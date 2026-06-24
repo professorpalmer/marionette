@@ -1,0 +1,138 @@
+{
+  "_meta": {
+    "description": "Open-weights candidates for the PM-native harness DRIVER layer. Tiers reflect role in a Puppetmaster-routed harness: 'flagship' drives the top-level loop; 'value' is cheap delegation fodder the PM router sends bulk sub-tasks to; 'frontier_control' is the ceiling baseline. Prices are NATIVE provider $/Mtok (in/out), the cost-thesis figure. license:other = provider's own modified license (check before enterprise self-host); MIT/Apache = clean.",
+    "verified": "2026-06-24 via Hugging Face Hub + provider pricing",
+    "reach_default": "openrouter",
+    "note": "OpenRouter gives the whole field through one OpenAI-compatible key (OPENROUTER_API_KEY). Native endpoints are wired for finalists where cost-accurate measurement matters (native price != OpenRouter markup)."
+  },
+  "models": [
+    {
+      "name": "glm-5.2",
+      "tier": "flagship",
+      "license": "MIT",
+      "hf": "zai-org/GLM-5.2",
+      "price_in": 1.4,
+      "price_out": 4.4,
+      "openrouter": "z-ai/glm-5.2",
+      "native": {
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "model": "glm-5.2",
+        "api_key_env": "ZAI_API_KEY"
+      }
+    },
+    {
+      "name": "kimi-k2.6",
+      "tier": "flagship",
+      "license": "other",
+      "hf": "moonshotai/Kimi-K2.6",
+      "price_in": 0.6,
+      "price_out": 2.8,
+      "openrouter": "moonshotai/kimi-k2.6",
+      "native": {
+        "base_url": "https://api.moonshot.ai/v1",
+        "model": "kimi-k2.6",
+        "api_key_env": "MOONSHOT_API_KEY"
+      }
+    },
+    {
+      "name": "minimax-m2.7",
+      "tier": "flagship",
+      "license": "other",
+      "hf": "MiniMaxAI/MiniMax-M2.7",
+      "price_in": 0.3,
+      "price_out": 1.2,
+      "openrouter": "minimax/minimax-m2.7",
+      "native": {
+        "base_url": "https://api.minimax.io/v1",
+        "model": "MiniMax-M2.7",
+        "api_key_env": "MINIMAX_API_KEY"
+      }
+    },
+    {
+      "name": "deepseek-v4-pro",
+      "tier": "flagship",
+      "license": "MIT",
+      "hf": "deepseek-ai/DeepSeek-V4-Pro",
+      "price_in": 0.55,
+      "price_out": 2.19,
+      "openrouter": "deepseek/deepseek-v4-pro",
+      "native": {
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "deepseek-chat",
+        "api_key_env": "DEEPSEEK_API_KEY"
+      }
+    },
+    {
+      "name": "deepseek-v4-flash",
+      "tier": "value",
+      "license": "MIT",
+      "hf": "deepseek-ai/DeepSeek-V4-Flash",
+      "price_in": 0.14,
+      "price_out": 0.28,
+      "openrouter": "deepseek/deepseek-v4-flash",
+      "native": {
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "deepseek-flash",
+        "api_key_env": "DEEPSEEK_API_KEY"
+      }
+    },
+    {
+      "name": "glm-4.7-flash",
+      "tier": "value",
+      "license": "MIT",
+      "hf": "zai-org/GLM-4.7-Flash",
+      "price_in": 0.1,
+      "price_out": 0.3,
+      "openrouter": "z-ai/glm-4.7-flash",
+      "native": null
+    },
+    {
+      "name": "qwen3-coder-30b",
+      "tier": "value",
+      "license": "Apache-2.0",
+      "hf": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      "price_in": 0.1,
+      "price_out": 0.3,
+      "openrouter": "qwen/qwen3-coder-30b-a3b-instruct",
+      "native": null
+    },
+    {
+      "name": "minimax-m2.5-highspeed",
+      "tier": "value",
+      "license": "other",
+      "hf": "MiniMaxAI/MiniMax-M2.5",
+      "price_in": 0.6,
+      "price_out": 2.4,
+      "openrouter": "minimax/minimax-m2.5",
+      "native": null
+    },
+    {
+      "name": "gpt-frontier",
+      "tier": "frontier_control",
+      "license": "proprietary",
+      "hf": null,
+      "price_in": 2.5,
+      "price_out": 10.0,
+      "openrouter": "openai/gpt-4o",
+      "native": {
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o",
+        "api_key_env": "OPENAI_API_KEY"
+      }
+    },
+    {
+      "name": "claude-frontier",
+      "tier": "frontier_control",
+      "license": "proprietary",
+      "hf": null,
+      "price_in": 3.0,
+      "price_out": 15.0,
+      "openrouter": "anthropic/claude-sonnet-4",
+      "native": {
+        "base_url": "https://api.anthropic.com/v1",
+        "model": "claude-sonnet-4",
+        "api_key_env": "ANTHROPIC_API_KEY"
+      }
+    }
+  ]
+}

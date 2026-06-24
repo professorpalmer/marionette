@@ -1,35 +1,96 @@
 from __future__ import annotations
 
-"""Driver registry: the models under study. Open-weights harness candidates
-(Kimi, GLM) plus a frontier control row. Keys live only in the environment.
-Factories are lazy so importing this module never requires a key.
+"""Data-driven driver registry built from pmharness/catalog.json -- the
+research artifact listing every open-weights harness candidate with license and
+native cost metadata.
+
+Two reach modes:
+  - "openrouter" (default): every model through one OpenAI-compatible endpoint
+    with one key (OPENROUTER_API_KEY). Best for breadth; study the whole field
+    fast. Driver-quality measurement is identical regardless of reach.
+  - "native": provider's own endpoint + key. Use for finalists where the cost
+    receipt must reflect true native pricing (not OpenRouter markup).
+
+The stub oracle is always available offline with no key.
 """
 
-from typing import Callable, Dict
+import json
+from pathlib import Path
+from typing import Optional
 
 from .drivers.base import Driver
 from .drivers.stub import StubDriver
 from .drivers.openai_compat import OpenAICompatDriver
 
 
-REGISTRY: Dict[str, Callable[[], Driver]] = {
-    "stub-oracle": lambda: StubDriver(),
-    "kimi-k2": lambda: OpenAICompatDriver(
-        name="kimi-k2", model="kimi-k2-0905-preview",
-        base_url="https://api.moonshot.ai/v1", api_key_env="MOONSHOT_API_KEY",
-    ),
-    "glm-4.6": lambda: OpenAICompatDriver(
-        name="glm-4.6", model="glm-4.6",
-        base_url="https://api.z.ai/api/paas/v4", api_key_env="ZAI_API_KEY",
-    ),
-    "gpt-frontier": lambda: OpenAICompatDriver(
-        name="gpt-frontier", model="gpt-4o",
-        base_url="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY",
-    ),
-}
+_CATALOG_PATH = Path(__file__).resolve().parent / "catalog.json"
+
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 
 
-def build(name: str) -> Driver:
-    if name not in REGISTRY:
-        raise KeyError(f"unknown driver {name!r}; known={list(REGISTRY)}")
-    return REGISTRY[name]()
+def load_catalog() -> dict:
+    with open(_CATALOG_PATH) as f:
+        return json.load(f)
+
+
+def _entry(name: str) -> dict:
+    cat = load_catalog()
+    for m in cat["models"]:
+        if m["name"] == name:
+            return m
+    raise KeyError(f"unknown model {name!r}; known={[m['name'] for m in cat['models']]}")
+
+
+def model_names(tier: Optional[str] = None) -> list:
+    cat = load_catalog()
+    return [m["name"] for m in cat["models"] if tier is None or m["tier"] == tier]
+
+
+def price(name: str) -> tuple:
+    """Native (price_in, price_out) per Mtok for the cost column."""
+    m = _entry(name)
+    return (m.get("price_in"), m.get("price_out"))
+
+
+def build(name: str, *, reach: str = "openrouter") -> Driver:
+    """Construct a Driver for a catalog model.
+
+    reach='openrouter' routes through OpenRouter (one key for the whole field).
+    reach='native' uses the provider's own endpoint where defined.
+    """
+    if name == "stub-oracle":
+        return StubDriver()
+
+    m = _entry(name)
+
+    if reach == "native":
+        nat = m.get("native")
+        if not nat:
+            raise ValueError(
+                f"{name} has no native endpoint defined; use reach='openrouter'"
+            )
+        return OpenAICompatDriver(
+            name=name, model=nat["model"], base_url=nat["base_url"],
+            api_key_env=nat["api_key_env"],
+        )
+
+    if reach == "openrouter":
+        slug = m.get("openrouter")
+        if not slug:
+            raise ValueError(f"{name} has no OpenRouter slug")
+        return OpenAICompatDriver(
+            name=name, model=slug, base_url=OPENROUTER_BASE,
+            api_key_env=OPENROUTER_KEY_ENV,
+            extra_headers={
+                "HTTP-Referer": "https://github.com/professorpalmer/pm-harness",
+                "X-Title": "pm-harness driver eval",
+            },
+        )
+
+    raise ValueError(f"unknown reach {reach!r}; use 'openrouter' or 'native'")
+
+
+# Convenience: all driver names (incl. the offline oracle).
+def all_driver_names() -> list:
+    return ["stub-oracle"] + model_names()
