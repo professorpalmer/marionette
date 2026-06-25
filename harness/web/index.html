@@ -33,9 +33,12 @@
       <span id="status-pill" class="pill idle">idle</span>
     </header>
     <div id="stream"></div>
+    <div id="attachments"></div>
     <form id="composer">
+      <button id="attach" type="button" title="Attach image">+</button>
+      <input id="file" type="file" accept="image/*" multiple hidden/>
       <input id="prompt" autocomplete="off"
-             placeholder="Describe a task. The driver decides: swarm, answer, or stop."/>
+             placeholder="Describe a task. Attach an image for the vision sidecar."/>
       <button id="send" type="submit">Run</button>
     </form>
   </main>

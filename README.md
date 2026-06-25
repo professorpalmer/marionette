@@ -163,3 +163,31 @@ Default sidecar is Gemini's vision endpoint (stand-in); swap base_url/model/key
 for an open VLM (GLM-OCR / Kimi-VL / Qwen-VL) -- same image->text contract.
 Verified live: a screenshot of `AUTH_TOKEN=*** was transcribed and a text-only
 driver correctly answered "abc123" from the text alone.
+
+
+## Headless CLI
+
+The harness runs without a browser:
+
+```bash
+harness "Investigate auth across this repo and conclude"
+harness --driver glm-5.2 --budget 4 "Audit for the biggest risk"
+harness --image shot.png "What secret is in this screenshot?"   # vision sidecar
+harness --json "..."   # machine-readable event stream
+```
+
+Exit codes: 0 = terminated cleanly (answer/stop), 1 = error, 2 = forced stop
+(budget/turn cap). Streams the driver loop to the terminal (intent / executing /
+artifacts / final), colored on a TTY.
+
+## GUI: uploads, errors, history
+
+The three-pane GUI (`./scripts/harness_gui.sh`) now supports:
+- Image attach (button + drag/drop onto the center pane) -> multipart upload ->
+  the vision sidecar transcribes -> the driver reasons over text. Attachment
+  chips show pending images.
+- Distinct error cards for driver / transport / execute / invalid-intent
+  failures (with the raw model output on a parse error) -- nothing fails silent.
+- Vision events render inline (transcription char count + preview).
+- Job history persists in Puppetmaster's store and reloads on page load; click a
+  job to inspect its artifacts in the right pane.

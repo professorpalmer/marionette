@@ -1,21 +1,22 @@
 const $ = s => document.querySelector(s);
 const stream = $("#stream"), artList = $("#artifact-list"),
-      jobList = $("#job-list"), pill = $("#status-pill");
+      jobList = $("#job-list"), pill = $("#status-pill"),
+      attachments = $("#attachments");
 let running = false;
+let pending = [];  // {path, name} uploaded, awaiting run
 
 async function loadConfig(){
   const c = await (await fetch("/api/config")).json();
   $("#driver-name").textContent = c.driver;
   $("#driver-meta").textContent = `reach=${c.reach} · budget=${c.budget}`;
 }
-
 function setStatus(s){ pill.className = "pill " + s; pill.textContent = s; }
-
 function el(cls, html){ const d=document.createElement("div"); d.className=cls;
   if(html!=null) d.innerHTML=html; return d; }
+function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
-function addTurn(action, headHtml, bodyHtml){
-  const t = el("turn");
+function addTurn(action, headHtml, bodyHtml, isErr){
+  const t = el("turn" + (isErr?" err":""));
   const h = el("turn-head");
   h.appendChild(el("badge "+action, action.replace("_"," ")));
   const lbl = document.createElement("span"); lbl.innerHTML = headHtml; h.appendChild(lbl);
@@ -25,11 +26,8 @@ function addTurn(action, headHtml, bodyHtml){
   return t;
 }
 
-function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-
 function pushArtifacts(arts){
   if(!arts || !arts.length) return;
-  // clear the empty hint
   if(artList.querySelector(".empty")) artList.innerHTML="";
   for(const a of arts){
     const c = el("acard");
@@ -55,23 +53,54 @@ async function refreshJobs(){
   }
 }
 
+function renderChips(){
+  attachments.innerHTML="";
+  pending.forEach((f,idx)=>{
+    const c = el("chip");
+    c.innerHTML = `<span>${esc(f.name)}</span><span class="x" data-i="${idx}">remove</span>`;
+    c.querySelector(".x").onclick = ()=>{ pending.splice(idx,1); renderChips(); };
+    attachments.appendChild(c);
+  });
+}
+
+async function uploadFiles(files){
+  if(!files || !files.length) return;
+  const fd = new FormData();
+  for(const f of files) fd.append("file", f, f.name);
+  try{
+    const r = await (await fetch("/api/upload", {method:"POST", body:fd})).json();
+    (r.saved||[]).forEach(s=>pending.push(s));
+    renderChips();
+  }catch(e){ addTurn("error", "upload failed", `<div>${esc(""+e)}</div>`, true); }
+}
+
 function run(prompt){
   if(running) return; running = true; setStatus("running");
   $("#send").disabled = true;
-  addTurn("run_swarm", `<span class="muted">you</span> &nbsp; ${esc(prompt)}`, null)
-    .querySelector(".badge").className = "badge stop"; // user bubble styling reuse
-  const es = new EventSource("/api/run?prompt="+encodeURIComponent(prompt));
+  const imgs = pending.map(p=>p.path);
+  const userBody = imgs.length ? `<div class="muted">${imgs.length} image(s) attached</div>` : null;
+  addTurn("stop", `<span class="muted">you</span> &nbsp; ${esc(prompt)}`, userBody);
+  pending=[]; renderChips();
+  let url = "/api/run?prompt="+encodeURIComponent(prompt);
+  if(imgs.length) url += "&images="+encodeURIComponent(imgs.join("|"));
+  const es = new EventSource(url);
   es.onmessage = (m)=>{
     const ev = JSON.parse(m.data);
     if(ev.kind==="done"){ es.close(); running=false; $("#send").disabled=false;
       if(pill.textContent==="running") setStatus("done"); refreshJobs(); return; }
     const d = ev.data||{};
-    if(ev.kind==="intent"){
+    if(ev.kind==="vision"){
+      if(d.error) addTurn("error", `vision error`, `<div>${esc(d.error)}</div>`, true);
+      else if(d.chars!=null) addTurn("executing", `vision · ${d.chars} chars · ${esc(d.model||"")}`,
+                                     `<div class="muted">${esc(d.preview||"")}</div>`);
+      else addTurn("executing", `vision · transcribing ${d.count||""} image(s)`, null);
+    } else if(ev.kind==="intent"){
+      const rep = d.repairs_used ? ` <span class="muted">(repaired x${d.repairs_used})</span>`:"";
       if(d.action==="run_swarm")
-        addTurn("run_swarm", `turn ${ev.turn} · <span class="muted">${d.tokens_out} tok</span>`,
+        addTurn("run_swarm", `turn ${ev.turn} · <span class="muted">${d.tokens_out} tok</span>${rep}`,
           `<div class="goal">${esc(d.goal)}</div><div class="rationale">${esc(d.rationale)}</div>`);
       else
-        addTurn(d.action, `turn ${ev.turn}`, `<div class="rationale">${esc(d.rationale)}</div>`);
+        addTurn(d.action, `turn ${ev.turn}${rep}`, `<div class="rationale">${esc(d.rationale)}</div>`);
     } else if(ev.kind==="executing"){
       addTurn("executing", `Puppetmaster running`, `<div class="goal">${esc(d.goal)}</div>`);
     } else if(ev.kind==="artifacts"){
@@ -81,9 +110,10 @@ function run(prompt){
       pushArtifacts(d.artifacts);
     } else if(ev.kind==="final"){
       addTurn(d.action, `final · ${d.forced?"(forced) ":""}`, `<div class="rationale">${esc(d.rationale)}</div>`);
-      setStatus("done");
+      setStatus(d.forced?"error":"done");
     } else if(ev.kind==="error"){
-      addTurn("error", `error`, `<div>${esc(d.error)}</div>`); setStatus("error");
+      addTurn("error", `error`, `<div>${esc(d.error)}</div>`+
+        (d.raw?`<div class="muted">raw: ${esc(d.raw)}</div>`:""), true); setStatus("error");
     }
   };
   es.onerror = ()=>{ es.close(); running=false; $("#send").disabled=false;
@@ -93,6 +123,19 @@ function run(prompt){
 $("#composer").addEventListener("submit", e=>{
   e.preventDefault(); const p = $("#prompt").value.trim();
   if(!p) return; $("#prompt").value=""; run(p);
+});
+$("#attach").onclick = ()=> $("#file").click();
+$("#file").onchange = e=> uploadFiles(e.target.files);
+
+// drag & drop onto center pane
+const center = $("#center");
+["dragover","dragenter"].forEach(ev=>center.addEventListener(ev,e=>{
+  e.preventDefault(); center.classList.add("drag"); }));
+["dragleave","drop"].forEach(ev=>center.addEventListener(ev,e=>{
+  e.preventDefault(); center.classList.remove("drag"); }));
+center.addEventListener("drop", e=>{
+  const files=[...(e.dataTransfer?.files||[])].filter(f=>f.type.startsWith("image/"));
+  if(files.length) uploadFiles(files);
 });
 
 loadConfig(); refreshJobs();

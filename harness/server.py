@@ -15,6 +15,9 @@ import queue
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+import cgi
+import tempfile
+import uuid
 
 from .config import HarnessConfig
 from .session import Session
@@ -36,6 +39,8 @@ if _keyfile and os.path.exists(_keyfile):
         with open(_keyfile) as _kf:
             os.environ[_envvar] = _kf.read().strip()
 _session = Session(_cfg)
+_UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "harness-uploads")
+os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -49,6 +54,32 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        if u.path == "/api/upload":
+            return self._handle_upload()
+        return self._send(404, json.dumps({"error": "not found"}))
+
+    def _handle_upload(self):
+        ctype = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in ctype:
+            return self._send(400, json.dumps({"error": "expected multipart/form-data"}))
+        fs = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
+                              environ={"REQUEST_METHOD": "POST",
+                                       "CONTENT_TYPE": ctype})
+        saved = []
+        items = fs.list or []
+        for item in items:
+            if getattr(item, "filename", None) and item.file:
+                ext = os.path.splitext(item.filename)[1].lower() or ".png"
+                if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                    continue
+                path = os.path.join(_UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
+                with open(path, "wb") as out:
+                    out.write(item.file.read())
+                saved.append({"path": path, "name": item.filename})
+        return self._send(200, json.dumps({"saved": saved}))
 
     def do_GET(self):
         u = urlparse(self.path)
@@ -70,17 +101,19 @@ class Handler(BaseHTTPRequestHandler):
             jid = q.get("job_id", [""])[0]
             return self._send(200, json.dumps(_session.state().job_artifacts(jid)))
         if u.path == "/api/run":
-            return self._stream_run(parse_qs(u.query).get("prompt", [""])[0])
+            q = parse_qs(u.query)
+            imgs = [p for p in q.get("images", [""])[0].split("|") if p]
+            return self._stream_run(q.get("prompt", [""])[0], imgs)
         return self._send(404, json.dumps({"error": "not found"}))
 
-    def _stream_run(self, prompt: str):
+    def _stream_run(self, prompt: str, images=None):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         try:
-            for ev in _session.run(prompt):
+            for ev in _session.run(prompt, images=images or None):
                 payload = json.dumps({"kind": ev.kind, "turn": ev.turn, "data": ev.data})
                 self.wfile.write(f"data: {payload}\n\n".encode())
                 self.wfile.flush()

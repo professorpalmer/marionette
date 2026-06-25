@@ -75,3 +75,16 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
 .acard .ahead{font-size:12px;margin-top:3px;color:var(--txt)}
 .acard .aconf{font-size:10px;color:var(--dim);margin-top:4px}
 .empty{color:var(--dim);font-size:12px;text-align:center;padding:24px 8px}
+
+
+/* attachments + upload */
+#attachments{display:flex;gap:6px;flex-wrap:wrap;padding:0 18px}
+#attachments:not(:empty){padding-top:10px}
+.chip{display:flex;align-items:center;gap:6px;background:var(--panel2);
+  border:1px solid var(--line);border-radius:7px;padding:4px 8px;font-size:11px;color:var(--dim)}
+.chip .x{cursor:pointer;color:var(--err)}
+#attach{background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+  width:38px;border-radius:9px;cursor:pointer;font-size:18px}
+#attach:hover{border-color:var(--accent);color:var(--accent)}
+#center.drag{outline:2px dashed var(--accent);outline-offset:-8px}
+.turn.err .turn-head{color:var(--err)}
