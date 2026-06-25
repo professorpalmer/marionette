@@ -181,6 +181,9 @@ def classify_models(models: list[str]) -> tuple[list[str], list[str]]:
     return cheap, strong
 
 def get_recommendations() -> dict:
+    from pmharness.registry import load_catalog
+    cat = load_catalog()
+
     active_provs = []
     preferred_order = ["openrouter", "anthropic", "openai", "deepseek", "gemini", "zai", "minimax", "xai", "nvidia"]
     for pname in preferred_order:
@@ -188,6 +191,41 @@ def get_recommendations() -> dict:
         if p and get_provider_key(p) is not None:
             active_provs.append(p)
             
+    # Map api_key_env to provider
+    env_to_provider = {}
+    for p in PROVIDERS:
+        for ev in p.env_vars:
+            env_to_provider[ev] = p
+
+    # Find the cheapest value/cheap tier catalog model whose provider has a key
+    candidates = []
+    for m in cat.get("models", []):
+        if m.get("tier") in ("value", "cheap"):
+            has_native_key = False
+            nat = m.get("native")
+            if isinstance(nat, dict) and "api_key_env" in nat:
+                np = env_to_provider.get(nat["api_key_env"])
+                if np and get_provider_key(np) is not None:
+                    has_native_key = True
+            
+            has_or_key = False
+            if m.get("openrouter"):
+                orp = get_provider("openrouter")
+                if orp and get_provider_key(orp) is not None:
+                    has_or_key = True
+                    
+            if has_native_key or has_or_key:
+                price_in = m.get("price_in") or 0.0
+                price_out = m.get("price_out") or 0.0
+                total_price = price_in + price_out
+                candidates.append((total_price, m["name"]))
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0])
+        pilot_driver = candidates[0][1]
+    else:
+        pilot_driver = "qwen3-coder-30b"
+
     if not active_provs:
         rec_provider = get_provider("openrouter") or PROVIDERS[0]
     else:
@@ -199,8 +237,6 @@ def get_recommendations() -> dict:
     cheap_model = cheap_list[0] if cheap_list else (rec_provider.pilot_models[0] if rec_provider.pilot_models else "unknown")
     strong_model = strong_list[0] if strong_list else (rec_provider.pilot_models[0] if rec_provider.pilot_models else "unknown")
     
-    pilot_driver = f"{rec_provider.name}:{strong_model}"
-    
     role_mapping = {}
     for role, base_score in REAL_BASE_SCORES.items():
         if base_score >= 70:
@@ -209,6 +245,7 @@ def get_recommendations() -> dict:
             role_mapping[role] = f"{rec_provider.name}:{cheap_model}"
             
     return {
+        "pilot": pilot_driver,
         "pilot_driver": pilot_driver,
         "roles": role_mapping
     }

@@ -10,8 +10,9 @@ import SettingsPane from "./SettingsPane";
 
 type Tab = "state" | "browser" | "files" | "git" | "mcp" | "skills" | "settings";
 
-export default function RightPane({ artifacts }: {
+export default function RightPane({ artifacts, onOpenWizard }: {
   artifacts: { type: string; headline: string; confidence?: number }[];
+  onOpenWizard: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("state");
   return (
@@ -32,7 +33,7 @@ export default function RightPane({ artifacts }: {
         {tab === "git" && <SourceControl />}
         {tab === "mcp" && <McpPane />}
         {tab === "skills" && <SkillsPane />}
-        {tab === "settings" && <SettingsPane />}
+        {tab === "settings" && <SettingsPane onOpenWizard={onOpenWizard} />}
       </div>
     </aside>
   );

@@ -25,7 +25,67 @@ export type Artifact = { type: string; headline: string; confidence?: number };
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
 export type Session = { id: string; title: string; created: number; active?: boolean };
 
+export type ProviderInfo = {
+  name: string;
+  env_var: string;
+  base_url: string;
+  has_key: boolean;
+  api_mode: string;
+};
+
+export type ProbeModel = {
+  id: string;
+};
+
+export type ProbeResult = {
+  provider: string;
+  models: ProbeModel[];
+  source: "live" | "static";
+  error?: string;
+};
+
+export type RegistryModel = {
+  id: string;
+  adapter: string;
+  adapter_model_name?: string;
+  capability_score: number;
+  tags?: string[];
+  input_per_mtok_usd?: number;
+  output_per_mtok_usd?: number;
+  notes?: string;
+};
+
+export type RolesConfig = {
+  roles: Record<string, number>;
+  policies: string[];
+  routing_policy: string;
+  overrides: Record<string, number>;
+};
+
+export type PilotValidateResult = {
+  valid: boolean;
+  resolved_model_id: string | null;
+  provider: string | null;
+  reason: string;
+};
+
+export type RecommendResult = {
+  pilot: string;
+  pilot_driver: string;
+  roles: Record<string, string>;
+};
+
 export const api = {
+  providers: () => getJSON<ProviderInfo[]>("/api/providers"),
+  probeProvider: (provider: string) => postJSON<ProbeResult>("/api/providers/probe", { provider }),
+  getRegistry: () => getJSON<{ models: RegistryModel[] }>("/api/registry"),
+  saveRegistry: (models: RegistryModel[]) => postJSON<{ ok: boolean; models: RegistryModel[] }>("/api/registry", { models }),
+  getRoles: () => getJSON<RolesConfig>("/api/roles"),
+  saveRoles: (payload: { overrides: Record<string, number>; routing_policy?: string }) =>
+    postJSON<{ ok: boolean; overrides: Record<string, number>; routing_policy: string }>("/api/roles", payload),
+  validatePilot: (driver: string) => postJSON<PilotValidateResult>("/api/pilot/validate", { driver }),
+  recommend: () => getJSON<RecommendResult>("/api/registry/recommend"),
+
   config: () => getJSON<Config>("/api/config"),
   settings: () => getJSON<Settings>("/api/settings"),
   updateSettings: (partial: Partial<Settings> & { api_key?: string; clear_api_key?: boolean }) => postJSON<Settings>("/api/settings", partial),

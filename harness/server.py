@@ -271,13 +271,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(409, json.dumps({"error": "pilot busy, try again"}))
                 _pilot._busy.release()
 
+            reach_to_use = body.get("reach", _cfg.reach)
             if "api_key" in body:
                 val = str(body["api_key"]).strip()
                 if val:
-                    set_api_key(_cfg.reach, val)
+                    set_api_key(reach_to_use, val)
                     _rebuild_pilot_and_session()
             elif body.get("clear_api_key") is True:
-                clear_api_key(_cfg.reach)
+                clear_api_key(reach_to_use)
                 _rebuild_pilot_and_session()
 
             driver = body.get("driver")

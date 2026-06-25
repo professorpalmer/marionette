@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Settings as SettingsIcon } from "lucide-react";
 import { api, type Settings } from "../lib/api";
 
-export default function SettingsPane() {
+export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
@@ -57,6 +57,19 @@ export default function SettingsPane() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-4">
+        {/* Wizard Button */}
+        <div className="space-y-1.5 border-b border-edge/65 pb-3">
+          <button
+            onClick={onOpenWizard}
+            className="w-full bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded py-2 font-bold transition-colors text-[11px]"
+          >
+            Open Provider & Model Setup
+          </button>
+          <p className="text-[10px] text-muted">
+            Configure API keys, probe models, select conversational pilots, and adjust routing scores.
+          </p>
+        </div>
+
         {/* Driver Select */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">

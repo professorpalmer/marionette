@@ -6,6 +6,7 @@ import RightPane from "./components/RightPane";
 import TaskStack from "./components/TaskStack";
 import StatusBar from "./components/StatusBar";
 import Resizer from "./components/Resizer";
+import RegistryWizard from "./components/RegistryWizard";
 
 const LS = {
   left: "pmharness.leftW", right: "pmharness.rightW",
@@ -27,8 +28,32 @@ export default function App() {
   const [leftOpen, setLeftOpen] = useState(() => bool(LS.leftOpen, true));
   const [rightOpen, setRightOpen] = useState(() => bool(LS.rightOpen, true));
 
+  const [showWizard, setShowWizard] = useState(false);
+
   useEffect(() => { api.config().then(setConfig).catch(() => {}); }, []);
   useEffect(() => { api.jobs().then((j) => setJobCount(j.length)).catch(() => {}); }, [jobsRefresh]);
+
+  // First-run behavior checking
+  useEffect(() => {
+    const checkSetupStatus = async () => {
+      const seen = localStorage.getItem("pmharness.wizardSeen");
+      if (seen === "1") return;
+
+      try {
+        const provs = await api.providers();
+        const hasAnyKey = provs.some((p) => p.has_key);
+        if (!hasAnyKey || seen === null) {
+          setShowWizard(true);
+        }
+      } catch (err) {
+        console.error("Failed to check provider setup", err);
+        if (seen === null) {
+          setShowWizard(true);
+        }
+      }
+    };
+    checkSetupStatus();
+  }, []);
 
   // persist layout
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
@@ -71,7 +96,7 @@ export default function App() {
           <>
             <Resizer side="right" onResize={(dx) => setRightW((w) => clamp(w + dx, 240, 640))} />
             <div style={{ width: rightW }} className="shrink-0 h-full overflow-hidden">
-              <RightPane artifacts={artifacts} />
+              <RightPane artifacts={artifacts} onOpenWizard={() => setShowWizard(true)} />
             </div>
           </>
         )}
@@ -80,6 +105,8 @@ export default function App() {
       <StatusBar config={config} jobCount={jobCount}
         leftOpen={leftOpen} rightOpen={rightOpen}
         onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)} />
+
+      {showWizard && <RegistryWizard onClose={() => setShowWizard(false)} />}
     </div>
   );
 }

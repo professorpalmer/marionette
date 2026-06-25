@@ -180,7 +180,10 @@ def test_registry_recommend_endpoint(test_server):
     resp = _get(port, f"/api/registry/recommend?token={srv._TOKEN}")
     assert resp.status == 200
     data = json.loads(resp.read().decode())
+    assert "pilot" in data
     assert "pilot_driver" in data
+    assert data["pilot_driver"] == "qwen3-coder-30b"
+    assert data["pilot"] == "qwen3-coder-30b"
     assert "roles" in data
     assert isinstance(data["roles"], dict)
     assert "explore" in data["roles"]
