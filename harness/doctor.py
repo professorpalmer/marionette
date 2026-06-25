@@ -85,6 +85,18 @@ def run_doctor(argv) -> int:
     else:
         _line("ok", "swarm adapter", "demo (deterministic substrate -- set HARNESS_SWARM_ADAPTER=openai + HARNESS_REPO for real analysis)")
 
+    # 3c. Wiki integration (optional durable-knowledge capture)
+    from .wiki import WikiClient
+    wc = WikiClient()
+    if wc.configured:
+        if wc.health():
+            auto = os.environ.get("HARNESS_WIKI_AUTO", "").strip() in ("1","true","yes")
+            _line("ok", "wiki", f"connected ({wc.base_url}), auto-ingest={'on' if auto else 'off'}")
+        else:
+            _line("warn", "wiki", f"configured ({wc.base_url}) but unreachable")
+    else:
+        _line("ok", "wiki", "not configured (optional -- set HARNESS_WIKI_URL + HARNESS_WIKI_TOKEN to auto-capture findings)")
+
     # 4. Vision sidecar key (warn-only; vision is optional). The backend depends
     # on HARNESS_VLM_REACH: openrouter -> open VLM (OPENROUTER_API_KEY), else Gemini.
     vlm_reach = os.environ.get("HARNESS_VLM_REACH", "").lower()

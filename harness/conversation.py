@@ -34,6 +34,7 @@ from . import providers as prov
 from pmharness.intent import DriverIntent
 from pmharness.bridge import execute_intent, BridgeResult
 from .pilot import (parse_pilot_turn, PilotTurn, PilotError, PILOT_SYSTEM)
+from .wiki import WikiClient, session_digest
 from .config import HarnessConfig
 from .state import DurableState
 
@@ -66,6 +67,9 @@ class ConversationalSession:
             os.environ["HARNESS_SWARM_ADAPTER"] = config.swarm_adapter
         # the running transcript with the pilot (conversation memory)
         self._history: list[dict] = [{"role": "system", "content": PILOT_SYSTEM}]
+        # optional durable-knowledge integration (portable-llm-wiki)
+        self._wiki = WikiClient()
+        self._wiki_auto = os.environ.get("HARNESS_WIKI_AUTO", "").strip() in ("1", "true", "yes")
 
     @property
     def durable(self) -> DurableState:
@@ -86,6 +90,8 @@ class ConversationalSession:
         swarms = 0
         action_seq = 0
         demo_swarms = 0  # count swarms that returned the demo substrate
+        turn_findings: list = []   # accumulate real findings for wiki ingest
+        turn_prose: list = []      # accumulate pilot prose for the digest
 
         for step in range(HARD_PILOT_STEPS):
             # 1. Ask the pilot for its next conversational turn.
@@ -111,11 +117,13 @@ class ConversationalSession:
             # 2. Emit the pilot's prose to the user.
             if turn.say:
                 yield ConvEvent("message", {"role": "assistant", "text": turn.say})
+                turn_prose.append(turn.say)
             # record the pilot's turn in transcript (prose only -- the conversation)
             self._history.append({"role": "assistant", "content": turn.say or "(acting)"})
 
             # 3. No actions => the pilot is done talking; yield back to the user.
             if not turn.has_actions:
+                self._maybe_ingest(user_message, turn_prose, turn_findings)
                 yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
                 return
 
@@ -145,6 +153,10 @@ class ConversationalSession:
                     "types": result.artifact_types, "artifacts": result.artifacts[:8],
                     "adapter": result.adapter, "mode": result.mode,
                 })
+                # collect non-substrate findings for durable knowledge capture
+                if result.adapter != "demo":
+                    turn_findings.extend(
+                        a for a in result.artifacts if a.get("type") != "verification")
                 # 5. Feed DISTILLED artifacts back into the transcript (not raw files).
                 digest = "\n".join(f"  - [{a['type']}] {a['headline']}"
                                    for a in result.artifacts[:8]) or "  (no artifacts)"
@@ -162,6 +174,25 @@ class ConversationalSession:
                     f"follow-up swarm or finish with no actions.){stall}"})
 
         # Hit the step cap -- close the turn gracefully.
+        self._maybe_ingest(user_message, turn_prose, turn_findings)
         yield ConvEvent("message", {"role": "assistant",
             "text": "(Reached the investigation step limit for this message.)"})
         yield ConvEvent("assistant_done", {"turns": HARD_PILOT_STEPS, "swarms": swarms})
+
+    def _maybe_ingest(self, user_message: str, prose: list, findings: list) -> None:
+        """Auto-ingest a session digest to the wiki when enabled and there are
+        real findings worth capturing. Never fires the orchestrator (token-spend)."""
+        if not (self._wiki_auto and self._wiki.configured and findings):
+            return
+        try:
+            digest = session_digest(user_message, prose, findings)
+            slug = f"harness-{_slugify(user_message)}"
+            self._wiki.ingest(slug, digest, note="auto-captured by pm-harness",
+                              run_orchestrator=False)
+        except Exception:
+            pass  # wiki capture is best-effort; never break the conversation
+
+
+def _slugify(s: str) -> str:
+    import re
+    return (re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-") or "session")[:60]

@@ -300,3 +300,20 @@ the Hermes Agent project (MIT, Nous Research) -- see NOTICE.md. Only the
 declarative data is borrowed; transport stays the harness's own thin drivers.
 The picker in the GUI lists exactly the providers your keys unlock; swapping the
 pilot is one selection (your conversation layer, your cost choice).
+
+
+## Wiki integration (durable knowledge, out of the box)
+
+The harness can auto-capture investigation findings/decisions to a
+portable-llm-wiki instance -- durable KNOWLEDGE state on top of PM's durable
+EXECUTION state. We INTEGRATE an existing wiki (POST /owner/ingest), not rebuild
+it, so interlinking / share tiers / the /llm handshake all come for free.
+
+```
+export HARNESS_WIKI_URL=http://127.0.0.1:8000
+export HARNESS_WIKI_TOKEN=<owner-token>
+export HARNESS_WIKI_AUTO=1        # auto-ingest findings when a pilot turn ends
+```
+
+Off by default; best-effort (never breaks the conversation); never fires the
+wiki's token-spending orchestrator. `harness doctor` reports wiki connectivity.
