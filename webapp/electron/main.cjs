@@ -12,6 +12,8 @@ const { spawn } = require("node:child_process");
 const http = require("node:http");
 const path = require("node:path");
 const net = require("node:net");
+const fs = require("node:fs");
+const os = require("node:os");
 
 const isDev = !!process.env.PMHARNESS_DEV_SERVER;
 let backend = null;
@@ -46,9 +48,31 @@ function waitForBackend(port, timeoutMs = 20000) {
   });
 }
 
+// Single-backend-per-machine: a marker file records the live backend port so a
+// second window REUSES it instead of spawning another process on the same SQLite
+// state (which causes "database is locked"). The marker is validated by a health
+// probe before reuse; stale markers are ignored.
+function markerPath() {
+  const dir = path.join(os.homedir(), ".pmharness");
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return path.join(dir, "backend.json");
+}
+
 async function startBackend() {
+  // 1. Try to reuse an existing healthy backend.
+  try {
+    const m = JSON.parse(fs.readFileSync(markerPath(), "utf8"));
+    if (m && m.port) {
+      await waitForBackend(m.port, 2000);
+      backendPort = m.port;
+      backend = null; // not ours to kill
+      console.log(`[backend] reusing existing backend on ${backendPort}`);
+      return;
+    }
+  } catch {}
+
+  // 2. Spawn a fresh backend on a free port and record the marker.
   backendPort = await freePort();
-  // Resolve the harness repo root (parent of webapp).
   const repoRoot = path.resolve(__dirname, "..", "..");
   const py = process.env.PMHARNESS_PYTHON || path.join(repoRoot, ".venv", "bin", "python");
   backend = spawn(py, ["-m", "harness.cli", "gui", "--port", String(backendPort)], {
@@ -59,6 +83,7 @@ async function startBackend() {
   backend.stdout.on("data", (d) => process.stdout.write(`[backend] ${d}`));
   backend.stderr.on("data", (d) => process.stderr.write(`[backend] ${d}`));
   await waitForBackend(backendPort);
+  try { fs.writeFileSync(markerPath(), JSON.stringify({ port: backendPort, pid: backend.pid, at: Date.now() })); } catch {}
 }
 
 // ---- transport seam over IPC: proxy to the local backend ----
@@ -139,8 +164,15 @@ app.whenReady().then(async () => {
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
+function cleanupBackend() {
+  if (backend) {
+    try { fs.unlinkSync(markerPath()); } catch {}
+    backend.kill();
+    backend = null;
+  }
+}
 app.on("window-all-closed", () => {
-  if (backend) backend.kill();
+  cleanupBackend();
   if (process.platform !== "darwin") app.quit();
 });
-app.on("before-quit", () => { if (backend) backend.kill(); });
+app.on("before-quit", cleanupBackend);
