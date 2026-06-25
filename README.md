@@ -260,3 +260,24 @@ mutated. Safe even on live-service repos.
 Honest limit: a cheap 30B analysis model reads the right files (real file-cited
 evidence) but can fabricate specifics -- findings are directionally useful and
 need verification. Pin a stronger HARNESS_ANALYSIS_MODEL for high-stakes work.
+
+
+## The pilot (conversational UX)
+
+The harness is a conversation, not a raw control loop. You message a PILOT (the
+model you pick), it plans in prose, investigates by firing swarms, and explains
+the findings -- like Cursor/Hermes. Orchestration calls render as Cursor-style
+COLLAPSIBLE cards (collapsed header "Ran swarm: <goal>"; expand for goal, cwd,
+artifacts), so you see the controls without them being the whole output.
+
+- The pilot is SWAPPABLE in the UI (qwen / glm / deepseek / kimi / ... per your
+  keys) -- pick how much to spend on the conversation layer.
+- Transcript lives in the you<->pilot channel only. Swarm workers receive a
+  DISTILLED brief (the pilot's goal) + CodeGraph -- never the transcript. The
+  expensive investigation stays decoupled from the conversation.
+- Set --repo + --swarm-adapter openai for the pilot's swarms to do REAL read-only
+  codebase analysis (else demo substrate; a stall guard stops the pilot grinding
+  on demo artifacts and tells you to enable real analysis).
+
+Endpoints: GET /api/chat?message=... (SSE: message | action_start | action_result
+| assistant_done), GET /api/pilot?model=... (hot-swap the pilot).

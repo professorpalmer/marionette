@@ -21,6 +21,7 @@ import uuid
 
 from .config import HarnessConfig
 from .session import Session
+from .conversation import ConversationalSession
 
 
 _WEB = Path(__file__).resolve().parent / "web"
@@ -39,6 +40,7 @@ if _keyfile and os.path.exists(_keyfile):
         with open(_keyfile) as _kf:
             os.environ[_envvar] = _kf.read().strip()
 _session = Session(_cfg)
+_pilot = ConversationalSession(_cfg)
 _UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "harness-uploads")
 os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
@@ -94,6 +96,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({
                 "driver": _cfg.driver, "reach": _cfg.reach,
                 "budget": _cfg.budget, "state_dir": _session.state_dir,
+                "models": _available_pilots(),
                 "preflight": _session.preflight()}))
         if u.path == "/api/jobs":
             return self._send(200, json.dumps(_session.state().list_jobs()))
@@ -105,6 +108,12 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(u.query)
             imgs = [p for p in q.get("images", [""])[0].split("|") if p]
             return self._stream_run(q.get("prompt", [""])[0], imgs)
+        if u.path == "/api/chat":
+            q = parse_qs(u.query)
+            return self._stream_chat(q.get("message", [""])[0])
+        if u.path == "/api/pilot":
+            q = parse_qs(u.query)
+            return self._swap_pilot(q.get("model", [""])[0])
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _stream_run(self, prompt: str, images=None):
@@ -128,6 +137,58 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def _swap_pilot(self, model: str):
+        """Hot-swap the pilot model (the whole point: your key -> your pilot)."""
+        global _pilot
+        if not model:
+            return self._send(400, json.dumps({"error": "model required"}))
+        try:
+            _cfg.driver = model
+            _pilot = ConversationalSession(_cfg)
+            return self._send(200, json.dumps({"ok": True, "driver": model}))
+        except Exception as e:
+            return self._send(500, json.dumps({"error": str(e)}))
+
+    def _stream_chat(self, message: str):
+        """Stream the conversational PILOT loop: prose messages + collapsible
+        action cards (run_swarm) + assistant_done."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        pre = _pilot_preflight()
+        if pre:
+            self.wfile.write(f"data: {json.dumps({'kind':'error','data':{'error':pre}})}\n\n".encode())
+            self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
+            self.wfile.flush()
+            return
+        try:
+            for ev in _pilot.send(message):
+                payload = json.dumps({"kind": ev.kind, "data": ev.data})
+                self.wfile.write(f"data: {payload}\n\n".encode())
+                self.wfile.flush()
+            self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+
+def _pilot_preflight():
+    return _session.preflight()
+
+
+def _available_pilots():
+    """Models the user can pilot with, given the reach. For openrouter, expose a
+    curated swappable set; the current driver is always included/first."""
+    cur = _cfg.driver
+    if _cfg.reach == "openrouter":
+        opts = ["qwen3-coder-30b", "glm-5.2", "deepseek-v4-pro",
+                "kimi-k2.6", "minimax-m2.7", "glm-4.7-flash"]
+    else:
+        opts = [cur]
+    return [cur] + [m for m in opts if m != cur]
 
 
 def serve(host: str = "127.0.0.1", port: int = 8799) -> None:

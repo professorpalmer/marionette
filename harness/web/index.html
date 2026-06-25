@@ -10,36 +10,31 @@
 <div id="app">
   <!-- LEFT: nav -->
   <aside id="nav">
-    <div class="brand">
-      <span class="mark">PM</span>
-      <span class="title">Harness</span>
-    </div>
-    <button class="nav-btn active">New task</button>
-    <button class="nav-btn">Artifacts</button>
-    <button class="nav-btn">Jobs</button>
-    <div class="nav-section">DRIVER</div>
+    <div class="brand"><span class="mark">PM</span><span class="title">Harness</span></div>
+    <button class="nav-btn active" id="new-chat">New chat</button>
+    <div class="nav-section">PILOT</div>
     <div id="driver-card" class="driver-card">
-      <div class="driver-name" id="driver-name">--</div>
+      <select id="pilot-picker" class="pilot-picker"></select>
       <div class="driver-meta" id="driver-meta">--</div>
     </div>
     <div class="nav-section">SESSION JOBS</div>
     <div id="job-list" class="job-list"></div>
   </aside>
 
-  <!-- CENTER: driver loop conversation -->
+  <!-- CENTER: conversation -->
   <main id="center">
     <header id="center-head">
       <span id="task-title">PM-Native Harness</span>
       <span id="status-pill" class="pill idle">idle</span>
     </header>
-    <div id="stream"></div>
+    <div id="feed"></div>
     <div id="attachments"></div>
     <form id="composer">
       <button id="attach" type="button" title="Attach image">+</button>
       <input id="file" type="file" accept="image/*" multiple hidden/>
-      <input id="prompt" autocomplete="off"
-             placeholder="Describe a task. Attach an image for the vision sidecar."/>
-      <button id="send" type="submit">Run</button>
+      <textarea id="prompt" rows="1" autocomplete="off"
+             placeholder="Message the pilot. It plans, investigates via swarms, and explains."></textarea>
+      <button id="send" type="submit">Send</button>
       <button id="stop" type="button" hidden>Stop</button>
     </form>
   </main>
@@ -49,7 +44,7 @@
     <header class="state-head">DURABLE STATE</header>
     <div class="state-sub">Artifacts (live)</div>
     <div id="artifact-list" class="artifact-list">
-      <div class="empty">Run a task to populate durable state.</div>
+      <div class="empty">Findings appear here as the pilot investigates.</div>
     </div>
   </aside>
 </div>

@@ -1,183 +1,122 @@
 const $ = s => document.querySelector(s);
-const stream = $("#stream"), artList = $("#artifact-list"),
-      jobList = $("#job-list"), pill = $("#status-pill"),
-      attachments = $("#attachments");
-let running = false;
-let pending = [];  // {path, name} uploaded, awaiting run
-let activeES = null;
+const feed = $("#feed"), artList = $("#artifact-list"), jobList = $("#job-list"),
+      pill = $("#status-pill"), promptEl = $("#prompt"), picker = $("#pilot-picker"),
+      driverMeta = $("#driver-meta");
+const esc = s => (s||"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let es = null, attachments = [];
 
-async function loadConfig(){
-  const c = await (await fetch("/api/config")).json();
-  $("#driver-name").textContent = c.driver;
-  $("#driver-meta").textContent = `reach=${c.reach} · budget=${c.budget}`;
-  if(c.preflight){
-    const b = el("turn err");
-    b.innerHTML = `<div class="turn-head"><span class="badge error">setup</span>`+
-      `<span>driver not ready</span></div><div class="turn-body">${esc(c.preflight)}</div>`;
-    stream.appendChild(b);
-  }
-}
 function setStatus(s){ pill.className = "pill " + s; pill.textContent = s; }
-function el(cls, html){ const d=document.createElement("div"); d.className=cls;
-  if(html!=null) d.innerHTML=html; return d; }
-function esc(s){ return (s||"").replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
-function addTurn(action, headHtml, bodyHtml, isErr){
-  const t = el("turn" + (isErr?" err":""));
-  const h = el("turn-head");
-  h.appendChild(el("badge "+action, action.replace("_"," ")));
-  const lbl = document.createElement("span"); lbl.innerHTML = headHtml; h.appendChild(lbl);
-  t.appendChild(h);
-  if(bodyHtml!=null) t.appendChild(el("turn-body", bodyHtml));
-  stream.appendChild(t); stream.scrollTop = stream.scrollHeight;
-  return t;
+function addMsg(role, text){
+  const el = document.createElement("div");
+  el.className = "msg " + role;
+  el.innerHTML = `<div class="who">${role==="user"?"you":"pilot"}</div>`+
+                 `<div class="bubble">${esc(text)}</div>`;
+  feed.appendChild(el); feed.scrollTop = feed.scrollHeight;
+  return el.querySelector(".bubble");
 }
 
-function addThinking(label){
-  const t = el("turn thinking");
-  t.innerHTML = `<div class="turn-head"><span class="dots"><i></i><i></i><i></i></span>`+
-    `<span class="muted">${esc(label||"driver thinking...")}</span></div>`;
-  stream.appendChild(t); stream.scrollTop = stream.scrollHeight;
-  return t;
+function addActionCard(d){
+  const el = document.createElement("div");
+  el.className = "action-card open";
+  el.id = "card-" + d.id;
+  const goal = d.goal || "(investigation)";
+  el.innerHTML =
+    `<div class="action-head">
+       <span class="spin" data-spin></span>
+       <span class="label">Ran <b>swarm</b> &middot; ${esc(goal.slice(0,80))}</span>
+       <span class="chev">&#9654;</span>
+     </div>
+     <div class="action-body">
+       <div class="action-kv"><span class="k">kind</span><span class="v">${esc(d.kind)}</span></div>
+       <div class="action-kv"><span class="k">goal</span><span class="v">${esc(goal)}</span></div>
+       ${d.cwd?`<div class="action-kv"><span class="k">cwd</span><span class="v">${esc(d.cwd)}</span></div>`:""}
+       <div data-result class="muted" style="font-size:12px;margin-top:6px">running...</div>
+     </div>`;
+  feed.appendChild(el); feed.scrollTop = feed.scrollHeight;
+  el.querySelector(".action-head").onclick = () => el.classList.toggle("open");
+  return el;
 }
 
-function addUser(text, bodyHtml){
-  const t = el("turn user");
-  const h = el("turn-head");
-  h.appendChild(el("who", "you"));
-  const lbl = document.createElement("span"); lbl.textContent = text; h.appendChild(lbl);
-  t.appendChild(h);
-  if(bodyHtml!=null) t.appendChild(el("turn-body", bodyHtml));
-  stream.appendChild(t); stream.scrollTop = stream.scrollHeight;
-}
-
-function pushArtifacts(arts){
-  if(!arts || !arts.length) return;
-  if(artList.querySelector(".empty")) artList.innerHTML="";
-  for(const a of arts){
-    const c = el("acard");
-    c.innerHTML = `<div class="atype">${esc(a.type)}</div>`+
-                  `<div class="ahead">${esc(a.headline)}</div>`+
+function fillActionResult(d){
+  const el = $("#card-" + d.id); if(!el) return;
+  const spin = el.querySelector("[data-spin]"); if(spin) spin.remove();
+  const body = el.querySelector("[data-result]");
+  if(d.error){ body.innerHTML = `<span style="color:var(--risk)">error: ${esc(d.error)}</span>`; el.classList.add("open"); return; }
+  const rows = (d.artifacts||[]).map(a=>{
+    const t = (a.type||"").toLowerCase();
+    const cls = t.includes("risk")?"risk":(t.includes("decision")?"decision":"");
+    return `<div class="art-row"><span class="t ${cls}">${esc(a.type)}</span><span>${esc(a.headline||"")}</span></div>`;
+  }).join("");
+  const sub = d.adapter==="demo" ? `<div class="substrate-note">demo substrate -- not real codebase analysis</div>` : "";
+  body.innerHTML =
+    `<div class="action-kv"><span class="k">job</span><span class="v">${esc(d.job_id)}</span></div>
+     <div class="action-kv"><span class="k">found</span><span class="v">${d.num} artifacts &middot; ${esc((d.types||[]).join(", "))}</span></div>
+     ${rows}${sub}`;
+  // collapse the card now that it's done (Cursor-style: collapsed when complete)
+  el.classList.remove("open");
+  // populate right-pane durable state
+  (d.artifacts||[]).forEach(a=>{
+    const c = document.createElement("div"); c.className="acard";
+    c.innerHTML = `<div class="atype">${esc(a.type)}</div><div class="ahead">${esc(a.headline||"")}</div>`+
                   (a.confidence!=null?`<div class="aconf">confidence ${a.confidence}</div>`:"");
-    artList.appendChild(c);
-  }
-}
-
-async function refreshJobs(){
-  const jobs = await (await fetch("/api/jobs")).json();
-  jobList.innerHTML="";
-  for(const j of jobs.slice().reverse()){
-    const it = el("job-item");
-    it.innerHTML = `<div class="job-goal">${esc(j.goal||"(task)")}</div>`+
-                   `<div class="job-meta">${esc(j.status.split('.').pop())} · ${j.artifacts} artifacts</div>`;
-    it.onclick = async ()=>{
-      const arts = await (await fetch("/api/artifacts?job_id="+encodeURIComponent(j.id))).json();
-      artList.innerHTML=""; pushArtifacts(arts);
-    };
-    jobList.appendChild(it);
-  }
-}
-
-function renderChips(){
-  attachments.innerHTML="";
-  pending.forEach((f,idx)=>{
-    const c = el("chip");
-    c.innerHTML = `<span>${esc(f.name)}</span><span class="x" data-i="${idx}">remove</span>`;
-    c.querySelector(".x").onclick = ()=>{ pending.splice(idx,1); renderChips(); };
-    attachments.appendChild(c);
+    if(artList.querySelector(".empty")) artList.innerHTML="";
+    artList.prepend(c);
   });
+  refreshJobs();
 }
 
-async function uploadFiles(files){
-  if(!files || !files.length) return;
-  const fd = new FormData();
-  for(const f of files) fd.append("file", f, f.name);
-  try{
-    const r = await (await fetch("/api/upload", {method:"POST", body:fd})).json();
-    (r.saved||[]).forEach(s=>pending.push(s));
-    renderChips();
-  }catch(e){ addTurn("error", "upload failed", `<div>${esc(""+e)}</div>`, true); }
-}
-
-function run(prompt){
-  if(running) return; running = true; setStatus("running");
-  $("#send").disabled = true;
-  const imgs = pending.map(p=>p.path);
-  const userBody = imgs.length ? `<div class="muted">${imgs.length} image(s) attached</div>` : null;
-  addUser(prompt, userBody);
-  pending=[]; renderChips();
-  let url = "/api/run?prompt="+encodeURIComponent(prompt);
-  if(imgs.length) url += "&images="+encodeURIComponent(imgs.join("|"));
-  let thinking = addThinking();
-  const es = new EventSource(url); activeES = es;
+function send(){
+  const msg = promptEl.value.trim(); if(!msg) return;
+  addMsg("user", msg); promptEl.value=""; promptEl.style.height="auto";
+  setStatus("thinking");
   $("#send").hidden = true; $("#stop").hidden = false;
-  es.onmessage = (m)=>{
-    const ev = JSON.parse(m.data);
-    if(thinking){ thinking.remove(); thinking = null; }
-    // re-show thinking after a swarm's artifacts while the driver decides next
-    const reThink = (ev.kind==="artifacts");
-    if(ev.kind==="done"){ es.close(); activeES=null; running=false;
-      $("#send").disabled=false; $("#send").hidden=false; $("#stop").hidden=true;
-      if(pill.textContent==="running") setStatus("done"); refreshJobs(); return; }
+  let url = "/api/chat?message=" + encodeURIComponent(msg);
+  es = new EventSource(url);
+  es.onmessage = e => {
+    let ev; try { ev = JSON.parse(e.data); } catch { return; }
+    if(ev.kind==="done"){ es.close(); es=null; setStatus("done");
+      $("#send").hidden=false; $("#stop").hidden=true; return; }
     const d = ev.data||{};
-    if(ev.kind==="vision"){
-      if(d.error) addTurn("error", `vision error`, `<div>${esc(d.error)}</div>`, true);
-      else if(d.chars!=null) addTurn("executing", `vision · ${d.chars} chars · ${esc(d.model||"")}`,
-                                     `<div class="muted">${esc(d.preview||"")}</div>`);
-      else addTurn("executing", `vision · transcribing ${d.count||""} image(s)`, null);
-    } else if(ev.kind==="intent"){
-      const rep = d.repairs_used ? ` <span class="muted">(repaired x${d.repairs_used})</span>`:"";
-      setStatus("running");
-      if(d.action==="run_swarm")
-        addTurn("run_swarm", `turn ${ev.turn} · <span class="muted">${d.tokens_out} tok</span>${rep}`,
-          `<div class="goal">${esc(d.goal)}</div><div class="rationale">${esc(d.rationale)}</div>`);
-      else
-        addTurn(d.action, `turn ${ev.turn}${rep}`, `<div class="rationale">${esc(d.rationale)}</div>`);
-    } else if(ev.kind==="executing"){
-      setStatus("executing");
-      addTurn("executing", `Puppetmaster running`, `<div class="goal">${esc(d.goal)}</div>`);
-    } else if(ev.kind==="artifacts"){
-      const body = (d.artifacts||[]).map(a=>
-        `<div class="art"><span class="t">${esc(a.type)}</span>${esc(a.headline)}</div>`).join("");
-      const subNote = d.adapter==="demo" ? ` <span class="muted">· demo substrate</span>` : "";
-      addTurn("run_swarm", `job ${esc(d.job_id)} · ${d.num} artifacts · ${esc((d.types||[]).join(", "))}${subNote}`, body);
-      pushArtifacts(d.artifacts);
-      thinking = addThinking("driver reviewing findings...");
-    } else if(ev.kind==="final"){
-      addTurn(d.action, d.forced?"final (forced)":"final", `<div class="rationale">${esc(d.rationale)}</div>`);
-      setStatus(d.forced?"error":"done");
-    } else if(ev.kind==="error"){
-      addTurn("error", `error`, `<div>${esc(d.error)}</div>`+
-        (d.raw?`<div class="muted">raw: ${esc(d.raw)}</div>`:""), true); setStatus("error");
-    }
+    if(ev.kind==="message"){ setStatus("thinking"); addMsg("assistant", d.text||""); }
+    else if(ev.kind==="action_start"){ setStatus("executing"); addActionCard(d); }
+    else if(ev.kind==="action_result"){ setStatus("thinking"); fillActionResult(d); }
+    else if(ev.kind==="assistant_done"){ setStatus("done"); }
+    else if(ev.kind==="error"){ setStatus("error"); addMsg("assistant", "[error] "+(d.error||"")); }
   };
-  es.onerror = ()=>{ es.close(); activeES=null; running=false; $("#send").disabled=false;
-    $("#send").hidden=false; $("#stop").hidden=true;
-    if(pill.textContent==="running") setStatus("error"); };
+  es.onerror = () => { if(es){es.close();es=null;} setStatus("error");
+    $("#send").hidden=false; $("#stop").hidden=true; };
 }
 
-$("#composer").addEventListener("submit", e=>{
-  e.preventDefault(); const p = $("#prompt").value.trim();
-  if(!p) return; $("#prompt").value=""; run(p);
-});
-$("#stop").onclick = ()=>{
-  if(activeES){ activeES.close(); activeES=null; }
-  running=false; $("#send").disabled=false; $("#send").hidden=false; $("#stop").hidden=true;
-  setStatus("idle");
-  addTurn("error", "stopped by user", null, true);
-};
-$("#attach").onclick = ()=> $("#file").click();
-$("#file").onchange = e=> uploadFiles(e.target.files);
+function refreshJobs(){
+  fetch("/api/jobs").then(r=>r.json()).then(jobs=>{
+    jobList.innerHTML = jobs.slice().reverse().map(j=>
+      `<div class="job-item"><span class="g">${esc((j.goal||"").slice(0,40))}</span>`+
+      `<span class="s">${esc((j.status||"").split(".").pop())}</span></div>`).join("")
+      || `<div class="empty">No jobs yet.</div>`;
+  }).catch(()=>{});
+}
 
-// drag & drop onto center pane
-const center = $("#center");
-["dragover","dragenter"].forEach(ev=>center.addEventListener(ev,e=>{
-  e.preventDefault(); center.classList.add("drag"); }));
-["dragleave","drop"].forEach(ev=>center.addEventListener(ev,e=>{
-  e.preventDefault(); center.classList.remove("drag"); }));
-center.addEventListener("drop", e=>{
-  const files=[...(e.dataTransfer?.files||[])].filter(f=>f.type.startsWith("image/"));
-  if(files.length) uploadFiles(files);
+function loadConfig(){
+  fetch("/api/config").then(r=>r.json()).then(c=>{
+    driverMeta.textContent = `reach=${c.reach} · budget=${c.budget}`;
+    // populate picker (current driver + any alternatives the server advertises)
+    const models = c.models || [c.driver];
+    picker.innerHTML = models.map(m=>`<option ${m===c.driver?"selected":""}>${esc(m)}</option>`).join("");
+    if(c.preflight){ addMsg("assistant", "Setup needed: "+c.preflight); setStatus("error"); }
+  }).catch(()=>{});
+}
+
+// composer
+$("#composer").addEventListener("submit", e=>{ e.preventDefault(); send(); });
+promptEl.addEventListener("keydown", e=>{
+  if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); }
 });
+promptEl.addEventListener("input", ()=>{ promptEl.style.height="auto";
+  promptEl.style.height=Math.min(promptEl.scrollHeight,140)+"px"; });
+$("#stop").onclick = ()=>{ if(es){es.close();es=null;} setStatus("idle");
+  $("#send").hidden=false; $("#stop").hidden=true; };
+$("#new-chat").onclick = ()=>{ feed.innerHTML=""; artList.innerHTML=`<div class="empty">Findings appear here as the pilot investigates.</div>`; setStatus("idle"); };
+picker.onchange = ()=>{ fetch("/api/pilot?model="+encodeURIComponent(picker.value)).catch(()=>{}); };
 
 loadConfig(); refreshJobs();
