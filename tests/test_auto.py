@@ -103,6 +103,46 @@ def test_auto_token_ceiling_trips():
     assert "token" in halts[-1].data["reason"].lower()
 
 
+def test_auto_distill_on_completion(tmp_path, monkeypatch):
+    """With HARNESS_AUTO_DISTILL=1, a finished auto run with >=2 findings yields a
+    'distilled' event proposing PENDING candidates (still human-gated)."""
+    monkeypatch.setenv("HARNESS_AUTO_DISTILL", "1")
+    import harness.skill_store as sks, harness.rule_store as rks
+    monkeypatch.setattr(sks, "SKILLS_DIR", tmp_path / "skills")
+    monkeypatch.setattr(rks, "RULES_PATH", tmp_path / "rules.json")
+
+    class _DistillPilot:
+        name = "dp"
+        def __init__(self): self.n = 0
+        def complete(self, prompt, *, system=None):
+            sysl = (system or "").lower()
+            if "reusable skill" in sysl:
+                return DriverResponse(text='{"name":"Found pattern","description":"d","body":"1. step"}', tokens_out=5, latency_ms=1.0)
+            if "convention" in sysl:
+                return DriverResponse(text='{"rules":[]}', tokens_out=5, latency_ms=1.0)
+            self.n += 1
+            if self.n <= 2:
+                return DriverResponse(text='{"say":"x","actions":[{"kind":"run_swarm","goal":"g"}]}', tokens_out=5, latency_ms=1.0)
+            return DriverResponse(text='{"say":"done","actions":[]}', tokens_out=5, latency_ms=1.0)
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    s = ConversationalSession(cfg)
+    s.pilot = _DistillPilot()
+    events = list(s.run_auto("investigate", AutoBudget(max_swarms=20)))
+    distilled = [e for e in events if e.kind == "distilled"]
+    assert distilled, "expected a distilled event on completion"
+    assert distilled[0].data.get("skill", {}).get("status") in ("proposed", "duplicate", "skipped")
+
+
+def test_auto_no_distill_when_disabled(tmp_path, monkeypatch):
+    monkeypatch.delenv("HARNESS_AUTO_DISTILL", raising=False)
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    s = ConversationalSession(cfg)
+    s.pilot = _DonePilot()
+    events = list(s.run_auto("x", AutoBudget(max_swarms=20)))
+    assert not [e for e in events if e.kind == "distilled"]
+
+
 def test_auto_killswitch(tmp_path):
     ks = tmp_path / "STOP"; ks.write_text("x")  # pre-tripped
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())

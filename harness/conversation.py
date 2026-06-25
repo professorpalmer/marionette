@@ -113,6 +113,9 @@ class ConversationalSession:
         self._first_objective: str = ""
         # token accounting for the autobudget governor (real metering, not a stub)
         self._tokens_used: int = 0
+        # auto-distill: when on, run_auto proposes PENDING skill/rule candidates on
+        # completion (still human-gated for approval). Off by default.
+        self._auto_distill = os.environ.get("HARNESS_AUTO_DISTILL", "").strip() in ("1", "true", "yes")
 
     @property
     def durable(self) -> DurableState:
@@ -269,6 +272,19 @@ class ConversationalSession:
             pass  # wiki capture is best-effort; never break the conversation
 
 
+    def _maybe_auto_distill(self):
+        """If auto-distill is enabled and the run produced findings, propose
+        PENDING candidates and yield a 'distilled' event. Best-effort."""
+        if not self._auto_distill:
+            return None
+        real = [f for f in self._session_findings if f.get("type") != "verification"]
+        if len(real) < 2:
+            return None
+        try:
+            return self.distill()
+        except Exception as e:
+            return {"status": "error", "reason": str(e)}
+
     def distill(self) -> dict:
         """Propose PENDING candidate skill(s) AND rule(s) from this session's
         accumulated findings. Human approval required before either loads into
@@ -325,6 +341,9 @@ class ConversationalSession:
             halt = budget.check()
             if halt:
                 yield ConvEvent("auto_halt", {"reason": halt, "snapshot": budget.snapshot()})
+                d = self._maybe_auto_distill()
+                if d:
+                    yield ConvEvent("distilled", d)
                 self._maybe_ingest(objective, [], [])
                 return
             cycle += 1
@@ -350,6 +369,9 @@ class ConversationalSession:
                     break
             if tripped:
                 yield ConvEvent("auto_halt", {"reason": tripped, "snapshot": budget.snapshot()})
+                d = self._maybe_auto_distill()
+                if d:
+                    yield ConvEvent("distilled", d)
                 self._maybe_ingest(objective, [], [])
                 return
             # account for stall + emit a governor heartbeat
@@ -365,6 +387,9 @@ class ConversationalSession:
             if turn_findings_count == 0 and budget.idle_steps >= 1:
                 yield ConvEvent("auto_halt", {"reason": "pilot reports objective met "
                     "(no further investigation)", "snapshot": budget.snapshot()})
+                d = self._maybe_auto_distill()
+                if d:
+                    yield ConvEvent("distilled", d)
                 self._maybe_ingest(objective, [], [])
                 return
 
