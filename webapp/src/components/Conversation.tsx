@@ -68,9 +68,10 @@ export default function Conversation({ config, onArtifacts, onJobChange }: {
 
   return (
     <main className="flex flex-col h-full min-w-0 bg-bg">
-      <header className="flex items-center justify-between px-6 py-2.5 border-b border-edge">
-        <span className="font-medium text-[13px] text-txt/90">PM-Native Harness</span>
-        <StatusPill status={status} />
+      <header className="flex items-center justify-between px-6 border-b border-edge"
+        style={{ paddingTop: 12, paddingBottom: 10, WebkitAppRegion: "drag" } as React.CSSProperties}>
+        <span className="font-medium text-[13px] text-txt/90" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>PM-Native Harness</span>
+        <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}><StatusPill status={status} /></div>
       </header>
 
       <div ref={feedRef} className="flex-1 overflow-y-auto">

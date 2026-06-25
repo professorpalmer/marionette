@@ -28,7 +28,8 @@ export default function LeftRail({ jobsRefresh }: {
 
   return (
     <aside className="bg-panel border-r border-edge flex flex-col h-full overflow-hidden">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-edge">
+      <div className="flex items-center gap-2 px-4 border-b border-edge"
+        style={{ paddingTop: 34, paddingBottom: 12, WebkitAppRegion: "drag" } as React.CSSProperties}>
         <span className="bg-accent/15 text-accent font-bold px-1.5 py-0.5 rounded-md text-[11px] tracking-tight">PM</span>
         <span className="font-medium text-[13px] text-txt/90">Harness</span>
       </div>
