@@ -169,7 +169,8 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/skills/distill", "/api/skills/approve",
                       "/api/skills/reject", "/api/skills/archive",
                       "/api/rules/approve", "/api/rules/reject",
-                      "/api/settings"):
+                      "/api/settings", "/api/providers/probe",
+                      "/api/registry", "/api/roles", "/api/pilot/validate"):
             return self._handle_post_json(u.path)
         return self._send(404, json.dumps({"error": "not found"}))
 
@@ -303,6 +304,124 @@ class Handler(BaseHTTPRequestHandler):
                 os.environ["HARNESS_AUTO_DISTILL"] = "true" if ad_val else "false"
 
             return self._send(200, json.dumps(_get_settings_dict()))
+
+        if path == "/api/providers/probe":
+            pname = body.get("provider", "")
+            from .providers import get_provider
+            p = get_provider(pname)
+            if not p:
+                return self._send(400, json.dumps({"error": f"Unknown provider: {pname}"}))
+            
+            from .registry_wizard import get_provider_key, probe_provider
+            key = get_provider_key(p)
+            try:
+                res = probe_provider(p, key)
+                return self._send(200, json.dumps(res))
+            except Exception as e:
+                return self._send(200, json.dumps({
+                    "provider": p.name,
+                    "models": [{"id": m} for m in p.pilot_models],
+                    "source": "static",
+                    "error": str(e)
+                }))
+
+        if path == "/api/registry":
+            models = body.get("models")
+            if not isinstance(models, list):
+                return self._send(400, json.dumps({"error": "models must be a list"}))
+            
+            validated_models = []
+            for m in models:
+                if not isinstance(m, dict):
+                    return self._send(400, json.dumps({"error": "each model must be a dictionary"}))
+                
+                model_id = m.get("id")
+                if not isinstance(model_id, str) or not model_id.strip():
+                    return self._send(400, json.dumps({"error": "id must be a non-empty string"}))
+                
+                adapter = m.get("adapter")
+                if not isinstance(adapter, str):
+                    return self._send(400, json.dumps({"error": "adapter must be a string"}))
+                
+                try:
+                    score = int(m.get("capability_score", 0))
+                    score = max(0, min(100, score))
+                except (ValueError, TypeError):
+                    return self._send(400, json.dumps({"error": "capability_score must be an integer"}))
+                
+                m["id"] = model_id.strip()
+                m["adapter"] = adapter
+                m["capability_score"] = score
+                validated_models.append(m)
+                
+            from .registry_wizard import get_models_file_path, write_json_atomic
+            dest_path = get_models_file_path()
+            try:
+                write_json_atomic(dest_path, {"models": validated_models})
+                return self._send(200, json.dumps({"ok": True, "models": validated_models}))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": f"Failed to write registry: {str(e)}"}))
+
+        if path == "/api/roles":
+            overrides = body.get("overrides", {})
+            policy = body.get("routing_policy")
+            
+            if not isinstance(overrides, dict):
+                return self._send(400, json.dumps({"error": "overrides must be a dictionary"}))
+            
+            validated_overrides = {}
+            from .registry_wizard import REAL_BASE_SCORES
+            for role, score in overrides.items():
+                if role not in REAL_BASE_SCORES:
+                    return self._send(400, json.dumps({"error": f"Unknown role: {role}"}))
+                try:
+                    clamped_score = max(0, min(100, int(score)))
+                    validated_overrides[role] = clamped_score
+                except (ValueError, TypeError):
+                    return self._send(400, json.dumps({"error": f"Invalid score for role {role}: {score}"}))
+            
+            if policy is not None:
+                valid_policies = {"balanced", "cheap", "quality", "escalating"}
+                if policy not in valid_policies:
+                    return self._send(400, json.dumps({"error": f"Invalid policy: {policy}; expected one of {list(valid_policies)}"}))
+            
+            from .registry_wizard import get_routing_file_path, write_json_atomic
+            dest_path = get_routing_file_path()
+            current_data = {}
+            if os.path.exists(dest_path):
+                try:
+                    with open(dest_path) as f:
+                        current_data = json.load(f)
+                except Exception:
+                    pass
+            
+            current_overrides = current_data.get("overrides", {})
+            current_overrides.update(validated_overrides)
+            current_data["overrides"] = current_overrides
+            
+            if policy is not None:
+                current_data["routing_policy"] = policy
+            elif "routing_policy" not in current_data:
+                current_data["routing_policy"] = "balanced"
+                
+            try:
+                write_json_atomic(dest_path, current_data, chmod_mode=0o600)
+                return self._send(200, json.dumps({"ok": True, "overrides": current_data["overrides"], "routing_policy": current_data["routing_policy"]}))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": f"Failed to save roles config: {str(e)}"}))
+
+        if path == "/api/pilot/validate":
+            driver = body.get("driver")
+            if not isinstance(driver, str):
+                return self._send(400, json.dumps({"error": "driver must be a string"}))
+                
+            from .registry_wizard import validate_pilot_driver
+            try:
+                res = validate_pilot_driver(driver)
+                return self._send(200, json.dumps(res))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)}))
+
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _handle_upload(self):
@@ -370,13 +489,71 @@ class Handler(BaseHTTPRequestHandler):
             jid = q.get("job_id", [""])[0]
             return self._send(200, json.dumps(_session.state().job_artifacts(jid)))
         # action endpoints (SSE) mutate state / spend budget -> guard them.
-        if u.path in ("/api/run", "/api/chat", "/api/auto", "/api/pilot", "/api/sessions/transcript", "/api/sessions/export"):
+        if u.path in ("/api/run", "/api/chat", "/api/auto", "/api/pilot", "/api/sessions/transcript", "/api/sessions/export",
+                      "/api/providers", "/api/registry", "/api/roles", "/api/registry/recommend"):
             if self._guard():
                 return
             from urllib.parse import parse_qs as _pq
             qtok = _pq(u.query).get("token", [""])[0]
-            if qtok != _TOKEN:
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
+
+        if u.path == "/api/providers":
+            from .registry_wizard import PROVIDERS, get_provider_key
+            res = []
+            for p in PROVIDERS:
+                res.append({
+                    "name": p.name,
+                    "env_var": p.env_vars[0] if p.env_vars else "",
+                    "base_url": p.base_url,
+                    "has_key": get_provider_key(p) is not None,
+                    "api_mode": p.api_mode
+                })
+            return self._send(200, json.dumps(res))
+
+        if u.path == "/api/registry":
+            from .registry_wizard import get_models_file_path
+            path = get_models_file_path()
+            if os.path.exists(path):
+                try:
+                    with open(path) as f:
+                        return self._send(200, f.read())
+                except Exception as e:
+                    return self._send(500, json.dumps({"error": f"Failed to read registry: {str(e)}"}))
+            return self._send(200, json.dumps({"models": []}))
+
+        if u.path == "/api/roles":
+            from .registry_wizard import REAL_BASE_SCORES, get_routing_file_path
+            path = get_routing_file_path()
+            overrides = {}
+            policy = "balanced"
+            if os.path.exists(path):
+                try:
+                    with open(path) as f:
+                        data = json.load(f)
+                        overrides = data.get("overrides", {})
+                        policy = data.get("routing_policy", "balanced")
+                except Exception:
+                    pass
+            
+            roles_mapping = {}
+            for k, v in REAL_BASE_SCORES.items():
+                roles_mapping[k] = overrides.get(k, v)
+                
+            return self._send(200, json.dumps({
+                "roles": roles_mapping,
+                "policies": ["balanced", "cheap", "quality", "escalating"],
+                "routing_policy": policy,
+                "overrides": overrides
+            }))
+
+        if u.path == "/api/registry/recommend":
+            from .registry_wizard import get_recommendations
+            try:
+                rec = get_recommendations()
+                return self._send(200, json.dumps(rec))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)}))
         if u.path == "/api/run":
             q = parse_qs(u.query)
             imgs = []
