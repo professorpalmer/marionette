@@ -80,6 +80,19 @@ class StdioMcpClient:
             )
         except FileNotFoundError as e:
             raise McpError(f"MCP server '{self.name}': command not found: {self.command} ({e})")
+        # Drain stderr on a background thread so a chatty server cannot fill the OS
+        # pipe buffer and deadlock the child (we only read stdout in _request).
+        self._stderr_tail: List[str] = []
+        def _drain():
+            try:
+                for line in self._proc.stderr:
+                    self._stderr_tail.append(line)
+                    if len(self._stderr_tail) > 50:
+                        self._stderr_tail.pop(0)
+            except Exception:
+                pass
+        self._stderr_thread = threading.Thread(target=_drain, daemon=True)
+        self._stderr_thread.start()
         # handshake
         resp = self._request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
@@ -134,13 +147,9 @@ class StdioMcpClient:
             while time.time() < deadline:
                 line = self._proc.stdout.readline()
                 if line == "":
-                    # process died -- surface stderr
-                    err = ""
-                    try:
-                        err = self._proc.stderr.read() or ""
-                    except Exception:
-                        pass
-                    raise McpError(f"MCP server '{self.name}' closed the connection. {err[:400]}")
+                    # process died -- surface captured stderr tail (drained on a thread)
+                    err = "".join(getattr(self, "_stderr_tail", []))
+                    raise McpError(f"MCP server '{self.name}' closed the connection. {err[-400:]}")
                 line = line.strip()
                 if not line:
                     continue

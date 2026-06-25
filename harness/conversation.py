@@ -111,6 +111,8 @@ class ConversationalSession:
         # self-learning: accumulate this session's real findings for distillation
         self._session_findings: list = []
         self._first_objective: str = ""
+        # token accounting for the autobudget governor (real metering, not a stub)
+        self._tokens_used: int = 0
 
     @property
     def durable(self) -> DurableState:
@@ -143,6 +145,10 @@ class ConversationalSession:
             except Exception as e:
                 yield ConvEvent("error", {"error": f"pilot transport: {e}"})
                 return
+            # real token metering: prompt + completion (drivers report tokens_out;
+            # estimate tokens_in from prompt length when not provided).
+            self._tokens_used += int(getattr(resp, "tokens_out", 0) or 0)
+            self._tokens_used += int(getattr(resp, "tokens_in", 0) or len(prompt) // 4)
             if resp.error:
                 yield ConvEvent("error", {"error": f"pilot: {resp.error}"})
                 return
@@ -323,6 +329,7 @@ class ConversationalSession:
                 return
             cycle += 1
             findings_before = 0
+            tokens_at_cycle_start = self._tokens_used
             # one pilot turn (send() drives say->act->react until it yields back)
             turn_findings_count = 0
             tripped = None
@@ -347,8 +354,11 @@ class ConversationalSession:
                 return
             # account for stall + emit a governor heartbeat
             budget.note_findings(turn_findings_count)
-            # approximate token metering from history growth (drivers report tokens
-            # per call; we keep it simple + conservative here via swarms/cycles)
+            # REAL token metering: feed the delta consumed this cycle into the
+            # governor so the documented token ceiling actually trips.
+            delta = self._tokens_used - tokens_at_cycle_start
+            if delta > 0:
+                budget.add_tokens(delta)
             yield ConvEvent("auto_status", {"cycle": cycle, "snapshot": budget.snapshot()})
             # if the pilot finished a turn with no swarms at all, it considers the
             # objective met -> stop the autonomous loop.

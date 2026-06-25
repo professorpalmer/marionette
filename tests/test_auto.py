@@ -83,6 +83,26 @@ def test_auto_stops_when_pilot_done():
     assert halts and "objective met" in halts[-1].data["reason"]
 
 
+class _BigTokenPilot:
+    """Never finishes, reports large tokens_out each turn -> token ceiling must trip."""
+    name = "bigtoken"
+    def complete(self, prompt, *, system=None):
+        return DriverResponse(
+            text='{"say":"working","actions":[{"kind":"run_swarm","goal":"go"}]}',
+            tokens_out=5000, latency_ms=1.0)
+
+
+def test_auto_token_ceiling_trips():
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    s = ConversationalSession(cfg)
+    s.pilot = _BigTokenPilot()
+    # high swarm ceiling so TOKENS are what stops it, not swarms
+    events = list(s.run_auto("dig", AutoBudget(max_swarms=999, max_tokens=8000)))
+    halts = [e for e in events if e.kind == "auto_halt"]
+    assert halts, "must halt"
+    assert "token" in halts[-1].data["reason"].lower()
+
+
 def test_auto_killswitch(tmp_path):
     ks = tmp_path / "STOP"; ks.write_text("x")  # pre-tripped
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())

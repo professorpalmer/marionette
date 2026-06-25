@@ -17,6 +17,7 @@ Frontmatter is parsed without PyYAML (stdlib only): simple key: value lines.
 import os
 import re
 import time
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -103,6 +104,7 @@ class SkillStore:
         self.root = Path(root) if root else SKILLS_DIR
         for st in STATES:
             (self.root / st).mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
     def _path(self, state: str, slug: str) -> Path:
         # SECURITY: sanitize on the lookup path, not just on create. The server
@@ -119,13 +121,17 @@ class SkillStore:
         return None
 
     def save(self, skill: Skill) -> Path:
-        # ensure a skill lives in exactly one state dir
-        existing = self._find(skill.slug)
-        if existing and existing.parent.name != skill.state:
-            existing.unlink()
-        p = self._path(skill.state, skill.slug)
-        p.write_text(skill.to_markdown())
-        return p
+        with self._lock:
+            # ensure a skill lives in exactly one state dir
+            existing = self._find(skill.slug)
+            if existing and existing.parent.name != skill.state:
+                existing.unlink()
+            p = self._path(skill.state, skill.slug)
+            # atomic: write temp in the same dir, then os.replace (no torn reads)
+            tmp = p.with_suffix(".md.tmp")
+            tmp.write_text(skill.to_markdown())
+            os.replace(tmp, p)
+            return p
 
     def get(self, slug: str) -> Optional[Skill]:
         p = self._find(slug)

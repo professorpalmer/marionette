@@ -419,7 +419,25 @@ def serve(host: str = "127.0.0.1", port: int = 8799) -> None:
             raise SystemExit(2)
         raise
     print(f"pm-harness GUI on http://{host}:{port}  (driver={_cfg.driver})")
-    srv.serve_forever()
+    # SECURITY/RESOURCE: ensure spawned MCP child processes are reaped on exit
+    # (Ctrl-C, SIGTERM, SystemExit) instead of being orphaned.
+    import atexit, signal
+    atexit.register(_mcp.stop_all)
+
+    def _graceful(signum, frame):
+        try:
+            _mcp.stop_all()
+        finally:
+            raise SystemExit(0)
+    for _sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(_sig, _graceful)
+        except (ValueError, OSError):
+            pass  # not on the main thread (e.g. under tests) -- atexit still covers it
+    try:
+        srv.serve_forever()
+    finally:
+        _mcp.stop_all()
 
 
 if __name__ == "__main__":

@@ -68,6 +68,8 @@ def switch_workspace(repo: str, name: str, *, allow_dirty: bool = False) -> dict
     if _dirty(repo) and not allow_dirty:
         return {"ok": False, "error": f"uncommitted changes in {repo}; commit/stash first "
                 f"or allow_dirty", "dirty": True}
+    if name.startswith("-"):
+        return {"ok": False, "error": "invalid workspace name (cannot start with '-')"}
     rc, out, err = _git(repo, "checkout", name)
     if rc != 0:
         return {"ok": False, "error": err or out}
@@ -78,6 +80,8 @@ def create_workspace(repo: str, name: str, base: Optional[str] = None) -> dict:
     """Create a new workspace = a new git branch (from base or current HEAD)."""
     if not _is_repo(repo):
         return {"ok": False, "error": "no git repo configured"}
+    if name.startswith("-") or (base and base.startswith("-")):
+        return {"ok": False, "error": "invalid workspace name/base (cannot start with '-')"}
     args = ["checkout", "-b", name] + ([base] if base else [])
     rc, out, err = _git(repo, *args)
     if rc != 0:

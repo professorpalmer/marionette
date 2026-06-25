@@ -13,6 +13,7 @@ import json
 import os
 import re
 import time
+import threading
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional
@@ -43,6 +44,7 @@ class RuleStore:
     def __init__(self, path: Optional[str] = None):
         self.path = Path(path) if path else RULES_PATH
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
     def _load(self) -> List[dict]:
         if not self.path.exists():
@@ -53,13 +55,21 @@ class RuleStore:
             return []
 
     def _save(self, rules: List[dict]) -> None:
-        self.path.write_text(json.dumps(rules, indent=2))
+        # atomic: temp + os.replace so a concurrent reader never sees a truncated
+        # file (which _load would swallow and return [], dropping all rules).
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rules, indent=2))
+        os.replace(tmp, self.path)
 
     def list(self, state: Optional[str] = None) -> List[Rule]:
         out = [Rule(**r) for r in self._load()]
         return [r for r in out if (state is None or r.state == state)]
 
     def add(self, rule: Rule) -> Rule:
+        with self._lock:
+            return self._add_locked(rule)
+
+    def _add_locked(self, rule: Rule) -> Rule:
         rules = self._load()
         if not rule.created_at:
             rule.created_at = time.time()
@@ -72,6 +82,10 @@ class RuleStore:
     def set_state(self, slug: str, state: str) -> bool:
         if state not in STATES:
             raise ValueError(f"bad state: {state}")
+        with self._lock:
+            return self._set_state_locked(slug, state)
+
+    def _set_state_locked(self, slug: str, state: str) -> bool:
         rules = self._load()
         hit = False
         for r in rules:
