@@ -7,6 +7,7 @@ export default function SettingsPane() {
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [keyInput, setKeyInput] = useState("");
 
   useEffect(() => {
     api.settings()
@@ -17,7 +18,7 @@ export default function SettingsPane() {
       });
   }, []);
 
-  const update = async (partial: Partial<Settings>) => {
+  const update = async (partial: Partial<Settings> & { api_key?: string; clear_api_key?: boolean }) => {
     if (!settings) return;
     setSaving(true);
     setStatus("");
@@ -127,6 +128,67 @@ export default function SettingsPane() {
           <p className="text-[10px] text-muted">
             When enabled, PM proposes pending skill/rule candidates automatically on task completion.
           </p>
+        </div>
+
+        {/* API Key Section */}
+        <div className="space-y-1.5 border-t border-edge pt-3">
+          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+            API Key Setup
+          </label>
+          <div className="text-[10px] text-muted mb-2">
+            Set the provider API key for <span className="font-semibold">{settings.reach} ({settings.key_env_var})</span>.
+          </div>
+          
+          <div className="flex gap-2">
+            <input
+              type="password"
+              placeholder="Enter API key..."
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              disabled={saving}
+              className="flex-1 bg-panel2 border border-edge rounded px-2.5 py-1 text-txt focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+            />
+            <button
+              onClick={() => {
+                if (keyInput.trim()) {
+                  update({ api_key: keyInput.trim() }).then(() => setKeyInput(""));
+                }
+              }}
+              disabled={saving || !keyInput.trim()}
+              className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-3 py-1 font-medium text-[11px] disabled:opacity-30 disabled:hover:bg-accent/15 disabled:hover:border-accent/30 transition-colors"
+            >
+              Save key
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between text-[11px] mt-2 bg-panel2 border border-edge/50 rounded p-2">
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-faint">Status:</span>
+                <span className={settings.has_api_key ? "text-good font-medium" : "text-risk font-medium"}>
+                  {settings.has_api_key ? `Key set: ${settings.api_key_masked}` : "No key set"}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-faint">Preflight:</span>
+                <span className={settings.preflight_ok ? "text-good font-medium" : "text-risk font-medium"}>
+                  {settings.preflight_ok ? "Provider ready" : "Key needed or invalid"}
+                </span>
+              </div>
+            </div>
+            {settings.has_api_key && (
+              <button
+                onClick={() => {
+                  update({ clear_api_key: true });
+                  setKeyInput("");
+                }}
+                disabled={saving}
+                className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2.5 py-1 font-medium text-[11px] disabled:opacity-30 transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Read-Only Info */}

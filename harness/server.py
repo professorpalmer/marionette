@@ -40,18 +40,24 @@ if _state_dir:
 
 # Masker-safe live key: if HARNESS_KEY_FILE points at a file, load it into the
 # expected env var for the chosen reach before the Session builds its driver.
-_keyfile = os.environ.get("HARNESS_KEY_FILE", "")
-if _keyfile and os.path.exists(_keyfile):
-    _envvar = "OPENROUTER_API_KEY" if _cfg.reach == "openrouter" else os.environ.get("HARNESS_KEY_ENV", "")
-    if _envvar:
-        with open(_keyfile) as _kf:
-            os.environ[_envvar] = _kf.read().strip()
+from .keys import load_api_keys_on_startup, get_api_key_status, get_env_var_for_reach, set_api_key, clear_api_key
+load_api_keys_on_startup(_cfg.reach)
 _session = Session(_cfg)
 _pilot = ConversationalSession(_cfg)
 import tempfile as _tf
 _sessions = SessionStore(os.path.join(_cfg.state_dir or _tf.gettempdir(), "harness_sessions.json"))
 _mcp = McpManager()
 _pilot._mcp = _mcp
+
+def _rebuild_pilot_and_session():
+    global _session, _pilot
+    _session = Session(_cfg)
+    old_history = _pilot._history
+    old_auto_distill = getattr(_pilot, "_auto_distill", False)
+    _pilot = ConversationalSession(_cfg)
+    _pilot._history = old_history
+    _pilot._auto_distill = old_auto_distill
+    _pilot._mcp = _mcp
 
 # Startup: Restore the active/most-recent session's transcript into _pilot
 if _sessions.active:
@@ -237,6 +243,15 @@ class Handler(BaseHTTPRequestHandler):
                 _pilot.load_history(history)
             return self._send(200, json.dumps(res))
         if path == "/api/settings":
+            if "api_key" in body:
+                val = str(body["api_key"]).strip()
+                if val:
+                    set_api_key(_cfg.reach, val)
+                    _rebuild_pilot_and_session()
+            elif body.get("clear_api_key") is True:
+                clear_api_key(_cfg.reach)
+                _rebuild_pilot_and_session()
+
             driver = body.get("driver")
             if driver is not None:
                 av = _available_pilots()
@@ -245,8 +260,7 @@ class Handler(BaseHTTPRequestHandler):
                 if driver != _cfg.driver:
                     try:
                         _cfg.driver = driver
-                        _pilot = ConversationalSession(_cfg)
-                        _pilot._mcp = _mcp  # type: ignore
+                        _rebuild_pilot_and_session()
                     except Exception as e:
                         return self._send(500, json.dumps({"error": f"Failed to swap driver: {str(e)}"}))
             budget = body.get("budget")
@@ -261,16 +275,7 @@ class Handler(BaseHTTPRequestHandler):
                 _pilot._auto_distill = ad_val
                 os.environ["HARNESS_AUTO_DISTILL"] = "true" if ad_val else "false"
 
-            return self._send(200, json.dumps({
-                "driver": _cfg.driver,
-                "reach": _cfg.reach,
-                "budget": _cfg.budget,
-                "models": _available_pilots(),
-                "auto_distill": getattr(_pilot, "_auto_distill", False),
-                "wiki_auto": getattr(_cfg, "wiki_auto", False),
-                "state_dir": _session.state_dir,
-                "repo": _cfg.repo,
-            }))
+            return self._send(200, json.dumps(_get_settings_dict()))
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _handle_upload(self):
@@ -330,16 +335,7 @@ class Handler(BaseHTTPRequestHandler):
                 "models": _available_pilots(), "repo": _cfg.repo,
                 "preflight": _session.preflight()}))
         if u.path == "/api/settings":
-            return self._send(200, json.dumps({
-                "driver": _cfg.driver,
-                "reach": _cfg.reach,
-                "budget": _cfg.budget,
-                "models": _available_pilots(),
-                "auto_distill": getattr(_pilot, "_auto_distill", False),
-                "wiki_auto": getattr(_cfg, "wiki_auto", False),
-                "state_dir": _session.state_dir,
-                "repo": _cfg.repo,
-            }))
+            return self._send(200, json.dumps(_get_settings_dict()))
         if u.path == "/api/jobs":
             return self._send(200, json.dumps(_session.state().list_jobs()))
         if u.path == "/api/artifacts":
@@ -479,6 +475,27 @@ def _available_pilots():
     # ensure the current driver appears first (it may already be in the list)
     ordered = [cur] + [p for p in pilots if p != cur]
     return ordered or [cur]
+
+
+def _get_settings_dict():
+    reach = _cfg.reach
+    status = get_api_key_status(reach)
+    preflight_ok = (_session.preflight() is None)
+    return {
+        "driver": _cfg.driver,
+        "reach": reach,
+        "budget": _cfg.budget,
+        "models": _available_pilots(),
+        "auto_distill": getattr(_pilot, "_auto_distill", False),
+        "wiki_auto": getattr(_cfg, "wiki_auto", False),
+        "state_dir": _session.state_dir,
+        "repo": _cfg.repo,
+        "has_api_key": status["has_key"],
+        "api_key_masked": status["masked"],
+        "masked": status["masked"],
+        "key_env_var": get_env_var_for_reach(reach),
+        "preflight_ok": preflight_ok,
+    }
 
 
 def _cleanup_marker(marker_path: str, pid: int) -> None:

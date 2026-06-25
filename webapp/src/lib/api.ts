@@ -15,6 +15,10 @@ export type Settings = {
   wiki_auto?: boolean;
   state_dir: string;
   repo: string;
+  has_api_key?: boolean;
+  api_key_masked?: string;
+  key_env_var?: string;
+  preflight_ok?: boolean;
 };
 export type Job = { id: string; goal: string; status: string };
 export type Artifact = { type: string; headline: string; confidence?: number };
@@ -24,7 +28,7 @@ export type Session = { id: string; title: string; created: number; active?: boo
 export const api = {
   config: () => getJSON<Config>("/api/config"),
   settings: () => getJSON<Settings>("/api/settings"),
-  updateSettings: (partial: Partial<Settings>) => postJSON<Settings>("/api/settings", partial),
+  updateSettings: (partial: Partial<Settings> & { api_key?: string; clear_api_key?: boolean }) => postJSON<Settings>("/api/settings", partial),
   jobs: () => getJSON<Job[]>("/api/jobs"),
   artifacts: (jobId: string) => getJSON<Artifact[]>(`/api/artifacts?job_id=${encodeURIComponent(jobId)}`),
   workspaces: () => getJSON<Workspace[]>("/api/workspaces"),
