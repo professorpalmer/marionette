@@ -49,11 +49,18 @@ def test_client_missing_command():
 
 
 def test_manager_config_roundtrip(tmp_path):
+    import os
+    import stat
     cfgp = tmp_path / "mcp.json"
     m = McpManager(config_path=str(cfgp))
     assert m.load_config() == {}
     m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
     assert "fake" in m.load_config()
+
+    if os.name == 'posix':
+        mode = os.stat(str(cfgp)).st_mode
+        assert stat.S_IMODE(mode) == 0o600
+
     m.remove_server("fake")
     assert "fake" not in m.load_config()
 

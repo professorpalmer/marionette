@@ -64,17 +64,35 @@ class McpManager:
             return {}
         return data.get("mcpServers", {}) or {}
 
+    def _write_config(self, data: dict) -> None:
+        path = str(self.config_path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        import tempfile
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix="mcp_")
+        try:
+            with os.fdopen(tmp_fd, 'w') as f:
+                json.dump(data, f, indent=2)
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, path)
+            os.chmod(path, 0o600)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            raise
+
     def save_server(self, name: str, server: dict) -> None:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         data = {"mcpServers": self.load_config()}
         data["mcpServers"][name] = server
-        self.config_path.write_text(json.dumps(data, indent=2))
+        self._write_config(data)
 
     def remove_server(self, name: str) -> None:
         data = {"mcpServers": self.load_config()}
         if name in data["mcpServers"]:
             del data["mcpServers"][name]
-            self.config_path.write_text(json.dumps(data, indent=2))
+            self._write_config(data)
         self.stop_server(name)
 
     # ---- lifecycle ----------------------------------------------------------

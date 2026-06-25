@@ -109,6 +109,14 @@ def _origin_ok(origin: str) -> bool:
         return False
 
 
+def _parse_bool(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ("1", "true", "yes", "on")
+    return False
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
@@ -169,18 +177,23 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0) or 0)
         if not n:
             return {}
+        data = self.rfile.read(n)
         try:
-            return json.loads(self.rfile.read(n).decode() or "{}")
-        except Exception:
-            return {}
+            decoded = data.decode()
+        except Exception as e:
+            raise json.JSONDecodeError("Unicode decode error", doc="", pos=0) from e
+        return json.loads(decoded or "{}")
 
     def _handle_post_json(self, path):
         global _pilot
-        body = self._read_json()
+        try:
+            body = self._read_json()
+        except json.JSONDecodeError:
+            return self._send(400, json.dumps({"error": "invalid JSON"}))
         repo = _cfg.repo
         if path == "/api/workspaces/switch":
             return self._send(200, json.dumps(_ws.switch_workspace(repo, body.get("name",""),
-                              allow_dirty=bool(body.get("allow_dirty")))))
+                              allow_dirty=_parse_bool(body.get("allow_dirty")))))
         if path == "/api/workspaces/create":
             return self._send(200, json.dumps(_ws.create_workspace(repo, body.get("name",""),
                               body.get("branch") or None)))
@@ -206,8 +219,11 @@ class Handler(BaseHTTPRequestHandler):
             _mcp.stop_server(body.get("name", ""))
             return self._send(200, json.dumps({"ok": True}))
         if path == "/api/mcp/call":
+            args = body.get("arguments")
+            if args is not None and not isinstance(args, dict):
+                return self._send(400, json.dumps({"error": "arguments must be a dictionary"}))
             try:
-                out = _mcp.call(body.get("tool", ""), body.get("arguments", {}))
+                out = _mcp.call(body.get("tool", ""), args or {})
                 return self._send(200, json.dumps({"ok": True, "result": out}))
             except Exception as e:
                 return self._send(200, json.dumps({"ok": False, "error": str(e)}))
@@ -243,6 +259,17 @@ class Handler(BaseHTTPRequestHandler):
                 _pilot.load_history(history)
             return self._send(200, json.dumps(res))
         if path == "/api/settings":
+            requires_rebuild = False
+            if "api_key" in body or body.get("clear_api_key") is True:
+                requires_rebuild = True
+            driver = body.get("driver")
+            if driver is not None and driver != _cfg.driver:
+                requires_rebuild = True
+            if requires_rebuild:
+                if not _pilot._busy.acquire(blocking=False):
+                    return self._send(409, json.dumps({"error": "pilot busy, try again"}))
+                _pilot._busy.release()
+
             if "api_key" in body:
                 val = str(body["api_key"]).strip()
                 if val:
@@ -271,7 +298,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, TypeError):
                     return self._send(400, json.dumps({"error": "Invalid budget value"}))
             if "auto_distill" in body:
-                ad_val = bool(body["auto_distill"])
+                ad_val = _parse_bool(body["auto_distill"])
                 _pilot._auto_distill = ad_val
                 os.environ["HARNESS_AUTO_DISTILL"] = "true" if ad_val else "false"
 
@@ -343,7 +370,7 @@ class Handler(BaseHTTPRequestHandler):
             jid = q.get("job_id", [""])[0]
             return self._send(200, json.dumps(_session.state().job_artifacts(jid)))
         # action endpoints (SSE) mutate state / spend budget -> guard them.
-        if u.path in ("/api/run", "/api/chat", "/api/auto"):
+        if u.path in ("/api/run", "/api/chat", "/api/auto", "/api/pilot", "/api/sessions/transcript", "/api/sessions/export"):
             if self._guard():
                 return
             from urllib.parse import parse_qs as _pq
@@ -352,7 +379,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
         if u.path == "/api/run":
             q = parse_qs(u.query)
-            imgs = [p for p in q.get("images", [""])[0].split("|") if p]
+            imgs = []
+            upload_dir_real = os.path.realpath(_UPLOAD_DIR)
+            for p in q.get("images", [""])[0].split("|"):
+                if not p:
+                    continue
+                real_p = os.path.realpath(p)
+                try:
+                    if os.path.commonpath([upload_dir_real, real_p]) == upload_dir_real:
+                        imgs.append(p)
+                    else:
+                        return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
+                except ValueError:
+                    return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
             return self._stream_run(q.get("prompt", [""])[0], imgs)
         if u.path == "/api/chat":
             q = parse_qs(u.query)
@@ -368,12 +407,7 @@ class Handler(BaseHTTPRequestHandler):
             history = load_transcript(_cfg.state_dir or _tf.gettempdir(), sid)
             return self._send(200, json.dumps({"history": history}))
         if u.path == "/api/sessions/export":
-            if self._guard():
-                return
             q = parse_qs(u.query)
-            qtok = q.get("token", [""])[0]
-            if qtok and qtok != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
             sid = q.get("session", [None])[0] or _sessions.active or ""
             fmt = q.get("format", ["json"])[0]
             

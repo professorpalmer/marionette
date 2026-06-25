@@ -36,10 +36,10 @@ export const api = {
   createWorkspace: (name: string, branch?: string) =>
     postJSON("/api/workspaces/create", { name, branch }),
   sessions: () => getJSON<Session[]>("/api/sessions"),
-  sessionTranscript: (session: string) => getJSON<{ history: any[] }>(`/api/sessions/transcript?session=${encodeURIComponent(session)}`),
+  sessionTranscript: (session: string) => getJSON<{ history: any[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
   createSession: (title?: string) => postJSON<Session>("/api/sessions/create", { title }),
   switchSession: (id: string) => postJSON("/api/sessions/switch", { id }),
-  swapPilot: (model: string) => getJSON(`/api/pilot?model=${encodeURIComponent(model)}`),
+  swapPilot: (model: string) => getJSON(withToken(`/api/pilot?model=${encodeURIComponent(model)}`)),
   chat: (message: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void) =>
     stream(`/api/chat?message=${encodeURIComponent(message)}`, onEvent, onDone, onError),
   mcp: () => getJSON<{ servers: any[]; tools: any[] }>("/api/mcp"),

@@ -5,7 +5,10 @@ Tests that legitimately need the network (the live-key analysis/eval tests) opt
 back in with @pytest.mark.network, and are deselected by default in CI runs.
 """
 import socket
+import os
 import pytest
+
+os.environ["PMHARNESS_MCP_ALLOW_PRIVATE"] = "1"
 
 _real_socket = socket.socket
 

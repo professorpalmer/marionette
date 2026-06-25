@@ -15,6 +15,10 @@ Config shape (standard, alongside stdio's command/args):
 import json
 import urllib.request
 import urllib.error
+import socket
+import ipaddress
+import os
+from urllib.parse import urlparse
 from typing import Dict, List, Optional
 
 from .mcp_client import McpTool, McpError, PROTOCOL_VERSION, CLIENT_INFO
@@ -27,12 +31,55 @@ class HttpMcpClient:
                  timeout: float = 30.0):
         self.name = name
         self.url = url
+        self.validate_url(url)
         self.headers = dict(headers or {})
         self.timeout = timeout
         self._id = 0
         self._session_id: Optional[str] = None
         self._initialized = False
         self._server_info: dict = {}
+
+    def validate_url(self, url: str) -> None:
+        try:
+            u = urlparse(url)
+        except Exception as e:
+            raise McpError(f"Invalid URL: {e}")
+        
+        if u.scheme not in ("http", "https"):
+            raise McpError(f"Invalid URL scheme '{u.scheme}'. Only http and https are allowed.")
+        
+        hostname = u.hostname
+        if not hostname:
+            raise McpError("Invalid URL: missing hostname.")
+        
+        # Block the cloud metadata IP 169.254.169.254 explicitly
+        if hostname == "169.254.169.254":
+            raise McpError("Access to cloud metadata IP is blocked.")
+        
+        allow_private = os.environ.get("PMHARNESS_MCP_ALLOW_PRIVATE", "").strip() in ("1", "true", "yes", "on")
+        if allow_private:
+            return
+            
+        try:
+            infos = socket.getaddrinfo(hostname, None)
+        except socket.gaierror:
+            return
+            
+        for family, socktype, proto, canonname, sockaddr in infos:
+            ip_str = str(sockaddr[0])
+            if "%" in ip_str:
+                ip_str = ip_str.split("%")[0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+                
+            if str(ip) == "169.254.169.254":
+                raise McpError("Access to cloud metadata IP is blocked.")
+                
+            if (ip.is_private or ip.is_loopback or ip.is_link_local or 
+                ip.is_reserved or ip.is_multicast):
+                raise McpError(f"Access to private/local IP {ip} is blocked for security reasons.")
 
     # ---- lifecycle ----------------------------------------------------------
     def start(self) -> None:
