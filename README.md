@@ -143,3 +143,23 @@ HARNESS_DRIVER=stub-oracle-v2 ./scripts/harness_gui.sh
 The driver is config -- the research proved the whole open-weights field drives
 at 100% under this harness, so swapping glm-5.2 for kimi/deepseek/qwen is a
 one-line change.
+
+
+## Vision (sidecar -- decoupled from the driver)
+
+The research found the only vision-capable open DRIVER (Kimi) is also the
+weakest driver. So the harness does NOT require a vision-capable driver. Instead
+`harness/vision.py` runs a cheap VLM sidecar that transcribes an attached image
+to TEXT once; that text is prepended to the driver context, so any text-only
+driver (glm-5.2, deepseek, qwen) "sees" the image through the transcription. The
+driver never receives pixels; the image is processed once.
+
+```python
+session.run("What is in this screenshot?", images=["/path/to/shot.png"])
+# -> emits a "vision" event with the transcription, then drives normally
+```
+
+Default sidecar is Gemini's vision endpoint (stand-in); swap base_url/model/key
+for an open VLM (GLM-OCR / Kimi-VL / Qwen-VL) -- same image->text contract.
+Verified live: a screenshot of `AUTH_TOKEN=*** was transcribed and a text-only
+driver correctly answered "abc123" from the text alone.

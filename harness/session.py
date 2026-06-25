@@ -70,14 +70,36 @@ class Session:
     def state(self) -> DurableState:
         return DurableState(self.state_dir)
 
-    def run(self, prompt: str) -> Iterator[SessionEvent]:
-        """Drive the loop, yielding an event per step. The GUI consumes this."""
+    def run(self, prompt: str, images: Optional[list] = None) -> Iterator[SessionEvent]:
+        """Drive the loop, yielding an event per step. The GUI consumes this.
+
+        If images are supplied, the vision sidecar transcribes them to text once
+        and prepends the transcription so a text-only driver can reason over the
+        image content. The driver never receives pixels."""
         budget = self.config.budget
         system = _system(budget)
         context = prompt
         swarms = 0
         tok = 0
         jobs: list = []
+
+        if images:
+            from .vision import transcribe_images
+            yield SessionEvent("vision", -1, {"count": len(images), "status": "transcribing"})
+            results = transcribe_images(images)
+            blocks = []
+            for path, r in zip(images, results):
+                if r.error:
+                    yield SessionEvent("vision", -1, {"path": path, "error": r.error})
+                else:
+                    blocks.append(f"[Image: {path}]\n{r.text}")
+                    yield SessionEvent("vision", -1, {"path": path,
+                        "chars": len(r.text), "model": r.model,
+                        "preview": r.text[:200]})
+            if blocks:
+                context = ("The user attached image(s). Transcription(s) below "
+                           "(you cannot see the image, only this text):\n\n"
+                           + "\n\n".join(blocks) + "\n\n---\n" + prompt)
 
         for i in range(HARD_TURN_CAP):
             intent, resp, repairs = drive_with_repair(self.driver, context, system)
