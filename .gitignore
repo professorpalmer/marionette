@@ -6,3 +6,8 @@ __pycache__/
 .env
 
 .pytest_cache/
+
+# React webapp
+webapp/node_modules/
+webapp/dist/
+webapp/.vite/

@@ -22,6 +22,9 @@ import uuid
 from .config import HarnessConfig
 from .session import Session
 from .conversation import ConversationalSession
+from . import workspaces as _ws
+from .sessions import SessionStore
+from .autobudget import AutoBudget
 
 
 _WEB = Path(__file__).resolve().parent / "web"
@@ -41,6 +44,8 @@ if _keyfile and os.path.exists(_keyfile):
             os.environ[_envvar] = _kf.read().strip()
 _session = Session(_cfg)
 _pilot = ConversationalSession(_cfg)
+import tempfile as _tf
+_sessions = SessionStore(os.path.join(_cfg.state_dir or _tf.gettempdir(), "harness_sessions.json"))
 _UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "harness-uploads")
 os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
@@ -49,18 +54,54 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
     def _send(self, code, body, ctype="application/json"):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self._cors()
         self.end_headers()
         self.wfile.write(data)
+
+    def do_OPTIONS(self):
+        self.send_response(204); self._cors(); self.end_headers()
 
     def do_POST(self):
         u = urlparse(self.path)
         if u.path == "/api/upload":
             return self._handle_upload()
+        if u.path in ("/api/workspaces/switch", "/api/workspaces/create",
+                      "/api/sessions/create", "/api/sessions/switch"):
+            return self._handle_post_json(u.path)
+        return self._send(404, json.dumps({"error": "not found"}))
+
+    def _read_json(self) -> dict:
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        if not n:
+            return {}
+        try:
+            return json.loads(self.rfile.read(n).decode() or "{}")
+        except Exception:
+            return {}
+
+    def _handle_post_json(self, path):
+        body = self._read_json()
+        repo = _cfg.repo
+        if path == "/api/workspaces/switch":
+            return self._send(200, json.dumps(_ws.switch_workspace(repo, body.get("name",""),
+                              allow_dirty=bool(body.get("allow_dirty")))))
+        if path == "/api/workspaces/create":
+            return self._send(200, json.dumps(_ws.create_workspace(repo, body.get("name",""),
+                              body.get("branch") or None)))
+        if path == "/api/sessions/create":
+            return self._send(200, json.dumps(_sessions.create(body.get("title"))))
+        if path == "/api/sessions/switch":
+            return self._send(200, json.dumps(_sessions.switch(body.get("id",""))))
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _handle_upload(self):
@@ -114,6 +155,13 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/pilot":
             q = parse_qs(u.query)
             return self._swap_pilot(q.get("model", [""])[0])
+        if u.path == "/api/workspaces":
+            return self._send(200, json.dumps(_ws.list_workspaces(_cfg.repo)))
+        if u.path == "/api/sessions":
+            return self._send(200, json.dumps(_sessions.list()))
+        if u.path == "/api/auto":
+            q = parse_qs(u.query)
+            return self._stream_auto(q.get("objective", [""])[0])
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _stream_run(self, prompt: str, images=None):
@@ -131,6 +179,24 @@ class Handler(BaseHTTPRequestHandler):
         try:
             for ev in _session.run(prompt, images=images or None):
                 payload = json.dumps({"kind": ev.kind, "turn": ev.turn, "data": ev.data})
+                self.wfile.write(f"data: {payload}\n\n".encode())
+                self.wfile.flush()
+            self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _stream_auto(self, objective: str):
+        """Stream the fully-auto loop (governor-bounded) over SSE."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self._cors()
+        self.end_headers()
+        try:
+            budget = AutoBudget.from_env()
+            for ev in _pilot.run_auto(objective, budget):
+                payload = json.dumps({"kind": ev.kind, "data": ev.data})
                 self.wfile.write(f"data: {payload}\n\n".encode())
                 self.wfile.flush()
             self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
