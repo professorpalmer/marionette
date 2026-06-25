@@ -105,6 +105,17 @@ export type UsageData = {
   }[];
 };
 
+export type CodegraphStatus = {
+  indexed: boolean;
+  status: "ready" | "indexing" | "unsupported" | "none";
+  nodes: number | null;
+  edges: number | null;
+  files: number | null;
+  languages: string[] | null;
+  last_indexed: string | null;
+  repo: string;
+};
+
 export const api = {
   providers: () => getJSON<ProviderInfo[]>("/api/providers"),
   probeProvider: (provider: string) => postJSON<ProbeResult>("/api/providers/probe", { provider }),
@@ -170,4 +181,7 @@ export const api = {
   addHook: (event: string, command: string) => postJSON<Hook>("/api/hooks/add", { event, command }),
   updateHook: (id: string, patch: { enabled?: boolean; command?: string }) => postJSON<Hook>("/api/hooks/update", { id, ...patch }),
   removeHook: (id: string) => postJSON<{ ok: boolean }>("/api/hooks/remove", { id }),
+
+  getCodegraph: () => getJSON<CodegraphStatus>("/api/codegraph"),
+  reindexCodegraph: () => postJSON<{ ok: boolean; status: string }>("/api/codegraph/reindex", {}),
 };

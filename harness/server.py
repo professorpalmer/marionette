@@ -164,6 +164,39 @@ def _index_codegraph_bg(repo_path: str):
         _codegraph_status = "unsupported"
 
 
+def _reindex_codegraph_bg(repo_path: str):
+    global _codegraph_status
+    _codegraph_status = "indexing"
+    try:
+        import sys
+        import subprocess
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "puppetmaster", "codegraph", "index"],
+            cwd=repo_path,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        def wait_and_update():
+            global _codegraph_status
+            try:
+                proc.wait(timeout=600)  # max 10 mins
+                if proc.returncode == 0:
+                    _codegraph_status = "ready"
+                else:
+                    _codegraph_status = "unsupported"
+            except Exception:
+                _codegraph_status = "unsupported"
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+        threading.Thread(target=wait_and_update, daemon=True).start()
+    except Exception:
+        _codegraph_status = "unsupported"
+
+
 def _get_codegraph_status(repo_path: str) -> str:
     global _codegraph_status
     if not repo_path:
@@ -241,7 +274,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/worktrees/add", "/api/worktrees/remove",
                       "/api/worktrees/prune", "/api/worktrees/max",
                       "/api/hooks/add", "/api/hooks/update", "/api/hooks/remove",
-                      "/api/workspace/open"):
+                      "/api/workspace/open", "/api/codegraph/reindex"):
             return self._handle_post_json(u.path)
         return self._send(404, json.dumps({"error": "not found"}))
 
@@ -263,6 +296,11 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._send(400, json.dumps({"error": "invalid JSON"}))
         repo = _cfg.repo
+        if path == "/api/codegraph/reindex":
+            if not repo or not os.path.isdir(repo):
+                return self._send(400, json.dumps({"error": "No open workspace"}))
+            _reindex_codegraph_bg(repo)
+            return self._send(200, json.dumps({"ok": True, "status": "indexing"}))
         if path == "/api/workspace/open":
             import subprocess
             target_repo = body.get("path", "").strip()
@@ -800,6 +838,105 @@ class Handler(BaseHTTPRequestHandler):
                 "is_git": is_git,
                 "codegraph_status": cg_status
             }))
+        if u.path == "/api/codegraph":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+
+            repo = _cfg.repo
+            if not repo or not os.path.isdir(repo):
+                return self._send(200, json.dumps({
+                    "indexed": False,
+                    "status": "none",
+                    "nodes": None,
+                    "edges": None,
+                    "files": None,
+                    "languages": None,
+                    "last_indexed": None,
+                    "repo": ""
+                }))
+
+            if _codegraph_status == "indexing":
+                last_indexed = None
+                try:
+                    import puppetmaster.codegraph as cg
+                    mtime = cg.codegraph_index_mtime(repo)
+                    if mtime:
+                        import datetime
+                        last_indexed = datetime.datetime.fromtimestamp(mtime).isoformat()
+                except Exception:
+                    pass
+
+                return self._send(200, json.dumps({
+                    "indexed": False,
+                    "status": "indexing",
+                    "nodes": None,
+                    "edges": None,
+                    "files": None,
+                    "languages": None,
+                    "last_indexed": last_indexed,
+                    "repo": repo
+                }))
+
+            try:
+                import subprocess
+                import sys
+                proc = subprocess.run(
+                    [sys.executable, "-m", "puppetmaster", "codegraph", "status", "--json"],
+                    cwd=repo,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if proc.returncode == 0:
+                    data = json.loads(proc.stdout)
+                    initialized = data.get("initialized", False)
+                    status_val = "ready" if initialized else "unsupported"
+                    
+                    last_indexed = None
+                    try:
+                        import puppetmaster.codegraph as cg
+                        mtime = cg.codegraph_index_mtime(repo)
+                        if mtime:
+                            import datetime
+                            last_indexed = datetime.datetime.fromtimestamp(mtime).isoformat()
+                    except Exception:
+                        pass
+
+                    return self._send(200, json.dumps({
+                        "indexed": initialized,
+                        "status": status_val,
+                        "nodes": data.get("nodeCount"),
+                        "edges": data.get("edgeCount"),
+                        "files": data.get("fileCount"),
+                        "languages": data.get("languages"),
+                        "last_indexed": last_indexed,
+                        "repo": repo
+                    }))
+                else:
+                    return self._send(200, json.dumps({
+                        "indexed": False,
+                        "status": "unsupported",
+                        "nodes": None,
+                        "edges": None,
+                        "files": None,
+                        "languages": None,
+                        "last_indexed": None,
+                        "repo": repo
+                    }))
+            except Exception:
+                return self._send(200, json.dumps({
+                    "indexed": False,
+                    "status": "unsupported",
+                    "nodes": None,
+                    "edges": None,
+                    "files": None,
+                    "languages": None,
+                    "last_indexed": None,
+                    "repo": repo
+                }))
         if u.path == "/api/config":
             return self._send(200, json.dumps({
                 "driver": _cfg.driver, "reach": _cfg.reach,
