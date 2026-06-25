@@ -16,7 +16,10 @@ harness = "harness.cli:main"
 # Puppetmaster is required to execute swarm intents (the bridge). Installed
 # editable from the local checkout in dev; not pinned here to avoid coupling
 # the research rig to a PyPI release of an internal tool.
-dev = ["pytest>=7"]
+dev = [
+    "pytest>=7",
+    "pyinstaller"
+]
 
 [tool.setuptools.packages.find]
 include = ["pmharness*", "harness*"]

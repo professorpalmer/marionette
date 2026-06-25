@@ -80,14 +80,34 @@ async function startBackend() {
   const { app } = require("electron");
   const repoRoot = process.env.HARNESS_REPO
     || (app.isPackaged ? path.join(os.homedir(), "pm-harness") : path.resolve(__dirname, "..", ".."));
-  const py = process.env.PMHARNESS_PYTHON || path.join(repoRoot, ".venv", "bin", "python");
-  backend = spawn(py, ["-m", "harness.cli", "gui", "--port", String(backendPort)], {
-    cwd: repoRoot,
-    env: { ...process.env, HARNESS_REPO: process.env.HARNESS_REPO || repoRoot },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+
+  let binaryPath = null;
+  if (app.isPackaged && process.resourcesPath) {
+    const p = path.join(process.resourcesPath, "pmharness-backend");
+    if (fs.existsSync(p)) {
+      binaryPath = p;
+    }
+  }
+
   const _dbg = (msg) => { try { fs.appendFileSync(path.join(os.homedir(), ".pmharness", "electron.log"), `${new Date().toISOString()} ${msg}\n`); } catch {} };
-  _dbg(`spawn py=${py} cwd=${repoRoot} port=${backendPort} packaged=${app.isPackaged}`);
+
+  if (binaryPath) {
+    _dbg(`spawning bundled binary: ${binaryPath} cwd=${repoRoot} port=${backendPort} packaged=${app.isPackaged}`);
+    backend = spawn(binaryPath, ["gui", "--port", String(backendPort)], {
+      cwd: repoRoot,
+      env: { ...process.env, HARNESS_REPO: process.env.HARNESS_REPO || repoRoot },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } else {
+    const py = process.env.PMHARNESS_PYTHON || path.join(repoRoot, ".venv", "bin", "python");
+    _dbg(`spawning python backend: ${py} cwd=${repoRoot} port=${backendPort} packaged=${app.isPackaged}`);
+    backend = spawn(py, ["-m", "harness.cli", "gui", "--port", String(backendPort)], {
+      cwd: repoRoot,
+      env: { ...process.env, HARNESS_REPO: process.env.HARNESS_REPO || repoRoot },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  }
+
   backend.on("error", (e) => _dbg(`spawn error: ${e.message}`));
   backend.stdout.on("data", (d) => { _dbg(`[out] ${d}`); process.stdout.write(`[backend] ${d}`); });
   backend.stderr.on("data", (d) => { _dbg(`[err] ${d}`); process.stderr.write(`[backend] ${d}`); });

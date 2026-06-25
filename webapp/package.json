@@ -12,7 +12,8 @@
     "electron": "electron .",
     "electron:build": "npm run build && electron .",
     "dist:mac": "npm run build && electron-builder --mac --dir",
-    "dist:dmg": "npm run build && electron-builder --mac dmg"
+    "dist:dmg": "npm run build && electron-builder --mac dmg",
+    "dist:full": "bash ../scripts/build_backend.sh && npm run dist:mac"
   },
   "dependencies": {
     "lucide-react": "^1.21.0",
@@ -49,6 +50,12 @@
       "dist/**/*",
       "electron/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend-dist/pmharness-backend",
+        "to": "pmharness-backend"
+      }
     ],
     "extraMetadata": {
       "main": "electron/main.cjs"

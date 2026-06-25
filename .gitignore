@@ -13,3 +13,8 @@ webapp/dist/
 webapp/.vite/
 webapp/release/
 webapp/out/
+
+# PyInstaller
+webapp/backend-dist/
+build/pyinstaller-work/
+
