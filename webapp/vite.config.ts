@@ -5,6 +5,8 @@ import react from "@vitejs/plugin-react";
 // Electron build the same transport calls route through IPC instead -- see
 // src/transport.ts. This keeps the app backend-agnostic, not web-locked.
 export default defineConfig({
+  // base "./" => relative asset paths so the build loads under file:// in Electron
+  base: "./",
   plugins: [react()],
   server: {
     host: "127.0.0.1",

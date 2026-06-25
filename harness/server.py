@@ -137,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({
                 "driver": _cfg.driver, "reach": _cfg.reach,
                 "budget": _cfg.budget, "state_dir": _session.state_dir,
-                "models": _available_pilots(),
+                "models": _available_pilots(), "repo": _cfg.repo,
                 "preflight": _session.preflight()}))
         if u.path == "/api/jobs":
             return self._send(200, json.dumps(_session.state().list_jobs()))

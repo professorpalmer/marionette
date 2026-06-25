@@ -4,6 +4,7 @@ import { getJSON, postJSON, stream, type StreamEvent } from "./transport";
 export type Config = {
   driver: string; reach: string; budget: number;
   models?: string[]; preflight?: string | null;
+  repo?: string;
 };
 export type Job = { id: string; goal: string; status: string };
 export type Artifact = { type: string; headline: string; confidence?: number };
