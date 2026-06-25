@@ -54,6 +54,8 @@ def price(name: str) -> tuple:
 
 
 def build(name: str, *, reach: str = "openrouter") -> Driver:
+    import os as _os
+    _mt = int(_os.environ.get("HARNESS_MAX_TOKENS", "1500"))
     """Construct a Driver for a catalog model.
 
     reach='openrouter' routes through OpenRouter (one key for the whole field).
@@ -84,7 +86,7 @@ def build(name: str, *, reach: str = "openrouter") -> Driver:
             )
         return OpenAICompatDriver(
             name=name, model=nat["model"], base_url=nat["base_url"],
-            api_key_env=nat["api_key_env"],
+            api_key_env=nat["api_key_env"], max_tokens=_mt,
         )
 
     if reach == "openrouter":
@@ -93,7 +95,7 @@ def build(name: str, *, reach: str = "openrouter") -> Driver:
             raise ValueError(f"{name} has no OpenRouter slug")
         return OpenAICompatDriver(
             name=name, model=slug, base_url=OPENROUTER_BASE,
-            api_key_env=OPENROUTER_KEY_ENV,
+            api_key_env=OPENROUTER_KEY_ENV, max_tokens=_mt,
             extra_headers={
                 "HTTP-Referer": "https://github.com/professorpalmer/pm-harness",
                 "X-Title": "pm-harness driver eval",
