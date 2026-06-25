@@ -194,4 +194,7 @@ export const api = {
   getCodegraph: () => getJSON<CodegraphStatus>("/api/codegraph"),
   reindexCodegraph: () => postJSON<{ ok: boolean; status: string }>("/api/codegraph/reindex", {}),
   getWikiGraph: () => getJSON<WikiGraphData>("/api/wiki/graph"),
+  getWikiConfig: () => getJSON<{ api_base: string; has_token: boolean }>("/api/wiki/config"),
+  setWikiConfig: (api_base?: string, owner_token?: string) =>
+    postJSON<{ api_base: string; has_token: boolean }>("/api/wiki/config", { api_base, owner_token }),
 };

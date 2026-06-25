@@ -52,7 +52,9 @@ if _state_dir:
 # Masker-safe live key: if HARNESS_KEY_FILE points at a file, load it into the
 # expected env var for the chosen reach before the Session builds its driver.
 from .keys import load_api_keys_on_startup, get_api_key_status, get_env_var_for_reach, set_api_key, clear_api_key
+from .wiki_config import load_wiki_config_on_startup, get_wiki_config, set_wiki_config
 load_api_keys_on_startup(_cfg.reach)
+load_wiki_config_on_startup()
 _session = Session(_cfg)
 _pilot = ConversationalSession(_cfg)
 import tempfile as _tf
@@ -269,7 +271,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/skills/distill", "/api/skills/approve",
                       "/api/skills/reject", "/api/skills/archive",
                       "/api/rules/approve", "/api/rules/reject",
-                      "/api/settings", "/api/providers/probe",
+                      "/api/settings", "/api/providers/probe", "/api/wiki/config",
                       "/api/registry", "/api/roles", "/api/pilot/validate",
                       "/api/worktrees/add", "/api/worktrees/remove",
                       "/api/worktrees/prune", "/api/worktrees/max",
@@ -504,6 +506,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "missing title"}))
             ok = _sessions.rename(sid, title)
             return self._send(200, json.dumps({"ok": ok}))
+        if path == "/api/wiki/config":
+            api_base = body.get("api_base")
+            owner_token = body.get("owner_token")
+            res = set_wiki_config(
+                api_base=api_base if api_base is not None else None,
+                owner_token=owner_token if owner_token is not None else None,
+            )
+            return self._send(200, json.dumps(res))
         if path == "/api/settings":
             requires_rebuild = False
             if "api_key" in body or body.get("clear_api_key") is True:
@@ -961,6 +971,13 @@ class Handler(BaseHTTPRequestHandler):
                 "budget": _cfg.budget, "state_dir": _session.state_dir,
                 "models": _available_pilots(), "repo": _cfg.repo,
                 "preflight": _session.preflight()}))
+        if u.path == "/api/wiki/config":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            return self._send(200, json.dumps(get_wiki_config()))
         if u.path == "/api/wiki/graph":
             if self._guard():
                 return

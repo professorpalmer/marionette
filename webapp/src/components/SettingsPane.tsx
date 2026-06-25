@@ -9,6 +9,10 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
   const [error, setError] = useState("");
   const [keyInput, setKeyInput] = useState("");
   const [usage, setUsage] = useState<UsageData | null>(null);
+  const [wikiCfg, setWikiCfg] = useState<{ api_base: string; has_token: boolean } | null>(null);
+  const [wikiBase, setWikiBase] = useState("");
+  const [wikiToken, setWikiToken] = useState("");
+  const [wikiSaving, setWikiSaving] = useState(false);
 
   // Feature states
   const [hooks, setHooks] = useState<any[]>([]);
@@ -73,6 +77,9 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
         console.error(err);
       });
 
+    api.getWikiConfig()
+      .then((w) => { setWikiCfg(w); setWikiBase(w.api_base || ""); })
+      .catch(() => {});
     api.getUsage()
       .then(setUsage)
       .catch((err) => {
@@ -551,6 +558,44 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
               {settings.repo || "None"}
             </div>
           </div>
+        </div>
+        {/* WIKI GRAPH (portable-llm-wiki gated owner surface) */}
+        <div className="border-t border-edge pt-3 space-y-2">
+          <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
+            Wiki Graph
+          </div>
+          <div className="text-[10px] text-muted leading-relaxed">
+            Connect the portable-llm-wiki owner surface (same as the wiki MCP) to populate the Wiki graph tab.
+            {wikiCfg ? <span className={wikiCfg.has_token ? "text-good" : "text-faint"}> {wikiCfg.has_token ? "Token set." : "No token."}</span> : null}
+          </div>
+          <input
+            type="text"
+            value={wikiBase}
+            onChange={(e) => setWikiBase(e.target.value)}
+            placeholder="WIKI_API_BASE (e.g. http://localhost:8000)"
+            className="w-full bg-bg border border-edge rounded px-2 py-1 text-[11px] font-mono text-txt focus:outline-none focus:border-accent"
+          />
+          <input
+            type="password"
+            value={wikiToken}
+            onChange={(e) => setWikiToken(e.target.value)}
+            placeholder={wikiCfg?.has_token ? "Owner token (leave blank to keep)" : "WIKI_OWNER_TOKEN"}
+            className="w-full bg-bg border border-edge rounded px-2 py-1 text-[11px] font-mono text-txt focus:outline-none focus:border-accent"
+          />
+          <button
+            disabled={wikiSaving}
+            onClick={async () => {
+              setWikiSaving(true);
+              try {
+                const res = await api.setWikiConfig(wikiBase, wikiToken || undefined);
+                setWikiCfg(res); setWikiToken("");
+              } catch { /* ignore */ }
+              finally { setWikiSaving(false); }
+            }}
+            className="bg-accent/15 hover:bg-accent/25 text-accent text-[11px] font-semibold px-2 py-1 rounded transition disabled:opacity-50"
+          >
+            {wikiSaving ? "Saving..." : "Save Wiki Config"}
+          </button>
         </div>
       </div>
     </div>
