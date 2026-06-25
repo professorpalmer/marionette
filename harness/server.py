@@ -26,6 +26,15 @@ _state_dir = os.environ.get("HARNESS_STATE_DIR", "")
 _cfg = HarnessConfig.from_env()
 if _state_dir:
     _cfg.state_dir = _state_dir
+
+# Masker-safe live key: if HARNESS_KEY_FILE points at a file, load it into the
+# expected env var for the chosen reach before the Session builds its driver.
+_keyfile = os.environ.get("HARNESS_KEY_FILE", "")
+if _keyfile and os.path.exists(_keyfile):
+    _envvar = "OPENROUTER_API_KEY" if _cfg.reach == "openrouter" else os.environ.get("HARNESS_KEY_ENV", "")
+    if _envvar:
+        with open(_keyfile) as _kf:
+            os.environ[_envvar] = _kf.read().strip()
 _session = Session(_cfg)
 
 

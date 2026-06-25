@@ -21,6 +21,7 @@ from pmharness.intent import validate_intent, parse_intent_text, IntentError, Dr
 from pmharness.bridge import execute_intent, BridgeResult
 from pmharness import registry as reg
 from pmharness.drivers.base import SYSTEM_PROMPT
+from .repair import drive_with_repair
 
 from .config import HarnessConfig
 from .state import DurableState
@@ -79,23 +80,19 @@ class Session:
         jobs: list = []
 
         for i in range(HARD_TURN_CAP):
-            resp = self.driver.complete(context, system=system)
+            intent, resp, repairs = drive_with_repair(self.driver, context, system)
             tok += resp.tokens_out
-            if resp.error:
-                yield SessionEvent("error", i, {"error": resp.error})
-                return
-
-            try:
-                intent = validate_intent(parse_intent_text(resp.text))
-            except IntentError as e:
-                yield SessionEvent("error", i, {"error": f"invalid intent: {e}",
-                                                "raw": resp.text[:300]})
+            if intent is None:
+                yield SessionEvent("error", i, {"error": resp.error or "invalid intent",
+                                                "raw": resp.text[:300],
+                                                "repairs_used": repairs})
                 return
 
             yield SessionEvent("intent", i, {
                 "action": intent.action, "goal": intent.goal,
                 "roles": intent.roles, "rationale": intent.rationale,
                 "tokens_out": resp.tokens_out, "latency_ms": resp.latency_ms,
+                "repairs_used": repairs,
             })
 
             if intent.action == "answer":
