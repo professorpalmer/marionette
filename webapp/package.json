@@ -13,7 +13,7 @@
     "electron:build": "npm run build && electron .",
     "dist:mac": "npm run build && electron-builder --mac --dir",
     "dist:dmg": "npm run build && electron-builder --mac dmg",
-    "dist:full": "bash ../scripts/build_backend.sh && npm run dist:mac"
+    "dist:full": "bash ../scripts/build_backend.sh && npm run dist:dmg"
   },
   "dependencies": {
     "lucide-react": "^1.21.0",
@@ -65,12 +65,13 @@
       "category": "public.app-category.developer-tools",
       "target": [
         {
-          "target": "dir",
+          "target": "dmg",
           "arch": [
             "arm64"
           ]
         }
       ],
+      "icon": "build/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",

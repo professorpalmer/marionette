@@ -18,3 +18,7 @@ webapp/out/
 webapp/backend-dist/
 build/pyinstaller-work/
 
+# Temporary iconset directories
+webapp/build/*.iconset/
+build/*.iconset/
+

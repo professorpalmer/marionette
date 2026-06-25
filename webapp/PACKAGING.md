@@ -3,13 +3,13 @@
 The desktop app is an Electron shell (webapp/) that spawns the Python backend
 (harness.cli gui) and talks to it over a localhost loopback + auth token.
 
-## Build a self-contained portable app
+## Build a self-contained portable installer
 
-To build the self-contained app that includes the bundled Python backend (with no runtime dependency on a local repository or virtual environment), run:
+To build the self-contained desktop installer with a custom app icon (which includes the bundled Python backend with no runtime dependency on a local repository or virtual environment), run:
 
 ```bash
 cd webapp
-npm run dist:full      # -> webapp/release/mac-arm64/PM Harness.app
+npm run dist:full      # -> webapp/release/PM Harness-0.1.0-arm64.dmg
 ```
 
 This script:
@@ -97,8 +97,19 @@ To build a fully functional universal2 package in the future, follow these steps
 4. Update the `electron-builder` configuration in webapp/package.json's `mac` section to change `target` to include `universal` (or `arm64` and `x64` targets) instead of just `arm64`.
 5. Verify both architectures are present in the resulting backend binary using `lipo -archs webapp/backend-dist/pmharness-backend`.
 
+## App Icon Generation
+
+PM Harness uses a custom app icon. The source 1024x1024 PNG image is located at `webapp/build/assets/icon-source.png`.
+To compile this image into a macOS `.icns` file, run the helper script from the repository root:
+
+```bash
+./scripts/make_icon.sh
+```
+
+This script creates a temporary `.iconset` directory, uses `sips` to resize the icon to the required standard resolutions (16x16, 32x32, 64x64, 128x128, 256x256, 512x512, and their `@2x` retina equivalents up to 1024x1024), compiles it into `webapp/build/icon.icns` using `iconutil`, and cleans up the temporary files.
+
 ## What the build produces
 
-- release/mac-arm64/PM Harness.app (Electron runtime + frontend + embedded PyInstaller backend)
-- Verified: launches, spawns the embedded backend, serves /api/config|skills|mcp (200),
-  single shared backend per machine (marker reuse), auth token enforced.
+- release/PM Harness-0.1.0-arm64.dmg (The macOS disk image installer containing the `.app` package)
+- release/mac-arm64/PM Harness.app (The unpackaged application bundle containing the Electron runtime, React frontend, and the embedded PyInstaller backend)
+- Verified: launches, spawns the embedded backend, serves /api/config|skills|mcp (200), single shared backend per machine (marker reuse), auth token enforced.
