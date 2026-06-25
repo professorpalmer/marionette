@@ -137,16 +137,16 @@ export default function WorktreesPane() {
                   key={wt.path}
                   className="p-2.5 bg-panel2/40 border border-edge rounded-lg text-[11px] flex flex-col gap-1 hover:border-edge/70 transition-colors"
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-txt flex items-center gap-1.5 truncate max-w-[190px]">
-                      {wt.branch || "detached"}
+                  <div className="flex items-center justify-between gap-2 min-w-0">
+                    <span className="font-semibold text-txt flex items-center gap-1.5 min-w-0 flex-1 truncate">
+                      <span className="truncate" title={wt.branch || "detached"}>{wt.branch || "detached"}</span>
                       {wt.is_main && (
-                        <span className="bg-accent/15 text-accent text-[8.5px] px-1 rounded font-bold uppercase tracking-wider">
+                        <span className="bg-accent/15 text-accent text-[8.5px] px-1 rounded font-bold uppercase tracking-wider flex-shrink-0">
                           main
                         </span>
                       )}
                       {wt.locked && (
-                        <span className="bg-risk/15 text-risk text-[8.5px] px-1 rounded font-bold uppercase tracking-wider">
+                        <span className="bg-risk/15 text-risk text-[8.5px] px-1 rounded font-bold uppercase tracking-wider flex-shrink-0">
                           locked
                         </span>
                       )}
@@ -155,7 +155,7 @@ export default function WorktreesPane() {
                     {!wt.is_main && (
                       <button
                         onClick={() => handleRemoveWorktree(wt.path, wt.branch)}
-                        className="text-muted hover:text-risk transition-colors p-0.5"
+                        className="text-muted hover:text-risk transition-colors p-0.5 flex-shrink-0"
                         title="Remove worktree"
                       >
                         <Trash2 size={12} />
@@ -179,7 +179,7 @@ export default function WorktreesPane() {
         </div>
 
         {/* Global actions: Prune & Max limit */}
-        <div className="bg-panel2/20 border border-edge/50 rounded-lg p-2.5 flex items-center justify-between text-[11px]">
+        <div className="bg-panel2/20 border border-edge/50 rounded-lg p-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
           <button
             onClick={handlePruneWorktrees}
             className="bg-panel2 hover:bg-edge/40 border border-edge text-txt rounded px-2.5 py-1 font-medium transition-colors text-[10.5px]"

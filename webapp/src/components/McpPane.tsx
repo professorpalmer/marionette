@@ -69,9 +69,9 @@ export default function McpPane() {
         <div className="border-t border-edge p-2 max-h-44 overflow-y-auto">
           <div className="uppercase tracking-wider text-[10px] text-faint mb-1">Available tools ({tools.length})</div>
           {tools.map((t) => (
-            <div key={t.qualified} className="py-0.5">
-              <span className="text-accent font-mono text-[11px]">{t.qualified}</span>
-              <span className="text-faint text-[10px] ml-1.5">{t.description?.slice(0, 60)}</span>
+            <div key={t.qualified} className="py-1 border-b border-edge/20 last:border-none flex flex-wrap items-baseline gap-x-1.5 min-w-0">
+              <span className="text-accent font-mono text-[11px] truncate max-w-full" title={t.qualified}>{t.qualified}</span>
+              <span className="text-faint text-[10px] truncate max-w-full" title={t.description}>{t.description}</span>
             </div>
           ))}
         </div>

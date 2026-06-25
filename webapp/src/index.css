@@ -19,3 +19,10 @@ body {
 
 /* subtle focus ring for inputs/buttons (cleaner than default) */
 :focus-visible { outline: none; }
+
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}

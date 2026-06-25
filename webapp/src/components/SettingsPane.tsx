@@ -481,9 +481,9 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
                   <span className="text-faint">Session Cost (estimated):</span>
                   <span className="text-good font-mono font-medium">${usage.session.est_cost_usd.toFixed(6)}</span>
                 </div>
-                <div className="flex items-center justify-between text-[11px] border-t border-edge/30 pt-1 mt-1">
+                <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] border-t border-edge/30 pt-1 mt-1">
                   <span className="text-faint">Active Driver:</span>
-                  <span className="text-txt font-mono font-medium">{usage.session.driver}</span>
+                  <span className="text-txt font-mono font-medium truncate max-w-full" title={usage.session.driver}>{usage.session.driver}</span>
                 </div>
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="text-faint">Price in/out (per Mtok):</span>
@@ -498,10 +498,10 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
                   </div>
                   <div className="max-h-24 overflow-y-auto space-y-1 pr-1">
                     {usage.jobs.map((job: any) => (
-                      <div key={job.job_id} className="flex items-center justify-between text-[10px] font-mono">
-                        <span className="text-muted truncate max-w-[120px]">{job.job_id}</span>
-                        <span className="text-faint text-[9px]">{job.tokens.toLocaleString()} tok</span>
-                        <span className="text-txt font-medium">${job.est_cost_usd.toFixed(6)}</span>
+                      <div key={job.job_id} className="flex items-center justify-between gap-x-1.5 text-[10px] font-mono">
+                        <span className="text-muted truncate flex-1 min-w-0" title={job.job_id}>{job.job_id}</span>
+                        <span className="text-faint text-[9px] flex-shrink-0">{job.tokens.toLocaleString()} tok</span>
+                        <span className="text-txt font-medium flex-shrink-0">${job.est_cost_usd.toFixed(6)}</span>
                       </div>
                     ))}
                   </div>
