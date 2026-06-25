@@ -171,7 +171,10 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/skills/reject", "/api/skills/archive",
                       "/api/rules/approve", "/api/rules/reject",
                       "/api/settings", "/api/providers/probe",
-                      "/api/registry", "/api/roles", "/api/pilot/validate"):
+                      "/api/registry", "/api/roles", "/api/pilot/validate",
+                      "/api/worktrees/add", "/api/worktrees/remove",
+                      "/api/worktrees/prune", "/api/worktrees/max",
+                      "/api/hooks/add", "/api/hooks/update", "/api/hooks/remove"):
             return self._handle_post_json(u.path)
         return self._send(404, json.dumps({"error": "not found"}))
 
@@ -249,8 +252,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sessions/create":
             if _sessions.active:
                 save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_history())
-            res = _sessions.create(body.get("title"))
+            title = body.get("title") or "New session"
+            res = _sessions.create(title)
             _pilot.load_history([])
+            
+            from .hooks import run_hooks
+            run_hooks("sessionStart", {"session_id": res.get("id", ""), "title": title})
+            
             return self._send(200, json.dumps(res))
         if path == "/api/sessions/switch":
             if _sessions.active:
@@ -265,6 +273,10 @@ class Handler(BaseHTTPRequestHandler):
             if not sid:
                 return self._send(400, json.dumps({"error": "missing session id"}))
             is_active = (_sessions.active == sid)
+            
+            from .hooks import run_hooks
+            run_hooks("sessionEnd", {"session_id": sid})
+            
             new_active = _sessions.delete(sid)
             safe_sid = "".join(c for c in sid if c.isalnum() or c in ("-", "_"))
             if safe_sid:
@@ -453,6 +465,106 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(res))
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)}))
+
+        if path == "/api/worktrees/add":
+            from . import worktrees as _wt
+            branch = body.get("branch", "").strip()
+            base = body.get("base") or "HEAD"
+            if not branch or branch.startswith("-") or (base and base.startswith("-")):
+                return self._send(400, json.dumps({"error": "invalid branch or base name"}))
+            try:
+                new_wt = _wt.add_worktree(_cfg.repo, branch, base)
+                _wt.cleanup_old_worktrees(_cfg.repo, _wt.get_max_worktrees())
+                return self._send(200, json.dumps(new_wt))
+            except ValueError as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            except Exception as e:
+                return self._send(400, json.dumps({"error": f"Failed to add worktree: {str(e)}"}))
+
+        if path == "/api/worktrees/remove":
+            from . import worktrees as _wt
+            wt_path = body.get("path", "").strip()
+            force = _parse_bool(body.get("force"))
+            if not wt_path:
+                return self._send(400, json.dumps({"error": "missing path"}))
+            try:
+                _wt.remove_worktree(_cfg.repo, wt_path, force=force)
+                return self._send(200, json.dumps({"ok": True}))
+            except ValueError as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            except Exception as e:
+                return self._send(400, json.dumps({"error": f"Failed to remove worktree: {str(e)}"}))
+
+        if path == "/api/worktrees/prune":
+            from . import worktrees as _wt
+            try:
+                _wt.prune_worktrees(_cfg.repo)
+                return self._send(200, json.dumps({"ok": True}))
+            except Exception as e:
+                return self._send(400, json.dumps({"error": f"Failed to prune worktrees: {str(e)}"}))
+
+        if path == "/api/worktrees/max":
+            from . import worktrees as _wt
+            try:
+                max_val = int(body.get("max") or body.get("max_worktrees") or 25)
+                _wt.set_max_worktrees(max_val)
+                _wt.cleanup_old_worktrees(_cfg.repo, max_val)
+                return self._send(200, json.dumps({"ok": True}))
+            except (ValueError, TypeError):
+                return self._send(400, json.dumps({"error": "Invalid max value"}))
+
+        if path == "/api/hooks/add":
+            from . import hooks as _hk
+            event = body.get("event", "").strip()
+            command = body.get("command", "").strip()
+            if event not in _hk.ALLOWED_EVENTS:
+                return self._send(400, json.dumps({"error": f"Invalid event. Allowed: {_hk.ALLOWED_EVENTS}"}))
+            if not command:
+                return self._send(400, json.dumps({"error": "Command cannot be empty"}))
+            
+            hooks = _hk.get_hooks()
+            new_hook = {
+                "id": uuid.uuid4().hex[:12],
+                "event": event,
+                "command": command,
+                "enabled": True
+            }
+            hooks.append(new_hook)
+            _hk.save_hooks(hooks)
+            return self._send(200, json.dumps(new_hook))
+
+        if path == "/api/hooks/update":
+            from . import hooks as _hk
+            hid = body.get("id", "").strip()
+            if not hid:
+                return self._send(400, json.dumps({"error": "missing hook id"}))
+            
+            hooks = _hk.get_hooks()
+            hook = next((h for h in hooks if h["id"] == hid), None)
+            if not hook:
+                return self._send(404, json.dumps({"error": "hook not found"}))
+            
+            if "enabled" in body:
+                hook["enabled"] = _parse_bool(body["enabled"])
+            if "command" in body:
+                cmd = body["command"].strip()
+                if not cmd:
+                    return self._send(400, json.dumps({"error": "Command cannot be empty"}))
+                hook["command"] = cmd
+            
+            _hk.save_hooks(hooks)
+            return self._send(200, json.dumps(hook))
+
+        if path == "/api/hooks/remove":
+            from . import hooks as _hk
+            hid = body.get("id", "").strip()
+            if not hid:
+                return self._send(400, json.dumps({"error": "missing hook id"}))
+            
+            hooks = _hk.get_hooks()
+            hooks = [h for h in hooks if h["id"] != hid]
+            _hk.save_hooks(hooks)
+            return self._send(200, json.dumps({"ok": True}))
 
         return self._send(404, json.dumps({"error": "not found"}))
 
@@ -685,6 +797,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._swap_pilot(q.get("model", [""])[0])
         if u.path == "/api/workspaces":
             return self._send(200, json.dumps(_ws.list_workspaces(_cfg.repo)))
+        if u.path == "/api/worktrees":
+            from . import worktrees as _wt
+            return self._send(200, json.dumps({
+                "worktrees": _wt.list_worktrees(_cfg.repo),
+                "max": _wt.get_max_worktrees()
+            }))
+        if u.path == "/api/hooks":
+            from . import hooks as _hk
+            return self._send(200, json.dumps({
+                "hooks": _hk.get_hooks(),
+                "events": _hk.ALLOWED_EVENTS
+            }))
         if u.path == "/api/sessions/transcript":
             q = parse_qs(u.query)
             sid = q.get("session", [None])[0] or _sessions.active or ""
@@ -779,6 +903,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
             self.wfile.flush()
             return
+            
+        from .hooks import run_hooks
+        ctx = {"session_id": _sessions.active or "", "prompt": prompt}
+        run_hooks("preRun", ctx)
         try:
             for ev in _session.run(prompt, images=images or None):
                 payload = json.dumps({"kind": ev.kind, "turn": ev.turn, "data": ev.data})
@@ -788,6 +916,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
+        finally:
+            run_hooks("postRun", ctx)
 
     def _stream_auto(self, objective: str):
         """Stream the fully-auto loop (governor-bounded) over SSE."""
@@ -796,6 +926,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self._cors()
         self.end_headers()
+        
+        from .hooks import run_hooks
+        ctx = {"session_id": _sessions.active or "", "objective": objective}
+        run_hooks("preRun", ctx)
         try:
             budget = AutoBudget.from_env()
             for ev in _pilot.run_auto(objective, budget):
@@ -809,6 +943,7 @@ class Handler(BaseHTTPRequestHandler):
             # instead of burning budget for a gone client.
             _pilot.cancel()
         finally:
+            run_hooks("postRun", ctx)
             if _sessions.active:
                 save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_history())
 
@@ -839,6 +974,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
             self.wfile.flush()
             return
+            
+        from .hooks import run_hooks
+        ctx = {"session_id": _sessions.active or "", "message": message}
+        run_hooks("preRun", ctx)
         try:
             for ev in _pilot.send(message):
                 payload = json.dumps({"kind": ev.kind, "data": ev.data})
@@ -849,6 +988,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
+            run_hooks("postRun", ctx)
             if _sessions.active:
                 save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_history())
 

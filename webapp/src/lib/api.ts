@@ -25,6 +25,21 @@ export type Artifact = { type: string; headline: string; confidence?: number };
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
 export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean };
 
+export type Worktree = {
+  path: string;
+  branch: string;
+  head: string;
+  is_main: boolean;
+  locked: boolean;
+};
+
+export type Hook = {
+  id: string;
+  event: string;
+  command: string;
+  enabled: boolean;
+};
+
 export type ProviderInfo = {
   name: string;
   env_var: string;
@@ -140,4 +155,15 @@ export const api = {
     stream(`/api/auto?objective=${encodeURIComponent(objective)}`, onEvent, onDone, onError),
   exportUrl: (sessionId: string, format: "md" | "json") =>
     withToken(`/api/sessions/export?session=${encodeURIComponent(sessionId)}&format=${format}`),
+
+  getWorktrees: () => getJSON<{ worktrees: Worktree[]; max: number }>("/api/worktrees"),
+  addWorktree: (branch: string, base?: string) => postJSON<Worktree>("/api/worktrees/add", { branch, base }),
+  removeWorktree: (path: string, force?: boolean) => postJSON<{ ok: boolean }>("/api/worktrees/remove", { path, force }),
+  pruneWorktrees: () => postJSON<{ ok: boolean }>("/api/worktrees/prune", {}),
+  setWorktreeMax: (max: number) => postJSON<{ ok: boolean }>("/api/worktrees/max", { max }),
+
+  getHooks: () => getJSON<{ hooks: Hook[]; events: string[] }>("/api/hooks"),
+  addHook: (event: string, command: string) => postJSON<Hook>("/api/hooks/add", { event, command }),
+  updateHook: (id: string, patch: { enabled?: boolean; command?: string }) => postJSON<Hook>("/api/hooks/update", { id, ...patch }),
+  removeHook: (id: string) => postJSON<{ ok: boolean }>("/api/hooks/remove", { id }),
 };
