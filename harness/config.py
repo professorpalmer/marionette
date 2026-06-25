@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 @dataclass
 class HarnessConfig:
-    driver: str = "glm-5.2"          # default open-weights driver
+    driver: str = "qwen3-coder-30b"   # default: wins both eval batteries (100%, lowest tokens, Apache-2.0)
     reach: str = "openrouter"        # one key, whole field
     budget: int = 3                  # orchestration steps per task
     state_dir: str = ""              # PM state dir; blank -> per-session temp
@@ -37,7 +37,7 @@ class HarnessConfig:
             return file_cfg.get(file_key, default)
 
         return cls(
-            driver=pick("HARNESS_DRIVER", "driver", "glm-5.2"),
+            driver=pick("HARNESS_DRIVER", "driver", "qwen3-coder-30b"),
             reach=pick("HARNESS_REACH", "reach", "openrouter"),
             budget=int(pick("HARNESS_BUDGET", "budget", 3)),
             state_dir=pick("HARNESS_STATE_DIR", "state_dir", ""),

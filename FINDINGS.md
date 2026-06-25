@@ -132,3 +132,33 @@ which argues FOR a purpose-built PM-native harness.
 LIMIT -> Stage 4: V2 battery now saturated for frontier models (100% across).
 It de-confounded but does not rank. Next: harder multi-swarm episodes (budget
 3+, min_swarms 2) and genuine stop-early-correct vs premature traps.
+
+
+## Stage 4 + cross-check: the real open-weights leaderboard (LIVE, funded)
+
+With a funded OpenRouter key, ran the full open-weights field on BOTH the Stage 4
+read-decide ranking traps and the Stage 3.5 budget battery. First runs that RANK
+instead of saturate.
+
+Stage 4 (read-decide): qwen3-coder-30b 100% (535 tok) > glm-5.2 100% (974) >
+glm-4.7-flash 100% (3577) > deepseek-v4-flash 90% > minimax-highspeed 90% >
+minimax-m2.7 81.7% > deepseek-v4-pro 81.7% > kimi-k2.6 53.3% (4809 tok, 68s/call).
+
+The failure mode the eval caught is real: losers fail the CONCLUSIVE trap with
+sw=0, prem=True -- they stop/answer WITHOUT investigating a task whose findings
+only resolve after a swarm. Premature pattern-matching, exactly what the trap was
+built to expose. Kimi (verbose reasoner) is the consistent loser: most tokens,
+slowest, worst judgment here.
+
+Cross-check (Stage 3.5 budget): qwen 100%/607 > glm-5.2 100%/984 > deepseek-flash
+100% > ... > kimi 93.1% > minimax-highspeed 74.4%. Top stable, bottom wobbles.
+
+DECISION: default driver = qwen3-coder-30b (100% both batteries, lowest tokens,
+Apache-2.0). glm-5.2 the MIT alternative. Cost thesis CONFIRMED on the
+discriminating eval with real open weights: the cheapest, cleanest-licensed open
+model drives Puppetmaster as well as any, and better than the expensive reasoner.
+
+LIVE GUI: drove the harness on qwen3-coder-30b through the browser -- a real
+multi-turn task (investigate durable state -> narrow -> conclude) ran 2 real PM
+jobs, 10 artifacts, 9 turns rendered, no JS errors. Open weights driving real
+Puppetmaster in the Cursor-3.0-style UI, end to end.
