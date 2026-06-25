@@ -126,7 +126,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     <main className="flex flex-col h-full min-w-0 bg-bg">
       <header className="flex items-center justify-between px-6 border-b border-edge"
         style={{ paddingTop: 12, paddingBottom: 10, WebkitAppRegion: "drag" } as React.CSSProperties}>
-        <span className="font-medium text-[13px] text-txt/90" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>PM-Native Harness</span>
+        <span className="font-medium text-[13px] text-txt/90" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>Puppetmaster</span>
         <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}><StatusPill status={status} /></div>
       </header>
 

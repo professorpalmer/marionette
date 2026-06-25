@@ -39,10 +39,10 @@
     "wait-on": "^9.0.10"
   },
   "main": "electron/main.cjs",
-  "productName": "PM Harness",
+  "productName": "Puppetmaster",
   "build": {
     "appId": "sh.palmer.pmharness",
-    "productName": "PM Harness",
+    "productName": "Puppetmaster",
     "directories": {
       "output": "release",
       "buildResources": "build"

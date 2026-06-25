@@ -51,7 +51,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       <div className="flex items-center gap-2 px-4 border-b border-edge"
         style={{ paddingTop: 34, paddingBottom: 12, WebkitAppRegion: "drag" } as React.CSSProperties}>
         <span className="bg-accent/15 text-accent font-bold px-1.5 py-0.5 rounded-md text-[11px] tracking-tight">PM</span>
-        <span className="font-medium text-[13px] text-txt/90">Harness</span>
+        <span className="font-medium text-[13px] text-txt/90">Puppetmaster</span>
       </div>
 
       {/* WORKSPACES */}
