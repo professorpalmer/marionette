@@ -164,6 +164,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_upload()
         if u.path in ("/api/workspaces/switch", "/api/workspaces/create",
                       "/api/sessions/create", "/api/sessions/switch",
+                      "/api/sessions/delete", "/api/sessions/archive",
                       "/api/mcp/add", "/api/mcp/remove", "/api/mcp/start",
                       "/api/mcp/stop", "/api/mcp/call",
                       "/api/skills/distill", "/api/skills/approve",
@@ -259,6 +260,36 @@ class Handler(BaseHTTPRequestHandler):
                 history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
                 _pilot.load_history(history)
             return self._send(200, json.dumps(res))
+        if path == "/api/sessions/delete":
+            sid = body.get("session") or body.get("id") or ""
+            if not sid:
+                return self._send(400, json.dumps({"error": "missing session id"}))
+            is_active = (_sessions.active == sid)
+            new_active = _sessions.delete(sid)
+            safe_sid = "".join(c for c in sid if c.isalnum() or c in ("-", "_"))
+            if safe_sid:
+                state_dir = _cfg.state_dir or _tf.gettempdir()
+                trans_dir = os.path.abspath(os.path.join(state_dir, "transcripts"))
+                p = os.path.abspath(os.path.join(trans_dir, f"{safe_sid}.json"))
+                if p.startswith(trans_dir) and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+            if is_active:
+                if new_active:
+                    history = load_transcript(_cfg.state_dir or _tf.gettempdir(), new_active)
+                    _pilot.load_history(history)
+                else:
+                    _pilot.load_history([])
+            return self._send(200, json.dumps({"ok": True, "active": new_active}))
+        if path == "/api/sessions/archive":
+            sid = body.get("session") or body.get("id") or ""
+            if not sid:
+                return self._send(400, json.dumps({"error": "missing session id"}))
+            archived = _parse_bool(body.get("archived"))
+            _sessions.archive(sid, archived)
+            return self._send(200, json.dumps({"ok": True}))
         if path == "/api/settings":
             requires_rebuild = False
             if "api_key" in body or body.get("clear_api_key") is True:

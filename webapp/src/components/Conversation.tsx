@@ -143,7 +143,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         </div>
       </div>
 
-      <div className="px-6 pb-4 pt-1">
+      <div className="px-6 pb-3 pt-0.5">
         <div className="max-w-3xl mx-auto">
           {distillNotice && (
             <div className="mb-3 px-3.5 py-2 bg-panel border border-warn/20 rounded-xl flex items-center justify-between text-[12px] shadow-lg text-txt/90">
@@ -159,23 +159,23 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             </div>
           )}
           {/* compact composer: input + a single tidy control row */}
-          <div className="bg-panel2/80 border border-edge rounded-2xl focus-within:border-edge2 shadow-lg shadow-black/20 transition">
+          <div className="bg-panel2/80 border border-edge rounded-xl focus-within:border-edge2 shadow-lg shadow-black/20 transition">
             <textarea value={input} onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
               rows={1} placeholder={auto ? "Give the pilot an objective..." : "Message the pilot..."}
-              className="w-full bg-transparent px-3.5 pt-2.5 pb-1 text-[13px] resize-none focus:outline-none max-h-32 placeholder:text-faint" />
-            <div className="flex items-center gap-1.5 px-2 pb-1.5">
+              className="w-full bg-transparent px-3 pt-2 pb-0.5 text-[13px] resize-none focus:outline-none max-h-24 placeholder:text-faint" />
+            <div className="flex items-center gap-1.5 px-2 pb-1">
               <button onClick={() => setAuto((a) => !a)} title="Fully-Auto mode"
-                className={`px-1.5 h-[22px] rounded-md text-[10.5px] flex items-center gap-1 transition
+                className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 transition
                   ${auto ? "bg-warn/15 text-warn" : "text-faint hover:text-muted"}`}>
                 <Zap size={11} /> Auto
               </button>
               <div className="flex-1" />
               <PilotPicker config={config} />
               {status === "thinking" || status === "executing"
-                ? <button onClick={stop} className="px-2 h-[22px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
+                ? <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
                 : <button onClick={send} disabled={!input.trim()}
-                    className="px-2.5 h-[22px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
+                    className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                     <Send size={9} />{auto ? "Run" : "Send"}</button>}
             </div>
           </div>

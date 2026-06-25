@@ -20,6 +20,7 @@ class SessionMeta:
     title: str
     created: float
     active: bool = False
+    archived: bool = False
 
 
 class SessionStore:
@@ -43,7 +44,7 @@ class SessionStore:
         json.dump({"sessions": self._sessions, "active": self._active}, open(self.path, "w"))
 
     def list(self) -> list[dict]:
-        return [{**s, "active": s["id"] == self._active} for s in self._sessions]
+        return [{**s, "active": s["id"] == self._active, "archived": s.get("archived", False)} for s in self._sessions]
 
     def create(self, title: Optional[str] = None) -> dict:
         sid = uuid.uuid4().hex[:12]
@@ -59,6 +60,24 @@ class SessionStore:
         self._active = sid
         self._save()
         return {"ok": True, "active": sid}
+
+    def delete(self, sid: str) -> Optional[str]:
+        self._sessions = [s for s in self._sessions if s["id"] != sid]
+        if self._active == sid:
+            if self._sessions:
+                most_recent = max(self._sessions, key=lambda s: s.get("created", 0))
+                self._active = most_recent["id"]
+            else:
+                self._active = None
+        self._save()
+        return self._active
+
+    def archive(self, sid: str, archived: bool = True) -> None:
+        for s in self._sessions:
+            if s["id"] == sid:
+                s["archived"] = archived
+                break
+        self._save()
 
     @property
     def active(self) -> Optional[str]:

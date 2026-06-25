@@ -23,7 +23,7 @@ export type Settings = {
 export type Job = { id: string; goal: string; status: string };
 export type Artifact = { type: string; headline: string; confidence?: number };
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
-export type Session = { id: string; title: string; created: number; active?: boolean };
+export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean };
 
 export type ProviderInfo = {
   name: string;
@@ -99,6 +99,8 @@ export const api = {
   sessionTranscript: (session: string) => getJSON<{ history: any[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
   createSession: (title?: string) => postJSON<Session>("/api/sessions/create", { title }),
   switchSession: (id: string) => postJSON("/api/sessions/switch", { id }),
+  deleteSession: (id: string) => postJSON<{ ok: boolean; active: string | null }>("/api/sessions/delete", { session: id }),
+  archiveSession: (id: string, archived: boolean) => postJSON<{ ok: boolean }>("/api/sessions/archive", { session: id, archived }),
   swapPilot: (model: string) => getJSON(withToken(`/api/pilot?model=${encodeURIComponent(model)}`)),
   chat: (message: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void) =>
     stream(`/api/chat?message=${encodeURIComponent(message)}`, onEvent, onDone, onError),

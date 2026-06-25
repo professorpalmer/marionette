@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { GitBranch, Plus, MessageSquare, Boxes, Check, Loader2 } from "lucide-react";
+import { GitBranch, Plus, MessageSquare, Boxes, Check, Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import { api, type Workspace, type Session, type Job } from "../lib/api";
 
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
@@ -10,6 +10,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [swapping, setSwapping] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    sessionId: string;
+    archived: boolean;
+  } | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
 
   const loadWs = () => api.workspaces().then(setWorkspaces).catch(() => {});
   const loadSess = () => api.sessions().then((sess) => {
@@ -17,10 +25,32 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     const active = sess.find((s) => s.active);
     if (active) {
       onSessionChange?.(active.id);
+    } else {
+      onSessionChange?.("");
     }
   }).catch(() => {});
   useEffect(() => { loadWs(); loadSess(); }, []);
   useEffect(() => { api.jobs().then(setJobs).catch(() => {}); }, [jobsRefresh]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleClose = () => {
+      setContextMenu(null);
+      setConfirmDeleteId(null);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setContextMenu(null);
+        setConfirmDeleteId(null);
+      }
+    };
+    window.addEventListener("click", handleClose);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", handleClose);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [contextMenu]);
 
   const switchWs = async (name: string) => {
     setSwapping(name);
@@ -45,6 +75,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     a.click();
     document.body.removeChild(a);
   };
+
+  const handleContextMenu = (e: React.MouseEvent, s: Session) => {
+    e.preventDefault();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      sessionId: s.id,
+      archived: !!s.archived,
+    });
+  };
+
+  const activeSessions = sessions.filter((s) => !s.archived);
+  const archivedSessions = sessions.filter((s) => s.archived);
 
   return (
     <aside className="bg-panel border-r border-edge flex flex-col h-full overflow-hidden">
@@ -72,28 +115,44 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       {/* SESSIONS */}
       <Section title="Sessions" action={<IconBtn onClick={newSession}><Plus size={13} /></IconBtn>}>
         {sessions.length === 0 && <Empty>No sessions</Empty>}
-        {sessions.map((s) => (
+        {activeSessions.map((s) => (
           <div key={s.id} className="group relative">
             <button onClick={() => switchSession(s.id)}
+              onContextMenu={(e) => handleContextMenu(e, s)}
               className={`w-full text-left rounded px-2 py-1.5 mb-0.5 flex items-center gap-2 text-[13px] transition
-                ${s.active ? "bg-accent2/40 text-txt" : "hover:bg-panel2 text-muted"}`}>
+                ${s.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2 text-muted"}`}>
               <MessageSquare size={12} />
-              <span className="flex-1 truncate mr-12">{s.title || "Untitled"}</span>
+              <span className="flex-1 truncate">{s.title || "Untitled"}</span>
             </button>
-            <div className={`absolute right-1 top-1.5 hidden group-hover:flex items-center gap-1 bg-panel border border-edge rounded px-1 py-0.5 z-10
-              ${s.active ? "!flex" : ""}`}>
-              <button onClick={(e) => { e.stopPropagation(); handleExport(s.id, "md"); }}
-                className="text-[9px] font-bold text-muted hover:text-accent uppercase px-1">
-                md
-              </button>
-              <span className="text-[9px] text-edge">|</span>
-              <button onClick={(e) => { e.stopPropagation(); handleExport(s.id, "json"); }}
-                className="text-[9px] font-bold text-muted hover:text-accent uppercase px-1">
-                json
-              </button>
-            </div>
           </div>
         ))}
+
+        {archivedSessions.length > 0 && (
+          <div className="mt-2">
+            <button
+              onClick={() => setArchivedExpanded(!archivedExpanded)}
+              className="w-full text-left px-2 py-1 text-[10px] uppercase tracking-wider text-faint font-medium hover:text-muted flex items-center justify-between"
+            >
+              <span>Archived ({archivedSessions.length})</span>
+              {archivedExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            </button>
+            {archivedExpanded && (
+              <div className="mt-1 pl-1 border-l border-edge">
+                {archivedSessions.map((s) => (
+                  <div key={s.id} className="group relative">
+                    <button onClick={() => switchSession(s.id)}
+                      onContextMenu={(e) => handleContextMenu(e, s)}
+                      className={`w-full text-left rounded px-2 py-1.5 mb-0.5 flex items-center gap-2 text-[13px] transition opacity-60 hover:opacity-100
+                        ${s.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2 text-muted"}`}>
+                      <MessageSquare size={12} />
+                      <span className="flex-1 truncate">{s.title || "Untitled"}</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </Section>
 
       {/* JOBS */}
@@ -106,6 +165,82 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           </div>
         ))}
       </Section>
+
+      {/* CONTEXT MENU */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[150px]"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              handleExport(contextMenu.sessionId, "md");
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            Export as Markdown
+          </button>
+          <button
+            onClick={() => {
+              handleExport(contextMenu.sessionId, "json");
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            Export as JSON
+          </button>
+          <div className="border-t border-edge my-1" />
+          <button
+            onClick={async () => {
+              await api.archiveSession(contextMenu.sessionId, !contextMenu.archived);
+              await loadSess();
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            {contextMenu.archived ? "Unarchive" : "Archive"}
+          </button>
+          <div className="border-t border-edge my-1" />
+          {confirmDeleteId === contextMenu.sessionId ? (
+            <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
+              <span className="text-muted font-medium">Delete?</span>
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    const res = await api.deleteSession(contextMenu.sessionId);
+                    await loadSess();
+                    if (res.active) {
+                      await switchSession(res.active);
+                    }
+                    setContextMenu(null);
+                    setConfirmDeleteId(null);
+                  }}
+                  className="text-red-400 font-bold hover:underline"
+                >
+                  Yes
+                </button>
+                <button
+                  onClick={() => setConfirmDeleteId(null)}
+                  className="text-muted hover:underline"
+                >
+                  No
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => {
+                setConfirmDeleteId(contextMenu.sessionId);
+              }}
+              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-red-400 font-medium transition-colors"
+            >
+              Delete
+            </button>
+          )}
+        </div>
+      )}
     </aside>
   );
 }
