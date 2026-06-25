@@ -185,8 +185,18 @@ def build_pilot(spec: str, *, max_tokens: int = 1500):
                 provider = p
                 break
     if provider is None:
-        # last resort: OpenRouter (one key, whole field) if present
+        # last resort: OpenRouter (one key, whole field) if present.
+        # Translate a catalog short-name (e.g. "qwen3-coder-30b") to its real
+        # OpenRouter slug so we don't send an invalid model ID.
         provider = get_provider("openrouter")
+        if provider is not None and "/" not in model:
+            try:
+                from pmharness.registry import _entry as _cat_entry
+                slug = _cat_entry(model).get("openrouter")
+                if slug:
+                    model = slug
+            except Exception:
+                pass
     if provider is None or not provider.available:
         raise ProviderError(
             f"no provider key available for pilot {spec!r}. Set one of: "
