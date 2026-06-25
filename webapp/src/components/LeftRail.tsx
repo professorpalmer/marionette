@@ -19,6 +19,38 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
 
+  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Record<string, boolean>>({});
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renamingTitle, setRenamingTitle] = useState("");
+
+  const toggleWorkspaceCollapse = (repo: string) => {
+    setCollapsedWorkspaces((prev) => ({
+      ...prev,
+      [repo]: !prev[repo],
+    }));
+  };
+
+  const getWorkspaceBasename = (repoPath: string) => {
+    if (!repoPath) return "";
+    const parts = repoPath.split(/[/\\]/);
+    return parts[parts.length - 1] || repoPath;
+  };
+
+  const handleRenameSubmit = async (id: string) => {
+    if (!renamingTitle.trim()) {
+      setRenamingId(null);
+      return;
+    }
+    try {
+      await api.renameSession(id, renamingTitle.trim());
+      await loadSess();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setRenamingId(null);
+    }
+  };
+
   const [openPath, setOpenPath] = useState("");
   const [opening, setOpening] = useState(false);
   const [workspaceInfo, setWorkspaceInfo] = useState<any>(null);
@@ -118,6 +150,44 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const activeSessions = sessions.filter((s) => !s.archived);
   const archivedSessions = sessions.filter((s) => s.archived);
 
+  // Group active sessions by workspace (repo path)
+  const workspaceGroups: Record<string, { repo: string; branch: string; sessions: Session[]; lastCreated: number }> = {};
+  
+  activeSessions.forEach((s) => {
+    const r = s.repo || "";
+    const b = s.branch || "";
+    if (!workspaceGroups[r]) {
+      workspaceGroups[r] = {
+        repo: r,
+        branch: b,
+        sessions: [],
+        lastCreated: 0,
+      };
+    }
+    workspaceGroups[r].sessions.push(s);
+    if (s.created > workspaceGroups[r].lastCreated) {
+      workspaceGroups[r].lastCreated = s.created;
+    }
+    // preserve branch info if active
+    if (s.active && b) {
+      workspaceGroups[r].branch = b;
+    }
+  });
+
+  // Sort sessions within each group by created descending
+  Object.values(workspaceGroups).forEach((g) => {
+    g.sessions.sort((a, b) => b.created - a.created);
+  });
+
+  // Sort workspace groups by currently open repo first, then lastCreated descending
+  const sortedWorkspaceGroups = Object.values(workspaceGroups).sort((a, b) => {
+    const isCurrentA = workspaceInfo?.repo && a.repo === workspaceInfo.repo;
+    const isCurrentB = workspaceInfo?.repo && b.repo === workspaceInfo.repo;
+    if (isCurrentA && !isCurrentB) return -1;
+    if (!isCurrentA && isCurrentB) return 1;
+    return b.lastCreated - a.lastCreated;
+  });
+
   return (
     <aside className="bg-panel border-r border-edge flex flex-col h-full overflow-hidden">
       <div className="flex items-center gap-2 px-4 border-b border-edge"
@@ -177,17 +247,70 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       {/* SESSIONS */}
       <Section title="Sessions" action={<IconBtn onClick={newSession}><Plus size={13} /></IconBtn>}>
         {sessions.length === 0 && <Empty>No sessions</Empty>}
-        {activeSessions.map((s) => (
-          <div key={s.id} className="group relative">
-            <button onClick={() => switchSession(s.id)}
-              onContextMenu={(e) => handleContextMenu(e, s)}
-              className={`w-full text-left rounded px-2 py-1.5 mb-0.5 flex items-center gap-2 text-[13px] transition
-                ${s.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2 text-muted"}`}>
-              <MessageSquare size={12} />
-              <span className="flex-1 truncate">{s.title || "Untitled"}</span>
-            </button>
-          </div>
-        ))}
+        {sortedWorkspaceGroups.map((g) => {
+          const isCollapsed = !!collapsedWorkspaces[g.repo];
+          const basename = getWorkspaceBasename(g.repo) || "No workspace";
+          const isCurrentOpen = workspaceInfo?.repo && g.repo === workspaceInfo.repo;
+          
+          return (
+            <div key={g.repo} className="mb-2">
+              <button
+                onClick={() => toggleWorkspaceCollapse(g.repo)}
+                className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-semibold text-muted hover:text-txt transition-colors"
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                  <span className={`truncate ${isCurrentOpen ? "text-accent font-bold" : ""}`}>
+                    {basename}
+                  </span>
+                  {g.branch && (
+                    <span className="bg-panel2 px-1 py-0.5 rounded text-[9px] font-mono font-normal text-faint max-w-[80px] truncate">
+                      {g.branch}
+                    </span>
+                  )}
+                </div>
+              </button>
+              
+              {!isCollapsed && (
+                <div className="pl-3 mt-1 border-l border-edge/30 space-y-0.5">
+                  {g.sessions.map((s) => (
+                    <div key={s.id} className="group relative">
+                      {renamingId === s.id ? (
+                        <input
+                          type="text"
+                          value={renamingTitle}
+                          onChange={(e) => setRenamingTitle(e.target.value)}
+                          onBlur={() => handleRenameSubmit(s.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              handleRenameSubmit(s.id);
+                            } else if (e.key === "Escape") {
+                              setRenamingId(null);
+                            }
+                          }}
+                          autoFocus
+                          className="w-full bg-bg border border-accent rounded px-2 py-1 text-[13px] text-txt focus:outline-none"
+                        />
+                      ) : (
+                        <button onClick={() => switchSession(s.id)}
+                          onDoubleClick={() => {
+                            setRenamingId(s.id);
+                            setRenamingTitle(s.title || "Untitled");
+                          }}
+                          onContextMenu={(e) => handleContextMenu(e, s)}
+                          className={`w-full text-left rounded px-2 py-1.5 flex items-center gap-2 text-[13px] transition
+                            ${s.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2 text-muted"}`}>
+                          <MessageSquare size={12} />
+                          <span className="flex-1 truncate">{s.title || "Untitled"}</span>
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
 
         {archivedSessions.length > 0 && (
           <div className="mt-2">
@@ -202,13 +325,35 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               <div className="mt-1 pl-1 border-l border-edge">
                 {archivedSessions.map((s) => (
                   <div key={s.id} className="group relative">
-                    <button onClick={() => switchSession(s.id)}
-                      onContextMenu={(e) => handleContextMenu(e, s)}
-                      className={`w-full text-left rounded px-2 py-1.5 mb-0.5 flex items-center gap-2 text-[13px] transition opacity-60 hover:opacity-100
-                        ${s.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2 text-muted"}`}>
-                      <MessageSquare size={12} />
-                      <span className="flex-1 truncate">{s.title || "Untitled"}</span>
-                    </button>
+                    {renamingId === s.id ? (
+                      <input
+                        type="text"
+                        value={renamingTitle}
+                        onChange={(e) => setRenamingTitle(e.target.value)}
+                        onBlur={() => handleRenameSubmit(s.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            handleRenameSubmit(s.id);
+                          } else if (e.key === "Escape") {
+                            setRenamingId(null);
+                          }
+                        }}
+                        autoFocus
+                        className="w-full bg-bg border border-accent rounded px-2 py-1 text-[13px] text-txt focus:outline-none"
+                      />
+                    ) : (
+                      <button onClick={() => switchSession(s.id)}
+                        onDoubleClick={() => {
+                          setRenamingId(s.id);
+                          setRenamingTitle(s.title || "Untitled");
+                        }}
+                        onContextMenu={(e) => handleContextMenu(e, s)}
+                        className={`w-full text-left rounded px-2 py-1.5 mb-0.5 flex items-center gap-2 text-[13px] transition opacity-60 hover:opacity-100
+                          ${s.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2 text-muted"}`}>
+                        <MessageSquare size={12} />
+                        <span className="flex-1 truncate">{s.title || "Untitled"}</span>
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>

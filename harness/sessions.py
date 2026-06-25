@@ -21,6 +21,8 @@ class SessionMeta:
     created: float
     active: bool = False
     archived: bool = False
+    repo: str = ""
+    branch: str = ""
 
 
 class SessionStore:
@@ -44,11 +46,17 @@ class SessionStore:
         json.dump({"sessions": self._sessions, "active": self._active}, open(self.path, "w"))
 
     def list(self) -> list[dict]:
-        return [{**s, "active": s["id"] == self._active, "archived": s.get("archived", False)} for s in self._sessions]
+        return [{
+            **s,
+            "active": s["id"] == self._active,
+            "archived": s.get("archived", False),
+            "repo": s.get("repo", ""),
+            "branch": s.get("branch", ""),
+        } for s in self._sessions]
 
-    def create(self, title: Optional[str] = None) -> dict:
+    def create(self, title: Optional[str] = None, repo: str = "", branch: str = "") -> dict:
         sid = uuid.uuid4().hex[:12]
-        meta = asdict(SessionMeta(id=sid, title=title or "New session", created=time.time()))
+        meta = asdict(SessionMeta(id=sid, title=title or "New session", created=time.time(), repo=repo, branch=branch))
         self._sessions.append(meta)
         self._active = sid
         self._save()
@@ -79,9 +87,70 @@ class SessionStore:
                 break
         self._save()
 
+    def set_title_if_default(self, sid: str, title: str) -> None:
+        for s in self._sessions:
+            if s["id"] == sid:
+                current = s.get("title", "")
+                if not current or current == "New session":
+                    s["title"] = title
+                    self._save()
+                break
+
+    def rename(self, sid: str, title: str) -> bool:
+        for s in self._sessions:
+            if s["id"] == sid:
+                s["title"] = title
+                self._save()
+                return True
+        return False
+
+    def stamp_session(self, sid: str, repo: str, branch: str) -> None:
+        for s in self._sessions:
+            if s["id"] == sid:
+                s["repo"] = repo
+                s["branch"] = branch
+                self._save()
+                break
+
     @property
     def active(self) -> Optional[str]:
         return self._active
+
+
+def derive_title(prompt: str) -> str:
+    if not prompt:
+        return "New session"
+    import re
+    lines = prompt.splitlines()
+    first_line = ""
+    for line in lines:
+        cleaned = re.sub(r'```[a-zA-Z0-9_\-+]*', '', line)
+        cleaned = re.sub(r'`', '', cleaned)
+        cleaned = re.sub(r'[*_~#\-+>]', '', cleaned)
+        cleaned = ' '.join(cleaned.split())
+        if cleaned:
+            first_line = cleaned
+            break
+    if not first_line:
+        return "New session"
+    words = first_line.split()
+    truncated_words = []
+    current_len = 0
+    for w in words:
+        if len(truncated_words) >= 8:
+            break
+        added_len = len(w) + (1 if truncated_words else 0)
+        if current_len + added_len > 48:
+            if not truncated_words:
+                truncated_words.append(w[:48])
+            break
+        truncated_words.append(w)
+        current_len += added_len
+    title = ' '.join(truncated_words)
+    title = title.rstrip('.,;:?!- ')
+    if title:
+        title = title[0].upper() + title[1:]
+    return title or "New session"
 
 
 def save_transcript(state_dir: str, session_id: str, messages: list) -> None:

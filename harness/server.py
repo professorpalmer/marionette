@@ -230,7 +230,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_upload()
         if u.path in ("/api/workspaces/switch", "/api/workspaces/create",
                       "/api/sessions/create", "/api/sessions/switch",
-                      "/api/sessions/delete", "/api/sessions/archive",
+                      "/api/sessions/delete", "/api/sessions/archive", "/api/sessions/rename",
                       "/api/mcp/add", "/api/mcp/remove", "/api/mcp/start",
                       "/api/mcp/stop", "/api/mcp/call",
                       "/api/skills/distill", "/api/skills/approve",
@@ -300,6 +300,9 @@ class Handler(BaseHTTPRequestHandler):
                         branch = proc_branch.stdout.strip()
             except Exception:
                 pass
+
+            if _sessions.active:
+                _sessions.stamp_session(_sessions.active, target_repo, branch)
 
             has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
             if not has_codegraph:
@@ -377,7 +380,25 @@ class Handler(BaseHTTPRequestHandler):
             if _sessions.active:
                 save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_history())
             title = body.get("title") or "New session"
-            res = _sessions.create(title)
+            repo = _cfg.repo or ""
+            branch = ""
+            if repo and os.path.isdir(repo):
+                import subprocess
+                try:
+                    proc = subprocess.run(
+                        ["git", "-C", repo, "rev-parse", "--is-inside-work-tree"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if proc.returncode == 0:
+                        proc_branch = subprocess.run(
+                            ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        if proc_branch.returncode == 0:
+                            branch = proc_branch.stdout.strip()
+                except Exception:
+                    pass
+            res = _sessions.create(title, repo=repo, branch=branch)
             _pilot.load_history([])
             
             from .hooks import run_hooks
@@ -426,6 +447,15 @@ class Handler(BaseHTTPRequestHandler):
             archived = _parse_bool(body.get("archived"))
             _sessions.archive(sid, archived)
             return self._send(200, json.dumps({"ok": True}))
+        if path == "/api/sessions/rename":
+            sid = body.get("session") or body.get("id") or ""
+            title = body.get("title") or ""
+            if not sid:
+                return self._send(400, json.dumps({"error": "missing session id"}))
+            if not title:
+                return self._send(400, json.dumps({"error": "missing title"}))
+            ok = _sessions.rename(sid, title)
+            return self._send(200, json.dumps({"ok": ok}))
         if path == "/api/settings":
             requires_rebuild = False
             if "api_key" in body or body.get("clear_api_key") is True:
@@ -1049,13 +1079,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
+        
+        if _sessions.active and prompt:
+            from .sessions import derive_title
+            _sessions.set_title_if_default(_sessions.active, derive_title(prompt))
+
         pre = _session.preflight()
         if pre:
             self.wfile.write(f"data: {json.dumps({'kind':'error','turn':0,'data':{'error':pre}})}\n\n".encode())
             self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
             self.wfile.flush()
             return
-            
+
         from .hooks import run_hooks
         ctx = {"session_id": _sessions.active or "", "prompt": prompt}
         run_hooks("preRun", ctx)
@@ -1079,6 +1114,10 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
         
+        if _sessions.active and objective:
+            from .sessions import derive_title
+            _sessions.set_title_if_default(_sessions.active, derive_title(objective))
+
         from .hooks import run_hooks
         ctx = {"session_id": _sessions.active or "", "objective": objective}
         run_hooks("preRun", ctx)
@@ -1120,13 +1159,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
+        
+        if _sessions.active and message:
+            from .sessions import derive_title
+            _sessions.set_title_if_default(_sessions.active, derive_title(message))
+
         pre = _pilot_preflight()
         if pre:
             self.wfile.write(f"data: {json.dumps({'kind':'error','data':{'error':pre}})}\n\n".encode())
             self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
             self.wfile.flush()
             return
-            
+
         from .hooks import run_hooks
         ctx = {"session_id": _sessions.active or "", "message": message}
         run_hooks("preRun", ctx)
