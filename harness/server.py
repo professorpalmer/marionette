@@ -259,7 +259,20 @@ def _available_pilots():
 
 
 def serve(host: str = "127.0.0.1", port: int = 8799) -> None:
-    srv = ThreadingHTTPServer((host, port), Handler)
+    import errno
+    import sys
+    # allow quick restarts without TIME_WAIT blocking the bind
+    ThreadingHTTPServer.allow_reuse_address = True
+    try:
+        srv = ThreadingHTTPServer((host, port), Handler)
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            print(f"pm-harness: port {port} is already in use. Another harness GUI "
+                  f"may be running.\n  - open the existing one at http://{host}:{port}\n"
+                  f"  - or pick another port: harness gui --port {port + 1}",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        raise
     print(f"pm-harness GUI on http://{host}:{port}  (driver={_cfg.driver})")
     srv.serve_forever()
 
