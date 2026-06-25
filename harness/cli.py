@@ -43,8 +43,9 @@ def _render(ev) -> None:
     elif ev.kind == "executing":
         print(_c("33", "  -> Puppetmaster executing: ") + (d.get("goal") or ""))
     elif ev.kind == "artifacts":
+        sub = "  [demo substrate -- not real codebase analysis]" if d.get("adapter") == "demo" else ""
         print(_c("32", f"  <- {d['num']} artifacts [{', '.join(d.get('types', []))}] "
-                       f"job {d['job_id']}"))
+                       f"job {d['job_id']}") + _c("33", sub))
         for a in d.get("artifacts", [])[:6]:
             print(f"       [{a['type']}] {a['headline']}")
     elif ev.kind == "final":

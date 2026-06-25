@@ -30,6 +30,10 @@ class BridgeResult:
     artifact_types: list
     summary: str
     artifacts: list  # list of compact dicts (type, claim/decision/etc snippet)
+    adapter: str = "demo"  # "demo" = local deterministic substrate (not real
+    #   codebase analysis); set to a real worker adapter when configured. Surfaces
+    #   use this to label generic substrate so it is never mistaken for real
+    #   findings.
 
 
 def _compact_artifact(a: Any) -> dict:
@@ -85,6 +89,10 @@ def execute_intent(
     )
 
     artifacts = list(result.artifacts)
+    # The default role path routes through Puppetmaster's built-in local demo
+    # adapter -- deterministic substrate, NOT real codebase analysis. Label it so
+    # surfaces can be honest. (Real-worker routing is a configured enhancement.)
+    adapter = "demo"
     return BridgeResult(
         job_id=result.job.id,
         status=str(result.job.status),
@@ -93,4 +101,5 @@ def execute_intent(
         artifact_types=sorted({str(a.type) for a in artifacts}),
         summary=result.summary or "",
         artifacts=[_compact_artifact(a) for a in artifacts],
+        adapter=adapter,
     )

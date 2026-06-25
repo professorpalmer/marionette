@@ -165,6 +165,7 @@ class Session:
                 "job_id": result.job_id, "num": result.num_artifacts,
                 "types": result.artifact_types,
                 "artifacts": result.artifacts[:8], "mode": result.mode,
+                "adapter": result.adapter,
             })
 
             # Feed REAL artifacts back (product loop -- no eval fixtures here)

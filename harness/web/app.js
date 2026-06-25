@@ -139,7 +139,8 @@ function run(prompt){
     } else if(ev.kind==="artifacts"){
       const body = (d.artifacts||[]).map(a=>
         `<div class="art"><span class="t">${esc(a.type)}</span>${esc(a.headline)}</div>`).join("");
-      addTurn("run_swarm", `job ${esc(d.job_id)} · ${d.num} artifacts · ${esc((d.types||[]).join(", "))}`, body);
+      const subNote = d.adapter==="demo" ? ` <span class="muted">· demo substrate</span>` : "";
+      addTurn("run_swarm", `job ${esc(d.job_id)} · ${d.num} artifacts · ${esc((d.types||[]).join(", "))}${subNote}`, body);
       pushArtifacts(d.artifacts);
       thinking = addThinking("driver reviewing findings...");
     } else if(ev.kind==="final"){
