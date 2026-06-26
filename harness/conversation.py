@@ -671,6 +671,141 @@ class ConversationalSession:
         else:
             self._history.append({"role": "user", "content": content})
 
+    def _do_read_file(self, act: Any) -> tuple[bool, str, str]:
+        if not self.config.repo:
+            return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        target_path = act.path
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(self.config.repo, target_path)
+        if not is_safe_path(target_path, self.config.repo):
+            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+        try:
+            if not os.path.exists(target_path):
+                raise FileNotFoundError(f"File not found: {act.path}")
+            if os.path.isdir(target_path):
+                raise IsADirectoryError(f"Path is a directory: {act.path}")
+            with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(200 * 1024)
+            is_truncated = os.path.getsize(target_path) > 200 * 1024
+            if is_truncated:
+                content += "\n\n... (file truncated to 200KB) ..."
+            return True, "success", content
+        except Exception as e:
+            return False, "exception", str(e)
+
+    def _do_list_dir(self, act: Any) -> tuple[bool, str, Any]:
+        if not self.config.repo:
+            return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        target_path = act.path
+        if not target_path or not target_path.strip():
+            target_path = self.config.repo
+        else:
+            if not os.path.isabs(target_path):
+                target_path = os.path.join(self.config.repo, target_path)
+        if not is_safe_path(target_path, self.config.repo):
+            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+        try:
+            if not os.path.exists(target_path):
+                raise FileNotFoundError(f"Directory not found: {act.path}")
+            if not os.path.isdir(target_path):
+                raise IsADirectoryError(f"Path is not a directory: {act.path}")
+            entries = []
+            skip_names = {".git", "node_modules", ".venv", ".codegraph"}
+            for entry in os.scandir(target_path):
+                if entry.name in skip_names:
+                    continue
+                is_dir = entry.is_dir()
+                entries.append({
+                    "name": entry.name,
+                    "is_dir": is_dir,
+                    "size": entry.stat().st_size if not is_dir else 0
+                })
+            entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+            text_list = []
+            for e in entries:
+                suffix = "/" if e["is_dir"] else ""
+                size_str = f" ({e['size']} bytes)" if not e["is_dir"] else ""
+                text_list.append(f"{e['name']}{suffix}{size_str}")
+            result_text = "\n".join(text_list) if text_list else "(empty directory)"
+            return True, "success", (len(entries), result_text)
+        except Exception as e:
+            return False, "exception", str(e)
+
+    def _do_web_search(self, act: Any) -> tuple[bool, str, str]:
+        from .web_tools import web_search
+        try:
+            result_text = web_search(act.query)
+            return True, "success", result_text
+        except Exception as e:
+            return False, "exception", str(e)
+
+    def _do_web_fetch(self, act: Any) -> tuple[bool, str, str]:
+        from .web_tools import web_fetch
+        try:
+            result_text = web_fetch(act.url)
+            return True, "success", result_text
+        except Exception as e:
+            return False, "exception", str(e)
+
+    def _do_read_pdf(self, act: Any) -> tuple[bool, str, str]:
+        from .web_tools import read_pdf
+        target = act.path or act.url
+        is_remote = target.startswith(("http://", "https://"))
+        
+        if not is_remote:
+            if not self.config.repo:
+                return False, "repo_not_open", "No workspace directory (config.repo) is open."
+            target_path = act.path
+            if not os.path.isabs(target_path):
+                target_path = os.path.join(self.config.repo, target_path)
+            if not is_safe_path(target_path, self.config.repo):
+                return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+            target = target_path
+
+        try:
+            result_text = read_pdf(target)
+            return True, "success", result_text
+        except Exception as e:
+            return False, "exception", str(e)
+
+    def _do_search_codegraph(self, act: Any) -> tuple[bool, str, Any]:
+        if not self.config.repo:
+            return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        
+        cg_bin = "codegraph"
+        if os.path.exists("/opt/homebrew/bin/codegraph"):
+            cg_bin = "/opt/homebrew/bin/codegraph"
+        
+        kind = act.arguments.get("kind") or "search"
+        if kind == "context":
+            cmd = [cg_bin, "context", act.query]
+        else:
+            cmd = [cg_bin, "query", act.query]
+        
+        try:
+            p = subprocess.run(
+                cmd,
+                cwd=self.config.repo,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=60
+            )
+            output = (p.stdout or "").strip()
+            if p.returncode != 0:
+                if "not found" in output.lower() or "no such file" in output.lower() or p.returncode == 127:
+                    output = "CodeGraph CLI is not installed or not available on PATH."
+                else:
+                    output = f"CodeGraph failed with exit code {p.returncode}: {output}"
+            else:
+                output = output[:6000]
+            
+            return True, "success", (kind, output)
+        except FileNotFoundError:
+            return False, "filenotfound", "CodeGraph CLI not found. Please install the codegraph binary."
+        except Exception as e:
+            return False, "exception", str(e)
+
     def cancel(self) -> None:
         """Signal any in-flight run_auto/send to stop at the next checkpoint."""
         self._cancel.set()
@@ -897,7 +1032,42 @@ class ConversationalSession:
                 return
 
             # 4. Execute each action as a collapsible tool-call.
-            for act in turn.actions:
+            READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "web_search", "web_fetch", "read_pdf"}
+            prefetch = {}
+            read_actions_with_idx = []
+            for idx, act in enumerate(turn.actions):
+                if act.kind in READ_ONLY_KINDS:
+                    read_actions_with_idx.append((idx, act))
+
+            if len(read_actions_with_idx) >= 2 and not self._cancel.is_set():
+                from concurrent.futures import ThreadPoolExecutor
+                
+                def run_prefetch(idx_and_act):
+                    idx, act = idx_and_act
+                    try:
+                        if act.kind == "read_file":
+                            return idx, self._do_read_file(act)
+                        elif act.kind == "list_dir":
+                            return idx, self._do_list_dir(act)
+                        elif act.kind == "search_codegraph":
+                            return idx, self._do_search_codegraph(act)
+                        elif act.kind == "web_search":
+                            return idx, self._do_web_search(act)
+                        elif act.kind == "web_fetch":
+                            return idx, self._do_web_fetch(act)
+                        elif act.kind == "read_pdf":
+                            return idx, self._do_read_pdf(act)
+                    except Exception as exc:
+                        return idx, (False, "exception", str(exc))
+                    return idx, (False, "exception", f"Unknown prefetch kind {act.kind}")
+
+                max_workers = min(8, len(read_actions_with_idx))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    results = executor.map(run_prefetch, read_actions_with_idx)
+                    for idx, res in results:
+                        prefetch[idx] = res
+
+            for idx, act in enumerate(turn.actions):
                 if self._cancel.is_set():
                     yield ConvEvent("interrupted", {"reason": "session interrupted"})
                     return
@@ -955,37 +1125,28 @@ class ConversationalSession:
 
                 # ---- read_file branch -----------------------------------------
                 if act.kind == "read_file":
-                    if not self.config.repo:
-                        error_msg = "No workspace directory (config.repo) is open."
-                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                        self._append_action_result(act, aid, f"(read_file {aid} failed: {error_msg})", is_native)
-                        continue
-                    target_path = act.path
-                    if not os.path.isabs(target_path):
-                        target_path = os.path.join(self.config.repo, target_path)
-                    if not is_safe_path(target_path, self.config.repo):
-                        error_msg = f"Path traversal attempt rejected: {act.path}"
-                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                        self._append_action_result(act, aid, f"(read_file {aid} failed: {error_msg})", is_native)
-                        continue
-                    try:
-                        if not os.path.exists(target_path):
-                            raise FileNotFoundError(f"File not found: {act.path}")
-                        if os.path.isdir(target_path):
-                            raise IsADirectoryError(f"Path is a directory: {act.path}")
-                        with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                            content = f.read(200 * 1024)
-                        is_truncated = os.path.getsize(target_path) > 200 * 1024
-                        if is_truncated:
-                            content += "\n\n... (file truncated to 200KB) ..."
+                    if idx in prefetch:
+                        ok, status, val = prefetch[idx]
+                    else:
+                        ok, status, val = self._do_read_file(act)
+
+                    if ok:
+                        content = val
                         yield ConvEvent("action_result", {
                             "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
                             "artifacts": [{"type": "file", "headline": f"Read {len(content)} chars from {act.path}"}],
                         })
                         self._append_action_result(act, aid, f"(read_file {act.path} returned)\n{content}", is_native)
-                    except Exception as e:
-                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
-                        self._append_action_result(act, aid, f"(read_file {act.path} failed: {e})", is_native)
+                    else:
+                        if status == "repo_not_open":
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(read_file {aid} failed: {val})", is_native)
+                        elif status == "path_traversal":
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(read_file {aid} failed: {val})", is_native)
+                        else:  # status == "exception"
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(read_file {act.path} failed: {val})", is_native)
                     continue
                 # ---- write_file branch ----------------------------------------
                 if act.kind == "write_file":
@@ -1165,163 +1326,114 @@ class ConversationalSession:
                     continue
                 # ---- list_dir branch ------------------------------------------
                 if act.kind == "list_dir":
-                    if not self.config.repo:
-                        error_msg = "No workspace directory (config.repo) is open."
-                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                        self._append_action_result(act, aid, f"(list_dir {aid} failed: {error_msg})", is_native)
-                        continue
-                    target_path = act.path
-                    if not target_path or not target_path.strip():
-                        target_path = self.config.repo
+                    if idx in prefetch:
+                        ok, status, val = prefetch[idx]
                     else:
-                        if not os.path.isabs(target_path):
-                            target_path = os.path.join(self.config.repo, target_path)
-                    if not is_safe_path(target_path, self.config.repo):
-                        error_msg = f"Path traversal attempt rejected: {act.path}"
-                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                        self._append_action_result(act, aid, f"(list_dir {aid} failed: {error_msg})", is_native)
-                        continue
-                    try:
-                        if not os.path.exists(target_path):
-                            raise FileNotFoundError(f"Directory not found: {act.path}")
-                        if not os.path.isdir(target_path):
-                            raise IsADirectoryError(f"Path is not a directory: {act.path}")
-                        entries = []
-                        skip_names = {".git", "node_modules", ".venv", ".codegraph"}
-                        for entry in os.scandir(target_path):
-                            if entry.name in skip_names:
-                                continue
-                            is_dir = entry.is_dir()
-                            entries.append({
-                                "name": entry.name,
-                                "is_dir": is_dir,
-                                "size": entry.stat().st_size if not is_dir else 0
-                            })
-                        entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
-                        text_list = []
-                        for e in entries:
-                            suffix = "/" if e["is_dir"] else ""
-                            size_str = f" ({e['size']} bytes)" if not e["is_dir"] else ""
-                            text_list.append(f"{e['name']}{suffix}{size_str}")
-                        result_text = "\n".join(text_list) if text_list else "(empty directory)"
+                        ok, status, val = self._do_list_dir(act)
+
+                    if ok:
+                        count, result_text = val
                         yield ConvEvent("action_result", {
                             "id": aid, "num": 1, "types": ["dir"], "adapter": "local", "mode": "tool",
-                            "artifacts": [{"type": "dir", "headline": f"Listed {len(entries)} items in {act.path or '/'}"}],
+                            "artifacts": [{"type": "dir", "headline": f"Listed {count} items in {act.path or '/'}"}],
                         })
                         self._append_action_result(act, aid, f"(list_dir {act.path or '/'} returned)\n{result_text}", is_native)
-                    except Exception as e:
-                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
-                        self._append_action_result(act, aid, f"(list_dir {act.path or '/'} failed: {e})", is_native)
+                    else:
+                        if status == "repo_not_open":
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(list_dir {aid} failed: {val})", is_native)
+                        elif status == "path_traversal":
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(list_dir {aid} failed: {val})", is_native)
+                        else:  # status == "exception"
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(list_dir {act.path or '/'} failed: {val})", is_native)
                     continue
                 # ---- web_search branch ----------------------------------------
                 if act.kind == "web_search":
-                    from .web_tools import web_search
-                    try:
-                        result_text = web_search(act.query)
+                    if idx in prefetch:
+                        ok, status, val = prefetch[idx]
+                    else:
+                        ok, status, val = self._do_web_search(act)
+
+                    if ok:
+                        result_text = val
                         yield ConvEvent("action_result", {
                             "id": aid, "num": 1, "types": ["web_search"], "adapter": "local", "mode": "tool",
                             "artifacts": [{"type": "web_search", "headline": f"Searched for '{act.query}'"}],
                         })
                         self._append_action_result(act, aid, f"(web_search '{act.query}' returned)\n{result_text}", is_native)
-                    except Exception as e:
-                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
-                        self._append_action_result(act, aid, f"(web_search '{act.query}' failed: {e})", is_native)
+                    else:
+                        yield ConvEvent("action_result", {"id": aid, "error": val})
+                        self._append_action_result(act, aid, f"(web_search '{act.query}' failed: {val})", is_native)
                     continue
                 # ---- web_fetch branch -----------------------------------------
                 if act.kind == "web_fetch":
-                    from .web_tools import web_fetch
-                    try:
-                        result_text = web_fetch(act.url)
+                    if idx in prefetch:
+                        ok, status, val = prefetch[idx]
+                    else:
+                        ok, status, val = self._do_web_fetch(act)
+
+                    if ok:
+                        result_text = val
                         yield ConvEvent("action_result", {
                             "id": aid, "num": 1, "types": ["web_fetch"], "adapter": "local", "mode": "tool",
                             "artifacts": [{"type": "web_fetch", "headline": f"Fetched {act.url}"}],
                         })
                         self._append_action_result(act, aid, f"(web_fetch '{act.url}' returned)\n{result_text}", is_native)
-                    except Exception as e:
-                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
-                        self._append_action_result(act, aid, f"(web_fetch '{act.url}' failed: {e})", is_native)
+                    else:
+                        yield ConvEvent("action_result", {"id": aid, "error": val})
+                        self._append_action_result(act, aid, f"(web_fetch '{act.url}' failed: {val})", is_native)
                     continue
                 # ---- read_pdf branch ------------------------------------------
                 if act.kind == "read_pdf":
-                    from .web_tools import read_pdf
-                    target = act.path or act.url
-                    is_remote = target.startswith(("http://", "https://"))
-                    
-                    if not is_remote:
-                        if not self.config.repo:
-                            error_msg = "No workspace directory (config.repo) is open."
-                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                            self._append_action_result(act, aid, f"(read_pdf {aid} failed: {error_msg})", is_native)
-                            continue
-                        target_path = act.path
-                        if not os.path.isabs(target_path):
-                            target_path = os.path.join(self.config.repo, target_path)
-                        if not is_safe_path(target_path, self.config.repo):
-                            error_msg = f"Path traversal attempt rejected: {act.path}"
-                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                            self._append_action_result(act, aid, f"(read_pdf {aid} failed: {error_msg})", is_native)
-                            continue
-                        target = target_path
+                    if idx in prefetch:
+                        ok, status, val = prefetch[idx]
+                    else:
+                        ok, status, val = self._do_read_pdf(act)
 
-                    try:
-                        result_text = read_pdf(target)
+                    if ok:
+                        result_text = val
                         yield ConvEvent("action_result", {
                             "id": aid, "num": 1, "types": ["read_pdf"], "adapter": "local", "mode": "tool",
                             "artifacts": [{"type": "read_pdf", "headline": f"Read PDF from {act.path or act.url}"}],
                         })
                         self._append_action_result(act, aid, f"(read_pdf '{act.path or act.url}' returned)\n{result_text}", is_native)
-                    except Exception as e:
-                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
-                        self._append_action_result(act, aid, f"(read_pdf '{act.path or act.url}' failed: {e})", is_native)
+                    else:
+                        if status == "repo_not_open":
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(read_pdf {aid} failed: {val})", is_native)
+                        elif status == "path_traversal":
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(read_pdf {aid} failed: {val})", is_native)
+                        else:  # status == "exception"
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(read_pdf '{act.path or act.url}' failed: {val})", is_native)
                     continue
                 # ---- search_codegraph branch ----------------------------------
                 if act.kind == "search_codegraph":
-                    if not self.config.repo:
-                        error_msg = "No workspace directory (config.repo) is open."
-                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                        self._append_action_result(act, aid, f"(search_codegraph {aid} failed: {error_msg})", is_native)
-                        continue
-                    
-                    cg_bin = "codegraph"
-                    if os.path.exists("/opt/homebrew/bin/codegraph"):
-                        cg_bin = "/opt/homebrew/bin/codegraph"
-                    
-                    kind = act.arguments.get("kind") or "search"
-                    if kind == "context":
-                        cmd = [cg_bin, "context", act.query]
+                    if idx in prefetch:
+                        ok, status, val = prefetch[idx]
                     else:
-                        cmd = [cg_bin, "query", act.query]
-                    
-                    try:
-                        p = subprocess.run(
-                            cmd,
-                            cwd=self.config.repo,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                            timeout=60
-                        )
-                        output = (p.stdout or "").strip()
-                        if p.returncode != 0:
-                            if "not found" in output.lower() or "no such file" in output.lower() or p.returncode == 127:
-                                output = "CodeGraph CLI is not installed or not available on PATH."
-                            else:
-                                output = f"CodeGraph failed with exit code {p.returncode}: {output}"
-                        else:
-                            output = output[:6000]
-                        
+                        ok, status, val = self._do_search_codegraph(act)
+
+                    if ok:
+                        kind, output = val
                         yield ConvEvent("action_result", {
                             "id": aid, "num": 1, "types": ["search_codegraph"], "adapter": "local", "mode": "tool",
                             "artifacts": [{"type": "search_codegraph", "headline": f"CodeGraph {kind}: {act.query}"}],
                         })
                         self._append_action_result(act, aid, f"(search_codegraph '{act.query}' returned)\n{output}", is_native)
-                    except FileNotFoundError:
-                        err_text = "CodeGraph CLI not found. Please install the codegraph binary."
-                        yield ConvEvent("action_result", {"id": aid, "error": err_text})
-                        self._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: CodeGraph CLI not found)", is_native)
-                    except Exception as e:
-                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
-                        self._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: {e})", is_native)
+                    else:
+                        if status == "repo_not_open":
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(search_codegraph {aid} failed: {val})", is_native)
+                        elif status == "filenotfound":
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: CodeGraph CLI not found)", is_native)
+                        else:  # status == "exception"
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: {val})", is_native)
                     continue
                 # ---- query_wiki branch ----------------------------------------
                 if act.kind == "query_wiki":
