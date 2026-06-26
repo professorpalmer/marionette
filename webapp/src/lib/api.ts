@@ -1,5 +1,5 @@
 // Typed harness API -- thin wrappers over the transport seam.
-import { getJSON, postJSON, stream, withToken, type StreamEvent } from "./transport";
+import { getJSON, postJSON, stream, withToken, uploadFile, type StreamEvent } from "./transport";
 
 export type Config = {
   driver: string; reach: string; budget: number;
@@ -217,8 +217,27 @@ export const api = {
   archiveSession: (id: string, archived: boolean) => postJSON<{ ok: boolean }>("/api/sessions/archive", { session: id, archived }),
   renameSession: (id: string, title: string) => postJSON<{ ok: boolean }>("/api/sessions/rename", { session: id, title }),
   swapPilot: (model: string) => getJSON(withToken(`/api/pilot?model=${encodeURIComponent(model)}`)),
-  chat: (message: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void, plan: boolean = false) =>
-    stream(`/api/chat?message=${encodeURIComponent(message)}${plan ? "&plan=true" : ""}`, onEvent, onDone, onError),
+  uploadImage: async (file: File | Blob): Promise<{ path: string; name: string }> => {
+    let fileObj: File;
+    if (file instanceof File) {
+      fileObj = file;
+    } else {
+      const ext = file.type.split("/")[1] || "png";
+      fileObj = new File([file], `image-${Date.now()}.${ext}`, { type: file.type });
+    }
+    const saved = await uploadFile(fileObj);
+    if (!saved || saved.length === 0) {
+      throw new Error("Upload failed");
+    }
+    return saved[0];
+  },
+  chat: (message: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void, plan: boolean = false, images?: string[]) => {
+    let url = `/api/chat?message=${encodeURIComponent(message)}${plan ? "&plan=true" : ""}`;
+    if (images && images.length > 0) {
+      url += `&images=${encodeURIComponent(images.join("|"))}`;
+    }
+    return stream(url, onEvent, onDone, onError);
+  },
   mcp: () => getJSON<{ servers: any[]; tools: any[] }>("/api/mcp"),
   mcpCatalog: () => getJSON<{ catalog: Record<string, any> }>("/api/mcp/catalog"),
   mcpAdd: (name: string, command?: string, args?: string[], env?: Record<string, string>, url?: string) => {

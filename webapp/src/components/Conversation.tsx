@@ -8,7 +8,12 @@ import { api, type Config } from "../lib/api";
 import PilotPicker from "./PilotPicker";
 import { pickFolder } from "../lib/transport";
 
-type Msg = { role: "user" | "assistant"; text: string; isPlan?: boolean };
+type Msg = {
+  role: "user" | "assistant";
+  text: string;
+  isPlan?: boolean;
+  images?: { path: string; name: string; previewUrl: string }[];
+};
 type Card = {
   id: string; goal: string; cwd?: string | null;
   running: boolean; open: boolean;
@@ -162,6 +167,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const [pendingJobIds, setPendingJobIds] = useState<string[]>([]);
   const processedSwarmJobIdsRef = useRef<string[]>([]);
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
+
+  const [attachedImages, setAttachedImages] = useState<{ path: string; name: string; previewUrl: string }[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Ergonomics states
   const [allFiles, setAllFiles] = useState<string[]>([]);
@@ -446,6 +455,67 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     setMentionIndex(-1);
   };
 
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault(); // prevent pasting binary junk text
+          setUploadError(null);
+          try {
+            const previewUrl = URL.createObjectURL(file);
+            const uploaded = await api.uploadImage(file);
+            setAttachedImages((prev) => [
+              ...prev,
+              { path: uploaded.path, name: uploaded.name, previewUrl }
+            ]);
+          } catch (err) {
+            console.error("Failed to upload pasted image:", err);
+            setUploadError("Image upload failed");
+          }
+        }
+      }
+    }
+  };
+
+  const handleComposerDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes("Files")) {
+      e.preventDefault();
+      setIsDragOver(true);
+    }
+  };
+
+  const handleComposerDragLeave = () => {
+    setIsDragOver(false);
+  };
+
+  const handleComposerDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+
+    setUploadError(null);
+    for (const file of imageFiles) {
+      try {
+        const previewUrl = URL.createObjectURL(file);
+        const uploaded = await api.uploadImage(file);
+        setAttachedImages((prev) => [
+          ...prev,
+          { path: uploaded.path, name: uploaded.name, previewUrl }
+        ]);
+      } catch (err) {
+        console.error("Failed to upload dropped image:", err);
+        setUploadError("Image upload failed");
+      }
+    }
+  };
+
   const handleEditMessage = (idx: number, originalText: string) => {
     setEditingIndex(idx);
     setInput(originalText);
@@ -589,11 +659,14 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
   const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false) => {
     planTurnRef.current = usePlan;
-    setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: msg } }]);
+    const imgsToSend = [...attachedImages];
+    const imgPaths = imgsToSend.map((img) => img.path);
+    setAttachedImages([]);
+    setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: msg, images: imgsToSend } }]);
     setStatus("thinking");
     const streamer = useAuto
       ? (cb: any, done: any, err: any) => api.auto(msg, cb, done, err)
-      : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan);
+      : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths);
     cancelRef.current = streamer((ev: any) => {
       const d = ev.data || {};
       if (ev.kind === "thinking") {
@@ -1075,7 +1148,14 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           )}
           {/* compact composer: input + a single tidy control row */}
           <WorkspaceChip />
-          <div className="relative bg-panel2/80 border border-edge rounded-2xl focus-within:border-edge2 shadow-lg shadow-black/20 transition">
+          <div
+            onDragOver={handleComposerDragOver}
+            onDragLeave={handleComposerDragLeave}
+            onDrop={handleComposerDrop}
+            className={`relative bg-panel2/80 border rounded-2xl focus-within:border-edge2 shadow-lg shadow-black/20 transition ${
+              isDragOver ? "border-accent ring-1 ring-accent" : "border-edge"
+            }`}
+          >
             {/* Editing indicator */}
             {editingIndex !== null && (
               <div className="flex items-center justify-between px-3.5 py-1.5 bg-panel border-b border-edge text-[11.5px] text-accent select-none rounded-t-2xl">
@@ -1151,9 +1231,44 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               );
             })()}
 
+            {/* Attached images preview chips */}
+            {attachedImages.length > 0 && (
+              <div className="flex flex-wrap gap-2 px-3 pt-2.5">
+                {attachedImages.map((img, idx) => (
+                  <div
+                    key={idx}
+                    className="relative group/thumb w-[40px] h-[40px] rounded-lg overflow-hidden border border-edge bg-panel/50 select-none animate-in fade-in zoom-in duration-150"
+                  >
+                    <img
+                      src={img.previewUrl}
+                      alt={img.name}
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      onClick={() => {
+                        setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
+                        URL.revokeObjectURL(img.previewUrl);
+                      }}
+                      className="absolute inset-0 bg-black/60 opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center transition text-txt hover:text-risk"
+                      title="Remove image"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {uploadError && (
+              <div className="text-[11px] text-risk px-3 pt-1">
+                {uploadError}
+              </div>
+            )}
+
             <textarea ref={taRef} value={input} 
               onChange={(e) => handleInputChange(e.target.value, e.target.selectionStart)}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               rows={1} placeholder={auto ? "Give the pilot an objective..." : "Message the pilot..."}
               className="w-full bg-transparent px-3 pt-2.5 pb-1 text-[13px] resize-none focus:outline-none overflow-y-auto placeholder:text-faint" />
             <div className="flex items-center gap-1.5 px-3 pb-2">
@@ -1183,7 +1298,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               <div className="flex-1" />
               {status === "thinking" || status === "executing"
                 ? <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
-                : <button onClick={send} disabled={!input.trim()}
+                : <button onClick={send} disabled={!input.trim() && attachedImages.length === 0}
                     className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                     <Send size={9} />{auto ? "Run" : plan ? "Plan" : "Send"}</button>}
             </div>
@@ -1514,7 +1629,20 @@ function Bubble({
               ? "bg-accent/10 text-txt border-accent"
               : "bg-accent2 text-txt border-edge/30"
           }`}>
-            {displayedText}
+            <div>{displayedText}</div>
+            {msg.images && msg.images.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-2">
+                {msg.images.map((img, idx) => (
+                  <div key={idx} className="relative rounded-lg overflow-hidden border border-edge/30 max-w-[240px] max-h-[180px]">
+                    <img
+                      src={img.previewUrl}
+                      alt={img.name}
+                      className="max-w-full max-h-[160px] object-contain rounded"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
