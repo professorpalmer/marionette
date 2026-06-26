@@ -199,12 +199,19 @@ def test_executor_smoke_run_implement():
             
             session = ConversationalSession(cfg)
             
-            # We inject our detect function mock to always return "hermes"
-            session._detect_default_implement_adapter = MagicMock(return_value="hermes")
+            # We inject our detect function mock to always return "cursor"
+            session._detect_default_implement_adapter = MagicMock(return_value="cursor")
+            # This smoke test exercises the EXTERNAL puppetmaster-CLI dispatch path,
+            # so force puppetmaster availability and request an external adapter
+            # explicitly (the default path is now the provider-native worker, which
+            # does not Popen the CLI -- covered by test_run_implement_provider.py).
+            import harness.conversation as _convmod
+            session_pm_orig = getattr(_convmod, "_puppetmaster_available", None)
+            _convmod._puppetmaster_available = lambda: True
             
-            # Send a prompt triggering a pilot action
+            # Send a prompt triggering a pilot action (explicit external adapter)
             from harness.pilot import PilotAction
-            action = PilotAction(kind="run_implement", goal="Add print statement")
+            action = PilotAction(kind="run_implement", goal="Add print statement", adapter="cursor")
             
             # Directly invoke our send logic or trigger actions processing
             class FakePilot:
@@ -215,7 +222,7 @@ def test_executor_smoke_run_implement():
                     from pmharness.drivers.openai_compat import DriverResponse
                     self.calls += 1
                     if self.calls == 1:
-                        txt = '{"say": "Starting implement worker.", "actions": [{"kind": "run_implement", "goal": "Add print statement"}]}'
+                        txt = '{"say": "Starting implement worker.", "actions": [{"kind": "run_implement", "goal": "Add print statement", "adapter": "cursor"}]}'
                     else:
                         txt = '{"say": "Done.", "actions": []}'
                     return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)

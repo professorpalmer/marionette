@@ -1298,45 +1298,109 @@ class ConversationalSession:
                         self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
                         continue
 
-                    if not _puppetmaster_available():
-                        error_msg = "puppetmaster CLI not available in this environment"
-                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                        self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
+                    external_adapters = {"cursor", "claude-code", "codex", "openai"}
+                    requested_adapter = act.adapter or ""
+                    
+                    if requested_adapter in external_adapters:
+                        if not _puppetmaster_available():
+                            error_msg = f"puppetmaster CLI not available in this environment. Drop the adapter option or install the CLI to proceed."
+                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                            self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
+                            continue
+                        use_external = True
+                    else:
+                        use_external = False
+
+                    if use_external:
+                        adapter = act.adapter or self._detect_default_implement_adapter()
+                        yield ConvEvent("action_start", {
+                            "id": aid,
+                            "kind": "run_implement",
+                            "goal": act.goal,
+                            "cwd": self.config.repo,
+                        })
+
+                        try:
+                            import json
+                            cmd = _puppetmaster_cmd(adapter, act.goal, "--cwd", self.config.repo, "--mode", "implement", "--allow-dirty", "--allow-non-worktree")
+                            p = subprocess.Popen(
+                                cmd,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True,
+                                cwd=self.config.repo
+                            )
+                            
+                            job_id = None
+                            all_output_lines = []
+                            for line in p.stdout:
+                                all_output_lines.append(line)
+                                if not job_id:
+                                    match = re.search(r"\b(job_[a-fA-F0-9]{12})\b", line)
+                                    if match:
+                                        job_id = match.group(1)
+                            
+                            p.wait(timeout=600)
+
+                            if job_id:
+                                # Submit the await+apply task to the thread pool
+                                future = self._swarm_pool.submit(self._run_swarm_background, job_id, act.goal, None)
+                                with self._swarm_futures_lock:
+                                    self._swarm_futures.add(future)
+                                
+                                def make_cleanup(fut):
+                                    def _cleanup(f):
+                                        with self._swarm_futures_lock:
+                                            self._swarm_futures.discard(f)
+                                    return _cleanup
+                                future.add_done_callback(make_cleanup(future))
+                                
+                                # Emit ConvEvent kind="swarm_pending" with {job_ids, objective}
+                                yield ConvEvent("swarm_pending", {
+                                    "job_ids": [job_id],
+                                    "objective": act.goal
+                                })
+                                
+                                # Complete the visible action start and result for the dispatch itself
+                                yield ConvEvent("action_result", {
+                                    "id": aid,
+                                    "job_id": job_id,
+                                    "status": "pending",
+                                    "message": f"Dispatched background swarm job {job_id}"
+                                })
+                                
+                                self._append_action_result(act, aid, f"(run_implement {aid} dispatched in background: job {job_id})", is_native)
+                                yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms + 1})
+                                return
+                            else:
+                                output = "".join(all_output_lines)[:5000]
+                                yield ConvEvent("action_result", {
+                                    "id": aid,
+                                    "error": f"Failed to detect job_id. CLI output:\n{output}"
+                                })
+                                self._append_action_result(act, aid, f"(run_implement {aid} failed: no job_id detected. Output:\n{output})", is_native)
+
+                        except Exception as e:
+                            yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+                            self._append_action_result(act, aid, f"(run_implement {aid} failed: {e})", is_native)
                         continue
-
-                    adapter = act.adapter or self._detect_default_implement_adapter()
-                    yield ConvEvent("action_start", {
-                        "id": aid,
-                        "kind": "run_implement",
-                        "goal": act.goal,
-                        "cwd": self.config.repo,
-                    })
-
-                    try:
-                        import json
-                        cmd = _puppetmaster_cmd(adapter, act.goal, "--cwd", self.config.repo, "--mode", "implement", "--allow-dirty", "--allow-non-worktree")
-                        p = subprocess.Popen(
-                            cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                            cwd=self.config.repo
-                        )
+                    else:
+                        # NEW provider-native path
+                        yield ConvEvent("action_start", {
+                            "id": aid,
+                            "kind": "run_implement",
+                            "goal": act.goal,
+                            "cwd": self.config.repo,
+                            "mode": "provider"
+                        })
                         
-                        job_id = None
-                        all_output_lines = []
-                        for line in p.stdout:
-                            all_output_lines.append(line)
-                            if not job_id:
-                                match = re.search(r"\b(job_[a-fA-F0-9]{12})\b", line)
-                                if match:
-                                    job_id = match.group(1)
-                        
-                        p.wait(timeout=600)
-
-                        if job_id:
-                            # Submit the await+apply task to the thread pool
-                            future = self._swarm_pool.submit(self._run_swarm_background, job_id, act.goal, None)
+                        try:
+                            import uuid
+                            short = uuid.uuid4().hex[:8]
+                            job_id = f"local-{short}"
+                            
+                            # Submit the provider worker task to the thread pool
+                            future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, act.goal)
                             with self._swarm_futures_lock:
                                 self._swarm_futures.add(future)
                             
@@ -1364,18 +1428,10 @@ class ConversationalSession:
                             self._append_action_result(act, aid, f"(run_implement {aid} dispatched in background: job {job_id})", is_native)
                             yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms + 1})
                             return
-                        else:
-                            output = "".join(all_output_lines)[:5000]
-                            yield ConvEvent("action_result", {
-                                "id": aid,
-                                "error": f"Failed to detect job_id. CLI output:\n{output}"
-                            })
-                            self._append_action_result(act, aid, f"(run_implement {aid} failed: no job_id detected. Output:\n{output})", is_native)
-
-                    except Exception as e:
-                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
-                        self._append_action_result(act, aid, f"(run_implement {aid} failed: {e})", is_native)
-                    continue
+                        except Exception as e:
+                            yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+                            self._append_action_result(act, aid, f"(run_implement {aid} failed: {e})", is_native)
+                        continue
 
                 # ---- run_parallel branch -------------------------------------
                 if act.kind == "run_parallel":
@@ -2002,6 +2058,165 @@ class ConversationalSession:
             "held_for_review": held_for_review,
             "pending_review": pending_review_info
         }
+
+    def _run_provider_worker_background(self, job_id: str, objective: str) -> None:
+        try:
+            from harness.worker import ProviderWorker
+            from harness.autobudget import AutoBudget
+            
+            w = ProviderWorker(
+                self.config.repo,
+                objective,
+                driver=self.config.driver,
+                reach=self.config.reach,
+                budget=AutoBudget.from_env(),
+                require_codegraph=False
+            )
+            res = w.run()
+            
+            if not res.ok:
+                res_dict = {
+                    "job_id": job_id,
+                    "applied": False,
+                    "files": [],
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "summary": res.summary or res.error or "Worker failed to produce patch",
+                    "error": res.error,
+                    "artifacts": [],
+                    "has_patch_art": False,
+                    "apply_msg": res.error or "Worker failed to produce patch",
+                    "num_artifacts": 0,
+                    "artifact_types": [],
+                    "ar_list": []
+                }
+            else:
+                artifacts = []
+                artifacts.append({
+                    "type": "patch",
+                    "payload": {
+                        "unified_diff": res.patch,
+                        "files": res.files_changed or []
+                    }
+                })
+                
+                tokens_in = 0
+                tokens_out = w.budget.tokens_used
+                with self._apply_lock:
+                    self._tokens_used += tokens_out
+                
+                patch_summary = ""
+                if res.files_changed:
+                    patch_summary = f"Files changed: {', '.join(res.files_changed)}"
+                elif res.patch:
+                    patch_summary = f"Diff total chars: {len(res.patch)}"
+                
+                summary = patch_summary if patch_summary else "Successfully completed implement task"
+                if res.summary:
+                    summary = f"{summary}\n{res.summary}"
+                
+                ar_list = [{
+                    "type": "patch",
+                    "headline": f"Patch: modified {', '.join(res.files_changed)}" if res.files_changed else "Patch generated"
+                }]
+                
+                has_patch_art = True
+                held_for_review = False
+                pending_review_info = None
+                
+                if getattr(self, "_review_edits_before_apply", False):
+                    held_for_review = True
+                    from .diffreview import parse_unified_diff
+                    parsed_files = parse_unified_diff(res.patch)
+                    
+                    import uuid
+                    import time
+                    review_id = f"rev-{uuid.uuid4().hex[:8]}"
+                    
+                    pending_review = {
+                        "id": review_id,
+                        "job_id": job_id,
+                        "objective": objective or "Implement edits",
+                        "files": parsed_files,
+                        "created_at": time.time()
+                    }
+                    
+                    with self._pending_reviews_lock:
+                        self._pending_reviews[review_id] = pending_review
+                        
+                    pending_review_info = {
+                        "id": review_id,
+                        "summary": f"Held {len(parsed_files)} files for review"
+                    }
+                    
+                    applied = False
+                    applied_files = []
+                    apply_msg = "held for review"
+                    cp_id = None
+                    apply_summary = f"Patch held for review (ID: {review_id})"
+                else:
+                    with self._apply_lock:
+                        applied, applied_files, apply_msg = self._apply_worker_patch(artifacts, job_id)
+                        cp_id = getattr(self, "_last_checkpoint_id", None)
+                    
+                    apply_summary = ""
+                    if applied:
+                        apply_summary = f"Applied patch to {len(applied_files)} files: {', '.join(applied_files)}"
+                    else:
+                        apply_summary = f"PATCH DID NOT APPLY: {apply_msg}"
+                        
+                if apply_summary:
+                    summary = f"{summary}\n{apply_summary}" if summary else apply_summary
+                
+                error = f"PATCH DID NOT APPLY: {apply_msg}" if (not applied and not held_for_review) else None
+                
+                res_dict = {
+                    "job_id": job_id,
+                    "applied": applied,
+                    "files": applied_files,
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                    "summary": summary,
+                    "error": error,
+                    "artifacts": artifacts,
+                    "has_patch_art": has_patch_art,
+                    "apply_msg": apply_msg,
+                    "num_artifacts": len(artifacts),
+                    "artifact_types": ["patch"],
+                    "ar_list": ar_list,
+                    "checkpoint_id": cp_id,
+                    "held_for_review": held_for_review,
+                    "pending_review": pending_review_info
+                }
+                
+            self._swarm_results.put({
+                "job_id": job_id,
+                "objective": objective,
+                "result": res_dict,
+                "state_dir": None
+            })
+            
+        except Exception as e:
+            self._swarm_results.put({
+                "job_id": job_id,
+                "objective": objective,
+                "result": {
+                    "job_id": job_id,
+                    "applied": False,
+                    "files": [],
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "summary": f"Failed background worker: {e}",
+                    "error": str(e),
+                    "artifacts": [],
+                    "has_patch_art": False,
+                    "apply_msg": str(e),
+                    "num_artifacts": 0,
+                    "artifact_types": [],
+                    "ar_list": []
+                },
+                "state_dir": None
+            })
 
     def _run_swarm_background(self, job_id: str, objective: str, state_dir: Optional[str] = None) -> None:
         try:
