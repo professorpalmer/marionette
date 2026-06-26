@@ -757,7 +757,13 @@ class ConversationalSession:
             # 1. Ask the pilot for its next conversational turn.
             base_sys = self._history[0]["content"]
             cg_section = ""
-            if self.config.repo:
+            # Skip the per-turn CodeGraph context build for no_delegation worker sessions:
+            # a worker runs in a fresh git worktree with NO .codegraph index, so this call
+            # blocks on a 30s timeout EVERY turn and returns nothing -- it was ~93% of worker
+            # wall-time. Workers edit directly and do not use codegraph (it is also excluded
+            # from their toolset), so skipping it is pure win.
+            _no_deleg = getattr(self.config, "no_delegation", False)
+            if self.config.repo and not _no_deleg:
                 try:
                     from puppetmaster.codegraph import codegraph_context, codegraph_prompt_section
                     cg_slice = codegraph_context(task=user_message, cwd=self.config.repo)
