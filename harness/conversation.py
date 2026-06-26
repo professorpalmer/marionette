@@ -426,6 +426,10 @@ class ConversationalSession:
                     act_goal = act.url
                 elif act.kind == "read_pdf":
                     act_goal = act.path or act.url
+                elif act.kind == "search_codegraph":
+                    act_goal = act.query
+                elif act.kind == "query_wiki":
+                    act_goal = act.arguments.get("question") or ""
 
                 yield ConvEvent("action_start", {
                     "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
@@ -649,6 +653,78 @@ class ConversationalSession:
                     except Exception as e:
                         yield ConvEvent("action_result", {"id": aid, "error": str(e)})
                         self._append_action_result(act, aid, f"(read_pdf '{act.path or act.url}' failed: {e})", is_native)
+                    continue
+                # ---- search_codegraph branch ----------------------------------
+                if act.kind == "search_codegraph":
+                    if not self.config.repo:
+                        error_msg = "No workspace directory (config.repo) is open."
+                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                        self._append_action_result(act, aid, f"(search_codegraph {aid} failed: {error_msg})", is_native)
+                        continue
+                    
+                    cg_bin = "codegraph"
+                    if os.path.exists("/opt/homebrew/bin/codegraph"):
+                        cg_bin = "/opt/homebrew/bin/codegraph"
+                    
+                    kind = act.arguments.get("kind") or "search"
+                    if kind == "context":
+                        cmd = [cg_bin, "context", act.query]
+                    else:
+                        cmd = [cg_bin, "query", act.query]
+                    
+                    try:
+                        p = subprocess.run(
+                            cmd,
+                            cwd=self.config.repo,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            timeout=60
+                        )
+                        output = (p.stdout or "").strip()
+                        if p.returncode != 0:
+                            if "not found" in output.lower() or "no such file" in output.lower() or p.returncode == 127:
+                                output = "CodeGraph CLI is not installed or not available on PATH."
+                            else:
+                                output = f"CodeGraph failed with exit code {p.returncode}: {output}"
+                        else:
+                            output = output[:6000]
+                        
+                        yield ConvEvent("action_result", {
+                            "id": aid, "num": 1, "types": ["search_codegraph"], "adapter": "local", "mode": "tool",
+                            "artifacts": [{"type": "search_codegraph", "headline": f"CodeGraph {kind}: {act.query}"}],
+                        })
+                        self._append_action_result(act, aid, f"(search_codegraph '{act.query}' returned)\n{output}", is_native)
+                    except FileNotFoundError:
+                        err_text = "CodeGraph CLI not found. Please install the codegraph binary."
+                        yield ConvEvent("action_result", {"id": aid, "error": err_text})
+                        self._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: CodeGraph CLI not found)", is_native)
+                    except Exception as e:
+                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+                        self._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: {e})", is_native)
+                    continue
+                # ---- query_wiki branch ----------------------------------------
+                if act.kind == "query_wiki":
+                    question = act.arguments.get("question") or ""
+                    if not self._wiki.configured:
+                        res = "wiki not configured"
+                        yield ConvEvent("action_result", {
+                            "id": aid, "num": 1, "types": ["query_wiki"], "adapter": "local", "mode": "tool",
+                            "artifacts": [{"type": "query_wiki", "headline": f"Wiki: {question}"}],
+                        })
+                        self._append_action_result(act, aid, f"(query_wiki '{question}' returned)\n{res}", is_native)
+                        continue
+                    
+                    try:
+                        res = self._wiki.query(question)
+                        yield ConvEvent("action_result", {
+                            "id": aid, "num": 1, "types": ["query_wiki"], "adapter": "local", "mode": "tool",
+                            "artifacts": [{"type": "query_wiki", "headline": f"Wiki: {question}"}],
+                        })
+                        self._append_action_result(act, aid, f"(query_wiki '{question}' returned)\n{res}", is_native)
+                    except Exception as e:
+                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+                        self._append_action_result(act, aid, f"(query_wiki '{question}' failed: {e})", is_native)
                     continue
                 # ---- MCP tool call branch -------------------------------------
                 if act.kind == "call_mcp":

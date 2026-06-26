@@ -88,6 +88,77 @@ class WikiClient:
         except Exception as e:
             return WikiResult(False, error=repr(e))
 
+    def query(self, question: str) -> str:
+        """Query the wiki's LLM query/search surface.
+        Try documented endpoints (POST /owner/query, POST /api/query, POST /llm, etc.).
+        If all fail or return error, fall back to fetching the manifest and compiling a helpful summary.
+        Cap result to ~4000 chars.
+        """
+        if not self.configured:
+            return "wiki not configured"
+
+        # Try a few common query endpoints
+        endpoints = [
+            ("/owner/query", "POST", {"question": question}),
+            ("/api/query", "POST", {"question": question}),
+            ("/owner/search", "POST", {"query": question}),
+            ("/llm", "POST", {"question": question}),
+        ]
+
+        for path, method, payload in endpoints:
+            url = f"{self.base_url}{path}"
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+
+            body = json.dumps(payload).encode()
+            req = urllib.request.Request(url, data=body, method=method, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                    if r.status == 200:
+                        res = r.read().decode("utf-8", "replace")
+                        try:
+                            data = json.loads(res)
+                            # Extract answer from response
+                            if isinstance(data, dict):
+                                answer = (data.get("answer") or data.get("response") or 
+                                          data.get("result") or data.get("content"))
+                                if answer:
+                                    return str(answer)[:4000]
+                        except Exception:
+                            pass
+                        # If raw string returned, return it
+                        return res[:4000]
+            except Exception:
+                continue
+
+        # Fallback to fetching manifest + returning a helpful summary if no query endpoint succeeded
+        try:
+            url = f"{self.base_url}/wiki/manifest.json"
+            headers = {"Accept": "application/json"}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+            req = urllib.request.Request(url, method="GET", headers=headers)
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                if r.status == 200:
+                    manifest = json.loads(r.read().decode("utf-8", "replace"))
+                    pages = manifest.get("pages", []) if isinstance(manifest, dict) else []
+                    summary_lines = ["No direct wiki query endpoint succeeded. Fallback wiki index summary:"]
+                    for p in pages[:15]:
+                        if isinstance(p, dict):
+                            slug = p.get("slug", "")
+                            title = p.get("title", slug)
+                            desc = p.get("description") or p.get("note") or ""
+                            summary_lines.append(f"- {title} ({slug}): {desc}")
+                    return "\n".join(summary_lines)[:4000]
+        except Exception as e:
+            return f"wiki query failed and fallback failed: {repr(e)}"
+
+        return "wiki query returned empty result"
+
     def graph(self) -> dict:
         """Fetch the wiki graph via the gated owner surface the portable-llm-wiki
         MCP uses: GET /wiki/manifest.json for nodes, then GET /wiki/graph/<slug>?hops=1

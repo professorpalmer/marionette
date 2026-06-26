@@ -663,13 +663,7 @@ function Bubble({ msg, showLabel, isIntermediate }: { msg: Msg; showLabel?: bool
   }
 
   if (isIntermediate) {
-    return (
-      <div className="flex flex-col items-start my-0.5 w-full pl-3">
-        <div className="text-[12px] leading-tight text-muted whitespace-pre-wrap break-words max-w-[95%] py-0.5 font-normal">
-          {displayedText}
-        </div>
-      </div>
-    );
+    return null;
   }
 
   return (
