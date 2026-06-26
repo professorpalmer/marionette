@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, Loader2, Send, Zap, Square, Folder, ChevronDown, GitBranch, ListChecks } from "lucide-react";
+import { ChevronRight, Loader2, Send, Zap, Square, Folder, ChevronDown, GitBranch, ListChecks, Play } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -8,7 +8,7 @@ import { api, type Config } from "../lib/api";
 import PilotPicker from "./PilotPicker";
 import { pickFolder } from "../lib/transport";
 
-type Msg = { role: "user" | "assistant"; text: string };
+type Msg = { role: "user" | "assistant"; text: string; isPlan?: boolean };
 type Card = {
   id: string; goal: string; cwd?: string | null;
   running: boolean; open: boolean;
@@ -132,6 +132,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const cancelRef = useRef<null | (() => void)>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const planTurnRef = useRef(false);
   const [msgQueue, setMsgQueue] = useState<{ text: string; auto: boolean; plan?: boolean }[]>([]);
 
   // Request notifications permission on mount
@@ -254,6 +255,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   }, [input]);
 
   const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false) => {
+    planTurnRef.current = usePlan;
     setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: msg } }]);
     setStatus("thinking");
     const streamer = useAuto
@@ -266,7 +268,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setItems((p) => [...p, { kind: "thinking", text: d.text || "" }]);
       } else if (ev.kind === "message") {
         setStatus("thinking");
-        setItems((p) => deduplicateConsecutiveAssistantMessages([...p, { kind: "msg", msg: { role: "assistant", text: d.text || "" } }]));
+        setItems((p) => deduplicateConsecutiveAssistantMessages([...p, { kind: "msg", msg: { role: "assistant", text: d.text || "", isPlan: planTurnRef.current } }]));
       } else if (ev.kind === "action_start") {
         setStatus("executing");
         setItems((p) => [...p, { kind: "card", card: {
@@ -394,6 +396,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                     msg={it.msg}
                     showLabel={it.msg.role === "assistant" ? isFirstInRun : false}
                     isIntermediate={isIntermediate}
+                    onExecutePlan={(planText) => {
+                      setAuto(true);
+                      setPlan(false);
+                      executeSend("Execute the following approved plan. Implement it fully, using run_implement/run_parallel as needed:\n\n" + planText, true, false);
+                    }}
                   />
                 );
               } else if (it.kind === "activity_group") {
@@ -761,7 +768,18 @@ function Markdown({ text }: { text: string }) {
   );
 }
 
-function Bubble({ msg, showLabel, isIntermediate }: { msg: Msg; showLabel?: boolean; isIntermediate?: boolean }) {
+function Bubble({
+  msg,
+  showLabel,
+  isIntermediate,
+  onExecutePlan
+}: {
+  msg: Msg;
+  showLabel?: boolean;
+  isIntermediate?: boolean;
+  onExecutePlan?: (text: string) => void;
+}) {
+  const [executed, setExecuted] = useState(false);
   const isUser = msg.role === "user";
   const displayedText = isUser ? msg.text : cleanAssistantText(msg.text);
 
@@ -782,13 +800,29 @@ function Bubble({ msg, showLabel, isIntermediate }: { msg: Msg; showLabel?: bool
     return null;
   }
 
+  const showExecuteButton = msg.isPlan && !executed && onExecutePlan;
+
   return (
     <div className="flex flex-col items-start gap-0.5 my-1 w-full">
       {showLabel && (
         <span className="text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-semibold mt-1">pilot</span>
       )}
-      <div className="text-[13px] leading-relaxed break-words max-w-[95%] text-txt/95 py-0.5">
+      <div className="text-[13px] leading-relaxed break-words max-w-[95%] text-txt/95 py-0.5 w-full">
         <Markdown text={displayedText} />
+        {showExecuteButton && (
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              onClick={() => {
+                setExecuted(true);
+                onExecutePlan(msg.text);
+              }}
+              className="bg-accent text-black/90 rounded-md px-3 h-[26px] text-[12px] font-semibold hover:brightness-110 flex items-center gap-1.5 transition shadow-sm"
+            >
+              <Play size={11} fill="currentColor" />
+              <span>Execute this plan</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
