@@ -155,3 +155,37 @@ def test_startup_auto_index_fires_when_not_exists(monkeypatch):
 
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_puppetmaster_cmd_frozen(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    fake_exe = "/mocked/frozen/pmharness"
+    monkeypatch.setattr(sys, "executable", fake_exe)
+    cmd = _puppetmaster_cmd("codegraph", "init", "--index")
+    assert cmd == [fake_exe, "pm-exec", "codegraph", "init", "--index"]
+
+
+def test_puppetmaster_available_frozen_success(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    _clear_puppetmaster_cache()
+    assert _puppetmaster_available() is True
+
+
+def test_puppetmaster_available_frozen_failure(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    _clear_puppetmaster_cache()
+    with patch.dict(sys.modules, {"puppetmaster": None}):
+        assert _puppetmaster_available() is False
+
+
+def test_harness_cli_pm_exec_dispatch(monkeypatch):
+    from harness.cli import main as harness_main
+    import puppetmaster.cli
+
+    mock_pm_main = MagicMock(return_value=42)
+    monkeypatch.setattr(puppetmaster.cli, "main", mock_pm_main)
+
+    code = harness_main(["pm-exec", "codegraph", "init", "--index"])
+    assert code == 42
+    mock_pm_main.assert_called_once_with(["codegraph", "init", "--index"])
+

@@ -135,6 +135,9 @@ def main(argv=None) -> int:
         print(f"harness {__version__}")
         return 0
     # Subcommand dispatch. Default (no subcommand) = run a task.
+    if raw and raw[0] == "pm-exec":
+        from puppetmaster.cli import main as _pm_main
+        return _pm_main(raw[1:])
     if raw and raw[0] == "gui":
         return _run_gui(raw[1:])
     if raw and raw[0] == "eval":

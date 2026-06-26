@@ -53,6 +53,16 @@ def _puppetmaster_available() -> bool:
     if _PM_AVAILABLE_CACHE is not None:
         return _PM_AVAILABLE_CACHE
 
+    is_frozen = getattr(sys, "frozen", False)
+    if is_frozen:
+        try:
+            import puppetmaster
+            _PM_AVAILABLE_CACHE = True
+            return True
+        except ImportError:
+            _PM_AVAILABLE_CACHE = False
+            return False
+
     # 1. env override: os.environ.get("PMHARNESS_PYTHON") if set and exists.
     env_py = os.environ.get("PMHARNESS_PYTHON")
     if env_py and os.path.exists(env_py):
@@ -105,6 +115,10 @@ def _puppetmaster_available() -> bool:
     return False
 
 def _puppetmaster_cmd(*args) -> list[str]:
+    is_frozen = getattr(sys, "frozen", False)
+    if is_frozen:
+        return [sys.executable, "pm-exec", *args]
+
     pm_script = shutil.which("puppetmaster")
     if pm_script:
         return [pm_script, *args]
