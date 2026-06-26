@@ -283,6 +283,143 @@ def build_tools_schema(mcp_tools: Optional[list] = None) -> list:
     return schema
 
 
+def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> PilotAction:
+    if name.startswith("mcp_"):
+        parts = name.split("_", 2)
+        if len(parts) >= 3:
+            server = parts[1]
+            tool_name = parts[2]
+            kind = "call_mcp"
+            tool = f"{server}.{tool_name}"
+        else:
+            kind = "call_mcp"
+            tool = name[4:]
+
+        return PilotAction(
+            kind=kind,
+            tool=tool,
+            arguments=args,
+            tool_call_id=tool_call_id
+        ).validate()
+    elif name in VALID_ACTION_KINDS:
+        kind = name
+        path = args.get("path") or ""
+        content = args.get("content") or ""
+        command = args.get("command") or ""
+        query = args.get("query") or ""
+        url = args.get("url") or ""
+        goal = args.get("goal") or ""
+        roles = args.get("roles") or []
+        if isinstance(roles, str):
+            roles = [roles]
+
+        return PilotAction(
+            kind=kind,
+            path=path,
+            content=content,
+            command=command,
+            query=query,
+            url=url,
+            goal=goal,
+            roles=roles,
+            arguments=args,
+            tool_call_id=tool_call_id
+        ).validate()
+    else:
+        raise PilotError(f"unknown native tool name: {name}")
+
+
+def _parse_lenient_json(s: str) -> dict:
+    s = s.strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    import ast
+    try:
+        py_s = s.replace("true", "True").replace("false", "False").replace("null", "None")
+        val = ast.literal_eval(py_s)
+        if isinstance(val, dict):
+            return val
+    except Exception:
+        pass
+    raise ValueError("Failed to parse JSON")
+
+
+def parse_inline_tool_calls(content: str) -> list[PilotAction]:
+    actions = []
+    if not content:
+        return actions
+
+    idx = 0
+
+    # 1. Shape B/C: <tool_call> ... </tool_call>
+    for tc_match in re.finditer(r'<tool_call>(.*?)</tool_call>', content, re.DOTALL):
+        inside = tc_match.group(1)
+        span = _first_balanced_braces(inside)
+        if span:
+            try:
+                obj = _parse_lenient_json(span)
+                if isinstance(obj, dict):
+                    name = obj.get("name") or obj.get("action") or ""
+                    arguments = obj.get("arguments") or obj.get("args") or {}
+                    if name:
+                        try:
+                            idx += 1
+                            tc_id = f"call_inline_{idx}"
+                            action = _tool_name_to_action(name, arguments, tool_call_id=tc_id)
+                            actions.append(action)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    # 2. Shape A: <function=NAME> ... </function>
+    matches = list(re.finditer(r'<function=([^>\s]+)>', content))
+    for i, m in enumerate(matches):
+        name = m.group(1)
+        start_idx = m.end()
+        end_idx = matches[i+1].start() if i + 1 < len(matches) else len(content)
+        sub = content[start_idx:end_idx]
+        
+        close_idx = sub.find("</function>")
+        if close_idx >= 0:
+            sub = sub[:close_idx]
+            
+        args = {}
+        p_matches = list(re.finditer(r'<parameter=([^>\s]+)>', sub))
+        for j, pm in enumerate(p_matches):
+            p_name = pm.group(1)
+            p_start = pm.end()
+            p_end = p_matches[j+1].start() if j + 1 < len(p_matches) else len(sub)
+            p_sub = sub[p_start:p_end]
+            p_close = p_sub.find("</parameter>")
+            if p_close >= 0:
+                p_val = p_sub[:p_close].strip()
+            else:
+                p_val = p_sub.strip()
+            args[p_name] = p_val
+            
+        try:
+            idx += 1
+            tc_id = f"call_inline_{idx}"
+            action = _tool_name_to_action(name, args, tool_call_id=tc_id)
+            actions.append(action)
+        except Exception:
+            pass
+            
+    return actions
+
+
+def strip_inline_tool_calls(content: str) -> str:
+    if not content:
+        return ""
+    content = re.sub(r'<function=[^>\s]+>.*?(?:</function>|$)', '', content, flags=re.DOTALL)
+    content = re.sub(r'<tool_call>.*?(?:</tool_call>|$)', '', content, flags=re.DOTALL)
+    content = re.sub(r'</tool_call>', '', content)
+    return content.strip()
+
+
 def parse_tool_calls(tool_calls: list) -> list[PilotAction]:
     actions = []
     if not tool_calls:
@@ -307,49 +444,13 @@ def parse_tool_calls(tool_calls: list) -> list[PilotAction]:
         else:
             args = {}
 
-        if name.startswith("mcp_"):
-            parts = name.split("_", 2)
-            if len(parts) >= 3:
-                server = parts[1]
-                tool_name = parts[2]
-                kind = "call_mcp"
-                tool = f"{server}.{tool_name}"
-            else:
-                kind = "call_mcp"
-                tool = name[4:]
-
-            actions.append(PilotAction(
-                kind=kind,
-                tool=tool,
-                arguments=args,
-                tool_call_id=tc_id
-            ).validate())
-        elif name in VALID_ACTION_KINDS:
-            kind = name
-            path = args.get("path") or ""
-            content = args.get("content") or ""
-            command = args.get("command") or ""
-            query = args.get("query") or ""
-            url = args.get("url") or ""
-            goal = args.get("goal") or ""
-            roles = args.get("roles") or []
-            if isinstance(roles, str):
-                roles = [roles]
-
-            actions.append(PilotAction(
-                kind=kind,
-                path=path,
-                content=content,
-                command=command,
-                query=query,
-                url=url,
-                goal=goal,
-                roles=roles,
-                arguments=args,
-                tool_call_id=tc_id
-            ).validate())
-        else:
-            raise PilotError(f"unknown native tool name: {name}")
+        try:
+            action = _tool_name_to_action(name, args, tool_call_id=tc_id)
+            actions.append(action)
+        except Exception as e:
+            if isinstance(e, PilotError):
+                raise
+            raise PilotError(str(e))
 
     return actions
 

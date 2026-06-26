@@ -329,8 +329,32 @@ class ConversationalSession:
 
             if is_native:
                 try:
-                    from .pilot import parse_tool_calls, PilotTurn
-                    actions = parse_tool_calls(tool_calls)
+                    from .pilot import parse_tool_calls, PilotTurn, parse_inline_tool_calls, strip_inline_tool_calls
+                    if not tool_calls and pure_content:
+                        inline_actions = parse_inline_tool_calls(pure_content)
+                        if inline_actions:
+                            import json
+                            synthetic_tool_calls = []
+                            for act in inline_actions:
+                                name = act.kind
+                                if act.kind == "call_mcp" and act.tool:
+                                    name = f"mcp_{act.tool.replace('.', '_')}"
+                                synthetic_tool_calls.append({
+                                    "id": act.tool_call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": json.dumps(act.arguments)
+                                    }
+                                })
+                            tool_calls = synthetic_tool_calls
+                            actions = inline_actions
+                            pure_content = strip_inline_tool_calls(pure_content)
+                        else:
+                            actions = parse_tool_calls(tool_calls)
+                    else:
+                        actions = parse_tool_calls(tool_calls)
+
                     turn = PilotTurn(say=pure_content, thinking=reasoning, actions=actions)
                 except Exception as e:
                     yield ConvEvent("error", {"error": f"native tool parsing error: {e}"})

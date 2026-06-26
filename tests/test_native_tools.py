@@ -190,6 +190,44 @@ class _FakeNativePilot:
             )
 
 
+class _FakeInlinePilot:
+    name = "fake-inline-pilot"
+    
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, task_prompt: str, *, system: Optional[str] = None) -> Any:
+        from pmharness.drivers.openai_compat import DriverResponse
+        return DriverResponse(text="")
+
+    def chat(self, messages: list, *, tools: list | None = None, system: str | None = None) -> Any:
+        from pmharness.drivers.openai_compat import DriverResponse
+        self.calls += 1
+        if self.calls == 1:
+            # Emit an inline tool call with empty structured tool_calls
+            return DriverResponse(
+                text='<function=read_file>\n<parameter=path>\nAGENTS.md\n</parameter>\n</function>\n</tool_call>',
+                tokens_out=15,
+                latency_ms=1.0,
+                meta={
+                    "tool_calls": [],
+                    "reasoning": "Checking AGENTS.md inline.",
+                    "finish_reason": "stop"
+                }
+            )
+        else:
+            return DriverResponse(
+                text="I have read AGENTS.md via inline fallback and it is clean.",
+                tokens_out=20,
+                latency_ms=1.0,
+                meta={
+                    "tool_calls": [],
+                    "reasoning": "Now answering after inline execution.",
+                    "finish_reason": "stop"
+                }
+            )
+
+
 def test_conversation_smoke_native_turn(monkeypatch):
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp(), repo=tempfile.mkdtemp())
     s = ConversationalSession(cfg)
@@ -216,3 +254,111 @@ def test_conversation_smoke_native_turn(monkeypatch):
     assistant_with_tools = [m for m in s._history if m.get("role") == "assistant" and m.get("tool_calls")]
     assert len(assistant_with_tools) == 1
     assert assistant_with_tools[0]["tool_calls"][0]["id"] == "tc_smoke_1"
+
+
+def test_conversation_inline_fallback_turn():
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp(), repo=tempfile.mkdtemp())
+    s = ConversationalSession(cfg)
+    s.pilot = _FakeInlinePilot()
+
+    events = list(s.send("Please read AGENTS.md."))
+    kinds = [e.kind for e in events]
+    
+    assert "thinking" in kinds
+    assert "action_start" in kinds
+    assert "action_result" in kinds
+    assert "message" in kinds
+    assert kinds[-1] == "assistant_done"
+
+    # Verify history structure: role: tool message was appended
+    tool_msgs = [m for m in s._history if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    # Check that synthetic tool call ID is used
+    assert tool_msgs[0]["tool_call_id"] == "call_inline_1"
+    assert "File not found" in tool_msgs[0]["content"]
+
+    # Verify assistant message has native tool_calls
+    assistant_with_tools = [m for m in s._history if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert len(assistant_with_tools) == 1
+    assert assistant_with_tools[0]["tool_calls"][0]["id"] == "call_inline_1"
+
+
+def test_parse_inline_tool_calls_qwen_shape():
+    from harness.pilot import parse_inline_tool_calls
+    
+    # (a) parse_inline_tool_calls parses the EXACT qwen shape seen live
+    content = '<function=read_file>\n<parameter=path>\nREADME.md\n</parameter>\n</function>\n</tool_call>'
+    actions = parse_inline_tool_calls(content)
+    assert len(actions) == 1
+    assert actions[0].kind == "read_file"
+    assert actions[0].path == "README.md"
+    assert actions[0].tool_call_id == "call_inline_1"
+
+
+def test_parse_inline_tool_calls_shape_b():
+    from harness.pilot import parse_inline_tool_calls
+    
+    # (b) parses Shape B
+    content = '<tool_call>\n{"name":"run_command","arguments":{"command":"ls"}}\n</tool_call>'
+    actions = parse_inline_tool_calls(content)
+    assert len(actions) == 1
+    assert actions[0].kind == "run_command"
+    assert actions[0].command == "ls"
+    assert actions[0].tool_call_id == "call_inline_1"
+
+
+def test_parse_inline_tool_calls_mcp():
+    from harness.pilot import parse_inline_tool_calls
+    
+    # (c) parses an mcp_<server>_<tool> inline call
+    content = '<tool_call>\n{"name":"mcp_todo_add_item","arguments":{"item":"buy milk"}}\n</tool_call>'
+    actions = parse_inline_tool_calls(content)
+    assert len(actions) == 1
+    assert actions[0].kind == "call_mcp"
+    assert actions[0].tool == "todo.add_item"
+    assert actions[0].arguments == {"item": "buy milk"}
+    assert actions[0].tool_call_id == "call_inline_1"
+
+
+def test_parse_inline_tool_calls_multiple():
+    from harness.pilot import parse_inline_tool_calls
+    
+    # (d) multiple <function=...> blocks
+    content = (
+        'Let me run two tools:\n'
+        '<function=read_file>\n<parameter=path>\nfoo.py\n</parameter>\n</function>\n'
+        'and then list:\n'
+        '<function=list_dir>\n<parameter=path>\nbar\n</parameter>\n</function>'
+    )
+    actions = parse_inline_tool_calls(content)
+    assert len(actions) == 2
+    assert actions[0].kind == "read_file"
+    assert actions[0].path == "foo.py"
+    assert actions[1].kind == "list_dir"
+    assert actions[1].path == "bar"
+
+
+def test_parse_inline_tool_calls_truncated():
+    from harness.pilot import parse_inline_tool_calls
+    
+    # (e) a truncated <function=list_dir><parameter=path>.</parameter> with no closing </function>
+    content = '<function=list_dir><parameter=path>.</parameter>'
+    actions = parse_inline_tool_calls(content)
+    assert len(actions) == 1
+    assert actions[0].kind == "list_dir"
+    assert actions[0].path == "."
+
+
+def test_strip_inline_tool_calls():
+    from harness.pilot import strip_inline_tool_calls, parse_inline_tool_calls
+    
+    # (f) strip_inline_tool_calls removes the blocks, leaving real prose
+    content = 'Hello! Let me do this for you:\n<function=read_file>\n<parameter=path>README.md</parameter></function>\nHope you like it!'
+    stripped = strip_inline_tool_calls(content)
+    assert stripped == 'Hello! Let me do this for you:\n\nHope you like it!'
+    
+    # No tool calls
+    normal = 'Just some standard prose saying <function> is cool but not a tool call.'
+    assert strip_inline_tool_calls(normal) == normal
+    assert parse_inline_tool_calls(normal) == []
+
