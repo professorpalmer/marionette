@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 import { Database, Globe, FolderTree, GitBranch, GitFork, Plug, Settings, SquareTerminal, Columns, Rows, Split, X, History, GitPullRequest } from "lucide-react";
 import StatePane from "./StatePane";
 import BrowserPane from "./BrowserPane";
@@ -27,6 +27,25 @@ const TAB_CONFIG: Record<Tab, { label: string; icon: React.ReactNode }> = {
   review: { label: "Review", icon: <GitPullRequest size={12} /> },
 };
 
+// Visual grouping for the tab bar: Workspace | Changes | Tools, with Settings pinned last.
+// A thin divider is rendered between groups so 10 icons read as 3 organized clusters
+// instead of one crowded row. Group membership also drives the canonical default order.
+const TAB_GROUPS: { group: string; tabs: Tab[] }[] = [
+  { group: "workspace", tabs: ["state", "files", "git", "worktrees", "terminal"] },
+  { group: "changes", tabs: ["review", "checkpoints"] },
+  { group: "tools", tabs: ["browser", "mcp"] },
+];
+// Settings is intentionally separated and rendered last (after a flex spacer).
+const PINNED_LAST: Tab = "settings";
+const groupOf = (t: Tab): string => {
+  for (const g of TAB_GROUPS) if (g.tabs.includes(t)) return g.group;
+  return "settings";
+};
+const CANONICAL_ORDER: Tab[] = [
+  ...TAB_GROUPS.flatMap(g => g.tabs),
+  PINNED_LAST,
+];
+
 interface SplitState {
   isSplit: boolean;
   primaryTab: Tab;
@@ -49,15 +68,17 @@ export default function RightPane({ artifacts, onOpenWizard }: {
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as Tab[];
-        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "checkpoints", "review"];
+        const validTabs: Tab[] = CANONICAL_ORDER.slice();
         const filtered = parsed.filter(t => validTabs.includes(t));
         const missing = validTabs.filter(t => !filtered.includes(t));
-        return [...filtered, ...missing];
+        // Always keep Settings pinned last regardless of saved order.
+        const merged = [...filtered, ...missing].filter(t => t !== PINNED_LAST);
+        return [...merged, PINNED_LAST];
       } catch (e) {
         // fallback
       }
     }
-    return ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "checkpoints", "review"];
+    return CANONICAL_ORDER.slice();
   });
 
   const saveTabOrder = (newOrder: Tab[]) => {
@@ -252,26 +273,39 @@ export default function RightPane({ artifacts, onOpenWizard }: {
         >
           {/* Primary Tab Bar */}
           <div className="flex flex-nowrap border-b border-edge overflow-x-auto scrollbar-none select-none">
-            {tabOrder.map((tabName) => {
+            {tabOrder.filter(t => t !== PINNED_LAST).map((tabName, idx, arr) => {
               const config = TAB_CONFIG[tabName];
-              const show = false; // icon-only always -- labels caused resize/stretch issues; tooltips via title attr
+              const prev = idx > 0 ? arr[idx - 1] : null;
+              const newGroup = prev !== null && groupOf(prev) !== groupOf(tabName);
               return (
-                <TabBtn
-                  key={tabName}
-                  active={splitState.primaryTab === tabName}
-                  onClick={() => updateSplitState({ primaryTab: tabName })}
-                  icon={config.icon}
-                  label={config.label}
-                  showLabel={show}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, tabName)}
-                  onDragOver={(e) => handleDragOver(e, tabName)}
-                  onDragEnd={handleDragEnd}
-                  className={draggedTab === tabName ? "opacity-30" : ""}
-                  badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
-                />
+                <Fragment key={tabName}>
+                  {newGroup && <span className="self-center h-4 w-px bg-edge/60 mx-0.5 shrink-0" aria-hidden />}
+                  <TabBtn
+                    active={splitState.primaryTab === tabName}
+                    onClick={() => updateSplitState({ primaryTab: tabName })}
+                    icon={config.icon}
+                    label={config.label}
+                    showLabel={false}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, tabName)}
+                    onDragOver={(e) => handleDragOver(e, tabName)}
+                    onDragEnd={handleDragEnd}
+                    className={draggedTab === tabName ? "opacity-30" : ""}
+                    badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
+                  />
+                </Fragment>
               );
             })}
+            {/* Settings pinned to the far end */}
+            <span className="flex-1 min-w-[4px]" aria-hidden />
+            <TabBtn
+              active={splitState.primaryTab === PINNED_LAST}
+              onClick={() => updateSplitState({ primaryTab: PINNED_LAST })}
+              icon={TAB_CONFIG[PINNED_LAST].icon}
+              label={TAB_CONFIG[PINNED_LAST].label}
+              showLabel={false}
+              className={`shrink-0 ${draggedTab === PINNED_LAST ? "opacity-30" : ""}`}
+            />
 
             {/* Split controls */}
             <div className="flex items-center px-1 border-l border-edge bg-panel2/35 gap-0.5 shrink-0 select-none">
@@ -330,26 +364,38 @@ export default function RightPane({ artifacts, onOpenWizard }: {
           >
             {/* Secondary Tab Bar */}
             <div className="flex flex-nowrap border-b border-edge overflow-x-auto scrollbar-none select-none">
-              {tabOrder.map((tabName) => {
+              {tabOrder.filter(t => t !== PINNED_LAST).map((tabName, idx, arr) => {
                 const config = TAB_CONFIG[tabName];
-                const show = false; // icon-only always -- labels caused resize/stretch issues; tooltips via title attr
+                const prev = idx > 0 ? arr[idx - 1] : null;
+                const newGroup = prev !== null && groupOf(prev) !== groupOf(tabName);
                 return (
-                  <TabBtn
-                    key={tabName}
-                    active={splitState.secondaryTab === tabName}
-                    onClick={() => updateSplitState({ secondaryTab: tabName })}
-                    icon={config.icon}
-                    label={config.label}
-                    showLabel={show}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, tabName)}
-                    onDragOver={(e) => handleDragOver(e, tabName)}
-                    onDragEnd={handleDragEnd}
-                    className={draggedTab === tabName ? "opacity-30" : ""}
-                    badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
-                  />
+                  <Fragment key={tabName}>
+                    {newGroup && <span className="self-center h-4 w-px bg-edge/60 mx-0.5 shrink-0" aria-hidden />}
+                    <TabBtn
+                      active={splitState.secondaryTab === tabName}
+                      onClick={() => updateSplitState({ secondaryTab: tabName })}
+                      icon={config.icon}
+                      label={config.label}
+                      showLabel={false}
+                      draggable
+                      onDragStart={(e) => handleDragStart(e, tabName)}
+                      onDragOver={(e) => handleDragOver(e, tabName)}
+                      onDragEnd={handleDragEnd}
+                      className={draggedTab === tabName ? "opacity-30" : ""}
+                      badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
+                    />
+                  </Fragment>
                 );
               })}
+              <span className="flex-1 min-w-[4px]" aria-hidden />
+              <TabBtn
+                active={splitState.secondaryTab === PINNED_LAST}
+                onClick={() => updateSplitState({ secondaryTab: PINNED_LAST })}
+                icon={TAB_CONFIG[PINNED_LAST].icon}
+                label={TAB_CONFIG[PINNED_LAST].label}
+                showLabel={false}
+                className="shrink-0"
+              />
 
               {/* Split controls for Secondary Pane */}
               <div className="flex items-center px-1 border-l border-edge bg-panel2/35 gap-0.5 shrink-0 select-none">
