@@ -391,7 +391,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/skills/reject", "/api/skills/archive",
                       "/api/rules/approve", "/api/rules/reject",
                       "/api/settings", "/api/providers/probe", "/api/wiki/config",
-                      "/api/platform",
+                      "/api/platform", "/api/reviews/apply", "/api/reviews/dismiss",
                       "/api/registry", "/api/roles", "/api/pilot/validate",
                       "/api/worktrees/add", "/api/worktrees/remove",
                       "/api/worktrees/prune", "/api/worktrees/max",
@@ -421,6 +421,21 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._send(400, json.dumps({"error": "invalid JSON"}))
         repo = _cfg.repo
+
+        if path == "/api/reviews/apply":
+            review_id = body.get("id", "").strip()
+            decisions = body.get("decisions", {})
+            if not review_id:
+                return self._send(400, json.dumps({"error": "Missing review id"}))
+            res = _pilot.apply_review(review_id, decisions)
+            return self._send(200, json.dumps(res))
+
+        if path == "/api/reviews/dismiss":
+            review_id = body.get("id", "").strip()
+            if not review_id:
+                return self._send(400, json.dumps({"error": "Missing review id"}))
+            success = _pilot.dismiss_review(review_id)
+            return self._send(200, json.dumps({"ok": success}))
         if path == "/api/session/compact":
             before = _pilot._estimate_context_tokens()
             orig_tokens = getattr(_cfg, "max_context_tokens", 96000)
@@ -792,6 +807,10 @@ class Handler(BaseHTTPRequestHandler):
                 ad_val = _parse_bool(body["auto_distill"])
                 _pilot._auto_distill = ad_val
                 os.environ["HARNESS_AUTO_DISTILL"] = "true" if ad_val else "false"
+            if "reviewEditsBeforeApply" in body:
+                rev_val = _parse_bool(body["reviewEditsBeforeApply"])
+                _pilot._review_edits_before_apply = rev_val
+                os.environ["HARNESS_REVIEW_EDITS_BEFORE_APPLY"] = "true" if rev_val else "false"
 
             return self._send(200, json.dumps(_get_settings_dict()))
 
@@ -1353,6 +1372,15 @@ class Handler(BaseHTTPRequestHandler):
             }))
         if u.path == "/api/settings":
             return self._send(200, json.dumps(_get_settings_dict()))
+        if u.path == "/api/reviews":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            with _pilot._pending_reviews_lock:
+                reviews_list = list(_pilot._pending_reviews.values())
+            return self._send(200, json.dumps(reviews_list))
         if u.path == "/api/platform":
             return self._send(200, json.dumps(_get_platform_adapters()))
         if u.path == "/api/jobs":
@@ -1858,6 +1886,7 @@ def _get_settings_dict():
         "budget": _cfg.budget,
         "models": _available_pilots(),
         "auto_distill": getattr(_pilot, "_auto_distill", False),
+        "reviewEditsBeforeApply": getattr(_pilot, "_review_edits_before_apply", False),
         "wiki_auto": getattr(_cfg, "wiki_auto", False),
         "state_dir": _session.state_dir,
         "repo": _cfg.repo,

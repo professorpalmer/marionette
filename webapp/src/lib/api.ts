@@ -12,6 +12,7 @@ export type Settings = {
   budget: number;
   models: string[];
   auto_distill: boolean;
+  reviewEditsBeforeApply?: boolean;
   wiki_auto?: boolean;
   state_dir: string;
   repo: string;
@@ -19,6 +20,26 @@ export type Settings = {
   api_key_masked?: string;
   key_env_var?: string;
   preflight_ok?: boolean;
+};
+
+export type PendingReviewHunk = {
+  id: string;
+  header: string;
+  lines: string[];
+  status: "pending" | "accept" | "reject";
+};
+
+export type PendingReviewFile = {
+  path: string;
+  hunks: PendingReviewHunk[];
+};
+
+export type PendingReview = {
+  id: string;
+  job_id: string;
+  objective: string;
+  files: PendingReviewFile[];
+  created_at: number;
 };
 export type Job = { id: string; goal: string; status: string };
 export type Artifact = { type: string; headline: string; confidence?: number };
@@ -248,4 +269,9 @@ export const api = {
 
   getPlatform: () => getJSON<{ adapters: PlatformAdapter[] }>("/api/platform"),
   togglePlatform: (name: string, enabled: boolean) => postJSON<{ adapters: PlatformAdapter[] }>("/api/platform", { name, enabled }),
+
+  getReviews: () => getJSON<PendingReview[]>(withToken("/api/reviews")),
+  applyReview: (id: string, decisions: Record<string, "accept" | "reject">) =>
+    postJSON<{ ok: boolean; applied_files: string[]; rejected_hunks: string[]; checkpoint_id: string | null; message: string }>("/api/reviews/apply", { id, decisions }),
+  dismissReview: (id: string) => postJSON<{ ok: boolean }>("/api/reviews/dismiss", { id }),
 };

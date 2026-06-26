@@ -235,6 +235,10 @@ class ConversationalSession:
         # auto-distill: when on, run_auto proposes PENDING skill/rule candidates on
         # completion (still human-gated for approval). Off by default.
         self._auto_distill = os.environ.get("HARNESS_AUTO_DISTILL", "").strip() in ("1", "true", "yes")
+        # diff review: opt-in mode to hold agent edits for approval
+        self._review_edits_before_apply = os.environ.get("HARNESS_REVIEW_EDITS_BEFORE_APPLY", "").strip() in ("1", "true", "yes")
+        self._pending_reviews = {}
+        self._pending_reviews_lock = threading.Lock()
         self._state = "idle"
         
         import queue
@@ -256,6 +260,91 @@ class ConversationalSession:
     def has_pending_swarms(self) -> bool:
         with self._swarm_futures_lock:
             return len(self._swarm_futures) > 0
+
+    def apply_review(self, review_id: str, decisions: dict) -> dict:
+        with self._pending_reviews_lock:
+            review = self._pending_reviews.get(review_id)
+            if not review:
+                return {
+                    "ok": False,
+                    "applied_files": [],
+                    "rejected_hunks": [],
+                    "checkpoint_id": None,
+                    "message": "Pending review not found"
+                }
+
+        rejected_hunks = []
+        all_hunks = []
+        for f in review["files"]:
+            for h in f["hunks"]:
+                h_id = h["id"]
+                all_hunks.append(h_id)
+                dec = decisions.get(h_id, "reject")
+                if dec == "reject":
+                    rejected_hunks.append(h_id)
+
+        # Reconstruct the accepted subset diff
+        from .diffreview import reconstruct_diff
+        accepted_diff = reconstruct_diff(review["files"], decisions)
+        
+        applied_files = []
+        for f in review["files"]:
+            if any(decisions.get(h["id"]) == "accept" for h in f["hunks"]):
+                applied_files.append(f["path"])
+
+        # If ALL hunks are rejected, do not apply anything, just remove the review
+        if len(rejected_hunks) == len(all_hunks):
+            with self._pending_reviews_lock:
+                self._pending_reviews.pop(review_id, None)
+            return {
+                "ok": True,
+                "applied_files": [],
+                "rejected_hunks": rejected_hunks,
+                "checkpoint_id": None,
+                "message": "All hunks were rejected. No changes applied."
+            }
+
+        mock_artifacts = [
+            {
+                "type": "patch",
+                "payload": {
+                    "files": applied_files,
+                    "unified_diff": accepted_diff
+                }
+            }
+        ]
+        
+        with self._apply_lock:
+            applied, files_changed, apply_msg = self._apply_worker_patch(mock_artifacts, review.get("job_id", ""))
+            cp_id = getattr(self, "_last_checkpoint_id", None)
+
+        if applied:
+            with self._pending_reviews_lock:
+                self._pending_reviews.pop(review_id, None)
+            return {
+                "ok": True,
+                "applied_files": files_changed,
+                "rejected_hunks": rejected_hunks,
+                "checkpoint_id": cp_id,
+                "message": f"Successfully applied: {apply_msg}"
+            }
+        else:
+            with self._pending_reviews_lock:
+                self._pending_reviews.pop(review_id, None)
+            return {
+                "ok": False,
+                "applied_files": [],
+                "rejected_hunks": rejected_hunks,
+                "checkpoint_id": cp_id,
+                "message": f"Failed to apply: {apply_msg}"
+            }
+
+    def dismiss_review(self, review_id: str) -> bool:
+        with self._pending_reviews_lock:
+            if review_id in self._pending_reviews:
+                self._pending_reviews.pop(review_id)
+                return True
+            return False
 
 
 
@@ -1631,7 +1720,7 @@ class ConversationalSession:
             pass
         return "hermes"  # fallback
 
-    def _await_and_apply_job(self, job_id: str, state_dir: Optional[str] = None) -> dict:
+    def _await_and_apply_job(self, job_id: str, state_dir: Optional[str] = None, objective: str = "") -> dict:
         import json
         import subprocess
         # 1. Await job
@@ -1708,22 +1797,63 @@ class ConversationalSession:
         # CORRECTNESS (comment these in code): Guard the git apply operation with self._apply_lock
         # so two concurrent backgrounded swarms cannot attempt to run git apply / git merge simultaneously,
         # which would cause repository index/state corruption.
-        with self._apply_lock:
-            applied, applied_files, apply_msg = self._apply_worker_patch(artifacts, job_id)
-            cp_id = getattr(self, "_last_checkpoint_id", None)
         has_patch_art = any(isinstance(a, dict) and a.get("type") == "patch" for a in artifacts)
-        
-        apply_summary = ""
-        if has_patch_art:
-            if applied:
-                apply_summary = f"Applied patch to {len(applied_files)} files: {', '.join(applied_files)}"
-            else:
-                apply_summary = f"PATCH DID NOT APPLY: {apply_msg}"
+        held_for_review = False
+        pending_review_info = None
+
+        if has_patch_art and getattr(self, "_review_edits_before_apply", False):
+            held_for_review = True
+            
+            # Find patch artifact and parse it
+            patch_art = next((a for a in artifacts if isinstance(a, dict) and a.get("type") == "patch"), None)
+            payload = patch_art.get("payload") or {}
+            diff_text = payload.get("unified_diff") or ""
+            
+            from .diffreview import parse_unified_diff
+            parsed_files = parse_unified_diff(diff_text)
+            
+            import uuid
+            import time
+            review_id = f"rev-{uuid.uuid4().hex[:8]}"
+            
+            pending_review = {
+                "id": review_id,
+                "job_id": job_id,
+                "objective": objective or "Implement edits",
+                "files": parsed_files,
+                "created_at": time.time()
+            }
+            
+            with self._pending_reviews_lock:
+                self._pending_reviews[review_id] = pending_review
+                
+            pending_review_info = {
+                "id": review_id,
+                "summary": f"Held {len(parsed_files)} files for review"
+            }
+            
+            applied = False
+            applied_files = []
+            apply_msg = "held for review"
+            cp_id = None
+            
+            apply_summary = f"Patch held for review (ID: {review_id})"
+        else:
+            with self._apply_lock:
+                applied, applied_files, apply_msg = self._apply_worker_patch(artifacts, job_id)
+                cp_id = getattr(self, "_last_checkpoint_id", None)
+            
+            apply_summary = ""
+            if has_patch_art:
+                if applied:
+                    apply_summary = f"Applied patch to {len(applied_files)} files: {', '.join(applied_files)}"
+                else:
+                    apply_summary = f"PATCH DID NOT APPLY: {apply_msg}"
         
         if apply_summary:
             summary = f"{summary}\n{apply_summary}" if summary else apply_summary
 
-        error = f"PATCH DID NOT APPLY: {apply_msg}" if (has_patch_art and not applied) else None
+        error = f"PATCH DID NOT APPLY: {apply_msg}" if (has_patch_art and not applied and not held_for_review) else None
 
         return {
             "job_id": job_id,
@@ -1740,6 +1870,8 @@ class ConversationalSession:
             "artifact_types": artifact_types,
             "ar_list": ar_list,
             "checkpoint_id": cp_id,
+            "held_for_review": held_for_review,
+            "pending_review": pending_review_info
         }
 
     def _run_swarm_background(self, job_id: str, objective: str, state_dir: Optional[str] = None) -> None:
@@ -1747,7 +1879,7 @@ class ConversationalSession:
             # CORRECTNESS: Do NOT touch self._history here to maintain single-writer invariant.
             # Background threads are strictly read-only or local-variable-only with respect to transcript memory,
             # ensuring that the self._history shared list is never corrupted by concurrent modifications.
-            res_dict = self._await_and_apply_job(job_id, state_dir=state_dir)
+            res_dict = self._await_and_apply_job(job_id, state_dir=state_dir, objective=objective)
             
             # Put result in queue
             self._swarm_results.put({
@@ -1807,6 +1939,8 @@ class ConversationalSession:
                 msg_content = f"[swarm result for: {objective}] {summary}"
                 if applied and applied_files:
                     msg_content += f"; applied {len(applied_files)} files"
+                elif res_job.get("held_for_review"):
+                    msg_content += f"; held for review"
                 elif res_job.get("has_patch_art") and not applied:
                     msg_content += f"; patch failed to apply: {res_job.get('apply_msg')}"
                 
@@ -1819,6 +1953,13 @@ class ConversationalSession:
                     "result": res_job,
                     "message": msg_content
                 })
+
+                pending_review = res_job.get("pending_review")
+                if pending_review:
+                    yield ConvEvent("pending_review", {
+                        "id": pending_review["id"],
+                        "summary": pending_review["summary"]
+                    })
 
                 checkpoint_id = res_job.get("checkpoint_id")
                 if checkpoint_id:

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Database, Globe, FolderTree, GitBranch, GitFork, Plug, Settings, SquareTerminal, Columns, Rows, Split, X, History } from "lucide-react";
+import { Database, Globe, FolderTree, GitBranch, GitFork, Plug, Settings, SquareTerminal, Columns, Rows, Split, X, History, GitPullRequest } from "lucide-react";
 import StatePane from "./StatePane";
 import BrowserPane from "./BrowserPane";
 import FileTree from "./FileTree";
@@ -9,8 +9,10 @@ import McpPane from "./McpPane";
 import SettingsPane from "./SettingsPane";
 import TerminalPane from "./TerminalPane";
 import CheckpointsPane from "./CheckpointsPane";
+import DiffReviewPane from "./DiffReviewPane";
+import { api, type PendingReview } from "../lib/api";
 
-type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "mcp" | "settings" | "checkpoints";
+type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "mcp" | "settings" | "checkpoints" | "review";
 
 const TAB_CONFIG: Record<Tab, { label: string; icon: React.ReactNode }> = {
   state: { label: "State", icon: <Database size={12} /> },
@@ -22,6 +24,7 @@ const TAB_CONFIG: Record<Tab, { label: string; icon: React.ReactNode }> = {
   mcp: { label: "MCP", icon: <Plug size={12} /> },
   settings: { label: "Settings", icon: <Settings size={12} /> },
   checkpoints: { label: "History", icon: <History size={12} /> },
+  review: { label: "Review", icon: <GitPullRequest size={12} /> },
 };
 
 interface SplitState {
@@ -46,7 +49,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as Tab[];
-        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "checkpoints"];
+        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "checkpoints", "review"];
         const filtered = parsed.filter(t => validTabs.includes(t));
         const missing = validTabs.filter(t => !filtered.includes(t));
         return [...filtered, ...missing];
@@ -54,7 +57,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
         // fallback
       }
     }
-    return ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "checkpoints"];
+    return ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "checkpoints", "review"];
   });
 
   const saveTabOrder = (newOrder: Tab[]) => {
@@ -94,7 +97,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "checkpoints"];
+        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "checkpoints", "review"];
         const primaryTab = validTabs.includes(parsed.primaryTab) ? parsed.primaryTab : "state";
         const secondaryTab = validTabs.includes(parsed.secondaryTab) ? parsed.secondaryTab : "terminal";
         return {
@@ -116,6 +119,24 @@ export default function RightPane({ artifacts, onOpenWizard }: {
       percent: 50,
     };
   });
+
+  const [reviews, setReviews] = useState<PendingReview[]>([]);
+
+  const fetchReviews = () => {
+    api.getReviews()
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setReviews(data);
+        }
+      })
+      .catch((err) => console.error("Failed to load reviews:", err));
+  };
+
+  useEffect(() => {
+    fetchReviews();
+    const interval = setInterval(fetchReviews, 4000);
+    return () => clearInterval(interval);
+  }, []);
 
   const updateSplitState = (updater: Partial<SplitState> | ((prev: SplitState) => SplitState)) => {
     setSplitState(prev => {
@@ -214,6 +235,8 @@ export default function RightPane({ artifacts, onOpenWizard }: {
         return <SettingsPane onOpenWizard={onOpenWizard} />;
       case "checkpoints":
         return <CheckpointsPane />;
+      case "review":
+        return <DiffReviewPane reviews={reviews} onRefresh={fetchReviews} />;
       default:
         return null;
     }
@@ -245,6 +268,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
                   onDragOver={(e) => handleDragOver(e, tabName)}
                   onDragEnd={handleDragEnd}
                   className={draggedTab === tabName ? "opacity-30" : ""}
+                  badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
                 />
               );
             })}
@@ -322,6 +346,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
                     onDragOver={(e) => handleDragOver(e, tabName)}
                     onDragEnd={handleDragEnd}
                     className={draggedTab === tabName ? "opacity-30" : ""}
+                    badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
                   />
                 );
               })}
@@ -356,7 +381,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
   );
 }
 
-function TabBtn({ active, onClick, icon, label, showLabel, draggable, onDragStart, onDragOver, onDragEnd, className }: {
+function TabBtn({ active, onClick, icon, label, showLabel, draggable, onDragStart, onDragOver, onDragEnd, className, badge }: {
   active: boolean;
   onClick: () => void;
   icon: React.ReactNode;
@@ -367,6 +392,7 @@ function TabBtn({ active, onClick, icon, label, showLabel, draggable, onDragStar
   onDragOver?: (e: React.DragEvent) => void;
   onDragEnd?: (e: React.DragEvent) => void;
   className?: string;
+  badge?: number;
 }) {
   const btnRef = useRef<HTMLButtonElement | null>(null);
 
@@ -388,7 +414,14 @@ function TabBtn({ active, onClick, icon, label, showLabel, draggable, onDragStar
       className={`flex-1 min-w-0 overflow-hidden flex items-center justify-center gap-1 py-2 px-1 text-[10px] uppercase tracking-wider font-medium transition whitespace-nowrap
         ${active ? "text-txt border-b-[1.5px] border-accent bg-panel2/10" : "text-faint hover:text-muted hover:bg-panel2/5"} ${className || ""}`}
     >
-      <span className="flex-shrink-0 flex items-center justify-center">{icon}</span>
+      <span className="flex-shrink-0 flex items-center justify-center relative">
+        {icon}
+        {badge !== undefined && (
+          <span className="absolute -top-1.5 -right-1.5 bg-accent text-panel text-[8px] font-bold h-3.5 w-3.5 flex items-center justify-center rounded-full border border-panel">
+            {badge}
+          </span>
+        )}
+      </span>
       {showLabel && <span className="text-[10px] tracking-wider select-none">{label}</span>}
     </button>
   );

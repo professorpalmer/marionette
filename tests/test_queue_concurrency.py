@@ -123,7 +123,7 @@ def test_queue_drains_while_swarm_pending(tmp_path):
         
         original_await_and_apply = session._await_and_apply_job
         
-        def mock_await_and_apply(job_id, state_dir=None):
+        def mock_await_and_apply(job_id, state_dir=None, objective=""):
             block_event.wait()
             return {
                 "job_id": job_id,

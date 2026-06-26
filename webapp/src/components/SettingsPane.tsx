@@ -236,6 +236,30 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </p>
         </div>
 
+        {/* Diff Review Toggle */}
+        <div className="space-y-1.5">
+          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+            Review Edits
+          </label>
+          <button
+            onClick={() => update({ reviewEditsBeforeApply: !settings.reviewEditsBeforeApply })}
+            disabled={saving}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
+              settings.reviewEditsBeforeApply
+                ? "bg-accent/10 border-accent/30 text-accent"
+                : "bg-panel2 border-edge text-muted"
+            } disabled:opacity-50`}
+          >
+            <span className="font-medium text-[11px]">Review edits before applying</span>
+            <span className="text-[10px] uppercase font-bold tracking-wider">
+              {settings.reviewEditsBeforeApply ? "on" : "off"}
+            </span>
+          </button>
+          <p className="text-[10px] text-muted">
+            When on, agent edits are held for your per-hunk approval instead of auto-applying.
+          </p>
+        </div>
+
         {/* API Key Section */}
         <div className="space-y-1.5 border-t border-edge pt-3">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
