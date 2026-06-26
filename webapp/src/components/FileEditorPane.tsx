@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Save, RotateCcw } from "lucide-react";
+import CodeMirror from "@uiw/react-codemirror";
+import { okaidia } from "@uiw/codemirror-theme-okaidia";
+import { keymap, EditorView } from "@codemirror/view";
+import { javascript } from "@codemirror/lang-javascript";
+import { python } from "@codemirror/lang-python";
+import { json } from "@codemirror/lang-json";
+import { css } from "@codemirror/lang-css";
+import { html } from "@codemirror/lang-html";
+import { markdown } from "@codemirror/lang-markdown";
 import { api } from "../lib/api";
 
 interface FileEditorPaneProps {
@@ -7,6 +16,43 @@ interface FileEditorPaneProps {
   onClose: () => void;
   onDirtyChange: (dirty: boolean) => void;
 }
+
+function getLanguageExtension(filePath: string) {
+  const ext = filePath.split(".").pop()?.toLowerCase() || "";
+  switch (ext) {
+    case "ts":
+    case "tsx":
+    case "js":
+    case "jsx":
+    case "mjs":
+    case "cjs":
+      return javascript({ jsx: true, typescript: true });
+    case "py":
+      return python();
+    case "json":
+      return json();
+    case "css":
+    case "scss":
+      return css();
+    case "html":
+      return html();
+    case "md":
+    case "markdown":
+      return markdown();
+    default:
+      return null;
+  }
+}
+
+const customTheme = EditorView.theme({
+  "&": {
+    fontSize: "13px",
+    height: "100%",
+  },
+  ".cm-scroller": {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+  },
+});
 
 export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEditorPaneProps) {
   const [content, setContent] = useState("");
@@ -16,9 +62,12 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
   const [isDirty, setIsDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [readOnly, setReadOnly] = useState(false);
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const lineNumbersRef = useRef<HTMLPreElement>(null);
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  useEffect(() => {
+    onDirtyChangeRef.current = onDirtyChange;
+  });
 
   useEffect(() => {
     let active = true;
@@ -31,8 +80,9 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
         if (res.ok) {
           setContent(res.content || "");
           setOriginalContent(res.content || "");
+          setReadOnly(!!res.truncated);
           setIsDirty(false);
-          onDirtyChange(false);
+          onDirtyChangeRef.current(false);
         } else if (res.binary) {
           setError("Binary file cannot be viewed or edited in-app");
         } else {
@@ -54,43 +104,18 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
     };
   }, [path]);
 
-  const handleScroll = () => {
-    if (textareaRef.current && lineNumbersRef.current) {
-      lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop;
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Tab") {
-      e.preventDefault();
-      const start = e.currentTarget.selectionStart;
-      const end = e.currentTarget.selectionEnd;
-      const value = e.currentTarget.value;
-      const newValue = value.substring(0, start) + "  " + value.substring(end);
-      setContent(newValue);
-      setIsDirty(true);
-      onDirtyChange(true);
-
-      setTimeout(() => {
-        if (textareaRef.current) {
-          textareaRef.current.selectionStart = textareaRef.current.selectionEnd = start + 2;
-        }
-      }, 0);
-    }
-  };
-
-  const handleSave = async () => {
+  const handleSave = async (currentContent: string = content) => {
     if (saving || !isDirty) return;
     setSaving(true);
     setSaveStatus("saving");
     setError(null);
     try {
-      const res = await api.writeFile(path, content);
+      const res = await api.writeFile(path, currentContent);
       if (res.ok) {
         setSaveStatus("saved");
         setIsDirty(false);
-        onDirtyChange(false);
-        setOriginalContent(content);
+        onDirtyChangeRef.current(false);
+        setOriginalContent(currentContent);
         // Let other components know (like workspace files tree or git view)
         window.dispatchEvent(new CustomEvent("harness-file-saved", { detail: { path } }));
         setTimeout(() => setSaveStatus("idle"), 2000);
@@ -106,11 +131,16 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
     }
   };
 
+  const handleSaveRef = useRef(handleSave);
+  useEffect(() => {
+    handleSaveRef.current = handleSave;
+  });
+
   const handleRevert = () => {
     if (window.confirm("Discard all local edits and restore file from disk?")) {
       setContent(originalContent);
       setIsDirty(false);
-      onDirtyChange(false);
+      onDirtyChangeRef.current(false);
     }
   };
 
@@ -119,7 +149,7 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        handleSave();
+        handleSave(content);
       }
     };
     window.addEventListener("keydown", handleGlobalKeyDown);
@@ -151,8 +181,26 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
     );
   }
 
-  const lineCount = content.split("\n").length;
-  const lineNumbers = Array.from({ length: Math.max(1, lineCount) }, (_, i) => i + 1).join("\n");
+  // Set up CodeMirror extensions dynamically
+  const extensions = [customTheme];
+  const langExt = getLanguageExtension(path);
+  if (langExt) {
+    extensions.push(langExt);
+  }
+
+  // Handle Cmd+S/Ctrl+S keymap within CodeMirror
+  extensions.push(
+    keymap.of([
+      {
+        key: "Mod-s",
+        run: (view) => {
+          const currentContent = view.state.doc.toString();
+          handleSaveRef.current(currentContent);
+          return true;
+        },
+      },
+    ])
+  );
 
   return (
     <div className="flex-1 flex flex-col bg-bg h-full min-h-0 overflow-hidden relative">
@@ -164,6 +212,11 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
           </span>
           {isDirty && (
             <span className="w-2 h-2 rounded-full bg-warn shrink-0" title="Unsaved changes" />
+          )}
+          {readOnly && (
+            <span className="px-1.5 py-0.5 rounded bg-panel2 border border-edge text-[9px] font-mono uppercase text-muted tracking-wider select-none shrink-0">
+              Read-only
+            </span>
           )}
         </div>
 
@@ -196,7 +249,7 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
               Revert
             </button>
             <button
-              onClick={handleSave}
+              onClick={() => handleSave(content)}
               disabled={!isDirty || saving}
               className={`flex items-center gap-1 px-2.5 py-1 rounded text-[11px] transition-colors border ${
                 isDirty && !saving
@@ -212,29 +265,29 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
         </div>
       </div>
 
-      {/* Editor area with synchronized scrolling */}
-      <div className="flex-1 flex overflow-hidden relative">
-        <pre
-          ref={lineNumbersRef}
-          className="w-12 bg-panel/10 text-right pr-2.5 select-none text-muted/50 py-3 overflow-hidden font-mono text-[13px] leading-relaxed border-r border-edge/30 select-none pointer-events-none"
-          style={{ margin: 0 }}
-        >
-          {lineNumbers}
-        </pre>
-        <textarea
-          ref={textareaRef}
+      {/* Editor area with CodeMirror */}
+      <div className="flex-1 overflow-hidden relative">
+        <CodeMirror
           value={content}
-          onChange={(e) => {
-            setContent(e.target.value);
+          theme={okaidia}
+          height="100%"
+          className="h-full text-[13px]"
+          extensions={extensions}
+          onChange={(val) => {
+            setContent(val);
             setIsDirty(true);
-            onDirtyChange(true);
+            onDirtyChangeRef.current(true);
           }}
-          onScroll={handleScroll}
-          onKeyDown={handleKeyDown}
-          className="flex-1 bg-transparent text-txt resize-none outline-none border-none p-3 overflow-auto font-mono text-[13px] leading-relaxed whitespace-pre focus:ring-0"
-          style={{ tabSize: 2 }}
-          placeholder="Write code here..."
-          spellCheck={false}
+          readOnly={readOnly}
+          basicSetup={{
+            lineNumbers: true,
+            highlightActiveLine: true,
+            bracketMatching: true,
+            foldGutter: false,
+            dropCursor: true,
+            allowMultipleSelections: true,
+            indentOnInput: true,
+          }}
         />
       </div>
     </div>
