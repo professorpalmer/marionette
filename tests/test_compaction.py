@@ -84,8 +84,9 @@ def test_maybe_compact_history_above_trigger():
     original_system = s._history[0]["content"]
     
     events = list(s._maybe_compact_history())
-    assert len(events) == 1
-    assert events[0].kind == "compaction"
+    assert len(events) == 2
+    assert events[0].kind == "compacting"
+    assert events[1].kind == "compaction"
     
     # Verify that the system message is completely unchanged
     assert s._history[0]["role"] == "system"
@@ -118,15 +119,16 @@ def test_fallback_truncation_on_pilot_failure():
             
     s.pilot = ErrorPilot()  # type: ignore
     
-    for i in range(12):
-        s._history.append({"role": "user", "content": f"Msg {i}: " + ("A" * 450)})
+    for i in range(24):
+        s._history.append({"role": "user", "content": f"Msg {i}: " + ("A" * 200)})
         
     before_tokens = s._estimate_context_tokens()
     assert before_tokens > 1125
     
     events = list(s._maybe_compact_history())
-    assert len(events) == 1
-    assert events[0].kind == "compaction"
+    assert len(events) == 2
+    assert events[0].kind == "compacting"
+    assert events[1].kind == "compaction"
     
     # Verify we compacted and didn't crash
     assert s._history[1]["role"] == "user"
@@ -197,3 +199,33 @@ def test_single_writer_synchronous_compaction():
     
     assert id(s._history) == original_id
     assert len(s._history) < 11
+
+
+def test_context_usage():
+    cfg = HarnessConfig(max_context_tokens=5000)
+    s = ConversationalSession(cfg)
+    s._history[0]["content"] = "This is base system content."
+    
+    # Let's add some simulated conversation turns
+    s._history.append({"role": "user", "content": "Hello computer"})
+    s._history.append({"role": "user", "content": "Summary of prior discussion", "_compressed_summary": True})
+    
+    usage = s.get_context_usage()
+    assert isinstance(usage, dict)
+    assert "total" in usage
+    assert "limit" in usage
+    assert "categories" in usage
+    assert usage["limit"] == 5000
+    
+    # Check that we have the 8 requested categories
+    cats = {c["name"]: c["tokens"] for c in usage["categories"]}
+    expected_keys = [
+        "System prompt", "Tool definitions", "Rules", "Skills", 
+        "MCP", "Subagent", "Summarized conversation", "Conversation"
+    ]
+    for key in expected_keys:
+        assert key in cats
+        
+    assert cats["Summarized conversation"] > 0
+    assert cats["Conversation"] > 0
+    assert cats["Subagent"] == 0

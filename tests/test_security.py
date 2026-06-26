@@ -309,3 +309,35 @@ def test_low_level_security_and_strict_parsing():
 
     finally:
         httpd.shutdown()
+
+
+def test_context_usage_security_and_api():
+    httpd, port, srv = _server()
+    try:
+        # 1. Without token -> 403
+        try:
+            _get(port, "/api/context/usage")
+            assert False, "should have been rejected with 403"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+
+        # 2. With bad token -> 403
+        try:
+            _get(port, "/api/context/usage?token=bad-token")
+            assert False, "should have been rejected with 403"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+
+        # 3. With good token -> 200 and valid breakdown
+        resp = _get(port, f"/api/context/usage?token={srv._TOKEN}")
+        assert resp.status == 200
+        data = json.loads(resp.read().decode("utf-8"))
+        assert "total" in data
+        assert "limit" in data
+        assert "categories" in data
+        
+        cats = {c["name"]: c["tokens"] for c in data["categories"]}
+        assert "System prompt" in cats
+        assert "Conversation" in cats
+    finally:
+        httpd.shutdown()

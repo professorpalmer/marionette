@@ -1466,7 +1466,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(_session.state().job_artifacts(jid)))
         # action endpoints (SSE) mutate state / spend budget -> guard them.
         if u.path in ("/api/run", "/api/chat", "/api/auto", "/api/pilot", "/api/sessions/transcript", "/api/sessions/export",
-                      "/api/providers", "/api/registry", "/api/roles", "/api/registry/recommend"):
+                      "/api/providers", "/api/registry", "/api/roles", "/api/registry/recommend", "/api/context/usage"):
             if self._guard():
                 return
             from urllib.parse import parse_qs as _pq
@@ -1569,6 +1569,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/pilot":
             q = parse_qs(u.query)
             return self._swap_pilot(q.get("model", [""])[0])
+        if u.path == "/api/context/usage":
+            try:
+                usage = _pilot.get_context_usage()
+                return self._send(200, json.dumps(usage))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)}))
         if u.path == "/api/workspaces":
             return self._send(200, json.dumps(_ws.list_workspaces(_cfg.repo)))
         if u.path == "/api/worktrees":

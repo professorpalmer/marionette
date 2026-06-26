@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Play, Copy, Check, Pencil, RefreshCw, FileText, History } from "lucide-react";
+import { ChevronRight, Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Play, Copy, Check, Pencil, RefreshCw, FileText, History, Gauge, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -28,13 +28,15 @@ type Item =
   | { kind: "thinking"; text: string }
   | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
-  | { kind: "checkpoint"; id: string; label: string; trigger: string };
+  | { kind: "checkpoint"; id: string; label: string; trigger: string }
+  | { kind: "compaction"; before_tokens: number; after_tokens: number };
 
 type GroupedItem =
   | { kind: "msg"; msg: Msg }
   | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
+  | { kind: "compaction"; before_tokens: number; after_tokens: number }
   | { kind: "activity_group"; items: ( { kind: "card"; card: Card } | { kind: "thinking"; text: string } )[] };
 
 function getSimilarity(s1: string, s2: string): number {
@@ -116,7 +118,7 @@ function groupAgentActivity(items: Item[]): GroupedItem[] {
         currentGroup = [];
       }
       grouped.push(item);
-    } else if (item.kind === "swarm_pending" || item.kind === "swarm_result" || item.kind === "checkpoint") {
+    } else if (item.kind === "swarm_pending" || item.kind === "swarm_result" || item.kind === "checkpoint" || item.kind === "compaction") {
       if (currentGroup.length > 0) {
         grouped.push({ kind: "activity_group", items: currentGroup });
         currentGroup = [];
@@ -143,6 +145,13 @@ const SLASH_COMMANDS = [
   { cmd: "/model", desc: "Focus model picker to switch models" },
   { cmd: "/help", desc: "Render a small help note" }
 ];
+
+
+const CTX_COLORS = ["#8b8b8b", "#7c6cf0", "#3fb950", "#d4a72c", "#bd8bbf", "#5b9bd5", "#f06c6c", "#6ca0f0"];
+function fmtK(n: number): string {
+  if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+  return String(n);
+}
 
 export default function Conversation({ config, activeSessionId, onArtifacts, onJobChange }: {
   config: Config | null;
@@ -171,6 +180,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const [attachedImages, setAttachedImages] = useState<{ path: string; name: string; previewUrl: string }[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // Compacting & Context breakdown states
+  const [compactingStatus, setCompactingStatus] = useState<string | null>(null);
+  const [showContextPanel, setShowContextPanel] = useState(false);
+  const [contextUsage, setContextUsage] = useState<import("../lib/api").ContextUsageResponse | null>(null);
 
   // Ergonomics states
   const [allFiles, setAllFiles] = useState<string[]>([]);
@@ -307,6 +321,30 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   }, [status]);
 
   useEffect(() => { feedRef.current?.scrollTo(0, feedRef.current.scrollHeight); }, [items]);
+
+  const fetchContextUsage = () => {
+    if (!activeSessionId) return;
+    api.getContextUsage()
+      .then((res) => {
+        setContextUsage(res);
+      })
+      .catch((err) => console.error("Failed to fetch context usage:", err));
+  };
+
+  useEffect(() => {
+    fetchContextUsage();
+    
+    const h = () => fetchContextUsage();
+    window.addEventListener("harness-context-changed", h);
+    return () => window.removeEventListener("harness-context-changed", h);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!showContextPanel) return;
+    fetchContextUsage();
+    const interval = setInterval(fetchContextUsage, 5000);
+    return () => clearInterval(interval);
+  }, [showContextPanel, activeSessionId]);
 
   useEffect(() => {
     if (activeSessionId) {
@@ -669,17 +707,27 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths);
     cancelRef.current = streamer((ev: any) => {
       const d = ev.data || {};
-      if (ev.kind === "thinking") {
+      if (ev.kind === "compacting") {
+        setCompactingStatus(d.message || "Summarizing chat context");
+      } else if (ev.kind === "compaction") {
+        setCompactingStatus(null);
+        setItems((p) => [...p, { kind: "compaction" as const, before_tokens: d.before_tokens, after_tokens: d.after_tokens }]);
+        window.dispatchEvent(new Event("harness-context-changed"));
+      } else if (ev.kind === "thinking") {
+        setCompactingStatus(null);
         setStatus("thinking");
         setItems((p) => [...p, { kind: "thinking", text: d.text || "" }]);
       } else if (ev.kind === "message") {
+        setCompactingStatus(null);
         setStatus("thinking");
         setItems((p) => deduplicateConsecutiveAssistantMessages([...p, { kind: "msg", msg: { role: "assistant", text: d.text || "", isPlan: planTurnRef.current } }]));
       } else if (ev.kind === "action_start") {
+        setCompactingStatus(null);
         setStatus("executing");
         setItems((p) => [...p, { kind: "card", card: {
           id: d.id, goal: d.goal, cwd: d.cwd, running: true, open: true, kind: d.kind } }]);
       } else if (ev.kind === "action_result") {
+        setCompactingStatus(null);
         setStatus("thinking");
         setCard(d.id, { running: false, open: false, result: d });
         if (d.artifacts && !d.error) onArtifacts(d.artifacts);
@@ -740,11 +788,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (ev.kind === "assistant_done") {
         setStatus("done");
       } else if (ev.kind === "error") {
+        setCompactingStatus(null);
         setStatus("error");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
       }
-    }, () => { setStatus("done"); cancelRef.current = null; },
-       () => { setStatus("error"); cancelRef.current = null; });
+    }, () => { setStatus("done"); cancelRef.current = null; setCompactingStatus(null); },
+       () => { setStatus("error"); cancelRef.current = null; setCompactingStatus(null); });
   };
 
   const send = () => {
@@ -999,6 +1048,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                     <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
                   </div>
                 );
+              } else if (it.kind === "compaction") {
+                return (
+                  <div key={i} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-edge/10 text-[10.5px] text-faint w-fit my-1 select-none font-mono">
+                    <span>Context summarized: {it.before_tokens} → {it.after_tokens} tokens</span>
+                  </div>
+                );
               } else if (it.kind === "activity_group") {
                 return (
                   <div key={i} className="flex flex-col gap-0.5 pl-3 border-l-2 border-edge/40 my-1 w-full">
@@ -1020,7 +1075,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             return (
               <>
                 {list}
-                {isBusy && (
+                {compactingStatus && (
+                  <div className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[11px] text-faint w-fit my-1 select-none animate-pulse">
+                    <Loader2 size={11} className="animate-spin text-accent" />
+                    <span>{compactingStatus}</span>
+                  </div>
+                )}
+                {isBusy && !compactingStatus && (
                   <div className="flex items-center gap-1.5 py-1 text-[12px] text-muted select-none mt-1 pl-0.5">
                     <Loader2 size={12} className="animate-spin text-muted" />
                     <span>{status === "thinking" ? "thinking..." : "running..."}</span>
@@ -1045,6 +1106,35 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               >
                 Dismiss
               </button>
+            </div>
+          )}
+          {showContextPanel && contextUsage && (
+            <div className="mb-3 bg-panel border border-edge rounded-lg p-3 text-[11.5px]">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-semibold text-txt">Context Usage</span>
+                <button onClick={() => setShowContextPanel(false)} className="text-faint hover:text-txt"><X size={13} /></button>
+              </div>
+              <div className="flex items-center justify-between text-faint mb-1.5">
+                <span>{contextUsage.limit > 0 ? Math.round((contextUsage.total / contextUsage.limit) * 100) : 0}% Full</span>
+                <span>~{fmtK(contextUsage.total)} / {fmtK(contextUsage.limit)} Tokens</span>
+              </div>
+              <div className="flex h-1.5 w-full rounded-full overflow-hidden bg-panel2 mb-2.5">
+                {contextUsage.categories.filter((c) => c.tokens > 0).map((c, i) => (
+                  <div key={c.name} title={`${c.name}: ${fmtK(c.tokens)}`}
+                    style={{ width: `${(c.tokens / Math.max(contextUsage.limit, contextUsage.total)) * 100}%`, background: CTX_COLORS[i % CTX_COLORS.length] }} />
+                ))}
+              </div>
+              <div className="space-y-1">
+                {contextUsage.categories.filter((c) => c.tokens > 0).map((c, i) => (
+                  <div key={c.name} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-sm" style={{ background: CTX_COLORS[i % CTX_COLORS.length] }} />
+                      <span className="text-muted">{c.name}</span>
+                    </div>
+                    <span className="text-faint tabular-nums">{fmtK(c.tokens)}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {msgQueue.length > 0 && (
@@ -1175,6 +1265,92 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               </div>
             )}
 
+            {/* Context Usage expandable panel */}
+            {showContextPanel && contextUsage && (
+              <div className="flex flex-col p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl animate-in slide-in-from-bottom duration-150">
+                <div className="flex items-center justify-between font-medium mb-2.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-txt">Context Usage</span>
+                    <span className="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded-full font-mono">
+                      {Math.min(100, Math.round((contextUsage.total / contextUsage.limit) * 100))}% Full
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-faint font-mono text-[11px]">
+                      ~{(contextUsage.total / 1000).toFixed(1)}K / {(contextUsage.limit / 1000).toFixed(0)}K Tokens
+                    </span>
+                    <button
+                      onClick={() => setShowContextPanel(false)}
+                      className="text-faint hover:text-muted transition p-0.5 rounded hover:bg-panel2"
+                      title="Close"
+                    >
+                      <ChevronDown size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Segmented/stacked progress bar */}
+                <div className="w-full h-2 bg-panel2 border border-edge/60 rounded-full overflow-hidden flex mb-3">
+                  {(() => {
+                    const colors = [
+                      "bg-blue-500",    // System prompt
+                      "bg-emerald-500", // Tool definitions
+                      "bg-purple-500",  // Rules
+                      "bg-amber-500",   // Skills
+                      "bg-teal-500",    // MCP
+                      "bg-rose-500",    // Subagent
+                      "bg-pink-500",    // Summarized conversation
+                      "bg-indigo-500",  // Conversation
+                    ];
+                    
+                    return contextUsage.categories.map((cat, idx) => {
+                      if (cat.tokens <= 0) return null;
+                      const pct = (cat.tokens / contextUsage.limit) * 100;
+                      return (
+                        <div
+                          key={cat.name}
+                          className={`${colors[idx % colors.length]} h-full transition-all duration-300`}
+                          style={{ width: `${pct}%` }}
+                          title={`${cat.name}: ${(cat.tokens / 1000).toFixed(1)}K tokens (${Math.round(pct)}%)`}
+                        />
+                      );
+                    });
+                  })()}
+                </div>
+
+                {/* Categories breakdown grid */}
+                <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-txt/90">
+                  {(() => {
+                    const colors = [
+                      "bg-blue-500",    // System prompt
+                      "bg-emerald-500", // Tool definitions
+                      "bg-purple-500",  // Rules
+                      "bg-amber-500",   // Skills
+                      "bg-teal-500",    // MCP
+                      "bg-rose-500",    // Subagent
+                      "bg-pink-500",    // Summarized conversation
+                      "bg-indigo-500",  // Conversation
+                    ];
+
+                    return contextUsage.categories.map((cat, idx) => {
+                      if (cat.tokens <= 0) return null;
+                      return (
+                        <div key={cat.name} className="flex items-center justify-between text-[11px] font-mono py-0.5 border-b border-edge/10">
+                          <div className="flex items-center gap-1.5 truncate">
+                            <span className={`w-2 h-2 rounded-full ${colors[idx % colors.length]} shrink-0`} />
+                            <span className="truncate text-muted">{cat.name}</span>
+                          </div>
+                          <span className="text-txt font-medium shrink-0">
+                            {(cat.tokens / 1000).toFixed(1)}K
+                          </span>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            )}
+
             {/* Mention autocomplete dropdown */}
             {mentionSearch !== null && filteredFiles.length > 0 && (
               <div className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[220px] w-[320px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
@@ -1295,6 +1471,33 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                 <ListChecks size={11} /> Plan
               </button>
               <PilotPicker config={config} />
+              {contextUsage && contextUsage.limit > 0 && (
+                <button
+                  onClick={() => setShowContextPanel((v) => !v)}
+                  title="Context usage breakdown"
+                  className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 transition ${showContextPanel ? "bg-panel2 text-txt" : "text-faint hover:text-muted"}`}>
+                  <Gauge size={11} />
+                  {Math.round((contextUsage.total / contextUsage.limit) * 100)}%
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setShowContextPanel(!showContextPanel);
+                  if (!showContextPanel) {
+                    fetchContextUsage();
+                  }
+                }}
+                title="View context window usage breakdown"
+                className={`px-1.5 h-[20px] rounded-md text-[10.5px] font-mono flex items-center gap-1 transition
+                  ${showContextPanel ? "bg-accent/15 text-accent border border-accent/20" : "text-faint hover:text-muted bg-panel2/40 border border-edge/30 hover:bg-panel2/80"}`}
+              >
+                <FileText size={11} />
+                <span>
+                  {contextUsage
+                    ? `${Math.min(100, Math.round((contextUsage.total / contextUsage.limit) * 100))}%`
+                    : "Context"}
+                </span>
+              </button>
               <div className="flex-1" />
               {status === "thinking" || status === "executing"
                 ? <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>

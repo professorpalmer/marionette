@@ -185,6 +185,17 @@ export type WikiGraphData = {
   base_url?: string;
 };
 
+export type ContextCategory = {
+  name: string;
+  tokens: number;
+};
+
+export type ContextUsageResponse = {
+  total: number;
+  limit: number;
+  categories: ContextCategory[];
+};
+
 export const api = {
   providers: () => getJSON<ProviderInfo[]>("/api/providers"),
   probeProvider: (provider: string) => postJSON<ProbeResult>("/api/providers/probe", { provider }),
@@ -269,6 +280,7 @@ export const api = {
   getWorkspace: () => getJSON<{ repo: string; branch: string; is_git: boolean; codegraph_status: string; recents?: string[] }>("/api/workspace"),
   getWorkspaceFiles: () => getJSON<{ files: string[] }>(withToken("/api/workspace/files")),
   compactSession: () => postJSON<{ ok: boolean; before_tokens: number; after_tokens: number }>("/api/session/compact", {}),
+  getContextUsage: () => getJSON<ContextUsageResponse>(withToken("/api/context/usage")),
 
   getCheckpoints: () => getJSON<Checkpoint[]>(withToken("/api/checkpoints")),
   restoreCheckpoint: (id: string) => postJSON<{ ok: boolean; restored_files: string[]; auto_snapshot_id: string }>("/api/checkpoints/restore", { id }),
