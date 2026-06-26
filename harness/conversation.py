@@ -229,7 +229,19 @@ class ConversationalSession:
             yield ConvEvent("error", {"error": "session busy: another request is in flight"})
             return
         try:
-            yield from self._send_locked(user_message, images=images)
+            import time
+            action_starts = {}
+            for ev in self._send_locked(user_message, images=images):
+                if ev.kind == "action_start":
+                    aid = ev.data.get("id")
+                    if aid:
+                        action_starts[aid] = time.time()
+                elif ev.kind == "action_result":
+                    aid = ev.data.get("id")
+                    if aid and aid in action_starts:
+                        duration_ms = int((time.time() - action_starts[aid]) * 1000)
+                        ev.data["duration_ms"] = duration_ms
+                yield ev
         finally:
             self._busy.release()
 

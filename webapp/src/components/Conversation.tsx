@@ -10,12 +10,59 @@ type Card = {
   running: boolean; open: boolean;
   kind?: string;
   result?: { job_id?: string; num: number; types: string[]; adapter: string;
-             artifacts: { type: string; headline: string }[]; error?: string };
+             artifacts: { type: string; headline: string }[]; error?: string;
+             duration_ms?: number };
 };
 type Item =
   | { kind: "msg"; msg: Msg }
   | { kind: "card"; card: Card }
   | { kind: "thinking"; text: string };
+
+type GroupedItem =
+  | { kind: "msg"; msg: Msg }
+  | { kind: "activity_group"; items: ( { kind: "card"; card: Card } | { kind: "thinking"; text: string } )[] };
+
+function getSimilarity(s1: string, s2: string): number {
+  const norm1 = s1.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const norm2 = s2.toLowerCase().replace(/[^a-z0-9]/g, "");
+  
+  if (!norm1 || !norm2) return 0;
+  if (norm1 === norm2) return 1.0;
+  
+  if (norm1.startsWith(norm2) || norm2.startsWith(norm1)) {
+    return 1.0;
+  }
+  
+  const w1 = s1.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
+  const w2 = s2.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
+  const set1 = new Set(w1);
+  const set2 = new Set(w2);
+  let intersect = 0;
+  set1.forEach(w => {
+    if (set2.has(w)) intersect++;
+  });
+  const wordJaccard = intersect / (set1.size + set2.size - intersect);
+  
+  const getBigrams = (s: string) => {
+    const bigrams = new Set<string>();
+    for (let i = 0; i < s.length - 1; i++) {
+      bigrams.add(s.substring(i, i + 2));
+    }
+    return bigrams;
+  };
+  const b1 = getBigrams(norm1);
+  const b2 = getBigrams(norm2);
+  if (b1.size > 0 && b2.size > 0) {
+    let bIntersect = 0;
+    b1.forEach(b => {
+      if (b2.has(b)) bIntersect++;
+    });
+    const charJaccard = bIntersect / (b1.size + b2.size - bIntersect);
+    return Math.max(wordJaccard, charJaccard);
+  }
+  
+  return wordJaccard;
+}
 
 function deduplicateConsecutiveAssistantMessages(items: Item[]): Item[] {
   const result: Item[] = [];
@@ -23,12 +70,13 @@ function deduplicateConsecutiveAssistantMessages(items: Item[]): Item[] {
     if (item.kind === "msg" && item.msg.role === "assistant") {
       const last = result[result.length - 1];
       if (last && last.kind === "msg" && last.msg.role === "assistant") {
-        const lastText = last.msg.text.trim();
-        const newText = item.msg.text.trim();
-        const normLast = lastText.toLowerCase().replace(/[^a-z0-9]/g, "").substring(0, 60);
-        const normNew = newText.toLowerCase().replace(/[^a-z0-9]/g, "").substring(0, 60);
-        if (normLast && normNew && (normLast.startsWith(normNew) || normNew.startsWith(normLast) || normLast === normNew)) {
-          result[result.length - 1] = item;
+        const lastText = last.msg.text;
+        const newText = item.msg.text;
+        
+        if (getSimilarity(lastText, newText) > 0.85) {
+          if (newText.length > lastText.length) {
+            result[result.length - 1] = item;
+          }
           continue;
         }
       }
@@ -36,6 +84,33 @@ function deduplicateConsecutiveAssistantMessages(items: Item[]): Item[] {
     result.push(item);
   }
   return result;
+}
+
+function groupAgentActivity(items: Item[]): GroupedItem[] {
+  const grouped: GroupedItem[] = [];
+  let currentGroup: ( { kind: "card"; card: Card } | { kind: "thinking"; text: string } )[] = [];
+
+  for (const item of items) {
+    if (item.kind === "thinking" && (!item.text || !item.text.trim())) {
+      continue;
+    }
+
+    if (item.kind === "msg") {
+      if (currentGroup.length > 0) {
+        grouped.push({ kind: "activity_group", items: currentGroup });
+        currentGroup = [];
+      }
+      grouped.push(item);
+    } else {
+      currentGroup.push(item);
+    }
+  }
+
+  if (currentGroup.length > 0) {
+    grouped.push({ kind: "activity_group", items: currentGroup });
+  }
+
+  return grouped;
 }
 
 export default function Conversation({ config, activeSessionId, onArtifacts, onJobChange }: {
@@ -264,31 +339,43 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       </header>
 
       <div ref={feedRef} className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1.5">
+        <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1">
           {items.length === 0 && (
             <div className="text-muted text-[13px] mt-32 text-center leading-relaxed">
               Message the pilot. It plans, investigates via swarms, and explains.
             </div>
           )}
-          {items.map((it, i) => {
-            if (it.kind === "msg") {
-              let prevMsg: Msg | null = null;
-              for (let j = i - 1; j >= 0; j--) {
-                const prevItem = items[j];
-                if (prevItem.kind === "msg") {
-                  prevMsg = prevItem.msg;
-                  break;
+          {(() => {
+            const grouped = groupAgentActivity(items);
+            return grouped.map((it, i) => {
+              if (it.kind === "msg") {
+                let prevMsg: Msg | null = null;
+                for (let j = i - 1; j >= 0; j--) {
+                  const prevItem = grouped[j];
+                  if (prevItem.kind === "msg") {
+                    prevMsg = prevItem.msg;
+                    break;
+                  }
                 }
+                const isFirstInRun = !prevMsg || prevMsg.role !== "assistant";
+                return <Bubble key={i} msg={it.msg} showLabel={it.msg.role === "assistant" ? isFirstInRun : false} />;
+              } else if (it.kind === "activity_group") {
+                return (
+                  <div key={i} className="flex flex-col gap-0.5 pl-3 border-l-2 border-edge/40 my-1 w-full">
+                    {it.items.map((git, idx) => {
+                      if (git.kind === "card") {
+                        return <ActionCard key={idx} card={git.card} onToggle={() => setCard(git.card.id, { open: !git.card.open })} />;
+                      } else if (git.kind === "thinking") {
+                        return <ThinkingBlock key={idx} text={git.text} />;
+                      }
+                      return null;
+                    })}
+                  </div>
+                );
               }
-              const isFirstInRun = !prevMsg || prevMsg.role !== "assistant";
-              return <Bubble key={i} msg={it.msg} showLabel={it.msg.role === "assistant" ? isFirstInRun : false} />;
-            } else if (it.kind === "card") {
-              return <ActionCard key={i} card={it.card} onToggle={() => setCard(it.card.id, { open: !it.card.open })} />;
-            } else if (it.kind === "thinking") {
-              return <ThinkingBlock key={i} text={it.text} />;
-            }
-            return null;
-          })}
+              return null;
+            });
+          })()}
         </div>
       </div>
 
@@ -472,29 +559,61 @@ function cleanAssistantText(text: string): string {
   return result || "Working...";
 }
 
+function getCardMeta(card: Card): string | null {
+  if (card.running) return null;
+  const parts: string[] = [];
+
+  const duration = card.result?.duration_ms;
+  if (typeof duration === "number") {
+    parts.push(`${duration}ms`);
+  }
+
+  if (card.result?.error) {
+    parts.push("error");
+  } else if (card.result?.artifacts && card.result.artifacts.length > 0) {
+    const headline = card.result.artifacts[0].headline || "";
+    
+    const readMatch = headline.match(/Read (\d+) chars/i);
+    if (readMatch) {
+      parts.push(`${readMatch[1]} chars`);
+    } else {
+      const writeMatch = headline.match(/Wrote (\d+) bytes/i);
+      if (writeMatch) {
+        parts.push(`${writeMatch[1]} B`);
+      } else {
+        const exitMatch = headline.match(/Command exited with (-?\d+)/i);
+        if (exitMatch) {
+          parts.push(`exit ${exitMatch[1]}`);
+        }
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 function ThinkingBlock({ text }: { text: string }) {
-  const [collapsed, setCollapsed] = useState(() => {
-    const pref = localStorage.getItem("pmharness.thinkingCollapsed");
-    return pref === "true";
-  });
+  const [collapsed, setCollapsed] = useState(true);
+
+  if (!text || !text.trim()) {
+    return null;
+  }
 
   const toggle = () => {
-    const next = !collapsed;
-    setCollapsed(next);
-    localStorage.setItem("pmharness.thinkingCollapsed", String(next));
+    setCollapsed(!collapsed);
   };
 
   return (
-    <div className="flex flex-col gap-1 items-start my-0.5 text-[11px] ml-4">
+    <div className="flex flex-col w-full py-0.5 select-none">
       <button
         onClick={toggle}
-        className="flex items-center gap-1 text-faint hover:text-muted transition select-none font-mono"
+        className="flex items-center gap-1 text-faint hover:text-muted transition font-mono text-[11px] text-left w-fit"
       >
-        {collapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+        {collapsed ? <ChevronRight size={10} className="text-faint" /> : <ChevronDown size={10} className="text-faint" />}
         <span>thinking</span>
       </button>
       {!collapsed && (
-        <div className="pl-3 ml-1.5 border-l border-edge text-faint whitespace-pre-wrap leading-relaxed max-w-[90%] text-[11px]">
+        <div className="mt-1 pl-2 ml-1.5 border-l border-edge text-faint text-[11px] whitespace-pre-wrap leading-relaxed max-w-[95%]">
           {text}
         </div>
       )}
@@ -512,7 +631,7 @@ function Bubble({ msg, showLabel }: { msg: Msg; showLabel?: boolean }) {
         {showLabel && (
           <span className="text-[10px] uppercase tracking-wider text-faint px-1 select-none font-semibold mt-1">you</span>
         )}
-        <div className="rounded-xl px-3 py-1.5 text-[13px] leading-relaxed whitespace-pre-wrap break-words max-w-[85%] bg-accent2 text-txt border border-edge/30">
+        <div className="rounded-xl px-3 py-1 text-[13px] leading-relaxed whitespace-pre-wrap break-words max-w-[85%] bg-accent2 text-txt border border-edge/30">
           {displayedText}
         </div>
       </div>
@@ -533,34 +652,45 @@ function Bubble({ msg, showLabel }: { msg: Msg; showLabel?: boolean }) {
 
 function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   const toolName = card.kind || "swarm";
+  const meta = getCardMeta(card);
+
   return (
-    <div className="flex flex-col items-start select-none w-fit max-w-full ml-4 my-0.5">
+    <div className="flex flex-col w-full py-0.5 select-none">
       <button
         onClick={onToggle}
-        className="flex items-center gap-2 py-0.5 px-2 rounded hover:bg-panel2/60 border-l-2 border-transparent hover:border-accent text-left text-[12px] font-mono group"
+        className="flex items-center justify-between w-full py-0.5 px-2 rounded hover:bg-panel2/60 border-l-2 border-transparent hover:border-accent text-left text-[12px] font-mono group transition"
       >
-        <div className="flex items-center justify-center w-3 h-3 shrink-0">
-          {card.running ? (
-            <Loader2 size={11} className="animate-spin text-accent" />
-          ) : (
-            <span className="w-1.5 h-1.5 rounded-full bg-good/80" />
-          )}
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <div className="flex items-center justify-center w-3 h-3 shrink-0">
+            {card.running ? (
+              <Loader2 size={11} className="animate-spin text-accent" />
+            ) : card.result?.error ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-risk/80" />
+            ) : (
+              <span className="w-1.5 h-1.5 rounded-full bg-good/80" />
+            )}
+          </div>
+          <span className="text-accent font-semibold shrink-0">
+            {toolName}
+          </span>
+          <span className="text-muted truncate max-w-[70%]" title={card.goal}>
+            {card.goal}
+          </span>
         </div>
-        <span className="text-accent font-semibold shrink-0">
-          {toolName}
-        </span>
-        <span className="text-muted truncate max-w-[300px] sm:max-w-[450px]">
-          {card.goal}
-        </span>
-        <ChevronRight
-          size={11}
-          className={`text-faint group-hover:text-muted transition shrink-0 ${
-            card.open ? "rotate-90" : ""
-          }`}
-        />
+
+        <div className="flex items-center gap-1.5 shrink-0 text-[10px] text-faint select-none">
+          {meta && <span>{meta}</span>}
+          <ChevronRight
+            size={11}
+            className={`text-faint group-hover:text-muted transition shrink-0 ${
+              card.open ? "rotate-90" : ""
+            }`}
+          />
+        </div>
       </button>
+
       {card.open && (
-        <div className="ml-5 pl-3 border-l border-edge py-1.5 pr-3 bg-panel2/40 rounded-r-md text-[11px] max-w-xl text-txt/90 space-y-1">
+        <div className="mt-1 ml-5 pl-3 border-l border-edge py-1.5 pr-3 bg-panel2/40 rounded-r-md text-[11px] max-w-full text-txt/90 space-y-1">
           <KV k="goal" v={card.goal} />
           {card.cwd && <KV k="cwd" v={card.cwd} />}
           {card.result?.error && <div className="text-risk mt-1 font-sans">error: {card.result.error}</div>}
