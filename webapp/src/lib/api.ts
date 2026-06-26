@@ -25,6 +25,29 @@ export type Artifact = { type: string; headline: string; confidence?: number };
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
 export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string };
 
+export type SessionState = {
+  state: "idle" | "thinking" | "awaiting_swarm";
+  pending_swarms: boolean;
+};
+
+export type SwarmResultData = {
+  job_id: string;
+  applied: boolean;
+  files: string[];
+  summary: string;
+  error: string | null;
+  objective?: string;
+};
+
+export type SwarmResultEvent = {
+  kind: "swarm_result";
+  data: SwarmResultData;
+};
+
+export type SwarmResultsResponse = {
+  results: SwarmResultEvent[];
+};
+
 export type PlatformAdapter = {
   name: string;
   enabled: boolean;
@@ -156,6 +179,8 @@ export const api = {
     postJSON("/api/workspaces/create", { name, branch }),
   sessions: () => getJSON<Session[]>("/api/sessions"),
   sessionTranscript: (session: string) => getJSON<{ history: any[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
+  getSessionState: () => getJSON<SessionState>(withToken("/api/session/state")),
+  getSwarmResults: () => getJSON<SwarmResultsResponse>(withToken("/api/session/swarm-results")),
   createSession: (title?: string) => postJSON<Session>("/api/sessions/create", { title }),
   switchSession: (id: string) => postJSON("/api/sessions/switch", { id }),
   deleteSession: (id: string) => postJSON<{ ok: boolean; active: string | null }>("/api/sessions/delete", { session: id }),

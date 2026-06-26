@@ -20,10 +20,14 @@ type Card = {
 type Item =
   | { kind: "msg"; msg: Msg }
   | { kind: "card"; card: Card }
-  | { kind: "thinking"; text: string };
+  | { kind: "thinking"; text: string }
+  | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string };
 
 type GroupedItem =
   | { kind: "msg"; msg: Msg }
+  | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
   | { kind: "activity_group"; items: ( { kind: "card"; card: Card } | { kind: "thinking"; text: string } )[] };
 
 function getSimilarity(s1: string, s2: string): number {
@@ -105,8 +109,16 @@ function groupAgentActivity(items: Item[]): GroupedItem[] {
         currentGroup = [];
       }
       grouped.push(item);
+    } else if (item.kind === "swarm_pending" || item.kind === "swarm_result") {
+      if (currentGroup.length > 0) {
+        grouped.push({ kind: "activity_group", items: currentGroup });
+        currentGroup = [];
+      }
+      grouped.push(item);
     } else {
-      currentGroup.push(item);
+      if (item.kind === "card" || item.kind === "thinking") {
+        currentGroup.push(item);
+      }
     }
   }
 
@@ -136,6 +148,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const [msgQueue, setMsgQueue] = useState<{ text: string; auto: boolean; plan?: boolean }[]>([]);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  const [pendingJobIds, setPendingJobIds] = useState<string[]>([]);
+  const processedSwarmJobIdsRef = useRef<string[]>([]);
+  const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
 
   const moveQueueItem = (index: number, direction: "up" | "down") => {
     if (direction === "up" && index === 0) return;
@@ -284,6 +300,21 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     }
   }, [activeSessionId]);
 
+  useEffect(() => {
+    setPendingJobIds([]);
+    processedSwarmJobIdsRef.current = [];
+    setBackendPendingSwarms(false);
+    if (activeSessionId) {
+      api.getSessionState()
+        .then((res) => {
+          if (res) {
+            setBackendPendingSwarms(res.pending_swarms);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [activeSessionId]);
+
   const setCard = (id: string, patch: Partial<Card>) =>
     setItems((prev) => prev.map((it) => {
       if (it.kind === "card" && it.card.id === id) {
@@ -305,6 +336,81 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
   }, [input]);
+
+  const handleSwarmResult = (d: any) => {
+    const job_id = d.job_id;
+    if (!job_id) return;
+
+    if (processedSwarmJobIdsRef.current.includes(job_id)) return;
+    processedSwarmJobIdsRef.current.push(job_id);
+
+    setPendingJobIds((p) => p.filter(id => id !== job_id));
+
+    setItems((prevItems) => {
+      const pendingItem = prevItems.find(it => it.kind === "swarm_pending" && it.job_ids.includes(job_id));
+      const pendingObj = pendingItem && pendingItem.kind === "swarm_pending" ? pendingItem.objective : "";
+      const finalObjective = d.objective || pendingObj || "";
+
+      // Resolve matching swarm_pending chip
+      const updated = prevItems.map((item) => {
+        if (item.kind === "swarm_pending" && item.job_ids.includes(job_id)) {
+          return { ...item, resolved: true };
+        }
+        return item;
+      });
+
+      // Check if we already have this swarm_result in updated (double check)
+      const alreadyHasResult = updated.some(it => it.kind === "swarm_result" && it.job_id === job_id);
+      if (alreadyHasResult) return updated;
+
+      return [
+        ...updated,
+        {
+          kind: "swarm_result" as const,
+          job_id: job_id,
+          applied: d.applied,
+          files: d.files || [],
+          summary: d.summary || "",
+          error: d.error || null,
+          objective: finalObjective
+        }
+      ];
+    });
+  };
+
+  useEffect(() => {
+    const isPending = pendingJobIds.length > 0 || backendPendingSwarms;
+    if (!isPending) return;
+
+    const poll = () => {
+      api.getSwarmResults()
+        .then((res) => {
+          if (res && res.results && res.results.length > 0) {
+            res.results.forEach((evt) => {
+              if (evt.kind === "swarm_result" && evt.data) {
+                handleSwarmResult(evt.data);
+              }
+            });
+          }
+          return api.getSessionState();
+        })
+        .then((stateRes) => {
+          if (stateRes) {
+            setBackendPendingSwarms(stateRes.pending_swarms);
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to poll swarm results:", err);
+        });
+    };
+
+    poll();
+    const timer = setInterval(poll, 2500);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [pendingJobIds, backendPendingSwarms]);
 
   const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false) => {
     planTurnRef.current = usePlan;
@@ -366,6 +472,22 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (ev.kind === "auto_halt") {
         setStatus("done");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "HALT: " + (d.reason || "") } }]);
+      } else if (ev.kind === "swarm_pending") {
+        const job_ids = d.job_ids || [];
+        setPendingJobIds((p) => [...p, ...job_ids]);
+        setItems((p) => [
+          ...p,
+          {
+            kind: "swarm_pending" as const,
+            job_ids,
+            objective: d.objective || "",
+            resolved: false,
+          },
+        ]);
+      } else if (ev.kind === "swarm_result") {
+        handleSwarmResult(d);
+      } else if (ev.kind === "assistant_done") {
+        setStatus("done");
       } else if (ev.kind === "error") {
         setStatus("error");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
@@ -454,6 +576,44 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                       executeSend("Execute the following approved plan. Implement it fully, using run_implement/run_parallel as needed:\n\n" + planText, true, false);
                     }}
                   />
+                );
+              } else if (it.kind === "swarm_pending") {
+                const truncatedObj = it.objective.length > 60 ? it.objective.slice(0, 60) + "..." : it.objective;
+                const jobIdsStr = it.job_ids.join(", ");
+                if (it.resolved) {
+                  return (
+                    <div key={i} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/20 border border-edge/30 text-[11px] text-faint w-fit my-1 select-none">
+                      <span className="w-1.5 h-1.5 rounded-full bg-good/40" />
+                      <span>swarm done: {truncatedObj} ({jobIdsStr})</span>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={i} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/60 border border-edge/60 text-[11px] text-muted w-fit my-1 select-none">
+                    <Loader2 size={11} className="animate-spin text-accent" />
+                    <span>swarm running: {truncatedObj} ({jobIdsStr})</span>
+                  </div>
+                );
+              } else if (it.kind === "swarm_result") {
+                const applied = it.applied;
+                const errorStr = it.error;
+                const truncatedObj = it.objective ? (it.objective.length > 60 ? it.objective.slice(0, 60) + "..." : it.objective) : "swarm";
+                return (
+                  <div key={i} className={`flex flex-col gap-1 py-1.5 px-3 rounded-md border text-[11px] font-mono w-fit max-w-full my-1 select-none bg-panel/30
+                    ${applied ? "border-good/20 text-good" : "border-risk/20 text-risk"}`}
+                  >
+                    {applied ? (
+                      <div>
+                        <span>swarm done: {truncatedObj} -- applied {it.files.length} file{it.files.length === 1 ? "" : "s"}: {it.files.join(", ")}</span>
+                        {it.summary && <div className="text-[10px] text-muted mt-1 leading-relaxed whitespace-pre-wrap">{it.summary}</div>}
+                      </div>
+                    ) : (
+                      <div>
+                        <span>swarm FAILED: {truncatedObj} -- {errorStr || "unknown error"}</span>
+                        {it.summary && <div className="text-[10px] text-muted mt-1 leading-relaxed whitespace-pre-wrap">{it.summary}</div>}
+                      </div>
+                    )}
+                  </div>
                 );
               } else if (it.kind === "activity_group") {
                 return (
