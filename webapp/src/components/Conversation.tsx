@@ -478,10 +478,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               rows={1} placeholder={auto ? "Give the pilot an objective..." : "Message the pilot..."}
               className="w-full bg-transparent px-3 pt-2.5 pb-1 text-[13px] resize-none focus:outline-none overflow-y-auto placeholder:text-faint" />
             <div className="flex items-center gap-1.5 px-3 pb-2">
-              <button onClick={() => setAuto((a) => !a)} title="Fully-Auto mode"
+              <button onClick={() => setAuto((a) => !a)} title="Autopilot: the pilot plans and executes autonomously (vs. you steering each step)"
                 className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 transition
                   ${auto ? "bg-warn/15 text-warn" : "text-faint hover:text-muted"}`}>
-                <Zap size={11} /> Auto
+                <Zap size={11} /> Autopilot
               </button>
               <PilotPicker config={config} />
               <div className="flex-1" />
