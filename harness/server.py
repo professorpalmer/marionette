@@ -1067,7 +1067,7 @@ class Handler(BaseHTTPRequestHandler):
             if not repo or not os.path.isdir(repo):
                 return self._send(200, json.dumps({"files": []}))
             files_list = []
-            skip_dirs = {".git", "node_modules", ".venv", ".codegraph", "dist", "build"}
+            skip_dirs = {".git", "node_modules", ".venv", ".codegraph", "dist", "build", ".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache", ".idea", ".vscode", "venv", ".next", "coverage", ".hermes", "release", "backend-dist"}
             repo_abs = os.path.abspath(repo)
             for root, dirs, files in os.walk(repo_abs):
                 dirs[:] = [d for d in dirs if d not in skip_dirs]
