@@ -29,6 +29,7 @@ import os
 import threading
 import time
 import subprocess
+import re
 from dataclasses import dataclass, field
 from typing import Iterator, Optional, Any
 
@@ -800,7 +801,7 @@ class ConversationalSession:
                     try:
                         import sys
                         import json
-                        cmd = [sys.executable, "-m", "puppetmaster", adapter, act.goal, "--cwd", self.config.repo, "--mode", "implement"]
+                        cmd = [sys.executable, "-m", "puppetmaster", adapter, act.goal, "--cwd", self.config.repo, "--mode", "implement", "--allow-dirty", "--allow-non-worktree"]
                         p = subprocess.Popen(
                             cmd,
                             stdout=subprocess.PIPE,
@@ -955,7 +956,8 @@ class ConversationalSession:
                         sub_aid = sub_aids[idx]
                         cmd = [
                             sys.executable, "-m", "puppetmaster", adapter, sub_goal,
-                            "--cwd", self.config.repo, "--mode", mode
+                            "--cwd", self.config.repo, "--mode", mode,
+                            "--allow-dirty", "--allow-non-worktree"
                         ]
                         try:
                             proc = subprocess.Popen(

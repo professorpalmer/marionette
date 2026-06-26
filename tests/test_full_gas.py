@@ -209,7 +209,14 @@ def test_executor_smoke_run_parallel(mock_run, mock_popen):
             }
         }
     ])
-    mock_run.side_effect = [mock_res_await, mock_res_art]
+    def _run_side(*a, **k):
+        # await calls return rc=0; artifacts calls return the json; any extra
+        # call (e.g. platform status) returns a benign empty result.
+        argv = a[0] if a else k.get("args", [])
+        if isinstance(argv, (list, tuple)) and "artifacts" in argv:
+            return mock_res_art
+        return mock_res_await
+    mock_run.side_effect = _run_side
     
     session = ConversationalSession(cfg)
     session._detect_default_implement_adapter = MagicMock(return_value="hermes")
