@@ -96,7 +96,7 @@ def test_queue_drains_while_swarm_pending(tmp_path):
         first_resp = MagicMock()
         first_resp.text = json.dumps({
             "say": "I will run implement now.",
-            "actions": [{"kind": "run_implement", "goal": "Apply fix to hello.txt"}]
+            "actions": [{"kind": "run_implement", "goal": "Apply fix to hello.txt", "adapter": "cursor"}]
         })
         first_resp.meta = {}
         first_resp.error = None
@@ -198,7 +198,7 @@ def test_apply_lock_serializes_background_applies(tmp_path):
     lock = threading.Lock()
     
     # We instrument _apply_worker_patch to record active parallel applications
-    def mock_apply_worker_patch(artifacts):
+    def mock_apply_worker_patch(artifacts, job_id=""):
         nonlocal active_applies
         with lock:
             active_applies += 1
