@@ -1098,6 +1098,25 @@ class Handler(BaseHTTPRequestHandler):
             from .checkpoints import CheckpointStore
             store = CheckpointStore(repo)
             return self._send(200, json.dumps(store.list()))
+        if u.path == "/api/checkpoints/diff":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            repo = _cfg.repo
+            if not repo or not os.path.exists(repo):
+                return self._send(400, json.dumps({"error": "No open workspace"}))
+            checkpoint_id = parse_qs(u.query).get("id", [""])[0].strip()
+            if not checkpoint_id:
+                return self._send(400, json.dumps({"error": "Missing checkpoint id"}))
+            from .checkpoints import CheckpointStore
+            store = CheckpointStore(repo)
+            result = store.diff(checkpoint_id)
+            if result.get("ok"):
+                return self._send(200, json.dumps(result))
+            else:
+                return self._send(400, json.dumps({"error": result.get("error", "Diff generation failed")}))
         if u.path == "/api/mcp":
             return self._send(200, json.dumps({"servers": _mcp.status(),
                 "tools": [{"server": t.server, "name": t.name, "qualified": t.qualified,

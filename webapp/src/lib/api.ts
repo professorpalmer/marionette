@@ -165,6 +165,19 @@ export type Checkpoint = {
   head: string | null;
 };
 
+export type CheckpointDiffFile = {
+  path: string;
+  status: "modified" | "added" | "removed";
+};
+
+export type CheckpointDiff = {
+  ok: boolean;
+  diff: string;
+  files: CheckpointDiffFile[];
+  truncated: boolean;
+  error?: string;
+};
+
 export type CodegraphStatus = {
   indexed: boolean;
   status: "ready" | "indexing" | "unsupported" | "none";
@@ -285,6 +298,7 @@ export const api = {
   getCheckpoints: () => getJSON<Checkpoint[]>(withToken("/api/checkpoints")),
   restoreCheckpoint: (id: string) => postJSON<{ ok: boolean; restored_files: string[]; auto_snapshot_id: string }>("/api/checkpoints/restore", { id }),
   snapshotCheckpoint: (label: string) => postJSON<{ ok: boolean; id: string }>("/api/checkpoints/snapshot", { label }),
+  getCheckpointDiff: (id: string) => getJSON<CheckpointDiff>(withToken(`/api/checkpoints/diff?id=${encodeURIComponent(id)}`)),
 
   getHooks: () => getJSON<{ hooks: Hook[]; events: string[] }>("/api/hooks"),
   addHook: (event: string, command: string) => postJSON<Hook>("/api/hooks/add", { event, command }),

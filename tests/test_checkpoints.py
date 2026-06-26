@@ -172,3 +172,64 @@ def test_api_endpoints_protection(temp_git_repo):
 
     finally:
         httpd.shutdown()
+
+
+def test_checkpoint_diff(temp_git_repo):
+    repo = temp_git_repo
+    store = CheckpointStore(repo)
+    
+    # Take initial snapshot
+    c1 = store.snapshot(label="Initial state", trigger="test")
+    assert c1 is not None
+
+    # 1. Unchanged tree diff is empty
+    res = store.diff(c1)
+    assert res["ok"] is True
+    assert res["diff"].strip() == ""
+    assert len(res["files"]) == 0
+    assert res["truncated"] is False
+
+    # 2. Modify a file, add a file
+    file1 = os.path.join(repo, "file1.txt")
+    with open(file1, "w") as f:
+        f.write("modified content here")
+    
+    file2 = os.path.join(repo, "file2.txt")
+    with open(file2, "w") as f:
+        f.write("new untracked file")
+
+    res2 = store.diff(c1)
+    assert res2["ok"] is True
+    # file1 is modified, file2 is removed on restore (since it's not in the checkpoint c1)
+    files = {f["path"]: f["status"] for f in res2["files"]}
+    assert files["file1.txt"] == "modified"
+    assert files["file2.txt"] == "removed"
+
+    # 3. Bad ID is handled gracefully
+    res_bad = store.diff("invalidid1234567890")
+    assert res_bad["ok"] is False
+
+def test_api_checkpoints_diff_protection(temp_git_repo):
+    repo = temp_git_repo
+    httpd, port, srv = _server()
+    srv._cfg.repo = repo
+    
+    try:
+        # Create a checkpoint
+        store = CheckpointStore(repo)
+        c1 = store.snapshot("Test", "test")
+        
+        # 1. GET /api/checkpoints/diff without token -> 403
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _get(port, f"/api/checkpoints/diff?id={c1}")
+        assert exc.value.code == 403
+
+        # 2. GET /api/checkpoints/diff with token -> 200
+        resp = _get(port, f"/api/checkpoints/diff?id={c1}&token={srv._TOKEN}")
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+        assert data["ok"] is True
+        assert "diff" in data
+        assert "files" in data
+    finally:
+        httpd.shutdown()

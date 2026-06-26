@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { History, Play, ShieldAlert, Check, RefreshCw } from "lucide-react";
-import { api, type Checkpoint } from "../lib/api";
+import { History, Play, ShieldAlert, Check, RefreshCw, Eye, EyeOff } from "lucide-react";
+import { api, type Checkpoint, type CheckpointDiff } from "../lib/api";
 
 export default function CheckpointsPane() {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
@@ -10,6 +10,10 @@ export default function CheckpointsPane() {
   const [isCreatingSnapshot, setIsCreatingSnapshot] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const [expandedDiffs, setExpandedDiffs] = useState<Record<string, boolean>>({});
+  const [diffData, setDiffData] = useState<Record<string, CheckpointDiff>>({});
+  const [loadingDiffs, setLoadingDiffs] = useState<Record<string, boolean>>({});
 
   const fetchCheckpoints = async () => {
     setIsLoading(true);
@@ -23,6 +27,32 @@ export default function CheckpointsPane() {
       setError(err?.message || "Failed to fetch checkpoints");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const toggleDiff = async (id: string) => {
+    const isCurrentlyExpanded = !!expandedDiffs[id];
+    setExpandedDiffs((prev) => ({ ...prev, [id]: !isCurrentlyExpanded }));
+
+    if (!isCurrentlyExpanded && !diffData[id]) {
+      setLoadingDiffs((prev) => ({ ...prev, [id]: true }));
+      try {
+        const res = await api.getCheckpointDiff(id);
+        setDiffData((prev) => ({ ...prev, [id]: res }));
+      } catch (err: any) {
+        setDiffData((prev) => ({
+          ...prev,
+          [id]: {
+            ok: false,
+            diff: "",
+            files: [],
+            truncated: false,
+            error: err?.message || "Failed to fetch diff",
+          },
+        }));
+      } finally {
+        setLoadingDiffs((prev) => ({ ...prev, [id]: false }));
+      }
     }
   };
 
@@ -200,6 +230,23 @@ export default function CheckpointsPane() {
 
                 <div className="flex gap-1.5 mt-1 border-t border-edge/30 pt-2 shrink-0">
                   <button
+                    onClick={() => toggleDiff(cp.id)}
+                    className="py-1 px-2.5 bg-panel border border-edge/80 hover:bg-edge/40 rounded font-medium text-muted hover:text-txt transition-colors text-[10px] flex items-center gap-1"
+                  >
+                    {expandedDiffs[cp.id] ? (
+                      <>
+                        <EyeOff size={10} />
+                        <span>Hide diff</span>
+                      </>
+                    ) : (
+                      <>
+                        <Eye size={10} />
+                        <span>View diff</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
                     onClick={() => handleRestore(cp)}
                     disabled={isRestoring !== null}
                     className="flex-1 py-1 px-2.5 bg-accent/5 hover:bg-accent/15 border border-accent/25 hover:border-accent/40 rounded font-medium text-accent hover:text-accent-bright transition-colors text-center text-[10px] flex items-center justify-center gap-1 disabled:opacity-40"
@@ -208,6 +255,99 @@ export default function CheckpointsPane() {
                     {isPending ? "Restoring..." : "Restore to this point"}
                   </button>
                 </div>
+
+                {expandedDiffs[cp.id] && (
+                  <div className="mt-2 border-t border-edge/30 pt-2 flex flex-col gap-2">
+                    {loadingDiffs[cp.id] ? (
+                      <div className="flex items-center gap-2 text-faint py-2 font-medium">
+                        <RefreshCw size={10} className="animate-spin" />
+                        <span>Fetching diff...</span>
+                      </div>
+                    ) : diffData[cp.id] ? (
+                      (() => {
+                        const diff = diffData[cp.id];
+                        if (!diff.ok) {
+                          return (
+                            <div className="p-2 bg-risk/10 border border-risk/20 text-risk rounded text-[10px]">
+                              {diff.error || "Failed to load diff."}
+                            </div>
+                          );
+                        }
+
+                        if (diff.files.length === 0) {
+                          return (
+                            <div className="text-faint py-1 italic text-[10.5px]">
+                              No changes since this checkpoint
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="flex flex-col gap-2 w-full overflow-hidden">
+                            {/* Compact File List */}
+                            <div className="flex flex-col gap-1 max-h-[120px] overflow-y-auto pr-1">
+                              {diff.files.map((file, idx) => {
+                                let badgeColor = "text-warn border-warn/30 bg-warn/5";
+                                let label = "modified";
+                                if (file.status === "added") {
+                                  badgeColor = "text-good border-good/30 bg-good/5";
+                                  label = "added";
+                                } else if (file.status === "removed") {
+                                  badgeColor = "text-risk border-risk/30 bg-risk/5";
+                                  label = "removed";
+                                }
+
+                                return (
+                                  <div key={idx} className="flex items-center justify-between gap-2 py-0.5 border-b border-edge/10 last:border-0">
+                                    <span className="font-mono text-[10px] text-muted truncate max-w-[180px]" title={file.path}>
+                                      {file.path}
+                                    </span>
+                                    <span className={`px-1 py-0.2 text-[8px] uppercase font-bold tracking-wider rounded border ${badgeColor}`}>
+                                      {label}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* Unified Diff Box */}
+                            {diff.diff && (
+                              <div className="flex flex-col gap-1">
+                                <div className="text-[9px] uppercase tracking-wider text-faint font-semibold">
+                                  Unified Diff
+                                </div>
+                                <div className="p-1.5 bg-panel border border-edge/80 rounded max-h-[180px] overflow-auto font-mono text-[10px] leading-relaxed text-muted scrollbar-thin">
+                                  {diff.diff.split("\n").map((line, lineIdx) => {
+                                    let lineClass = "text-muted/80";
+                                    if (line.startsWith("+") && !line.startsWith("+++")) {
+                                      lineClass = "text-good bg-good/5 border-l border-good/30 pl-1";
+                                    } else if (line.startsWith("-") && !line.startsWith("---")) {
+                                      lineClass = "text-risk bg-risk/5 border-l border-risk/30 pl-1";
+                                    } else if (line.startsWith("@@")) {
+                                      lineClass = "text-accent font-semibold pl-1";
+                                    } else if (line.startsWith("diff") || line.startsWith("index") || line.startsWith("---") || line.startsWith("+++")) {
+                                      lineClass = "text-faint select-none font-medium";
+                                    }
+                                    return (
+                                      <div key={lineIdx} className={`whitespace-pre-wrap break-all min-h-[1.1rem] ${lineClass}`}>
+                                        {line}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                {diff.truncated && (
+                                  <div className="text-[9px] text-warn italic">
+                                    Diff truncated (size limit exceeded)
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()
+                    ) : null}
+                  </div>
+                )}
               </div>
             );
           })

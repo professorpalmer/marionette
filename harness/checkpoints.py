@@ -221,6 +221,92 @@ class CheckpointStore:
         except Exception as e:
             return {"ok": False, "error": f"Restore failed with error: {e}"}
 
+    def diff(self, checkpoint_id: str) -> dict[str, Any]:
+        """
+        Returns the unified diff between the checkpoint commit's tree and the CURRENT working tree.
+        """
+        if not self._enabled:
+            return {
+                "ok": False,
+                "error": "Checkpoints disabled: repository is not a git worktree",
+            }
+
+        # Verify target checkpoint exists
+        try:
+            chk_res = subprocess.run(
+                ["git", "cat-file", "-e", f"{checkpoint_id}^" + "{commit}"],
+                cwd=self.repo,
+                capture_output=True,
+            )
+            if chk_res.returncode != 0:
+                return {"ok": False, "error": f"Checkpoint {checkpoint_id} not found in Git"}
+        except Exception as e:
+            return {"ok": False, "error": f"Failed to verify checkpoint: {e}"}
+
+        try:
+            # Get checkpoint files
+            checkpoint_files = set(self._ls_files(checkpoint_id))
+            
+            # Get current files (tracked and untracked, excluding ignored)
+            current_files = set(self._ls_current_files())
+
+            # Files added on restore: existed in checkpoint but not now
+            added_files = sorted(list(checkpoint_files - current_files))
+            
+            # Files removed on restore: exist now but not in checkpoint
+            removed_files = sorted(list(current_files - checkpoint_files))
+
+            # Modified files: exist in both but are modified (we can detect this from git status/diff or by comparing them)
+            diff_names_res = subprocess.run(
+                ["git", "diff", "--name-only", checkpoint_id, "--", "."],
+                cwd=self.repo,
+                capture_output=True,
+                text=True,
+            )
+            modified_candidates = set()
+            if diff_names_res.returncode == 0:
+                modified_candidates = {line.strip() for line in diff_names_res.stdout.splitlines() if line.strip()}
+            
+            # Keep only those that are in both sets
+            modified_files = sorted(list(modified_candidates & checkpoint_files & current_files))
+
+            # Build the files list
+            files_list = []
+            for f in added_files:
+                files_list.append({"path": f, "status": "added"})
+            for f in removed_files:
+                files_list.append({"path": f, "status": "removed"})
+            for f in modified_files:
+                files_list.append({"path": f, "status": "modified"})
+
+            # Sort files list by path
+            files_list.sort(key=lambda x: x["path"])
+
+            # Run git diff <checkpoint_sha> -- .
+            diff_res = subprocess.run(
+                ["git", "diff", checkpoint_id, "--", "."],
+                cwd=self.repo,
+                capture_output=True,
+                text=True,
+            )
+            
+            diff_text = diff_res.stdout or ""
+            truncated = False
+            max_size = 200000
+            if len(diff_text) > max_size:
+                diff_text = diff_text[:max_size] + "\n[Diff truncated...]"
+                truncated = True
+
+            return {
+                "ok": True,
+                "diff": diff_text,
+                "files": files_list,
+                "truncated": truncated,
+            }
+
+        except Exception as e:
+            return {"ok": False, "error": f"Failed to generate diff: {e}"}
+
     def prune(self) -> None:
         """
         Prunes metadata entries and limits storage to last 50 entries.
@@ -290,6 +376,19 @@ class CheckpointStore:
         try:
             res = subprocess.run(
                 ["git", "ls-tree", "-r", "--name-only", commit_sha],
+                cwd=self.repo,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        except Exception:
+            return []
+
+    def _ls_current_files(self) -> list[str]:
+        try:
+            res = subprocess.run(
+                ["git", "ls-files", "-c", "-o", "--exclude-standard"],
                 cwd=self.repo,
                 capture_output=True,
                 text=True,
