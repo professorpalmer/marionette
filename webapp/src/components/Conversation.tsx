@@ -388,13 +388,51 @@ function WorkspaceChip() {
   );
 }
 
+function cleanAssistantText(text: string): string {
+  const lines = text.split("\n");
+  const cleaned: string[] = [];
+  let inTraceback = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const stripped = line.trim();
+
+    if (stripped.startsWith("USER: (") || stripped.includes("completed with exit code")) {
+      continue;
+    }
+    if (stripped.match(/^\s*Traceback\s*\(most\s+recent\s+call\s+last\):/i)) {
+      inTraceback = true;
+      continue;
+    }
+    if (inTraceback) {
+      if (stripped === "") {
+        continue;
+      }
+      if (line.startsWith(" ") || line.startsWith("\t")) {
+        continue;
+      }
+      inTraceback = false;
+      continue;
+    }
+    if (stripped.includes("During handling of the above exception") || stripped.includes("The above exception was the direct cause")) {
+      continue;
+    }
+    cleaned.push(line);
+  }
+
+  let result = cleaned.join("\n").trim();
+  result = result.replace(/\n{3,}/g, "\n\n");
+  return result || "Working...";
+}
+
 function Bubble({ msg }: { msg: Msg }) {
   const isUser = msg.role === "user";
+  const displayedText = isUser ? msg.text : cleanAssistantText(msg.text);
   return (
     <div className={`flex flex-col gap-1 ${isUser ? "items-end" : "items-start"}`}>
       <span className="text-[10px] uppercase tracking-wider text-faint px-1">{isUser ? "you" : "pilot"}</span>
       <div className={`rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap break-words max-w-[85%]
-        ${isUser ? "bg-accent2 text-txt" : "bg-panel border border-edge text-txt/90"}`}>{msg.text}</div>
+        ${isUser ? "bg-accent2 text-txt" : "bg-panel border border-edge text-txt/90"}`}>{displayedText}</div>
     </div>
   );
 }

@@ -37,6 +37,7 @@ from pmharness.intent import DriverIntent
 from pmharness.bridge import execute_intent, BridgeResult
 from .pilot import (parse_pilot_turn, PilotTurn, PilotError, PILOT_SYSTEM)
 from .wiki import WikiClient, session_digest
+from .text_clean import clean_say
 
 
 def is_safe_path(path: str, parent: str) -> bool:
@@ -247,11 +248,12 @@ class ConversationalSession:
                 continue
 
             # 2. Emit the pilot's prose to the user.
-            if turn.say:
-                yield ConvEvent("message", {"role": "assistant", "text": turn.say})
-                turn_prose.append(turn.say)
+            cleaned_say_text = clean_say(turn.say) if turn.say else ""
+            if cleaned_say_text:
+                yield ConvEvent("message", {"role": "assistant", "text": cleaned_say_text})
+                turn_prose.append(cleaned_say_text)
             # record the pilot's turn in transcript (prose only -- the conversation)
-            self._history.append({"role": "assistant", "content": turn.say or "(acting)"})
+            self._history.append({"role": "assistant", "content": cleaned_say_text or "(acting)"})
 
             # 3. No actions => the pilot is done talking; yield back to the user.
             if not turn.has_actions:

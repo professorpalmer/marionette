@@ -231,7 +231,7 @@ Respond ONLY with a JSON object:
   }
 
 Rules:
-- `say` is always present: talk to the user in natural prose. Explain what you're doing.
+- `say` is always present: the `say` field is for natural-language explanation to the USER ONLY. It must NOT contain tool output, command results, tracebacks, file listings, or the literal text of tool-result messages. Never echo or quote the "(... completed with exit code ...)" tool-result envelopes -- those are shown to the user automatically in the action chips. Keep say concise: explain what you're doing and why, then act.
 - Prefer your direct tools (read_file, write_file, run_command, list_dir) for precise actions and testing.
 - Use `run_swarm` when you need a team of workers to analyze a broad issue or scan the codebase.
 - Always verify your work by running tests via `run_command` after editing.
