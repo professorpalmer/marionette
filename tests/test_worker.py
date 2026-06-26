@@ -211,8 +211,8 @@ def test_worker_leaf_mode_schemas_and_defense(monkeypatch):
     assert "read_file" in tool_names_worker
     assert "run_command" in tool_names_worker
     assert "list_dir" in tool_names_worker
-    assert "search_codegraph" in tool_names_worker
-    assert "query_wiki" in tool_names_worker
+    assert "search_codegraph" not in tool_names_worker
+    assert "query_wiki" not in tool_names_worker
 
     # 2. build_tools_schema by default (regression guard)
     schema_default = build_tools_schema()
@@ -220,6 +220,8 @@ def test_worker_leaf_mode_schemas_and_defense(monkeypatch):
     assert "run_implement" in tool_names_default
     assert "run_parallel" in tool_names_default
     assert "run_swarm" in tool_names_default
+    assert "search_codegraph" in tool_names_default
+    assert "query_wiki" in tool_names_default
 
     # 3. Verify ProviderWorker constructs session with no_delegation=True
     repo_dir = create_temp_git_repo()
@@ -272,4 +274,71 @@ def test_worker_leaf_mode_schemas_and_defense(monkeypatch):
     action_results = [e for e in events if e.kind == "action_result"]
     assert len(action_results) >= 1
     assert "delegation is disabled for workers" in action_results[0].data.get("error", "")
+
+
+def test_provider_worker_leak_and_failure_cleanup(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        # Mock run_auto to write a file
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+            filepath = os.path.join(self.config.repo, "added_by_worker.txt")
+            with open(filepath, "w") as f:
+                f.write("this is a new file created by the worker\n")
+            yield ConvEvent("message", {"text": "Wrote the file."})
+            yield ConvEvent("auto_halt", {"reason": "pilot reports objective met"})
+
+        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto)
+
+        # 1. SUCCESS PATH
+        worker = ProviderWorker(
+            repo=repo_dir,
+            goal="Add a file",
+            keep_worktree_on_failure=False  # default is False now
+        )
+        res = worker.run()
+        assert res.ok is True
+
+        # Assert worktree dir is gone
+        assert not os.path.exists(res.worktree)
+
+        # Assert no pmworker-* branch remains
+        p_branches = subprocess.run(
+            ["git", "-C", repo_dir, "branch", "--list", "pmworker-*"],
+            capture_output=True,
+            text=True
+        )
+        assert p_branches.stdout.strip() == ""
+
+        # 2. FAILURE PATH (must clean up by default too)
+        def mock_run_auto_fail(self, objective, budget=None, require_codegraph=True):
+            # Write a file but raise an error to trigger failure
+            filepath = os.path.join(self.config.repo, "added_by_worker_fail.txt")
+            with open(filepath, "w") as f:
+                f.write("failed\n")
+            raise RuntimeError("something went wrong")
+
+        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto_fail)
+
+        worker_fail = ProviderWorker(
+            repo=repo_dir,
+            goal="This will fail",
+            keep_worktree_on_failure=False  # must clean up by default
+        )
+        res_fail = worker_fail.run()
+        assert res_fail.ok is False
+        assert "something went wrong" in res_fail.error
+
+        # Assert worktree dir is gone
+        assert not os.path.exists(res_fail.worktree)
+
+        # Assert no pmworker-* branch remains
+        p_branches = subprocess.run(
+            ["git", "-C", repo_dir, "branch", "--list", "pmworker-*"],
+            capture_output=True,
+            text=True
+        )
+        assert p_branches.stdout.strip() == ""
+
+    finally:
+        shutil.rmtree(repo_dir)
 

@@ -16,7 +16,8 @@ from harness.worktrees import (
     add_worktree,
     remove_worktree,
     _safe_branch_name,
-    _git
+    _git,
+    delete_branch
 )
 
 @dataclass
@@ -115,7 +116,7 @@ class ProviderWorker:
         base: str = "HEAD",
         budget: Optional[AutoBudget] = None,
         run_tests: str = "",
-        keep_worktree_on_failure: bool = True,
+        keep_worktree_on_failure: bool = False,
         require_codegraph: bool = False,
     ):
         self.repo = os.path.abspath(repo) if repo else ""
@@ -123,7 +124,12 @@ class ProviderWorker:
         self.driver = driver
         self.reach = reach
         self.base = base
-        self.budget = budget or AutoBudget.from_env()
+        self.budget = budget or AutoBudget(
+            max_tokens=40000,
+            max_seconds=300,
+            max_swarms=2,
+            max_idle_steps=2
+        )
         self.run_tests = run_tests
         self.keep_worktree_on_failure = keep_worktree_on_failure
         self.require_codegraph = require_codegraph
@@ -169,9 +175,8 @@ class ProviderWorker:
             # Set the objective framing
             worker_objective = (
                 f"IMPLEMENT TASK: {self.goal}\n\n"
-                "Edit the files in this workspace to accomplish the task end to end. "
-                "Run focused tests if a test command is obvious. "
-                "Finish when the change is complete."
+                "Edit the file(s) directly to complete this task. Read each target file at most once, then write the change. "
+                "Do not investigate beyond the files you must edit. Finish as soon as the change is complete."
             )
             
             # Start the budget
@@ -291,11 +296,16 @@ class ProviderWorker:
             )
             
         finally:
-            if wt_path:
-                if not success and self.keep_worktree_on_failure:
-                    pass
-                else:
-                    try:
-                        remove_worktree(self.repo, wt_path, force=True)
-                    except Exception:
+            try:
+                if wt_path:
+                    if not success and self.keep_worktree_on_failure:
                         pass
+                    else:
+                        remove_worktree(self.repo, wt_path, force=True)
+            except Exception:
+                pass
+
+            try:
+                delete_branch(self.repo, branch_name)
+            except Exception:
+                pass

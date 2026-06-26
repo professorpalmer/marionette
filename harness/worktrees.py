@@ -189,3 +189,11 @@ def cleanup_old_worktrees(repo: str, max_count: int = 25) -> None:
             remove_worktree(repo, wt["path"], force=True)
         except Exception:
             pass
+
+def delete_branch(repo: str, branch: str) -> None:
+    if not branch.startswith("pmworker-"):
+        return
+    if not repo or not _is_repo(repo):
+        return
+    subprocess.run(["git", "-C", repo, "branch", "-D", branch], capture_output=True, text=True, timeout=15)
+
