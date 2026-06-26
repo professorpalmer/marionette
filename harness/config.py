@@ -18,6 +18,7 @@ class HarnessConfig:
     swarm_adapter: str = "demo"      # demo (free/safe) | openai (real read-only analysis)
     wiki_url: str = ""               # portable-llm-wiki base url (HARNESS_WIKI_URL)
     wiki_auto: bool = False          # auto-ingest findings to the wiki (HARNESS_WIKI_AUTO)
+    max_context_tokens: int = 96000
 
     @classmethod
     def from_env(cls) -> "HarnessConfig":
@@ -54,4 +55,5 @@ class HarnessConfig:
             swarm_adapter=swarm_adapter_val,
             wiki_url=pick("HARNESS_WIKI_URL", "wiki_url", ""),
             wiki_auto=str(pick("HARNESS_WIKI_AUTO", "wiki_auto", "")).strip() in ("1","true","yes","True"),
+            max_context_tokens=int(pick("HARNESS_MAX_CONTEXT_TOKENS", "max_context_tokens", 96000)),
         )

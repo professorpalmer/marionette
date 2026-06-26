@@ -296,6 +296,154 @@ class ConversationalSession:
         lines.append("ASSISTANT:")
         return "\n\n".join(lines)
 
+    def _estimate_context_tokens_for_list(self, history_list: list[dict]) -> int:
+        total_chars = 0
+        per_msg_overhead = 10
+        total_overhead = 0
+        for m in history_list:
+            role = m.get("role") or ""
+            content = m.get("content") or ""
+            chars = len(content)
+            
+            if m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    func = tc.get("function") or {}
+                    chars += len(func.get("name") or "") + len(func.get("arguments") or "") + 30
+            elif role == "tool":
+                chars += len(m.get("tool_call_id") or "") + 30
+                
+            total_chars += chars
+            total_overhead += per_msg_overhead
+            
+        return (total_chars // 4) + total_overhead
+
+    def _estimate_context_tokens(self) -> int:
+        return self._estimate_context_tokens_for_list(self._history)
+
+    def _find_safe_split(self, start_idx: int) -> int:
+        split_idx = start_idx
+        if split_idx < 2:
+            split_idx = 2
+            
+        while split_idx < len(self._history):
+            middle_tool_calls = set()
+            for msg in self._history[1:split_idx]:
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        if tc.get("id"):
+                            middle_tool_calls.add(tc["id"])
+                            
+            has_orphaned = False
+            for msg in self._history[split_idx:]:
+                if msg.get("role") == "tool":
+                    tc_id = msg.get("tool_call_id")
+                    if tc_id in middle_tool_calls:
+                        has_orphaned = True
+                        break
+                        
+            if not has_orphaned:
+                break
+                
+            split_idx += 1
+            
+        return split_idx
+
+    def _format_block_for_summary(self, messages: list[dict]) -> str:
+        lines = []
+        for m in messages:
+            role = m.get("role", "user").upper()
+            content = m.get("content") or ""
+            if m.get("tool_calls"):
+                tc_strs = []
+                for tc in m["tool_calls"]:
+                    func = tc.get("function") or {}
+                    tc_strs.append(f"({func.get('name')} with arguments {func.get('arguments')})")
+                if tc_strs:
+                    content = (content + "\n" + "\n".join(tc_strs)).strip()
+            elif m.get("role") == "tool":
+                role = "USER"
+                tc_id = m.get("tool_call_id") or ""
+                content = f"(tool result for {tc_id}):\n{content}"
+            lines.append(f"{role}: {content}")
+        return "\n\n".join(lines)
+
+    def _make_fallback_summary(self, middle_block: list[dict]) -> str:
+        n = len(middle_block)
+        if n <= 4:
+            return self._format_block_for_summary(middle_block)
+        first_part = self._format_block_for_summary(middle_block[:2])
+        last_part = self._format_block_for_summary(middle_block[-2:])
+        elided_count = n - 4
+        note = f"[... {elided_count} messages were elided here to fit context window ...]"
+        return f"{first_part}\n\n{note}\n\n{last_part}"
+
+    def _maybe_compact_history(self) -> Iterator[ConvEvent]:
+        budget = getattr(self.config, "max_context_tokens", 96000)
+        trigger = int(budget * 0.75)
+        target = int(budget * 0.50)
+        
+        before_tokens = self._estimate_context_tokens()
+        if before_tokens < trigger:
+            return
+            
+        recent_count = 6
+        split_idx = len(self._history) - recent_count
+        if split_idx < 2:
+            split_idx = 2
+            
+        split_idx = self._find_safe_split(split_idx)
+        
+        while split_idx < len(self._history) - 1:
+            simulated_summary_msg = {"role": "user", "content": "A" * 4000}
+            simulated_history = [self._history[0], simulated_summary_msg] + self._history[split_idx:]
+            sim_tokens = self._estimate_context_tokens_for_list(simulated_history)
+            
+            if sim_tokens <= target:
+                break
+                
+            split_idx = self._find_safe_split(split_idx + 1)
+            
+        if split_idx >= len(self._history):
+            split_idx = len(self._history) - 1
+            if split_idx < 2:
+                return
+                
+        middle_block = self._history[1:split_idx]
+        recent_block = self._history[split_idx:]
+        
+        sys_msg = "Summarize the following conversation history into a compact briefing preserving decisions, file paths, key facts, and open threads. Be terse."
+        content_to_summarize = self._format_block_for_summary(middle_block)
+        
+        summary = ""
+        try:
+            if hasattr(self.pilot, "chat"):
+                resp = self.pilot.chat([{"role": "user", "content": content_to_summarize}], system=sys_msg)
+            else:
+                resp = self.pilot.complete(content_to_summarize, system=sys_msg)
+                
+            if resp and not getattr(resp, "error", None) and getattr(resp, "text", None):
+                summary = resp.text.strip()
+                if len(summary) > 6000:
+                    summary = summary[:6000] + "\n... [summary truncated to fit budget]"
+            else:
+                summary = self._make_fallback_summary(middle_block)
+        except Exception:
+            summary = self._make_fallback_summary(middle_block)
+            
+        summary_msg = {
+            "role": "user",
+            "content": f"[Earlier conversation summarized to fit context]\n{summary}"
+        }
+        
+        self._history[:] = [self._history[0], summary_msg] + recent_block
+        
+        after_tokens = self._estimate_context_tokens()
+        yield ConvEvent("compaction", {
+            "before_tokens": before_tokens,
+            "after_tokens": after_tokens,
+            "summarized_messages": len(middle_block)
+        })
+
     def _append_action_result(self, act: Any, aid: str, content: str, is_native: bool) -> None:
         if is_native:
             tc_id = getattr(act, "tool_call_id", None) or aid
@@ -383,6 +531,9 @@ class ConversationalSession:
             if self._cancel.is_set():
                 yield ConvEvent("interrupted", {"reason": "session interrupted"})
                 return
+
+            yield from self._maybe_compact_history()
+
             # 1. Ask the pilot for its next conversational turn.
             base_sys = self._history[0]["content"]
             cg_section = ""
