@@ -163,6 +163,7 @@ class ProviderWorker:
                 wiki_url=base_cfg.wiki_url,
                 wiki_auto=base_cfg.wiki_auto,
                 max_context_tokens=base_cfg.max_context_tokens,
+                no_delegation=True,
             )
             
             # Set the objective framing

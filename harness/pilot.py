@@ -148,7 +148,7 @@ def _coerce_actions(raw_actions) -> list:
     return actions
 
 
-def build_tools_schema(mcp_tools: Optional[list] = None) -> list:
+def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = False) -> list:
     schema = []
 
     # 1. read_file
@@ -264,30 +264,31 @@ def build_tools_schema(mcp_tools: Optional[list] = None) -> list:
     })
 
     # 8. run_swarm
-    schema.append({
-        "type": "function",
-        "function": {
-            "name": "run_swarm",
-            "description": "dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "goal": {"type": "string", "description": "The specific objective or question for the swarm workers"},
-                    "roles": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional worker roles list"
+    if not no_delegation:
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "run_swarm",
+                "description": "dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string", "description": "The specific objective or question for the swarm workers"},
+                        "roles": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional worker roles list"
+                        },
+                        "worker_mode": {
+                            "type": "string",
+                            "enum": ["subprocess", "inline", "daemon"],
+                            "description": "Optional worker process mode"
+                        }
                     },
-                    "worker_mode": {
-                        "type": "string",
-                        "enum": ["subprocess", "inline", "daemon"],
-                        "description": "Optional worker process mode"
-                    }
-                },
-                "required": ["goal"]
+                    "required": ["goal"]
+                }
             }
-        }
-    })
+        })
 
     # 9. search_codegraph
     schema.append({
@@ -323,43 +324,45 @@ def build_tools_schema(mcp_tools: Optional[list] = None) -> list:
     })
 
     # 11. run_implement
-    schema.append({
-        "type": "function",
-        "function": {
-            "name": "run_implement",
-            "description": "dispatch an edit-capable Puppetmaster worker that edits the repo in an isolated worktree and produces a patch. Requires `goal`.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "goal": {"type": "string", "description": "The coding objective / task description to implement"},
-                    "adapter": {"type": "string", "description": "Optional Puppetmaster adapter to run (e.g., hermes, cursor, codex, claude-code)"}
-                },
-                "required": ["goal"]
+    if not no_delegation:
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "run_implement",
+                "description": "dispatch an edit-capable Puppetmaster worker that edits the repo in an isolated worktree and produces a patch. Requires `goal`.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string", "description": "The coding objective / task description to implement"},
+                        "adapter": {"type": "string", "description": "Optional Puppetmaster adapter to run (e.g., hermes, cursor, codex, claude-code)"}
+                    },
+                    "required": ["goal"]
+                }
             }
-        }
-    })
+        })
 
     # 12. run_parallel
-    schema.append({
-        "type": "function",
-        "function": {
-            "name": "run_parallel",
-            "description": "dispatch multiple Puppetmaster workers concurrently. Requires `goals` array.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "goals": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Array of goals/objectives to run in parallel"
+    if not no_delegation:
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "run_parallel",
+                "description": "dispatch multiple Puppetmaster workers concurrently. Requires `goals` array.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "goals": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Array of goals/objectives to run in parallel"
+                        },
+                        "adapter": {"type": "string", "description": "Optional Puppetmaster adapter to run (e.g., hermes, cursor, codex, claude-code)"},
+                        "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"}
                     },
-                    "adapter": {"type": "string", "description": "Optional Puppetmaster adapter to run (e.g., hermes, cursor, codex, claude-code)"},
-                    "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"}
-                },
-                "required": ["goals"]
+                    "required": ["goals"]
+                }
             }
-        }
-    })
+        })
 
     # 13. route_task
     schema.append({
@@ -709,4 +712,44 @@ Rules:
 
 
 PLAN_SYSTEM_SUFFIX = """PLAN MODE: Do NOT call run_implement, run_parallel, write_file, or run_command. Investigate read-only if needed (read_file, search_codegraph, query_wiki, list_dir, web_search), then output a clear, actionable, numbered implementation PLAN in markdown: goal restatement, the concrete steps (each with what/where/why), files likely touched, risks, and a suggested verification. End with a one-line summary. The user will review the plan before any execution."""
+
+
+WORKER_SYSTEM = """You are an implementation worker. Make the change DIRECTLY by editing files with write_file (and read_file/list_dir/search_codegraph to understand the code, run_command to run tests). You CANNOT delegate -- do the work yourself, edit every file the task requires, and finish when the change is complete.
+
+You have direct access to a local CodeGraph-indexed workspace and can explore/edit it using these real actions:
+- `read_file`: read a file's contents from the workspace. Requires `path`.
+- `write_file`: write/create a file atomically. Requires `path` and `content`.
+- `run_command`: run a terminal shell command. Requires `command`.
+- `list_dir`: list the files and folders inside a directory. `path` is optional.
+- `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.
+- `web_search`: search the internet and return top results. Requires `query`.
+- `web_fetch`: read a web page's text contents. Requires `url`.
+- `read_pdf`: extract plain text from a local PDF file or PDF URL. Requires `path` or `url`.
+- `search_codegraph`: search the CodeGraph index for symbol usages, definitions, or context. Requires `query` and optional `kind`.
+- `query_wiki`: query the durable cross-session architecture and knowledge wiki. Requires `question`.
+- `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
+
+You have search_codegraph (semantic/graph search over THIS repo's code -- prefer it over grep/read_file for 'where is X / what calls Y / how does Z work') and query_wiki (durable cross-session knowledge base -- consult it for prior decisions, architecture, and context). Use search_codegraph to explore code structure before reading whole files. These are first-class: you know the codebase via CodeGraph and your durable memory via the Wiki.
+
+NATIVE TOOL-CALLING (Primary Mode):
+If native tool calling (function calling) is enabled, you MUST invoke functions/tools directly rather than writing JSON envelopes. Keep your user-facing message content to a brief, friendly sentence (pure prose) describing your action or findings. Never paste tool outputs, command outputs, or full file contents into your message content.
+
+FALLBACK JSON ENVELOPE MODE (Non-native fallback):
+If native tool-calling is NOT supported by the active driver/model, respond ONLY with a JSON object:
+
+  {
+    "thinking": "<optional private reasoning/scratchpad -- analysis, plan, what you are considering>",
+    "say": "<prose for the user describing your plan and concise explanations>",
+    "actions": [
+      {"kind": "read_file", "path": "src/main.py"}
+    ]
+  }
+
+Rules:
+- Keep your prose explanation (message content or "say") extremely tight and concise (under 2 sentences). Let the tool chips show the work. Do NOT paste file contents, command output, tracebacks, or large code blocks back into prose -- reference them briefly instead. Never echo or quote tool-result messages.
+- Prefer search_codegraph and query_wiki for code exploration and architectural knowledge.
+- Prefer your direct tools (read_file, write_file, run_command, list_dir) for precise actions and testing.
+- Always verify your work by running tests via `run_command` after editing.
+- Be concise and concrete. Never invent file contents; read the files first.
+"""
 

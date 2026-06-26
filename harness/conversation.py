@@ -39,7 +39,7 @@ from pmharness import registry as reg
 from . import providers as prov
 from pmharness.intent import DriverIntent
 from pmharness.bridge import execute_intent, BridgeResult
-from .pilot import (parse_pilot_turn, PilotTurn, PilotError, PILOT_SYSTEM)
+from .pilot import (parse_pilot_turn, PilotTurn, PilotError, PILOT_SYSTEM, WORKER_SYSTEM)
 from .wiki import WikiClient, session_digest
 from .text_clean import clean_say
 from .checkpoints import CheckpointStore
@@ -194,7 +194,7 @@ class ConversationalSession:
         # self-learning: load ACTIVE skills into the pilot's system context so
         # the loop compounds (procedural memory). Pending skills are NOT loaded.
         self._skills = SkillStore()
-        system = PILOT_SYSTEM
+        system = WORKER_SYSTEM if getattr(config, "no_delegation", False) else PILOT_SYSTEM
         active = self._skills.list("active")
         if active:
             skills_block = "\n\n".join(
@@ -489,7 +489,7 @@ class ConversationalSession:
         # Tool definitions section
         from .pilot import build_tools_schema
         mcp_tools = self._mcp.discovered_tools() if self._mcp else None
-        tools_schema = build_tools_schema(mcp_tools)
+        tools_schema = build_tools_schema(mcp_tools, no_delegation=getattr(self.config, "no_delegation", False))
         serialized_tools = json.dumps(tools_schema)
         tool_definitions_tokens = len(serialized_tools) // 4
         
@@ -780,7 +780,7 @@ class ConversationalSession:
                 if hasattr(self.pilot, "chat"):
                     from .pilot import build_tools_schema
                     mcp_tools = self._mcp.discovered_tools() if self._mcp else None
-                    tools_schema = build_tools_schema(mcp_tools)
+                    tools_schema = build_tools_schema(mcp_tools, no_delegation=getattr(self.config, "no_delegation", False))
                     resp = self.pilot.chat(self._history[1:], tools=tools_schema, system=sys_prompt)
                 else:
                     resp = self.pilot.complete(prompt, system=sys_prompt)
@@ -927,6 +927,15 @@ class ConversationalSession:
                         "error": f"(plan mode: skipped {act.kind})"
                     })
                     self._append_action_result(act, aid, f"(plan mode: skipped {act.kind})", is_native)
+                    continue
+
+                if getattr(self.config, "no_delegation", False) and act.kind in ("run_implement", "run_parallel", "run_swarm"):
+                    err_msg = "delegation is disabled for workers; edit the files directly with write_file"
+                    yield ConvEvent("action_result", {
+                        "id": aid,
+                        "error": err_msg
+                    })
+                    self._append_action_result(act, aid, err_msg, is_native)
                     continue
 
                 # ---- read_file branch -----------------------------------------
