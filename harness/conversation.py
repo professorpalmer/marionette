@@ -907,7 +907,7 @@ class ConversationalSession:
                     turn_had_invalid = True
                     continue
                 act_goal = act.goal
-                if act.kind in ("read_file", "write_file", "list_dir"):
+                if act.kind in ("read_file", "write_file", "edit_file", "list_dir"):
                     act_goal = act.path or "(workspace root)"
                 elif act.kind == "run_command":
                     act_goal = act.command
@@ -930,7 +930,7 @@ class ConversationalSession:
                     "adapter": self.config.swarm_adapter,
                 })
 
-                if plan and act.kind in ("run_implement", "run_parallel", "write_file", "run_command"):
+                if plan and act.kind in ("run_implement", "run_parallel", "write_file", "edit_file", "run_command"):
                     yield ConvEvent("action_result", {
                         "id": aid,
                         "error": f"(plan mode: skipped {act.kind})"
@@ -939,7 +939,7 @@ class ConversationalSession:
                     continue
 
                 if getattr(self.config, "no_delegation", False) and act.kind in ("run_implement", "run_parallel", "run_swarm"):
-                    err_msg = "delegation is disabled for workers; edit the files directly with write_file"
+                    err_msg = "delegation is disabled for workers; edit the files directly with write_file or edit_file"
                     yield ConvEvent("action_result", {
                         "id": aid,
                         "error": err_msg
@@ -1034,6 +1034,93 @@ class ConversationalSession:
                     except Exception as e:
                         yield ConvEvent("action_result", {"id": aid, "error": str(e)})
                         self._append_action_result(act, aid, f"(write_file {act.path} failed: {e})", is_native)
+                    continue
+                # ---- edit_file branch -----------------------------------------
+                if act.kind == "edit_file":
+                    if not self.config.repo:
+                        error_msg = "No workspace directory (config.repo) is open."
+                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                        self._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native)
+                        continue
+                    target_path = act.path
+                    if not os.path.isabs(target_path):
+                        target_path = os.path.join(self.config.repo, target_path)
+                    if not is_safe_path(target_path, self.config.repo):
+                        error_msg = f"Path traversal attempt rejected: {act.path}"
+                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                        self._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native)
+                        continue
+                    try:
+                        if not os.path.exists(target_path):
+                            error_msg = f"edit_file: file not found: {act.path} (use write_file to create new files)"
+                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                            self._append_action_result(act, aid, f"(edit_file {act.path} failed: {error_msg})", is_native)
+                            continue
+                        if os.path.isdir(target_path):
+                            error_msg = f"edit_file: path is a directory: {act.path}"
+                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                            self._append_action_result(act, aid, f"(edit_file {act.path} failed: {error_msg})", is_native)
+                            continue
+
+                        with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                            original_content = f.read()
+
+                        old_str = act.old_str
+                        new_str = act.new_str
+                        occurrences = original_content.count(old_str)
+                        if occurrences == 0:
+                            error_msg = f"edit_file: old_str not found in {act.path} (it must match the existing text EXACTLY, including whitespace/indentation)"
+                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                            self._append_action_result(act, aid, f"(edit_file {act.path} failed: {error_msg})", is_native)
+                            continue
+                        elif occurrences > 1:
+                            error_msg = f"edit_file: old_str matched {occurrences} times in {act.path}; add more surrounding context to make it unique"
+                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                            self._append_action_result(act, aid, f"(edit_file {act.path} failed: {error_msg})", is_native)
+                            continue
+
+                        # Exactly 1 match. Construct the new content.
+                        new_content = original_content.replace(old_str, new_str, 1)
+
+                        # Take checkpoint before edit_file
+                        try:
+                            cp_id = self._checkpoints.snapshot(
+                                label=f"Before editing {act.path}",
+                                trigger="edit_file"
+                            )
+                            if cp_id:
+                                yield ConvEvent("checkpoint", {
+                                    "id": cp_id,
+                                    "trigger": "edit_file",
+                                    "label": f"Before editing {act.path}"
+                                })
+                        except Exception as cp_err:
+                            import sys
+                            print(f"Checkpoint error before edit_file: {cp_err}", file=sys.stderr)
+
+                        target_dir = os.path.dirname(target_path)
+                        os.makedirs(target_dir, exist_ok=True)
+                        import tempfile
+                        fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-")
+                        try:
+                            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                                f.write(new_content)
+                            os.replace(temp_path, target_path)
+                        except Exception as e:
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                            raise e
+
+                        # Emit action result
+                        headline = f"edited {act.path}: replaced {len(old_str)} chars -> {len(new_str)} chars"
+                        yield ConvEvent("action_result", {
+                            "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
+                            "artifacts": [{"type": "file", "headline": headline}],
+                        })
+                        self._append_action_result(act, aid, f"(edit_file {act.path} successfully edited: {headline})", is_native)
+                    except Exception as e:
+                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+                        self._append_action_result(act, aid, f"(edit_file {act.path} failed: {e})", is_native)
                     continue
                 # ---- run_command branch ---------------------------------------
                 if act.kind == "run_command":

@@ -55,7 +55,7 @@ def price(name: str) -> tuple:
 
 def build(name: str, *, reach: str = "openrouter") -> Driver:
     import os as _os
-    _mt = int(_os.environ.get("HARNESS_MAX_TOKENS", "1500"))
+    _mt = int(_os.environ.get("HARNESS_MAX_TOKENS", "8000"))
     """Construct a Driver for a catalog model.
 
     reach='openrouter' routes through OpenRouter (one key for the whole field).

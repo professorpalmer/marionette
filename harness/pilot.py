@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "query_wiki", "run_implement", "run_parallel", "route_task"}
+VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "query_wiki", "run_implement", "run_parallel", "route_task"}
 
 
 @dataclass
@@ -57,6 +57,8 @@ class PilotAction:
     adapter: str = ""           # run_implement / run_parallel: optional adapter name
     mode: str = ""              # run_parallel: "implement" or "analysis" / "review"
     instruction: str = ""       # route_task: instruction text
+    old_str: str = ""
+    new_str: str = ""
 
     def validate(self) -> "PilotAction":
         if self.kind not in VALID_ACTION_KINDS:
@@ -73,6 +75,10 @@ class PilotAction:
             raise PilotError("call_mcp action requires a 'tool' (server.tool)")
         if self.kind in ("read_file", "write_file") and not (self.path or "").strip():
             raise PilotError(f"{self.kind} action requires a 'path'")
+        if self.kind == "edit_file" and not (self.path or "").strip():
+            raise PilotError("edit_file action requires a 'path'")
+        if self.kind == "edit_file" and not self.old_str:
+            raise PilotError("edit_file action requires 'old_str'")
         if self.kind == "run_command" and not (self.command or "").strip():
             raise PilotError("run_command action requires a 'command'")
         if self.kind == "web_search" and not (self.query or "").strip():
@@ -180,6 +186,24 @@ def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = F
                     "content": {"type": "string", "description": "The exact content to write/overwrite in the file"}
                 },
                 "required": ["path", "content"]
+            }
+        }
+    })
+
+    # edit_file
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": "Make a targeted edit to an existing file by replacing an exact substring. STRONGLY PREFERRED over write_file for editing existing files -- only send the small snippet that changes, never the whole file. Requires path, old_str (the EXACT existing text to replace, including surrounding context to make it unique), and new_str (the replacement). To append, set old_str to a unique trailing snippet of the file and include it at the start of new_str.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or relative path to the file to edit"},
+                    "old_str": {"type": "string", "description": "The EXACT existing text to replace, including surrounding context to make it unique"},
+                    "new_str": {"type": "string", "description": "The replacement text (may be empty to delete)"}
+                },
+                "required": ["path", "old_str", "new_str"]
             }
         }
     })
@@ -426,6 +450,10 @@ def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> Pilot
                 or args.get("file") or args.get("filepath") or "")
         content = (args.get("content") or args.get("text") or args.get("code")
                    or args.get("file_contents") or args.get("contents") or "")
+        old_str = (args.get("old_str") or args.get("old_string") or args.get("old")
+                   or args.get("search") or "")
+        new_str = (args.get("new_str") or args.get("new_string") or args.get("new")
+                   or args.get("replace") or args.get("content") or args.get("text") or "")
         command = (args.get("command") or args.get("cmd") or args.get("shell") or "")
         query = args.get("query") or ""
         url = args.get("url") or ""
@@ -453,6 +481,8 @@ def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> Pilot
             adapter=adapter,
             mode=mode,
             instruction=instruction,
+            old_str=old_str,
+            new_str=new_str,
             arguments=args,
             tool_call_id=tool_call_id
         ).validate()
@@ -565,15 +595,30 @@ def parse_tool_calls(tool_calls: list) -> list[PilotAction]:
         name = func.get("name") or ""
         tc_id = tc.get("id") or ""
         raw_args = func.get("arguments") or {}
+        
+        args_failed = False
         if isinstance(raw_args, str):
             try:
                 args = json.loads(raw_args)
             except Exception:
                 args = {}
+                args_failed = True
         elif isinstance(raw_args, dict):
             args = raw_args
         else:
             args = {}
+            args_failed = True
+
+        if args_failed:
+            actions.append(PilotAction(
+                kind="__invalid__",
+                tool=name,
+                arguments={},
+                tool_call_id=tc_id,
+                content=(f"INVALID TOOL CALL '{name}': your previous tool call was TRUNCATED (arguments cut off). "
+                         f"Use edit_file with a SMALL old_str/new_str snippet instead of writing the whole file."),
+            ))
+            continue
 
         try:
             action = _tool_name_to_action(name, args, tool_call_id=tc_id)
@@ -589,7 +634,7 @@ def parse_tool_calls(tool_calls: list) -> list[PilotAction]:
                 arguments=args,
                 tool_call_id=tc_id,
                 content=(f"INVALID TOOL CALL '{name}': {e}. Re-issue the tool call with ALL required "
-                         f"arguments (write_file needs both 'path' and 'content')."),
+                         f"arguments (write_file needs both 'path' and 'content'; edit_file needs 'path', 'old_str', and 'new_str')."),
             ))
 
     return actions
@@ -685,7 +730,8 @@ You talk directly with the user like a senior engineer pairing with them.
 
 You have direct access to a local CodeGraph-indexed workspace and can explore/edit it using these real actions:
 - `read_file`: read a file's contents from the workspace. Requires `path`.
-- `write_file`: write/create a file atomically. Requires `path` and `content`.
+- `edit_file`: make a targeted edit to an existing file by replacing an exact substring. Requires `path`, `old_str`, and `new_str`. STRONGLY PREFERRED over write_file for editing existing files.
+- `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
 - `run_command`: run a terminal shell command. Requires `command`.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
 - `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`.
@@ -727,14 +773,15 @@ Rules:
 """
 
 
-PLAN_SYSTEM_SUFFIX = """PLAN MODE: Do NOT call run_implement, run_parallel, write_file, or run_command. Investigate read-only if needed (read_file, search_codegraph, query_wiki, list_dir, web_search), then output a clear, actionable, numbered implementation PLAN in markdown: goal restatement, the concrete steps (each with what/where/why), files likely touched, risks, and a suggested verification. End with a one-line summary. The user will review the plan before any execution."""
+PLAN_SYSTEM_SUFFIX = """PLAN MODE: Do NOT call run_implement, run_parallel, write_file, edit_file, or run_command. Investigate read-only if needed (read_file, search_codegraph, query_wiki, list_dir, web_search), then output a clear, actionable, numbered implementation PLAN in markdown: goal restatement, the concrete steps (each with what/where/why), files likely touched, risks, and a suggested verification. End with a one-line summary. The user will review the plan before any execution."""
 
 
-WORKER_SYSTEM = """You are an implementation worker. Be FAST and DECISIVE. Your job is to EDIT FILES to complete the task, not to investigate. Read ONLY the specific file(s) you must change (read_file once per file), then make the edit immediately with write_file, then FINISH. Do NOT explore the wider codebase. Do NOT call search_codegraph (this workspace has no code index; it returns nothing and wastes time). Do NOT re-read a file you already read. Ideal small change = read target file once, write the change, done. As soon as all required edits are made, STOP. Do not do extra investigation rounds.
+WORKER_SYSTEM = """You are an implementation worker. Be FAST and DECISIVE. Your job is to EDIT FILES to complete the task, not to investigate. Read ONLY the specific file(s) you must change (read_file once per file), then make the edit immediately with edit_file, then FINISH. To change an existing file, ALWAYS use edit_file with a small old_str/new_str snippet -- do NOT use write_file to rewrite an existing file (that wastes tokens and can truncate). Use write_file ONLY to create a brand-new file. Do NOT explore the wider codebase. Do NOT call search_codegraph (this workspace has no code index; it returns nothing and wastes time). Do NOT re-read a file you already read. Ideal small change = read target file once, edit the change, done. As soon as all required edits are made, STOP. Do not do extra investigation rounds.
 
 You have direct access to the workspace and can explore/edit it using these real actions:
 - `read_file`: read a file's contents from the workspace. Requires `path`.
-- `write_file`: write/create a file atomically. Requires `path` and `content`.
+- `edit_file`: make a targeted edit to an existing file by replacing an exact substring. Requires `path`, `old_str`, and `new_str`. STRONGLY PREFERRED over write_file for editing existing files.
+- `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
 - `run_command`: run a terminal shell command. Requires `command`.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
 - `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.
