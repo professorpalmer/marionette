@@ -36,7 +36,6 @@ export default function RightPane({ artifacts, onOpenWizard }: {
 }) {
   const asideRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [width, setWidth] = useState<number>(600);
   const [isResizing, setIsResizing] = useState(false);
 
   // Tab order state (drag to reorder, persisted in localStorage)
@@ -124,18 +123,6 @@ export default function RightPane({ artifacts, onOpenWizard }: {
     });
   };
 
-  // ResizeObserver for measuring total width
-  useEffect(() => {
-    if (!asideRef.current) return;
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setWidth(entry.contentRect.width);
-      }
-    });
-    observer.observe(asideRef.current);
-    return () => observer.disconnect();
-  }, []);
-
   // Hotkey listener
   useEffect(() => {
     const onFocusTab = (e: any) => {
@@ -203,38 +190,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
   }, [isResizing, splitState.direction]);
 
   // Compute label visibility based on sub-pane widths
-  const primaryWidth = splitState.isSplit && splitState.direction === "vertical" ? width * (splitState.percent / 100) : width;
-  const secondaryWidth = splitState.isSplit && splitState.direction === "vertical" ? width * ((100 - splitState.percent) / 100) : width;
 
-  const getLabelsMode = (paneWidth: number, activeTab: Tab, isSplit: boolean) => {
-    const controlsWidth = isSplit ? 80 : 40;
-    const availableTabsWidth = paneWidth - controlsWidth;
-    
-    let sumAllLabels = 0;
-    let sumActiveOnly = 0;
-    const iconWidth = 32; // estimation for icon-only tab width: icon + padding
-    
-    tabOrder.forEach((t) => {
-      const labelText = TAB_CONFIG[t].label;
-      // Tab width if labelled: icon(12px) + gap(4px) + characters(length * 6.5px) + padding(16px)
-      const labelledWidth = 12 + 4 + labelText.length * 6.5 + 16;
-      sumAllLabels += labelledWidth;
-      
-      if (t === activeTab) {
-        sumActiveOnly += labelledWidth;
-      } else {
-        sumActiveOnly += iconWidth;
-      }
-    });
-    
-    if (availableTabsWidth >= sumAllLabels) {
-      return "all";
-    } else if (availableTabsWidth >= sumActiveOnly) {
-      return "active-only";
-    } else {
-      return "icon-only";
-    }
-  };
 
   const renderTabContent = (tabName: Tab) => {
     switch (tabName) {
@@ -271,8 +227,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
           <div className="flex flex-nowrap border-b border-edge overflow-x-auto scrollbar-none select-none">
             {tabOrder.map((tabName) => {
               const config = TAB_CONFIG[tabName];
-              const mode = getLabelsMode(primaryWidth, splitState.primaryTab, splitState.isSplit);
-              const show = mode === "all" || (mode === "active-only" && splitState.primaryTab === tabName);
+              const show = false; // icon-only always -- labels caused resize/stretch issues; tooltips via title attr
               return (
                 <TabBtn
                   key={tabName}
@@ -349,8 +304,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
             <div className="flex flex-nowrap border-b border-edge overflow-x-auto scrollbar-none select-none">
               {tabOrder.map((tabName) => {
                 const config = TAB_CONFIG[tabName];
-                const mode = getLabelsMode(secondaryWidth, splitState.secondaryTab, splitState.isSplit);
-                const show = mode === "all" || (mode === "active-only" && splitState.secondaryTab === tabName);
+                const show = false; // icon-only always -- labels caused resize/stretch issues; tooltips via title attr
                 return (
                   <TabBtn
                     key={tabName}
