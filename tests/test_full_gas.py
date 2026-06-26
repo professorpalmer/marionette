@@ -351,7 +351,7 @@ def test_executor_smoke_run_parallel():
                     from pmharness.drivers.openai_compat import DriverResponse
                     self.calls += 1
                     if self.calls == 1:
-                        txt = '{"say": "Running in parallel.", "actions": [{"kind": "run_parallel", "goals": ["Audit auth", "Audit cache"], "mode": "implement"}]}'
+                        txt = '{"say": "Running in parallel.", "actions": [{"kind": "run_parallel", "adapter": "cursor", "goals": ["Audit auth", "Audit cache"], "mode": "implement"}]}'
                     else:
                         txt = '{"say": "Done.", "actions": []}'
                     return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
@@ -449,7 +449,7 @@ def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, 
             from pmharness.drivers.openai_compat import DriverResponse
             self.calls += 1
             if self.calls == 1:
-                txt = '{"say": "Running in parallel.", "actions": [{"kind": "run_parallel", "goals": ["Goal One", "Goal Two"], "mode": "analysis"}]}'
+                txt = '{"say": "Running in parallel.", "actions": [{"kind": "run_parallel", "adapter": "cursor", "goals": ["Goal One", "Goal Two"], "mode": "analysis"}]}'
             else:
                 txt = '{"say": "Done.", "actions": []}'
             return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
