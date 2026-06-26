@@ -242,3 +242,102 @@ def test_executor_smoke_run_parallel(mock_run, mock_popen):
     # Verify aggregate result is returned
     kinds = [e.kind for e in events]
     assert "action_result" in kinds
+
+
+@patch("tempfile.mkdtemp")
+@patch("shutil.rmtree")
+@patch("subprocess.Popen")
+@patch("subprocess.run")
+def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, mock_mkdtemp):
+    mock_mkdtemp.side_effect = ["/tmp/pmh-par-1", "/tmp/pmh-par-2"]
+    
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir="/tmp/test-state-dir")
+    cfg.repo = "/mock/repo"
+    
+    mock_p1 = MagicMock()
+    mock_p1.stdout = ["Started job job_111111111111"]
+    
+    mock_p2 = MagicMock()
+    mock_p2.stdout = ["Success but stdout missed the job_id line"]
+    
+    mock_popen.side_effect = [mock_p1, mock_p2]
+    
+    mock_res_last = MagicMock(returncode=0, stdout="job_222222222222")
+    mock_res_await = MagicMock(returncode=0)
+    mock_res_art = MagicMock()
+    mock_res_art.stdout = json.dumps([
+        {
+            "job_id": "job_111111111111",
+            "type": "finding",
+            "payload": {"report": "Worker 1 results"}
+        }
+    ])
+    
+    def _run_side(*a, **k):
+        argv = a[0] if a else k.get("args", [])
+        if isinstance(argv, list):
+            if "last" in argv:
+                return mock_res_last
+            elif "artifacts" in argv:
+                if "job_111111111111" in argv:
+                    return mock_res_art
+                else:
+                    res2 = MagicMock()
+                    res2.stdout = json.dumps([
+                        {
+                            "job_id": "job_222222222222",
+                            "type": "finding",
+                            "payload": {"report": "Worker 2 results"}
+                        }
+                    ])
+                    return res2
+            elif "await" in argv:
+                return mock_res_await
+        return mock_res_await
+        
+    mock_run.side_effect = _run_side
+    
+    session = ConversationalSession(cfg)
+    session._detect_default_implement_adapter = MagicMock(return_value="hermes")
+    
+    class FakeParallelPilot:
+        name = "fake"
+        def __init__(self):
+            self.calls = 0
+        def complete(self, prompt, *, system=None):
+            from pmharness.drivers.openai_compat import DriverResponse
+            self.calls += 1
+            if self.calls == 1:
+                txt = '{"say": "Running in parallel.", "actions": [{"kind": "run_parallel", "goals": ["Goal One", "Goal Two"], "mode": "analysis"}]}'
+            else:
+                txt = '{"say": "Done.", "actions": []}'
+            return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
+            
+    session.pilot = FakeParallelPilot()
+    events = list(session.send("Run parallel checks!"))
+    
+    assert mock_popen.call_count == 2
+    args1 = mock_popen.call_args_list[0][0][0]
+    args2 = mock_popen.call_args_list[1][0][0]
+    
+    assert args1[1:5] == ["-m", "puppetmaster", "--state-dir", "/tmp/pmh-par-1"]
+    assert args2[1:5] == ["-m", "puppetmaster", "--state-dir", "/tmp/pmh-par-2"]
+    
+    last_calls = [c[0][0] for c in mock_run.call_args_list if "last" in c[0][0]]
+    assert len(last_calls) == 1
+    assert last_calls[0] == [sys.executable, "-m", "puppetmaster", "--state-dir", "/tmp/pmh-par-2", "last"]
+    
+    await_calls = [c[0][0] for c in mock_run.call_args_list if "await" in c[0][0]]
+    assert len(await_calls) == 2
+    assert ["--state-dir", "/tmp/pmh-par-1"] in [await_calls[0][3:5], await_calls[1][3:5]]
+    assert ["--state-dir", "/tmp/pmh-par-2"] in [await_calls[0][3:5], await_calls[1][3:5]]
+    
+    art_calls = [c[0][0] for c in mock_run.call_args_list if "artifacts" in c[0][0]]
+    assert len(art_calls) == 2
+    assert ["--state-dir", "/tmp/pmh-par-1"] in [art_calls[0][3:5], art_calls[1][3:5]]
+    assert ["--state-dir", "/tmp/pmh-par-2"] in [art_calls[0][3:5], art_calls[1][3:5]]
+    
+    assert mock_rmtree.call_count == 2
+    mock_rmtree.assert_any_call("/tmp/pmh-par-1", ignore_errors=True)
+    mock_rmtree.assert_any_call("/tmp/pmh-par-2", ignore_errors=True)
+

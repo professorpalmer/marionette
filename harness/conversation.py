@@ -954,6 +954,8 @@ class ConversationalSession:
                     import sys
                     import json
                     import threading
+                    import tempfile
+                    import shutil
                     processes = []
                     threads = []
                     
@@ -970,8 +972,14 @@ class ConversationalSession:
 
                     for idx, sub_goal in enumerate(goals):
                         sub_aid = sub_aids[idx]
+                        try:
+                            state_dir = tempfile.mkdtemp(prefix="pmh-par-")
+                        except Exception as e:
+                            yield ConvEvent("action_result", {"id": sub_aid, "error": f"Failed to create temp state-dir: {e}"})
+                            continue
+
                         cmd = [
-                            sys.executable, "-m", "puppetmaster", adapter, sub_goal,
+                            sys.executable, "-m", "puppetmaster", "--state-dir", state_dir, adapter, sub_goal,
                             "--cwd", self.config.repo, "--mode", mode,
                             "--allow-dirty", "--allow-non-worktree"
                         ]
@@ -988,7 +996,8 @@ class ConversationalSession:
                                 "goal": sub_goal,
                                 "id": sub_aid,
                                 "job_id": None,
-                                "lines": []
+                                "lines": [],
+                                "state_dir": state_dir
                             }
                             processes.append(p_info)
                             t = threading.Thread(target=read_stdout_thread, args=(p_info,), daemon=True)
@@ -996,6 +1005,7 @@ class ConversationalSession:
                             threads.append(t)
                         except Exception as e:
                             yield ConvEvent("action_result", {"id": sub_aid, "error": f"Failed to start: {e}"})
+                            shutil.rmtree(state_dir, ignore_errors=True)
 
                     for p_info in processes:
                         try:
@@ -1014,77 +1024,107 @@ class ConversationalSession:
                     for idx, p_info in enumerate(processes):
                         sub_aid = p_info["id"]
                         sub_goal = p_info["goal"]
-                        job_id = p_info["job_id"]
+                        state_dir = p_info.get("state_dir")
                         
-                        if job_id:
-                            job_ids_collected.append(job_id)
-                            await_cmd = [sys.executable, "-m", "puppetmaster", "await", job_id, "--cwd", self.config.repo]
-                            subprocess.run(await_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
+                        try:
+                            job_id = p_info["job_id"]
+                            
+                            if not job_id and state_dir:
+                                try:
+                                    last_cmd = [sys.executable, "-m", "puppetmaster", "--state-dir", state_dir, "last"]
+                                    last_p = subprocess.run(last_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+                                    if last_p.returncode == 0:
+                                        last_out = last_p.stdout or ""
+                                        m = re.search(r"\b(job_[a-fA-F0-9]{12})\b", last_out)
+                                        if m:
+                                            p_info["job_id"] = m.group(1)
+                                            job_id = p_info["job_id"]
+                                except Exception:
+                                    pass
 
-                            art_cmd = [sys.executable, "-m", "puppetmaster", "artifacts", job_id, "--cwd", self.config.repo]
-                            art_p = subprocess.run(art_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
-                            art_out = art_p.stdout or ""
-                            
-                            try:
-                                artifacts = json.loads(art_out)
-                            except Exception:
-                                artifacts = []
+                            if job_id:
+                                job_ids_collected.append(job_id)
+                                await_cmd = [sys.executable, "-m", "puppetmaster", "--state-dir", state_dir, "await", job_id, "--cwd", self.config.repo]
+                                subprocess.run(await_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
 
-                            self._add_worker_tokens_from_artifacts(artifacts)
-                            
-                            num_art = len(artifacts)
-                            aggregate_num_artifacts += num_art
-                            art_types = sorted({str(a.get("type", "finding")) for a in artifacts})
-                            
-                            ar_list = []
-                            for a in artifacts[:4]:
-                                t = a.get("type", "finding")
-                                headline = ""
-                                if t == "patch":
-                                    files = (a.get("payload") or {}).get("files") or []
-                                    headline = f"Patch: modified {', '.join(files)}" if files else "Patch generated"
-                                elif t == "finding":
-                                    claim = (a.get("payload") or {}).get("claim") or ""
-                                    rep = (a.get("payload") or {}).get("report") or ""
-                                    headline = claim or rep[:80] or "Finding"
+                                art_cmd = [sys.executable, "-m", "puppetmaster", "--state-dir", state_dir, "artifacts", job_id, "--cwd", self.config.repo]
+                                art_p = subprocess.run(art_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+                                art_out = art_p.stdout or ""
+                                
+                                try:
+                                    artifacts = json.loads(art_out)
+                                except Exception:
+                                    artifacts = []
+
+                                self._add_worker_tokens_from_artifacts(artifacts)
+                                
+                                num_art = len(artifacts)
+                                aggregate_num_artifacts += num_art
+                                art_types = sorted({str(a.get("type", "finding")) for a in artifacts})
+                                
+                                ar_list = []
+                                for a in artifacts[:4]:
+                                    t = a.get("type", "finding")
+                                    headline = ""
+                                    if t == "patch":
+                                        files = (a.get("payload") or {}).get("files") or []
+                                        headline = f"Patch: modified {', '.join(files)}" if files else "Patch generated"
+                                    elif t == "finding":
+                                        claim = (a.get("payload") or {}).get("claim") or ""
+                                        rep = (a.get("payload") or {}).get("report") or ""
+                                        headline = claim or rep[:80] or "Finding"
+                                    else:
+                                        headline = f"{t.capitalize()} artifact"
+                                    ar_list.append({"type": t, "headline": headline})
+
+                                yield ConvEvent("action_result", {
+                                    "id": sub_aid,
+                                    "job_id": job_id,
+                                    "num": num_art,
+                                    "types": art_types,
+                                    "artifacts": ar_list,
+                                    "adapter": adapter,
+                                    "mode": mode
+                                })
+
+                                patch_art = next((a for a in artifacts if a.get("type") == "patch"), None)
+                                patch_desc = ""
+                                if patch_art:
+                                    files = (patch_art.get("payload") or {}).get("files") or []
+                                    patch_desc = f"Patch modified: {', '.join(files)}" if files else "Patch generated"
+                                
+                                findings = [
+                                    (a.get("payload") or {}).get("report", "")[:100]
+                                    for a in artifacts if a.get("type") == "finding"
+                                ]
+                                findings_desc = "; ".join(findings[:2])
+                                
+                                p_sum = []
+                                if patch_desc:
+                                    p_sum.append(patch_desc)
+                                if findings_desc:
+                                    p_sum.append(findings_desc)
+                                
+                                sum_str = " | ".join(p_sum) if p_sum else "Completed task successfully"
+                                aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' (job {job_id}): {sum_str}")
+                            else:
+                                ret_code = p_info["proc"].returncode
+                                output_text = "".join(p_info["lines"])
+                                lower_out = output_text.lower()
+                                has_success_marker = any(m in lower_out for m in ["success", "complete", "finished", "done", "written", "saved"])
+                                
+                                if ret_code != 0:
+                                    err_msg = f"worker process failed (exit {ret_code})"
+                                elif has_success_marker:
+                                    err_msg = "worker completed but job_id unrecoverable"
                                 else:
-                                    headline = f"{t.capitalize()} artifact"
-                                ar_list.append({"type": t, "headline": headline})
+                                    err_msg = "worker completed but job_id unrecoverable (no success marker found)"
 
-                            yield ConvEvent("action_result", {
-                                "id": sub_aid,
-                                "job_id": job_id,
-                                "num": num_art,
-                                "types": art_types,
-                                "artifacts": ar_list,
-                                "adapter": adapter,
-                                "mode": mode
-                            })
-
-                            patch_art = next((a for a in artifacts if a.get("type") == "patch"), None)
-                            patch_desc = ""
-                            if patch_art:
-                                files = (patch_art.get("payload") or {}).get("files") or []
-                                patch_desc = f"Patch modified: {', '.join(files)}" if files else "Patch generated"
-                            
-                            findings = [
-                                (a.get("payload") or {}).get("report", "")[:100]
-                                for a in artifacts if a.get("type") == "finding"
-                            ]
-                            findings_desc = "; ".join(findings[:2])
-                            
-                            p_sum = []
-                            if patch_desc:
-                                p_sum.append(patch_desc)
-                            if findings_desc:
-                                p_sum.append(findings_desc)
-                            
-                            sum_str = " | ".join(p_sum) if p_sum else "Completed task successfully"
-                            aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' (job {job_id}): {sum_str}")
-                        else:
-                            err_msg = "Failed to launch or detect job_id"
-                            yield ConvEvent("action_result", {"id": sub_aid, "error": err_msg})
-                            aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' failed: {err_msg}")
+                                yield ConvEvent("action_result", {"id": sub_aid, "error": err_msg})
+                                aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' failed: {err_msg}")
+                        finally:
+                            if state_dir:
+                                shutil.rmtree(state_dir, ignore_errors=True)
 
                     aggregate_artifacts_list = [{"type": "parallel_summary", "headline": s} for s in aggregate_artifacts_summary[:8]]
                     
