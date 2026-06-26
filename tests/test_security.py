@@ -341,3 +341,59 @@ def test_context_usage_security_and_api():
         assert "Conversation" in cats
     finally:
         httpd.shutdown()
+
+
+def test_api_chat_multi_image_path_traversal_blocked():
+    import os
+    import urllib.parse
+    httpd, port, srv = _server()
+    try:
+        # 1. Request /api/chat with multiple images, one of which is outside upload_dir
+        temp_img_path = os.path.join(srv._UPLOAD_DIR, "valid_test.png")
+        with open(temp_img_path, "wb") as f:
+            f.write(b"fake png content")
+
+        bad_images = f"{temp_img_path}|/etc/hosts"
+        url_bad = f"/api/chat?message=hello&images={urllib.parse.quote(bad_images)}&token={srv._TOKEN}"
+        try:
+            _get(port, url_bad)
+            assert False, "should have been rejected with 400 due to traversal image"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            data = json.loads(e.read().decode())
+            assert "Invalid image path" in data["error"]
+
+        # 2. Request /api/chat with multiple valid images
+        temp_img_path2 = os.path.join(srv._UPLOAD_DIR, "valid_test2.png")
+        with open(temp_img_path2, "wb") as f:
+            f.write(b"fake png content 2")
+
+        good_images = f"{temp_img_path}|{temp_img_path2}"
+        # We mock _stream_chat to avoid running actual VLM/Pilot during this security test
+        original_stream_chat = srv.Handler._stream_chat
+        called_with_imgs = []
+        def mock_stream_chat(handler_self, message, images=None, plan=False):
+            called_with_imgs.append(images)
+            handler_self.send_response(200)
+            handler_self.end_headers()
+            handler_self.wfile.write(b"ok")
+
+        srv.Handler._stream_chat = mock_stream_chat
+        try:
+            url_good = f"/api/chat?message=hello&images={urllib.parse.quote(good_images)}&token={srv._TOKEN}"
+            resp = _get(port, url_good)
+            assert resp.status == 200
+            assert called_with_imgs == [[temp_img_path, temp_img_path2]]
+        finally:
+            srv.Handler._stream_chat = original_stream_chat
+            try:
+                os.remove(temp_img_path)
+            except Exception:
+                pass
+            try:
+                os.remove(temp_img_path2)
+            except Exception:
+                pass
+    finally:
+        httpd.shutdown()
+

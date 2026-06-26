@@ -180,6 +180,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const [attachedImages, setAttachedImages] = useState<{ path: string; name: string; previewUrl: string }[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
   // Compacting & Context breakdown states
   const [compactingStatus, setCompactingStatus] = useState<string | null>(null);
@@ -497,20 +498,31 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     const items = e.clipboardData?.items;
     if (!items) return;
 
+    let addedCount = attachedImages.length;
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       if (item.type.startsWith("image/")) {
         const file = item.getAsFile();
         if (file) {
           e.preventDefault(); // prevent pasting binary junk text
+          if (addedCount >= 8) {
+            setUploadError("Maximum 8 images allowed per message");
+            continue;
+          }
           setUploadError(null);
           try {
             const previewUrl = URL.createObjectURL(file);
             const uploaded = await api.uploadImage(file);
-            setAttachedImages((prev) => [
-              ...prev,
-              { path: uploaded.path, name: uploaded.name, previewUrl }
-            ]);
+            setAttachedImages((prev) => {
+              if (prev.length >= 8) {
+                return prev;
+              }
+              return [
+                ...prev,
+                { path: uploaded.path, name: uploaded.name, previewUrl }
+              ];
+            });
+            addedCount++;
           } catch (err) {
             console.error("Failed to upload pasted image:", err);
             setUploadError("Image upload failed");
@@ -539,14 +551,25 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     if (imageFiles.length === 0) return;
 
     setUploadError(null);
+    let addedCount = attachedImages.length;
     for (const file of imageFiles) {
+      if (addedCount >= 8) {
+        setUploadError("Maximum 8 images allowed per message");
+        break;
+      }
       try {
         const previewUrl = URL.createObjectURL(file);
         const uploaded = await api.uploadImage(file);
-        setAttachedImages((prev) => [
-          ...prev,
-          { path: uploaded.path, name: uploaded.name, previewUrl }
-        ]);
+        setAttachedImages((prev) => {
+          if (prev.length >= 8) {
+            return prev;
+          }
+          return [
+            ...prev,
+            { path: uploaded.path, name: uploaded.name, previewUrl }
+          ];
+        });
+        addedCount++;
       } catch (err) {
         console.error("Failed to upload dropped image:", err);
         setUploadError("Image upload failed");
@@ -1001,6 +1024,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                     onEdit={onEdit}
                     isEditing={isEditing}
                     onRegenerate={onRegenerate}
+                    onImageClick={(url) => setLightboxUrl(url)}
                   />
                 );
               } else if (it.kind === "swarm_pending") {
@@ -1409,7 +1433,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
             {/* Attached images preview chips */}
             {attachedImages.length > 0 && (
-              <div className="flex flex-wrap gap-2 px-3 pt-2.5">
+              <div className="flex flex-wrap items-center gap-2 px-3 pt-2.5">
                 {attachedImages.map((img, idx) => (
                   <div
                     key={idx}
@@ -1418,20 +1442,27 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                     <img
                       src={img.previewUrl}
                       alt={img.name}
-                      className="w-full h-full object-cover"
+                      onClick={() => setLightboxUrl(img.previewUrl)}
+                      className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
                     />
                     <button
                       onClick={() => {
                         setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
                         URL.revokeObjectURL(img.previewUrl);
+                        setUploadError(null);
                       }}
-                      className="absolute inset-0 bg-black/60 opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center transition text-txt hover:text-risk"
+                      className="absolute top-0 right-0 p-0.5 bg-black/60 text-txt hover:text-risk opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center transition rounded-bl"
                       title="Remove image"
                     >
-                      <Trash2 size={13} />
+                      <X size={11} />
                     </button>
                   </div>
                 ))}
+                {attachedImages.length > 1 && (
+                  <span className="text-[10px] text-muted self-center ml-1 select-none font-medium">
+                    {attachedImages.length} images
+                  </span>
+                )}
               </div>
             )}
 
@@ -1508,6 +1539,28 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           </div>
         </div>
       </div>
+
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm transition-opacity animate-in fade-in duration-200"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <div className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center justify-center" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setLightboxUrl(null)}
+              className="absolute -top-10 right-0 p-1.5 text-faint hover:text-txt bg-panel border border-edge rounded-full transition-all focus:outline-none"
+              title="Close"
+            >
+              <X size={16} />
+            </button>
+            <img
+              src={lightboxUrl}
+              alt="Enlarged screenshot"
+              className="max-w-full max-h-[80vh] object-contain rounded-lg border border-edge shadow-2xl"
+            />
+          </div>
+        </div>
+      )}
 
     </main>
   );
@@ -1790,7 +1843,8 @@ function Bubble({
   onExecutePlan,
   onEdit,
   isEditing,
-  onRegenerate
+  onRegenerate,
+  onImageClick
 }: {
   msg: Msg;
   showLabel?: boolean;
@@ -1799,6 +1853,7 @@ function Bubble({
   onEdit?: () => void;
   isEditing?: boolean;
   onRegenerate?: () => void;
+  onImageClick?: (url: string) => void;
 }) {
   const [executed, setExecuted] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -1836,11 +1891,12 @@ function Bubble({
             {msg.images && msg.images.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-2">
                 {msg.images.map((img, idx) => (
-                  <div key={idx} className="relative rounded-lg overflow-hidden border border-edge/30 max-w-[240px] max-h-[180px]">
+                  <div key={idx} className="relative w-11 h-11 rounded overflow-hidden border border-edge bg-panel flex-shrink-0">
                     <img
                       src={img.previewUrl}
                       alt={img.name}
-                      className="max-w-full max-h-[160px] object-contain rounded"
+                      onClick={() => onImageClick?.(img.previewUrl)}
+                      className="w-full h-full object-cover rounded cursor-pointer hover:opacity-85 transition-opacity"
                     />
                   </div>
                 ))}
