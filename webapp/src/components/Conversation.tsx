@@ -305,13 +305,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     if (isNotifyEnabled && isHidden) {
       if (typeof Notification !== "undefined") {
         if (Notification.permission === "granted") {
-          new Notification("Puppetmaster", {
+          new Notification("Marionette", {
             body: "Run complete",
           });
         } else if (Notification.permission !== "denied") {
           Notification.requestPermission().then((permission) => {
             if (permission === "granted") {
-              new Notification("Puppetmaster", {
+              new Notification("Marionette", {
                 body: "Run complete",
               });
             }
@@ -1007,7 +1007,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     <main className="flex flex-col h-full min-w-0 bg-bg">
       <header className="flex items-center justify-between px-6 border-b border-edge"
          style={{ paddingTop: 12, paddingBottom: 10, WebkitAppRegion: "drag" } as React.CSSProperties}>
-        <span className="font-medium text-[13px] text-txt/90" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>Puppetmaster</span>
+        <span className="font-medium text-[13px] text-txt/90" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>Marionette</span>
         <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}><StatusPill status={status} /></div>
       </header>
 

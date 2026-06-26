@@ -8,7 +8,7 @@
 // implementation differs (IPC here vs fetch/SSE on the web).
 
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
-app.name = "Puppetmaster";
+app.name = "Marionette";
 const { spawn } = require("node:child_process");
 const http = require("node:http");
 const path = require("node:path");

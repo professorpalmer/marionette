@@ -53,10 +53,10 @@
     "wait-on": "^9.0.10"
   },
   "main": "electron/main.cjs",
-  "productName": "Puppetmaster",
+  "productName": "Marionette",
   "build": {
     "appId": "sh.palmer.pmharness",
-    "productName": "Puppetmaster",
+    "productName": "Marionette",
     "directories": {
       "output": "release",
       "buildResources": "build"
