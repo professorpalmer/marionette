@@ -32,6 +32,112 @@ from .sessions import SessionStore, save_transcript, load_transcript
 from .autobudget import AutoBudget
 
 
+def _get_platform_json_path() -> str:
+    override = os.environ.get("TEST_PLATFORM_JSON_PATH")
+    if override:
+        return override
+    return os.path.expanduser("~/.puppetmaster/platform.json")
+
+
+def _write_platform_json_atomic(path: str, data: dict) -> None:
+    dir_path = os.path.dirname(path)
+    if dir_path:
+        os.makedirs(dir_path, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_path or ".", prefix="platform_")
+    try:
+        with os.fdopen(tmp_fd, 'w', encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
+def _init_platform_lock() -> None:
+    path = _get_platform_json_path()
+    pdata = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                pdata = json.load(f)
+        except Exception:
+            pass
+    if not isinstance(pdata, dict):
+        pdata = {}
+    
+    if not os.path.exists(path) or "harness_initialized" not in pdata:
+        if "disabled" not in pdata or not isinstance(pdata["disabled"], list):
+            pdata["disabled"] = ["claude-code", "codex", "openai"]
+        else:
+            pdata["disabled"] = [x for x in pdata["disabled"] if x not in ("cursor", "hermes")]
+        pdata["harness_initialized"] = True
+        try:
+            _write_platform_json_atomic(path, pdata)
+        except Exception:
+            pass
+
+
+def _get_platform_adapters() -> dict:
+    import shutil
+    from .keys import get_api_key_status
+    path = _get_platform_json_path()
+    disabled_list = []
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                pdata = json.load(f)
+                if isinstance(pdata, dict) and "disabled" in pdata and isinstance(pdata["disabled"], list):
+                    disabled_list = pdata["disabled"]
+        except Exception:
+            pass
+
+    adapters_config = [
+        {"name": "cursor", "implement_capable": True},
+        {"name": "hermes", "implement_capable": True},
+        {"name": "claude-code", "implement_capable": True},
+        {"name": "codex", "implement_capable": True},
+        {"name": "openai", "implement_capable": False}
+    ]
+
+    adapters = []
+    for cfg in adapters_config:
+        name = cfg["name"]
+        enabled = name not in disabled_list
+        
+        # Best-effort availability
+        if name == "hermes":
+            available = ("OPENROUTER_API_KEY" in os.environ) or get_api_key_status("openrouter")["has_key"]
+            note = "Hermes via OpenRouter. Uses standard API key."
+        elif name == "openai":
+            available = ("OPENAI_API_KEY" in os.environ) or get_api_key_status("openai")["has_key"]
+            note = "OpenAI API adapter. Note: Analysis-only, cannot drive implement tasks."
+        elif name == "cursor":
+            available = shutil.which("cursor") is not None
+            note = "Cursor editor CLI. Run swarm/implement in a Cursor workspace."
+        elif name == "claude-code":
+            available = shutil.which("claude") is not None
+            note = "Anthropic Claude Code. Requires 'claude' npm command in path."
+        elif name == "codex":
+            available = shutil.which("codex") is not None
+            note = "Codex agent CLI. Requires 'codex' command in path."
+        else:
+            available = True
+            note = ""
+
+        adapters.append({
+            "name": name,
+            "enabled": enabled,
+            "implement_capable": cfg["implement_capable"],
+            "available": available,
+            "note": note
+        })
+    return {"adapters": adapters}
+
+
 _WEB = Path(__file__).resolve().parent / "web"
 # One shared session per server process (single-user local app).
 _state_dir = os.environ.get("HARNESS_STATE_DIR", "")
@@ -64,6 +170,7 @@ _mcp = McpManager()
 from .pty_manager import PtyManager
 _pty = PtyManager()
 _pilot._mcp = _mcp
+_init_platform_lock()
 
 def _rebuild_pilot_and_session():
     global _session, _pilot
@@ -275,6 +382,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/skills/reject", "/api/skills/archive",
                       "/api/rules/approve", "/api/rules/reject",
                       "/api/settings", "/api/providers/probe", "/api/wiki/config",
+                      "/api/platform",
                       "/api/registry", "/api/roles", "/api/pilot/validate",
                       "/api/worktrees/add", "/api/worktrees/remove",
                       "/api/worktrees/prune", "/api/worktrees/max",
@@ -542,6 +650,40 @@ class Handler(BaseHTTPRequestHandler):
                 owner_token=owner_token if owner_token is not None else None,
             )
             return self._send(200, json.dumps(res))
+        if path == "/api/platform":
+            name = body.get("name")
+            enabled = body.get("enabled")
+            if name not in ("cursor", "hermes", "claude-code", "codex", "openai"):
+                return self._send(400, json.dumps({"error": f"Unknown adapter: {name}"}))
+            if not isinstance(enabled, bool):
+                return self._send(400, json.dumps({"error": "enabled must be a boolean"}))
+            
+            path_file = _get_platform_json_path()
+            pdata = {}
+            if os.path.exists(path_file):
+                try:
+                    with open(path_file, "r", encoding="utf-8") as f:
+                        pdata = json.load(f)
+                except Exception:
+                    pass
+            if not isinstance(pdata, dict):
+                pdata = {}
+            if "disabled" not in pdata or not isinstance(pdata["disabled"], list):
+                pdata["disabled"] = []
+            
+            disabled_list = pdata["disabled"]
+            if enabled:
+                pdata["disabled"] = [x for x in disabled_list if x != name]
+            else:
+                if name not in disabled_list:
+                    pdata["disabled"] = disabled_list + [name]
+            
+            try:
+                _write_platform_json_atomic(path_file, pdata)
+            except Exception as e:
+                return self._send(500, json.dumps({"error": f"Failed to save platform.json: {str(e)}"}))
+            
+            return self._send(200, json.dumps(_get_platform_adapters()))
         if path == "/api/settings":
             requires_rebuild = False
             if "api_key" in body or body.get("clear_api_key") is True:
@@ -1052,6 +1194,8 @@ class Handler(BaseHTTPRequestHandler):
             }))
         if u.path == "/api/settings":
             return self._send(200, json.dumps(_get_settings_dict()))
+        if u.path == "/api/platform":
+            return self._send(200, json.dumps(_get_platform_adapters()))
         if u.path == "/api/jobs":
             return self._send(200, json.dumps(_session.state().list_jobs()))
         if u.path == "/api/usage":

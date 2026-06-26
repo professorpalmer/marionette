@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Settings as SettingsIcon, ChevronRight, ChevronDown, Plus, Trash2 } from "lucide-react";
-import { api, type Settings, type UsageData } from "../lib/api";
+import { api, type Settings, type UsageData, type PlatformAdapter } from "../lib/api";
 import SkillsPane from "./SkillsPane";
 
 export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => void }) {
@@ -14,6 +14,10 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
   const [wikiBase, setWikiBase] = useState("");
   const [wikiToken, setWikiToken] = useState("");
   const [wikiSaving, setWikiSaving] = useState(false);
+  
+  // Platform Adapter states
+  const [platformAdapters, setPlatformAdapters] = useState<PlatformAdapter[]>([]);
+  const [platformError, setPlatformError] = useState("");
 
   // Feature states
   const [hooks, setHooks] = useState<any[]>([]);
@@ -88,8 +92,24 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
         console.error("Failed to load usage statistics", err);
       });
 
+    api.getPlatform()
+      .then((res) => setPlatformAdapters(res.adapters))
+      .catch((err) => {
+        setPlatformError("platform settings unavailable");
+        console.error("Failed to load platform adapters", err);
+      });
+
     loadHooks();
   }, []);
+
+  const handleTogglePlatform = async (name: string, enabled: boolean) => {
+    try {
+      const res = await api.togglePlatform(name, enabled);
+      setPlatformAdapters(res.adapters);
+    } catch (err) {
+      console.error("Failed to toggle platform adapter", err);
+    }
+  };
 
   const update = async (partial: Partial<Settings> & { api_key?: string; clear_api_key?: boolean }) => {
     if (!settings) return;
@@ -275,6 +295,68 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
               </button>
             )}
           </div>
+        </div>
+
+        {/* Platform Adapters Control */}
+        <div className="space-y-3 border-t border-edge pt-3">
+          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+            Platform Adapters
+          </label>
+          
+          {platformError ? (
+            <p className="text-[10px] text-muted italic">{platformError}</p>
+          ) : platformAdapters.length === 0 ? (
+            <p className="text-[10px] text-muted italic">Loading platform settings...</p>
+          ) : (
+            <div className="space-y-2">
+              <div className="space-y-2 bg-panel rounded border border-edge/40 p-2">
+                {platformAdapters.map((adapter) => (
+                  <div key={adapter.name} className="flex items-center justify-between gap-2 border-b border-edge/30 last:border-b-0 pb-1.5 last:pb-0 pt-1.5 first:pt-0">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono font-medium text-[11px] text-txt">{adapter.name}</span>
+                        <span className={`px-1 py-0.5 text-[8px] uppercase font-bold tracking-wider rounded ${
+                          adapter.implement_capable 
+                            ? "bg-accent/10 text-accent/90 border border-accent/25" 
+                            : "bg-panel2 text-muted border border-edge"
+                        }`}>
+                          {adapter.implement_capable ? "implement" : "analysis"}
+                        </span>
+                        {!adapter.available && (
+                          <span className="px-1 py-0.5 text-[8px] uppercase font-bold tracking-wider rounded bg-risk/10 text-risk border border-risk/20">
+                            not available
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-muted">
+                        {adapter.note}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleTogglePlatform(adapter.name, !adapter.enabled)}
+                      className={`px-2.5 py-1 rounded text-[10px] uppercase font-bold tracking-wider border transition-colors ${
+                        adapter.enabled
+                          ? "bg-accent/10 border-accent/30 text-accent hover:bg-accent/20"
+                          : "bg-panel2 border-edge text-muted hover:bg-panel"
+                      }`}
+                    >
+                      {adapter.enabled ? "on" : "off"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {!platformAdapters.some((a) => a.implement_capable && a.enabled) && (
+                <div className="text-risk text-[10px] font-semibold bg-risk/10 border border-risk/30 rounded p-2">
+                  No implement-capable adapter enabled -- run_implement will fail
+                </div>
+              )}
+
+              <p className="text-[10px] text-muted leading-normal">
+                The pilot dispatches implement/swarm workers to ENABLED adapters. Hermes (OpenRouter) is the default implement adapter.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Observability & Queue Prefs */}

@@ -25,6 +25,14 @@ export type Artifact = { type: string; headline: string; confidence?: number };
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
 export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string };
 
+export type PlatformAdapter = {
+  name: string;
+  enabled: boolean;
+  implement_capable: boolean;
+  available: boolean;
+  note: string;
+};
+
 export type Worktree = {
   path: string;
   branch: string;
@@ -197,4 +205,7 @@ export const api = {
   getWikiConfig: () => getJSON<{ api_base: string; has_token: boolean }>("/api/wiki/config"),
   setWikiConfig: (api_base?: string, owner_token?: string) =>
     postJSON<{ api_base: string; has_token: boolean }>("/api/wiki/config", { api_base, owner_token }),
+
+  getPlatform: () => getJSON<{ adapters: PlatformAdapter[] }>("/api/platform"),
+  togglePlatform: (name: string, enabled: boolean) => postJSON<{ adapters: PlatformAdapter[] }>("/api/platform", { name, enabled }),
 };
