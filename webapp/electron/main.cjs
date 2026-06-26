@@ -94,57 +94,39 @@ async function startBackend() {
 
   const customEnv = { ...process.env, HARNESS_REPO: process.env.HARNESS_REPO || repoRoot };
 
+  // codegraph self-containment: only safe with a REAL bundled `node` binary.
+  // The electron-as-node trick (ELECTRON_RUN_AS_NODE) does NOT work for codegraph because
+  // codegraph uses worker_threads (new Worker), which re-launch the Electron binary and recurse
+  // infinitely (verified 2026-06-26). So we ONLY inject codegraph/node shims when a bundled real
+  // node binary is shipped at Resources/node/bin/node; otherwise we leave PATH alone so a system
+  // codegraph/node (dev machines) keeps working. See .hermes/plans node-bundling verdict.
   try {
-    const shimDir = path.join(app.getPath("userData"), "bin");
-    fs.mkdirSync(shimDir, { recursive: true });
-
+    const bundledNode = app.isPackaged
+      ? path.join(process.resourcesPath, "node", "bin", "node")
+      : "";
     let codegraphJsPath = "";
     if (app.isPackaged) {
-      codegraphJsPath = path.join(process.resourcesPath, "codegraph", "dist", "bin", "codegraph.js");
-    } else {
-      const devVendorPath = path.join(__dirname, "..", "codegraph-vendor", "dist", "bin", "codegraph.js");
-      if (fs.existsSync(devVendorPath)) {
-        codegraphJsPath = devVendorPath;
-      } else {
-        const paths = [
-          "/opt/homebrew/lib/node_modules/@colbymchenry/codegraph/dist/bin/codegraph.js",
-          "/usr/local/lib/node_modules/@colbymchenry/codegraph/dist/bin/codegraph.js",
-        ];
-        for (const p of paths) {
-          if (fs.existsSync(p)) {
-            codegraphJsPath = p;
-            break;
-          }
-        }
-      }
+      const cg = path.join(process.resourcesPath, "codegraph", "dist", "bin", "codegraph.js");
+      if (fs.existsSync(cg)) codegraphJsPath = cg;
     }
-
-    if (codegraphJsPath && fs.existsSync(codegraphJsPath)) {
+    if (bundledNode && fs.existsSync(bundledNode) && codegraphJsPath) {
+      const shimDir = path.join(app.getPath("userData"), "bin");
+      fs.mkdirSync(shimDir, { recursive: true });
       const codegraphShimPath = path.join(shimDir, "codegraph");
-      const codegraphShimContent = `#!/bin/sh
-export ELECTRON_RUN_AS_NODE=1
-exec "${process.execPath}" -e "process.execArgv = []; process.argv.splice(1, 0, '${codegraphJsPath}'); delete process.versions.electron; require('${codegraphJsPath}')" -- "$@"
-`;
-      fs.writeFileSync(codegraphShimPath, codegraphShimContent, "utf8");
+      fs.writeFileSync(codegraphShimPath,
+        `#!/bin/sh\nexec "${bundledNode}" "${codegraphJsPath}" "$@"\n`, "utf8");
       fs.chmodSync(codegraphShimPath, 0o755);
-
       const nodeShimPath = path.join(shimDir, "node");
-      const nodeShimContent = `#!/bin/sh
-export ELECTRON_RUN_AS_NODE=1
-exec "${process.execPath}" "$@"
-`;
-      fs.writeFileSync(nodeShimPath, nodeShimContent, "utf8");
+      fs.writeFileSync(nodeShimPath, `#!/bin/sh\nexec "${bundledNode}" "$@"\n`, "utf8");
       fs.chmodSync(nodeShimPath, 0o755);
-
-      _dbg(`Set up codegraph shim in ${shimDir} pointing to ${codegraphJsPath}`);
-
       customEnv.PATH = shimDir + path.delimiter + (process.env.PATH || "");
       customEnv.PUPPETMASTER_CODEGRAPH_NO_NPX = "1";
+      _dbg(`codegraph self-contained via bundled node at ${bundledNode}`);
     } else {
-      _dbg(`Could not locate codegraph.js (isPackaged=${app.isPackaged}). Skipping shim setup.`);
+      _dbg("No bundled node binary; using system codegraph/node if present (no shim).");
     }
   } catch (e) {
-    _dbg(`Failed to setup codegraph shim: ${e.message}`);
+    _dbg(`codegraph shim setup skipped: ${e}`);
   }
 
   if (binaryPath) {

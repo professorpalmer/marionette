@@ -87,15 +87,10 @@ if (source === tempDir && fs.existsSync(tempDir)) {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }
 
-// Prune native better-sqlite3 build/ directory to force WASM SQLite and shrink size
-const betterSqliteDir = path.join(dest, "node_modules", "better-sqlite3");
-if (fs.existsSync(betterSqliteDir)) {
-  const buildDir = path.join(betterSqliteDir, "build");
-  if (fs.existsSync(buildDir)) {
-    console.log(`Pruning native build directory: ${buildDir}`);
-    fs.rmSync(buildDir, { recursive: true, force: true });
-  }
-}
+// NOTE: we KEEP the native better-sqlite3 build. The electron-as-node approach was abandoned
+// (codegraph worker_threads recurse under ELECTRON_RUN_AS_NODE -- see .hermes/plans verdict).
+// The viable path bundles a REAL node binary, which needs the native module (rebuilt for that
+// node's ABI at package time). Do NOT prune it.
 
 // Print vendored size
 const sizeInBytes = getVendoredSize(dest);
