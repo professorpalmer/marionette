@@ -113,6 +113,18 @@ def test_run_swarm_remains_read_only():
     assert acts[0].roles == ["explore"]
 
 
+
+def _wait_for_swarms(session, timeout=10.0):
+    """Wait for background swarm futures to finish, then drain results.
+    Under the offload model, run_implement/run_parallel apply the worker patch
+    in a background thread; this blocks until that completes so tests can then
+    assert the file landed. Returns the list of drained swarm_result events."""
+    import time as _t
+    deadline = _t.time() + timeout
+    while session.has_pending_swarms() and _t.time() < deadline:
+        _t.sleep(0.05)
+    return list(session.drain_swarm_results())
+
 def test_executor_smoke_run_implement():
     import os
     import shutil
@@ -215,11 +227,16 @@ def test_executor_smoke_run_implement():
             kinds = [e.kind for e in events]
             assert "action_start" in kinds
             assert "action_result" in kinds
+            # New offload model: the dispatch emits swarm_pending and returns; the
+            # patch applies in a background future.
+            assert "swarm_pending" in kinds
             
             # Verify mock_popen was called at least once
             assert mock_popen.call_count >= 1
             
-            # The KEY new assertion: after a simulated run, the target file actually exists on disk.
+            # Wait for the background apply to complete, then assert the file landed.
+            _wait_for_swarms(session)
+            # The KEY assertion: once the background swarm completes, the file exists.
             target_path = os.path.join(temp_repo, "src/main.py")
             assert os.path.exists(target_path)
             with open(target_path, "r") as f:
@@ -340,8 +357,12 @@ def test_executor_smoke_run_parallel():
             # Verify aggregate result is returned
             kinds = [e.kind for e in events]
             assert "action_result" in kinds
+            # New offload model: dispatch emits swarm_pending and returns; applies run in background.
+            assert "swarm_pending" in kinds
             
-            # The KEY new assertion: after a simulated run, the target files actually exist on disk.
+            # Wait for the background applies to complete, then assert the files landed.
+            _wait_for_swarms(session)
+            # The KEY assertion: once the background swarms complete, the target files exist.
             path1 = os.path.join(temp_repo, "src/job_abcdef111111.py")
             path2 = os.path.join(temp_repo, "src/job_abcdef222222.py")
             assert os.path.exists(path1)
@@ -428,6 +449,11 @@ def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, 
             
     session.pilot = FakeParallelPilot()
     events = list(session.send("Run parallel checks!"))
+    # New offload model: dispatch (Popen) is synchronous in-turn, but await/artifacts/last/rmtree
+    # run in the background futures -- wait for them before asserting on those calls.
+    kinds = [e.kind for e in events]
+    assert "swarm_pending" in kinds
+    _wait_for_swarms(session)
     
     assert mock_popen.call_count == 2
     args1 = mock_popen.call_args_list[0][0][0]

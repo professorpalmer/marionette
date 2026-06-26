@@ -1000,6 +1000,26 @@ class Handler(BaseHTTPRequestHandler):
                               "application/javascript")
         if u.path == "/app.css":
             return self._send(200, (_WEB / "app.css").read_text(), "text/css")
+        if u.path == "/api/session/state":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            return self._send(200, json.dumps({
+                "state": _pilot.state(),
+                "pending_swarms": _pilot.has_pending_swarms()
+            }))
+        if u.path == "/api/session/swarm-results":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            results = []
+            for ev in _pilot.drain_swarm_results():
+                results.append({"kind": ev.kind, "data": ev.data})
+            return self._send(200, json.dumps({"results": results}))
         if u.path == "/api/mcp":
             return self._send(200, json.dumps({"servers": _mcp.status(),
                 "tools": [{"server": t.server, "name": t.name, "qualified": t.qualified,
@@ -1676,6 +1696,13 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.dumps({"kind": ev.kind, "data": ev.data})
                 self.wfile.write(f"data: {payload}\n\n".encode())
                 self.wfile.flush()
+            
+            # After a chat turn streams its events, also drain ready swarm results:
+            for ev in _pilot.drain_swarm_results():
+                payload = json.dumps({"kind": ev.kind, "data": ev.data})
+                self.wfile.write(f"data: {payload}\n\n".encode())
+                self.wfile.flush()
+
             self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
