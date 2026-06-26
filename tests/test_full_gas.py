@@ -355,11 +355,13 @@ def test_executor_smoke_run_parallel():
         shutil.rmtree(temp_repo, ignore_errors=True)
 
 
+@patch("shutil.which")
 @patch("tempfile.mkdtemp")
 @patch("shutil.rmtree")
 @patch("subprocess.Popen")
 @patch("subprocess.run")
-def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, mock_mkdtemp):
+def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, mock_mkdtemp, mock_which):
+    mock_which.return_value = None
     mock_mkdtemp.side_effect = ["/tmp/pmh-par-1", "/tmp/pmh-par-2"]
     
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir="/tmp/test-state-dir")

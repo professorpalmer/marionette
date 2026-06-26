@@ -33,6 +33,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterator, Optional, Any
 
+from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd
+
 from pmharness import registry as reg
 from . import providers as prov
 from pmharness.intent import DriverIntent
@@ -804,6 +806,12 @@ class ConversationalSession:
                         self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
                         continue
 
+                    if not _puppetmaster_available():
+                        error_msg = "puppetmaster CLI not available in this environment"
+                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                        self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
+                        continue
+
                     adapter = act.adapter or self._detect_default_implement_adapter()
                     yield ConvEvent("action_start", {
                         "id": aid,
@@ -813,9 +821,8 @@ class ConversationalSession:
                     })
 
                     try:
-                        import sys
                         import json
-                        cmd = [sys.executable, "-m", "puppetmaster", adapter, act.goal, "--cwd", self.config.repo, "--mode", "implement", "--allow-dirty", "--allow-non-worktree"]
+                        cmd = _puppetmaster_cmd(adapter, act.goal, "--cwd", self.config.repo, "--mode", "implement", "--allow-dirty", "--allow-non-worktree")
                         p = subprocess.Popen(
                             cmd,
                             stdout=subprocess.PIPE,
@@ -836,10 +843,10 @@ class ConversationalSession:
                         p.wait(timeout=600)
 
                         if job_id:
-                            await_cmd = [sys.executable, "-m", "puppetmaster", "await", job_id, "--cwd", self.config.repo]
+                            await_cmd = _puppetmaster_cmd("await", job_id, "--cwd", self.config.repo)
                             subprocess.run(await_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
 
-                            art_cmd = [sys.executable, "-m", "puppetmaster", "artifacts", job_id, "--cwd", self.config.repo]
+                            art_cmd = _puppetmaster_cmd("artifacts", job_id, "--cwd", self.config.repo)
                             art_p = subprocess.run(art_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
                             art_out = art_p.stdout or ""
                             
@@ -947,6 +954,12 @@ class ConversationalSession:
                         self._append_action_result(act, aid, f"(run_parallel {aid} failed: {error_msg})", is_native)
                         continue
 
+                    if not _puppetmaster_available():
+                        error_msg = "puppetmaster CLI not available in this environment"
+                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                        self._append_action_result(act, aid, f"(run_parallel {aid} failed: {error_msg})", is_native)
+                        continue
+
                     goals = act.goals or []
                     if not goals:
                         yield ConvEvent("action_result", {"id": aid, "error": "No goals provided to run_parallel"})
@@ -971,7 +984,6 @@ class ConversationalSession:
                             "cwd": self.config.repo
                         })
 
-                    import sys
                     import json
                     import threading
                     import tempfile
@@ -998,11 +1010,11 @@ class ConversationalSession:
                             yield ConvEvent("action_result", {"id": sub_aid, "error": f"Failed to create temp state-dir: {e}"})
                             continue
 
-                        cmd = [
-                            sys.executable, "-m", "puppetmaster", "--state-dir", state_dir, adapter, sub_goal,
+                        cmd = _puppetmaster_cmd(
+                            "--state-dir", state_dir, adapter, sub_goal,
                             "--cwd", self.config.repo, "--mode", mode,
                             "--allow-dirty", "--allow-non-worktree"
-                        ]
+                        )
                         try:
                             proc = subprocess.Popen(
                                 cmd,
@@ -1052,7 +1064,7 @@ class ConversationalSession:
                             
                             if not job_id and state_dir:
                                 try:
-                                    last_cmd = [sys.executable, "-m", "puppetmaster", "--state-dir", state_dir, "last"]
+                                    last_cmd = _puppetmaster_cmd("--state-dir", state_dir, "last")
                                     last_p = subprocess.run(last_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
                                     if last_p.returncode == 0:
                                         last_out = last_p.stdout or ""
@@ -1065,10 +1077,10 @@ class ConversationalSession:
 
                             if job_id:
                                 job_ids_collected.append(job_id)
-                                await_cmd = [sys.executable, "-m", "puppetmaster", "--state-dir", state_dir, "await", job_id, "--cwd", self.config.repo]
+                                await_cmd = _puppetmaster_cmd("--state-dir", state_dir, "await", job_id, "--cwd", self.config.repo)
                                 subprocess.run(await_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
 
-                                art_cmd = [sys.executable, "-m", "puppetmaster", "--state-dir", state_dir, "artifacts", job_id, "--cwd", self.config.repo]
+                                art_cmd = _puppetmaster_cmd("--state-dir", state_dir, "artifacts", job_id, "--cwd", self.config.repo)
                                 art_p = subprocess.run(art_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
                                 art_out = art_p.stdout or ""
                                 
@@ -1198,13 +1210,18 @@ class ConversationalSession:
 
                 # ---- route_task branch ---------------------------------------
                 if act.kind == "route_task":
+                    if not _puppetmaster_available():
+                        error_msg = "puppetmaster CLI not available in this environment"
+                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                        self._append_action_result(act, aid, f"(route_task {aid} failed: {error_msg})", is_native)
+                        continue
+
                     instruction = act.instruction or act.arguments.get("instruction") or ""
                     role = act.arguments.get("role") or "explore"
                     
                     try:
-                        import sys
                         import json
-                        cmd = [sys.executable, "-m", "puppetmaster", "route", instruction, "--role", role, "--json"]
+                        cmd = _puppetmaster_cmd("route", instruction, "--role", role, "--json")
                         p = subprocess.run(
                             cmd,
                             stdout=subprocess.PIPE,
@@ -1418,10 +1435,11 @@ class ConversationalSession:
                 pass
 
     def _detect_default_implement_adapter(self) -> str:
+        if not _puppetmaster_available():
+            return "hermes"
         try:
-            import sys
             p = subprocess.run(
-                [sys.executable, "-m", "puppetmaster", "platform", "status"],
+                _puppetmaster_cmd("platform", "status"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

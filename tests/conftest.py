@@ -64,6 +64,23 @@ def _no_network(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _clear_pm_resolver_cache():
+    # The puppetmaster resolver caches availability/python globally; clear it
+    # before every test so mock_which states never leak across tests.
+    try:
+        from harness._exec import _clear_puppetmaster_cache
+        _clear_puppetmaster_cache()
+    except Exception:
+        pass
+    yield
+    try:
+        from harness._exec import _clear_puppetmaster_cache
+        _clear_puppetmaster_cache()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _clear_wiki_env(monkeypatch):
     monkeypatch.delenv("WIKI_API_BASE", raising=False)
     monkeypatch.delenv("WIKI_OWNER_TOKEN", raising=False)

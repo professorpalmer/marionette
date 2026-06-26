@@ -30,6 +30,7 @@ from .rule_store import RuleStore
 from . import workspaces as _ws
 from .sessions import SessionStore, save_transcript, load_transcript
 from .autobudget import AutoBudget
+from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd
 
 
 def _get_platform_json_path() -> str:
@@ -241,16 +242,21 @@ def _parse_bool(val) -> bool:
 
 
 _codegraph_status = "unsupported"
+_codegraph_status_reason = None
 
 
 def _index_codegraph_bg(repo_path: str):
-    global _codegraph_status
+    global _codegraph_status, _codegraph_status_reason
+    if not _puppetmaster_available():
+        _codegraph_status = "unsupported"
+        _codegraph_status_reason = "puppetmaster not found -- codegraph/swarm unavailable"
+        return
     _codegraph_status = "indexing"
+    _codegraph_status_reason = None
     try:
-        import sys
         import subprocess
         proc = subprocess.Popen(
-            [sys.executable, "-m", "puppetmaster", "codegraph", "init", "--index"],
+            _puppetmaster_cmd("codegraph", "init", "--index"),
             cwd=repo_path,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
@@ -277,13 +283,17 @@ def _index_codegraph_bg(repo_path: str):
 
 
 def _reindex_codegraph_bg(repo_path: str):
-    global _codegraph_status
+    global _codegraph_status, _codegraph_status_reason
+    if not _puppetmaster_available():
+        _codegraph_status = "unsupported"
+        _codegraph_status_reason = "puppetmaster not found -- codegraph/swarm unavailable"
+        return
     _codegraph_status = "indexing"
+    _codegraph_status_reason = None
     try:
-        import sys
         import subprocess
         proc = subprocess.Popen(
-            [sys.executable, "-m", "puppetmaster", "codegraph", "index"],
+            _puppetmaster_cmd("codegraph", "index"),
             cwd=repo_path,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
@@ -313,18 +323,16 @@ def _get_codegraph_status(repo_path: str) -> str:
     global _codegraph_status
     if not repo_path:
         return "unsupported"
+    if not _puppetmaster_available():
+        _codegraph_status = "unsupported"
+        return "unsupported"
     if _codegraph_status == "indexing":
         return "indexing"
 
-    try:
-        import puppetmaster.codegraph as cg
-        if os.path.isdir(os.path.join(repo_path, ".codegraph")):
-            _codegraph_status = "ready"
-            return "ready"
-        else:
-            return "unsupported"
-    except Exception:
-        _codegraph_status = "unsupported"
+    if os.path.isdir(os.path.join(repo_path, ".codegraph")):
+        _codegraph_status = "ready"
+        return "ready"
+    else:
         return "unsupported"
 
 
@@ -482,10 +490,9 @@ class Handler(BaseHTTPRequestHandler):
                 _index_codegraph_bg(target_repo)
             else:
                 global _codegraph_status
-                try:
-                    import puppetmaster.codegraph as cg
+                if _puppetmaster_available():
                     _codegraph_status = "ready"
-                except Exception:
+                else:
                     _codegraph_status = "unsupported"
 
             return self._send(200, json.dumps({
@@ -1074,6 +1081,19 @@ class Handler(BaseHTTPRequestHandler):
                     "repo": ""
                 }))
 
+            if not _puppetmaster_available():
+                return self._send(200, json.dumps({
+                    "indexed": False,
+                    "status": "unsupported",
+                    "reason": _codegraph_status_reason or "puppetmaster not found -- codegraph/swarm unavailable",
+                    "nodes": None,
+                    "edges": None,
+                    "files": None,
+                    "languages": None,
+                    "last_indexed": None,
+                    "repo": repo
+                }))
+
             if _codegraph_status == "indexing":
                 last_indexed = None
                 try:
@@ -1083,7 +1103,16 @@ class Handler(BaseHTTPRequestHandler):
                         import datetime
                         last_indexed = datetime.datetime.fromtimestamp(mtime).isoformat()
                 except Exception:
-                    pass
+                    try:
+                        db_path = os.path.join(repo, ".codegraph", "db")
+                        if not os.path.exists(db_path):
+                            db_path = os.path.join(repo, ".codegraph")
+                        if os.path.exists(db_path):
+                            mtime = os.path.getmtime(db_path)
+                            import datetime
+                            last_indexed = datetime.datetime.fromtimestamp(mtime).isoformat()
+                    except Exception:
+                        pass
 
                 return self._send(200, json.dumps({
                     "indexed": False,
@@ -1098,9 +1127,8 @@ class Handler(BaseHTTPRequestHandler):
 
             try:
                 import subprocess
-                import sys
                 proc = subprocess.run(
-                    [sys.executable, "-m", "puppetmaster", "codegraph", "status", "--json"],
+                    _puppetmaster_cmd("codegraph", "status", "--json"),
                     cwd=repo,
                     capture_output=True,
                     text=True,
@@ -1119,7 +1147,16 @@ class Handler(BaseHTTPRequestHandler):
                             import datetime
                             last_indexed = datetime.datetime.fromtimestamp(mtime).isoformat()
                     except Exception:
-                        pass
+                        try:
+                            db_path = os.path.join(repo, ".codegraph", "db")
+                            if not os.path.exists(db_path):
+                                db_path = os.path.join(repo, ".codegraph")
+                            if os.path.exists(db_path):
+                                mtime = os.path.getmtime(db_path)
+                                import datetime
+                                last_indexed = datetime.datetime.fromtimestamp(mtime).isoformat()
+                        except Exception:
+                            pass
 
                     return self._send(200, json.dumps({
                         "indexed": initialized,
@@ -1687,6 +1724,32 @@ def _get_settings_dict():
     }
 
 
+_startup_index_fired = False
+
+
+def _maybe_auto_index_codegraph():
+    global _startup_index_fired, _codegraph_status, _codegraph_status_reason
+    if _startup_index_fired:
+        return
+    _startup_index_fired = True
+
+    repo = _cfg.repo
+    if repo and os.path.isdir(repo):
+        if not _puppetmaster_available():
+            _codegraph_status = "unsupported"
+            _codegraph_status_reason = "puppetmaster not found -- codegraph/swarm unavailable"
+            return
+        
+        cg_dir = os.path.join(repo, ".codegraph")
+        if os.path.isdir(cg_dir):
+            _codegraph_status = "ready"
+        else:
+            def target():
+                _index_codegraph_bg(repo)
+            t = threading.Thread(target=target, daemon=True)
+            t.start()
+
+
 def _cleanup_marker(marker_path: str, pid: int) -> None:
     try:
         if os.path.exists(marker_path):
@@ -1772,6 +1835,7 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
         except (ValueError, OSError):
             pass  # not on the main thread (e.g. under tests) -- atexit still covers it
     try:
+        _maybe_auto_index_codegraph()
         srv.serve_forever()
     finally:
         _mcp.stop_all()
