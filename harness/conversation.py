@@ -747,43 +747,417 @@ class ConversationalSession:
                     self._append_action_result(act, aid, f"(mcp {act.tool} returned)\n{text[:2000]}", is_native)
                     continue
                 # ---- swarm branch --------------------------------------------
-                intent = DriverIntent(action="run_swarm", goal=act.goal,
-                                      roles=act.roles or None, rationale="pilot")
-                try:
-                    result: BridgeResult = execute_intent(intent, state_dir=self.state_dir)
-                except Exception as e:
-                    yield ConvEvent("action_result", {"id": aid, "error": f"execute: {e}"})
-                    self._append_action_result(act, aid, f"(swarm {aid} failed: {e})", is_native)
+                if act.kind == "run_swarm":
+                    intent = DriverIntent(action="run_swarm", goal=act.goal,
+                                          roles=act.roles or None, rationale="pilot")
+                    try:
+                        result: BridgeResult = execute_intent(intent, state_dir=self.state_dir)
+                    except Exception as e:
+                        yield ConvEvent("action_result", {"id": aid, "error": f"execute: {e}"})
+                        self._append_action_result(act, aid, f"(swarm {aid} failed: {e})", is_native)
+                        continue
+                    swarms += 1
+                    if result.adapter == "demo":
+                        demo_swarms += 1
+                    yield ConvEvent("action_result", {
+                        "id": aid, "job_id": result.job_id, "num": result.num_artifacts,
+                        "types": result.artifact_types, "artifacts": result.artifacts[:8],
+                        "adapter": result.adapter, "mode": result.mode,
+                    })
+                    # collect non-substrate findings for durable knowledge capture
+                    if result.adapter != "demo":
+                        turn_findings.extend(
+                            a for a in result.artifacts if a.get("type") != "verification")
+                    # 5. Feed DISTILLED artifacts back into the transcript (not raw files).
+                    digest = "\n".join(f"  - [{a['type']}] {a['headline']}"
+                                       for a in result.artifacts[:8]) or "  (no artifacts)"
+                    stall = ""
+                    if demo_swarms >= 2:
+                        stall = ("\n(NOTE: swarms are running on the DEMO substrate, which "
+                                 "returns generic artifacts -- not real codebase analysis. "
+                                 "Do NOT keep retrying; explain this to the user and finish "
+                                 "with no actions. Real analysis needs --repo + "
+                                 "--swarm-adapter openai.)")
+                    self._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {result.num_artifacts} artifacts via {result.adapter}:\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
                     continue
-                swarms += 1
-                if result.adapter == "demo":
-                    demo_swarms += 1
-                yield ConvEvent("action_result", {
-                    "id": aid, "job_id": result.job_id, "num": result.num_artifacts,
-                    "types": result.artifact_types, "artifacts": result.artifacts[:8],
-                    "adapter": result.adapter, "mode": result.mode,
-                })
-                # collect non-substrate findings for durable knowledge capture
-                if result.adapter != "demo":
-                    turn_findings.extend(
-                        a for a in result.artifacts if a.get("type") != "verification")
-                # 5. Feed DISTILLED artifacts back into the transcript (not raw files).
-                digest = "\n".join(f"  - [{a['type']}] {a['headline']}"
-                                   for a in result.artifacts[:8]) or "  (no artifacts)"
-                stall = ""
-                if demo_swarms >= 2:
-                    stall = ("\n(NOTE: swarms are running on the DEMO substrate, which "
-                             "returns generic artifacts -- not real codebase analysis. "
-                             "Do NOT keep retrying; explain this to the user and finish "
-                             "with no actions. Real analysis needs --repo + "
-                             "--swarm-adapter openai.)")
-                self._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {result.num_artifacts} artifacts via {result.adapter}:\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
+
+                # ---- run_implement branch ------------------------------------
+                if act.kind == "run_implement":
+                    if not self.config.repo:
+                        error_msg = "No workspace directory (config.repo) is open."
+                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                        self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
+                        continue
+
+                    adapter = act.adapter or self._detect_default_implement_adapter()
+                    yield ConvEvent("action_start", {
+                        "id": aid,
+                        "kind": "run_implement",
+                        "goal": act.goal,
+                        "cwd": self.config.repo,
+                    })
+
+                    try:
+                        import sys
+                        import json
+                        cmd = [sys.executable, "-m", "puppetmaster", adapter, act.goal, "--cwd", self.config.repo, "--mode", "implement"]
+                        p = subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            cwd=self.config.repo
+                        )
+                        
+                        job_id = None
+                        all_output_lines = []
+                        for line in p.stdout:
+                            all_output_lines.append(line)
+                            if not job_id:
+                                match = re.search(r"\b(job_[a-fA-F0-9]{12})\b", line)
+                                if match:
+                                    job_id = match.group(1)
+                        
+                        p.wait(timeout=600)
+
+                        if job_id:
+                            await_cmd = [sys.executable, "-m", "puppetmaster", "await", job_id, "--cwd", self.config.repo]
+                            subprocess.run(await_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
+
+                            art_cmd = [sys.executable, "-m", "puppetmaster", "artifacts", job_id, "--cwd", self.config.repo]
+                            art_p = subprocess.run(art_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+                            art_out = art_p.stdout or ""
+                            
+                            try:
+                                artifacts = json.loads(art_out)
+                            except Exception:
+                                artifacts = []
+
+                            num_artifacts = len(artifacts)
+                            artifact_types = sorted({str(a.get("type", "finding")) for a in artifacts})
+                            
+                            patch_summary = ""
+                            patch_art = next((a for a in artifacts if a.get("type") == "patch"), None)
+                            if patch_art:
+                                payload = patch_art.get("payload") or {}
+                                files_changed = payload.get("files", [])
+                                if files_changed:
+                                    patch_summary = f"Files changed: {', '.join(files_changed)}"
+                                else:
+                                    diff_text = payload.get("unified_diff") or ""
+                                    if diff_text:
+                                        patch_summary = f"Diff total chars: {len(diff_text)}"
+                            
+                            findings_summary = []
+                            for a in artifacts:
+                                if a.get("type") == "finding":
+                                    rep = (a.get("payload") or {}).get("report") or ""
+                                    if rep:
+                                        findings_summary.append(rep[:120])
+                            
+                            summary_parts = []
+                            if patch_summary:
+                                summary_parts.append(patch_summary)
+                            if findings_summary:
+                                summary_parts.append("; ".join(findings_summary[:3]))
+                            
+                            summary = "\n".join(summary_parts) if summary_parts else "Successfully completed implement task"
+                            
+                            ar_list = []
+                            for a in artifacts[:8]:
+                                t = a.get("type", "finding")
+                                headline = ""
+                                if t == "patch":
+                                    files = (a.get("payload") or {}).get("files") or []
+                                    headline = f"Patch: modified {', '.join(files)}" if files else "Patch generated"
+                                elif t == "finding":
+                                    claim = (a.get("payload") or {}).get("claim") or ""
+                                    rep = (a.get("payload") or {}).get("report") or ""
+                                    headline = claim or rep[:80] or "Finding"
+                                else:
+                                    headline = f"{t.capitalize()} artifact"
+                                ar_list.append({"type": t, "headline": headline})
+                            
+                            yield ConvEvent("action_result", {
+                                "id": aid,
+                                "job_id": job_id,
+                                "num": num_artifacts,
+                                "types": artifact_types,
+                                "artifacts": ar_list,
+                                "adapter": adapter,
+                                "mode": "implement",
+                            })
+                            
+                            self._append_action_result(act, aid, f"(run_implement job {job_id} on {adapter} returned {num_artifacts} artifacts:\n{summary}\n)", is_native)
+                        else:
+                            output = "".join(all_output_lines)[:5000]
+                            yield ConvEvent("action_result", {
+                                "id": aid,
+                                "error": f"Failed to detect job_id. CLI output:\n{output}"
+                            })
+                            self._append_action_result(act, aid, f"(run_implement {aid} failed: no job_id detected. Output:\n{output})", is_native)
+
+                    except Exception as e:
+                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+                        self._append_action_result(act, aid, f"(run_implement {aid} failed: {e})", is_native)
+                    continue
+
+                # ---- run_parallel branch -------------------------------------
+                if act.kind == "run_parallel":
+                    if not self.config.repo:
+                        error_msg = "No workspace directory (config.repo) is open."
+                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                        self._append_action_result(act, aid, f"(run_parallel {aid} failed: {error_msg})", is_native)
+                        continue
+
+                    goals = act.goals or []
+                    if not goals:
+                        yield ConvEvent("action_result", {"id": aid, "error": "No goals provided to run_parallel"})
+                        self._append_action_result(act, aid, f"(run_parallel {aid} failed: no goals provided)", is_native)
+                        continue
+
+                    MAX_PARALLEL_CAP = 8
+                    if len(goals) > MAX_PARALLEL_CAP:
+                        goals = goals[:MAX_PARALLEL_CAP]
+
+                    adapter = act.adapter or self._detect_default_implement_adapter()
+                    mode = act.mode or "implement"
+
+                    sub_aids = []
+                    for idx, sub_goal in enumerate(goals):
+                        sub_aid = f"{aid}_sub_{idx}"
+                        sub_aids.append(sub_aid)
+                        yield ConvEvent("action_start", {
+                            "id": sub_aid,
+                            "kind": f"run_{mode}",
+                            "goal": sub_goal,
+                            "cwd": self.config.repo
+                        })
+
+                    import sys
+                    import json
+                    import threading
+                    processes = []
+                    threads = []
+                    
+                    def read_stdout_thread(p_info):
+                        try:
+                            for line in p_info["proc"].stdout:
+                                p_info["lines"].append(line)
+                                if not p_info["job_id"]:
+                                    m = re.search(r"\b(job_[a-fA-F0-9]{12})\b", line)
+                                    if m:
+                                        p_info["job_id"] = m.group(1)
+                        except Exception:
+                            pass
+
+                    for idx, sub_goal in enumerate(goals):
+                        sub_aid = sub_aids[idx]
+                        cmd = [
+                            sys.executable, "-m", "puppetmaster", adapter, sub_goal,
+                            "--cwd", self.config.repo, "--mode", mode
+                        ]
+                        try:
+                            proc = subprocess.Popen(
+                                cmd,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True,
+                                cwd=self.config.repo
+                            )
+                            p_info = {
+                                "proc": proc,
+                                "goal": sub_goal,
+                                "id": sub_aid,
+                                "job_id": None,
+                                "lines": []
+                            }
+                            processes.append(p_info)
+                            t = threading.Thread(target=read_stdout_thread, args=(p_info,), daemon=True)
+                            t.start()
+                            threads.append(t)
+                        except Exception as e:
+                            yield ConvEvent("action_result", {"id": sub_aid, "error": f"Failed to start: {e}"})
+
+                    for p_info in processes:
+                        try:
+                            p_info["proc"].wait(timeout=600)
+                        except subprocess.TimeoutExpired:
+                            p_info["proc"].kill()
+                            p_info["proc"].wait()
+
+                    for t in threads:
+                        t.join(timeout=5)
+
+                    aggregate_artifacts_summary = []
+                    job_ids_collected = []
+                    aggregate_num_artifacts = 0
+
+                    for idx, p_info in enumerate(processes):
+                        sub_aid = p_info["id"]
+                        sub_goal = p_info["goal"]
+                        job_id = p_info["job_id"]
+                        
+                        if job_id:
+                            job_ids_collected.append(job_id)
+                            await_cmd = [sys.executable, "-m", "puppetmaster", "await", job_id, "--cwd", self.config.repo]
+                            subprocess.run(await_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
+
+                            art_cmd = [sys.executable, "-m", "puppetmaster", "artifacts", job_id, "--cwd", self.config.repo]
+                            art_p = subprocess.run(art_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+                            art_out = art_p.stdout or ""
+                            
+                            try:
+                                artifacts = json.loads(art_out)
+                            except Exception:
+                                artifacts = []
+                            
+                            num_art = len(artifacts)
+                            aggregate_num_artifacts += num_art
+                            art_types = sorted({str(a.get("type", "finding")) for a in artifacts})
+                            
+                            ar_list = []
+                            for a in artifacts[:4]:
+                                t = a.get("type", "finding")
+                                headline = ""
+                                if t == "patch":
+                                    files = (a.get("payload") or {}).get("files") or []
+                                    headline = f"Patch: modified {', '.join(files)}" if files else "Patch generated"
+                                elif t == "finding":
+                                    claim = (a.get("payload") or {}).get("claim") or ""
+                                    rep = (a.get("payload") or {}).get("report") or ""
+                                    headline = claim or rep[:80] or "Finding"
+                                else:
+                                    headline = f"{t.capitalize()} artifact"
+                                ar_list.append({"type": t, "headline": headline})
+
+                            yield ConvEvent("action_result", {
+                                "id": sub_aid,
+                                "job_id": job_id,
+                                "num": num_art,
+                                "types": art_types,
+                                "artifacts": ar_list,
+                                "adapter": adapter,
+                                "mode": mode
+                            })
+
+                            patch_art = next((a for a in artifacts if a.get("type") == "patch"), None)
+                            patch_desc = ""
+                            if patch_art:
+                                files = (patch_art.get("payload") or {}).get("files") or []
+                                patch_desc = f"Patch modified: {', '.join(files)}" if files else "Patch generated"
+                            
+                            findings = [
+                                (a.get("payload") or {}).get("report", "")[:100]
+                                for a in artifacts if a.get("type") == "finding"
+                            ]
+                            findings_desc = "; ".join(findings[:2])
+                            
+                            p_sum = []
+                            if patch_desc:
+                                p_sum.append(patch_desc)
+                            if findings_desc:
+                                p_sum.append(findings_desc)
+                            
+                            sum_str = " | ".join(p_sum) if p_sum else "Completed task successfully"
+                            aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' (job {job_id}): {sum_str}")
+                        else:
+                            err_msg = "Failed to launch or detect job_id"
+                            yield ConvEvent("action_result", {"id": sub_aid, "error": err_msg})
+                            aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' failed: {err_msg}")
+
+                    aggregate_artifacts_list = [{"type": "parallel_summary", "headline": s} for s in aggregate_artifacts_summary[:8]]
+                    
+                    yield ConvEvent("action_result", {
+                        "id": aid,
+                        "job_id": ",".join(job_ids_collected) if job_ids_collected else "none",
+                        "num": aggregate_num_artifacts,
+                        "types": ["parallel_summary"],
+                        "artifacts": aggregate_artifacts_list,
+                        "adapter": adapter,
+                        "mode": mode
+                    })
+
+                    summary_all = "\n".join(aggregate_artifacts_summary)
+                    self._append_action_result(act, aid, f"(run_parallel wave completed on {adapter} in {mode} mode, returned jobs: {', '.join(job_ids_collected)}:\n{summary_all}\n)", is_native)
+                    continue
+
+                # ---- route_task branch ---------------------------------------
+                if act.kind == "route_task":
+                    instruction = act.instruction or act.arguments.get("instruction") or ""
+                    role = act.arguments.get("role") or "explore"
+                    
+                    try:
+                        import sys
+                        import json
+                        cmd = [sys.executable, "-m", "puppetmaster", "route", instruction, "--role", role, "--json"]
+                        p = subprocess.run(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            timeout=60
+                        )
+                        output = p.stdout or ""
+                        if p.returncode != 0:
+                            raise Exception(f"Exit code {p.returncode}: {output}")
+                        
+                        route_data = json.loads(output)
+                        model_id = route_data.get("model_id") or "unknown"
+                        adapter = route_data.get("adapter") or "unknown"
+                        cost = route_data.get("nominal_cost_usd", 0.0) or route_data.get("estimated_cost_usd", 0.0)
+                        reason = route_data.get("reason") or "No reasoning provided."
+                        
+                        res_str = (
+                            f"**Routed Model**: {model_id} (via {adapter})\n"
+                            f"**Estimated Cost**: ${cost:.6f}\n"
+                            f"**Reasoning**: {reason}"
+                        )
+                        
+                        yield ConvEvent("action_result", {
+                            "id": aid,
+                            "num": 1,
+                            "types": ["route_task"],
+                            "adapter": "local",
+                            "mode": "tool",
+                            "artifacts": [{"type": "route_task", "headline": f"Routed to {model_id} (${cost:.6f})"}]
+                        })
+                        self._append_action_result(act, aid, f"(route_task for '{instruction}' returned):\n{res_str}", is_native)
+                    except Exception as e:
+                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+                        self._append_action_result(act, aid, f"(route_task for '{instruction}' failed: {e})", is_native)
+                    continue
 
         # Hit the step cap -- close the turn gracefully.
         self._maybe_ingest(user_message, turn_prose, turn_findings)
         yield ConvEvent("message", {"role": "assistant",
             "text": "(Reached the investigation step limit for this message.)"})
         yield ConvEvent("assistant_done", {"turns": HARD_PILOT_STEPS, "swarms": swarms})
+
+    def _detect_default_implement_adapter(self) -> str:
+        try:
+            import sys
+            p = subprocess.run(
+                [sys.executable, "-m", "puppetmaster", "platform", "status"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=10
+            )
+            output = p.stdout or ""
+            enabled = []
+            import re
+            matches = re.findall(r"\[on\s*\]\s*([a-zA-Z0-9_-]+)", output)
+            for m in matches:
+                enabled.append(m.lower().strip())
+            
+            pref = ["hermes", "codex", "cursor", "claude-code"]
+            for adapter in pref:
+                if adapter in enabled:
+                    return adapter
+        except Exception:
+            pass
+        return "hermes"  # fallback
 
     def _maybe_ingest(self, user_message: str, prose: list, findings: list) -> None:
         """Auto-ingest a session digest to the wiki when enabled and there are

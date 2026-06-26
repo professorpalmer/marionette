@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "query_wiki"}
+VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "query_wiki", "run_implement", "run_parallel", "route_task"}
 
 
 @dataclass
@@ -53,12 +53,22 @@ class PilotAction:
     query: str = ""
     url: str = ""
     tool_call_id: str = ""
+    goals: list = field(default_factory=list)  # run_parallel: list of goals
+    adapter: str = ""           # run_implement / run_parallel: optional adapter name
+    mode: str = ""              # run_parallel: "implement" or "analysis" / "review"
+    instruction: str = ""       # route_task: instruction text
 
     def validate(self) -> "PilotAction":
         if self.kind not in VALID_ACTION_KINDS:
             raise PilotError(f"unknown action kind: {self.kind!r}")
         if self.kind == "run_swarm" and not (self.goal or "").strip():
             raise PilotError("run_swarm action requires a non-empty goal")
+        if self.kind == "run_implement" and not (self.goal or "").strip():
+            raise PilotError("run_implement action requires a non-empty goal")
+        if self.kind == "run_parallel" and not self.goals:
+            raise PilotError("run_parallel action requires a list of 'goals'")
+        if self.kind == "route_task" and not (self.instruction or "").strip():
+            raise PilotError("route_task action requires a non-empty instruction")
         if self.kind == "call_mcp" and not (self.tool or "").strip():
             raise PilotError("call_mcp action requires a 'tool' (server.tool)")
         if self.kind in ("read_file", "write_file") and not (self.path or "").strip():
@@ -123,10 +133,18 @@ def _coerce_actions(raw_actions) -> list:
         command = a.get("command") or ""
         query = a.get("query") or ""
         url = a.get("url") or ""
+        goals = a.get("goals") or []
+        if isinstance(goals, str):
+            goals = [goals]
+        adapter = a.get("adapter") or ""
+        mode = a.get("mode") or ""
+        instruction = a.get("instruction") or ""
         actions.append(PilotAction(kind=str(kind), goal=str(goal), roles=roles,
                                    tool=str(tool), arguments=arguments,
                                    path=str(path), content=str(content), command=str(command),
-                                   query=str(query), url=str(url)).validate())
+                                   query=str(query), url=str(url),
+                                   goals=goals, adapter=str(adapter), mode=str(mode),
+                                   instruction=str(instruction)).validate())
     return actions
 
 
@@ -304,6 +322,62 @@ def build_tools_schema(mcp_tools: Optional[list] = None) -> list:
         }
     })
 
+    # 11. run_implement
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "run_implement",
+            "description": "dispatch an edit-capable Puppetmaster worker that edits the repo in an isolated worktree and produces a patch. Requires `goal`.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "The coding objective / task description to implement"},
+                    "adapter": {"type": "string", "description": "Optional Puppetmaster adapter to run (e.g., hermes, cursor, codex, claude-code)"}
+                },
+                "required": ["goal"]
+            }
+        }
+    })
+
+    # 12. run_parallel
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "run_parallel",
+            "description": "dispatch multiple Puppetmaster workers concurrently. Requires `goals` array.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goals": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Array of goals/objectives to run in parallel"
+                    },
+                    "adapter": {"type": "string", "description": "Optional Puppetmaster adapter to run (e.g., hermes, cursor, codex, claude-code)"},
+                    "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"}
+                },
+                "required": ["goals"]
+            }
+        }
+    })
+
+    # 13. route_task
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "route_task",
+            "description": "preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "instruction": {"type": "string", "description": "The task instruction text"},
+                    "role": {"type": "string", "description": "Task role (e.g., explore, implement, review). Default: explore"}
+                },
+                "required": ["instruction"]
+            }
+        }
+    })
+
     # MCP tools
     if mcp_tools:
         for tool in mcp_tools:
@@ -349,6 +423,12 @@ def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> Pilot
         roles = args.get("roles") or []
         if isinstance(roles, str):
             roles = [roles]
+        goals = args.get("goals") or []
+        if isinstance(goals, str):
+            goals = [goals]
+        adapter = args.get("adapter") or ""
+        mode = args.get("mode") or ""
+        instruction = args.get("instruction") or ""
 
         return PilotAction(
             kind=kind,
@@ -359,6 +439,10 @@ def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> Pilot
             url=url,
             goal=goal,
             roles=roles,
+            goals=goals,
+            adapter=adapter,
+            mode=mode,
+            instruction=instruction,
             arguments=args,
             tool_call_id=tool_call_id
         ).validate()
@@ -586,12 +670,17 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `run_command`: run a terminal shell command. Requires `command`.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
 - `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`.
+- `run_implement`: dispatch an edit-capable Puppetmaster worker that edits the repo in an isolated worktree and produces a patch. Requires `goal`.
+- `run_parallel`: dispatch multiple Puppetmaster workers concurrently. Requires `goals` array, optional `adapter`, optional `mode`.
+- `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.
 - `web_search`: search the internet and return top results. Requires `query`.
 - `web_fetch`: read a web page's text contents. Requires `url`.
 - `read_pdf`: extract plain text from a local PDF file or PDF URL. Requires `path` or `url`.
 - `search_codegraph`: search the CodeGraph index for symbol usages, definitions, or context. Requires `query` and optional `kind`.
 - `query_wiki`: query the durable cross-session architecture and knowledge wiki. Requires `question`.
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
+
+You are not just an investigator -- you can GET WORK DONE. Use run_implement to make real code changes (it dispatches an edit-capable worker in an isolated worktree that produces a patch). Use run_parallel to fan out multiple implement/analysis workers at once for big multi-part work (audits + fixes + tests in parallel waves). Use run_swarm for read-only investigation, route_task to preview model/cost before a big dispatch. Prefer parallel waves for large work: decompose into independent goals and run_parallel them.
 
 You have search_codegraph (semantic/graph search over THIS repo's code -- prefer it over grep/read_file for 'where is X / what calls Y / how does Z work') and query_wiki (durable cross-session knowledge base -- consult it for prior decisions, architecture, and context). Use search_codegraph to explore code structure before reading whole files. These are first-class: you know the codebase via CodeGraph and your durable memory via the Wiki.
 
