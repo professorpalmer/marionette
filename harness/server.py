@@ -360,6 +360,47 @@ def _get_codegraph_status(repo_path: str) -> str:
         return "unsupported"
 
 
+def _codegraph_is_stale(repo_path: str) -> bool:
+    try:
+        codegraph_path = os.path.join(repo_path, ".codegraph")
+        if not os.path.exists(codegraph_path):
+            return False
+        cg_mtime = os.path.getmtime(codegraph_path)
+        skip_dirs = {".git", "node_modules", ".venv", ".codegraph", "dist", "build"}
+        extensions = {".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".swift", ".go", ".rs"}
+        newest_mtime = 0.0
+        for root, dirs, files in os.walk(repo_path):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for file in files:
+                _, ext = os.path.splitext(file)
+                if ext.lower() in extensions:
+                    file_path = os.path.join(root, file)
+                    try:
+                        mtime = os.path.getmtime(file_path)
+                        if mtime > newest_mtime:
+                            newest_mtime = mtime
+                    except Exception:
+                        pass
+        if newest_mtime > cg_mtime:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _maybe_refresh_codegraph(repo_path: str) -> None:
+    def worker():
+        global _codegraph_status
+        if _codegraph_status == "indexing":
+            return
+        if _codegraph_is_stale(repo_path):
+            _reindex_codegraph_bg(repo_path)
+    try:
+        threading.Thread(target=worker, daemon=True).start()
+    except Exception:
+        pass
+
+
 def _strip_markdown_fences(text: str) -> str:
     text_stripped = text.strip()
     if text_stripped.startswith("```"):
@@ -410,6 +451,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204); self._cors(); self.end_headers()
 
     def do_POST(self):
+        global _codegraph_status
         if self._guard():
             return
         if not self._token_ok():
@@ -716,9 +758,9 @@ class Handler(BaseHTTPRequestHandler):
             if not has_codegraph:
                 _index_codegraph_bg(target_repo)
             else:
-                global _codegraph_status
                 if _puppetmaster_available():
                     _codegraph_status = "ready"
+                    _maybe_refresh_codegraph(target_repo)
                 else:
                     _codegraph_status = "unsupported"
 
@@ -833,8 +875,37 @@ class Handler(BaseHTTPRequestHandler):
                 save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
             res = _sessions.switch(body.get("id",""))
             if res.get("ok") and _sessions.active:
-                history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
-                _pilot.load_history(history)
+                target_sess = None
+                for s in _sessions.list():
+                    if s.get("id") == _sessions.active:
+                        target_sess = s
+                        break
+                target_repo = target_sess.get("repo", "").strip() if target_sess else ""
+                
+                if target_repo and os.path.isdir(target_repo) and target_repo != _cfg.repo:
+                    _cfg.repo = target_repo
+                    os.environ["HARNESS_REPO"] = target_repo
+                    _rebuild_pilot_and_session()
+                    
+                    history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
+                    _pilot.load_history(history)
+                    
+                    has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
+                    if not has_codegraph:
+                        _index_codegraph_bg(target_repo)
+                    else:
+                        if _puppetmaster_available():
+                            _codegraph_status = "ready"
+                            _maybe_refresh_codegraph(target_repo)
+                        else:
+                            _codegraph_status = "unsupported"
+                else:
+                    history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
+                    _pilot.load_history(history)
+                    
+                res["repo"] = _cfg.repo
+                res["codegraph"] = _get_codegraph_status(_cfg.repo) if _cfg.repo else "unsupported"
+                
             return self._send(200, json.dumps(res))
         if path == "/api/sessions/delete":
             sid = body.get("session") or body.get("id") or ""

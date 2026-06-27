@@ -1037,7 +1037,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           }
         }
         if (parts.length > 0) {
-          setDistillNotice(`Self-learning: ${parts.join(", ")} - review in Skills tab`);
+          const notice = `Self-learning: ${parts.join(", ")} - review in Skills tab`;
+          setDistillNotice(notice);
+          // Quiet footnote: auto-fade after 8s so it never lingers like a push notif.
+          setTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
         }
       } else if (ev.kind === "auto_halt") {
         setStatus("done");
@@ -1474,15 +1477,16 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       <div className="px-6 pb-3 pt-0.5">
         <div className="max-w-3xl mx-auto">
           {distillNotice && (
-            <div className="mb-3 px-3.5 py-2 bg-panel border border-warn/20 rounded-xl flex items-center justify-between text-[12px] shadow-lg text-txt/90">
-              <span className="flex-1">
+            <div className="mb-2 px-1 flex items-center gap-2 text-[10.5px] text-faint/80">
+              <span className="flex-1 truncate">
                 {distillNotice}
               </span>
               <button
                 onClick={() => setDistillNotice(null)}
-                className="text-faint hover:text-muted transition font-medium text-[10.5px] ml-3 px-2 py-0.5 rounded border border-edge hover:bg-panel2"
+                className="text-faint/50 hover:text-muted transition shrink-0"
+                title="dismiss"
               >
-                Dismiss
+                x
               </button>
             </div>
           )}

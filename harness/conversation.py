@@ -184,7 +184,7 @@ from .config import HarnessConfig
 from .state import DurableState
 
 
-HARD_PILOT_STEPS = 10  # safety cap on pilot<->swarm round-trips per user message
+HARD_PILOT_STEPS = int(os.environ.get("HARNESS_MAX_PILOT_STEPS", "40"))  # safety cap on pilot<->swarm round-trips per user message
 
 
 @dataclass
@@ -1208,7 +1208,9 @@ class ConversationalSession:
         turn_findings: list = []   # accumulate real findings for wiki ingest
         turn_prose: list = []      # accumulate pilot prose for the digest
 
-        for step in range(HARD_PILOT_STEPS):
+        consecutive_non_productive = 0
+        max_steps = 2 * HARD_PILOT_STEPS
+        for step in range(max_steps):
             if self._cancel.is_set():
                 yield ConvEvent("interrupted", {"reason": "session interrupted"})
                 return
@@ -1411,6 +1413,14 @@ class ConversationalSession:
                 self._history.append(assistant_msg)
             else:
                 self._history.append({"role": "assistant", "content": cleaned_say_text or "(acting)"})
+
+            if len(turn.actions) > 0 or (cleaned_say_text and len(cleaned_say_text.strip()) > 0):
+                consecutive_non_productive = 0
+            else:
+                consecutive_non_productive += 1
+
+            if consecutive_non_productive >= 3:
+                break
 
             # 3. No actions => the pilot is done talking; yield back to the user.
             if not turn.has_actions:
@@ -2471,7 +2481,7 @@ class ConversationalSession:
         limit_msg = "(Reached the investigation step limit for this message.)"
         yield ConvEvent("message", {"role": "assistant", "text": limit_msg})
         self._display_transcript.append({"type": "message", "role": "assistant", "text": limit_msg})
-        yield ConvEvent("assistant_done", {"turns": HARD_PILOT_STEPS, "swarms": swarms})
+        yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
 
     def _add_worker_tokens_from_artifacts(self, artifacts_json: Any) -> tuple[int, int]:
         """Extracts token counts from worker job artifacts defensively, summing tokens_in/out
