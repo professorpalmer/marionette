@@ -87,6 +87,43 @@ if (source === tempDir && fs.existsSync(tempDir)) {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }
 
+// ---- Strip symlinks that escape the vendor dir ----
+// npm leaves absolute .bin shims (e.g. node_modules/.bin/semver -> /opt/homebrew/...)
+// in the global install. codesign REFUSES to sign an .app bundle that contains a
+// symlink pointing outside the bundle ("invalid destination for symbolic link in
+// bundle"), which breaks the signed DMG build. These .bin shims are CLI entrypoints
+// the packaged app never invokes (it calls the codegraph binary directly), so we
+// remove any symlink whose resolved target falls outside the vendor dir. Internal
+// relative symlinks (if any) that stay inside the bundle are preserved.
+(function stripExternalSymlinks(root) {
+  const destReal = fs.realpathSync(root);
+  let removed = 0;
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        let target;
+        try {
+          target = fs.realpathSync(full);
+        } catch (_) {
+          // dangling/broken symlink -> remove it (also illegal in a signed bundle)
+          fs.rmSync(full, { force: true });
+          removed++;
+          continue;
+        }
+        if (!target.startsWith(destReal + path.sep) && target !== destReal) {
+          fs.rmSync(full, { force: true });
+          removed++;
+        }
+      } else if (entry.isDirectory()) {
+        walk(full);
+      }
+    }
+  };
+  walk(root);
+  console.log(`Stripped ${removed} external/broken symlink(s) from the vendor dir (codesign safety).`);
+})(dest);
+
 // NOTE: we KEEP the native better-sqlite3 build. The electron-as-node approach was abandoned
 // (codegraph worker_threads recurse under ELECTRON_RUN_AS_NODE -- see .hermes/plans verdict).
 // The viable path bundles a REAL node binary, which needs the native module (rebuilt for that

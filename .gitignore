@@ -28,3 +28,10 @@ build/*.iconset/
 # Agent artifacts (plans, local agent state) -- never commit
 .hermes/
 webapp/node-vendor/
+
+# Apple code-signing secrets (never commit)
+signing.env
+
+# Apple signing private key + CSR (never commit)
+.signing-keys/
+.DS_Store
