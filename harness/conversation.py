@@ -54,6 +54,24 @@ def is_safe_path(path: str, parent: str) -> bool:
         return False
 
 
+def _clamp_tool_result(text: str, max_chars: Optional[int] = None) -> str:
+    if max_chars is None:
+        try:
+            max_chars = int(os.environ.get("HARNESS_MAX_TOOL_RESULT_CHARS", "24000"))
+        except ValueError:
+            max_chars = 24000
+    if len(text) <= max_chars:
+        return text
+    head_len = max_chars // 2
+    tail_len = max_chars - head_len
+    head = text[:head_len]
+    tail = text[-tail_len:]
+    m = len(text)
+    n = m - max_chars
+    marker = f"\n... [truncated {n} chars of {m}-char tool result -- middle elided to fit context] ...\n"
+    return head + marker + tail
+
+
 def load_workspace_rules(repo: Optional[str]) -> str:
     if not repo or not os.path.isdir(repo):
         return ""
@@ -562,12 +580,12 @@ class ConversationalSession:
         note = f"[... {elided_count} messages were elided here to fit context window ...]"
         return f"{first_part}\n\n{note}\n\n{last_part}"
 
-    def _maybe_compact_history(self) -> Iterator[ConvEvent]:
+    def _maybe_compact_history(self, force: bool = False) -> Iterator[ConvEvent]:
         budget = getattr(self.config, "max_context_tokens", 96000)
         trigger = int(budget * 0.75)
         
         before_tokens = self._estimate_context_tokens()
-        if before_tokens < trigger:
+        if not force and before_tokens < trigger:
             return
             
         yield ConvEvent("compacting", {"message": "Summarizing chat context"})
@@ -665,11 +683,12 @@ class ConversationalSession:
         })
 
     def _append_action_result(self, act: Any, aid: str, content: str, is_native: bool) -> None:
+        clamped_content = _clamp_tool_result(content)
         if is_native:
             tc_id = getattr(act, "tool_call_id", None) or aid
-            self._history.append({"role": "tool", "tool_call_id": tc_id, "content": content})
+            self._history.append({"role": "tool", "tool_call_id": tc_id, "content": clamped_content})
         else:
-            self._history.append({"role": "user", "content": content})
+            self._history.append({"role": "user", "content": clamped_content})
 
     def _do_read_file(self, act: Any) -> tuple[bool, str, str]:
         if not self.config.repo:
@@ -936,74 +955,93 @@ class ConversationalSession:
                 except Exception:
                     pass
 
-            sys_prompt = base_sys
-            if cg_section:
-                sys_prompt += "\n\n" + cg_section
-            mcp_section = _format_mcp_tools_section(self._mcp)
-            if mcp_section:
-                sys_prompt += "\n\n" + mcp_section
+            resp = None
+            for attempt in range(2):
+                sys_prompt = base_sys
+                if cg_section:
+                    sys_prompt += "\n\n" + cg_section
+                mcp_section = _format_mcp_tools_section(self._mcp)
+                if mcp_section:
+                    sys_prompt += "\n\n" + mcp_section
 
-            self._history[0]["content"] = sys_prompt
-            prompt = self._render_history()
+                self._history[0]["content"] = sys_prompt
+                prompt = self._render_history()
 
-            try:
-                if hasattr(self.pilot, "chat"):
-                    from .pilot import build_tools_schema
-                    mcp_tools = self._mcp.discovered_tools() if self._mcp else None
-                    tools_schema = build_tools_schema(mcp_tools, no_delegation=getattr(self.config, "no_delegation", False))
-                    
-                    is_interactive = not getattr(self.config, "no_delegation", False)
-                    # Gate on an EXPLICIT capability flag (is True) + a callable chat_stream.
-                    # Using `is True` avoids MagicMock test pilots (which fabricate any attr as a
-                    # truthy Mock) wrongly entering the streaming branch.
-                    _can_stream = (
-                        getattr(self.pilot, "supports_streaming", False) is True
-                        and callable(getattr(self.pilot, "chat_stream", None))
-                    )
-                    if is_interactive and _can_stream:
-                        import queue
-                        import threading
-                        q = queue.Queue()
+                try:
+                    if hasattr(self.pilot, "chat"):
+                        from .pilot import build_tools_schema
+                        mcp_tools = self._mcp.discovered_tools() if self._mcp else None
+                        tools_schema = build_tools_schema(mcp_tools, no_delegation=getattr(self.config, "no_delegation", False))
                         
-                        def run_stream():
-                            try:
-                                r = self.pilot.chat_stream(
-                                    self._history[1:],
-                                    tools=tools_schema,
-                                    system=sys_prompt,
-                                    on_delta=lambda delta: q.put(("delta", delta))
-                                )
-                                q.put(("done", r))
-                            except Exception as ex:
-                                q.put(("error", ex))
-                        
-                        t = threading.Thread(target=run_stream, daemon=True)
-                        t.start()
-                        
-                        while True:
-                            kind, val = q.get()
-                            if kind == "delta":
-                                yield ConvEvent("message_delta", {"text": val})
-                            elif kind == "done":
-                                resp = val
-                                break
-                            elif kind == "error":
-                                raise val
+                        is_interactive = not getattr(self.config, "no_delegation", False)
+                        # Gate on an EXPLICIT capability flag (is True) + a callable chat_stream.
+                        # Using `is True` avoids MagicMock test pilots (which fabricate any attr as a
+                        # truthy Mock) wrongly entering the streaming branch.
+                        _can_stream = (
+                            getattr(self.pilot, "supports_streaming", False) is True
+                            and callable(getattr(self.pilot, "chat_stream", None))
+                        )
+                        if is_interactive and _can_stream:
+                            import queue
+                            import threading
+                            q = queue.Queue()
+                            
+                            def run_stream():
+                                try:
+                                    r = self.pilot.chat_stream(
+                                        self._history[1:],
+                                        tools=tools_schema,
+                                        system=sys_prompt,
+                                        on_delta=lambda delta: q.put(("delta", delta))
+                                    )
+                                    q.put(("done", r))
+                                except Exception as ex:
+                                    q.put(("error", ex))
+                            
+                            t = threading.Thread(target=run_stream, daemon=True)
+                            t.start()
+                            
+                            while True:
+                                kind, val = q.get()
+                                if kind == "delta":
+                                    yield ConvEvent("message_delta", {"text": val})
+                                elif kind == "done":
+                                    resp = val
+                                    break
+                                elif kind == "error":
+                                    raise val
+                        else:
+                            resp = self.pilot.chat(self._history[1:], tools=tools_schema, system=sys_prompt)
                     else:
-                        resp = self.pilot.chat(self._history[1:], tools=tools_schema, system=sys_prompt)
-                else:
-                    resp = self.pilot.complete(prompt, system=sys_prompt)
-            except Exception as e:
-                yield ConvEvent("error", {"error": f"pilot transport: {e}"})
-                return
-            finally:
-                self._history[0]["content"] = base_sys
+                        resp = self.pilot.complete(prompt, system=sys_prompt)
+                except Exception as e:
+                    yield ConvEvent("error", {"error": f"pilot transport: {e}"})
+                    return
+                finally:
+                    self._history[0]["content"] = base_sys
 
-            # real token metering: prompt + completion (drivers report tokens_out;
-            # estimate tokens_in from prompt length when not provided).
-            self._tokens_used += int(getattr(resp, "tokens_out", 0) or 0)
-            self._tokens_used += int(getattr(resp, "tokens_in", 0) or len(prompt) // 4)
-            if resp.error:
+                # real token metering: prompt + completion (drivers report tokens_out;
+                # estimate tokens_in from prompt length when not provided).
+                self._tokens_used += int(getattr(resp, "tokens_out", 0) or 0)
+                self._tokens_used += int(getattr(resp, "tokens_in", 0) or len(prompt) // 4)
+
+                if resp and resp.error:
+                    from pmharness.drivers import error_classifier
+                    err_cls = error_classifier.classify(None, resp.error)
+                    if err_cls == error_classifier.ErrorClass.CONTEXT_OVERFLOW:
+                        if attempt == 0:
+                            # Force history compaction and try again
+                            yield from self._maybe_compact_history(force=True)
+                            continue
+                        else:
+                            # Context overflow persists after compaction
+                            yield ConvEvent("error", {"error": "context overflow persists after compaction"})
+                            return
+                
+                # If there's no error or it is not context overflow, we're done
+                break
+
+            if resp and resp.error:
                 yield ConvEvent("error", {"error": f"pilot: {resp.error}"})
                 return
 
