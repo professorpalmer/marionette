@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory"}
+VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory"}
 
 
 @dataclass
@@ -102,6 +102,8 @@ class PilotAction:
             raise PilotError("read_pdf action requires a 'path' or 'url'")
         if self.kind == "search_codegraph" and not (self.query or "").strip():
             raise PilotError("search_codegraph action requires a 'query'")
+        if self.kind == "search_files" and not (self.query or "").strip():
+            raise PilotError("search_files action requires a 'query'")
         if self.kind == "query_wiki" and not (self.arguments.get("question") or "").strip():
             raise PilotError("query_wiki action requires a 'question'")
         if self.roles and not isinstance(self.roles, list):
@@ -355,6 +357,25 @@ def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = F
                     "properties": {
                         "query": {"type": "string", "description": "The search query, symbol, or question about the codebase"},
                         "kind": {"type": "string", "enum": ["search", "context"], "description": "Optional search kind: 'search' (symbols/calls/grep) or 'context' (deeper task-enclosing code structure/affected nodes)"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        })
+
+    # search_files
+    if not no_delegation:
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "search_files",
+                "description": "plain-text/regex content search over the repository, complementary to symbol search. Requires `query`.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The plain-text or regex query to search for"},
+                        "path": {"type": "string", "description": "Optional subdirectory to scope the search, relative to repo root"},
+                        "max_results": {"type": "integer", "description": "Optional max results to return, default 50"}
                     },
                     "required": ["query"]
                 }
@@ -812,6 +833,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `web_fetch`: read a web page's text contents. Requires `url`.
 - `read_pdf`: extract plain text from a local PDF file or PDF URL. Requires `path` or `url`.
 - `search_codegraph`: search the CodeGraph index for symbol usages, definitions, or context. Requires `query` and optional `kind`.
+- `search_files`: plain-text/regex content search over the repository, complementary to symbol search. Requires `query`, optional `path`, and `max_results`.
 - `query_wiki`: query the durable cross-session architecture and knowledge wiki. Requires `question`.
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
 

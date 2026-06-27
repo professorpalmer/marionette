@@ -860,6 +860,103 @@ class ConversationalSession:
         except Exception as e:
             return False, "exception", str(e)
 
+    def _do_search_files(self, act: Any) -> tuple[bool, str, Any]:
+        if not self.config.repo:
+            return False, "repo_not_open", "No workspace directory (config.repo) is open."
+
+        query = act.query
+        if not query:
+            return False, "invalid_arguments", "search_files requires a non-empty 'query'"
+
+        sub_path = act.arguments.get("path") or ""
+        target_path = sub_path
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(self.config.repo, target_path)
+        if not is_safe_path(target_path, self.config.repo):
+            return False, "path_traversal", f"Path traversal attempt rejected: {sub_path}"
+
+        max_results = act.arguments.get("max_results")
+        if max_results is None:
+            max_results = 50
+        else:
+            try:
+                max_results = int(max_results)
+            except (ValueError, TypeError):
+                max_results = 50
+
+        # Try ripgrep first
+        import shutil
+        rg_path = shutil.which("rg")
+        if rg_path:
+            rg_arg_path = sub_path if sub_path else "."
+            cmd = [rg_path, "--line-number", "--no-heading", "--color=never", "-e", query, rg_arg_path]
+            try:
+                p = subprocess.run(
+                    cmd,
+                    cwd=self.config.repo,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=20
+                )
+                output = p.stdout or ""
+                if p.returncode > 1:
+                    return False, "exception", f"ripgrep failed with code {p.returncode}: {output.strip()}"
+
+                lines = [l for l in output.splitlines() if l.strip()]
+                truncated = len(lines) > max_results
+                lines = lines[:max_results]
+                result_text = "\n".join(lines)
+                if truncated:
+                    result_text += f"\n\n... (results truncated to {max_results} matches) ..."
+                return True, "success", result_text
+            except subprocess.TimeoutExpired:
+                return False, "exception", "ripgrep timed out after 20 seconds"
+            except Exception:
+                pass
+
+        # Fallback to pure-Python os.walk + re scan
+        matches = []
+        try:
+            compiled_re = re.compile(query)
+        except re.error as e:
+            return False, "invalid_arguments", f"Invalid regex pattern: {e}"
+
+        skip_dirs = {".git", "node_modules", "results", "build", "dist", "__pycache__"}
+        
+        for root, dirs, files in os.walk(target_path):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for file in files:
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, "rb") as f:
+                        chunk = f.read(8000)
+                        if b"\x00" in chunk:
+                            continue
+                except Exception:
+                    continue
+
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                        for line_num, line in enumerate(f, 1):
+                            if compiled_re.search(line):
+                                rel_path = os.path.relpath(file_path, self.config.repo)
+                                line_text = line.rstrip("\r\n")
+                                matches.append(f"{rel_path}:{line_num}: {line_text}")
+                                if len(matches) > max_results:
+                                    break
+                except Exception:
+                    continue
+            if len(matches) > max_results:
+                break
+
+        truncated = len(matches) > max_results
+        matches = matches[:max_results]
+        result_text = "\n".join(matches)
+        if truncated:
+            result_text += f"\n\n... (results truncated to {max_results} matches) ..."
+        return True, "success", result_text
+
     def cancel(self) -> None:
         """Signal any in-flight run_auto/send to stop at the next checkpoint."""
         self._cancel.set()
@@ -1144,7 +1241,7 @@ class ConversationalSession:
                 return
 
             # 4. Execute each action as a collapsible tool-call.
-            READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "web_search", "web_fetch", "read_pdf", "view_image"}
+            READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "search_files", "web_search", "web_fetch", "read_pdf", "view_image"}
             prefetch = {}
             read_actions_with_idx = []
             for idx, act in enumerate(turn.actions):
@@ -1163,6 +1260,8 @@ class ConversationalSession:
                             return idx, self._do_list_dir(act)
                         elif act.kind == "search_codegraph":
                             return idx, self._do_search_codegraph(act)
+                        elif act.kind == "search_files":
+                            return idx, self._do_search_files(act)
                         elif act.kind == "web_search":
                             return idx, self._do_web_search(act)
                         elif act.kind == "web_fetch":
@@ -1210,6 +1309,8 @@ class ConversationalSession:
                 elif act.kind == "read_pdf":
                     act_goal = act.path or act.url
                 elif act.kind == "search_codegraph":
+                    act_goal = act.query
+                elif act.kind == "search_files":
                     act_goal = act.query
                 elif act.kind == "query_wiki":
                     act_goal = act.arguments.get("question") or ""
@@ -1566,6 +1667,31 @@ class ConversationalSession:
                         else:  # status == "exception"
                             yield ConvEvent("action_result", {"id": aid, "error": val})
                             self._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: {val})", is_native)
+                    continue
+                # ---- search_files branch --------------------------------------
+                if act.kind == "search_files":
+                    if idx in prefetch:
+                        ok, status, val = prefetch[idx]
+                    else:
+                        ok, status, val = self._do_search_files(act)
+
+                    if ok:
+                        output = val
+                        yield ConvEvent("action_result", {
+                            "id": aid, "num": 1, "types": ["search_files"], "adapter": "local", "mode": "tool",
+                            "artifacts": [{"type": "search_files", "headline": f"Search Files: {act.query}"}],
+                        })
+                        self._append_action_result(act, aid, f"(search_files '{act.query}' returned)\n{output}", is_native)
+                    else:
+                        if status == "repo_not_open":
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(search_files {aid} failed: {val})", is_native)
+                        elif status == "path_traversal":
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(search_files {aid} failed: {val})", is_native)
+                        else:  # status == "exception" or "invalid_arguments"
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(search_files '{act.query}' failed: {val})", is_native)
                     continue
                 # ---- query_wiki branch ----------------------------------------
                 if act.kind == "query_wiki":
