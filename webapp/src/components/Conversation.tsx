@@ -31,7 +31,8 @@ type Item =
   | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
-  | { kind: "compaction"; before_tokens: number; after_tokens: number };
+  | { kind: "compaction"; before_tokens: number; after_tokens: number }
+  | { kind: "steer"; text: string };
 
 type GroupedItem =
   | { kind: "msg"; msg: Msg }
@@ -39,6 +40,7 @@ type GroupedItem =
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
+  | { kind: "steer"; text: string }
   | { kind: "activity_group"; items: ( { kind: "card"; card: Card } | { kind: "thinking"; text: string } )[] };
 
 function getSimilarity(s1: string, s2: string): number {
@@ -120,7 +122,7 @@ function groupAgentActivity(items: Item[]): GroupedItem[] {
         currentGroup = [];
       }
       grouped.push(item);
-    } else if (item.kind === "swarm_pending" || item.kind === "swarm_result" || item.kind === "checkpoint" || item.kind === "compaction") {
+    } else if (item.kind === "swarm_pending" || item.kind === "swarm_result" || item.kind === "checkpoint" || item.kind === "compaction" || item.kind === "steer") {
       if (currentGroup.length > 0) {
         grouped.push({ kind: "activity_group", items: currentGroup });
         currentGroup = [];
@@ -1106,18 +1108,28 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     // while providing a seamless correction/resubmission flow.
     setEditingIndex(null);
 
-    const queuePrefVal = localStorage.getItem("pmharness.queueMessages");
-    const isQueueEnabled = queuePrefVal !== null ? queuePrefVal === "true" : true;
     const isBusy = status === "thinking" || status === "executing" || status === "streaming";
 
     if (isBusy) {
-      if (isQueueEnabled) {
-        setMsgQueue((prev) => [...prev, { text: msg, auto, plan }]);
-        setInput("");
-        return;
-      } else {
-        return;
-      }
+      setInput("");
+      api.steerSession(msg)
+        .then(() => {
+          setItems((prev) => [...prev, { kind: "steer", text: msg }]);
+        })
+        .catch((err) => {
+          console.error("Failed to steer session:", err);
+          setItems((prev) => [
+            ...prev,
+            {
+              kind: "msg",
+              msg: {
+                role: "assistant",
+                text: "[error] Steer failed: " + (err.message || err)
+              }
+            }
+          ]);
+        });
+      return;
     }
 
     setInput("");
@@ -1332,6 +1344,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                 return (
                   <div key={i} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-edge/10 text-[10.5px] text-faint w-fit my-1 select-none font-mono">
                     <span>Context summarized: {it.before_tokens} → {it.after_tokens} tokens</span>
+                  </div>
+                );
+              } else if (it.kind === "steer") {
+                return (
+                  <div key={i} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10.5px] text-faint w-fit my-1 select-none font-mono animate-in fade-in duration-200">
+                    <span className="text-muted">steer:</span>
+                    <span>{it.text}</span>
                   </div>
                 );
               } else if (it.kind === "activity_group") {

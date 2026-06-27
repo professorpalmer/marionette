@@ -322,6 +322,7 @@ export const api = {
   writeFile: (path: string, content: string) => postJSON<{ ok: boolean; bytes?: number; error?: string }>("/api/file/write", { path, content }),
   inlineEdit: (path: string, selection: string, instruction: string, prefix: string, suffix: string, language: string) => postJSON<{ ok: boolean; edit?: string; error?: string }>("/api/inline-edit", { path, selection, instruction, prefix, suffix, language }),
   compactSession: () => postJSON<{ ok: boolean; before_tokens: number; after_tokens: number }>("/api/session/compact", {}),
+  steerSession: (text: string) => postJSON<{ ok: boolean }>("/api/session/steer", { text }),
   getContextUsage: () => getJSON<ContextUsageResponse>(withToken("/api/context/usage")),
 
   getCheckpoints: () => getJSON<Checkpoint[]>(withToken("/api/checkpoints")),

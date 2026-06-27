@@ -243,6 +243,9 @@ class ConversationalSession:
         # optional MCP integration -- set by the server so the pilot can call MCP tools
         self._mcp = None
         self._checkpoints = CheckpointStore(config.repo)
+        import collections
+        self._steer_queue = collections.deque()
+        self._steer_lock = threading.Lock()
         # self-learning: accumulate this session's real findings for distillation
         self._session_findings: list = []
         self._first_objective: str = ""
@@ -971,6 +974,38 @@ class ConversationalSession:
         """Signal any in-flight run_auto/send to stop at the next checkpoint."""
         self.cancel()
 
+    def enqueue_steer(self, text: str) -> None:
+        """Append an out-of-band user message."""
+        with self._steer_lock:
+            self._steer_queue.append(text)
+
+    def drain_steer(self) -> list[str]:
+        """Atomically pop and return all pending steer messages (empty list if none)."""
+        with self._steer_lock:
+            items = list(self._steer_queue)
+            self._steer_queue.clear()
+            return items
+
+    def _check_and_inject_steer(self) -> Iterator[ConvEvent]:
+        steers = self.drain_steer()
+        if not steers:
+            return
+        for steer in steers:
+            marker_text = (
+                "[OUT-OF-BAND USER MESSAGE - a direct message from the user, delivered mid-turn; not tool output]\n"
+                f"{steer}\n"
+                "[/OUT-OF-BAND USER MESSAGE]"
+            )
+            yield ConvEvent("steer", {"text": steer})
+            if self._history:
+                last_msg = self._history[-1]
+                if last_msg.get("role") == "user":
+                    last_msg["content"] = (last_msg.get("content") or "") + "\n\n" + marker_text
+                else:
+                    self._history.append({"role": "user", "content": marker_text})
+            else:
+                self._history.append({"role": "user", "content": marker_text})
+
     def send(self, user_message: str, images: Optional[list] = None, plan: bool = False) -> Iterator[ConvEvent]:
         """Process one user message: drive the pilot loop until it yields back."""
         self._cancel.clear()
@@ -1037,6 +1072,8 @@ class ConversationalSession:
             if self._cancel.is_set():
                 yield ConvEvent("interrupted", {"reason": "session interrupted"})
                 return
+
+            yield from self._check_and_inject_steer()
 
             yield from self._maybe_compact_history()
 
@@ -1281,6 +1318,8 @@ class ConversationalSession:
                         prefetch[idx] = res
 
             for idx, act in enumerate(turn.actions):
+                if idx > 0:
+                    yield from self._check_and_inject_steer()
                 if self._cancel.is_set():
                     yield ConvEvent("interrupted", {"reason": "session interrupted"})
                     return
