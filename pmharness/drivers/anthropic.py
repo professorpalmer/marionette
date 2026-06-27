@@ -21,7 +21,8 @@ class AnthropicDriver:
                  api_key_env: str = "ANTHROPIC_API_KEY",
                  version: str = "2023-06-01",
                  max_tokens: int = 1024, temperature: float = 0.0, timeout: int = 90,
-                 send_temperature: bool = False) -> None:
+                 send_temperature: bool = False,
+                 enable_prompt_cache: bool = True) -> None:
         self.name = name
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -31,6 +32,7 @@ class AnthropicDriver:
         self.temperature = temperature
         self.send_temperature = send_temperature
         self.timeout = timeout
+        self.enable_prompt_cache = enable_prompt_cache
 
     def _key(self) -> str:
         key = os.environ.get(self.api_key_env, "").strip()
@@ -43,9 +45,13 @@ class AnthropicDriver:
         body = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "system": system,
             "messages": [{"role": "user", "content": task_prompt}],
         }
+        if self.enable_prompt_cache:
+            body["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+        else:
+            body["system"] = system
+
         # Some Anthropic models (Opus 4.x) reject an explicit temperature.
         if self.temperature is not None and self.send_temperature:
             body["temperature"] = self.temperature
@@ -55,6 +61,8 @@ class AnthropicDriver:
             "x-api-key": self._key(),
             "anthropic-version": self.version,
         }
+        if self.enable_prompt_cache:
+            headers["anthropic-beta"] = "prompt-caching-2024-07-31"
 
         def _call() -> DriverResponse:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -82,12 +90,18 @@ class AnthropicDriver:
                 return DriverResponse(text="", model=self.name,
                                       error=f"unexpected response: {str(raw)[:300]}", latency_ms=latency)
             usage = raw.get("usage", {}) or {}
+            cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+            cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
             return DriverResponse(
                 text=text,
                 tokens_in=int(usage.get("input_tokens", 0) or 0),
                 tokens_out=int(usage.get("output_tokens", 0) or 0),
                 latency_ms=latency, model=self.name,
-                meta={"stop_reason": raw.get("stop_reason")},
+                meta={
+                    "stop_reason": raw.get("stop_reason"),
+                    "cache_write_tokens": cache_write,
+                    "cache_read_tokens": cache_read,
+                },
             )
 
         return with_retry(_call)

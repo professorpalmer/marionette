@@ -99,13 +99,18 @@ class OpenAICompatDriver:
                     latency_ms=latency,
                 )
             usage = raw.get("usage", {}) or {}
+            prompt_tokens_details = usage.get("prompt_tokens_details") or {}
+            cached_tokens = int(prompt_tokens_details.get("cached_tokens", 0) or 0)
             return DriverResponse(
                 text=text,
                 tokens_in=int(usage.get("prompt_tokens", 0) or 0),
                 tokens_out=int(usage.get("completion_tokens", 0) or 0),
                 latency_ms=latency,
                 model=self.name,
-                meta={"raw_finish": raw["choices"][0].get("finish_reason") if raw.get("choices") else None},
+                meta={
+                    "raw_finish": raw["choices"][0].get("finish_reason") if raw.get("choices") else None,
+                    "cache_read_tokens": cached_tokens,
+                },
             )
 
         return with_retry(_call)
@@ -171,6 +176,8 @@ class OpenAICompatDriver:
             pure_text = strip_think_blocks(text)
 
             usage = raw.get("usage", {}) or {}
+            prompt_tokens_details = usage.get("prompt_tokens_details") or {}
+            cached_tokens = int(prompt_tokens_details.get("cached_tokens", 0) or 0)
             return DriverResponse(
                 text=pure_text,
                 tokens_in=int(usage.get("prompt_tokens", 0) or 0),
@@ -181,6 +188,7 @@ class OpenAICompatDriver:
                     "tool_calls": tool_calls,
                     "reasoning": reasoning,
                     "finish_reason": finish_reason,
+                    "cache_read_tokens": cached_tokens,
                 },
             )
 
@@ -229,6 +237,7 @@ class OpenAICompatDriver:
             finish_reason = ""
             tokens_in = 0
             tokens_out = 0
+            cached_tokens = 0
             stream_started = False
 
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -252,6 +261,8 @@ class OpenAICompatDriver:
                             if chunk_usage:
                                 tokens_in = int(chunk_usage.get("prompt_tokens", 0) or 0)
                                 tokens_out = int(chunk_usage.get("completion_tokens", 0) or 0)
+                                prompt_tokens_details = chunk_usage.get("prompt_tokens_details") or {}
+                                cached_tokens = int(prompt_tokens_details.get("cached_tokens", 0) or 0)
 
                             choices = chunk.get("choices") or []
                             if choices:
@@ -341,6 +352,7 @@ class OpenAICompatDriver:
                     "reasoning": reasoning,
                     "finish_reason": finish_reason,
                     "stream_started": stream_started,
+                    "cache_read_tokens": cached_tokens,
                 },
             )
 
