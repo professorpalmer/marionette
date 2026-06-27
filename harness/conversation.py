@@ -693,6 +693,35 @@ class ConversationalSession:
         except Exception as e:
             return False, "exception", str(e)
 
+    def _do_view_image(self, act: Any) -> tuple[bool, str, str]:
+        if not self.config.repo:
+            return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        target_path = act.path
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(self.config.repo, target_path)
+        if not is_safe_path(target_path, self.config.repo):
+            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+        try:
+            if not os.path.exists(target_path):
+                return False, "error", f"view_image: not an image file or not found: {act.path}"
+            if os.path.isdir(target_path):
+                return False, "error", f"view_image: not an image file or not found: {act.path}"
+
+            ext = os.path.splitext(target_path)[1].lower()
+            if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+                return False, "error", f"view_image: not an image file or not found: {act.path}"
+
+            from .vision import transcribe_images
+            results = transcribe_images([target_path])
+            if not results:
+                return False, "error", "view_image failed: no transcription returned"
+            r = results[0]
+            if r.error:
+                return False, "error", f"view_image failed: {r.error}"
+            return True, "success", r.text
+        except Exception as e:
+            return False, "exception", str(e)
+
     def _do_list_dir(self, act: Any) -> tuple[bool, str, Any]:
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
@@ -1071,7 +1100,7 @@ class ConversationalSession:
                 return
 
             # 4. Execute each action as a collapsible tool-call.
-            READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "web_search", "web_fetch", "read_pdf"}
+            READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "web_search", "web_fetch", "read_pdf", "view_image"}
             prefetch = {}
             read_actions_with_idx = []
             for idx, act in enumerate(turn.actions):
@@ -1096,6 +1125,8 @@ class ConversationalSession:
                             return idx, self._do_web_fetch(act)
                         elif act.kind == "read_pdf":
                             return idx, self._do_read_pdf(act)
+                        elif act.kind == "view_image":
+                            return idx, self._do_view_image(act)
                     except Exception as exc:
                         return idx, (False, "exception", str(exc))
                     return idx, (False, "exception", f"Unknown prefetch kind {act.kind}")
@@ -1122,7 +1153,7 @@ class ConversationalSession:
                     turn_had_invalid = True
                     continue
                 act_goal = act.goal
-                if act.kind in ("read_file", "write_file", "edit_file", "list_dir"):
+                if act.kind in ("read_file", "write_file", "edit_file", "list_dir", "view_image"):
                     act_goal = act.path or "(workspace root)"
                 elif act.kind == "run_command":
                     act_goal = act.command
@@ -1186,6 +1217,24 @@ class ConversationalSession:
                         else:  # status == "exception"
                             yield ConvEvent("action_result", {"id": aid, "error": val})
                             self._append_action_result(act, aid, f"(read_file {act.path} failed: {val})", is_native)
+                    continue
+                # ---- view_image branch -----------------------------------------
+                if act.kind == "view_image":
+                    if idx in prefetch:
+                        ok, status, val = prefetch[idx]
+                    else:
+                        ok, status, val = self._do_view_image(act)
+
+                    if ok:
+                        text = val
+                        yield ConvEvent("action_result", {
+                            "id": aid, "num": 1, "types": ["image"], "adapter": "local", "mode": "tool",
+                            "artifacts": [{"type": "image", "headline": f"Viewed image {act.path}"}],
+                        })
+                        self._append_action_result(act, aid, f"(view_image {act.path}):\n{text}", is_native)
+                    else:
+                        yield ConvEvent("action_result", {"id": aid, "error": val})
+                        self._append_action_result(act, aid, f"(view_image {act.path} failed: {val})", is_native)
                     continue
                 # ---- write_file branch ----------------------------------------
                 if act.kind == "write_file":

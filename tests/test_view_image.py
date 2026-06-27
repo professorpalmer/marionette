@@ -1,0 +1,221 @@
+import json
+import tempfile
+import os
+import pytest
+from harness.pilot import build_tools_schema
+from harness.config import HarnessConfig
+from harness.conversation import ConversationalSession
+from harness.vision import VisionResult, default_sidecar, GeminiVisionSidecar, OpenRouterVisionSidecar
+import harness.vision
+
+def test_view_image_schema():
+    schemas_normal = build_tools_schema(no_delegation=False)
+    normal_names = [s["function"]["name"] for s in schemas_normal]
+    assert "view_image" in normal_names
+    
+    schemas_worker = build_tools_schema(no_delegation=True)
+    worker_names = [s["function"]["name"] for s in schemas_worker]
+    assert "view_image" in worker_names
+
+def test_view_image_execution(monkeypatch):
+    canned_text = "This is a canned description of a 1x1 image."
+    def mock_transcribe_images(paths, sidecar=None):
+        return [VisionResult(text=canned_text, model="mock-vlm")]
+    monkeypatch.setattr(harness.vision, "transcribe_images", mock_transcribe_images)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        png_path = os.path.join(tmpdir, "test_image.png")
+        with open(png_path, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+
+        cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp(), repo=tmpdir)
+        s = ConversationalSession(cfg)
+        
+        class _FakeImagePilot:
+            name = "fake-image-pilot"
+            def __init__(self):
+                self.calls = 0
+            def complete(self, task_prompt, *, system=None):
+                from pmharness.drivers.openai_compat import DriverResponse
+                return DriverResponse(text="")
+            def chat(self, messages, *, tools=None, system=None):
+                from pmharness.drivers.openai_compat import DriverResponse
+                self.calls += 1
+                if self.calls == 1:
+                    tool_calls = [
+                        {
+                            "id": "tc_view_1",
+                            "type": "function",
+                            "function": {
+                                "name": "view_image",
+                                "arguments": json.dumps({"path": "test_image.png"})
+                            }
+                        }
+                    ]
+                    return DriverResponse(
+                        text="",
+                        tokens_out=15,
+                        latency_ms=1.0,
+                        meta={
+                            "tool_calls": tool_calls,
+                            "reasoning": "Checking image.",
+                            "finish_reason": "tool_calls"
+                        }
+                    )
+                else:
+                    return DriverResponse(
+                        text="Verified description.",
+                        tokens_out=20,
+                        latency_ms=1.0,
+                        meta={
+                            "tool_calls": [],
+                            "reasoning": "Answer.",
+                            "finish_reason": "stop"
+                        }
+                    )
+        
+        s.pilot = _FakeImagePilot()
+        events = list(s.send("Look at the test_image.png image."))
+        kinds = [e.kind for e in events]
+        assert "action_start" in kinds
+        assert "action_result" in kinds
+        
+        tool_msgs = [m for m in s._history if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert "test_image.png" in tool_msgs[0]["content"]
+        assert canned_text in tool_msgs[0]["content"]
+
+def test_view_image_non_image(monkeypatch):
+    def mock_transcribe_images(paths, sidecar=None):
+        return [VisionResult(text="should not be called", model="mock-vlm")]
+    monkeypatch.setattr(harness.vision, "transcribe_images", mock_transcribe_images)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        txt_path = os.path.join(tmpdir, "test.txt")
+        with open(txt_path, "w") as f:
+            f.write("hello")
+
+        cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp(), repo=tmpdir)
+        s = ConversationalSession(cfg)
+        
+        class _FakeImagePilot:
+            name = "fake-image-pilot"
+            def __init__(self):
+                self.calls = 0
+            def complete(self, task_prompt, *, system=None):
+                from pmharness.drivers.openai_compat import DriverResponse
+                return DriverResponse(text="")
+            def chat(self, messages, *, tools=None, system=None):
+                from pmharness.drivers.openai_compat import DriverResponse
+                self.calls += 1
+                if self.calls == 1:
+                    tool_calls = [
+                        {
+                            "id": "tc_view_invalid_1",
+                            "type": "function",
+                            "function": {
+                                "name": "view_image",
+                                "arguments": json.dumps({"path": "test.txt"})
+                            }
+                        }
+                    ]
+                    return DriverResponse(
+                        text="",
+                        tokens_out=15,
+                        latency_ms=1.0,
+                        meta={
+                            "tool_calls": tool_calls,
+                            "reasoning": "Checking non-image.",
+                            "finish_reason": "tool_calls"
+                        }
+                    )
+                else:
+                    return DriverResponse(
+                        text="Done.",
+                        tokens_out=20,
+                        latency_ms=1.0,
+                        meta={
+                            "tool_calls": [],
+                            "reasoning": "Answer.",
+                            "finish_reason": "stop"
+                        }
+                    )
+
+        s.pilot = _FakeImagePilot()
+        events = list(s.send("Look at test.txt."))
+        tool_msgs = [m for m in s._history if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert "not an image file or not found" in tool_msgs[0]["content"]
+
+def test_view_image_confinement(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp(), repo=tmpdir)
+        s = ConversationalSession(cfg)
+        
+        class _FakeImagePilot:
+            name = "fake-image-pilot"
+            def __init__(self):
+                self.calls = 0
+            def complete(self, task_prompt, *, system=None):
+                from pmharness.drivers.openai_compat import DriverResponse
+                return DriverResponse(text="")
+            def chat(self, messages, *, tools=None, system=None):
+                from pmharness.drivers.openai_compat import DriverResponse
+                self.calls += 1
+                if self.calls == 1:
+                    tool_calls = [
+                        {
+                            "id": "tc_view_confinement_1",
+                            "type": "function",
+                            "function": {
+                                "name": "view_image",
+                                "arguments": json.dumps({"path": "../outside_image.png"})
+                            }
+                        }
+                    ]
+                    return DriverResponse(
+                        text="",
+                        tokens_out=15,
+                        latency_ms=1.0,
+                        meta={
+                            "tool_calls": tool_calls,
+                            "reasoning": "Checking traversal.",
+                            "finish_reason": "tool_calls"
+                        }
+                    )
+                else:
+                    return DriverResponse(
+                        text="Done.",
+                        tokens_out=20,
+                        latency_ms=1.0,
+                        meta={
+                            "tool_calls": [],
+                            "reasoning": "Answer.",
+                            "finish_reason": "stop"
+                        }
+                    )
+
+        s.pilot = _FakeImagePilot()
+        events = list(s.send("Look at outside image."))
+        tool_msgs = [m for m in s._history if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert "Path traversal attempt rejected" in tool_msgs[0]["content"]
+
+def test_vision_default_sidecar_fallback(monkeypatch):
+    monkeypatch.setenv("HARNESS_VLM_REACH", "openrouter")
+    monkeypatch.setenv("GEMINI_API_KEY", "some_gemini_key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "some_openrouter_key")
+    sc = default_sidecar()
+    assert isinstance(sc, OpenRouterVisionSidecar)
+    
+    monkeypatch.delenv("HARNESS_VLM_REACH", raising=False)
+    sc = default_sidecar()
+    assert isinstance(sc, GeminiVisionSidecar)
+    
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    sc = default_sidecar()
+    assert isinstance(sc, OpenRouterVisionSidecar)
+    
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    sc = default_sidecar()
+    assert isinstance(sc, GeminiVisionSidecar)

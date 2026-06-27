@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "query_wiki", "run_implement", "run_parallel", "route_task"}
+VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image"}
 
 
 @dataclass
@@ -73,7 +73,7 @@ class PilotAction:
             raise PilotError("route_task action requires a non-empty instruction")
         if self.kind == "call_mcp" and not (self.tool or "").strip():
             raise PilotError("call_mcp action requires a 'tool' (server.tool)")
-        if self.kind in ("read_file", "write_file") and not (self.path or "").strip():
+        if self.kind in ("read_file", "write_file", "view_image") and not (self.path or "").strip():
             raise PilotError(f"{self.kind} action requires a 'path'")
         if self.kind == "edit_file" and not (self.path or "").strip():
             raise PilotError("edit_file action requires a 'path'")
@@ -283,6 +283,22 @@ def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = F
                     "path": {"type": "string", "description": "Local path to PDF file"},
                     "url": {"type": "string", "description": "URL to PDF file"}
                 }
+            }
+        }
+    })
+
+    # view_image
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "view_image",
+            "description": "View/describe an image file (screenshot, diagram, photo, mockup). Use this to SEE an image referenced in the task or repo -- it is transcribed to a precise text description you can reason over. Requires path (path to a .png/.jpg/.jpeg/.webp image, relative to the repo or absolute).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or relative path to the image file to view"}
+                },
+                "required": ["path"]
             }
         }
     })

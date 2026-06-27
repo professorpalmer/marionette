@@ -188,9 +188,14 @@ class OpenRouterVisionSidecar:
 
 def default_sidecar():
     """Pick the vision sidecar from env. HARNESS_VLM_REACH=openrouter -> open VLM
-    (default model qwen3-vl, overridable via HARNESS_VLM_MODEL); else Gemini."""
+    (default model qwen3-vl, overridable via HARNESS_VLM_MODEL); else Gemini.
+    If no GEMINI_API_KEY is found but OPENROUTER_API_KEY is present, fall back to OpenRouter."""
     import os as _os
-    if _os.environ.get("HARNESS_VLM_REACH", "").lower() == "openrouter":
+    reach = _os.environ.get("HARNESS_VLM_REACH", "").lower()
+    gemini_key = _os.environ.get("GEMINI_API_KEY", "").strip()
+    or_key = _os.environ.get("OPENROUTER_API_KEY", "").strip()
+
+    if reach == "openrouter" or (not gemini_key and or_key):
         model = _os.environ.get("HARNESS_VLM_MODEL", "qwen/qwen3-vl-30b-a3b-instruct")
         return OpenRouterVisionSidecar(model=model)
     return GeminiVisionSidecar()
