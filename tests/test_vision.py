@@ -1,5 +1,11 @@
 """Vision sidecar wiring: image -> transcription -> prepended to driver context.
-Offline-safe with a fake sidecar; the live VLM call is exercised separately."""
+Offline-safe with a fake sidecar; the live VLM call is exercised separately.
+
+Swarm execution is stubbed (execute_intent monkeypatched) so these tests verify
+ONLY the vision-transcription wiring deterministically -- they must never spawn a
+real in-process Puppetmaster worker (that blocks in _wait_for_worker on the demo
+adapter and hangs the suite). The real swarm path is covered by the E2E tests.
+"""
 import tempfile
 from harness.config import HarnessConfig
 from harness.session import Session
@@ -13,11 +19,30 @@ class _FakeSidecar:
                             tokens_out=12, model=self.name)
 
 
+def _stub_execute_intent(monkeypatch):
+    """Replace harness.session.execute_intent with a fake that returns a
+    deterministic BridgeResult instead of driving real Puppetmaster."""
+    from pmharness.bridge import BridgeResult
+    import harness.session as sess
+
+    def fake_execute_intent(intent, *, state_dir=None, worker_mode="subprocess"):
+        return BridgeResult(
+            job_id="job_fake", status="done", mode="analyze",
+            num_artifacts=1, artifact_types=["finding"],
+            summary="stub swarm result",
+            artifacts=[{"type": "finding", "headline": "stub finding"}],
+            adapter="demo",
+        )
+    monkeypatch.setattr(sess, "execute_intent", fake_execute_intent)
+
+
 def test_session_transcribes_and_prepends(monkeypatch):
     # patch transcribe_images to use the fake sidecar
     import harness.vision as v
     monkeypatch.setattr(v, "transcribe_images",
                         lambda paths, sidecar=None: [_FakeSidecar().transcribe(p) for p in paths])
+    # stub swarm execution so we never spawn a real Puppetmaster worker
+    _stub_execute_intent(monkeypatch)
 
     cfg = HarnessConfig(driver="stub-oracle-v2", reach="openrouter",
                         budget=3, state_dir=tempfile.mkdtemp(prefix="vh-"))
@@ -32,7 +57,8 @@ def test_session_transcribes_and_prepends(monkeypatch):
     assert kinds[-1] == "final"
 
 
-def test_no_images_no_vision_event():
+def test_no_images_no_vision_event(monkeypatch):
+    _stub_execute_intent(monkeypatch)
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp(prefix="vh-"))
     s = Session(cfg)
     events = list(s.run("What is JSON?"))
