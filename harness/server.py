@@ -340,6 +340,18 @@ def _get_codegraph_status(repo_path: str) -> str:
         return "unsupported"
 
 
+def _strip_markdown_fences(text: str) -> str:
+    text_stripped = text.strip()
+    if text_stripped.startswith("```"):
+        lines = text_stripped.splitlines()
+        if len(lines) >= 2 and lines[0].startswith("```"):
+            if lines[-1].strip() == "```":
+                return "\n".join(lines[1:-1])
+            else:
+                return "\n".join(lines[1:])
+    return text
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
@@ -403,6 +415,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/hooks/add", "/api/hooks/update", "/api/hooks/remove",
                       "/api/workspace/open", "/api/codegraph/reindex",
                       "/api/file/write",
+                      "/api/inline-edit",
                       "/api/commands/render",
                       "/api/git/connect", "/api/git/device/poll", "/api/git/disconnect",
                       "/api/checkpoints/restore", "/api/checkpoints/snapshot",
@@ -500,6 +513,63 @@ class Handler(BaseHTTPRequestHandler):
             if rendered is None:
                 return self._send(404, json.dumps({"error": "unknown command"}))
             return self._send(200, json.dumps({"name": name, "prompt": rendered}))
+
+        if path == "/api/inline-edit":
+            if not repo or not os.path.exists(repo):
+                return self._send(400, json.dumps({"error": "No open workspace"}))
+            rel_path = body.get("path", "").strip()
+            if not rel_path:
+                return self._send(400, json.dumps({"error": "Missing path parameter"}))
+            target_path = os.path.abspath(os.path.join(repo, rel_path))
+            from .conversation import is_safe_path
+            if not is_safe_path(target_path, repo):
+                return self._send(400, json.dumps({"error": f"Path traversal attempt rejected: {rel_path}"}))
+            
+            selection = body.get("selection", "")
+            instruction = body.get("instruction", "")
+            prefix = body.get("prefix", "")
+            suffix = body.get("suffix", "")
+            language = body.get("language", "")
+            
+            if len(selection) > 20000:
+                return self._send(400, json.dumps({"error": "Selection size exceeds 20000 characters limit"}))
+            if len(prefix) > 4000:
+                return self._send(400, json.dumps({"error": "Prefix size exceeds 4000 characters limit"}))
+            if len(suffix) > 4000:
+                return self._send(400, json.dumps({"error": "Suffix size exceeds 4000 characters limit"}))
+            
+            system_msg = (
+                "You are a precise code-editing assistant. You rewrite ONLY the user's SELECTED code per their instruction. "
+                "Output ONLY the replacement code for the selection -- no markdown fences, no explanation, no surrounding code. "
+                "Preserve the surrounding indentation style. If the instruction cannot apply, output the selection unchanged."
+            )
+            
+            task_prompt = (
+                f"We are editing a file of language: {language or 'unknown'}.\n"
+                f"File Path: {rel_path}\n\n"
+                f"CONTEXT BEFORE THE SELECTION (Do not modify this, only use for context):\n"
+                f"---BEGIN PREFIX---\n{prefix}\n---END PREFIX---\n\n"
+                f"SELECTED CODE TO REWRITE:\n"
+                f"---BEGIN SELECTION---\n{selection}\n---END SELECTION---\n\n"
+                f"CONTEXT AFTER THE SELECTION (Do not modify this, only use for context):\n"
+                f"---BEGIN SUFFIX---\n{suffix}\n---END SUFFIX---\n\n"
+                f"INSTRUCTION: {instruction}\n\n"
+                f"Please output ONLY the new rewritten code that will replace the SELECTED CODE TO REWRITE. "
+                f"Do not output prefix context, suffix context, explanation, or markdown fences. Output the replacement code directly."
+            )
+            
+            try:
+                if not hasattr(_pilot, "pilot") or not _pilot.pilot:
+                    return self._send(200, json.dumps({"ok": False, "error": "No pilot driver configured"}))
+                
+                resp = _pilot.pilot.complete(task_prompt, system=system_msg)
+                if getattr(resp, "error", None):
+                    return self._send(200, json.dumps({"ok": False, "error": resp.error}))
+                
+                cleaned_text = _strip_markdown_fences(resp.text)
+                return self._send(200, json.dumps({"ok": True, "edit": cleaned_text}))
+            except Exception as e:
+                return self._send(200, json.dumps({"ok": False, "error": f"Failed during inline edit pilot execution: {str(e)}"}))
 
         if path == "/api/file/write":
             if not repo or not os.path.exists(repo):

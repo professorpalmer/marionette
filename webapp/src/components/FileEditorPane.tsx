@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Save, RotateCcw } from "lucide-react";
+import { Loader2, Save, RotateCcw, Wand2 } from "lucide-react";
 import CodeMirror from "@uiw/react-codemirror";
 import { okaidia } from "@uiw/codemirror-theme-okaidia";
 import { keymap, EditorView } from "@codemirror/view";
@@ -44,6 +44,31 @@ function getLanguageExtension(filePath: string) {
   }
 }
 
+function getLanguageFromPath(filePath: string): string {
+  const ext = filePath.split(".").pop()?.toLowerCase() || "";
+  switch (ext) {
+    case "ts":
+    case "tsx":
+      return "typescript";
+    case "js":
+    case "jsx":
+      return "javascript";
+    case "py":
+      return "python";
+    case "json":
+      return "json";
+    case "css":
+      return "css";
+    case "html":
+      return "html";
+    case "md":
+    case "markdown":
+      return "markdown";
+    default:
+      return "";
+  }
+}
+
 const customTheme = EditorView.theme({
   "&": {
     fontSize: "13px",
@@ -63,6 +88,88 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [readOnly, setReadOnly] = useState(false);
+
+  const [showInlinePrompt, setShowInlinePrompt] = useState(false);
+  const [inlineInstruction, setInlineInstruction] = useState("");
+  const [inlineRange, setInlineRange] = useState<{ from: number; to: number } | null>(null);
+  const [inlineLoading, setInlineLoading] = useState(false);
+  const [inlineError, setInlineError] = useState<string | null>(null);
+  const editorViewRef = useRef<EditorView | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (showInlinePrompt && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [showInlinePrompt]);
+
+  useEffect(() => {
+    if (!showInlinePrompt) return;
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setShowInlinePrompt(false);
+        setInlineRange(null);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [showInlinePrompt]);
+
+  const handleInlineEditSubmit = async () => {
+    if (!inlineInstruction.trim() || !inlineRange || !editorViewRef.current) return;
+    setInlineLoading(true);
+    setInlineError(null);
+    const view = editorViewRef.current;
+    const { from, to } = inlineRange;
+    const docLen = view.state.doc.length;
+
+    const prefix = view.state.sliceDoc(Math.max(0, from - 2000), from);
+    const suffix = view.state.sliceDoc(to, Math.min(docLen, to + 2000));
+    const selection = view.state.sliceDoc(from, to);
+    const language = getLanguageFromPath(path);
+
+    try {
+      const res = await api.inlineEdit(
+        path,
+        selection,
+        inlineInstruction,
+        prefix,
+        suffix,
+        language
+      );
+      if (res.ok && res.edit !== undefined) {
+        const replacement = res.edit;
+        view.dispatch({
+          changes: { from, to, insert: replacement }
+        });
+
+        // set selection to the newly inserted range to highlight it
+        const newTo = from + replacement.length;
+        view.dispatch({
+          selection: { anchor: from, head: newTo },
+          scrollIntoView: true
+        });
+
+        // Mark dirty
+        setContent(view.state.doc.toString());
+        setIsDirty(true);
+        onDirtyChangeRef.current(true);
+
+        // Close prompt
+        setShowInlinePrompt(false);
+        setInlineRange(null);
+      } else {
+        setInlineError(res.error || "Failed to process inline edit");
+      }
+    } catch (err: any) {
+      setInlineError(err.message || "Error performing inline edit");
+    } finally {
+      setInlineLoading(false);
+    }
+  };
 
   const onDirtyChangeRef = useRef(onDirtyChange);
   useEffect(() => {
@@ -199,6 +306,24 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
           return true;
         },
       },
+      {
+        key: "Mod-k",
+        run: (view) => {
+          if (readOnly) return true;
+          editorViewRef.current = view;
+          let { from, to } = view.state.selection.main;
+          if (from === to) {
+            const line = view.state.doc.lineAt(from);
+            from = line.from;
+            to = line.to;
+          }
+          setInlineRange({ from, to });
+          setInlineInstruction("");
+          setInlineError(null);
+          setShowInlinePrompt(true);
+          return true;
+        },
+      },
     ])
   );
 
@@ -267,6 +392,57 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
 
       {/* Editor area with CodeMirror */}
       <div className="flex-1 overflow-hidden relative">
+        {showInlinePrompt && (
+          <div ref={containerRef} className="absolute top-2 right-4 z-50 w-96 bg-panel2 border border-edge rounded-md shadow-lg p-3 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-accent uppercase tracking-wider flex items-center gap-1">
+                <Wand2 size={12} className="text-accent shrink-0 animate-pulse" />
+                Inline Edit
+              </span>
+              <button
+                onClick={() => {
+                  setShowInlinePrompt(false);
+                  setInlineRange(null);
+                }}
+                className="text-[10px] text-muted hover:text-txt transition-colors border border-edge rounded px-1.5 py-0.5 bg-panel"
+              >
+                Esc
+              </button>
+            </div>
+            <div className="relative flex items-center">
+              <input
+                ref={inputRef}
+                type="text"
+                value={inlineInstruction}
+                onChange={(e) => setInlineInstruction(e.target.value)}
+                placeholder="Describe the edit... (Enter to apply)"
+                className="w-full bg-panel border border-edge rounded px-2.5 py-1.5 text-[12px] text-txt placeholder:text-muted outline-none focus:border-accent transition-colors"
+                disabled={inlineLoading}
+                onKeyDown={async (e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    await handleInlineEditSubmit();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    setShowInlinePrompt(false);
+                    setInlineRange(null);
+                  }
+                }}
+              />
+            </div>
+            {inlineLoading && (
+              <div className="text-[11px] text-muted flex items-center gap-1.5 py-0.5">
+                <Loader2 className="animate-spin text-accent" size={12} />
+                Thinking...
+              </div>
+            )}
+            {inlineError && (
+              <div className="text-[11px] text-risk break-words font-medium py-0.5">
+                {inlineError}
+              </div>
+            )}
+          </div>
+        )}
         <CodeMirror
           value={content}
           theme={okaidia}

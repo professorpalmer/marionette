@@ -316,6 +316,7 @@ export const api = {
   getWorkspaceFiles: () => getJSON<{ files: string[] }>(withToken("/api/workspace/files")),
   readFile: (path: string) => getJSON<{ ok: boolean; path: string; content: string; truncated: boolean; error?: string; binary?: boolean }>("/api/file/read?path=" + encodeURIComponent(path)),
   writeFile: (path: string, content: string) => postJSON<{ ok: boolean; bytes?: number; error?: string }>("/api/file/write", { path, content }),
+  inlineEdit: (path: string, selection: string, instruction: string, prefix: string, suffix: string, language: string) => postJSON<{ ok: boolean; edit?: string; error?: string }>("/api/inline-edit", { path, selection, instruction, prefix, suffix, language }),
   compactSession: () => postJSON<{ ok: boolean; before_tokens: number; after_tokens: number }>("/api/session/compact", {}),
   getContextUsage: () => getJSON<ContextUsageResponse>(withToken("/api/context/usage")),
 
