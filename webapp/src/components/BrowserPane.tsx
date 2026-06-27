@@ -1,25 +1,53 @@
 import { useEffect, useRef, useState } from "react";
-import { RotateCw, ExternalLink, ArrowLeft, ArrowRight } from "lucide-react";
+import { RotateCw, ExternalLink, ArrowLeft, ArrowRight, Plus, X } from "lucide-react";
 
-// In-app browser pane. Design adapted from professorpalmer\'s Hermes fork branch
-// feat/desktop-browser-panel (BrowserState shape, nav toolbar + editable address
-// bar, nonce reload). Web build uses an iframe; a future Electron build swaps to
-// a <webview> behind the transport seam with the same chrome.
+// In-app browser pane with multi-tab support.
+// Each tab maintains its own URL, loading state, history, and active iframe/webview.
 const DEFAULT_URL = "https://duckduckgo.com";
 
+interface Tab {
+  id: string;
+  url: string;
+  title: string;
+  loading: boolean;
+  canBack: boolean;
+  canFwd: boolean;
+  nonce: number;
+}
+
 export default function BrowserPane() {
-  const [url, setUrl] = useState(DEFAULT_URL);
-  const [draft, setDraft] = useState(DEFAULT_URL);
-  const [editing, setEditing] = useState(false);
-  const [nonce, setNonce] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [canBack, setCanBack] = useState(false);
-  const [canFwd, setCanFwd] = useState(false);
-  const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const webviewRef = useRef<any>(null);
   const isDesktop = !!(window as any).harnessIPC;
 
-  useEffect(() => { if (!editing) setDraft(url); }, [editing, url]);
+  const initialIdRef = useRef(Math.random().toString(36).substring(2, 11));
+  const [tabs, setTabs] = useState<Tab[]>([
+    {
+      id: initialIdRef.current,
+      url: DEFAULT_URL,
+      title: "New Tab",
+      loading: false,
+      canBack: false,
+      canFwd: false,
+      nonce: 0,
+    }
+  ]);
+  const [activeTabId, setActiveTabId] = useState<string>(initialIdRef.current);
+
+  const [draft, setDraft] = useState(DEFAULT_URL);
+  const [editing, setEditing] = useState(false);
+
+  const webviewsRef = useRef<Record<string, any>>({});
+
+  const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
+  const url = activeTab?.url || DEFAULT_URL;
+  const loading = activeTab?.loading || false;
+  const canBack = activeTab?.canBack || false;
+  const canFwd = activeTab?.canFwd || false;
+
+  useEffect(() => {
+    if (!editing && activeTab) {
+      setDraft(activeTab.url);
+    }
+  }, [editing, activeTabId, activeTab?.url]);
 
   const normalize = (raw: string): string => {
     const v = raw.trim();
@@ -31,43 +59,153 @@ export default function BrowserPane() {
 
   const go = (raw: string) => {
     const next = normalize(raw);
-    setUrl(next); setLoading(true);
-    if (isDesktop && webviewRef.current) { try { webviewRef.current.loadURL(next); } catch {} }
-    else setNonce((n) => n + 1);
+    setTabs((prev) =>
+      prev.map((t) => (t.id === activeTabId ? { ...t, url: next, loading: true } : t))
+    );
+    if (isDesktop) {
+      const wv = webviewsRef.current[activeTabId];
+      if (wv) {
+        try {
+          wv.loadURL(next);
+        } catch {}
+      }
+    } else {
+      setTabs((prev) =>
+        prev.map((t) => (t.id === activeTabId ? { ...t, nonce: t.nonce + 1 } : t))
+      );
+    }
   };
-  const reload = () => {
-    setLoading(true);
-    if (isDesktop && webviewRef.current) { try { webviewRef.current.reload(); } catch {} }
-    else setNonce((n) => n + 1);
-  };
-  const back = () => { if (webviewRef.current?.canGoBack?.()) webviewRef.current.goBack(); };
-  const fwd = () => { if (webviewRef.current?.canGoForward?.()) webviewRef.current.goForward(); };
 
-  // Attach webview nav listeners (desktop only). The <webview> is created by the
-  // renderer below; we wire load + url events to update chrome state.
-  useEffect(() => {
-    if (!isDesktop) return;
-    const wv: any = webviewRef.current;
-    if (!wv) return;
-    const onStart = () => setLoading(true);
-    const onStop = () => {
-      setLoading(false);
-      try {
-        setCanBack(wv.canGoBack()); setCanFwd(wv.canGoForward());
-        const u = wv.getURL(); if (u && !editing) { setUrl(u); setDraft(u); }
-      } catch {}
+  const reload = () => {
+    setTabs((prev) =>
+      prev.map((t) => (t.id === activeTabId ? { ...t, loading: true } : t))
+    );
+    if (isDesktop) {
+      const wv = webviewsRef.current[activeTabId];
+      if (wv) {
+        try {
+          wv.reload();
+        } catch {}
+      }
+    } else {
+      setTabs((prev) =>
+        prev.map((t) => (t.id === activeTabId ? { ...t, nonce: t.nonce + 1 } : t))
+      );
+    }
+  };
+
+  const back = () => {
+    if (isDesktop) {
+      const wv = webviewsRef.current[activeTabId];
+      if (wv?.canGoBack?.()) {
+        wv.goBack();
+      }
+    }
+  };
+
+  const fwd = () => {
+    if (isDesktop) {
+      const wv = webviewsRef.current[activeTabId];
+      if (wv?.canGoForward?.()) {
+        wv.goForward();
+      }
+    }
+  };
+
+  const newTab = (initialUrl = DEFAULT_URL) => {
+    const id = Math.random().toString(36).substring(2, 11);
+    const tab: Tab = {
+      id,
+      url: initialUrl,
+      title: "New Tab",
+      loading: false,
+      canBack: false,
+      canFwd: false,
+      nonce: 0,
     };
-    wv.addEventListener("did-start-loading", onStart);
-    wv.addEventListener("did-stop-loading", onStop);
-    return () => {
-      wv.removeEventListener("did-start-loading", onStart);
-      wv.removeEventListener("did-stop-loading", onStop);
-    };
-  }, [isDesktop, editing]);
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(id);
+  };
+
+  const closeTab = (id: string, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    setTabs((prev) => {
+      const remaining = prev.filter((t) => t.id !== id);
+      if (remaining.length === 0) {
+        const newId = Math.random().toString(36).substring(2, 11);
+        setActiveTabId(newId);
+        return [{
+          id: newId,
+          url: DEFAULT_URL,
+          title: "New Tab",
+          loading: false,
+          canBack: false,
+          canFwd: false,
+          nonce: 0,
+        }];
+      }
+      if (activeTabId === id) {
+        const idx = prev.findIndex((t) => t.id === id);
+        const nextActive = prev[idx + 1] || prev[idx - 1];
+        if (nextActive) {
+          setActiveTabId(nextActive.id);
+        }
+      }
+      return remaining;
+    });
+  };
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-edge">
+    <div className="flex flex-col h-full bg-panel">
+      {/* Tab strip */}
+      <div className="flex items-center gap-1 px-2 pt-1.5 bg-panel border-b border-edge select-none overflow-x-auto scrollbar-none">
+        {tabs.map((tab) => {
+          const isActive = tab.id === activeTabId;
+          
+          let displayTitle = tab.title;
+          if (!displayTitle || displayTitle === "New Tab" || displayTitle === DEFAULT_URL) {
+            try {
+              displayTitle = new URL(tab.url).hostname;
+            } catch {
+              displayTitle = "New Tab";
+            }
+          }
+          
+          return (
+            <div
+              key={tab.id}
+              onClick={() => setActiveTabId(tab.id)}
+              className={`group relative flex items-center gap-2 px-3 py-1 rounded-t-md text-[11px] font-medium cursor-pointer transition max-w-[140px] min-w-[80px] shrink-0 border-t-2
+                ${isActive 
+                  ? "bg-panel2 text-txt border-x border-b border-x-edge border-b-panel2 border-t-accent -mb-[1px]" 
+                  : "bg-panel text-muted border-transparent hover:bg-panel2/50 hover:text-txt"
+                }`}
+            >
+              <span className="truncate flex-1 pr-3">{displayTitle}</span>
+              <button
+                onClick={(e) => closeTab(tab.id, e)}
+                className={`absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded-md hover:bg-panel2 hover:text-txt transition
+                  ${isActive ? "text-muted" : "opacity-0 group-hover:opacity-100 text-faint"}`}
+              >
+                <X size={10} />
+              </button>
+            </div>
+          );
+        })}
+        
+        <button
+          onClick={() => newTab()}
+          title="New Tab"
+          className="p-1.5 rounded-md text-muted hover:text-txt hover:bg-panel2 transition shrink-0"
+        >
+          <Plus size={12} />
+        </button>
+      </div>
+
+      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-edge bg-panel">
         {isDesktop && <NavBtn label="Back" onClick={back} disabled={!canBack}><ArrowLeft size={12} /></NavBtn>}
         {isDesktop && <NavBtn label="Forward" onClick={fwd} disabled={!canFwd}><ArrowRight size={12} /></NavBtn>}
         <NavBtn label="Reload" onClick={reload}><RotateCw size={12} className={loading ? "animate-spin" : ""} /></NavBtn>
@@ -80,42 +218,128 @@ export default function BrowserPane() {
         </form>
         <NavBtn label="Open externally" onClick={() => window.open(url, "_blank")}><ExternalLink size={12} /></NavBtn>
       </div>
-      <div className="flex-1 relative overflow-hidden bg-bg" style={{ backgroundColor: "#0a0a0c" }}>
-        {isDesktop ? (
-          // Real browser: Electron <webview> bypasses X-Frame-Options/CSP. Created
-          // via dangerouslySetInnerHTML so React does not re-mount it per render
-          // (which would lose its navigation methods + history).
-          <webview
-            key="desktop-webview"
-            ref={webviewRef as any}
-            src={DEFAULT_URL}
-            // @ts-expect-error -- webview is an Electron element, not in React JSX types
-            allowpopups="true"
-            className="absolute inset-0 w-full h-full border-0"
-            style={{ display: "flex", width: "100%", height: "100%", backgroundColor: "#0a0a0c" }}
-          />
-        ) : (
-          <>
-            <iframe ref={frameRef} key={nonce} src={url} title="browser"
-              onLoad={() => setLoading(false)}
+
+      <div className="flex-1 relative overflow-hidden bg-bg" style={{ backgroundColor: "#1a1a1e" }}>
+        {tabs.map((tab) => {
+          const isActive = tab.id === activeTabId;
+          return isDesktop ? (
+            <webview
+              key={`webview-${tab.id}`}
+              ref={(el: any) => {
+                if (el) {
+                  if (webviewsRef.current[tab.id] === el) return;
+                  // Clean up old listeners
+                  const oldEl = webviewsRef.current[tab.id];
+                  if (oldEl) {
+                    try {
+                      oldEl.removeEventListener("did-start-loading", oldEl._onStart);
+                      oldEl.removeEventListener("did-stop-loading", oldEl._onStop);
+                    } catch {}
+                  }
+
+                  webviewsRef.current[tab.id] = el;
+
+                  const onStart = () => {
+                    setTabs((prev) =>
+                      prev.map((t) => (t.id === tab.id ? { ...t, loading: true } : t))
+                    );
+                  };
+
+                  const onStop = () => {
+                    try {
+                      const u = el.getURL();
+                      let title = "";
+                      try { title = el.getTitle(); } catch {}
+                      if (!title && u) {
+                        try { title = new URL(u).hostname; } catch { title = u; }
+                      }
+                      const cb = el.canGoBack();
+                      const cf = el.canGoForward();
+                      setTabs((prev) =>
+                        prev.map((t) =>
+                          t.id === tab.id
+                            ? {
+                                ...t,
+                                loading: false,
+                                url: u || t.url,
+                                title: title || t.title,
+                                canBack: cb,
+                                canFwd: cf,
+                              }
+                            : t
+                        )
+                      );
+                    } catch {
+                      setTabs((prev) =>
+                        prev.map((t) => (t.id === tab.id ? { ...t, loading: false } : t))
+                      );
+                    }
+                  };
+
+                  el._onStart = onStart;
+                  el._onStop = onStop;
+
+                  el.addEventListener("did-start-loading", onStart);
+                  el.addEventListener("did-stop-loading", onStop);
+                } else {
+                  const oldEl = webviewsRef.current[tab.id];
+                  if (oldEl) {
+                    try {
+                      oldEl.removeEventListener("did-start-loading", oldEl._onStart);
+                      oldEl.removeEventListener("did-stop-loading", oldEl._onStop);
+                    } catch {}
+                  }
+                  delete webviewsRef.current[tab.id];
+                }
+              }}
+              src={tab.url}
+              // @ts-expect-error -- webview is an Electron element, not in React JSX types
+              allowpopups="true"
               className="absolute inset-0 w-full h-full border-0"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups" />
-            <div className="absolute bottom-0 inset-x-0 bg-panel/95 border-t border-edge px-3 py-1.5
-                            text-[10px] text-muted">
-              Web preview: many sites block embedding (X-Frame-Options/CSP). Full
-              navigation arrives in the desktop build via the webview.
+              style={{
+                display: isActive ? "flex" : "none",
+                width: "100%",
+                height: "100%",
+                backgroundColor: "#1a1a1e",
+              }}
+            />
+          ) : (
+            <div
+              key={`iframe-container-${tab.id}`}
+              className="absolute inset-0 w-full h-full"
+              style={{ display: isActive ? "block" : "none" }}
+            >
+              <iframe
+                key={`iframe-${tab.id}-${tab.nonce}`}
+                src={tab.url}
+                title={`browser-${tab.id}`}
+                onLoad={() => {
+                  setTabs((prev) =>
+                    prev.map((t) => (t.id === tab.id ? { ...t, loading: false } : t))
+                  );
+                }}
+                className="w-full h-full border-0"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              />
             </div>
-          </>
+          );
+        })}
+
+        {!isDesktop && (
+          <div className="absolute bottom-0 inset-x-0 bg-panel/95 border-t border-edge px-3 py-1.5 text-[10px] text-muted z-10">
+            Web preview: many sites block embedding (X-Frame-Options/CSP). Full
+            navigation arrives in the desktop build via the webview.
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-function NavBtn({ label, onClick, children }: any) {
+function NavBtn({ label, onClick, children, disabled }: any) {
   return (
-    <button title={label} onClick={onClick} type="button"
-      className="grid place-items-center size-6 shrink-0 rounded-md text-muted hover:text-txt hover:bg-panel2 transition">
+    <button title={label} onClick={onClick} type="button" disabled={disabled}
+      className="grid place-items-center size-6 shrink-0 rounded-md text-muted hover:text-txt hover:bg-panel2 transition disabled:opacity-40 disabled:hover:text-muted disabled:hover:bg-transparent">
       {children}
     </button>
   );
