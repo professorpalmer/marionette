@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { GitBranch, Plus, MessageSquare, Boxes, Check, Loader2, ChevronDown, ChevronRight, SquarePen } from "lucide-react";
+import { GitBranch, Plus, MessageSquare, Boxes, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2 } from "lucide-react";
 import { api, type Workspace, type Session, type Job } from "../lib/api";
 import { pickFolder } from "../lib/transport";
 
@@ -20,16 +20,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
 
-  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Record<string, boolean>>({});
+  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
-
-  const toggleWorkspaceCollapse = (repo: string) => {
-    setCollapsedWorkspaces((prev) => ({
-      ...prev,
-      [repo]: !prev[repo],
-    }));
-  };
 
   const getWorkspaceBasename = (repoPath: string) => {
     if (!repoPath) return "";
@@ -71,15 +64,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   }).catch(() => {});
   useEffect(() => { loadWs(); loadSess(); fetchWorkspace(); }, []);
 
-  const handleOpenFolder = async () => {
-    const picked = await pickFolder();
-    if (!picked) return;
+  const handleOpenProject = async (path: string) => {
     setOpening(true);
     try {
-      const res = await api.openWorkspace(picked);
+      const res = await api.openWorkspace(path);
       if (res.ok) {
         fetchWorkspace();
         await loadWs();
+        await loadSess();
         window.dispatchEvent(new Event("harness-config-changed"));
       } else {
         alert("Failed to open directory: " + (res as any).error);
@@ -89,6 +81,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     } finally {
       setOpening(false);
     }
+  };
+
+  const handleOpenFolder = async () => {
+    const picked = await pickFolder();
+    if (!picked) return;
+    await handleOpenProject(picked);
   };
   useEffect(() => { api.jobs().then(setJobs).catch(() => {}); }, [jobsRefresh]);
 
@@ -154,214 +152,226 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const activeSessions = sessions.filter((s) => !s.archived);
   const archivedSessions = sessions.filter((s) => s.archived);
 
-  // Group active sessions by workspace (repo path)
-  const workspaceGroups: Record<string, { repo: string; branch: string; sessions: Session[]; lastCreated: number }> = {};
-  
-  activeSessions.forEach((s) => {
-    const r = s.repo || "";
-    const b = s.branch || "";
-    if (!workspaceGroups[r]) {
-      workspaceGroups[r] = {
-        repo: r,
-        branch: b,
-        sessions: [],
-        lastCreated: 0,
-      };
-    }
-    workspaceGroups[r].sessions.push(s);
-    if (s.created > workspaceGroups[r].lastCreated) {
-      workspaceGroups[r].lastCreated = s.created;
-    }
-    // preserve branch info if active
-    if (s.active && b) {
-      workspaceGroups[r].branch = b;
-    }
-  });
+  const currentRepo = workspaceInfo?.repo || "";
+  const rawRecents = workspaceInfo?.recents || [];
+  const projects = Array.from(new Set([currentRepo, ...rawRecents])).filter(Boolean);
 
-  // Sort sessions within each group by created descending
-  Object.values(workspaceGroups).forEach((g) => {
-    g.sessions.sort((a, b) => b.created - a.created);
-  });
-
-  // Sort workspace groups by currently open repo first, then lastCreated descending
-  const sortedWorkspaceGroups = Object.values(workspaceGroups).sort((a, b) => {
-    const isCurrentA = workspaceInfo?.repo && a.repo === workspaceInfo.repo;
-    const isCurrentB = workspaceInfo?.repo && b.repo === workspaceInfo.repo;
-    if (isCurrentA && !isCurrentB) return -1;
-    if (!isCurrentA && isCurrentB) return 1;
-    return b.lastCreated - a.lastCreated;
-  });
+  const handleProjectRowClick = (projectPath: string, isActive: boolean, isExpanded: boolean) => {
+    if (isActive) {
+      setExpandedProjects(prev => ({
+        ...prev,
+        [projectPath]: !isExpanded
+      }));
+    } else {
+      handleOpenProject(projectPath);
+    }
+  };
 
   return (
     <aside className="bg-panel border-r border-edge flex flex-col h-full overflow-hidden">
       {/* Slim draggable bar to clear the macOS traffic lights; no product label
           (the title bar already names the app, like Cursor/Hermes). */}
       <div style={{ height: 30, WebkitAppRegion: "drag" } as React.CSSProperties} />
-      <div className="px-3 pb-2 border-b border-edge">
+      
+      <div className="px-3 pb-2 border-b border-edge flex flex-col gap-1.5">
         <button
           onClick={newSession}
           className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] font-medium text-txt bg-panel2/60 hover:bg-panel2 border border-edge/60 transition">
           <SquarePen size={14} className="text-accent" />
           New session
         </button>
-      </div>
-
-      {/* OPEN WORKSPACE FOLDER */}
-      <div className="px-4 py-2.5 border-b border-edge bg-panel2/10">
-        <div className="text-[11px] uppercase tracking-wider text-muted font-semibold mb-2">Opened Folder</div>
-        {workspaceInfo?.repo ? (
-          <div className="text-[11px] font-mono break-all text-muted/90 bg-panel2/50 p-2 rounded-md mb-2">
-            {workspaceInfo.repo}
-            {workspaceInfo.codegraph_status && (
-              <div className="text-[9px] mt-1 text-faint flex items-center gap-1">
-                CodeGraph: <span className={workspaceInfo.codegraph_status === "ready" ? "text-good font-semibold" : workspaceInfo.codegraph_status === "indexing" ? "text-warn animate-pulse font-semibold" : "text-faint font-semibold"}>{workspaceInfo.codegraph_status}</span>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="text-[11px] text-faint italic mb-2">No folder open</div>
-        )}
         <button
           onClick={handleOpenFolder}
           disabled={opening}
-          className="w-full bg-accent/15 hover:bg-accent/25 text-accent text-[11px] font-semibold px-2 py-1.5 rounded transition disabled:opacity-50"
+          className="w-full text-center text-accent text-[11px] font-semibold py-1 hover:bg-accent/10 rounded transition disabled:opacity-50"
         >
           {opening ? "Opening..." : "Open Folder..."}
         </button>
       </div>
 
-      {/* WORKSPACES */}
-      <Section title="Workspaces" action={<IconBtn onClick={newWs}><Plus size={13} /></IconBtn>}>
-        {workspaces.length === 0 && <Empty>No workspaces</Empty>}
-        {workspaces.map((w) => (
-          <button key={w.name} onClick={() => switchWs(w.name)}
-            className={`w-full text-left rounded px-2 py-1.5 mb-0.5 flex items-center gap-2 text-[13px] transition
-              ${w.active ? "bg-accent2/40 text-txt" : "hover:bg-panel2 text-muted"}`}>
-            {swapping === w.name ? <Loader2 size={12} className="animate-spin" /> : <GitBranch size={12} />}
-            <span className="flex-1 truncate">{w.name}</span>
-            {w.dirty && <span className="w-1.5 h-1.5 rounded-full bg-warn" title="uncommitted changes" />}
-            {w.active && <Check size={12} className="text-accent" />}
-          </button>
-        ))}
-      </Section>
+      {/* PROJECTS SECTION */}
+      <Section title="Projects">
+        {projects.length === 0 && <Empty>No projects</Empty>}
+        <div className="space-y-1">
+          {projects.map((projectPath) => {
+            const basename = getWorkspaceBasename(projectPath) || "Untitled Project";
+            const isCurrentActive = workspaceInfo?.repo && projectPath === workspaceInfo.repo;
+            const isExpanded = expandedProjects[projectPath] !== undefined 
+              ? expandedProjects[projectPath] 
+              : isCurrentActive;
+            
+            const projectSessions = activeSessions.filter((s) => s.repo === projectPath);
+            projectSessions.sort((a, b) => b.created - a.created);
+            const count = projectSessions.length;
+            
+            return (
+              <div key={projectPath} className={`rounded transition ${isCurrentActive ? "bg-panel2/50 border-l-2 border-accent" : "hover:bg-panel2/20"}`}>
+                {/* Project Row */}
+                <div
+                  onClick={() => handleProjectRowClick(projectPath, isCurrentActive, isExpanded)}
+                  className="flex items-center gap-1.5 px-2 py-1.5 cursor-pointer select-none group"
+                  title={projectPath}
+                >
+                  {/* Expand Chevron */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setExpandedProjects(prev => ({ ...prev, [projectPath]: !isExpanded }));
+                    }}
+                    className="p-0.5 hover:bg-panel2 rounded text-muted hover:text-txt transition-colors flex items-center justify-center"
+                  >
+                    {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  </button>
 
-      {/* SESSIONS */}
-      <Section title="Sessions" action={<IconBtn onClick={newSession}><Plus size={13} /></IconBtn>}>
-        {sessions.length === 0 && <Empty>No sessions</Empty>}
-        {sortedWorkspaceGroups.map((g) => {
-          const isCollapsed = !!collapsedWorkspaces[g.repo];
-          const basename = getWorkspaceBasename(g.repo) || "No workspace";
-          const isCurrentOpen = workspaceInfo?.repo && g.repo === workspaceInfo.repo;
-          
-          return (
-            <div key={g.repo} className="mb-2">
-              <button
-                onClick={() => toggleWorkspaceCollapse(g.repo)}
-                className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-semibold text-muted hover:text-txt transition-colors"
-              >
-                <div className="flex items-center gap-1.5 truncate">
-                  {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                  <span className={`truncate ${isCurrentOpen ? "text-txt font-bold" : ""}`}>
+                  {/* Folder Icon */}
+                  {isCurrentActive && workspaceInfo?.is_git ? (
+                    <FolderGit2 size={13} className="text-accent shrink-0" />
+                  ) : (
+                    <Folder size={13} className="text-muted shrink-0" />
+                  )}
+
+                  {/* Basename */}
+                  <span className={`text-[12.5px] truncate font-medium flex-1 ${isCurrentActive ? "text-txt font-semibold" : "text-muted hover:text-txt"}`}>
                     {basename}
                   </span>
-                  {g.branch && (
-                    <span className="bg-panel2 px-1 py-0.5 rounded text-[9px] font-mono font-normal text-faint max-w-[80px] truncate">
-                      {g.branch}
+
+                  {/* CodeGraph status (inline compact) */}
+                  {isCurrentActive && workspaceInfo?.codegraph_status && (
+                    <span className={`text-[9px] font-semibold uppercase px-1 rounded shrink-0 ${
+                      workspaceInfo.codegraph_status === "ready" 
+                        ? "text-good bg-good/10" 
+                        : workspaceInfo.codegraph_status === "indexing" 
+                          ? "text-warn bg-warn/10 animate-pulse" 
+                          : "text-faint bg-panel2"
+                    }`}>
+                      {workspaceInfo.codegraph_status}
+                    </span>
+                  )}
+
+                  {/* Session Count Badge */}
+                  {count > 0 && (
+                    <span className="text-[10px] text-faint px-1.5 py-0.2 rounded bg-panel2 font-mono shrink-0">
+                      {count}
                     </span>
                   )}
                 </div>
-              </button>
-              
-              {!isCollapsed && (
-                <div className="pl-3 mt-1 border-l border-edge/30 space-y-0.5">
-                  {g.sessions.map((s) => (
-                    <div key={s.id} className="group relative">
-                      {renamingId === s.id ? (
-                        <input
-                          type="text"
-                          value={renamingTitle}
-                          onChange={(e) => setRenamingTitle(e.target.value)}
-                          onBlur={() => handleRenameSubmit(s.id)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              handleRenameSubmit(s.id);
-                            } else if (e.key === "Escape") {
-                              setRenamingId(null);
-                            }
-                          }}
-                          autoFocus
-                          className="w-full bg-bg border border-accent rounded px-2 py-1 text-[13px] text-txt focus:outline-none"
-                        />
-                      ) : (
-                        <button onClick={() => switchSession(s.id)}
-                          onDoubleClick={() => {
-                            setRenamingId(s.id);
-                            setRenamingTitle(s.title || "Untitled");
-                          }}
-                          onContextMenu={(e) => handleContextMenu(e, s)}
-                          className={`w-full text-left rounded px-2 py-1.5 flex items-center gap-2 text-[13px] transition
-                            ${s.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2 text-muted"}`}>
-                          <MessageSquare size={12} />
-                          <span className="flex-1 truncate">{s.title || "Untitled"}</span>
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
 
-        {archivedSessions.length > 0 && (
-          <div className="mt-2">
-            <button
-              onClick={() => setArchivedExpanded(!archivedExpanded)}
-              className="w-full text-left px-2 py-1 text-[10px] uppercase tracking-wider text-faint font-medium hover:text-muted flex items-center justify-between"
-            >
-              <span>Archived ({archivedSessions.length})</span>
-              {archivedExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-            </button>
-            {archivedExpanded && (
-              <div className="mt-1 pl-1 border-l border-edge">
-                {archivedSessions.map((s) => (
-                  <div key={s.id} className="group relative">
-                    {renamingId === s.id ? (
-                      <input
-                        type="text"
-                        value={renamingTitle}
-                        onChange={(e) => setRenamingTitle(e.target.value)}
-                        onBlur={() => handleRenameSubmit(s.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            handleRenameSubmit(s.id);
-                          } else if (e.key === "Escape") {
-                            setRenamingId(null);
-                          }
-                        }}
-                        autoFocus
-                        className="w-full bg-bg border border-accent rounded px-2 py-1 text-[13px] text-txt focus:outline-none"
-                      />
+                {/* Sessions (Expandable inline) */}
+                {isExpanded && (
+                  <div className="pl-4 pr-1 pb-1.5 space-y-0.5 border-l border-edge/30 ml-3.5 mt-0.5">
+                    {projectSessions.length === 0 ? (
+                      <div className="text-[11px] text-faint italic px-2 py-1">No sessions</div>
                     ) : (
-                      <button onClick={() => switchSession(s.id)}
-                        onDoubleClick={() => {
-                          setRenamingId(s.id);
-                          setRenamingTitle(s.title || "Untitled");
-                        }}
-                        onContextMenu={(e) => handleContextMenu(e, s)}
-                        className={`w-full text-left rounded px-2 py-1.5 mb-0.5 flex items-center gap-2 text-[13px] transition opacity-60 hover:opacity-100
-                          ${s.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2 text-muted"}`}>
-                        <MessageSquare size={12} />
-                        <span className="flex-1 truncate">{s.title || "Untitled"}</span>
-                      </button>
+                      projectSessions.map((s) => (
+                        <div key={s.id} className="group relative">
+                          {renamingId === s.id ? (
+                            <input
+                              type="text"
+                              value={renamingTitle}
+                              onChange={(e) => setRenamingTitle(e.target.value)}
+                              onBlur={() => handleRenameSubmit(s.id)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  handleRenameSubmit(s.id);
+                                } else if (e.key === "Escape") {
+                                  setRenamingId(null);
+                                }
+                              }}
+                              autoFocus
+                              className="w-full bg-bg border border-accent rounded px-2 py-1 text-[12px] text-txt focus:outline-none"
+                            />
+                          ) : (
+                            <button onClick={() => switchSession(s.id)}
+                              onDoubleClick={() => {
+                                setRenamingId(s.id);
+                                setRenamingTitle(s.title || "Untitled");
+                              }}
+                              onContextMenu={(e) => handleContextMenu(e, s)}
+                              className={`w-full text-left rounded px-1.5 py-1 flex items-center gap-1.5 text-[12.5px] transition
+                                ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}`}>
+                              <MessageSquare size={11} className={s.active ? "text-accent" : "text-faint"} />
+                              <span className="flex-1 truncate">{s.title || "Untitled"}</span>
+                            </button>
+                          )}
+                        </div>
+                      ))
                     )}
                   </div>
-                ))}
+                )}
               </div>
-            )}
-          </div>
-        )}
+            );
+          })}
+        </div>
       </Section>
+
+      {/* BRANCH SWITCHING / WORKSPACES */}
+      {workspaceInfo?.is_git && (
+        <Section title="Branches" action={<IconBtn onClick={newWs}><Plus size={13} /></IconBtn>}>
+          {workspaces.length === 0 && <Empty>No branches</Empty>}
+          <div className="space-y-0.5 max-h-[140px] overflow-y-auto">
+            {workspaces.map((w) => (
+              <button key={w.name} onClick={() => switchWs(w.name)}
+                className={`w-full text-left rounded px-2 py-1 mb-0.5 flex items-center gap-2 text-[12px] transition
+                  ${w.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2/60 text-muted"}`}>
+                {swapping === w.name ? <Loader2 size={11} className="animate-spin" /> : <GitBranch size={11} />}
+                <span className="flex-1 truncate">{w.name}</span>
+                {w.dirty && <span className="w-1.5 h-1.5 rounded-full bg-warn" title="uncommitted changes" />}
+                {w.active && <Check size={11} className="text-accent" />}
+              </button>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* ARCHIVED SESSIONS */}
+      {archivedSessions.length > 0 && (
+        <Section title="Archived">
+          <button
+            onClick={() => setArchivedExpanded(!archivedExpanded)}
+            className="w-full text-left px-2 py-1 text-[10px] uppercase tracking-wider text-faint font-medium hover:text-muted flex items-center justify-between"
+          >
+            <span>Sessions ({archivedSessions.length})</span>
+            {archivedExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          </button>
+          {archivedExpanded && (
+            <div className="mt-1 pl-1 border-l border-edge space-y-0.5">
+              {archivedSessions.map((s) => (
+                <div key={s.id} className="group relative">
+                  {renamingId === s.id ? (
+                    <input
+                      type="text"
+                      value={renamingTitle}
+                      onChange={(e) => setRenamingTitle(e.target.value)}
+                      onBlur={() => handleRenameSubmit(s.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          handleRenameSubmit(s.id);
+                        } else if (e.key === "Escape") {
+                          setRenamingId(null);
+                        }
+                      }}
+                      autoFocus
+                      className="w-full bg-bg border border-accent rounded px-2 py-1 text-[12px] text-txt focus:outline-none"
+                    />
+                  ) : (
+                    <button onClick={() => switchSession(s.id)}
+                      onDoubleClick={() => {
+                        setRenamingId(s.id);
+                        setRenamingTitle(s.title || "Untitled");
+                      }}
+                      onContextMenu={(e) => handleContextMenu(e, s)}
+                      className={`w-full text-left rounded px-2 py-1 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100
+                        ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted"}`}>
+                      <MessageSquare size={11} />
+                      <span className="flex-1 truncate">{s.title || "Untitled"}</span>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
 
       {/* JOBS */}
       <Section title="Session Jobs" grow>
