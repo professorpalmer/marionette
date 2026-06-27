@@ -70,6 +70,21 @@ def build(name: str, *, reach: str = "openrouter") -> Driver:
         from .drivers.stub_v2 import StubV2Driver
         return StubV2Driver()
 
+    cat = load_catalog()
+    moa_presets = cat.get("moa_presets", {})
+    if name in moa_presets or name.startswith("moa-"):
+        preset = moa_presets.get(name, moa_presets.get("moa-planner"))
+        if not preset:
+            raise KeyError(f"MoA preset {name} not found and no default planner preset available")
+        from .drivers.moa import MoADriver
+        return MoADriver(
+            name=name,
+            proposers=preset["proposers"],
+            aggregator=preset["aggregator"],
+            reach=reach,
+            builder=build,
+        )
+
     m = _entry(name)
 
     if reach == "native":

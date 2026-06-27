@@ -239,5 +239,15 @@
       "openrouter": "qwen/qwen3-vl",
       "native": null
     }
-  ]
+  ],
+  "moa_presets": {
+    "moa-planner": {
+      "proposers": [
+        "glm-5.2",
+        "qwen3-coder-30b",
+        "deepseek-v4-flash"
+      ],
+      "aggregator": "glm-5.2"
+    }
+  }
 }
