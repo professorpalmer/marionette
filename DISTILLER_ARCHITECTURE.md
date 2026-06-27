@@ -1,7 +1,8 @@
 # Distiller architecture: programmatic vs agent-driven
 
-Status: decision pending (Cary). Written 2026-06-27 after differential-testing
-Marionette's self-learning against the Hermes reference implementation.
+Status: RESOLVED 2026-06-27 - the hybrid (option below) was implemented.
+Written after differential-testing Marionette's self-learning against the Hermes
+reference implementation; updated when the redesign shipped.
 
 ## The fork
 
@@ -72,4 +73,25 @@ But the honest long-term call is likely a HYBRID:
 3. Keep the human-in-loop pending gate regardless -- both systems agree on
    this, and it is the right call for an anti-vibe-code ethos.
 
-This is a redesign, not a bug fix. Deferred until Cary decides.
+## RESOLVED: the hybrid shipped
+
+Cary's call: implement the hybrid (highest quality for a daily driver). Done:
+
+- The jaccard thresholds (DUP_THRESHOLD/MERGE_THRESHOLD) no longer DECIDE
+  anything. Jaccard survives only as a cheap PREFILTER_FLOOR=0.25 that builds a
+  shortlist (top 5 plausibly-related skills) so the LLM call stays small even
+  with hundreds of skills.
+- The new/duplicate/update DECISION is now an LLM judgment call
+  (_classify_candidate + CLASSIFY_SYSTEM): the model sees the candidate plus the
+  shortlist and returns a structured verdict. No threshold can destructively
+  merge distinct skills anymore - the failure mode the stress test found is
+  structurally gone.
+- Defensive fallback: an unparseable verdict, an unknown verdict, or a slug not
+  in the shortlist all fall back to "new" (propose it). Never crash, never drop.
+- Kept: the auto-fire trigger (Hermes lacks this), the human-in-loop pending
+  gate, and rules distillation unchanged.
+
+This matches Hermes' bet (the model is the better judge of similarity) while
+keeping Marionette's edge (it fires on its own). Determinism for tests is
+preserved via the fake-pilot pattern: tests queue the distill envelope then the
+classify verdict as separate .complete() responses.

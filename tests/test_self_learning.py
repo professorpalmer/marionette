@@ -27,10 +27,17 @@ def test_store_list_and_used(tmp_path):
 
 
 class _Pilot:
-    def __init__(self, text): self._t = text
+    def __init__(self, responses):
+        self.responses = responses if isinstance(responses, list) else [responses]
+        self.call_count = 0
+
     def complete(self, prompt, *, system=None):
-        class R: text = self._t
-        return R()
+        class R:
+            def __init__(self, text):
+                self.text = text
+        text = self.responses[self.call_count % len(self.responses)]
+        self.call_count += 1
+        return R(text)
 
 
 def test_distill_proposes_pending(tmp_path):
@@ -62,7 +69,10 @@ def test_distill_skips_no_lesson(tmp_path):
 def test_distill_dedup(tmp_path):
     s = SkillStore(root=str(tmp_path))
     s.save(Skill(name="Trace SSE streaming bug", description="when SSE hangs in browser", body="steps", state="active"))
-    pilot = _Pilot('{"name":"Trace SSE bug","description":"when SSE hangs","body":"steps"}')
+    pilot = _Pilot([
+        '{"name":"Trace SSE bug","description":"when SSE hangs","body":"steps"}',
+        '{"verdict":"duplicate","slug":"trace-sse-streaming-bug"}'
+    ])
     findings = [{"type": "finding", "headline": "a"}, {"type": "finding", "headline": "b"}]
     r = distill_session(pilot, "obj", findings, s)
     assert r["status"] == "duplicate"

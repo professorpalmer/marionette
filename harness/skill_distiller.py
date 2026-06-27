@@ -45,12 +45,7 @@ def _tokens(text: str) -> set:
     return set(re.findall(r"[a-z0-9]{3,}", (text or "").lower()))
 
 
-# Skip-dedup: a candidate this similar to an existing skill is treated as a
-# duplicate at all. Merge: only when it is near-certainly the SAME skill do we
-# auto-merge/patch (merging distinct skills is destructive, so it needs higher
-# confidence than a plain skip).
-DUP_THRESHOLD = 0.6
-MERGE_THRESHOLD = 0.7
+PREFILTER_FLOOR = 0.25
 
 
 def _best_match(cand: Candidate, store: SkillStore) -> tuple:
@@ -71,10 +66,112 @@ def _best_match(cand: Candidate, store: SkillStore) -> tuple:
     return (best_slug, best_score)
 
 
-def _is_duplicate(cand: Candidate, store: SkillStore, threshold: float = DUP_THRESHOLD) -> Optional[str]:
+def _is_duplicate(cand: Candidate, store: SkillStore, threshold: float = PREFILTER_FLOOR) -> Optional[str]:
     """Jaccard overlap on name+description tokens vs existing skills."""
     slug, score = _best_match(cand, store)
     return slug if (slug and score >= threshold) else None
+
+
+def _build_shortlist(cand: Candidate, store: SkillStore) -> List[Skill]:
+    """Return up to 5 existing skills with Jaccard overlap score >= PREFILTER_FLOOR, sorted by score descending."""
+    ctoks = _tokens(cand.name + " " + cand.description)
+    if not ctoks:
+        return []
+    scored = []
+    for sk in store.list():
+        stoks = _tokens(sk.name + " " + sk.description)
+        if not stoks:
+            continue
+        union = len(ctoks | stoks)
+        score = (len(ctoks & stoks) / union) if union else 0.0
+        if score >= PREFILTER_FLOOR:
+            scored.append((score, sk))
+    # sort by score descending
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [sk for score, sk in scored[:5]]
+
+
+CLASSIFY_SYSTEM = (
+    "You classify a new candidate skill against a shortlist of potentially related existing skills. "
+    "Analyze if the candidate is a genuinely new skill, a duplicate of an existing skill, "
+    "or an update/improvement that should be merged into an existing skill. "
+    "Output ONE JSON object matching this schema exactly, with no surrounding prose:\n"
+    "{\n"
+    '  "verdict": "new", "duplicate", or "update",\n'
+    '  "slug": "<existing slug if duplicate or update, else empty string>",\n'
+    '  "merged_body": "<for update only: the merged and improved full procedure body>",\n'
+    '  "merged_name": "<optional for update: improved title>",\n'
+    '  "merged_description": "<optional for update: improved description>"\n'
+    "}\n"
+    "Guidelines:\n"
+    "- 'new': Use if the candidate is fundamentally different from all shortlisted skills.\n"
+    "- 'duplicate': Use if the candidate is practically identical to a shortlisted skill and adds no new useful information.\n"
+    "- 'update': Use if the candidate covers the same core procedure as a shortlisted skill but provides better instructions, newer commands, or corrections. In this case, merge their steps cleanly into 'merged_body' to form a single, complete, cohesive procedure."
+)
+
+
+def _parse_classify_response(text: str) -> Optional[dict]:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    raw = text[start:end + 1]
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            obj = json.loads(_escape_ctrl_in_strings(raw))
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(obj, dict):
+        return None
+    return obj
+
+
+def _classify_candidate(pilot, cand: Candidate, shortlist: List[Skill]) -> dict:
+    """Ask pilot to classify candidate against the shortlist of existing skills.
+    Returns the parsed classification dict or a fallback dict."""
+    shortlist_formatted = []
+    shortlist_slugs = set()
+    for sk in shortlist:
+        shortlist_slugs.add(sk.slug)
+        body = sk.body
+        if len(body) > 3000:
+            body = body[:3000] + "\n... [truncated]"
+        shortlist_formatted.append(
+            f"Slug: {sk.slug}\n"
+            f"Name: {sk.name}\n"
+            f"Description: {sk.description}\n"
+            f"Body:\n{body}"
+        )
+    
+    prompt = (
+        f"NEW CANDIDATE SKILL TO CLASSIFY:\n"
+        f"Name: {cand.name}\n"
+        f"Description: {cand.description}\n"
+        f"Body:\n{cand.body}\n\n"
+        f"SHORTLIST OF EXISTING SKILLS:\n\n"
+        + "\n\n---\n\n".join(shortlist_formatted)
+        + "\n\nClassify the candidate skill now."
+    )
+    
+    resp = pilot.complete(prompt, system=CLASSIFY_SYSTEM)
+    text = getattr(resp, "text", "") or ""
+    
+    parsed = _parse_classify_response(text)
+    if not parsed:
+        return {"verdict": "new", "slug": ""}
+        
+    verdict = parsed.get("verdict")
+    if verdict not in ("new", "duplicate", "update"):
+        return {"verdict": "new", "slug": ""}
+        
+    if verdict in ("duplicate", "update"):
+        slug = parsed.get("slug")
+        if not slug or slug not in shortlist_slugs:
+            return {"verdict": "new", "slug": ""}
+            
+    return parsed
 
 
 def _escape_ctrl_in_strings(s: str) -> str:
@@ -152,44 +249,74 @@ def distill_session(pilot, objective: str, findings: List[dict],
     if not cand:
         return {"status": "skipped", "reason": "no reusable lesson"}
 
-    match_slug, match_score = _best_match(cand, store)
-    # Only auto-merge when near-certainly the same skill (>= MERGE_THRESHOLD).
-    # Borderline-similar candidates (DUP_THRESHOLD..MERGE_THRESHOLD) are proposed
-    # as a NEW pending skill instead -- recoverable, never destructively merged.
-    if match_slug and match_score >= MERGE_THRESHOLD:
-        dup = match_slug
-        existing = store.get(dup)
+    shortlist = _build_shortlist(cand, store)
+    if not shortlist:
+        skill = Skill(name=cand.name, description=cand.description, body=cand.body,
+                      state="pending", source=source)
+        store.save(skill)
+        return {"status": "proposed", "slug": skill.slug, "name": skill.name}
+
+    classification = _classify_candidate(pilot, cand, shortlist)
+    verdict = classification.get("verdict", "new")
+
+    if verdict == "duplicate":
+        slug = classification.get("slug")
+        if not isinstance(slug, str):
+            slug = ""
+        return {"status": "duplicate", "slug": slug}
+
+    elif verdict == "update":
+        slug = classification.get("slug")
+        if not isinstance(slug, str):
+            slug = ""
+        slug = slug.strip()
+
+        merged_body = classification.get("merged_body")
+        if not isinstance(merged_body, str):
+            merged_body = ""
+        merged_body = merged_body.strip()
+        if not merged_body:
+            merged_body = cand.body
+
+        merged_name = classification.get("merged_name")
+        if not isinstance(merged_name, str):
+            merged_name = ""
+        merged_name = merged_name.strip() or cand.name
+
+        merged_desc = classification.get("merged_description")
+        if not isinstance(merged_desc, str):
+            merged_desc = ""
+        merged_desc = merged_desc.strip() or cand.description
+
+        existing = store.get(slug) if slug else None
         if existing:
-            merge_prompt = (
-                f"We have an existing skill:\n"
-                f"Name: {existing.name}\n"
-                f"Description: {existing.description}\n"
-                f"Body:\n{existing.body}\n\n"
-                f"And a new candidate procedure from a recent session:\n"
-                f"Name: {cand.name}\n"
-                f"Description: {cand.description}\n"
-                f"Body:\n{cand.body}\n\n"
-                f"Please merge these two into a single updated, complete, and cohesive skill procedure. "
-                f"Preserve all useful instructions from both. Output ONE JSON object only, matching the original format:\n"
-                f'{{"name": "<imperative title>", "description": "<one line>", "body": "<merged numbered steps>"}}'
-            )
-            merge_resp = pilot.complete(merge_prompt, system=DISTILL_SYSTEM)
-            merged_cand = _parse_envelope(getattr(merge_resp, "text", "") or "")
-            if merged_cand and merged_cand.body.strip() != existing.body.strip():
+            if merged_body != existing.body:
                 patch_skill = store.propose_update(
-                    slug=dup,
-                    new_body=merged_cand.body,
-                    new_name=merged_cand.name,
-                    new_description=merged_cand.description,
+                    slug=slug,
+                    new_body=merged_body,
+                    new_name=merged_name,
+                    new_description=merged_desc,
                     source=source
                 )
-                return {"status": "patch_proposed", "slug": patch_skill.slug, "supersedes": dup, "name": patch_skill.name}
-        return {"status": "duplicate", "slug": dup}
+                return {
+                    "status": "patch_proposed",
+                    "slug": patch_skill.slug,
+                    "supersedes": slug,
+                    "name": patch_skill.name
+                }
+            else:
+                return {"status": "duplicate", "slug": slug}
+        else:
+            skill = Skill(name=cand.name, description=cand.description, body=cand.body,
+                          state="pending", source=source)
+            store.save(skill)
+            return {"status": "proposed", "slug": skill.slug, "name": skill.name}
 
-    skill = Skill(name=cand.name, description=cand.description, body=cand.body,
-                  state="pending", source=source)
-    store.save(skill)
-    return {"status": "proposed", "slug": skill.slug, "name": skill.name}
+    else:
+        skill = Skill(name=cand.name, description=cand.description, body=cand.body,
+                      state="pending", source=source)
+        store.save(skill)
+        return {"status": "proposed", "slug": skill.slug, "name": skill.name}
 
 
 # ---- Rules distillation -----------------------------------------------------

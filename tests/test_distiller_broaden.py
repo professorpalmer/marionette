@@ -86,13 +86,13 @@ def test_duplicate_with_new_info_proposes_patch(tmp_path):
     )
     store.save(existing)
     
-    # 1. Candidate is Jaccard similar to existing skill (Jaccard = 1.0)
-    # 2. Pilot merged output is different from existing body
+    # 1. Candidate is Jaccard similar to existing skill
+    # 2. Pilot classifies it as an "update" with a merged body
     pilot = FakePilot([
         # Response for distill_session's original complete call
         '{"name":"SSE Fix","description":"Fixes SSE issues","body":"1. check flush\\n2. check content-type"}',
-        # Response for merge_prompt complete call
-        '{"name":"SSE Fix","description":"Fixes SSE issues","body":"1. check flush\\n2. check content-type"}'
+        # Response for _classify_candidate complete call
+        '{"verdict":"update","slug":"sse-fix","merged_body":"1. check flush\\n2. check content-type"}'
     ])
     
     findings = [
@@ -200,26 +200,50 @@ def test_repeated_patch_no_slug_growth(tmp_path):
 def test_distinct_skills_not_destructively_merged(tmp_path):
     """Regression: borderline-similar but DISTINCT skills (same domain, different
     verb ~= 0.6 similarity) must be proposed as NEW pending skills, not merged
-    into one (which destroys knowledge). Merge only at >= MERGE_THRESHOLD."""
+    into one (which destroys knowledge)."""
     from harness.skill_store import SkillStore, Skill
     from harness.skill_distiller import distill_session
-
-    class _P:
-        def __init__(self, resp): self.resp = resp
-        def complete(self, p, system=""):
-            class R: text = self.resp
-            return R()
 
     store = SkillStore(root=str(tmp_path / "skills"))
     f = [{"type": "finding", "headline": "a"}, {"type": "finding", "headline": "b"}]
     import json
-    r1 = distill_session(_P(json.dumps({"name": "Trace SSE websocket handshake",
-                                        "description": "trace the SSE websocket handshake",
-                                        "body": "x"})), "o", f, store)
-    r2 = distill_session(_P(json.dumps({"name": "Debug SSE websocket handshake",
-                                        "description": "debug the SSE websocket handshake",
-                                        "body": "y"})), "o", f, store)
+    
+    # First skill: no shortlist exists yet, so no classify call
+    p1 = FakePilot(json.dumps({"name": "Trace SSE websocket handshake",
+                               "description": "trace the SSE websocket handshake",
+                               "body": "x"}))
+    r1 = distill_session(p1, "o", f, store)
     assert r1["status"] == "proposed"
-    # distinct verb (~0.6) must NOT be auto-merged into r1
-    assert r2["status"] == "proposed", f"distinct skill was destructively merged: {r2}"
+    
+    # Second skill: shortlist exists containing first skill. Classify is called and returns "new".
+    p2 = FakePilot([
+        json.dumps({"name": "Debug SSE websocket handshake",
+                    "description": "debug the SSE websocket handshake",
+                    "body": "y"}),
+        '{"verdict":"new"}'
+    ])
+    r2 = distill_session(p2, "o", f, store)
+    
+    assert r2["status"] == "proposed"
     assert len(store.list("pending")) == 2
+
+
+def test_classify_fallback_proposes_new(tmp_path):
+    """An unparseable/garbage classify response falls back to 'new' (proposes), never crashes."""
+    from harness.skill_store import SkillStore, Skill
+    from harness.skill_distiller import distill_session
+    
+    store = SkillStore(root=str(tmp_path / "skills"))
+    # Save an active skill to force a shortlist match and a classify call
+    store.save(Skill(name="Deploy flow", description="how to deploy", body="v1", state="active"))
+    
+    p = FakePilot([
+        '{"name":"Deploy flow","description":"how to deploy","body":"v2"}',
+        'this is garbage { unclosed'
+    ])
+    
+    findings = [{"type": "finding", "headline": "a"}, {"type": "finding", "headline": "b"}]
+    r = distill_session(p, "obj", findings, store)
+    assert r["status"] == "proposed"
+    # It proposed a new skill instead of patching or crashing
+    assert len(store.list("pending")) == 1
