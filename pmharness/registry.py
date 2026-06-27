@@ -84,6 +84,13 @@ def build(name: str, *, reach: str = "openrouter") -> Driver:
                 name=name, model=nat["model"],
                 base_url=nat["base_url"], api_key_env=nat["api_key_env"],
             )
+        if nat.get("driver") == "gemini":
+            from .drivers.gemini import GeminiDriver
+            return GeminiDriver(
+                name=name, model=nat["model"],
+                base_url=nat["base_url"], api_key_env=nat["api_key_env"],
+                max_tokens=_mt,
+            )
         return OpenAICompatDriver(
             name=name, model=nat["model"], base_url=nat["base_url"],
             api_key_env=nat["api_key_env"], max_tokens=_mt,

@@ -8,6 +8,22 @@
   },
   "models": [
     {
+      "name": "gemini-3.5-flash",
+      "tier": "flagship",
+      "license": "proprietary",
+      "hf": null,
+      "price_in": 0.075,
+      "price_out": 0.3,
+      "openrouter": "google/gemini-3.5-flash",
+      "native": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "model": "gemini-3.5-flash",
+        "api_key_env": "GEMINI_API_KEY",
+        "driver": "gemini"
+      },
+      "vision": false
+    },
+    {
       "name": "glm-5.2",
       "tier": "flagship",
       "license": "MIT",
