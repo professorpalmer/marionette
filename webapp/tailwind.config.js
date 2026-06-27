@@ -4,10 +4,12 @@ export default {
   theme: {
     extend: {
       colors: {
-        // deeper, calmer base with subtle elevation steps (less flat grey)
-        bg: "#0a0a0c", panel: "#101013", panel2: "#16161a",
-        edge: "#1f1f25", edge2: "#2a2a31",
-        txt: "#ededf2", muted: "#7d7d88", faint: "#55555f",
+        // lifted dark base with clear elevation steps (Hermes/Cursor-class
+        // legibility: canvas is dark but not a void, each surface is visibly
+        // lighter than the one below, secondary text stays readable).
+        bg: "#1a1a1e", panel: "#222227", panel2: "#2c2c33",
+        edge: "#3a3a45", edge2: "#4a4a57",
+        txt: "#f4f4f8", muted: "#a8a8b5", faint: "#7c7c8a",
         accent: "#7c93ff", accent2: "#1e2436",
         good: "#3ecf8e", warn: "#e0a44a", risk: "#e0625c",
       },

@@ -155,7 +155,7 @@ export default function StatePane({ artifacts }: {
       <div className="mx-2 mb-3 bg-panel border border-edge rounded-lg p-2.5 shrink-0">
         <div className="flex items-center justify-between pb-2 border-b border-edge/60">
           <div className="flex items-center gap-1.5 font-semibold text-txt text-[12px]">
-            <span className="text-accent tracking-wide uppercase text-[10px]">CodeGraph</span>
+            <span className="text-txt tracking-wide uppercase text-[10px] font-semibold">CodeGraph</span>
           </div>
           <div className="flex items-center gap-1.5">
             {cg?.status === "indexing" ? (
@@ -237,7 +237,7 @@ export default function StatePane({ artifacts }: {
       <div className="mx-2 mb-3 bg-panel border border-edge rounded-lg p-2.5 shrink-0">
         <div className="flex items-center justify-between pb-1.5 border-b border-edge/60">
           <div className="flex items-center gap-1.5 font-semibold text-txt text-[12px]">
-            <span className="text-accent tracking-wide uppercase text-[10px]">Wiki</span>
+            <span className="text-txt tracking-wide uppercase text-[10px] font-semibold">Wiki</span>
           </div>
           <div className="flex items-center gap-1.5">
             {loadingWiki ? (

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { GitBranch, Plus, MessageSquare, Boxes, Check, Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import { GitBranch, Plus, MessageSquare, Boxes, Check, Loader2, ChevronDown, ChevronRight, SquarePen } from "lucide-react";
 import { api, type Workspace, type Session, type Job } from "../lib/api";
 import { pickFolder } from "../lib/transport";
 
@@ -194,17 +194,23 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   return (
     <aside className="bg-panel border-r border-edge flex flex-col h-full overflow-hidden">
-      <div className="flex items-center gap-2 px-4 border-b border-edge"
-        style={{ paddingTop: 34, paddingBottom: 12, WebkitAppRegion: "drag" } as React.CSSProperties}>
-        <span className="bg-accent/15 text-accent font-bold px-1.5 py-0.5 rounded-md text-[11px] tracking-tight">PM</span>
-        <span className="font-medium text-[13px] text-txt/90">Marionette</span>
+      {/* Slim draggable bar to clear the macOS traffic lights; no product label
+          (the title bar already names the app, like Cursor/Hermes). */}
+      <div style={{ height: 30, WebkitAppRegion: "drag" } as React.CSSProperties} />
+      <div className="px-3 pb-2 border-b border-edge">
+        <button
+          onClick={newSession}
+          className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] font-medium text-txt bg-panel2/60 hover:bg-panel2 border border-edge/60 transition">
+          <SquarePen size={14} className="text-accent" />
+          New session
+        </button>
       </div>
 
       {/* OPEN WORKSPACE FOLDER */}
       <div className="px-4 py-2.5 border-b border-edge bg-panel2/10">
-        <div className="text-[10px] uppercase tracking-wider text-faint font-semibold mb-1.5">Opened Folder</div>
+        <div className="text-[11px] uppercase tracking-wider text-muted font-semibold mb-2">Opened Folder</div>
         {workspaceInfo?.repo ? (
-          <div className="text-[11px] font-mono break-all text-muted bg-bg p-2 rounded border border-edge/40 mb-2">
+          <div className="text-[11px] font-mono break-all text-muted/90 bg-panel2/50 p-2 rounded-md mb-2">
             {workspaceInfo.repo}
             {workspaceInfo.codegraph_status && (
               <div className="text-[9px] mt-1 text-faint flex items-center gap-1">
@@ -255,7 +261,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               >
                 <div className="flex items-center gap-1.5 truncate">
                   {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                  <span className={`truncate ${isCurrentOpen ? "text-accent font-bold" : ""}`}>
+                  <span className={`truncate ${isCurrentOpen ? "text-txt font-bold" : ""}`}>
                     {basename}
                   </span>
                   {g.branch && (
@@ -449,9 +455,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
 function Section({ title, action, children, grow }: any) {
   return (
-    <div className={`px-2 pt-3 ${grow ? "flex-1 overflow-y-auto" : ""}`}>
-      <div className="flex items-center justify-between px-2 mb-1 mt-1">
-        <span className="text-[10px] uppercase tracking-wider text-faint font-medium">{title}</span>
+    <div className={`px-2 pt-4 ${grow ? "flex-1 overflow-y-auto" : ""}`}>
+      <div className="flex items-center justify-between px-2 mb-2 mt-0.5">
+        <span className="text-[11px] uppercase tracking-wider text-muted font-semibold">{title}</span>
         {action}
       </div>
       {children}
