@@ -175,8 +175,22 @@ _pty = PtyManager()
 _pilot._mcp = _mcp
 _init_platform_lock()
 
+def _apply_model_context_window():
+    """Recompute _cfg.max_context_tokens for the active driver's real window
+    after a model swap. An explicit HARNESS_MAX_CONTEXT_TOKENS env override
+    always wins (so a deliberate cap is never silently widened)."""
+    if "HARNESS_MAX_CONTEXT_TOKENS" in os.environ:
+        return
+    try:
+        from pmharness.registry import context_window
+        _cfg.max_context_tokens = context_window(_cfg.driver, default=96000)
+    except Exception:
+        pass
+
+
 def _rebuild_pilot_and_session():
     global _session, _pilot
+    _apply_model_context_window()
     _session = Session(_cfg)
     old_history = _pilot._history
     old_auto_distill = getattr(_pilot, "_auto_distill", False)
@@ -2417,6 +2431,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, json.dumps({"error": "model required"}))
         try:
             _cfg.driver = model
+            _apply_model_context_window()
             _pilot = ConversationalSession(_cfg)
             _pilot._mcp = _mcp
             return self._send(200, json.dumps({"ok": True, "driver": model}))

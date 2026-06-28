@@ -48,8 +48,27 @@ class HarnessConfig:
         default_adapter = "openai" if (repo_val and not has_explicit_adapter) else "demo"
         swarm_adapter_val = pick("HARNESS_SWARM_ADAPTER", "swarm_adapter", default_adapter)
 
+        driver_val = pick("HARNESS_DRIVER", "driver", "qwen3-coder-30b")
+
+        # Context budget resolution, in priority order:
+        #   1. explicit HARNESS_MAX_CONTEXT_TOKENS env / config -> always wins
+        #   2. the active model's REAL published window from the catalog
+        #   3. a safe 96K default for unknown models
+        # This stops every model from being throttled to a flat 96K when many
+        # carry 200K-1M windows.
+        if "HARNESS_MAX_CONTEXT_TOKENS" in os.environ:
+            max_ctx = int(os.environ["HARNESS_MAX_CONTEXT_TOKENS"])
+        elif "max_context_tokens" in file_cfg:
+            max_ctx = int(file_cfg["max_context_tokens"])
+        else:
+            try:
+                from pmharness.registry import context_window
+                max_ctx = context_window(driver_val, default=96000)
+            except Exception:
+                max_ctx = 96000
+
         return cls(
-            driver=pick("HARNESS_DRIVER", "driver", "qwen3-coder-30b"),
+            driver=driver_val,
             reach=pick("HARNESS_REACH", "reach", "openrouter"),
             budget=int(pick("HARNESS_BUDGET", "budget", 3)),
             state_dir=pick("HARNESS_STATE_DIR", "state_dir", ""),
@@ -57,7 +76,7 @@ class HarnessConfig:
             swarm_adapter=swarm_adapter_val,
             wiki_url=pick("HARNESS_WIKI_URL", "wiki_url", ""),
             wiki_auto=str(pick("HARNESS_WIKI_AUTO", "wiki_auto", "")).strip() in ("1","true","yes","True"),
-            max_context_tokens=int(pick("HARNESS_MAX_CONTEXT_TOKENS", "max_context_tokens", 96000)),
+            max_context_tokens=max_ctx,
             no_delegation=str(pick("HARNESS_NO_DELEGATION", "no_delegation", "")).strip() in ("1","true","yes","True"),
             verify_cmd=pick("HARNESS_VERIFY_CMD", "verify_cmd", ""),
         )

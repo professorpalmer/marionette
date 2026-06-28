@@ -21,7 +21,8 @@
         "api_key_env": "GEMINI_API_KEY",
         "driver": "gemini"
       },
-      "vision": false
+      "vision": false,
+      "context_window": 1000000
     },
     {
       "name": "glm-5.2",
@@ -36,7 +37,8 @@
         "model": "glm-5.2",
         "api_key_env": "ZAI_API_KEY"
       },
-      "vision": false
+      "vision": false,
+      "context_window": 200000
     },
     {
       "name": "kimi-k2.6",
@@ -51,7 +53,8 @@
         "model": "kimi-k2.6",
         "api_key_env": "MOONSHOT_API_KEY"
       },
-      "vision": true
+      "vision": true,
+      "context_window": 256000
     },
     {
       "name": "minimax-m2.7",
@@ -66,7 +69,8 @@
         "model": "MiniMax-M2.7",
         "api_key_env": "MINIMAX_API_KEY"
       },
-      "vision": false
+      "vision": false,
+      "context_window": 1000000
     },
     {
       "name": "deepseek-v4-pro",
@@ -81,7 +85,8 @@
         "model": "deepseek-chat",
         "api_key_env": "DEEPSEEK_API_KEY"
       },
-      "vision": false
+      "vision": false,
+      "context_window": 128000
     },
     {
       "name": "deepseek-v4-flash",
@@ -96,7 +101,8 @@
         "model": "deepseek-flash",
         "api_key_env": "DEEPSEEK_API_KEY"
       },
-      "vision": false
+      "vision": false,
+      "context_window": 128000
     },
     {
       "name": "glm-4.7-flash",
@@ -107,7 +113,8 @@
       "price_out": 0.3,
       "openrouter": "z-ai/glm-4.7-flash",
       "native": null,
-      "vision": false
+      "vision": false,
+      "context_window": 128000
     },
     {
       "name": "qwen3-coder-30b",
@@ -118,7 +125,8 @@
       "price_out": 0.3,
       "openrouter": "qwen/qwen3-coder-30b-a3b-instruct",
       "native": null,
-      "vision": false
+      "vision": false,
+      "context_window": 262144
     },
     {
       "name": "minimax-m2.5-highspeed",
@@ -129,7 +137,8 @@
       "price_out": 2.4,
       "openrouter": "minimax/minimax-m2.5",
       "native": null,
-      "vision": false
+      "vision": false,
+      "context_window": 1000000
     },
     {
       "name": "gpt-frontier",
@@ -145,7 +154,8 @@
         "api_key_env": "OPENAI_API_KEY"
       },
       "price_note": "estimate",
-      "vision": true
+      "vision": true,
+      "context_window": 400000
     },
     {
       "name": "claude-frontier",
@@ -162,7 +172,8 @@
         "driver": "anthropic"
       },
       "price_note": "estimate",
-      "vision": true
+      "vision": true,
+      "context_window": 200000
     },
     {
       "name": "gemini-frontier",
@@ -178,7 +189,8 @@
         "api_key_env": "GEMINI_API_KEY"
       },
       "price_note": "estimate",
-      "vision": true
+      "vision": true,
+      "context_window": 1000000
     },
     {
       "name": "gemini-flash-control",
@@ -194,7 +206,8 @@
         "model": "gemini-3.1-flash-lite-preview",
         "api_key_env": "GEMINI_API_KEY"
       },
-      "vision": true
+      "vision": true,
+      "context_window": 1000000
     },
     {
       "name": "glm-ocr",
@@ -237,7 +250,8 @@
       "price_note": "estimate",
       "role": "general vision-language understanding",
       "openrouter": "qwen/qwen3-vl",
-      "native": null
+      "native": null,
+      "context_window": 256000
     }
   ],
   "moa_presets": {

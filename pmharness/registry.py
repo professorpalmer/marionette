@@ -53,6 +53,19 @@ def price(name: str) -> tuple:
     return (m.get("price_in"), m.get("price_out"))
 
 
+def context_window(name: str, default: int = 96000) -> int:
+    """The model's real input context window (tokens) from the catalog, or
+    `default` if the model is unknown or declares no window. Lets the harness
+    use each model's true capacity (e.g. 200K Opus, 1M Gemini) instead of a flat
+    cap. Never raises -- an unknown model falls back to the safe default."""
+    try:
+        m = _entry(name)
+        w = m.get("context_window")
+        return int(w) if w else default
+    except Exception:
+        return default
+
+
 def build(name: str, *, reach: str = "openrouter") -> Driver:
     import os as _os
     _mt = int(_os.environ.get("HARNESS_MAX_TOKENS", "8000"))
