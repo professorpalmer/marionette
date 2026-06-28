@@ -1058,31 +1058,19 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (ev.kind === "auto_status") {
         setStatus("executing");
       } else if (ev.kind === "distilled") {
+        // Only surface self-learning when it produced something WORTH the user's
+        // attention -- a newly PROPOSED skill or rule(s). Skips, duplicates, and
+        // "insufficient findings" are the 99% case and stay silent (they are not
+        // actionable; announcing them is pure noise).
         const parts: string[] = [];
-        if (d.skill) {
-          const { status, name, reason } = d.skill;
-          if (status === "proposed") {
-            parts.push(`proposed 1 skill${name ? ` ("${name}")` : ""}`);
-          } else if (status === "duplicate") {
-            parts.push("1 duplicate skill skipped");
-          } else if (status === "skipped") {
-            parts.push(`skill skipped${reason ? ` (${reason})` : ""}`);
-          }
+        if (d.skill && d.skill.status === "proposed") {
+          const { name } = d.skill;
+          parts.push(`proposed 1 skill${name ? ` ("${name}")` : ""}`);
         }
         if (d.rules) {
-          const { status, proposed, duplicates } = d.rules;
-          const pCount = proposed?.length || 0;
-          const dCount = duplicates?.length || 0;
-          if (pCount > 0 && dCount > 0) {
-            parts.push(`proposed ${pCount} rule${pCount === 1 ? "" : "s"} (${dCount} duplicate${dCount === 1 ? "" : "s"} skipped)`);
-          } else if (pCount > 0) {
+          const pCount = d.rules.proposed?.length || 0;
+          if (pCount > 0) {
             parts.push(`proposed ${pCount} rule${pCount === 1 ? "" : "s"}`);
-          } else if (dCount > 0) {
-            parts.push(`${dCount} duplicate rule${dCount === 1 ? "" : "s"} skipped`);
-          } else if (status === "duplicate") {
-            parts.push("skipped duplicate rules");
-          } else if (status === "skipped") {
-            parts.push("skipped rules");
           }
         }
         if (parts.length > 0) {
