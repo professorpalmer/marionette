@@ -189,12 +189,32 @@ def _apply_model_context_window():
 
 
 def _rebuild_pilot_and_session():
-    global _session, _pilot
+    """Rebuild the session + pilot for the active driver, preserving history.
+
+    Defensive: if the configured driver cannot be built (e.g. a stale saved
+    spec the catalog no longer knows), do NOT let the exception escape and
+    crash the POST handler -- that left the whole app dead on workspace-open /
+    session-switch. We roll back to the previous working driver and surface the
+    error to the caller to show, instead of taking down the process.
+    """
+    global _session, _pilot, _cfg
+    prev_driver = _cfg.driver
     _apply_model_context_window()
-    _session = Session(_cfg)
+    try:
+        new_session = Session(_cfg)
+        new_pilot = ConversationalSession(_cfg)
+    except Exception as e:
+        # Roll back to the last driver that built successfully.
+        _cfg.driver = prev_driver
+        _apply_model_context_window()
+        raise RuntimeError(
+            f"could not load model {prev_driver!r}: {e}. Reverted to the "
+            f"previous pilot."
+        ) from e
     old_history = _pilot._history
     old_auto_distill = getattr(_pilot, "_auto_distill", False)
-    _pilot = ConversationalSession(_cfg)
+    _session = new_session
+    _pilot = new_pilot
     _pilot._history = old_history
     _pilot._auto_distill = old_auto_distill
     _pilot._mcp = _mcp
@@ -527,7 +547,20 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/checkpoints/restore", "/api/checkpoints/snapshot",
                       "/api/terminal/create", "/api/terminal/write",
                       "/api/terminal/resize", "/api/terminal/kill"):
-            return self._handle_post_json(u.path)
+            # Wrap the dispatch so NO handler exception can escape to the
+            # socketserver and crash the connection/process. A bad driver spec,
+            # a failed rebuild, etc. now return a clean 500 the UI can show
+            # instead of taking the whole backend down (the "socket hang up" /
+            # "Error opening directory" crash on workspace-open/session-switch).
+            try:
+                return self._handle_post_json(u.path)
+            except Exception as e:
+                import traceback as _tb
+                _tb.print_exc()
+                try:
+                    return self._send(500, json.dumps({"error": str(e)}))
+                except Exception:
+                    return
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _read_json(self) -> dict:

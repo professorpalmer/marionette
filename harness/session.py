@@ -68,7 +68,17 @@ class Session:
     def __init__(self, config: Optional[HarnessConfig] = None) -> None:
         self.config = config or HarnessConfig.from_env()
         self.state_dir = self.config.state_dir or tempfile.mkdtemp(prefix="harness-")
-        self.driver = reg.build(self.config.driver, reach=self.config.reach)
+        # Build the driver. Try the eval registry first (it owns stub drivers and
+        # bare catalog names like 'stub-oracle-v2', 'gpt-frontier'); on a KeyError
+        # (e.g. a 'provider:model' picker spec the catalog does not know, like
+        # 'openrouter:openai/gpt-5.4') fall through to the provider-aware builder.
+        # This mirrors ConversationalSession and means a spec the picker can offer
+        # never crashes here with an uncaught KeyError.
+        try:
+            self.driver = reg.build(self.config.driver, reach=self.config.reach)
+        except Exception:
+            from . import providers as _prov
+            self.driver = _prov.build_pilot(self.config.driver)
         # Propagate repo/adapter to env so the bridge's execute_intent picks them
         # up. Real analysis requires BOTH a repo and the openai adapter.
         import os as _os
