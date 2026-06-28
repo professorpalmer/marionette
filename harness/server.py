@@ -360,40 +360,69 @@ def _get_codegraph_status(repo_path: str) -> str:
         return "unsupported"
 
 
+# Debounce: never re-check staleness more than once per this interval per repo,
+# so per-turn triggers cannot thrash the (CPU-heavy) reindex during rapid edits.
+_codegraph_stale_check_at = {}  # repo -> monotonic timestamp of last check
+_CODEGRAPH_STALE_DEBOUNCE = 20.0  # seconds
+
+
 def _codegraph_is_stale(repo_path: str) -> bool:
+    """True if the working tree has changed since the .codegraph index was built.
+
+    Detects edits AND deletions: we compare the index mtime against the newest
+    mtime of (a) every source FILE and (b) every DIRECTORY. Directory mtimes are
+    the key to catching deletions/renames -- removing a file bumps its parent
+    dir's mtime even though no surviving file looks newer (the original bug:
+    deleted files left the index referencing ghosts while this returned False).
+    """
     try:
         codegraph_path = os.path.join(repo_path, ".codegraph")
         if not os.path.exists(codegraph_path):
             return False
         cg_mtime = os.path.getmtime(codegraph_path)
-        skip_dirs = {".git", "node_modules", ".venv", ".codegraph", "dist", "build"}
+        skip_dirs = {".git", "node_modules", ".venv", ".codegraph", "dist", "build", "__pycache__"}
         extensions = {".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".swift", ".go", ".rs"}
-        newest_mtime = 0.0
         for root, dirs, files in os.walk(repo_path):
             dirs[:] = [d for d in dirs if d not in skip_dirs]
+            # (b) directory mtime -- catches deletions/renames/additions in this dir
+            try:
+                if os.path.getmtime(root) > cg_mtime:
+                    return True
+            except Exception:
+                pass
+            # (a) source file mtime -- catches in-place edits
             for file in files:
                 _, ext = os.path.splitext(file)
                 if ext.lower() in extensions:
-                    file_path = os.path.join(root, file)
                     try:
-                        mtime = os.path.getmtime(file_path)
-                        if mtime > newest_mtime:
-                            newest_mtime = mtime
+                        if os.path.getmtime(os.path.join(root, file)) > cg_mtime:
+                            return True
                     except Exception:
                         pass
-        if newest_mtime > cg_mtime:
-            return True
     except Exception:
         pass
     return False
 
 
-def _maybe_refresh_codegraph(repo_path: str) -> None:
+def _maybe_refresh_codegraph(repo_path: str, *, force: bool = False) -> None:
+    """Debounced, background staleness-driven reindex. Safe to call on every turn
+    and on session switch -- the debounce + the indexing-guard ensure it never
+    thrashes. force=True bypasses the debounce (e.g. an explicit user action)."""
+    if not repo_path:
+        return
+    import time as _time
+    if not force:
+        last = _codegraph_stale_check_at.get(repo_path, 0.0)
+        if (_time.monotonic() - last) < _CODEGRAPH_STALE_DEBOUNCE:
+            return
+    _codegraph_stale_check_at[repo_path] = _time.monotonic()
+
     def worker():
-        global _codegraph_status
+        global _codegraph_status, _codegraph_status_reason
         if _codegraph_status == "indexing":
             return
         if _codegraph_is_stale(repo_path):
+            _codegraph_status_reason = "files changed -- refreshing index"
             _reindex_codegraph_bg(repo_path)
     try:
         threading.Thread(target=worker, daemon=True).start()
@@ -1722,6 +1751,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({
                     "indexed": False,
                     "status": "indexing",
+                    "reason": _codegraph_status_reason or None,
                     "nodes": None,
                     "edges": None,
                     "files": None,
@@ -2320,6 +2350,9 @@ class Handler(BaseHTTPRequestHandler):
             from .sessions import derive_title
             _sessions.set_title_if_default(_sessions.active, derive_title(prompt))
 
+        if _cfg.repo and os.path.isdir(_cfg.repo):
+            _maybe_refresh_codegraph(_cfg.repo)
+
         pre = _session.preflight()
         if pre:
             self.wfile.write(f"data: {json.dumps({'kind':'error','turn':0,'data':{'error':pre}})}\n\n".encode())
@@ -2353,6 +2386,9 @@ class Handler(BaseHTTPRequestHandler):
         if _sessions.active and objective:
             from .sessions import derive_title
             _sessions.set_title_if_default(_sessions.active, derive_title(objective))
+
+        if _cfg.repo and os.path.isdir(_cfg.repo):
+            _maybe_refresh_codegraph(_cfg.repo)
 
         from .hooks import run_hooks
         ctx = {"session_id": _sessions.active or "", "objective": objective}
@@ -2436,6 +2472,13 @@ class Handler(BaseHTTPRequestHandler):
         if _sessions.active and message:
             from .sessions import derive_title
             _sessions.set_title_if_default(_sessions.active, derive_title(message))
+
+        # Self-healing CodeGraph: debounced staleness check at the start of every
+        # turn, so an index that drifted (files edited/added/DELETED since the last
+        # build) reindexes in the background before it misleads the pilot. The
+        # debounce in _maybe_refresh_codegraph prevents thrash during rapid turns.
+        if _cfg.repo and os.path.isdir(_cfg.repo):
+            _maybe_refresh_codegraph(_cfg.repo)
 
         # Resolve @-file and @symbol mentions in message
         resolved_files = []

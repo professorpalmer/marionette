@@ -244,6 +244,7 @@ export type CheckpointDiff = {
 export type CodegraphStatus = {
   indexed: boolean;
   status: "ready" | "indexing" | "unsupported" | "none";
+  reason?: string | null;
   nodes: number | null;
   edges: number | null;
   files: number | null;

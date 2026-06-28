@@ -110,32 +110,43 @@ def test_session_switch_repo_sync(tmp_path, monkeypatch):
 def test_codegraph_staleness(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    
+
     # Check stale when .codegraph is missing -> returns False
     assert _codegraph_is_stale(str(repo)) is False
 
-    # Create .codegraph directory and set its mtime to 1000
-    cg_dir = repo / ".codegraph"
-    cg_dir.mkdir()
-    os.utime(cg_dir, (1000, 1000))
-
-    # Create a source file in repo with mtime 900 -> not stale (False)
+    # Create the source file FIRST, then the index, so the index mtime is the
+    # newest thing in the tree (the realistic post-index state). We then drive
+    # mtimes explicitly. NOTE: the detector now also checks DIRECTORY mtimes (to
+    # catch deletions), so we must hold repo/ + src dir mtimes <= index too.
     src_file = repo / "main.py"
     src_file.write_text("print('hello')")
-    os.utime(src_file, (900, 900))
+    cg_dir = repo / ".codegraph"
+    cg_dir.mkdir()
+
+    def _set_all(file_mtime, dir_mtime=1000):
+        os.utime(cg_dir, (1000, 1000))
+        os.utime(src_file, (file_mtime, file_mtime))
+        os.utime(repo, (dir_mtime, dir_mtime))
+
+    # source older than index, dirs not newer than index -> not stale
+    _set_all(900, dir_mtime=950)
     assert _codegraph_is_stale(str(repo)) is False
 
-    # Create a source file in repo with mtime 1100 -> stale (True)
-    os.utime(src_file, (1100, 1100))
+    # edited source newer than index -> stale
+    _set_all(1100, dir_mtime=950)
     assert _codegraph_is_stale(str(repo)) is True
 
-    # Check that skipped directories (.git, node_modules, etc.) are ignored even if new
+    # a directory newer than the index (e.g. a file was deleted/added) -> stale
+    _set_all(900, dir_mtime=1100)
+    assert _codegraph_is_stale(str(repo)) is True
+
+    # changes inside a skipped dir (node_modules) are not descended into; with
+    # repo/src mtimes held old, the skipped dir churn alone does not trip it.
     ignored_dir = repo / "node_modules"
     ignored_dir.mkdir()
     ignored_src = ignored_dir / "lib.js"
     ignored_src.write_text("console.log()")
     os.utime(ignored_src, (1200, 1200))
-    # It should still be stale because of main.py at 1100, but if we set main.py back to 900:
-    os.utime(src_file, (900, 900))
-    # now it should be False because ignored_src is skipped!
+    _set_all(900, dir_mtime=950)  # reset repo + src + index to old
+    os.utime(ignored_dir, (1200, 1200))  # only the skipped dir is "new"
     assert _codegraph_is_stale(str(repo)) is False

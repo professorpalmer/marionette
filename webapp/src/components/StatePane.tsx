@@ -235,6 +235,11 @@ export default function StatePane({ artifacts }: {
               </div>
             )}
 
+            {cg?.status === "indexing" && cg?.reason && (
+              <div className="mt-2 text-[9px] text-accent/80">
+                {cg.reason}
+              </div>
+            )}
             {cg?.last_indexed && (
               <div className="mt-2 text-[8px] text-faint">
                 Last indexed: {new Date(cg.last_indexed).toLocaleString()}
