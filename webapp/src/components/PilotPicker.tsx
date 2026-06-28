@@ -44,13 +44,25 @@ export default function PilotPicker({ config }: {
   }, [isOpen]);
 
   const swap = async (m: string) => {
+    const prev = current;
     setCurrent(m);
     setIsOpen(false);
     try {
       await api.swapPilot(m);
       // notify the rest of the app (StatusBar, etc.) so config-derived UI refreshes
       window.dispatchEvent(new Event("harness-config-changed"));
-    } catch {}
+    } catch (e: any) {
+      // Swap refused (e.g. 409 -- a turn is streaming) or failed. Revert the
+      // label so the picker never lies about the active model, and surface a
+      // brief reason instead of silently appearing broken.
+      setCurrent(prev);
+      const msg = String(e?.message || e || "");
+      window.dispatchEvent(new CustomEvent("harness-toast", {
+        detail: msg.includes("409") || msg.includes("in progress")
+          ? "Stop the current turn before switching models"
+          : "Model switch failed -- try again",
+      }));
+    }
   };
 
   if (!config) return null;

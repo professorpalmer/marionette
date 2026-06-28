@@ -13,6 +13,20 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
   const [branch, setBranch] = useState("");
   const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number } | null>(null);
   const [update, setUpdate] = useState<{ version: string; url: string; name: string } | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Transient toast (e.g. a refused model switch). Auto-dismisses; never blocks.
+  useEffect(() => {
+    const onToast = (e: Event) => {
+      const msg = (e as CustomEvent).detail;
+      if (typeof msg === "string" && msg) {
+        setToast(msg);
+        window.setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 4000);
+      }
+    };
+    window.addEventListener("harness-toast", onToast);
+    return () => window.removeEventListener("harness-toast", onToast);
+  }, []);
 
   // Tier-1 update check: ping GitHub Releases once on launch (desktop only).
   // Silent on failure -- an update nudge must never get in the way.
@@ -105,6 +119,11 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
         </>
       )}
       <div className="flex-1" />
+      {toast && (
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300/90">
+          {toast}
+        </span>
+      )}
       <span className="flex items-center gap-1"><Cpu size={10} />{config?.driver?.split(":").pop() || "pilot"}</span>
       <span>{config?.reach || ""}</span>
       {update && (

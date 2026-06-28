@@ -231,10 +231,41 @@ ipcMain.handle("harness:pickFolder", async () => {
 });
 
 // SSE stream: bridge backend EventSource-style stream to renderer via events.
+//
+// Robustness: every event.sender.send() is guarded. When the user stops + swaps
+// the model + resends, the renderer tears down the old stream's webContents
+// mid-flight; an unguarded send() on a destroyed sender throws "Object has been
+// destroyed" -- an UNCAUGHT exception in the Electron main process, which exits
+// the whole app (backend orphaned -> respawn on a new port -> ECONNREFUSED ->
+// everything dead). We also always abort the upstream backend request and remove
+// the one-shot cancel listener so connections + listeners never leak.
 ipcMain.on("harness:stream", (event, channelId, apiPath) => {
   const tok = authToken();
   const streamPath = tok ? apiPath + (apiPath.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok) : apiPath;
-  const req = http.get({ host: "127.0.0.1", port: backendPort, path: streamPath }, (res) => {
+  let req = null;
+  let finished = false;
+
+  // Safe send: never throw if the renderer (webContents) is gone.
+  const safeSend = (channel, payload) => {
+    try {
+      if (event.sender && !event.sender.isDestroyed()) {
+        event.sender.send(channel, payload);
+      }
+    } catch {
+      // sender destroyed between the check and the send -- swallow.
+    }
+  };
+
+  const cleanup = () => {
+    if (finished) return;
+    finished = true;
+    try { ipcMain.removeListener(`${channelId}:cancel`, onCancel); } catch {}
+    try { if (req) req.destroy(); } catch {}
+  };
+
+  const onCancel = () => { cleanup(); };
+
+  req = http.get({ host: "127.0.0.1", port: backendPort, path: streamPath }, (res) => {
     res.setEncoding("utf8");
     let buf = "";
     res.on("data", (chunk) => {
@@ -247,16 +278,16 @@ ipcMain.on("harness:stream", (event, channelId, apiPath) => {
         const payload = line.slice(6);
         try {
           const ev = JSON.parse(payload);
-          if (ev.kind === "done") { event.sender.send(`${channelId}:done`); res.destroy(); return; }
-          event.sender.send(`${channelId}:event`, ev);
+          if (ev.kind === "done") { safeSend(`${channelId}:done`); res.destroy(); cleanup(); return; }
+          safeSend(`${channelId}:event`, ev);
         } catch {}
       }
     });
-    res.on("end", () => event.sender.send(`${channelId}:done`));
-    res.on("error", (e) => event.sender.send(`${channelId}:error`, String(e)));
+    res.on("end", () => { safeSend(`${channelId}:done`); cleanup(); });
+    res.on("error", (e) => { safeSend(`${channelId}:error`, String(e)); cleanup(); });
   });
-  req.on("error", (e) => event.sender.send(`${channelId}:error`, String(e)));
-  ipcMain.once(`${channelId}:cancel`, () => req.destroy());
+  req.on("error", (e) => { safeSend(`${channelId}:error`, String(e)); cleanup(); });
+  ipcMain.once(`${channelId}:cancel`, onCancel);
 });
 
 // ---- native bridges (file tree + git) ----

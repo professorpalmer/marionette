@@ -2425,14 +2425,29 @@ class Handler(BaseHTTPRequestHandler):
                 save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
 
     def _swap_pilot(self, model: str):
-        """Hot-swap the pilot model (the whole point: your key -> your pilot)."""
+        """Hot-swap the pilot model (the whole point: your key -> your pilot).
+
+        Preserves the in-flight conversation: history, auto-distill, and MCP are
+        carried onto the rebuilt pilot (mirrors _rebuild_pilot_and_session). A
+        bare rebuild dropped history, so swapping mid-conversation silently reset
+        the context to empty. We also refuse a swap while a turn is streaming, so
+        the old pilot's busy stream is never orphaned underneath a fresh object."""
         global _pilot
         if not model:
             return self._send(400, json.dumps({"error": "model required"}))
+        # Do not swap underneath a live stream -- let it finish or be cancelled.
+        if getattr(_pilot, "_busy", None) is not None and _pilot._busy.locked():
+            return self._send(409, json.dumps({
+                "error": "a turn is in progress; stop it before switching models"}))
         try:
+            old_history = getattr(_pilot, "_history", None)
+            old_auto_distill = getattr(_pilot, "_auto_distill", False)
             _cfg.driver = model
             _apply_model_context_window()
             _pilot = ConversationalSession(_cfg)
+            if old_history is not None:
+                _pilot._history = old_history
+            _pilot._auto_distill = old_auto_distill
             _pilot._mcp = _mcp
             return self._send(200, json.dumps({"ok": True, "driver": model}))
         except Exception as e:
