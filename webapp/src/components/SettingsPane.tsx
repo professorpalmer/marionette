@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChevronRight, ChevronDown, Plus, Trash2 } from "lucide-react";
-import { api, type Settings, type UsageData, type PlatformAdapter, type GitStatus } from "../lib/api";
+import { api, type Settings, type UsageData, type PlatformAdapter, type GitStatus, type ProviderInfo } from "../lib/api";
 import SkillsPane from "./SkillsPane";
 import MemoryPane from "./MemoryPane";
 
@@ -34,6 +34,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const [platformAdapters, setPlatformAdapters] = useState<PlatformAdapter[]>([]);
   const [showAdvancedAdapters, setShowAdvancedAdapters] = useState(false);
   const [platformError, setPlatformError] = useState("");
+
+  // Per-provider key management states
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [provKeyInput, setProvKeyInput] = useState<Record<string, string>>({});
+  const [provBusy, setProvBusy] = useState<string>("");
 
   // Feature states
   const [hooks, setHooks] = useState<any[]>([]);
@@ -116,6 +121,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         console.error("Failed to load platform adapters", err);
       });
 
+    api.providers()
+      .then(setProviders)
+      .catch((err) => console.error("Failed to load providers", err));
+
     api.getGitStatus()
       .then(setGitStatus)
       .catch((err) => {
@@ -191,6 +200,40 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       setGitError(err?.message || "Failed to start device flow");
     } finally {
       setGitConnecting(false);
+    }
+  };
+
+  const refreshProviders = async () => {
+    try { setProviders(await api.providers()); } catch (e) { console.error(e); }
+  };
+
+  const handleSetProviderKey = async (name: string) => {
+    const val = (provKeyInput[name] || "").trim();
+    if (!val) return;
+    setProvBusy(name);
+    try {
+      await api.setProviderKey(name, val);
+      setProvKeyInput((p) => ({ ...p, [name]: "" }));
+      await refreshProviders();
+      // Picker model list may now include this provider's live catalog.
+      window.dispatchEvent(new Event("harness-config-changed"));
+    } catch (e) {
+      console.error("Failed to set provider key", e);
+    } finally {
+      setProvBusy("");
+    }
+  };
+
+  const handleClearProviderKey = async (name: string) => {
+    setProvBusy(name);
+    try {
+      await api.clearProviderKey(name);
+      await refreshProviders();
+      window.dispatchEvent(new Event("harness-config-changed"));
+    } catch (e) {
+      console.error("Failed to disconnect provider", e);
+    } finally {
+      setProvBusy("");
     }
   };
 
@@ -421,10 +464,63 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
         </>)}
         {show("providers") && (<>
-        {/* API Key Section */}
+        {/* Per-provider key management: connect/disconnect each provider independently */}
+        <div className="space-y-2">
+          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+            Providers
+          </label>
+          <div className="text-[10px] text-muted mb-1">
+            Connect or disconnect each provider independently. Disconnecting removes its key and pulls its models from the picker.
+          </div>
+          <div className="space-y-1.5">
+            {providers.map((p) => (
+              <div key={p.name} className="bg-panel2 border border-edge/50 rounded p-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.has_key ? "bg-good" : "bg-faint"}`} />
+                    <span className="text-txt font-medium text-[11px]">{p.display_name || p.name}</span>
+                    <span className="text-faint text-[10px] font-mono truncate">
+                      {p.has_key ? (p.masked ? `key ${p.masked}` : "connected") : "not connected"}
+                    </span>
+                  </div>
+                  {p.has_key && (
+                    <button
+                      onClick={() => handleClearProviderKey(p.name)}
+                      disabled={provBusy === p.name}
+                      className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors shrink-0"
+                    >
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+                {!p.has_key && (
+                  <div className="flex gap-2 mt-1.5">
+                    <input
+                      type="password"
+                      placeholder={`${p.env_var || "API key"}...`}
+                      value={provKeyInput[p.name] || ""}
+                      onChange={(e) => setProvKeyInput((prev) => ({ ...prev, [p.name]: e.target.value }))}
+                      disabled={provBusy === p.name}
+                      className="flex-1 bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+                    />
+                    <button
+                      onClick={() => handleSetProviderKey(p.name)}
+                      disabled={provBusy === p.name || !(provKeyInput[p.name] || "").trim()}
+                      className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors shrink-0"
+                    >
+                      Connect
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* API Key Section (active reach -- legacy single-provider quick-set) */}
         <div className="space-y-1.5 border-t border-edge pt-3">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
-            API Key Setup
+            Active Provider Key
           </label>
           <div className="text-[10px] text-muted mb-2">
             Set the provider API key for <span className="font-semibold">{settings.reach} ({settings.key_env_var})</span>.

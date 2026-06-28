@@ -657,7 +657,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/skills/reject", "/api/skills/archive",
                       "/api/rules/approve", "/api/rules/reject",
                       "/api/memory/add", "/api/memory/remove",
-                      "/api/settings", "/api/providers/probe", "/api/wiki/config",
+                      "/api/settings", "/api/providers/probe", "/api/providers/key", "/api/wiki/config",
                       "/api/platform", "/api/reviews/apply", "/api/reviews/dismiss",
                       "/api/registry", "/api/roles", "/api/pilot/validate",
                       "/api/worktrees/add", "/api/worktrees/remove",
@@ -1370,6 +1370,38 @@ class Handler(BaseHTTPRequestHandler):
                     "source": "static",
                     "error": str(e)
                 }))
+
+        if path == "/api/providers/key":
+            # Per-provider key management: set or disconnect a SPECIFIC provider's
+            # key independently (e.g. turn OpenRouter off while keeping Anthropic).
+            # Distinct from /api/settings, which only touches the active reach.
+            pname = str(body.get("provider", "")).strip()
+            from .providers import get_provider
+            p = get_provider(pname)
+            if not p:
+                return self._send(400, json.dumps({"error": f"Unknown provider: {pname}"}))
+            action = str(body.get("action", "")).strip().lower()
+            if action == "clear" or body.get("clear") is True:
+                clear_api_key(p.name)
+                # If we just disconnected the ACTIVE driver's provider, the pilot
+                # can no longer run -- rebuild so it rebinds (or surfaces no-key).
+                try:
+                    if _cfg.driver and _cfg.driver.split(":", 1)[0] == p.name:
+                        _rebuild_pilot_and_session()
+                except Exception:
+                    pass
+            else:
+                val = str(body.get("api_key", "")).strip()
+                if not val:
+                    return self._send(400, json.dumps({"error": "api_key required to set"}))
+                set_api_key(p.name, val)
+            status = get_api_key_status(p.name)
+            return self._send(200, json.dumps({
+                "ok": True,
+                "provider": p.name,
+                "has_key": status["has_key"],
+                "masked": status["masked"],
+            }))
 
         if path == "/api/registry":
             models = body.get("models")
@@ -2325,12 +2357,15 @@ class Handler(BaseHTTPRequestHandler):
             from .registry_wizard import PROVIDERS, get_provider_key
             res = []
             for p in PROVIDERS:
+                status = get_api_key_status(p.name)
                 res.append({
                     "name": p.name,
+                    "display_name": getattr(p, "display_name", "") or p.name,
                     "env_var": p.env_vars[0] if p.env_vars else "",
                     "base_url": p.base_url,
-                    "has_key": get_provider_key(p) is not None,
-                    "api_mode": p.api_mode
+                    "has_key": (get_provider_key(p) is not None) or status["has_key"],
+                    "masked": status["masked"],
+                    "api_mode": p.api_mode,
                 })
             return self._send(200, json.dumps(res))
 

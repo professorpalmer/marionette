@@ -157,10 +157,19 @@ export type Hook = {
 
 export type ProviderInfo = {
   name: string;
+  display_name?: string;
   env_var: string;
   base_url: string;
   has_key: boolean;
+  masked?: string;
   api_mode: string;
+};
+
+export type ProviderKeyResult = {
+  ok: boolean;
+  provider: string;
+  has_key: boolean;
+  masked: string;
 };
 
 export type ProbeModel = {
@@ -291,6 +300,8 @@ export type ContextUsageResponse = {
 export const api = {
   providers: () => getJSON<ProviderInfo[]>("/api/providers"),
   probeProvider: (provider: string) => postJSON<ProbeResult>("/api/providers/probe", { provider }),
+  setProviderKey: (provider: string, api_key: string) => postJSON<ProviderKeyResult>("/api/providers/key", { provider, api_key }),
+  clearProviderKey: (provider: string) => postJSON<ProviderKeyResult>("/api/providers/key", { provider, action: "clear" }),
   getRegistry: () => getJSON<{ models: RegistryModel[] }>("/api/registry"),
   saveRegistry: (models: RegistryModel[]) => postJSON<{ ok: boolean; models: RegistryModel[] }>("/api/registry", { models }),
   getRoles: () => getJSON<RolesConfig>("/api/roles"),
