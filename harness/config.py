@@ -63,7 +63,7 @@ class HarnessConfig:
         else:
             try:
                 from pmharness.registry import context_window
-                max_ctx = context_window(driver_val, default=96000)
+                max_ctx = context_window(driver_val, default=200000)
             except Exception:
                 max_ctx = 96000
 

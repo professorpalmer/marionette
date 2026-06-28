@@ -183,7 +183,7 @@ def _apply_model_context_window():
         return
     try:
         from pmharness.registry import context_window
-        _cfg.max_context_tokens = context_window(_cfg.driver, default=96000)
+        _cfg.max_context_tokens = context_window(_cfg.driver, default=200000)
     except Exception:
         pass
 

@@ -53,17 +53,171 @@ def price(name: str) -> tuple:
     return (m.get("price_in"), m.get("price_out"))
 
 
-def context_window(name: str, default: int = 96000) -> int:
-    """The model's real input context window (tokens) from the catalog, or
-    `default` if the model is unknown or declares no window. Lets the harness
-    use each model's true capacity (e.g. 200K Opus, 1M Gemini) instead of a flat
-    cap. Never raises -- an unknown model falls back to the safe default."""
+# ---- live OpenRouter context-window map (cached) --------------------------
+# OpenRouter's /models endpoint returns each model's real context_length with NO
+# auth, and is more current than our hand-maintained catalog (which drifts:
+# glm-5.2 was 200K in-catalog but is really 1M; gpt-5.4 was missing but is 1.05M).
+# We fetch it once, cache to disk with a TTL, and resolve context_window() from
+# the live map first, then the catalog, then a sane floor. Stdlib-only; any
+# network/parse failure degrades gracefully to the cache, then the catalog.
+import json as _json
+import os as _os
+import re as _re
+import threading as _threading
+import time as _time
+import urllib.request as _urlreq
+
+_CW_FLOOR = 200000               # sane floor for unknown models (was a flat 96K)
+_CW_CACHE_TTL = int(_os.environ.get("PMHARNESS_OR_CACHE_TTL", "86400"))  # 24h
+_CW_FETCH_TIMEOUT = 6            # seconds; keep short so offline never stalls
+_CW_LOCK = _threading.Lock()
+_CW_MEM = None                   # in-process memo: dict[slug] -> ctx (or {})
+_CW_MEM_AT = 0.0                 # monotonic time the memo was set
+
+
+def _cw_cache_path() -> str:
+    base = _os.path.join(_os.path.expanduser("~"), ".pmharness")
+    try:
+        _os.makedirs(base, exist_ok=True)
+    except Exception:
+        pass
+    return _os.path.join(base, "or_models_cache.json")
+
+
+def _cw_norm(slug: str) -> str:
+    """Normalize a model id/slug for fuzzy matching: drop the provider prefix,
+    lowercase, and strip every non-alphanumeric (so 'claude-opus-4-8',
+    'anthropic/claude-opus-4.8' both collapse to 'claudeopus48')."""
+    s = (slug or "").lower()
+    if "/" in s:
+        s = s.split("/", 1)[1]
+    return _re.sub(r"[^a-z0-9]", "", s)
+
+
+def _fetch_live_windows() -> dict:
+    """Fetch {slug: context_length} from OpenRouter (no auth). Returns {} on any
+    failure. Caller handles caching + fallback."""
+    req = _urlreq.Request(
+        "https://openrouter.ai/api/v1/models",
+        headers={"User-Agent": "pm-harness"},
+    )
+    raw = _urlreq.urlopen(req, timeout=_CW_FETCH_TIMEOUT).read()
+    data = _json.loads(raw)
+    out = {}
+    for m in data.get("data", []):
+        mid = m.get("id")
+        ctx = m.get("context_length")
+        if mid and isinstance(ctx, int) and ctx > 0:
+            out[mid] = ctx
+    return out
+
+
+def _live_windows() -> dict:
+    """The live OpenRouter window map, memoized in-process and cached on disk
+    with a TTL. Never raises; never blocks more than once per process. Set
+    PMHARNESS_OR_LIVE_WINDOWS=0 to disable the live source entirely (tests)."""
+    global _CW_MEM, _CW_MEM_AT
+    if _os.environ.get("PMHARNESS_OR_LIVE_WINDOWS", "1") == "0":
+        return {}
+    # In-process memo: attempt the network at most once per process.
+    if _CW_MEM is not None:
+        return _CW_MEM
+    with _CW_LOCK:
+        if _CW_MEM is not None:
+            return _CW_MEM
+        path = _cw_cache_path()
+        disk = None
+        try:
+            with open(path) as f:
+                disk = _json.load(f)
+        except Exception:
+            disk = None
+        # Fresh disk cache -> use it, no network.
+        if isinstance(disk, dict):
+            fetched_at = disk.get("fetched_at", 0)
+            windows = disk.get("windows")
+            if isinstance(windows, dict) and (_time.time() - fetched_at) < _CW_CACHE_TTL:
+                _CW_MEM = {k: int(v) for k, v in windows.items()}
+                _CW_MEM_AT = _time.monotonic()
+                return _CW_MEM
+        # Stale or missing -> try one fetch; on failure fall back to stale disk.
+        try:
+            fresh = _fetch_live_windows()
+            if fresh:
+                try:
+                    with open(path, "w") as f:
+                        _json.dump({"fetched_at": _time.time(), "windows": fresh}, f)
+                except Exception:
+                    pass
+                _CW_MEM = fresh
+                _CW_MEM_AT = _time.monotonic()
+                return _CW_MEM
+        except Exception:
+            pass
+        # Network failed -> use stale disk cache if present, else empty.
+        if isinstance(disk, dict) and isinstance(disk.get("windows"), dict):
+            _CW_MEM = {k: int(v) for k, v in disk["windows"].items()}
+        else:
+            _CW_MEM = {}
+        _CW_MEM_AT = _time.monotonic()
+        return _CW_MEM
+
+
+def _resolve_live_window(name: str) -> int:
+    """Best live OpenRouter window for `name` (a catalog name, a 'provider:model'
+    spec, a bare slug, or a native model id). 0 if no live match."""
+    live = _live_windows()
+    if not live:
+        return 0
+    # Build candidate slugs to try as EXACT keys first.
+    candidates = []
+    # 1. catalog entry's openrouter slug
+    try:
+        ent = _entry(name)
+        if ent.get("openrouter"):
+            candidates.append(ent["openrouter"])
+    except Exception:
+        pass
+    # 2. provider:model spec -> strip the provider prefix
+    if ":" in name:
+        candidates.append(name.split(":", 1)[1])
+    # 3. the raw name itself (may already be a slug)
+    candidates.append(name)
+    for c in candidates:
+        if c in live:
+            return int(live[c])
+    # Fuzzy: normalized-equality, preferring the shortest matching id so a base
+    # model wins over '-fast' / '-image' / '-codex' variants.
+    targets = {_cw_norm(c) for c in candidates if c}
+    best = 0
+    best_len = 10 ** 9
+    for slug, ctx in live.items():
+        if _cw_norm(slug) in targets and len(slug) < best_len:
+            best = int(ctx)
+            best_len = len(slug)
+    return best
+
+
+def context_window(name: str, default: int = _CW_FLOOR) -> int:
+    """The model's real input context window (tokens). Resolves in order:
+    live OpenRouter /models map (cached) -> catalog `context_window` -> `default`
+    (a 200K floor). Lets the harness use each model's true capacity (opus 1M,
+    gpt-5.4 1.05M, glm-5.2 1M) instead of a stale catalog value or a flat 96K.
+    Never raises."""
+    try:
+        live = _resolve_live_window(name)
+        if live > 0:
+            return live
+    except Exception:
+        pass
     try:
         m = _entry(name)
         w = m.get("context_window")
-        return int(w) if w else default
+        if w:
+            return int(w)
     except Exception:
-        return default
+        pass
+    return default
 
 
 def build(name: str, *, reach: str = "openrouter") -> Driver:
