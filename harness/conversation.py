@@ -246,6 +246,15 @@ class ConversationalSession:
         # optional durable-knowledge integration (portable-llm-wiki)
         self._wiki = WikiClient()
         self._wiki_auto = os.environ.get("HARNESS_WIKI_AUTO", "").strip() in ("1", "true", "yes")
+        # Local-model wiki orchestration: the cheap pilot structures a raw digest
+        # into entity/concept/decision pages BEFORE ingest, so the wiki never pays
+        # for a frontier orchestrator. Default = prepare-and-approve (human gates
+        # what lands in durable cross-LLM memory). Opt into silent auto-ingest with
+        # HARNESS_WIKI_ORCHESTRATE=auto for a trusted repo.
+        _wo = os.environ.get("HARNESS_WIKI_ORCHESTRATE", "").strip().lower()
+        self._wiki_orchestrate = _wo in ("1", "true", "yes", "auto", "approve", "on")
+        self._wiki_orchestrate_auto = _wo == "auto"
+        self._wiki_prepared_hwm = 0  # findings count at last prepare, dedupe re-runs
         # optional MCP integration -- set by the server so the pilot can call MCP tools
         self._mcp = None
         self._checkpoints = CheckpointStore(config.repo)
@@ -1168,6 +1177,17 @@ class ConversationalSession:
                         d = self._maybe_auto_distill()
                         if d:
                             yield ConvEvent("distilled", d)
+                    # Local-model wiki orchestration at the natural checkpoint:
+                    # structure this session's digest into entity/concept/decision
+                    # pages with the cheap pilot, then (default) surface them for
+                    # approval or (opt-in auto) ingest immediately.
+                    if self._wiki_orchestrate:
+                        try:
+                            w = self.prepare_wiki_pages()
+                            if w and w.get("status") == "prepared" and w.get("pages"):
+                                yield ConvEvent("wiki_prepared", w)
+                        except Exception:
+                            pass
                 yield ev
         finally:
             self._history[0]["content"] = original_sys
@@ -3154,6 +3174,66 @@ class ConversationalSession:
         except Exception:
             pass  # wiki capture is best-effort; never break the conversation
 
+    def prepare_wiki_pages(self) -> dict:
+        """Run the LOCAL pilot model to structure this session's digest into
+        entity/concept/decision wiki pages (the "backwards" orchestration pass),
+        cheaply, without a frontier orchestrator.
+
+        Returns {"status", "pages": [...], "auto_ingested"?: bool, "reason"?}.
+        status: prepared | empty | error | not_configured | no_signal.
+        Human-gated by default: pages are PREPARED and returned for approval.
+        With HARNESS_WIKI_ORCHESTRATE=auto they are also ingested immediately.
+        Never raises -- best-effort.
+        """
+        if not self._wiki.configured:
+            return {"status": "not_configured", "pages": []}
+        # Only act when there is genuinely new durable signal this session.
+        if len(self._session_findings) <= self._wiki_prepared_hwm or not self._session_findings:
+            return {"status": "no_signal", "pages": []}
+        try:
+            from .wiki_orchestrator import prepare_pages
+            digest = self._build_transcript_digest() or session_digest(
+                self._first_objective or "(session)", [], self._session_findings)
+            res = prepare_pages(self.pilot, self._first_objective or "(session)", digest)
+        except Exception as e:
+            return {"status": "error", "pages": [], "reason": str(e)}
+
+        self._wiki_prepared_hwm = len(self._session_findings)
+        pages = res.get("pages", [])
+        if res.get("status") != "prepared" or not pages:
+            return {"status": res.get("status", "empty"), "pages": []}
+
+        if self._wiki_orchestrate_auto:
+            ingested = self.ingest_prepared_pages(pages)
+            return {"status": "prepared", "pages": pages,
+                    "auto_ingested": True, "ingested": ingested}
+        return {"status": "prepared", "pages": pages, "auto_ingested": False}
+
+    def ingest_prepared_pages(self, pages: list) -> int:
+        """File approved structured pages into the wiki, one source each, with
+        run_orchestrator=False (the local model already did the structuring).
+        Returns the count successfully ingested. Best-effort."""
+        if not self._wiki.configured or not pages:
+            return 0
+        count = 0
+        for p in pages:
+            try:
+                kind = (p.get("kind") or "concept").strip()
+                title = (p.get("title") or "").strip()
+                slug = (p.get("slug") or _slugify(title)).strip()
+                body = (p.get("body") or "").strip()
+                if not slug or not body:
+                    continue
+                content = f"# {title}\n\n{body}\n" if title else body
+                r = self._wiki.ingest(
+                    f"{kind}-{slug}", content,
+                    note=f"pm-harness local orchestration ({kind})",
+                    run_orchestrator=False)
+                if getattr(r, "ok", False):
+                    count += 1
+            except Exception:
+                continue
+        return count
 
     def _build_transcript_digest(self) -> str:
         lines = []

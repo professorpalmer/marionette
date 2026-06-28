@@ -232,6 +232,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const [auto, setAuto] = useState(false);
   const [plan, setPlan] = useState(false);
   const [distillNotice, setDistillNotice] = useState<string | null>(null);
+  const [wikiPrepared, setWikiPrepared] = useState<{ pages: any[]; autoIngested: boolean } | null>(null);
   const cancelRef = useRef<null | (() => void)>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -971,6 +972,19 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       const d = ev.data || {};
       if (ev.kind === "compacting") {
         setCompactingStatus(d.message || "Summarizing chat context");
+      } else if (ev.kind === "wiki_prepared") {
+        const pages = d.pages || [];
+        if (pages.length > 0) {
+          if (d.auto_ingested) {
+            // Silent-auto mode already ingested -- just a quiet confirmation footnote.
+            setDistillNotice(`Wiki: ${pages.length} page${pages.length === 1 ? "" : "s"} auto-ingested (local orchestration)`);
+            const notice = `Wiki: ${pages.length} page${pages.length === 1 ? "" : "s"} auto-ingested (local orchestration)`;
+            setTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
+          } else {
+            // Prepare-and-approve: surface the pages for one-click ingest.
+            setWikiPrepared({ pages, autoIngested: false });
+          }
+        }
       } else if (ev.kind === "codegraph_context") {
         setItems((p) => [...p, { kind: "codegraph_context" as const, symbols: d.symbols || 0, query: d.query || "" }]);
       } else if (ev.kind === "compaction") {
@@ -1516,6 +1530,39 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
       <div className="px-6 pb-3 pt-0.5">
         <div className="max-w-3xl mx-auto">
+          {wikiPrepared && wikiPrepared.pages.length > 0 && (
+            <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-accent/5 border border-accent/20 flex items-center gap-2 text-[11px] text-txt/85">
+              <Share2 size={11} className="text-accent shrink-0" />
+              <span className="flex-1">
+                Wiki: {wikiPrepared.pages.length} structured page{wikiPrepared.pages.length === 1 ? "" : "s"} ready
+                <span className="text-faint"> ({wikiPrepared.pages.map((p: any) => p.kind).filter((v: any, i: number, a: any[]) => a.indexOf(v) === i).join(", ")})</span>
+              </span>
+              <button
+                onClick={async () => {
+                  const pages = wikiPrepared.pages;
+                  setWikiPrepared(null);
+                  try {
+                    const res = await api.wikiIngestPrepared(pages);
+                    const notice = `Wiki: ${res.ingested} page${res.ingested === 1 ? "" : "s"} ingested`;
+                    setDistillNotice(notice);
+                    setTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 6000);
+                  } catch {
+                    setDistillNotice("Wiki ingest failed");
+                  }
+                }}
+                className="shrink-0 px-2 py-0.5 rounded bg-accent/15 hover:bg-accent/25 text-accent font-medium transition text-[10.5px]"
+              >
+                Ingest
+              </button>
+              <button
+                onClick={() => setWikiPrepared(null)}
+                className="shrink-0 text-faint/60 hover:text-muted transition"
+                title="dismiss"
+              >
+                x
+              </button>
+            </div>
+          )}
           {distillNotice && (
             <div className="mb-2 px-1 flex items-center gap-2 text-[10.5px] text-faint/80">
               <span className="flex-1 truncate">

@@ -335,6 +335,7 @@ export const api = {
   mcpStop: (name: string) => postJSON<{ ok: boolean }>("/api/mcp/stop", { name }),
   skills: () => getJSON<any[]>("/api/skills"),
   skillDistill: () => postJSON<{ skill?: any; rules?: any }>("/api/skills/distill", {}),
+  wikiIngestPrepared: (pages: any[]) => postJSON<{ ok: boolean; ingested: number }>("/api/wiki/ingest-prepared", { pages }),
   rules: () => getJSON<any[]>("/api/rules"),
   ruleApprove: (slug: string) => postJSON<{ ok: boolean }>("/api/rules/approve", { slug }),
   ruleReject: (slug: string) => postJSON<{ ok: boolean }>("/api/rules/reject", { slug }),

@@ -466,6 +466,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/mcp/add", "/api/mcp/remove", "/api/mcp/start",
                       "/api/mcp/stop", "/api/mcp/call",
                       "/api/skills/distill", "/api/skills/approve",
+                      "/api/wiki/ingest-prepared",
                       "/api/skills/reject", "/api/skills/archive",
                       "/api/rules/approve", "/api/rules/reject",
                       "/api/memory/add", "/api/memory/remove",
@@ -811,6 +812,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": False, "error": str(e)}))
         if path == "/api/skills/distill":
             return self._send(200, json.dumps(_pilot.distill()))
+        if path == "/api/wiki/ingest-prepared":
+            # One-click approve: file the locally-orchestrated pages into the wiki.
+            pages = body.get("pages") or []
+            count = _pilot.ingest_prepared_pages(pages)
+            return self._send(200, json.dumps({"ok": count > 0, "ingested": count}))
         if path == "/api/skills/approve":
             sk = _skills.set_state(body.get("slug", ""), "active")
             return self._send(200, json.dumps({"ok": bool(sk)}))
