@@ -121,6 +121,10 @@ def test_run_implement_external_fallback(monkeypatch):
 
         # Mock puppetmaster available
         monkeypatch.setattr("harness.conversation._puppetmaster_available", lambda: True)
+        # Mock the external adapter CLI as available so this test exercises the
+        # external dispatch path (cursor is not installed in CI; without this it
+        # would correctly fall back to the provider-native worker).
+        monkeypatch.setattr(ConversationalSession, "_external_adapter_available", lambda self, adapter: True)
 
         # Mock puppetmaster cmd
         pm_cmd_called = []
@@ -159,5 +163,56 @@ def test_run_implement_external_fallback(monkeypatch):
         assert len(pm_cmd_called) > 0
         assert "cursor" in pm_cmd_called[0]
 
+    finally:
+        shutil.rmtree(repo_dir)
+
+
+def test_run_implement_falls_back_to_provider_when_cli_absent(monkeypatch):
+    """When an external adapter (cursor/codex/claude-code) is requested but its
+    CLI is not installed, the implement must fall back to the provider-native
+    worker (which runs off the user's own keys) instead of hard-failing. The
+    platform must never be unusable just because an optional worker CLI is gone.
+    """
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = HarnessConfig()
+        cfg.repo = repo_dir
+        session = ConversationalSession(cfg)
+
+        monkeypatch.setattr("harness.conversation._puppetmaster_available", lambda: True)
+        # The external adapter CLI is NOT available.
+        monkeypatch.setattr(ConversationalSession, "_external_adapter_available", lambda self, adapter: False)
+
+        # If the external path were taken it would call the pm CLI; assert it does NOT.
+        pm_cmd_called = []
+        def mock_pm_cmd(*args, **kwargs):
+            pm_cmd_called.append(args)
+            return ["echo", "job_should_not_be_used"]
+        monkeypatch.setattr("harness.conversation._puppetmaster_cmd", mock_pm_cmd)
+
+        mock_pilot = MagicMock()
+        first_resp = MagicMock()
+        first_resp.text = json.dumps({
+            "say": "Running cursor implement",
+            "actions": [{"kind": "run_implement", "goal": "Add world to test.txt", "adapter": "cursor"}]
+        })
+        first_resp.meta = {}
+        first_resp.error = None
+        mock_pilot.chat.return_value = first_resp
+        session.pilot = mock_pilot
+
+        events = list(session.send("start implement"))
+
+        # The provider-native path emits action_start with mode="provider".
+        action_starts = [e for e in events if e.kind == "action_start" and e.data.get("kind") == "run_implement"]
+        assert len(action_starts) >= 1
+        assert action_starts[-1].data.get("mode") == "provider"
+
+        # The external CLI must NOT have been invoked for the implement dispatch.
+        assert not any("cursor" in c for c in pm_cmd_called)
+
+        # A swarm_pending should still be emitted (the provider worker is dispatched).
+        swarm_pendings = [e for e in events if e.kind == "swarm_pending"]
+        assert len(swarm_pendings) == 1
     finally:
         shutil.rmtree(repo_dir)

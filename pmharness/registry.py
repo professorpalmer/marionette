@@ -198,12 +198,83 @@ def _resolve_live_window(name: str) -> int:
     return best
 
 
+# ---- static offline fallback windows ----------------------------------------
+# When the live OpenRouter map is unavailable (offline, slow network, fresh
+# packaged app with an empty cache) AND the spec is a provider-prefixed picker
+# entry like "anthropic:claude-opus-4-8" (which is NOT a catalog model name),
+# resolution used to collapse to the flat floor -- so a 1M-window Opus showed as
+# 200K. This static table is keyed by NORMALIZED slug (see _cw_norm) and gives
+# well-known frontier families their real windows with zero network dependency.
+# Matching is longest-prefix on the normalized slug, so "claudeopus48" matches
+# the "claudeopus" family entry. Live map and catalog still win when present.
+_STATIC_WINDOWS = {
+    # Anthropic Claude: Opus/Sonnet 4.x carry 1M; Haiku 200K.
+    "claudeopus": 1000000,
+    "claudesonnet": 1000000,
+    "claudehaiku": 200000,
+    "claude3opus": 200000,
+    "claude3sonnet": 200000,
+    "claude3haiku": 200000,
+    # OpenAI GPT-5 family: 1M+ windows; mini/nano 400K.
+    "gpt55": 400000,
+    "gpt54mini": 400000,
+    "gpt54nano": 400000,
+    "gpt54": 1050000,
+    "gpt5mini": 400000,
+    "gpt5nano": 400000,
+    "gpt5": 400000,
+    # Google Gemini: 1M-2M windows.
+    "gemini35flash": 1000000,
+    "gemini31pro": 1000000,
+    "gemini31flash": 1000000,
+    "gemini25pro": 1000000,
+    "gemini25flash": 1000000,
+    "gemini": 1000000,
+    # Open-weights frontier families.
+    "glm52": 1000000,
+    "glm47": 128000,
+    "glm": 128000,
+    "qwen3coder": 262144,
+    "qwen": 262144,
+    "kimik2": 256000,
+    "kimi": 200000,
+    "minimaxm2": 1000000,
+    "minimax": 1000000,
+    "deepseekv4": 128000,
+    "deepseek": 128000,
+}
+
+
+def _static_window(name: str) -> int:
+    """Best static-table window for `name` (a catalog name, a 'provider:model'
+    spec, a bare slug, or a native model id). 0 if no family match. Uses
+    longest-prefix match on the normalized slug so 'claudeopus48' resolves via
+    the 'claudeopus' family entry."""
+    candidates = []
+    if ":" in name:
+        candidates.append(name.split(":", 1)[1])
+    if "/" in name:
+        candidates.append(name.split("/", 1)[1])
+    candidates.append(name)
+    best = 0
+    best_keylen = 0
+    for c in candidates:
+        norm = _cw_norm(c)
+        if not norm:
+            continue
+        for key, win in _STATIC_WINDOWS.items():
+            if norm.startswith(key) and len(key) > best_keylen:
+                best = win
+                best_keylen = len(key)
+    return best
+
+
 def context_window(name: str, default: int = _CW_FLOOR) -> int:
     """The model's real input context window (tokens). Resolves in order:
-    live OpenRouter /models map (cached) -> catalog `context_window` -> `default`
-    (a 200K floor). Lets the harness use each model's true capacity (opus 1M,
-    gpt-5.4 1.05M, glm-5.2 1M) instead of a stale catalog value or a flat 96K.
-    Never raises."""
+    live OpenRouter /models map (cached) -> catalog `context_window` ->
+    static offline fallback table -> `default` (a 200K floor). Lets the harness
+    use each model's true capacity (opus 1M, gpt-5.4 1.05M, glm-5.2 1M) instead
+    of a stale catalog value or a flat 96K -- even offline. Never raises."""
     try:
         live = _resolve_live_window(name)
         if live > 0:
@@ -215,6 +286,12 @@ def context_window(name: str, default: int = _CW_FLOOR) -> int:
         w = m.get("context_window")
         if w:
             return int(w)
+    except Exception:
+        pass
+    try:
+        static = _static_window(name)
+        if static > 0:
+            return static
     except Exception:
         pass
     return default

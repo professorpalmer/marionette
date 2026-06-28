@@ -208,6 +208,11 @@ def test_executor_smoke_run_implement():
             import harness.conversation as _convmod
             session_pm_orig = getattr(_convmod, "_puppetmaster_available", None)
             _convmod._puppetmaster_available = lambda: True
+            # Force the external CLI adapter to read as available so this test keeps
+            # exercising the external dispatch path (the requested CLI is not installed
+            # in CI; without this the implement correctly falls back to the
+            # provider-native worker, which is covered separately).
+            session._external_adapter_available = lambda adapter: True
             
             # Send a prompt triggering a pilot action (explicit external adapter)
             from harness.pilot import PilotAction
@@ -342,6 +347,9 @@ def test_executor_smoke_run_parallel():
             
             session = ConversationalSession(cfg)
             session._detect_default_implement_adapter = MagicMock(return_value="hermes")
+            # Keep exercising the external dispatch path even though the requested
+            # CLI is not installed in CI (otherwise it falls back to provider-native).
+            session._external_adapter_available = lambda adapter: True
             
             class FakeParallelPilot:
                 name = "fake"
@@ -440,6 +448,9 @@ def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, 
     
     session = ConversationalSession(cfg)
     session._detect_default_implement_adapter = MagicMock(return_value="hermes")
+    # Keep exercising the external dispatch path even though the requested CLI is
+    # not installed in CI (otherwise it falls back to the provider-native worker).
+    session._external_adapter_available = lambda adapter: True
     
     class FakeParallelPilot:
         name = "fake"

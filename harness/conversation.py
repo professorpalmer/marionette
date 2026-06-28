@@ -2135,12 +2135,21 @@ class ConversationalSession:
                     requested_adapter = act.adapter or ""
                     
                     if requested_adapter in external_adapters:
-                        if not _puppetmaster_available():
-                            error_msg = f"puppetmaster CLI not available in this environment. Drop the adapter option or install the CLI to proceed."
-                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                            self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
-                            continue
-                        use_external = True
+                        # Gracefully fall back to the provider-native worker (which runs
+                        # off the user's own provider key) when the external CLI adapter
+                        # is unavailable, instead of hard-failing. The platform must never
+                        # be unusable just because an optional worker CLI is missing.
+                        if not _puppetmaster_available() or not self._external_adapter_available(requested_adapter):
+                            yield ConvEvent("action_result", {
+                                "id": aid,
+                                "num": 0,
+                                "types": ["note"],
+                                "artifacts": [{"type": "note", "headline": f"{requested_adapter} adapter unavailable -- using provider-native worker (your keys)"}],
+                            })
+                            self._append_action_result(act, aid, f"(run_implement: {requested_adapter} adapter unavailable; falling back to the provider-native worker on your own keys)", is_native)
+                            use_external = False
+                        else:
+                            use_external = True
                     else:
                         use_external = False
 
@@ -2290,12 +2299,19 @@ class ConversationalSession:
                     requested_adapter = act.adapter or ""
                     
                     if requested_adapter in external_adapters:
-                        if not _puppetmaster_available():
-                            error_msg = f"puppetmaster CLI not available in this environment. Drop the adapter option or install the CLI to proceed."
-                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                            self._append_action_result(act, aid, f"(run_parallel {aid} failed: {error_msg})", is_native)
-                            continue
-                        use_external = True
+                        # Gracefully fall back to the provider-native worker when the
+                        # external CLI adapter is unavailable, instead of hard-failing.
+                        if not _puppetmaster_available() or not self._external_adapter_available(requested_adapter):
+                            yield ConvEvent("action_result", {
+                                "id": aid,
+                                "num": 0,
+                                "types": ["note"],
+                                "artifacts": [{"type": "note", "headline": f"{requested_adapter} adapter unavailable -- using provider-native worker (your keys)"}],
+                            })
+                            self._append_action_result(act, aid, f"(run_parallel: {requested_adapter} adapter unavailable; falling back to the provider-native worker on your own keys)", is_native)
+                            use_external = False
+                        else:
+                            use_external = True
                     else:
                         use_external = False
 
@@ -2835,6 +2851,29 @@ class ConversationalSession:
                 os.remove(temp_path)
             except Exception:
                 pass
+
+    def _external_adapter_available(self, adapter: str) -> bool:
+        """True when the requested external CLI adapter can actually run.
+
+        The provider-native ProviderWorker (which runs in-process off whatever
+        provider key the user supplied) is ALWAYS available, so this gate only
+        governs the optional external CLI adapters. When the requested adapter's
+        CLI / key is missing we fall back to the provider-native worker instead
+        of hard-failing -- the platform must never be unusable just because an
+        optional external worker CLI is absent.
+        """
+        import shutil
+        a = (adapter or "").lower().strip()
+        if a == "cursor":
+            return shutil.which("cursor") is not None
+        if a == "claude-code":
+            return shutil.which("claude") is not None
+        if a == "codex":
+            return shutil.which("codex") is not None
+        if a == "openai":
+            return bool(os.environ.get("OPENAI_API_KEY"))
+        # Unknown adapter name: let the external path try (it will report its own error).
+        return True
 
     def _detect_default_implement_adapter(self) -> str:
         if not _puppetmaster_available():
