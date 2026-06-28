@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
-import { Settings as SettingsIcon, ChevronRight, ChevronDown, Plus, Trash2 } from "lucide-react";
+import { ChevronRight, ChevronDown, Plus, Trash2 } from "lucide-react";
 import { api, type Settings, type UsageData, type PlatformAdapter, type GitStatus } from "../lib/api";
 import SkillsPane from "./SkillsPane";
 import MemoryPane from "./MemoryPane";
 
-export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => void }) {
+export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "advanced";
+
+export default function SettingsPane({ onOpenWizard, section = "general" }: { onOpenWizard: () => void; section?: SettingsSection }) {
+  const show = (s: SettingsSection) => section === s;
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
@@ -242,18 +245,16 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
   }
 
   return (
-    <div className="flex flex-col h-full text-[12px]">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-edge">
-        <span className="uppercase tracking-wider text-[10px] text-faint font-medium flex items-center gap-1.5">
-          <SettingsIcon size={11} /> Settings
-        </span>
-        <div className="flex items-center gap-2">
+    <div className="text-[12px] max-w-3xl">
+      {(status || error) && (
+        <div className="flex items-center gap-2 mb-3">
           {status && <span className="text-good text-[10px] font-medium">{status}</span>}
           {error && <span className="text-risk text-[10px] font-medium">{error}</span>}
         </div>
-      </div>
+      )}
 
-      <div className="flex-1 overflow-y-auto p-3 space-y-4">
+      <div className="space-y-4">
+        {show("general") && (<>
         {/* Wizard Button */}
         <div className="space-y-1.5 border-b border-edge/65 pb-3">
           <button
@@ -267,6 +268,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </p>
         </div>
 
+        </>)}
+        {show("general") && (<>
         {/* Driver Select */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -289,6 +292,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </p>
         </div>
 
+        </>)}
+        {show("general") && (<>
         {/* Budget Stepper / Number */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -316,6 +321,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </p>
         </div>
 
+        </>)}
+        {show("general") && (<>
         {/* Auto Distill Toggle */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -340,6 +347,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </p>
         </div>
 
+        </>)}
+        {show("general") && (<>
         {/* Diff Review Toggle */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -364,6 +373,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </p>
         </div>
 
+        </>)}
+        {show("safety") && (<>
         {/* Full-Auto Safety: command guard + timeout */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -408,6 +419,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </p>
         </div>
 
+        </>)}
+        {show("providers") && (<>
         {/* API Key Section */}
         <div className="space-y-1.5 border-t border-edge pt-3">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -469,6 +482,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </div>
         </div>
 
+        </>)}
+        {show("providers") && (<>
         {/* Platform Adapters Control (ADVANCED -- optional) */}
         <div className="space-y-3 border-t border-edge pt-3">
           <button
@@ -535,6 +550,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </>)}
         </div>
 
+        </>)}
+        {show("notifications") && (<>
         {/* Observability & Queue Prefs */}
         <div className="space-y-3 border-t border-edge pt-3">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -589,6 +606,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </div>
         </div>
 
+        </>)}
+        {show("advanced") && (<>
         {/* Lifecycle Hooks Section */}
         <div className="border-t border-edge pt-3 space-y-2">
           <button
@@ -719,6 +738,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           )}
         </div>
 
+        </>)}
+        {show("advanced") && (<>
         {/* Agent Memory Section */}
         <div className="border-t border-edge pt-3 space-y-2">
           <button
@@ -740,6 +761,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           )}
         </div>
 
+        </>)}
+        {show("advanced") && (<>
         {/* Skills & Rules Section */}
         <div className="border-t border-edge pt-3 space-y-2">
           <button
@@ -761,6 +784,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           )}
         </div>
 
+        </>)}
+        {show("general") && (<>
         {/* Usage / Cost Dashboard Section */}
         <div className="border-t border-edge pt-3 space-y-2.5">
           <div className="flex items-center justify-between">
@@ -825,6 +850,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </p>
         </div>
 
+        </>)}
+        {show("general") && (<>
         {/* Read-Only Info */}
         <div className="border-t border-edge pt-3 space-y-2.5">
           <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -862,6 +889,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           </div>
         </div>
 
+        </>)}
+        {show("providers") && (<>
         {/* GitHub & Wiki Repo Provisioning */}
         <div className="border-t border-edge pt-3 space-y-2">
           <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -980,6 +1009,8 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
           )}
         </div>
 
+        </>)}
+        {show("advanced") && (<>
         {/* WIKI GRAPH (portable-llm-wiki gated owner surface) */}
         <div className="border-t border-edge pt-3 space-y-2">
           <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -1018,6 +1049,7 @@ export default function SettingsPane({ onOpenWizard }: { onOpenWizard: () => voi
             {wikiSaving ? "Saving..." : "Save Wiki Config"}
           </button>
         </div>
+        </>)}
       </div>
     </div>
   );
