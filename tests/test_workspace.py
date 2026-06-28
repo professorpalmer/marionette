@@ -89,3 +89,94 @@ def test_open_workspace_endpoints():
 
     finally:
         httpd.shutdown()
+
+
+def test_forget_recent_workspace(monkeypatch, tmp_path):
+    import json
+    import os
+    import tempfile
+    import harness.server as srv
+    
+    # Create a dummy workspace.json path
+    ws_file = tmp_path / "workspace.json"
+    monkeypatch.setattr(srv, "_WORKSPACE_JSON", str(ws_file))
+    
+    # Create some dummy directory paths (must be real directories to be persistable)
+    dir1 = tmp_path / "dir1"
+    dir1.mkdir()
+    dir2 = tmp_path / "dir2"
+    dir2.mkdir()
+    
+    # We want these directories to be considered persistable, so let's mock the tempdir check
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/some/other/dummy/path")
+    
+    # Record them
+    recents = srv._record_recent_workspace(str(dir1))
+    assert str(dir1) in recents
+    
+    recents = srv._record_recent_workspace(str(dir2))
+    assert str(dir2) in recents
+    assert str(dir1) in recents
+    
+    # Now forget dir1
+    recents = srv._forget_recent_workspace(str(dir1))
+    assert str(dir1) not in recents
+    assert str(dir2) in recents
+    
+    # Check that file actually wrote the correct JSON
+    with open(ws_file) as f:
+        data = json.load(f)
+        assert data["repo"] == str(dir2)
+        assert str(dir1) not in data["recents"]
+
+
+class _OpenProjectPilot:
+    def __init__(self, path):
+        self.path = path
+        self.calls = 0
+    def complete(self, prompt, *, system=None):
+        from pmharness.drivers.openai_compat import DriverResponse
+        self.calls += 1
+        if self.calls == 1:
+            txt = f'{{"say":"Opening...","actions":[{{"kind":"open_project","path":"{self.path}"}}]}}'
+        else:
+            txt = '{"say":"Done","actions":[]}'
+        return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
+
+
+def test_open_project_action_validates_and_succeeds(monkeypatch, tmp_path):
+    import os
+    import pytest
+    from harness.conversation import ConversationalSession, ConvEvent
+    from harness.config import HarnessConfig
+    
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    session = ConversationalSession(cfg)
+    
+    # 1. Test non-existent path
+    nonexistent = tmp_path / "nonexistent"
+    session.pilot = _OpenProjectPilot(str(nonexistent))
+    
+    events = list(session.send("open the project please"))
+    # The action should start and then return result with error
+    action_results = [e for e in events if e.kind == "action_result"]
+    assert len(action_results) == 1
+    assert "error" in action_results[0].data
+    assert "not an existing directory" in action_results[0].data["error"]
+    
+    # 2. Test successful path
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    
+    session = ConversationalSession(cfg)
+    session.pilot = _OpenProjectPilot(str(existing))
+    
+    events = list(session.send("open the project please"))
+    action_results = [e for e in events if e.kind == "action_result"]
+    assert len(action_results) == 1
+    assert "error" not in action_results[0].data
+    assert "workspace" in action_results[0].data.get("types", [])
+    
+    # Check that environment and config are updated
+    assert session.config.repo == str(existing)
+    assert os.environ["HARNESS_REPO"] == str(existing)

@@ -1055,6 +1055,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setCard(d.id, { running: false, open: false, result: d });
         if (d.artifacts && !d.error) onArtifacts(d.artifacts);
         onJobChange();
+        setItems((prev) => {
+          const cardItem = prev.find((it) => it.kind === "card" && it.card.id === d.id);
+          if (cardItem && cardItem.kind === "card" && cardItem.card.kind === "open_project" && !d.error) {
+            window.dispatchEvent(new Event("harness-config-changed"));
+          }
+          return prev;
+        });
       } else if (ev.kind === "auto_status") {
         setStatus("executing");
       } else if (ev.kind === "distilled") {

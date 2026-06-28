@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory"}
+VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project"}
 
 
 @dataclass
@@ -88,7 +88,7 @@ class PilotAction:
             raise PilotError("route_task action requires a non-empty instruction")
         if self.kind == "call_mcp" and not (self.tool or "").strip():
             raise PilotError("call_mcp action requires a 'tool' (server.tool)")
-        if self.kind in ("read_file", "write_file", "view_image") and not (self.path or "").strip():
+        if self.kind in ("read_file", "write_file", "view_image", "open_project") and not (self.path or "").strip():
             raise PilotError(f"{self.kind} action requires a 'path'")
         if self.kind == "edit_file" and not (self.path or "").strip():
             raise PilotError("edit_file action requires a 'path'")
@@ -173,6 +173,22 @@ def _coerce_actions(raw_actions) -> list:
 
 def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = False) -> list:
     schema = []
+
+    # open_project
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "open_project",
+            "description": "Open a local directory as a project/workspace so its files and graph become available. Use when the user says 'open <dir> as a project' or asks to work in a directory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the directory to open as a project"}
+                },
+                "required": ["path"]
+            }
+        }
+    })
 
     # 1. read_file
     schema.append({

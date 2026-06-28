@@ -18,6 +18,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     archived: boolean;
   } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [projectContextMenu, setProjectContextMenu] = useState<{
+    x: number;
+    y: number;
+    projectPath: string;
+  } | null>(null);
+  const [confirmForgetPath, setConfirmForgetPath] = useState<string | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
 
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
@@ -123,6 +129,26 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!projectContextMenu) return;
+    const handleClose = () => {
+      setProjectContextMenu(null);
+      setConfirmForgetPath(null);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setProjectContextMenu(null);
+        setConfirmForgetPath(null);
+      }
+    };
+    window.addEventListener("click", handleClose);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", handleClose);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [projectContextMenu]);
+
   const switchWs = async (name: string) => {
     setSwapping(name);
     try { await api.switchWorkspace(name); await loadWs(); } finally { setSwapping(null); }
@@ -173,6 +199,15 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const currentRepo = workspaceInfo?.repo || "";
   const rawRecents = workspaceInfo?.recents || [];
   const projects = Array.from(new Set([currentRepo, ...rawRecents])).filter(Boolean);
+
+  const handleProjectContextMenu = (e: React.MouseEvent, path: string) => {
+    e.preventDefault();
+    setProjectContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      projectPath: path,
+    });
+  };
 
   const handleProjectRowClick = (projectPath: string, isActive: boolean, isExpanded: boolean) => {
     if (isActive) {
@@ -227,6 +262,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                 {/* Project Row */}
                 <div
                   onClick={() => handleProjectRowClick(projectPath, isCurrentActive, isExpanded)}
+                  onContextMenu={(e) => handleProjectContextMenu(e, projectPath)}
                   className="flex items-center gap-1.5 px-2 py-1.5 cursor-pointer select-none group"
                   title={projectPath}
                 >
@@ -473,6 +509,51 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-red-400 font-medium transition-colors"
             >
               Delete
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* PROJECT CONTEXT MENU */}
+      {projectContextMenu && (
+        <div
+          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[150px]"
+          style={{ top: projectContextMenu.y, left: projectContextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {confirmForgetPath === projectContextMenu.projectPath ? (
+            <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
+              <span className="text-muted font-medium">Remove?</span>
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    await api.forgetWorkspace(projectContextMenu.projectPath);
+                    fetchWorkspace();
+                    await loadWs();
+                    await loadSess();
+                    setProjectContextMenu(null);
+                    setConfirmForgetPath(null);
+                  }}
+                  className="text-accent font-bold hover:underline"
+                >
+                  Yes
+                </button>
+                <button
+                  onClick={() => setConfirmForgetPath(null)}
+                  className="text-muted hover:underline"
+                >
+                  No
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => {
+                setConfirmForgetPath(projectContextMenu.projectPath);
+              }}
+              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+            >
+              Remove from list
             </button>
           )}
         </div>

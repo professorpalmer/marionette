@@ -1582,7 +1582,7 @@ class ConversationalSession:
                     turn_had_invalid = True
                     continue
                 act_goal = act.goal
-                if act.kind in ("read_file", "write_file", "edit_file", "list_dir", "view_image"):
+                if act.kind in ("read_file", "write_file", "edit_file", "list_dir", "view_image", "open_project"):
                     act_goal = act.path or "(workspace root)"
                 elif act.kind == "run_command":
                     act_goal = act.command
@@ -1622,6 +1622,44 @@ class ConversationalSession:
                         "error": err_msg
                     })
                     self._append_action_result(act, aid, err_msg, is_native)
+                    continue
+
+                # ---- open_project branch --------------------------------------
+                if act.kind == "open_project":
+                    target_repo = (act.path or "").strip()
+                    if not target_repo:
+                        err_msg = "Error: path is required for open_project action"
+                        yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+                        self._append_action_result(act, aid, err_msg, is_native)
+                        continue
+                    if not os.path.isdir(target_repo):
+                        err_msg = f"Error: path '{target_repo}' is not an existing directory"
+                        yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+                        self._append_action_result(act, aid, err_msg, is_native)
+                        continue
+
+                    # Update active configuration and environment
+                    self.config.repo = target_repo
+                    os.environ["HARNESS_REPO"] = target_repo
+
+                    try:
+                        from harness.server import _cfg, _record_recent_workspace
+                        _cfg.repo = target_repo
+                        _record_recent_workspace(target_repo)
+                    except Exception as e:
+                        # Log or handle import/calling exceptions gracefully
+                        pass
+
+                    basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
+                    yield ConvEvent("action_result", {
+                        "id": aid,
+                        "num": 1,
+                        "types": ["workspace"],
+                        "adapter": "local",
+                        "mode": "tool",
+                        "artifacts": [{"type": "workspace", "headline": f"Opened project: {basename}"}]
+                    })
+                    self._append_action_result(act, aid, f"Opened project: {basename}", is_native)
                     continue
 
                 # ---- read_file branch -----------------------------------------

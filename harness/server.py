@@ -146,6 +146,129 @@ _WEB = Path(__file__).resolve().parent / "web"
 _state_dir = os.environ.get("HARNESS_STATE_DIR", "")
 _cfg = HarnessConfig.from_env()
 _WORKSPACE_JSON = os.path.expanduser("~/.pmharness/workspace.json")
+
+def _record_recent_workspace(target_repo: str) -> list:
+    import json
+    import os
+    import tempfile as _tf
+    ws_json_path = _WORKSPACE_JSON
+    try:
+        os.makedirs(os.path.dirname(ws_json_path), exist_ok=True)
+        recents = []
+        if os.path.exists(ws_json_path):
+            try:
+                with open(ws_json_path) as f:
+                    recents = json.load(f).get("recents", []) or []
+            except Exception:
+                recents = []
+        # never persist temp dirs (test/ephemeral state_dirs leak otherwise)
+        _tmproot = os.path.realpath(_tf.gettempdir())
+        def _persistable(_pth):
+            if not _pth:
+                return False
+            _rp = os.path.realpath(_pth)
+            if "PYTEST_CURRENT_TEST" not in os.environ:
+                if _rp.startswith(_tmproot) or "/var/folders/" in _rp or "/T/tmp" in _pth:
+                    return False
+            return os.path.isdir(_pth)
+        # prepend, dedupe (keep first occurrence), drop temp/dead dirs, cap 8
+        recents = [target_repo] + [r for r in recents if r != target_repo]
+        recents = [r for r in recents if _persistable(r)]
+        recents = recents[:8]
+
+        # Use atomic-write
+        target_dir = os.path.dirname(ws_json_path)
+        fd, temp_path = _tf.mkstemp(dir=target_dir, prefix=".tmp-")
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump({"repo": target_repo, "recents": recents}, f)
+            os.replace(temp_path, ws_json_path)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            raise e
+
+        try:
+            os.chmod(ws_json_path, 0o600)
+        except Exception:
+            pass
+        return recents
+    except Exception:
+        # Fallback to get recents if possible
+        try:
+            if os.path.exists(ws_json_path):
+                with open(ws_json_path) as f:
+                    return json.load(f).get("recents", []) or []
+        except Exception:
+            pass
+        return []
+
+def _forget_recent_workspace(forget_path: str) -> list:
+    import json
+    import os
+    import tempfile as _tf
+    ws_json_path = _WORKSPACE_JSON
+    try:
+        os.makedirs(os.path.dirname(ws_json_path), exist_ok=True)
+        recents = []
+        repo = ""
+        if os.path.exists(ws_json_path):
+            try:
+                with open(ws_json_path) as f:
+                    data = json.load(f)
+                    recents = data.get("recents", []) or []
+                    repo = data.get("repo", "")
+            except Exception:
+                recents = []
+        # never persist temp dirs (test/ephemeral state_dirs leak otherwise)
+        _tmproot = os.path.realpath(_tf.gettempdir())
+        def _persistable(_pth):
+            if not _pth:
+                return False
+            _rp = os.path.realpath(_pth)
+            if "PYTEST_CURRENT_TEST" not in os.environ:
+                if _rp.startswith(_tmproot) or "/var/folders/" in _rp or "/T/tmp" in _pth:
+                    return False
+            return os.path.isdir(_pth)
+
+        # remove forget_path
+        recents = [r for r in recents if r != forget_path]
+        recents = [r for r in recents if _persistable(r)]
+        recents = recents[:8]
+
+        # Use atomic-write
+        target_dir = os.path.dirname(ws_json_path)
+        fd, temp_path = _tf.mkstemp(dir=target_dir, prefix=".tmp-")
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump({"repo": repo, "recents": recents}, f)
+            os.replace(temp_path, ws_json_path)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            raise e
+
+        try:
+            os.chmod(ws_json_path, 0o600)
+        except Exception:
+            pass
+        return recents
+    except Exception:
+        # Fallback to get recents if possible
+        try:
+            if os.path.exists(ws_json_path):
+                with open(ws_json_path) as f:
+                    return json.load(f).get("recents", []) or []
+        except Exception:
+            pass
+        return []
+
 if not os.environ.get("HARNESS_REPO") and os.path.exists(_WORKSPACE_JSON):
     try:
         with open(_WORKSPACE_JSON, "r") as _ws_f:
@@ -540,7 +663,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/worktrees/add", "/api/worktrees/remove",
                       "/api/worktrees/prune", "/api/worktrees/max",
                       "/api/hooks/add", "/api/hooks/update", "/api/hooks/remove",
-                      "/api/workspace/open", "/api/codegraph/reindex",
+                      "/api/workspace/open", "/api/workspace/forget", "/api/codegraph/reindex",
                       "/api/file/write",
                       "/api/inline-edit",
                       "/api/commands/render",
@@ -769,32 +892,8 @@ class Handler(BaseHTTPRequestHandler):
             _cfg.repo = target_repo
             os.environ["HARNESS_REPO"] = target_repo
 
-            ws_json_path = os.path.expanduser("~/.pmharness/workspace.json")
             try:
-                os.makedirs(os.path.dirname(ws_json_path), exist_ok=True)
-                recents = []
-                if os.path.exists(ws_json_path):
-                    try:
-                        with open(ws_json_path) as f:
-                            recents = json.load(f).get("recents", []) or []
-                    except Exception:
-                        recents = []
-                # never persist temp dirs (test/ephemeral state_dirs leak otherwise)
-                _tmproot = os.path.realpath(_tf.gettempdir())
-                def _persistable(_pth):
-                    if not _pth:
-                        return False
-                    _rp = os.path.realpath(_pth)
-                    if _rp.startswith(_tmproot) or "/var/folders/" in _rp or "/T/tmp" in _pth:
-                        return False
-                    return os.path.isdir(_pth)
-                # prepend, dedupe (keep first occurrence), drop temp/dead dirs, cap 8
-                recents = [target_repo] + [r for r in recents if r != target_repo]
-                recents = [r for r in recents if _persistable(r)]
-                recents = recents[:8]
-                with open(ws_json_path, "w") as f:
-                    json.dump({"repo": target_repo, "recents": recents}, f)
-                os.chmod(ws_json_path, 0o600)
+                recents = _record_recent_workspace(target_repo)
             except Exception:
                 pass
 
@@ -849,6 +948,19 @@ class Handler(BaseHTTPRequestHandler):
                 "is_git": is_git,
                 "codegraph": _get_codegraph_status(target_repo),
                 "active_session": _sessions.active
+            }))
+
+        if path == "/api/workspace/forget":
+            target_repo = body.get("path", "").strip()
+            if not target_repo:
+                return self._send(400, json.dumps({"error": "Path is required"}))
+            try:
+                recents = _forget_recent_workspace(target_repo)
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)}))
+            return self._send(200, json.dumps({
+                "ok": True,
+                "recents": recents
             }))
 
         if path == "/api/workspaces/switch":
