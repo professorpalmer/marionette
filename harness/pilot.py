@@ -765,6 +765,118 @@ def parse_tool_calls(tool_calls: list) -> list[PilotAction]:
     return actions
 
 
+class StreamingSayExtractor:
+    """Incrementally extract the human-facing `say` string from a streaming
+    pilot JSON envelope ({"say": "...", "actions": [...]}) so prose renders
+    token-by-token in real time instead of dumping after the full parse.
+
+    feed(delta) returns the NEW clean prose characters for that delta (empty
+    when the delta is JSON scaffolding / the actions array / etc.). JSON string
+    escapes (newline, tab, quote, backslash, unicode) are decoded. If the
+    stream is NOT a JSON envelope (the model just talked), bare-prose mode
+    streams everything verbatim.
+
+    Character state machine over the raw stream:
+      START   -> first non-space decides json vs bare
+      SEEK    -> scanning for a "say"/"message"/"text" key + ':' + opening quote
+      IN_SAY  -> inside the say value; emit decoded chars until closing quote
+      DONE    -> say value closed; emit nothing more
+      BARE    -> not a JSON envelope; emit everything verbatim
+    """
+
+    _KEYS = ("say", "message", "text")
+
+    def __init__(self):
+        self._raw = ""
+        self._state = "START"
+        self._escape = False
+        self._uni = None          # str of collected hex digits, or None
+        self._bare_emitted = 0
+        self._key_search_from = 0  # index to resume key scanning from
+
+    def feed(self, delta: str) -> str:
+        if not delta:
+            return ""
+        self._raw += delta
+
+        if self._state == "START":
+            stripped = self._raw.lstrip()
+            if not stripped:
+                return ""
+            self._state = "SEEK" if stripped[0] == "{" else "BARE"
+
+        if self._state == "BARE":
+            out = self._raw[self._bare_emitted:]
+            self._bare_emitted = len(self._raw)
+            return out
+
+        if self._state == "DONE":
+            return ""
+
+        out = []
+        # Process only newly-arrived characters. We track absolute position via
+        # _key_search_from for the SEEK phase, and consume char-by-char in IN_SAY.
+        i = len(self._raw) - len(delta)
+        n = len(self._raw)
+        while i < n:
+            ch = self._raw[i]
+            if self._state == "SEEK":
+                # Look for a key followed by ':' then '"'. Cheap check: whenever
+                # we hit a '"', test whether the run ending here matches a key
+                # and is followed (after optional ws + ':') by an opening quote.
+                if ch == '"':
+                    # Find the matching opening quote of this key token.
+                    # Scan backward to the previous unescaped '"'.
+                    seg = self._raw[: i + 1]
+                    m = _re_say_key_open(seg)
+                    if m:
+                        # The opening quote of the value is the LAST char matched.
+                        self._state = "IN_SAY"
+                i += 1
+                continue
+            if self._state == "IN_SAY":
+                if self._escape:
+                    self._escape = False
+                    if ch == "u":
+                        self._uni = ""  # begin collecting 4 hex digits
+                    else:
+                        out.append({"n": "\n", "t": "\t", "r": "\r",
+                                    '"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f"}.get(ch, ch))
+                    i += 1
+                    continue
+                if self._uni is not None:
+                    self._uni += ch
+                    if len(self._uni) == 4:
+                        try:
+                            out.append(chr(int(self._uni, 16)))
+                        except Exception:
+                            pass
+                        self._uni = None
+                    i += 1
+                    continue
+                if ch == "\\":
+                    self._escape = True
+                    i += 1
+                    continue
+                if ch == '"':
+                    self._state = "DONE"
+                    i += 1
+                    break
+                out.append(ch)
+                i += 1
+                continue
+            break
+
+        return "".join(out)
+
+
+def _re_say_key_open(seg: str) -> bool:
+    """True if `seg` ends with a `"say"`/`"message"`/`"text"` key, optional
+    whitespace, a ':', optional whitespace, and the opening '"' of the value."""
+    import re
+    return bool(re.search(r'"(?:say|message|text)"\s*:\s*"$', seg))
+
+
 def parse_pilot_turn(text: str) -> PilotTurn:
     """Lenient parse of a pilot envelope from model output. Accepts:
     - a clean JSON object {say, actions}

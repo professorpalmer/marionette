@@ -327,6 +327,11 @@ class ConversationalSession:
         self._cg_cache_key = None
         self._cg_cache_section = ""
         self._cg_cache_symbols = 0
+        # Tracks prose already streamed to the client this turn via the
+        # StreamingSayExtractor, so the final `message` event can mark itself as
+        # already-shown (the frontend finalizes the streaming bubble in place
+        # rather than re-dumping the text).
+        self._streamed_prose = ""
 
     def state(self) -> str:
         if self._state == "thinking":
@@ -1360,6 +1365,7 @@ class ConversationalSession:
                         pass
 
             resp = None
+            self._streamed_prose = ""  # reset per step; set if this step streams
             for attempt in range(2):
                 sys_prompt = base_sys
                 if cg_section:
@@ -1388,6 +1394,7 @@ class ConversationalSession:
                         if is_interactive and _can_stream:
                             import queue
                             import threading
+                            from .pilot import StreamingSayExtractor
                             q = queue.Queue()
                             
                             def run_stream():
@@ -1405,15 +1412,27 @@ class ConversationalSession:
                             t = threading.Thread(target=run_stream, daemon=True)
                             t.start()
                             
+                            # The model streams a raw JSON envelope ({"say": "...",
+                            # "actions": [...]}). Extract just the human-facing `say`
+                            # prose incrementally so it renders token-by-token --
+                            # instead of streaming ugly JSON then dumping the parsed
+                            # prose all at once. streamed_prose tracks what we showed
+                            # so the final `message` can skip re-emitting it.
+                            say_extractor = StreamingSayExtractor()
+                            streamed_prose = []
                             while True:
                                 kind, val = q.get()
                                 if kind == "delta":
-                                    yield ConvEvent("message_delta", {"text": val})
+                                    clean = say_extractor.feed(val)
+                                    if clean:
+                                        streamed_prose.append(clean)
+                                        yield ConvEvent("message_delta", {"text": clean})
                                 elif kind == "done":
                                     resp = val
                                     break
                                 elif kind == "error":
                                     raise val
+                            self._streamed_prose = "".join(streamed_prose)
                         else:
                             resp = self.pilot.chat(self._history[1:], tools=tools_schema, system=sys_prompt)
                     else:
@@ -1520,7 +1539,11 @@ class ConversationalSession:
 
             cleaned_say_text = clean_say(turn.say) if turn.say else ""
             if cleaned_say_text:
-                yield ConvEvent("message", {"role": "assistant", "text": cleaned_say_text})
+                # If this prose was already streamed token-by-token, flag it so the
+                # frontend finalizes the existing streaming bubble in place instead
+                # of treating it as a brand-new message (which would re-dump it).
+                _already_streamed = bool(self._streamed_prose.strip())
+                yield ConvEvent("message", {"role": "assistant", "text": cleaned_say_text, "streamed": _already_streamed})
                 turn_prose.append(cleaned_say_text)
                 self._display_transcript.append({"type": "message", "role": "assistant", "text": cleaned_say_text})
             # record the pilot's turn in transcript (prose only -- the conversation)
