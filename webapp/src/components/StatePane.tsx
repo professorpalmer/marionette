@@ -51,13 +51,18 @@ export default function StatePane({ artifacts }: {
     };
   }, []);
 
-  // Poll /api/codegraph every 10s while indexing
+  // Poll /api/codegraph frequently while indexing so the panel flips to READY
+  // promptly on its own when the index finishes. setInterval waits one full
+  // interval before its first tick, so a slow (10s) poll left the panel showing
+  // INDEXING for up to 10s after completion -- which read as "stuck until you
+  // click the dir" (a manual click fires harness-config-changed -> instant
+  // refetch). A tight 2s poll makes the transition feel immediate.
   useEffect(() => {
     let timer: any = null;
     if (cg?.status === "indexing") {
       timer = setInterval(() => {
         fetchCg();
-      }, 10000);
+      }, 2000);
     }
     return () => {
       if (timer) clearInterval(timer);
