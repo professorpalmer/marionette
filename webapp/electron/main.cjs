@@ -371,6 +371,23 @@ function createWindow() {
   });
   if (isDev) win.loadURL(process.env.PMHARNESS_DEV_SERVER);
   else win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+
+  // Drop the reference when the window is closed so a reopen builds a clean one
+  // (and a failed renderer load doesn't leave a half-dead window bound to `win`).
+  win.on("closed", () => { win = null; });
+  // If the renderer fails to load (white screen / error), reload it once so a
+  // transient failure on reopen self-heals instead of stranding the user.
+  win.webContents.on("did-fail-load", (_e, errorCode, errorDesc, validatedURL, isMainFrame) => {
+    if (isMainFrame && errorCode !== -3) {  // -3 = aborted (navigation), ignore
+      _dbg2(`renderer did-fail-load ${errorCode} ${errorDesc} ${validatedURL}`);
+      setTimeout(() => {
+        try {
+          if (isDev) win && win.loadURL(process.env.PMHARNESS_DEV_SERVER);
+          else win && win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+        } catch {}
+      }, 500);
+    }
+  });
 }
 
 // Configure the in-app browser's PERSISTENT session partition. The <webview>
@@ -418,7 +435,19 @@ app.whenReady().then(async () => {
   configureBrowserSession();
   try { await startBackend(); } catch (e) { console.error("backend start failed:", e); }
   createWindow();
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  // Re-open: ensure a healthy backend, THEN (re)create the window. startBackend()
+  // is idempotent -- it reuses a live backend via the marker, or respawns one if
+  // it died -- so a reopened window always connects to a working backend.
+  app.on("activate", async () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      try { await startBackend(); } catch (e) { console.error("backend re-ensure failed:", e); }
+      createWindow();
+    } else {
+      // A window exists but may be hidden/behind -- surface it.
+      const w = BrowserWindow.getAllWindows()[0];
+      try { if (w.isMinimized()) w.restore(); w.show(); w.focus(); } catch {}
+    }
+  });
 });
 
 function cleanupBackend() {
@@ -429,7 +458,13 @@ function cleanupBackend() {
   }
 }
 app.on("window-all-closed", () => {
-  cleanupBackend();
-  if (process.platform !== "darwin") app.quit();
+  // On macOS the app stays alive when all windows close (standard behavior), so
+  // we MUST keep the backend running -- otherwise reopening a window (Cmd/Ctrl+W
+  // then reopen, or Dock click) loads a renderer against a dead backend and every
+  // API call errors. The backend is torn down only on a real quit (before-quit).
+  if (process.platform !== "darwin") {
+    cleanupBackend();
+    app.quit();
+  }
 });
 app.on("before-quit", cleanupBackend);
