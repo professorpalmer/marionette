@@ -49,3 +49,20 @@ def test_provider_models_no_key_returns_curated(monkeypatch):
     monkeypatch.setattr(p.__class__, "key", lambda self: None)
     merged = mv.provider_models(p)
     assert merged == list(p.pilot_models)
+
+
+def test_chat_model_filter_drops_non_chat():
+    """Live model fetch must drop image/video/audio/embedding/etc models -- a
+    pilot must be a text chat model. This kept veo/imagen/lyria/tts/embedding
+    entries out of the picker."""
+    from harness.model_fetch import _is_chat_model
+    # Chat models -> kept
+    for m in ["gpt-5.5", "gpt-5.4", "claude-opus-4-8", "gemini-3-pro-preview",
+              "deepseek-chat", "glm-5.2"]:
+        assert _is_chat_model(m), f"{m} should be a chat model"
+    # Non-chat -> dropped
+    for m in ["veo-3.0-generate-001", "imagen-4.0-generate-001", "lyria-3-pro-preview",
+              "gemini-embedding-2", "tts-1-hd", "whisper-1", "dall-e-3",
+              "gpt-realtime-2", "text-embedding-3-large", "aqa",
+              "gemini-2.5-pro-preview-tts", "nano-banana-pro-preview"]:
+        assert not _is_chat_model(m), f"{m} should NOT be a chat model"

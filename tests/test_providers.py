@@ -1,7 +1,18 @@
 """Provider registry: detection from env keys, driver selection by api_mode,
 spec resolution, and MIT attribution presence. Data adapted from Hermes (MIT)."""
 import os
+import tempfile
+import pytest
 from harness import providers as prov
+
+
+@pytest.fixture(autouse=True)
+def _isolate_disconnected(monkeypatch):
+    """Point provider-disconnect state at an empty temp dir so these tests do not
+    inherit the developer's real ~/.pmharness/disconnected.json (which would make
+    a keyed provider read as unavailable)."""
+    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
+    yield
 
 
 def test_attribution_present():

@@ -3011,27 +3011,20 @@ def _pilot_preflight():
 
 
 def _available_pilots():
-    """Pilot 'provider:model' specs for every provider whose key is set in the
-    environment. Spans Anthropic/OpenAI/OpenRouter/Gemini/DeepSeek/Z.AI/... -- the
-    user picks from whatever they actually have keys for. The current driver is
-    always first so the picker shows it selected.
+    """The pilot picker's model list: the user's ENABLED set (curated in
+    Settings -> Models), filtered to providers that currently have a key and are
+    not disconnected. The Settings tab is the curation surface -- it shows the
+    FULL live catalog (incl. newly released models like gpt-5.5) as toggles; the
+    picker shows only what is toggled on there, so the two always agree.
 
-    The picker shows the FULL live-merged catalog for keyed providers (so newly
-    released models like gpt-5.5 appear automatically), with the user's curated
-    `enabled` set used only to ORDER it (enabled specs first). Previously a stale
-    `enabled` set hid every model not in it -- which is why new live models never
-    showed up. Curation/hiding lives in Settings -> Models, not here."""
+    The current driver is forced first so the picker shows it selected. If the
+    user has not curated anything yet, enabled_pilots() falls back to the full
+    available set."""
     from . import model_visibility as _mv
     cur = _cfg.driver
-    # Full available catalog (live fetch merged with curated fallback) for every
-    # provider that currently has a key.
-    full = [row["spec"] for row in _mv.catalog(available_only=True)]
-    enabled = [s for s in _mv.get_enabled() if s in set(full)]
-    enabled_set = set(enabled)
-    # Order: current driver, then enabled (curated) specs, then everything else
-    # available -- so curated favorites stay on top but new models are visible.
-    rest = [s for s in full if s not in enabled_set and s != cur]
-    ordered = [cur] + [s for s in enabled if s != cur] + rest
+    pilots = _mv.enabled_pilots()
+    # ensure the current driver appears first (it may already be in the list)
+    ordered = [cur] + [p for p in pilots if p != cur]
     # De-dup while preserving order.
     seen = set()
     out = []

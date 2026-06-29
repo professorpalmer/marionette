@@ -96,6 +96,24 @@ def _fetch_provider_models(provider, key: str) -> list[str]:
     return []
 
 
+# Substrings that mark a model as NOT a chat/pilot model (image/video/audio/
+# embedding/moderation/realtime/etc). These pollute the picker -- a pilot must be
+# a text chat model. Matched case-insensitively against the bare model id.
+_NON_CHAT_MARKERS = (
+    "embedding", "embed", "tts", "whisper", "audio", "transcribe", "realtime",
+    "image", "imagen", "veo", "lyria", "dall-e", "dalle", "vision-only",
+    "moderation", "rerank", "guard", "aqa", "speech", "music", "video",
+    "robotics", "computer-use", "-tts", "nano-banana",
+)
+
+
+def _is_chat_model(model_id: str) -> bool:
+    m = (model_id or "").lower()
+    if not m:
+        return False
+    return not any(marker in m for marker in _NON_CHAT_MARKERS)
+
+
 def fetch_models(provider, key: str, *, force: bool = False) -> list[str]:
     """Live model ids for a keyed provider, memoized in-process and cached on
     disk with a TTL. Returns [] on total failure (caller merges with curated)."""
@@ -115,6 +133,8 @@ def fetch_models(provider, key: str, *, force: bool = False) -> list[str]:
             _MEM_AT[name] = time.monotonic()
             return models
     fresh = _fetch_provider_models(provider, key)
+    # Keep only chat/pilot-capable models (drop image/video/audio/embedding/etc).
+    fresh = [m for m in fresh if _is_chat_model(m)]
     if fresh:
         disk[name] = {"fetched_at": now, "models": fresh}
         _write_cache(disk)
