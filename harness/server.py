@@ -423,44 +423,79 @@ _wiki_graph_cache = {}  # base_url -> (monotonic_expiry, payload_dict)
 _WIKI_GRAPH_TTL = 60.0  # seconds
 
 
+# Handle to the in-flight CodeGraph indexer: (repo_path, Popen). Lets status
+# self-heal -- a wedged "indexing" flag can never outlive the actual job -- and
+# prevents a SECOND indexer from spawning while one runs (concurrent indexers
+# collide on the same SQLite and Puppetmaster fails them lock-busy, which
+# manifested as the panel locking up + metrics vanishing).
+_codegraph_index_proc = None  # tuple[str, subprocess.Popen] | None
+_codegraph_index_lock = threading.Lock()
+
+
+def _codegraph_index_alive() -> bool:
+    """True only while the tracked indexer subprocess is actually running."""
+    p = _codegraph_index_proc
+    if p is None:
+        return False
+    try:
+        return p[1].poll() is None
+    except Exception:
+        return False
+
+
 def _index_codegraph_bg(repo_path: str):
     global _codegraph_status, _codegraph_status_reason, _codegraph_status_cache
     if not _puppetmaster_available():
         _codegraph_status = "unsupported"
         _codegraph_status_reason = "puppetmaster not found -- codegraph/swarm unavailable"
         return
-    _codegraph_status = "indexing"
-    _codegraph_status_reason = None
-    # Invalidate any cached status for this repo so the panel does not show
-    # stale "ready" stats while a fresh (re)index is running.
-    _codegraph_status_cache.pop(repo_path, None)
-    try:
-        import subprocess
-        proc = subprocess.Popen(
-            _puppetmaster_cmd("codegraph", "init", "--index"),
-            cwd=repo_path,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
+    global _codegraph_index_proc
+    # Guard against a second indexer while one is already running -- concurrent
+    # codegraph indexers collide on the same SQLite (lock-busy) and wedge the panel.
+    with _codegraph_index_lock:
+        if _codegraph_index_alive():
+            _codegraph_status = "indexing"
+            return
+        _codegraph_status = "indexing"
+        _codegraph_status_reason = None
+        # Invalidate any cached status for this repo so the panel does not show
+        # stale "ready" stats while a fresh (re)index is running.
+        _codegraph_status_cache.pop(repo_path, None)
+        try:
+            import subprocess
+            proc = subprocess.Popen(
+                _puppetmaster_cmd("codegraph", "init", "--index"),
+                cwd=repo_path,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            _codegraph_index_proc = (repo_path, proc)
+        except Exception:
+            _codegraph_status = "unsupported"
+            return
 
-        def wait_and_update():
-            global _codegraph_status
-            try:
-                proc.wait(timeout=600)  # max 10 mins
-                if proc.returncode == 0:
-                    _codegraph_status = "ready"
-                else:
-                    _codegraph_status = "unsupported"
-            except Exception:
+    def wait_and_update():
+        global _codegraph_status, _codegraph_index_proc
+        try:
+            proc.wait(timeout=600)  # max 10 mins
+            if proc.returncode == 0:
+                _codegraph_status = "ready"
+            else:
                 _codegraph_status = "unsupported"
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+        except Exception:
+            _codegraph_status = "unsupported"
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        finally:
+            # Clear the tracker so status can self-heal and a future index can run.
+            with _codegraph_index_lock:
+                if _codegraph_index_proc and _codegraph_index_proc[1] is proc:
+                    _codegraph_index_proc = None
+            _codegraph_status_cache.pop(repo_path, None)
 
-        threading.Thread(target=wait_and_update, daemon=True).start()
-    except Exception:
-        _codegraph_status = "unsupported"
+    threading.Thread(target=wait_and_update, daemon=True).start()
 
 
 def _reindex_codegraph_bg(repo_path: str):
@@ -469,35 +504,48 @@ def _reindex_codegraph_bg(repo_path: str):
         _codegraph_status = "unsupported"
         _codegraph_status_reason = "puppetmaster not found -- codegraph/swarm unavailable"
         return
-    _codegraph_status = "indexing"
-    _codegraph_status_reason = None
-    try:
-        import subprocess
-        proc = subprocess.Popen(
-            _puppetmaster_cmd("codegraph", "index"),
-            cwd=repo_path,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
+    global _codegraph_index_proc
+    with _codegraph_index_lock:
+        if _codegraph_index_alive():
+            _codegraph_status = "indexing"
+            return
+        _codegraph_status = "indexing"
+        _codegraph_status_reason = None
+        _codegraph_status_cache.pop(repo_path, None)
+        try:
+            import subprocess
+            proc = subprocess.Popen(
+                _puppetmaster_cmd("codegraph", "index"),
+                cwd=repo_path,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            _codegraph_index_proc = (repo_path, proc)
+        except Exception:
+            _codegraph_status = "unsupported"
+            return
 
-        def wait_and_update():
-            global _codegraph_status
-            try:
-                proc.wait(timeout=600)  # max 10 mins
-                if proc.returncode == 0:
-                    _codegraph_status = "ready"
-                else:
-                    _codegraph_status = "unsupported"
-            except Exception:
+    def wait_and_update():
+        global _codegraph_status, _codegraph_index_proc
+        try:
+            proc.wait(timeout=600)  # max 10 mins
+            if proc.returncode == 0:
+                _codegraph_status = "ready"
+            else:
                 _codegraph_status = "unsupported"
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+        except Exception:
+            _codegraph_status = "unsupported"
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        finally:
+            with _codegraph_index_lock:
+                if _codegraph_index_proc and _codegraph_index_proc[1] is proc:
+                    _codegraph_index_proc = None
+            _codegraph_status_cache.pop(repo_path, None)
 
-        threading.Thread(target=wait_and_update, daemon=True).start()
-    except Exception:
-        _codegraph_status = "unsupported"
+    threading.Thread(target=wait_and_update, daemon=True).start()
 
 
 def _get_codegraph_status(repo_path: str) -> str:
@@ -507,8 +555,16 @@ def _get_codegraph_status(repo_path: str) -> str:
     if not _puppetmaster_available():
         _codegraph_status = "unsupported"
         return "unsupported"
+    # Self-heal: trust the "indexing" flag ONLY while the indexer subprocess is
+    # actually alive. A stale flag (proc finished but the wait thread lost a
+    # race, or an old global left over) must not pin the panel on "indexing"
+    # forever -- fall through to the disk check below. This is the bug that
+    # required a full app restart to clear.
     if _codegraph_status == "indexing":
-        return "indexing"
+        if _codegraph_index_alive():
+            return "indexing"
+        # Indexer is not running -> resolve real state from disk.
+        _codegraph_status = "ready" if os.path.isdir(os.path.join(repo_path, ".codegraph")) else "unsupported"
 
     if os.path.isdir(os.path.join(repo_path, ".codegraph")):
         _codegraph_status = "ready"
@@ -765,6 +821,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/codegraph/reindex":
             if not repo or not os.path.isdir(repo):
                 return self._send(400, json.dumps({"error": "No open workspace"}))
+            # Don't stack a second indexer on top of a running one -- concurrent
+            # codegraph indexers collide on the same SQLite and wedge the panel.
+            if _codegraph_index_alive():
+                return self._send(200, json.dumps({"ok": True, "status": "indexing", "note": "already indexing"}))
             _reindex_codegraph_bg(repo)
             return self._send(200, json.dumps({"ok": True, "status": "indexing"}))
         if path == "/api/commands/render":
@@ -1623,6 +1683,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, json.dumps({"saved": saved}))
 
     def do_GET(self):
+        global _codegraph_status
         u = urlparse(self.path)
         if u.path in ("/", "/index.html"):
             html = (_WEB / "index.html").read_text()
@@ -1949,7 +2010,15 @@ class Handler(BaseHTTPRequestHandler):
                     "repo": repo
                 }))
 
-            if _codegraph_status == "indexing":
+            # Only report "indexing" while the indexer subprocess is actually
+            # alive. If the flag is stale (job finished), fall through to the real
+            # status query so the panel shows live metrics instead of nulls --
+            # this is what previously stuck the panel on INDEXING until a restart.
+            if _codegraph_status == "indexing" and not _codegraph_index_alive():
+                _codegraph_status = "ready" if os.path.isdir(os.path.join(repo, ".codegraph")) else "unsupported"
+                _codegraph_status_cache.pop(repo, None)
+
+            if _codegraph_status == "indexing" and _codegraph_index_alive():
                 last_indexed = None
                 try:
                     import puppetmaster.codegraph as cg
