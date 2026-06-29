@@ -275,6 +275,7 @@ class ConversationalSession:
         # corrupt the transcript, so we reject re-entrant streams rather than
         # silently corrupting. (The harness is a local single-user tool.)
         self._busy = threading.Lock()
+        self._busy_since = 0.0  # monotonic time the lock was acquired (0 = free)
         # cooperative cancel: set by the server when the SSE client disconnects
         # so run_auto halts promptly instead of burning budget for a gone client.
         self._cancel = threading.Event()
@@ -1223,8 +1224,26 @@ class ConversationalSession:
         """Process one user message: drive the pilot loop until it yields back."""
         self._cancel.clear()
         if not self._busy.acquire(blocking=False):
-            yield ConvEvent("error", {"error": "session busy: another request is in flight"})
-            return
+            # The lock is held. Normally that means a turn is genuinely streaming.
+            # But if a previous turn's generator was never closed (hard crash /
+            # abandoned stream), the lock LEAKS and the pilot looks dead forever.
+            # Detect a stale lock -- held with no live stream for too long -- and
+            # forcibly recover it so the user isn't permanently wedged.
+            import time as _t
+            held_for = _t.monotonic() - self._busy_since if self._busy_since else 0.0
+            stale = self._busy_since and held_for > 1.5 and self._state == "idle"
+            if stale:
+                try:
+                    self._busy.release()
+                except RuntimeError:
+                    pass
+                if not self._busy.acquire(blocking=False):
+                    yield ConvEvent("error", {"error": "session busy: another request is in flight"})
+                    return
+            else:
+                yield ConvEvent("error", {"error": "session busy: another request is in flight"})
+                return
+        self._busy_since = __import__("time").monotonic()
         if self._is_correction(user_message):
             self._corrections.append(user_message)
         original_sys = self._history[0]["content"]
@@ -1301,6 +1320,7 @@ class ConversationalSession:
                 yield ev
         finally:
             self._history[0]["content"] = original_sys
+            self._busy_since = 0.0
             self._busy.release()
 
     def _send_locked(self, user_message: str, images: Optional[list] = None, plan: bool = False) -> Iterator[ConvEvent]:

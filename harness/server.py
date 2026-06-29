@@ -2818,8 +2818,9 @@ class Handler(BaseHTTPRequestHandler):
         from .hooks import run_hooks
         ctx = {"session_id": _sessions.active or "", "prompt": prompt}
         run_hooks("preRun", ctx)
+        gen = _session.run(prompt, images=images or None)
         try:
-            for ev in _session.run(prompt, images=images or None):
+            for ev in gen:
                 payload = json.dumps({"kind": ev.kind, "turn": ev.turn, "data": ev.data})
                 self.wfile.write(f"data: {payload}\n\n".encode())
                 self.wfile.flush()
@@ -2828,6 +2829,13 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
+            # Close the generator so its finally (the _busy release) runs even on
+            # client disconnect -- otherwise the session lock leaks and every later
+            # message silently fails with "session busy".
+            try:
+                gen.close()
+            except Exception:
+                pass
             run_hooks("postRun", ctx)
 
     def _stream_auto(self, objective: str):
@@ -2848,9 +2856,10 @@ class Handler(BaseHTTPRequestHandler):
         from .hooks import run_hooks
         ctx = {"session_id": _sessions.active or "", "objective": objective}
         run_hooks("preRun", ctx)
+        budget = AutoBudget.from_env()
+        gen = _pilot.run_auto(objective, budget)
         try:
-            budget = AutoBudget.from_env()
-            for ev in _pilot.run_auto(objective, budget):
+            for ev in gen:
                 payload = json.dumps({"kind": ev.kind, "data": ev.data})
                 self.wfile.write(f"data: {payload}\n\n".encode())
                 self.wfile.flush()
@@ -2861,6 +2870,13 @@ class Handler(BaseHTTPRequestHandler):
             # instead of burning budget for a gone client.
             _pilot.cancel()
         finally:
+            # Close the generator so its finally (the _busy release) runs even on
+            # disconnect -- otherwise the session lock leaks and later messages
+            # silently fail with "session busy".
+            try:
+                gen.close()
+            except Exception:
+                pass
             run_hooks("postRun", ctx)
             if _sessions.active:
                 save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
@@ -3071,8 +3087,16 @@ class Handler(BaseHTTPRequestHandler):
         from .hooks import run_hooks
         ctx = {"session_id": _sessions.active or "", "message": message}
         run_hooks("preRun", ctx)
+        # Hold the generator so we can ALWAYS close it -- closing runs send()'s
+        # finally block, which releases the per-session _busy lock. If the client
+        # disconnects mid-stream (BrokenPipeError below) and we merely abandon the
+        # loop, that finally never runs and the lock LEAKS -- after which every
+        # subsequent message silently fails with "session busy" and the pilot
+        # appears to "stop doing anything." Closing the generator in finally is
+        # the fix.
+        gen = _pilot.send(message, images=images or None, plan=plan)
         try:
-            for ev in _pilot.send(message, images=images or None, plan=plan):
+            for ev in gen:
                 payload = json.dumps({"kind": ev.kind, "data": ev.data})
                 self.wfile.write(f"data: {payload}\n\n".encode())
                 self.wfile.flush()
@@ -3088,6 +3112,13 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
+            # Close the generator so send()'s finally (the _busy release) always
+            # runs, even on client disconnect. GeneratorExit from close() is
+            # swallowed by the generator's own finally; guard just in case.
+            try:
+                gen.close()
+            except Exception:
+                pass
             run_hooks("postRun", ctx)
             if _sessions.active:
                 save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
