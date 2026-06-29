@@ -17,7 +17,7 @@ from pmharness.reasoning import extract_reasoning, strip_think_blocks
 
 
 class AnthropicDriver:
-    supports_streaming = False
+    supports_streaming = True
 
     def __init__(self, name: str, model: str, *,
                  base_url: str = "https://api.anthropic.com/v1",
@@ -109,9 +109,10 @@ class AnthropicDriver:
 
         return with_retry(_call)
 
-    def chat(self, messages: list, *, tools: list | None = None, system: str | None = None) -> DriverResponse:
-        url = f"{self.base_url}/messages"
-
+    def _build_body(self, messages: list, tools: list | None, system: str | None) -> dict:
+        """Build the Anthropic /v1/messages request body (messages + tools +
+        system). Shared by chat() and chat_stream() so both speak the same
+        native tool-calling protocol -- only streaming vs blocking differs."""
         anthropic_msgs = []
         for msg in messages:
             role = msg.get("role")
@@ -203,8 +204,9 @@ class AnthropicDriver:
             body["tools"] = anthropic_tools
             body["tool_choice"] = {"type": "auto"}
 
-        data = json.dumps(body).encode("utf-8")
+        return body
 
+    def _headers(self) -> dict:
         headers = {
             "Content-Type": "application/json",
             "x-api-key": self._key(),
@@ -212,6 +214,13 @@ class AnthropicDriver:
         }
         if self.enable_prompt_cache:
             headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+        return headers
+
+    def chat(self, messages: list, *, tools: list | None = None, system: str | None = None) -> DriverResponse:
+        url = f"{self.base_url}/messages"
+        body = self._build_body(messages, tools, system)
+        data = json.dumps(body).encode("utf-8")
+        headers = self._headers()
 
         def _call() -> DriverResponse:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -292,3 +301,141 @@ class AnthropicDriver:
             )
 
         return with_retry(_call)
+
+    def chat_stream(self, messages: list, *, tools: list | None = None,
+                    system: str | None = None, on_delta=None) -> DriverResponse:
+        """Streaming counterpart of chat() over Anthropic's SSE Messages API.
+        Emits text deltas via on_delta(str) as they arrive, while assembling the
+        full text + native tool_use calls so the return value matches chat()
+        exactly. This is what makes Claude prose render token-by-token instead of
+        dumping after the full response, and it preserves native tool calling."""
+        url = f"{self.base_url}/messages"
+        body = self._build_body(messages, tools, system)
+        body["stream"] = True
+        data = json.dumps(body).encode("utf-8")
+        headers = self._headers()
+        if on_delta is None:
+            on_delta = lambda _t: None
+
+        t0 = time.time()
+        full_text_pieces = []
+        # tool_use blocks assembled by content-block index.
+        tool_blocks: dict = {}
+        tokens_in = 0
+        tokens_out = 0
+        cache_write = 0
+        cache_read = 0
+        stop_reason = ""
+
+        try:
+            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if not payload:
+                        continue
+                    try:
+                        evt = json.loads(payload)
+                    except Exception:
+                        continue
+                    etype = evt.get("type")
+
+                    if etype == "message_start":
+                        usage = (evt.get("message") or {}).get("usage") or {}
+                        tokens_in = int(usage.get("input_tokens", 0) or 0)
+                        cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+                        cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+
+                    elif etype == "content_block_start":
+                        idx = evt.get("index")
+                        block = evt.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            tool_blocks[idx] = {
+                                "id": block.get("id") or "",
+                                "name": block.get("name") or "",
+                                "args": "",
+                            }
+
+                    elif etype == "content_block_delta":
+                        idx = evt.get("index")
+                        delta = evt.get("delta") or {}
+                        dtype = delta.get("type")
+                        if dtype == "text_delta":
+                            piece = delta.get("text") or ""
+                            if piece:
+                                full_text_pieces.append(piece)
+                                on_delta(piece)
+                        elif dtype == "input_json_delta":
+                            # Streamed tool-call arguments (partial JSON).
+                            if idx in tool_blocks:
+                                tool_blocks[idx]["args"] += delta.get("partial_json") or ""
+
+                    elif etype == "message_delta":
+                        usage = evt.get("usage") or {}
+                        tokens_out = int(usage.get("output_tokens", tokens_out) or tokens_out)
+                        sr = (evt.get("delta") or {}).get("stop_reason")
+                        if sr:
+                            stop_reason = sr
+
+                    elif etype == "error":
+                        err = evt.get("error") or {}
+                        return DriverResponse(
+                            text="", model=self.name,
+                            error=f"{err.get('type','error')}: {err.get('message','')}",
+                            latency_ms=(time.time() - t0) * 1000.0,
+                            meta={"stream_started": bool(full_text_pieces)},
+                        )
+
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:500]
+            return DriverResponse(
+                text="", model=self.name, error=f"HTTP {e.code}: {detail}",
+                latency_ms=(time.time() - t0) * 1000.0,
+                meta={"stream_started": bool(full_text_pieces)},
+            )
+        except Exception as e:
+            return DriverResponse(
+                text="", model=self.name, error=repr(e),
+                latency_ms=(time.time() - t0) * 1000.0,
+                meta={"stream_started": bool(full_text_pieces)},
+            )
+
+        latency = (time.time() - t0) * 1000.0
+        full_text = "".join(full_text_pieces)
+
+        tool_calls = []
+        for idx in sorted(tool_blocks.keys()):
+            tb = tool_blocks[idx]
+            args = tb["args"] or "{}"
+            # Validate the assembled JSON; fall back to empty object if malformed.
+            try:
+                json.loads(args)
+            except Exception:
+                args = "{}"
+            tool_calls.append({
+                "id": tb["id"],
+                "type": "function",
+                "function": {"name": tb["name"], "arguments": args},
+            })
+
+        reasoning = extract_reasoning({"content": full_text})
+        pure_text = strip_think_blocks(full_text)
+
+        return DriverResponse(
+            text=pure_text,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            latency_ms=latency,
+            model=self.name,
+            meta={
+                "tool_calls": tool_calls,
+                "reasoning": reasoning,
+                "finish_reason": stop_reason,
+                "cache_write_tokens": cache_write,
+                "cache_read_tokens": cache_read,
+                "stream_started": bool(full_text_pieces),
+            },
+        )

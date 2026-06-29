@@ -21,7 +21,9 @@ def test_anthropic_supports_streaming():
         model="claude-3-5-sonnet",
         api_key_env="ANTHROPIC_API_KEY"
     )
-    assert driver.supports_streaming is False
+    # AnthropicDriver now streams via SSE (chat_stream); prose renders token-by-token.
+    assert driver.supports_streaming is True
+    assert callable(driver.chat_stream)
 
 def test_anthropic_chat_tools_and_system(monkeypatch):
     driver = AnthropicDriver(
