@@ -15,6 +15,7 @@ export type Settings = {
   reviewEditsBeforeApply?: boolean;
   autoCommandGuard?: boolean;
   commandTimeout?: string;
+  maxPilotSteps?: string;
   wiki_auto?: boolean;
   state_dir: string;
   repo: string;

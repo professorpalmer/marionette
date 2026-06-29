@@ -771,6 +771,48 @@ class ConversationalSession:
         import tempfile
         return getattr(self, "state_dir", None) or tempfile.gettempdir()
 
+    def _sanitize_tool_pairs(self) -> None:
+        """Guarantee every assistant tool_call has a matching tool result before
+        the next model request. Anthropic 400s ("tool_use ids were found without
+        tool_result blocks immediately after") if an assistant message carries
+        tool_calls that are never answered -- which happens when the action loop
+        is cut short mid-spree (cancel, steer, a worker hitting its step ceiling,
+        an exception). For any dangling tool_call id, synthesize a stub tool
+        result so history stays valid. Idempotent and cheap; safe to call before
+        every request."""
+        history = self._history
+        # Collect tool_call ids that already have a matching tool result.
+        answered = set()
+        for m in history:
+            if m.get("role") == "tool":
+                tcid = m.get("tool_call_id")
+                if tcid:
+                    answered.add(tcid)
+        # Walk assistant messages; for each tool_call without an answer, insert a
+        # stub tool result IMMEDIATELY after that assistant message.
+        i = 0
+        out = []
+        for m in history:
+            out.append(m)
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                # Find which of this message's tool_calls are unanswered.
+                needed = []
+                for tc in m.get("tool_calls") or []:
+                    tcid = tc.get("id")
+                    if tcid and tcid not in answered:
+                        needed.append(tcid)
+                if needed:
+                    # Only insert stubs if the NEXT message isn't already the
+                    # matching tool result(s) for them (avoid duplicate inserts).
+                    for tcid in needed:
+                        out.append({
+                            "role": "tool",
+                            "tool_call_id": tcid,
+                            "content": "(no result: the previous action was interrupted before it completed)",
+                        })
+                        answered.add(tcid)
+        self._history = out
+
     def _append_action_result(self, act: Any, aid: str, content: str, is_native: bool) -> None:
         tc_id = getattr(act, "tool_call_id", None) or aid
         from harness.context_budget import maybe_persist_result
@@ -1295,8 +1337,23 @@ class ConversationalSession:
         turn_prose: list = []      # accumulate pilot prose for the digest
 
         consecutive_non_productive = 0
-        max_steps = 2 * HARD_PILOT_STEPS
-        for step in range(max_steps):
+        # Step ceiling per user message, read LIVE from the env each turn so a
+        # Settings change applies without a restart. 0 (or negative) means
+        # UNLIMITED -- true autopilot: loop until the pilot is done, the budget
+        # governor halts it, or the user stops it. Otherwise cap at 2x the
+        # configured pilot-step budget.
+        import itertools as _itertools
+        try:
+            _pilot_steps = int(os.environ.get("HARNESS_MAX_PILOT_STEPS", str(HARD_PILOT_STEPS)))
+        except ValueError:
+            _pilot_steps = HARD_PILOT_STEPS
+        if _pilot_steps <= 0:
+            _step_iter = _itertools.count()
+            max_steps = 0  # 0 == unlimited (used by the limit message below)
+        else:
+            max_steps = 2 * _pilot_steps
+            _step_iter = range(max_steps)
+        for step in _step_iter:
             if self._cancel.is_set():
                 yield ConvEvent("interrupted", {"reason": "session interrupted"})
                 return
@@ -1377,6 +1434,10 @@ class ConversationalSession:
                 self._history[0]["content"] = sys_prompt
                 prompt = self._render_history()
 
+                # Guarantee tool_use/tool_result pairing so a prior interrupted
+                # spree (cancel/steer/worker-ceiling/exception) can't 400 the next
+                # request with a dangling tool_use.
+                self._sanitize_tool_pairs()
                 try:
                     if hasattr(self.pilot, "chat"):
                         from .pilot import build_tools_schema

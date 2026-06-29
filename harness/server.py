@@ -3099,6 +3099,7 @@ def _get_settings_dict():
         "wiki_auto": getattr(_cfg, "wiki_auto", False),
         "autoCommandGuard": getattr(_pilot, "_auto_command_guard", True),
         "commandTimeout": (os.environ.get("HARNESS_COMMAND_TIMEOUT", "").strip() or "120"),
+        "maxPilotSteps": (os.environ.get("HARNESS_MAX_PILOT_STEPS", "").strip() or "40"),
         "state_dir": _session.state_dir,
         "repo": _cfg.repo,
         "has_api_key": status["has_key"],
