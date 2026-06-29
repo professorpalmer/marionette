@@ -2389,8 +2389,8 @@ function ActivityGroup({
     }
     if (it.kind === "codegraph_context") {
       return (
-        <div key={idx} className="flex items-center gap-1.5 py-0.5 text-[10px] text-accent/70 select-none" title={it.query ? `CodeGraph consulted for: ${it.query}` : "CodeGraph consulted"}>
-          <Share2 size={9} className="text-accent/70" />
+        <div key={idx} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/70 select-none" title={it.query ? `CodeGraph consulted for: ${it.query}` : "CodeGraph consulted"}>
+          <Share2 size={9} className="text-faint/60" />
           <span>CodeGraph consulted{it.symbols > 0 ? ` -- ${it.symbols} symbols` : ""}</span>
         </div>
       );
@@ -2415,16 +2415,16 @@ function ActivityGroup({
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-panel2/20 border border-edge/30 hover:bg-panel2/40 transition text-[11px] text-muted w-fit select-none"
       >
-        {open ? <ChevronDown size={11} className="text-faint" /> : <ChevronRight size={11} className="text-faint" />}
-        {anyRunning ? <Loader2 size={11} className="animate-spin text-accent" /> : <Share2 size={11} className="text-accent" />}
-        <span className="text-txt/80 font-medium">
+        {open ? <ChevronDown size={11} className="text-faint/70" /> : <ChevronRight size={11} className="text-faint/70" />}
+        {anyRunning ? <Loader2 size={11} className="animate-spin text-faint" /> : <Share2 size={10} className="text-faint/70" />}
+        <span className="text-txt/70 font-medium tracking-tight">
           {anyRunning ? "Investigating" : "Investigated"}
         </span>
         <span className="text-faint">
           {actionCount} step{actionCount === 1 ? "" : "s"}{kindSummary ? ` -- ${kindSummary}` : ""}
         </span>
         {cgItems.length > 0 && (
-          <span className="ml-0.5 text-accent/80">+ CodeGraph</span>
+          <span className="ml-0.5 text-faint/70">+ CodeGraph</span>
         )}
       </button>
       {open && (
@@ -2697,35 +2697,38 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   const toolName = card.kind || "swarm";
   const meta = getCardMeta(card);
 
+  // Hermes tool-row spec: monochrome. Success is SILENT (no glyph -- the row
+  // reads as done without a checkmark); only running (spinner) and error
+  // (destructive) carry a leading glyph. Tool name is secondary grey, not
+  // colored/bold. Meta is the faintest tertiary tier.
+  const isErr = !!card.result?.error;
   return (
-    <div className="flex flex-col w-full py-0.5 select-none">
+    <div className="flex flex-col w-full select-none">
       <button
         onClick={onToggle}
-        className="flex items-center justify-between w-full py-0.5 px-2 rounded hover:bg-panel2/60 border-l-2 border-transparent hover:border-accent text-left text-[12px] font-mono group transition"
+        className="flex items-center justify-between w-full py-1 px-2 rounded-md hover:bg-panel2/40 text-left text-[11px] font-mono group transition-colors"
       >
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <div className="flex items-center justify-center w-3 h-3 shrink-0">
+          <div className="flex items-center justify-center w-3.5 h-3.5 shrink-0">
             {card.running ? (
-              <Loader2 size={11} className="animate-spin text-accent" />
-            ) : card.result?.error ? (
-              <span className="w-1.5 h-1.5 rounded-full bg-risk/80" />
-            ) : (
-              <span className="w-1.5 h-1.5 rounded-full bg-good/80" />
-            )}
+              <Loader2 size={11} className="animate-spin text-faint/70" />
+            ) : isErr ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-risk/70" />
+            ) : null}
           </div>
-          <span className="text-accent font-semibold shrink-0">
+          <span className={`font-medium shrink-0 ${isErr ? "text-risk/85" : "text-txt/70"}`}>
             {toolName}
           </span>
-          <span className="text-muted truncate max-w-[70%]" title={card.goal}>
+          <span className="text-faint/85 truncate max-w-[70%] font-normal" title={card.goal}>
             {card.goal}
           </span>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0 text-[10px] text-faint select-none">
+        <div className="flex items-center gap-2 shrink-0 text-[10px] text-faint/60 select-none tabular-nums">
           {meta && <span>{meta}</span>}
           <ChevronRight
             size={11}
-            className={`text-faint group-hover:text-muted transition shrink-0 ${
+            className={`text-faint/40 group-hover:text-faint/70 transition shrink-0 ${
               card.open ? "rotate-90" : ""
             }`}
           />
@@ -2744,7 +2747,7 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
               {card.result.adapter === "demo" && <div className="text-warn text-[10px] mt-1 font-sans">demo substrate -- not real codebase analysis</div>}
               {card.result.artifacts.map((a, i) => (
                 <div key={i} className="flex gap-2 py-0.5 border-t border-edge/30 mt-1 items-center font-sans">
-                  <span className="text-[9px] uppercase px-1.5 rounded bg-accent2 text-accent h-fit leading-none py-0.5">{a.type}</span>
+                  <span className="text-[9px] uppercase px-1.5 rounded bg-panel2 text-faint h-fit leading-none py-0.5 border border-edge/50">{a.type}</span>
                   <span className="text-txt/80 truncate">{a.headline}</span>
                 </div>
               ))}

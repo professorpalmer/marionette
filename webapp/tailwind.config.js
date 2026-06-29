@@ -10,8 +10,13 @@ export default {
         bg: "#1a1a1e", panel: "#222227", panel2: "#2c2c33",
         edge: "#3a3a45", edge2: "#4a4a57",
         txt: "#f4f4f8", muted: "#a8a8b5", faint: "#7c7c8a",
-        accent: "#7c93ff", accent2: "#1e2436",
-        good: "#3ecf8e", warn: "#e0a44a", risk: "#e0625c",
+        // Restrained, desaturated accent (was a near-neon periwinkle #7c93ff,
+        // which read as "vibe-coded"). A muted slate-blue carries interactivity
+        // without shouting -- closer to the Cursor/Hermes register.
+        accent: "#8590b0", accent2: "#22262f",
+        // Softer status hues so tool rows read as professional, not candy. Errors
+        // stay legibly warm; success/warn are desaturated.
+        good: "#6fae8e", warn: "#c79a5e", risk: "#cf7d76",
       },
       fontFamily: {
         sans: ["-apple-system","BlinkMacSystemFont","Segoe UI","Roboto","sans-serif"],
