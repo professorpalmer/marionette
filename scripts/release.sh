@@ -86,6 +86,29 @@ else
     --latest
 fi
 
+# --- keep the release folder tidy ---------------------------------------------
+# electron-builder leaves stale blockmaps, orphan .zip/.dmg from prior builds,
+# and a .DS_Store behind every run. Prune everything that is not THIS release's
+# DMG (+ its blockmap), the active mac-arm64 staging dir, or builder metadata, so
+# webapp/release/ does not pile up to gigabytes over many releases.
+REL_DIR="webapp/release"
+KEEP_DMG="$(basename "$DMG")"
+KEEP_BLOCKMAP="${KEEP_DMG}.blockmap"
+echo
+echo "Pruning stale artifacts from ${REL_DIR}/ (keeping ${KEEP_DMG}) ..."
+if [ -d "$REL_DIR" ]; then
+  for f in "$REL_DIR"/*; do
+    [ -e "$f" ] || continue
+    base="$(basename "$f")"
+    case "$base" in
+      "$KEEP_DMG"|"$KEEP_BLOCKMAP"|"mac-arm64"|"builder-debug.yml"|"latest-mac.yml"|"latest.yml")
+        : ;;  # keep
+      *)
+        rm -rf "$f" && echo "  pruned ${base}" ;;
+    esac
+  done
+fi
+
 echo
 echo "DONE. Release ${TAG} published with $(basename "$DMG")."
 echo "Testers on an older build will see the 'update ${VERSION}' nudge in the status bar on next launch."
