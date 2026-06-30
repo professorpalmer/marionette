@@ -7,20 +7,23 @@ export default {
         // lifted dark base with clear elevation steps (Hermes/Cursor-class
         // legibility: canvas is dark but not a void, each surface is visibly
         // lighter than the one below, secondary text stays readable).
-        // Surfaces carry a faint cool blue-violet undertone (not pure neutral
-        // grey) so the canvas has DEPTH instead of flat greyscale -- the Cursor/
-        // Linear move. Each step stays a clear elevation above the one below.
-        bg: "#16161c", panel: "#1f1f27", panel2: "#292932",
-        edge: "#383844", edge2: "#494957",
-        // Text keeps a hair of warmth so it doesn't read clinical on the cool base.
-        txt: "#f5f4f8", muted: "#aaa9b8", faint: "#7e7d8d",
-        // Accent: a slate-blue with a little more life than the fully-muted
-        // version, but still nowhere near the old near-neon periwinkle. Reads as
-        // "interactive + considered," not "vibe-coded."
-        accent: "#8b96c4", accent2: "#23283a",
-        // Status hues: present and legible, desaturated enough to stay
-        // professional. Slightly richer than the washed-out pass.
-        good: "#5fb98f", warn: "#cf9d56", risk: "#d4756d",
+        // Surfaces carry a faint warm TEAL-charcoal undertone (Hermes-esque:
+        // a deep teal/charcoal canvas, not flat neutral grey and not the old
+        // cool blue-violet) so the canvas has DEPTH and a hair of warmth
+        // instead of reading washed-out. Each step stays a clear elevation
+        // above the one below.
+        bg: "#14181a", panel: "#1c2226", panel2: "#262e32",
+        edge: "#36403f", edge2: "#46524f",
+        // Text keeps a hair of warmth so it doesn't read clinical on the base.
+        txt: "#f4f5f3", muted: "#a9b0aa", faint: "#7c837d",
+        // Accent: Hermes' signature WARM GOLD/AMBER -- the single biggest move
+        // away from washed-out greyscale toward the teal-and-gold identity.
+        // Reads as "interactive + considered + warm," not clinical.
+        accent: "#d6a45c", accent2: "#2a2418",
+        // Status hues: present and legible, re-saturated with a little life so
+        // they read on the warm base. good leans teal-green to harmonize with
+        // the canvas; warn echoes the gold accent; risk stays a warm coral.
+        good: "#54bf95", warn: "#e0a94e", risk: "#dd7468",
       },
       fontFamily: {
         sans: ["-apple-system","BlinkMacSystemFont","Segoe UI","Roboto","sans-serif"],

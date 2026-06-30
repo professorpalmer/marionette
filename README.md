@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.4.x, deliberately pre-1.0. Vetted privately before any wider release.
+> Status: v0.6.x, deliberately pre-1.0. Vetted privately before any wider release.
 
 ## What it is
 

@@ -4,17 +4,17 @@
 
 html, body, #root { height: 100%; margin: 0; }
 body {
-  background: #1a1a1e; color: #f4f4f8;
+  background: #14181a; color: #f4f5f3;
   overflow: hidden;
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   letter-spacing: 0.005em;
 }
-* { scrollbar-width: thin; scrollbar-color: #42424d transparent; }
+* { scrollbar-width: thin; scrollbar-color: #46524f transparent; }
 *::-webkit-scrollbar { width: 7px; height: 7px; }
-*::-webkit-scrollbar-thumb { background: #33333c; border-radius: 4px; }
-*::-webkit-scrollbar-thumb:hover { background: #42424d; }
+*::-webkit-scrollbar-thumb { background: #36403f; border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: #46524f; }
 *::-webkit-scrollbar-track { background: transparent; }
 
 /* subtle focus ring for inputs/buttons (cleaner than default) */

@@ -228,7 +228,7 @@ export default function BrowserPane() {
         <NavBtn label="Open externally" onClick={() => window.open(url, "_blank")}><ExternalLink size={12} /></NavBtn>
       </div>
 
-      <div className="flex-1 relative overflow-hidden bg-bg" style={{ backgroundColor: "#1a1a1e" }}>
+      <div className="flex-1 relative overflow-hidden bg-bg" style={{ backgroundColor: "#14181a" }}>
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           return isDesktop ? (
@@ -316,7 +316,7 @@ export default function BrowserPane() {
                 display: isActive ? "flex" : "none",
                 width: "100%",
                 height: "100%",
-                backgroundColor: "#1a1a1e",
+                backgroundColor: "#14181a",
               }}
             />
           ) : (

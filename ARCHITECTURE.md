@@ -1,4 +1,4 @@
-# pm-harness Architecture
+# Marionette Architecture
 
 A PM-native harness: a coding/agent front-end whose kernel is Puppetmaster
 orchestration, driven by swappable open-weights models, with a durable-state GUI.
@@ -13,7 +13,7 @@ Every mainstream agent harness (Cursor, Claude Code, Hermes) treats orchestratio
 as a tool the model calls, and runs a frontier model as the top-level narrator.
 That narrator pays tokens to *talk about* what it will do before doing it.
 
-pm-harness inverts this: **Puppetmaster orchestration is the kernel**, and a
+Marionette inverts this: **Puppetmaster orchestration is the kernel**, and a
 cheap open-weights model is a swappable *driver* that emits structured intents,
 not prose. The harness executes those intents in code. Two consequences:
 
@@ -70,7 +70,7 @@ The driver's entire job is to emit one `DriverIntent` per turn:
 `pmharness/intent.py` is the pure contract: a strict validator plus a lenient
 text->JSON parser (so "valid JSON" and "valid schema" stay separate metrics).
 
-## 4. The product loop (`harness/session.py`)
+## 4. The product loop (`harness/conversation.py`)
 
 ```
 prompt (+ optional images)
@@ -87,7 +87,10 @@ prompt (+ optional images)
    ▼ (loop)
 ```
 
-Every step is yielded as a `SessionEvent`
+The pilot loop now lives in `harness/conversation.py` (`ConversationalSession`),
+the multi-turn front-end that the GUI and CLI both drive; the older
+`harness/session.py` remains the single-shot Session core it grew out of. Every
+step is yielded as a `SessionEvent`
 (`intent|executing|artifacts|final|error|vision`) so a GUI or CLI renders the
 loop live. The driver is config (`HarnessConfig.driver`), swappable in one line.
 
@@ -141,8 +144,9 @@ layer empirically. Each stage answered one question and exposed the next:
 | 3.5 | (de-confound) budget + substantive substrate | Claude 55%->100%; whole open field 100%, indistinguishable from frontier. Lesson: harness design is a lever on driver economy. |
 | 4 | Rank via read-decide traps (inconclusive vs conclusive) | Discriminates competent-vs-lazy (offline lazy stub fails); frontier models genuinely read findings. Splitting the top tier needs the open-weights field on Stage 4 (pending key). |
 
-**Default driver: glm-5.2** -- MIT, efficient (932 tok/run on the discriminating
-eval), 100% quality. Swappable to any catalog model via config.
+**Default driver: qwen3-coder-30b** -- Apache-2.0, the lowest-token winner of
+both eval batteries at 100% quality (the value `harness/config.py` actually
+sets). Swappable to any catalog model via config.
 
 Results live in `results/STAGE*_RESULTS.md`. Every score is from real execution
 against real Puppetmaster; an early false "30%" run (a masker-truncated API key)
@@ -158,15 +162,53 @@ pmharness/        research rig (validates the driver layer)
   registry.py       data-driven catalog.json (license, price, vision, tier)
   battery* / scoring* / runner* / episode*   the Stage 1-4 evals
   ledger.py         append-only SQLite results
-harness/          the product
-  session.py        the driver loop (Session, SessionEvent)
-  repair.py         intent-repair retry
-  vision.py         VLM sidecar (image -> text)
+harness/          the product (~43 modules; principal ones below)
+  conversation.py   the pilot loop (ConversationalSession, multi-turn front-end)
+  session.py        single-shot Session core (SessionEvent) the loop grew from
+  server.py         stdlib HTTP + SSE server (three-pane GUI backend)
+  worker.py         edit-capable worktree worker (applies real file edits)
+  worktrees.py      git worktree confinement (isolated work trees)
+  workspaces.py     workspace bookkeeping over the confined worktrees
+  command_policy.py full-auto danger guard (blocks unsafe shell commands)
+  wiki.py           portable knowledge wiki (durable notes store)
+  wiki_orchestrator.py  drives wiki page synthesis from session output
+  skill_distiller.py    distills reusable skills from completed runs
+  skill_store.py    persists and retrieves learned skills
+  mcp_client.py     MCP transport client
+  mcp_manager.py    MCP server lifecycle + tool registry
   state.py          DurableState (read layer over SwarmStore)
   config.py         HarnessConfig (swappable driver, budget, reach)
-  server.py + web/  three-pane GUI (HTTP + SSE)
+  autobudget.py     full-auto budget governor (caps spend per objective)
+  checkpoints.py    run checkpoints for resume/rollback
+  memory_store.py   durable user facts and preferences
+  providers.py      model provider/reach resolution
+  vision.py         VLM sidecar (image -> text)
+  repair.py         intent-repair retry
   cli.py            headless CLI
 ```
+
+### 9a. Full-auto mode and the AutoBudget governor
+
+Full-auto mode lets the pilot loop run an objective to completion across many
+turns without per-step confirmation. `harness/autobudget.py` is the governor
+that bounds it: it tracks spend against a per-objective ceiling and forces a
+clean stop before the budget is exceeded, so an unattended run cannot spiral.
+This keeps the cost thesis intact even when no human is watching the loop.
+
+### 9b. The command safety guard (`command_policy.py`)
+
+Because full-auto can execute shell commands without a human in the loop,
+`harness/command_policy.py` is the danger guard that screens commands before
+they run. It blocks destructive or unsafe operations rather than trusting the
+driver, turning autonomy into a bounded, auditable capability.
+
+### 9c. The portable Wiki orchestrator
+
+`harness/wiki.py` is a portable knowledge wiki -- a durable notes store the
+system can carry between sessions. `harness/wiki_orchestrator.py` drives
+synthesis of wiki pages from session output, accumulating reusable project
+knowledge over time. Paired with the skill store, this is how the harness
+learns from its own runs instead of starting cold each time.
 
 ## 10. Non-goals (v1, internal-first)
 

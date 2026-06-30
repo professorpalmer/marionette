@@ -1,4 +1,4 @@
-# pm-harness -- Demo Walkthrough
+# Marionette -- Demo Walkthrough
 
 A 10-minute walkthrough of the PM-native harness: what it is, why it exists, and
 how to see it work. Written to be run live.
@@ -21,7 +21,7 @@ Two consequences that matter at an enterprise:
 2. Control. Your prompts and context flow through a model you cannot inspect,
    restrict, or host.
 
-pm-harness inverts it: orchestration is the kernel; the model is a component
+Marionette inverts it: orchestration is the kernel; the model is a component
 inside it that emits structured intents, not prose. Swap the model freely. Run
 open weights and the black box disappears.
 
