@@ -45,29 +45,26 @@ def test_timeout_kills():
 
 
 def test_process_group_kill_no_orphans():
-    # children spawned by the shell must also die (group kill, not just the shell).
-    # The kill is SIGTERM -> grace -> SIGKILL, and the OS reaps asynchronously, so
-    # POLL for the orphan count to reach 0 rather than checking once after a fixed
-    # sleep (that fixed-delay check raced on slow/loaded CI runners -- the kill was
-    # correct, the assertion was just too eager). Use a unique marker so a
-    # concurrent test's "sleep" can never be miscounted as our orphan.
+    # Children spawned by the shell must also die (group kill, not just the parent
+    # shell). We assert this by giving the spawned sleeps a UNIQUE sentinel sleep
+    # DURATION (not a comment -- a comment is dropped when the shell exec's, so it
+    # never appears in any child's argv and pgrep can't see it). 778231 is a wildly
+    # unusual duration nothing else will be running, so a survivor is unambiguous.
+    # Poll for reap (SIGTERM -> grace -> SIGKILL + OS reaping is async).
     import subprocess as sp
-    marker = "orphan_probe_4193"
+    dur = "778231"  # unique sentinel; appears in each child sleep's argv
     ev = threading.Event()
     threading.Thread(target=lambda: (time.sleep(0.3), ev.set())).start()
-    run_cancellable(
-        f"sleep 23 # {marker}\n sleep 23 # {marker}\n wait",
-        timeout=None, cancel_event=ev,
-    )
+    run_cancellable(f"sleep {dur} & sleep {dur} & wait", timeout=None, cancel_event=ev)
     deadline = time.time() + 8.0
     remaining = None
     while time.time() < deadline:
-        n = sp.run(f"pgrep -f {marker} | wc -l", shell=True, capture_output=True, text=True)
+        n = sp.run(f"pgrep -f 'sleep {dur}' | wc -l", shell=True, capture_output=True, text=True)
         remaining = n.stdout.strip()
         if remaining == "0":
             break
         time.sleep(0.2)
-    assert remaining == "0", "child processes were orphaned, not group-killed"
+    assert remaining == "0", f"child processes were orphaned, not group-killed (remaining={remaining})"
 
 
 def test_bad_command_does_not_raise():
