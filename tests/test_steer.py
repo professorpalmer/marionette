@@ -69,6 +69,54 @@ def test_drive_turn_with_mid_turn_steer():
         assert history_roles[idx] != history_roles[idx - 1], f"Strict alternation broken: consecutive {history_roles[idx]} at index {idx}"
 
 
+class _FinalizingPilot:
+    """First call yields NO actions (the model is finalizing its answer). A steer
+    is enqueued at that exact moment -- there is no tool result to piggyback on, so
+    the finalization-time drain must deliver it as a next-turn user message and
+    re-ask the model rather than terminating. The second call (after the steer is
+    delivered) finishes cleanly."""
+    def __init__(self, session):
+        self.session = session
+        self.calls = 0
+
+    def complete(self, prompt, *, system=None):
+        from pmharness.drivers.openai_compat import DriverResponse
+        self.calls += 1
+        if self.calls == 1:
+            # The model is done talking and emits no actions; a steer arrives now.
+            self.session.enqueue_steer("Actually, also check the README.")
+            txt = '{"say":"Here is my answer.","actions":[]}'
+        else:
+            txt = '{"say":"Acknowledged, checked the README.","actions":[]}'
+        return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
+
+
+def test_steer_during_finalization_reasks_model():
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    s = ConversationalSession(cfg)
+    s.pilot = _FinalizingPilot(s)
+
+    events = list(s.send("Give me your final answer"))
+    kinds = [e.kind for e in events]
+
+    # The steer must surface and the model must be re-asked (two pilot calls),
+    # not terminated on the first no-action turn.
+    assert "steer" in kinds, "the steer must surface as an event"
+    assert s.pilot.calls == 2, "the model must be re-asked after the finalization-time steer"
+    assert kinds[-1] == "assistant_done", "the run must still end cleanly after delivery"
+
+    # The steer must be delivered as a genuine next-turn user message.
+    found_marker = False
+    for msg in s._history:
+        if msg["role"] == "user" and "[OUT-OF-BAND USER MESSAGE" in msg.get("content", ""):
+            assert "Actually, also check the README." in msg["content"]
+            found_marker = True
+    assert found_marker, "the finalization-time steer was not delivered as a user message"
+
+    # No steer may be left stranded as pending.
+    assert s.drain_steer() == [], "the steer must not remain pending"
+
+
 def test_api_session_steer_auth(tmp_path):
     import harness.server as srv
     

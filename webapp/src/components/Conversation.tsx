@@ -1212,7 +1212,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setCompactingStatus(null);
         setStatus("executing");
         setItems((p) => [...p, { kind: "card", card: {
-          id: d.id, goal: d.goal, cwd: d.cwd, running: true, open: true, kind: d.kind } }]);
+          // Default tool cards to collapsed always: they used to mount open while
+          // running and snap shut on action_result, which read as a flicker.
+          // Start collapsed; the user can click to expand (onToggleCard).
+          id: d.id, goal: d.goal, cwd: d.cwd, running: true, open: false, kind: d.kind } }]);
       } else if (ev.kind === "action_result") {
         setCompactingStatus(null);
         setStatus("thinking");

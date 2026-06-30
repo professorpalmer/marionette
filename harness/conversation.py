@@ -1157,6 +1157,19 @@ class ConversationalSession:
             self._steer_queue.clear()
             return items
 
+    @staticmethod
+    def _steer_marker(text: str) -> str:
+        """Single definition of the OUT-OF-BAND USER MESSAGE marker wrapping a
+        steer. Shared by both delivery points (mid-spree piggyback in
+        _check_and_inject_steer, and finalization-time user-message append in
+        the step loop) so the literal is never duplicated."""
+        return (
+            "\n\n[OUT-OF-BAND USER MESSAGE - a direct message from the user, "
+            "delivered mid-turn; not tool output. Stop your current line of work, "
+            "address THIS now, and do not resume the previous task unless the user "
+            f"asks.]\n{text}\n[/OUT-OF-BAND USER MESSAGE]"
+        )
+
     def _check_and_inject_steer(self) -> Iterator[ConvEvent]:
         """Drain pending steers and surface them to the model WITHOUT breaking
         message role alternation or injecting a synthetic user turn mid-loop.
@@ -1177,12 +1190,7 @@ class ConversationalSession:
         if not steers:
             return
         for steer in steers:
-            marker_text = (
-                "\n\n[OUT-OF-BAND USER MESSAGE - a direct message from the user, "
-                "delivered mid-turn; not tool output. Stop your current line of work, "
-                "address THIS now, and do not resume the previous task unless the user "
-                f"asks.]\n{steer}\n[/OUT-OF-BAND USER MESSAGE]"
-            )
+            marker_text = self._steer_marker(steer)
             yield ConvEvent("steer", {"text": steer})
             # Inject into the last result-bearing message (tool role for native
             # tool-calling, or the user-role result the JSON-envelope path appends).
@@ -1653,8 +1661,24 @@ class ConversationalSession:
             if consecutive_non_productive >= 3:
                 break
 
-            # 3. No actions => the pilot is done talking; yield back to the user.
+            # 3. No actions => the pilot is done talking. Before yielding back to
+            # the user, drain any pending steer. A steer that arrives while the
+            # model is finalizing has no tool result to piggyback on (the last
+            # history message is this assistant turn), so the mid-spree path in
+            # _check_and_inject_steer cannot deliver it. We deliver it here as a
+            # genuine next-turn user message (valid assistant -> user alternation)
+            # and re-ask the model instead of terminating. This is the second of
+            # the two steer delivery points (the other being the mid-spree
+            # piggyback inside _check_and_inject_steer); together they guarantee
+            # any enqueued steer is eventually delivered and never stranded.
             if not turn.has_actions:
+                pending_steers = self.drain_steer()
+                if pending_steers:
+                    for steer in pending_steers:
+                        yield ConvEvent("steer", {"text": steer})
+                        self._history.append({"role": "user", "content": self._steer_marker(steer)})
+                    self._steer_pending = False
+                    continue
                 self._maybe_ingest(user_message, turn_prose, turn_findings)
                 yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
                 return
