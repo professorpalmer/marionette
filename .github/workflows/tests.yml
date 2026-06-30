@@ -1,0 +1,60 @@
+name: tests
+
+# Gate every PR and every push to main on the offline test suite. No API keys,
+# no Apple secrets -- this only runs pytest in a clean venv with PyPI deps, which
+# is exactly how a contributor's machine installs the rig (verified: 584 pass
+# with `pip install -e .[dev] puppetmaster-ai`).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel an in-flight run when a new commit is pushed to the same PR/branch.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor (3.9, the requires-python minimum) + the dev interpreter (3.11).
+        python-version: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install (rig + dev extras + Puppetmaster from PyPI)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" puppetmaster-ai
+
+      - name: Run the offline test suite
+        run: python -m pytest -q -p no:cacheprovider
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install + typecheck + build the renderer
+        working-directory: webapp
+        run: |
+          npm ci
+          npm run build
