@@ -7,6 +7,8 @@ import urllib.parse
 import html.parser
 from typing import Optional
 
+from harness.url_safety import is_safe_url, normalize_url_for_request
+
 WEB_FETCH_LIMIT = 16000
 
 
@@ -155,6 +157,10 @@ def web_search(query: str, timeout: int = 10) -> str:
     try:
         query_encoded = urllib.parse.quote_plus(query)
         url = f"https://html.duckduckgo.com/html/?q={query_encoded}"
+        ok, reason = is_safe_url(url)
+        if not ok:
+            return f"Refused to search the web: unsafe URL ({reason})."
+        url = normalize_url_for_request(url)
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
         })
@@ -191,6 +197,10 @@ def _truncate(text: str, source_url: str) -> str:
 
 
 def _fetch_one(url: str, timeout: int) -> str:
+    ok, reason = is_safe_url(url)
+    if not ok:
+        return f"Refused to fetch web page: unsafe URL ({reason})."
+    url = normalize_url_for_request(url)
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     })
