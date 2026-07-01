@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Play, Copy, Check, Pencil, RefreshCw, FileText, History, X, Code, Share2 } from "lucide-react";
+import { ChevronRight, Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Play, Copy, Check, Pencil, RefreshCw, FileText, History, X, Code, Share2, CheckCircle2, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -1631,25 +1631,15 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                   </div>
                 );
               } else if (it.kind === "swarm_result") {
-                const applied = it.applied;
-                const errorStr = it.error;
-                const truncatedObj = it.objective ? (it.objective.length > 60 ? it.objective.slice(0, 60) + "..." : it.objective) : "swarm";
                 return (
-                  <div key={i} className={`flex flex-col gap-1 py-1.5 px-3 rounded-md border text-[11px] font-mono w-fit max-w-full my-1 select-none bg-panel/30
-                    ${applied ? "border-good/20 text-good" : "border-risk/20 text-risk"}`}
-                  >
-                    {applied ? (
-                      <div>
-                        <span>swarm done: {truncatedObj} -- applied {it.files.length} file{it.files.length === 1 ? "" : "s"}: {it.files.join(", ")}</span>
-                        {it.summary && <div className="text-[10px] text-muted mt-1 leading-relaxed whitespace-pre-wrap">{it.summary}</div>}
-                      </div>
-                    ) : (
-                      <div>
-                        <span>swarm FAILED: {truncatedObj} -- {errorStr || "unknown error"}</span>
-                        {it.summary && <div className="text-[10px] text-muted mt-1 leading-relaxed whitespace-pre-wrap">{it.summary}</div>}
-                      </div>
-                    )}
-                  </div>
+                  <SwarmResultCard
+                    key={i}
+                    applied={it.applied}
+                    files={it.files}
+                    summary={it.summary}
+                    error={it.error}
+                    objective={it.objective}
+                  />
                 );
               } else if (it.kind === "checkpoint") {
                 return (
@@ -2811,4 +2801,67 @@ function StatusPill({ status }: { status: string }) {
   };
   return <span className={`text-[10.5px] flex items-center gap-1.5 ${m[status] || m.idle}`}>
     <span className={`w-1.5 h-1.5 rounded-full ${dot[status] || dot.idle}`} />{status}</span>;
+}
+
+// A swarm outcome in the transcript. Previously this dumped the entire worker
+// summary as full-width green/red monospace text -- a "wall" that read as noise
+// on a finished run. Now it's a compact status line (icon + verb + objective +
+// file count) that stays collapsed by default; the full summary, file chips,
+// and any error live behind a click. Status color is confined to the icon,
+// label, and border so the body text stays readable instead of tinted.
+function SwarmResultCard({ applied, files, summary, error, objective }: {
+  applied: boolean;
+  files: string[];
+  summary: string;
+  error: string | null;
+  objective?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const obj = objective ? (objective.length > 70 ? objective.slice(0, 70) + "..." : objective) : "swarm";
+  const hasBody = !!(summary || (!applied && error) || (applied && files.length > 0));
+
+  return (
+    <div className={`rounded-md border w-fit max-w-full my-1 overflow-hidden select-none bg-panel/40 ${applied ? "border-good/30" : "border-risk/30"}`}>
+      <button
+        onClick={() => hasBody && setOpen((v) => !v)}
+        className={`flex items-center gap-2 px-2.5 py-1.5 text-[11px] w-full text-left transition-colors ${hasBody ? "hover:bg-panel2/40 cursor-pointer" : "cursor-default"}`}
+        title={objective || undefined}
+      >
+        {applied
+          ? <CheckCircle2 size={13} className="text-good shrink-0" />
+          : <XCircle size={13} className="text-risk shrink-0" />}
+        <span className={`font-medium shrink-0 ${applied ? "text-good" : "text-risk"}`}>
+          {applied ? "swarm done" : "swarm failed"}
+        </span>
+        <span className="text-muted truncate">{obj}</span>
+        <span className="flex-1 min-w-[8px]" />
+        {applied
+          ? <span className="text-faint shrink-0 tabular-nums">{files.length} file{files.length === 1 ? "" : "s"}</span>
+          : <span className="text-risk/70 shrink-0 truncate max-w-[45%]">{error || "error"}</span>}
+        {hasBody && (open
+          ? <ChevronDown size={12} className="text-faint shrink-0" />
+          : <ChevronRight size={12} className="text-faint shrink-0" />)}
+      </button>
+
+      {open && hasBody && (
+        <div className="px-2.5 pb-2 pt-1.5 border-t border-edge/30 flex flex-col gap-1.5">
+          {applied && files.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {files.map((f) => (
+                <span key={f} className="text-[9px] font-mono text-muted bg-panel2/60 border border-edge/50 rounded px-1 py-0.5">
+                  {f}
+                </span>
+              ))}
+            </div>
+          )}
+          {!applied && error && (
+            <div className="text-[10px] text-risk/90 font-mono whitespace-pre-wrap leading-relaxed break-words">{error}</div>
+          )}
+          {summary && (
+            <div className="text-[10.5px] text-muted whitespace-pre-wrap leading-relaxed break-words">{summary}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

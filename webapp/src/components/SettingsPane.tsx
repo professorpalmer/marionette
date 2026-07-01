@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronRight, ChevronDown, Plus, Trash2 } from "lucide-react";
+import { ChevronRight, ChevronDown, Plus, Trash2, ExternalLink } from "lucide-react";
 import { api, type Settings, type UsageData, type PlatformAdapter, type GitStatus, type ProviderInfo } from "../lib/api";
 import SkillsPane from "./SkillsPane";
 import MemoryPane from "./MemoryPane";
@@ -12,7 +12,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
-  const [keyInput, setKeyInput] = useState("");
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [wikiCfg, setWikiCfg] = useState<{ api_base: string; has_token: boolean } | null>(null);
   const [wikiBase, setWikiBase] = useState("");
@@ -498,6 +497,18 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   <div className="flex items-center gap-2 min-w-0">
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.has_key ? "bg-good" : "bg-faint"}`} />
                     <span className="text-txt font-medium text-[11px]">{p.display_name || p.name}</span>
+                    {p.name === settings.reach && (
+                      <span
+                        title={settings.preflight_ok ? "Active provider -- preflight passed" : "Active provider -- key needed or invalid"}
+                        className={`shrink-0 rounded px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide border ${
+                          settings.preflight_ok
+                            ? "bg-good/10 text-good border-good/30"
+                            : "bg-risk/10 text-risk border-risk/30"
+                        }`}
+                      >
+                        {settings.preflight_ok ? "active - ready" : "active - key needed"}
+                      </span>
+                    )}
                     <span className="text-faint text-[10px] font-mono truncate">
                       {p.has_key ? (p.masked ? `key ${p.masked}` : "connected") : "not connected"}
                     </span>
@@ -533,67 +544,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 )}
               </div>
             ))}
-          </div>
-        </div>
-
-        {/* API Key Section (active reach -- legacy single-provider quick-set) */}
-        <div className="space-y-1.5 border-t border-edge pt-3">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
-            Active Provider Key
-          </label>
-          <div className="text-[10px] text-muted mb-2">
-            Set the provider API key for <span className="font-semibold">{settings.reach} ({settings.key_env_var})</span>.
-          </div>
-          
-          <div className="flex gap-2">
-            <input
-              type="password"
-              placeholder="Enter API key..."
-              value={keyInput}
-              onChange={(e) => setKeyInput(e.target.value)}
-              disabled={saving}
-              className="flex-1 bg-panel2 border border-edge rounded px-2.5 py-1 text-txt focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
-            />
-            <button
-              onClick={() => {
-                if (keyInput.trim()) {
-                  update({ api_key: keyInput.trim() }).then(() => setKeyInput(""));
-                }
-              }}
-              disabled={saving || !keyInput.trim()}
-              className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-3 py-1 font-medium text-[11px] disabled:opacity-30 disabled:hover:bg-accent/15 disabled:hover:border-accent/30 transition-colors"
-            >
-              Save key
-            </button>
-          </div>
-
-          <div className="flex items-center justify-between text-[11px] mt-2 bg-panel2 border border-edge/50 rounded p-2">
-            <div className="space-y-1">
-              <div className="flex items-center gap-1.5">
-                <span className="text-faint">Status:</span>
-                <span className={settings.has_api_key ? "text-good font-medium" : "text-risk font-medium"}>
-                  {settings.has_api_key ? `Key set: ${settings.api_key_masked}` : "No key set"}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-faint">Preflight:</span>
-                <span className={settings.preflight_ok ? "text-good font-medium" : "text-risk font-medium"}>
-                  {settings.preflight_ok ? "Provider ready" : "Key needed or invalid"}
-                </span>
-              </div>
-            </div>
-            {settings.has_api_key && (
-              <button
-                onClick={() => {
-                  update({ clear_api_key: true });
-                  setKeyInput("");
-                }}
-                disabled={saving}
-                className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2.5 py-1 font-medium text-[11px] disabled:opacity-30 transition-colors"
-              >
-                Clear
-              </button>
-            )}
           </div>
         </div>
 
@@ -1163,6 +1113,19 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           >
             {wikiSaving ? "Saving..." : "Save Wiki Config"}
           </button>
+        </div>
+
+        {/* portable-llm-wiki explainer / learn-more link */}
+        <div className="border-t border-edge pt-3 mt-1 text-center">
+          <a
+            href="https://portablellm.wiki"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-[10px] text-faint hover:text-accent transition-colors"
+          >
+            New here? Learn what portable-llm-wiki is at portablellm.wiki
+            <ExternalLink size={10} />
+          </a>
         </div>
         </>)}
       </div>
