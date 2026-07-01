@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Circle, GitBranch, Boxes, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle } from "lucide-react";
+import { Circle, GitBranch, Boxes, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle, RefreshCw } from "lucide-react";
 import { api, type Config } from "../lib/api";
 import { isDesktop } from "../lib/transport";
 
@@ -12,7 +12,8 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
 }) {
   const [branch, setBranch] = useState("");
   const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number } | null>(null);
-  const [update, setUpdate] = useState<{ version: string; url: string; name: string } | null>(null);
+  const [update, setUpdate] = useState<{ behind: number; branch: string; version: string } | null>(null);
+  const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   // Transient toast (e.g. a refused model switch). Auto-dismisses; never blocks.
@@ -28,7 +29,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
     return () => window.removeEventListener("harness-toast", onToast);
   }, []);
 
-  // Tier-1 update check: ping GitHub Releases once on launch (desktop only).
+  // Self-update check: how far behind the tracked branch we are (desktop only).
   // Silent on failure -- an update nudge must never get in the way.
   useEffect(() => {
     const ipc = (window as any).harnessIPC;
@@ -36,17 +37,37 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
     let cancelled = false;
     ipc.updates.check()
       .then((res: any) => {
-        if (!cancelled && res && res.available && res.url) {
-          setUpdate({ version: res.version, url: res.url, name: res.name });
+        if (!cancelled && res && res.available) {
+          setUpdate({ behind: res.behind || 0, branch: res.branch || "main", version: res.current || "" });
         }
       })
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
 
-  const openUpdate = () => {
+  // Pull + rebuild + relaunch. Progress streams in over IPC; on success the app
+  // relaunches (this window goes away). On failure, surface a toast and reset.
+  const runUpdate = () => {
     const ipc = (window as any).harnessIPC;
-    if (ipc && ipc.updates && update) ipc.updates.openDownload(update.url);
+    if (!ipc || !ipc.updates || apply) return;
+    setApply({ stage: "fetch", message: "Starting update", percent: 0 });
+    const off = ipc.updates.onProgress((p: any) => setApply(p));
+    ipc.updates.apply()
+      .then((res: any) => {
+        if (off) off();
+        if (!res || !res.ok) {
+          setApply(null);
+          window.dispatchEvent(new CustomEvent("harness-toast", {
+            detail: `Update failed: ${(res && res.error) || "unknown error"}`,
+          }));
+        }
+        // On success the main process relaunches; nothing more to do here.
+      })
+      .catch((e: any) => {
+        if (off) off();
+        setApply(null);
+        window.dispatchEvent(new CustomEvent("harness-toast", { detail: `Update failed: ${String(e)}` }));
+      });
   };
 
   const fetchUsage = () => {
@@ -126,16 +147,24 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
       )}
       <span className="flex items-center gap-1"><Cpu size={10} />{config?.driver?.split(":").pop() || "pilot"}</span>
       <span>{config?.reach || ""}</span>
-      {update && (
+      {apply ? (
+        <span
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-accent"
+          title={apply.message}
+        >
+          <RefreshCw size={11} className="animate-spin" />
+          <span>{apply.message}{apply.percent != null ? ` ${apply.percent}%` : ""}</span>
+        </span>
+      ) : update ? (
         <button
-          onClick={openUpdate}
-          title={`Marionette ${update.version} is available -- click to download`}
+          onClick={runUpdate}
+          title={`${update.behind ? update.behind + " commit(s)" : "An update is"} behind ${update.branch} -- click to update and relaunch`}
           className="flex items-center gap-1 px-1.5 py-0.5 rounded text-accent hover:bg-accent/10 transition font-medium"
         >
           <ArrowUpCircle size={11} />
-          <span>update {update.version}</span>
+          <span>update{update.behind ? ` (${update.behind})` : ""}</span>
         </button>
-      )}
+      ) : null}
       <span className="text-muted/60">{isDesktop ? "desktop" : "web"}</span>
     </div>
   );

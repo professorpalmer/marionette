@@ -15,6 +15,7 @@ const path = require("node:path");
 const net = require("node:net");
 const fs = require("node:fs");
 const os = require("node:os");
+const { readLiveUpdateMarker } = require("./update-marker.cjs");
 
 const isDev = !!process.env.PMHARNESS_DEV_SERVER;
 
@@ -68,6 +69,17 @@ let backend = null;
 let backendPort = 8799;
 let win = null;
 
+// The source checkout the app runs from. The backend is `harness.cli` under this
+// root, and the self-updater pulls + rebuilds it in place. HARNESS_REPO wins;
+// otherwise a packaged shell assumes ~/pm-harness and a dev run resolves the repo
+// two levels up from webapp/electron/.
+function resolveRepoRoot() {
+  return (
+    process.env.HARNESS_REPO ||
+    (app.isPackaged ? path.join(os.homedir(), "pm-harness") : path.resolve(__dirname, "..", ".."))
+  );
+}
+
 function freePort() {
   return new Promise((resolve) => {
     const srv = net.createServer();
@@ -119,15 +131,22 @@ async function startBackend() {
     }
   } catch {}
 
+  // 1b. If a self-update is applying (git pull + rebuild), do NOT spawn a fresh
+  // backend against the same state -- park until the update finishes or its
+  // marker goes stale, so a mid-update relaunch can't race the rebuild.
+  for (let i = 0; i < 40; i++) {
+    const live = readLiveUpdateMarker(path.join(os.homedir(), ".pmharness"));
+    if (!live) break;
+    console.log(`[backend] update in progress (pid ${live.pid}); parking...`);
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
   // 2. Spawn a fresh backend on a free port and record the marker.
   backendPort = await freePort();
-  // Backend resolution. In dev, __dirname is webapp/electron so ../.. is the repo.
-  // When packaged (.asar), that path is invalid -> resolve from env or the known
-  // install location. A fully self-contained bundle (PyInstaller) is the next
-  // step toward distribution; for a personal build we use the existing venv.
-  const { app } = require("electron");
-  const repoRoot = process.env.HARNESS_REPO
-    || (app.isPackaged ? path.join(os.homedir(), "pm-harness") : path.resolve(__dirname, "..", ".."));
+  // Backend resolution: the source checkout the app runs from (see
+  // resolveRepoRoot). A fully self-contained bundle (PyInstaller) is the
+  // distribution path; for a source/checkout run we use the repo's venv.
+  const repoRoot = resolveRepoRoot();
 
   let binaryPath = null;
   if (app.isPackaged && process.resourcesPath) {
@@ -349,7 +368,17 @@ const { registerGitBridge } = require("./git-bridge.cjs");
 const { registerUpdateBridge } = require("./update-bridge.cjs");
 registerFsBridge(ipcMain);
 registerGitBridge(ipcMain);
-registerUpdateBridge(ipcMain, app, shell);
+// Self-update: track the checkout, pull+rebuild in place, then relaunch. The
+// relaunch tears the backend down first (and drops the marker so the fresh
+// instance spawns a backend running the just-pulled code) before re-exec.
+registerUpdateBridge(ipcMain, app, shell, {
+  getRepoRoot: resolveRepoRoot,
+  relaunch: () => {
+    try { cleanupBackend(); } catch { /* ignore */ }
+    app.relaunch();
+    app.exit(0);
+  },
+});
 
 function createWindow() {
   win = new BrowserWindow({

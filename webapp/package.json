@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test:electron": "node --test electron/*.test.cjs",
     "preview": "vite preview",
     "vendor:codegraph": "node scripts/vendor-codegraph.cjs",
     "electron:dev": "concurrently -k \"vite --host 127.0.0.1 --port 5273\" \"wait-on http://127.0.0.1:5273 && cross-env PMHARNESS_DEV_SERVER=http://127.0.0.1:5273 electron .\"",

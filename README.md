@@ -85,25 +85,45 @@ a native harness layer?** That rig still lives in `pmharness/` and stays green:
 Driver eval grades **driving**, not **working**: swarm intents execute on
 Puppetmaster's free local adapter so ground truth is deterministic and key-free.
 
-## Run it
+## Install and updates
 
-Desktop app (dev, source build with hot-reload):
+Marionette runs from a git checkout and self-updates the way Hermes does: it
+tracks the `main` branch, and when you (or a friend) merge a change, every
+running app shows an `update (N)` pill in the status bar. Click it and the app
+pulls, refreshes deps if their lockfiles changed, rebuilds the renderer, and
+relaunches -- no DMG to send around. This is why contributing is the delivery
+mechanism: merge to `main`, everyone gets it on their next relaunch.
+
+One-command setup on a fresh machine (macOS, Apple Silicon):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/professorpalmer/pm-harness/main/scripts/bootstrap.sh | bash
+```
+
+Then launch it for daily use (production renderer; the self-updater rebuilds
+into this mode):
+
+```bash
+bash scripts/start.sh          # or add:  alias marionette='bash ~/pm-harness/scripts/start.sh'
+```
+
+## Run it (contributor / dev)
+
+Desktop app with Vite hot-reload for active editing:
 
 ```bash
 cd webapp && npm install && npm run electron:dev
 ```
 
-Or the one-command launcher (cleans stale processes, then launches):
+Or the one-command dev launcher (cleans stale processes, then launches):
 
 ```bash
-bash scripts/dev.sh            # or the `marionette` shell alias
+bash scripts/dev.sh
 ```
 
-Build a notarized macOS DMG and publish a GitHub release:
-
-```bash
-bash scripts/release.sh 0.4.1 "release notes"
-```
+A notarized macOS DMG (`scripts/release.sh`) still exists for shipping to
+non-dev testers who don't want a checkout -- see `RELEASING.md`. The git
+self-update path above is the primary channel for the contributor circle.
 
 Research rig (offline, no keys):
 

@@ -46,10 +46,17 @@ contextBridge.exposeInMainWorld("harnessIPC", {
     diffStaged: (repo, file) => ipcRenderer.invoke("git:diffStaged", repo, file),
     applyHunk: (repo, patchText, reverse) => ipcRenderer.invoke("git:applyHunk", repo, patchText, reverse),
   },
-  // Tier-1 updates: check GitHub Releases for a newer version + open the download.
+  // Self-update: how far behind the tracked branch we are, apply (pull+rebuild),
+  // and a progress subscription for the apply. openRepo opens the repo/commits.
   updates: {
     check: () => ipcRenderer.invoke("updates:check"),
-    openDownload: (url) => ipcRenderer.invoke("updates:openDownload", url),
+    apply: () => ipcRenderer.invoke("updates:apply"),
+    openRepo: (sub) => ipcRenderer.invoke("updates:openRepo", sub),
+    onProgress: (cb) => {
+      const handler = (_e, payload) => cb(payload);
+      ipcRenderer.on("updates:progress", handler);
+      return () => ipcRenderer.removeListener("updates:progress", handler);
+    },
   },
   isDesktop: true,
 });

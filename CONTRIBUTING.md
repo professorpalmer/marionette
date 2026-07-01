@@ -48,8 +48,19 @@ to test your own changes.
 5. Keep commits scoped: don't fold unrelated work into one commit. A release
    commit is its own commit.
 
+## How updates reach users (contributing IS the release)
+
+Marionette self-updates from git, Hermes-style: the installed app tracks `main`
+and every running instance shows an `update (N)` pill when it's behind, then
+pulls + rebuilds + relaunches in place. So **merging a green PR to `main` ships
+your change to the whole circle** on their next relaunch -- no DMG hand-off.
+
+Keep `main` releasable: it must build (`npm run build`) and pass CI, because a
+red `main` is what everyone's app tries to pull. The updater fast-forwards only,
+so never force-push `main`.
+
 ## Releases
 
-Releases are cut from `main` via tag. See `RELEASING.md` for the pipeline. In
-short: bump version, tag `vX.Y.Z`, and the build produces a signed + notarized
-DMG and a GitHub Release. Don't hand-edit release artifacts.
+See `RELEASING.md`. The primary channel is the git self-update above. A signed +
+notarized DMG (`scripts/release.sh X.Y.Z`) still exists for non-dev testers who
+don't keep a checkout; don't hand-edit release artifacts.
