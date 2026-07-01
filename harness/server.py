@@ -3246,8 +3246,24 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
 
     # allow quick restarts without TIME_WAIT blocking the bind
     ThreadingHTTPServer.allow_reuse_address = True
+
+    class _HarnessServer(ThreadingHTTPServer):
+        daemon_threads = True  # handler threads never block process shutdown
+
+        def handle_error(self, request, client_address):
+            # The renderer closing a socket mid-request (navigating away, stopping
+            # a stream, swapping models) raises ConnectionResetError/BrokenPipeError
+            # deep in socketserver. That is benign -- suppress the per-request
+            # traceback that otherwise floods ~/.pmharness/electron.log and buries
+            # real errors. Anything else still gets a full traceback.
+            exc = sys.exc_info()[1]
+            if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
+                return
+            import traceback
+            traceback.print_exc()
+
     try:
-        srv = ThreadingHTTPServer((host, port), Handler)
+        srv = _HarnessServer((host, port), Handler)
     except OSError as e:
         if e.errno == errno.EADDRINUSE:
             print(f"pm-harness: port {port} is already in use. Another harness GUI "

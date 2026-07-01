@@ -19,6 +19,44 @@ const { readLiveUpdateMarker } = require("./update-marker.cjs");
 
 const isDev = !!process.env.PMHARNESS_DEV_SERVER;
 
+// Persistent main-process log, shared with the backend [out]/[err] lines under
+// ~/.pmharness/electron.log so a death is always diagnosable after the fact.
+function logMain(msg) {
+  try {
+    fs.appendFileSync(
+      path.join(os.homedir(), ".pmharness", "electron.log"),
+      `${new Date().toISOString()} ${msg}\n`
+    );
+  } catch { /* logging must never throw */ }
+}
+
+// Safety net. A stray async throw (or a send() on a renderer torn down mid-stream)
+// must NOT take down the whole app: previously an uncaught exception in main
+// exited the process, orphaned the backend, and the renderer then reconnected to
+// a dead port -- so the LLM stream, CodeGraph, wiki, and terminal all went dark at
+// once. Log loudly and stay alive instead of crashing.
+process.on("uncaughtException", (err) => {
+  logMain(`[uncaughtException] ${err && err.stack ? err.stack : err}`);
+});
+process.on("unhandledRejection", (reason) => {
+  logMain(`[unhandledRejection] ${reason && reason.stack ? reason.stack : reason}`);
+});
+
+// One running instance per machine. A second launch (double-click, Dock, or a
+// checkout's start.sh on top of the installed app) otherwise spawns a SECOND
+// backend on a different port; the two fight over the marker and the live
+// renderer's connections get pulled out from under it -- observed as a mid-session
+// respawn that kills graph/wiki/terminal at once. Hand focus to the first instance.
+const gotSingleInstanceLock = isDev || app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const w = BrowserWindow.getAllWindows()[0];
+    if (w) { try { if (w.isMinimized()) w.restore(); w.show(); w.focus(); } catch { /* ignore */ } }
+  });
+}
+
 // ---- login-shell environment capture (macOS Finder/Dock launch fix) --------
 // When a packaged app is launched from Finder/Dock (not a terminal), macOS gives
 // it a MINIMAL launchd environment: it is missing the user's real PATH, their
@@ -164,7 +202,10 @@ async function startBackend() {
   // still wins for anything the app set deliberately. Only fills in when a GUI
   // launch left those vars stripped.
   const _shellEnv = app.isPackaged ? loginShellEnv() : {};
-  const customEnv = { ..._shellEnv, ...process.env, HARNESS_REPO: process.env.HARNESS_REPO || repoRoot };
+  // PYTHONUNBUFFERED: stream backend stdout/stderr to the log immediately instead
+  // of sitting in a pipe buffer (that buffering hid the real startup/crash lines
+  // and left a ~20-min gap between "spawning" and "GUI on" in the log).
+  const customEnv = { ..._shellEnv, ...process.env, PYTHONUNBUFFERED: "1", HARNESS_REPO: process.env.HARNESS_REPO || repoRoot };
 
   // codegraph self-containment: only safe with a REAL bundled `node` binary.
   // The electron-as-node trick (ELECTRON_RUN_AS_NODE) does NOT work for codegraph because
@@ -219,6 +260,13 @@ async function startBackend() {
   }
 
   backend.on("error", (e) => _dbg(`spawn error: ${e.message}`));
+  // Log unexpected backend death (code/signal) instead of silently losing it; the
+  // renderer surfaces graph/wiki/terminal failures on its own, but this pins the
+  // cause in the log. cleanupBackend() nulls `backend` on intentional teardown, so
+  // a non-null ref here means the exit was NOT us.
+  backend.on("exit", (code, signal) => {
+    if (backend) _dbg(`[backend EXITED unexpectedly] code=${code} signal=${signal}`);
+  });
   backend.stdout.on("data", (d) => { _dbg(`[out] ${d}`); process.stdout.write(`[backend] ${d}`); });
   backend.stderr.on("data", (d) => { _dbg(`[err] ${d}`); process.stderr.write(`[backend] ${d}`); });
   await waitForBackend(backendPort);
@@ -471,6 +519,7 @@ app.on("web-contents-created", (_e, contents) => {
 });
 
 app.whenReady().then(async () => {
+  if (!gotSingleInstanceLock) return; // a prior instance owns the backend
   configureBrowserSession();
   try { await startBackend(); } catch (e) { console.error("backend start failed:", e); }
   createWindow();
