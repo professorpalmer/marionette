@@ -29,6 +29,18 @@ export default function UpdateBanner() {
 
     let cancelled = false;
 
+    // Advance the inline progress text from an event payload (shared by the
+    // pre-commit download churn and the post-commit install stages). The
+    // installed-app updater bakes the percent into the message ("Downloading
+    // update 72%"), so only append when the message doesn't already carry one --
+    // otherwise you get "... 72% 72%".
+    const showProgress = (p: any) => {
+      setApplying(true);
+      const base = p.message || "Updating";
+      const hasPct = /\d%\s*$/.test(base);
+      setProgress(base + (p.percent != null && !hasPct ? ` ${p.percent}%` : ""));
+    };
+
     // Catch an update that already finished downloading before this mounted.
     ipc.updates
       .check()
@@ -42,42 +54,45 @@ export default function UpdateBanner() {
       })
       .catch(() => {});
 
-    // React to live updater events. "available"/"downloaded" surface the banner;
-    // the install stages drive the inline progress text once the user commits.
+    // React to live updater events. Every payload carries `version`, so we label
+    // the banner from the event alone -- deliberately NOT calling updates:check
+    // here, which used to re-trigger checkForUpdates -> another "available" event
+    // -> another check, an infinite loop that was the visible "blinking".
     const off = ipc.updates.onProgress((p: any) => {
       if (!p || !p.stage) return;
-      // "available"/"downloaded" surface the banner; every other stage
-      // (prepare/download/install/done for the binary updater, or
-      // fetch/rebuild/relaunch for the git self-updater) means the user has
-      // committed and we show inline progress.
+      if (p.version) setLatest(p.version);
+
+      // A failed download/install: recover to an actionable state instead of a
+      // permanent spinner, and reopen the gate so the user can retry.
+      if (p.stage === "error") {
+        committedRef.current = false;
+        setApplying(false);
+        if (p.message) window.dispatchEvent(new CustomEvent("harness-toast", { detail: p.message }));
+        return;
+      }
+
+      // Once the user has committed (clicked Restart), the banner stays in the
+      // install view and only advances progress text. A stray background
+      // "available"/"downloaded" event must NOT flip it back to "Restart now"
+      // mid-install (that flip was another source of blinking).
+      if (committedRef.current) {
+        showProgress(p);
+        return;
+      }
+
       if (p.stage === "available" || p.stage === "downloaded") {
+        // Surface the actionable "ready -- Restart now" view. Latch it so late
+        // background download-progress can't flip it back and forth.
         readyRef.current = true;
         setReady(true);
-        // Download finished (or an update is simply available): leave the
-        // "applying" progress state so the banner flips to the actionable
-        // "ready -- Restart now" view. Without this it stuck at "Downloading
-        // update 100%" (the applying branch has no button) until the user found
-        // the StatusBar pill.
         setApplying(false);
-        // Refresh the version label cleanly rather than parsing the message.
-        ipc.updates.check().then((res: any) => {
-          if (!cancelled && res) setLatest(res.latest || res.branch || "");
-        }).catch(() => {});
-      } else {
-        // Once ready and not yet committed by the user, ignore download-progress
-        // churn -- otherwise a late "Downloading 100%" event would flip the
-        // banner off the "Restart now" view and back, which reads as blinking.
-        if (readyRef.current && !committedRef.current) return;
-        setApplying(true);
-        // Append the percent only when the message doesn't already carry one.
-        // The installed-app updater bakes it into the text ("Downloading update
-        // 72%"), so blindly appending produced "... 72% 72%". The git
-        // self-updater's messages ("Fetching latest changes") have no percent
-        // and still rely on this append for progress.
-        const base = p.message || "Updating";
-        const hasPct = /\d%\s*$/.test(base);
-        setProgress(base + (p.percent != null && !hasPct ? ` ${p.percent}%` : ""));
+        return;
       }
+
+      // Pre-commit background download churn. Once we've latched "ready", ignore
+      // it so the banner doesn't oscillate between "Restart now" and progress.
+      if (readyRef.current) return;
+      showProgress(p);
     });
 
     return () => {
@@ -89,14 +104,41 @@ export default function UpdateBanner() {
   const restart = () => {
     const ipc = (window as any).harnessIPC;
     if (!ipc || !ipc.updates) return;
+    if (committedRef.current) return; // idempotent: a second click while applying is a no-op
     committedRef.current = true;
     setApplying(true);
     setProgress("Preparing update");
-    ipc.updates.apply().catch((e: any) => {
+
+    // Recover the banner to an actionable state instead of stranding the user.
+    const recover = (msg: string) => {
+      committedRef.current = false;
       setApplying(false);
-      window.dispatchEvent(new CustomEvent("harness-toast", { detail: `Update failed: ${String(e)}` }));
-    });
-    // On success the main process relaunches; this window goes away.
+      window.dispatchEvent(new CustomEvent("harness-toast", { detail: msg }));
+    };
+
+    // Watchdog: on success the main process swaps the bundle and relaunches, so
+    // this window is destroyed well before this fires. If we're still alive after
+    // 90s, the install silently stalled -- return to "Restart now" and point the
+    // user at the releases page rather than spinning forever.
+    const watchdog = window.setTimeout(() => {
+      recover("Update is taking longer than expected. Try again, or download it from the releases page.");
+      ipc.updates.openRepo?.().catch?.(() => {});
+    }, 90000);
+
+    ipc.updates
+      .apply()
+      .then((r: any) => {
+        // apply() resolves { ok:false, error } when there's nothing to install
+        // (e.g. a stale banner) -- surface it instead of spinning.
+        if (r && r.ok === false) {
+          window.clearTimeout(watchdog);
+          recover(`Update failed: ${r.error || "no update available"}`);
+        }
+      })
+      .catch((e: any) => {
+        window.clearTimeout(watchdog);
+        recover(`Update failed: ${String(e)}`);
+      });
   };
 
   if (dismissed || (!ready && !applying)) return null;

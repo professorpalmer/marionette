@@ -40,6 +40,24 @@ def test_is_obviously_destructive():
     assert is_obviously_destructive("rm -rf temp_folder_name") is False
     assert is_obviously_destructive("echo hello") is False
 
+    # Catastrophic roots stay blocked, including flag-order/verbosity variants
+    # and bare top-level system directories.
+    assert is_obviously_destructive("rm -fr /") is True
+    assert is_obviously_destructive("rm -rfv /") is True
+    assert is_obviously_destructive("rm -rf /*") is True
+    assert is_obviously_destructive("rm -rf /etc") is True
+    assert is_obviously_destructive("rm -rf /home") is True
+    assert is_obviously_destructive("rm -rf /Users") is True
+    assert is_obviously_destructive("rm -rf ~/*") is True
+    assert is_obviously_destructive("rm -rf $HOME") is True
+
+    # Legitimate absolute project/temp cleanups must NOT be flagged -- this is
+    # the over-broad `rm -rf /` regex fix (previously any absolute path matched).
+    assert is_obviously_destructive("rm -rf /home/user/project/build") is False
+    assert is_obviously_destructive("rm -rf /Users/cary/pm-harness/dist") is False
+    assert is_obviously_destructive("rm -rf /var/folders/tmp/xyz") is False
+    assert is_obviously_destructive("rm -rf ~/project/node_modules") is False
+
 
 def test_worker_not_git_repo():
     temp_dir = tempfile.mkdtemp()

@@ -46,8 +46,14 @@ class HarnessConfig:
         repo_val = pick("HARNESS_REPO", "repo", "")
         has_explicit_adapter = ("HARNESS_SWARM_ADAPTER" in os.environ) or ("swarm_adapter" in file_cfg)
         # Standalone by default: a repo-scoped swarm routes through the built-in
-        # 'agentic' adapter (direct provider API on the user's own key, no external
-        # CLI). 'demo' stays the safe no-key fallback when no repo is targeted.
+        # 'agentic' adapter -- direct provider API on the user's own key, no external
+        # CLI, model picked live by Puppetmaster's router. This is the shipped
+        # identity: agentic out of the box, working the moment a key is plugged in.
+        # We deliberately do NOT fall back to 'demo' when keyless -- a demo run
+        # produces deterministic placeholder findings that read as "the product is
+        # broken." Instead the UI nudges the keyless user to add a key (see
+        # ProviderKeyBanner), and 'demo' stays only for the no-repo case and as an
+        # explicit opt-in. 'agentic_ready' on /api/config reflects real key posture.
         default_adapter = "agentic" if (repo_val and not has_explicit_adapter) else "demo"
         swarm_adapter_val = pick("HARNESS_SWARM_ADAPTER", "swarm_adapter", default_adapter)
 

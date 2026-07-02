@@ -44,34 +44,49 @@ def is_obviously_destructive(cmd: str) -> bool:
         return False
     
     cmd_lower = cmd.lower().strip()
-    
-    # Specific denylist patterns from instructions and tool_guardrails
+
+    # Recursive-force delete flag cluster (-rf, -fr, -rfv, ...): both r and f
+    # present in any order. Case is handled by also matching cmd_lower below.
+    rm_rf = r"\brm\s+-(?=[a-z]*r)(?=[a-z]*f)[a-z]+\s+"
+    # Target boundary: end-of-string, whitespace, or a glob. This is what keeps
+    # a catastrophic root from matching a deeper, legitimate project path --
+    # `rm -rf /home` is blocked, `rm -rf /home/user/project/build` is not.
+    end = r"(\s|$|\*)"
+    # Only truly catastrophic targets: the filesystem root, a root glob, or a
+    # bare top-level system directory. Arbitrary absolute paths are allowed on
+    # purpose so the worker can clean up its own build/output dirs.
+    system_roots = (
+        "bin|boot|dev|etc|home|lib|lib64|opt|proc|root|run|sbin|srv|sys|"
+        "usr|users|var|applications|library|system|volumes|private"
+    )
     denylist = [
-        r"rm\s+-rf\s+/",
-        r"rm\s+-rf\s+~",
-        r":\(\)\{\s*:\|\s*&\s*\}\s*;\s*:",  # Fork bomb
+        rm_rf + r"/" + end,                              # rm -rf /   or   rm -rf /*
+        rm_rf + r"/(" + system_roots + r")(/)?" + end,   # rm -rf /etc , /home , ...
+        rm_rf + r"~(/)?" + end,                          # rm -rf ~   or   ~/   or   ~/*
+        rm_rf + r"\$home(/)?" + end,                     # rm -rf $HOME
+        r":\(\)\{\s*:\|\s*&\s*\}\s*;\s*:",               # Fork bomb
         r"\bmkfs\b",
         r"\bdd\s+if=",
         r">\s*/dev/sd",
-        r"git\s+push\s+.*--force"
+        r"git\s+push\s+.*--force",
     ]
-    
+
     for pattern in denylist:
         if re.search(pattern, cmd) or re.search(pattern, cmd_lower):
             return True
-            
-    # Substring literal matches to be safe and clear
+
+    # Literal catches for non-path patterns that don't need boundary logic.
+    # (rm/root literals are deliberately omitted -- the regexes above handle
+    # them with proper boundaries so legitimate absolute paths aren't caught.)
     literals = [
-        "rm -rf /",
-        "rm -rf ~",
         ":(){:|:&};:",
         "git push --force",
-        "dd if="
+        "dd if=",
     ]
     for lit in literals:
         if lit in cmd or lit in cmd_lower:
             return True
-            
+
     return False
 
 
@@ -211,6 +226,12 @@ class ProviderWorker:
                 )
 
             if not patch.strip():
+                # Empty diff is a benign no-op, not an execution failure. `ok`
+                # is False (no usable patch) but `success` is True so the finally
+                # block cleans up the worktree -- keep_worktree_on_failure retains
+                # only on exceptions, and an unchanged worktree has nothing to
+                # inspect. (See test_worker_empty_change; the ok/success split is
+                # intentional, not an inconsistency.)
                 success = True
                 return WorkerResult(
                     ok=False,

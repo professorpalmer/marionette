@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { api, type CodegraphStatus, type WikiGraphData } from "../lib/api";
 
 export default function StatePane({ artifacts }: {
@@ -41,6 +41,16 @@ export default function StatePane({ artifacts }: {
     } finally {
       setLoadingWiki(false);
     }
+  };
+
+  // Open the hosted wiki in the in-app Browser tab so a disconnected user has a
+  // one-click path to create (or self-host) their portable LLM wiki. Mirrors the
+  // markdown-link open flow: stash the URL, focus the tab, then dispatch the open.
+  const openWikiSetup = () => {
+    const url = "https://portablellm.wiki";
+    (window as any).__pmPendingBrowserUrl = url;
+    window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "browser" }));
+    window.dispatchEvent(new CustomEvent("harness-open-url", { detail: { url } }));
   };
 
   useEffect(() => {
@@ -304,7 +314,30 @@ export default function StatePane({ artifacts }: {
               {wikiErr ? (
                 <div className="text-risk italic">{wiki?.error || "Failed to fetch wiki status"}</div>
               ) : !wikiOk ? (
-                <div className="text-faint italic">Wiki not connected (optional)</div>
+                <div className="flex flex-col gap-1.5">
+                  <div className="text-faint leading-relaxed">
+                    A portable LLM wiki is a personal, URL-addressable briefing about
+                    you that any model can read to work with your context. Optional --
+                    connect one (or host your own) to make every session smarter.
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={openWikiSetup}
+                      className="text-[9px] bg-accent/15 hover:bg-accent/25 text-accent px-2 py-0.5 rounded transition-colors font-medium border border-accent/30 flex items-center gap-1 shrink-0"
+                      title="Open portablellm.wiki to create or connect your wiki"
+                    >
+                      <ExternalLink className="w-2.5 h-2.5" /> Set up portablellm.wiki
+                    </button>
+                    <button
+                      onClick={fetchWiki}
+                      disabled={loadingWiki}
+                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
+                      title="Re-check wiki connection"
+                    >
+                      <RefreshCw className={`w-2.5 h-2.5 ${loadingWiki ? "animate-spin" : ""}`} />
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-muted">

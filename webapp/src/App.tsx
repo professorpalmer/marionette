@@ -6,6 +6,7 @@ import RightPane from "./components/RightPane";
 import TaskStack from "./components/TaskStack";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner from "./components/UpdateBanner";
+import ProviderKeyBanner from "./components/ProviderKeyBanner";
 import Resizer from "./components/Resizer";
 import RegistryWizard from "./components/RegistryWizard";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -127,6 +128,17 @@ export default function App() {
   return (
     <div className="h-full flex flex-col">
       <UpdateBanner />
+      {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
+          we tell the user to plug in a key. Suppressed while the first-run wizard
+          is up (it already covers key setup) to avoid stacking two prompts. */}
+      {config?.agentic_ready === false && !showWizard && (
+        <ProviderKeyBanner
+          onAddKey={() => {
+            setRightOpen(true);
+            window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
+          }}
+        />
+      )}
       <div className="flex-1 min-h-0 flex">
         {leftOpen && (
           <>

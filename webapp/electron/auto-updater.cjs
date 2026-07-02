@@ -68,17 +68,25 @@ function registerAutoUpdater(ipcMain, app, shell, opts = {}) {
 
   const state = { available: false, downloaded: false, latest: app.getVersion(), error: "" };
   let installWhenReady = false;
+  let installing = false; // idempotency: install()/quitAndInstall runs exactly once
 
   const { BrowserWindow } = require("electron");
+  // Every payload carries `version` so the renderer can label the banner from the
+  // event alone -- it must NEVER call back into updates:check to learn the version
+  // (that re-triggers checkForUpdates -> update-available -> another broadcast ->
+  // another check: an infinite loop that manifested as the banner "blinking").
   const broadcast = (payload) => {
+    const full = { version: state.latest, ...payload };
     for (const win of BrowserWindow.getAllWindows()) {
       try {
-        if (win.webContents && !win.webContents.isDestroyed()) win.webContents.send("updates:progress", payload);
+        if (win.webContents && !win.webContents.isDestroyed()) win.webContents.send("updates:progress", full);
       } catch { /* window went away mid-broadcast */ }
     }
   };
 
   const install = () => {
+    if (installing) return; // never stack two quitAndInstall attempts
+    installing = true;
     // The bytes are already on disk by this point; the only work left is the
     // bundle swap + relaunch. Say "Installing", not a download percent, so the
     // pill never looks stuck at 0% right before the app restarts.
@@ -86,7 +94,17 @@ function registerAutoUpdater(ipcMain, app, shell, opts = {}) {
     try { cleanup(); } catch { /* ignore */ }
     // A tick lets the renderer paint the final state before the app quits.
     setTimeout(() => {
-      try { autoUpdater.quitAndInstall(false, true); } catch { /* ignore */ }
+      try {
+        autoUpdater.quitAndInstall(false, true);
+      } catch (e) {
+        // quitAndInstall can throw if the staged update went missing or the
+        // signature check fails. Don't strand the user on a permanent spinner:
+        // surface it, let them retry, and fall back to install-on-next-quit
+        // (autoInstallOnAppQuit is on) so the update still lands eventually.
+        installing = false;
+        state.error = String((e && e.message) || e);
+        broadcast({ stage: "error", message: `Update could not restart automatically: ${state.error}. It will finish next time you quit.`, percent: null });
+      }
     }, 400);
   };
 
@@ -114,6 +132,12 @@ function registerAutoUpdater(ipcMain, app, shell, opts = {}) {
   });
   autoUpdater.on("error", (err) => {
     state.error = String((err && err.message) || err);
+    // A download/check error after the user committed would otherwise leave the
+    // banner spinning forever. Broadcast it so the renderer can recover to an
+    // actionable state, and clear the pending-install intent so a later retry
+    // starts clean.
+    installWhenReady = false;
+    broadcast({ stage: "error", message: `Update failed: ${state.error}`, percent: null });
   });
 
   let lastCheckAt = 0;

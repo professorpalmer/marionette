@@ -372,7 +372,7 @@ export default function SwarmPane() {
                         <div className="text-[9px] uppercase tracking-wider text-faint font-medium mb-1">
                           Findings ({streamArts.length})
                         </div>
-                        <div className="max-h-44 overflow-y-auto pr-1 flex flex-col gap-1 border border-edge/20 rounded p-1.5 bg-panel/30">
+                        <div className="pr-1 flex flex-col gap-1 border border-edge/20 rounded p-1.5 bg-panel/30">
                           {streamArts.map((art: Artifact, idx: number) => (
                             <div key={art.id || idx} className="text-[9.5px] border-b border-edge/10 pb-1 last:border-0 last:pb-0 flex flex-col gap-0.5">
                               <div className="flex items-center justify-between">
