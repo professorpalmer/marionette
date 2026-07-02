@@ -56,10 +56,12 @@ def test_first_run_sensible_default(temp_platform_json):
         data = json.load(f)
 
     assert data.get("harness_initialized") is True
-    # Key-first default: only hermes (bring-your-own-key OpenRouter) is enabled
-    # out of the box; cursor and every other external adapter are disabled so a
-    # fresh install never routes workers through the Cursor CLI/subscription.
-    assert "hermes" not in data["disabled"]
+    # Standalone default: only the built-in 'agentic' adapter is enabled out of
+    # the box (it runs directly on the user's provider key with no external CLI).
+    # Every CLI adapter -- including hermes -- is disabled so a fresh install is
+    # fully self-contained.
+    assert "agentic" not in data["disabled"]
+    assert "hermes" in data["disabled"]
     assert "cursor" in data["disabled"]
     assert "claude-code" in data["disabled"]
     assert "codex" in data["disabled"]
@@ -83,8 +85,13 @@ def test_get_platform_adapters(temp_platform_json):
         data = json.loads(resp.read().decode())
         
         adapters = data["adapters"]
-        assert len(adapters) == 5
-        
+        assert len(adapters) == 6
+
+        # The standalone 'agentic' adapter is present and implement-capable.
+        agentic = next(a for a in adapters if a["name"] == "agentic")
+        assert agentic["enabled"] is True
+        assert agentic["implement_capable"] is True
+
         # Verify disabled/enabled state from file
         cursor = next(a for a in adapters if a["name"] == "cursor")
         assert cursor["enabled"] is False

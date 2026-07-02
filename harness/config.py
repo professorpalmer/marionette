@@ -15,7 +15,7 @@ class HarnessConfig:
     state_dir: str = ""              # PM state dir; blank -> per-session temp
     worker_mode: str = "subprocess"
     repo: str = ""                   # target repo for REAL analysis (HARNESS_REPO)
-    swarm_adapter: str = "demo"      # demo (free/safe) | openai (real read-only analysis)
+    swarm_adapter: str = "demo"      # demo (free/safe) | agentic (standalone, key-routed) | openai
     wiki_url: str = ""               # portable-llm-wiki base url (HARNESS_WIKI_URL)
     wiki_auto: bool = False          # auto-ingest findings to the wiki (HARNESS_WIKI_AUTO)
     max_context_tokens: int = 96000
@@ -45,7 +45,10 @@ class HarnessConfig:
 
         repo_val = pick("HARNESS_REPO", "repo", "")
         has_explicit_adapter = ("HARNESS_SWARM_ADAPTER" in os.environ) or ("swarm_adapter" in file_cfg)
-        default_adapter = "openai" if (repo_val and not has_explicit_adapter) else "demo"
+        # Standalone by default: a repo-scoped swarm routes through the built-in
+        # 'agentic' adapter (direct provider API on the user's own key, no external
+        # CLI). 'demo' stays the safe no-key fallback when no repo is targeted.
+        default_adapter = "agentic" if (repo_val and not has_explicit_adapter) else "demo"
         swarm_adapter_val = pick("HARNESS_SWARM_ADAPTER", "swarm_adapter", default_adapter)
 
         driver_val = pick("HARNESS_DRIVER", "driver", "qwen3-coder-30b")

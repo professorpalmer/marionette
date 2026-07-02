@@ -73,27 +73,56 @@ def _init_platform_lock() -> None:
         pdata = {}
     
     if not os.path.exists(path) or "harness_initialized" not in pdata:
-        # Key-first default: out of the box only the hermes adapter (OpenRouter,
-        # bring-your-own-key) is enabled. The cursor adapter is left OFF so a fresh
-        # install never silently routes workers through the Cursor CLI/subscription
-        # and its toolset -- Marionette is vendor-neutral and runs on the user's own
-        # provider keys, which keeps worker behavior deterministic and reproducible
-        # for contributors who may not even have Cursor. Any adapter can be
-        # re-enabled in Settings > Platform.
-        default_disabled = ["cursor", "claude-code", "codex", "openai"]
+        # Standalone default: out of the box only the built-in ``agentic`` adapter
+        # is enabled. It runs its own tool-use loop directly against whatever
+        # provider API the user has a key for (Anthropic, OpenAI, Gemini,
+        # OpenRouter, ...), so a fresh install needs NOTHING but a provider key --
+        # no external agent CLI (cursor / claude / codex / hermes) installed or
+        # logged in. Every CLI adapter is left OFF so Marionette stays fully
+        # self-contained and vendor-neutral; any of them can still be re-enabled
+        # in Settings > Platform for users who have that tooling.
+        default_disabled = ["cursor", "claude-code", "codex", "openai", "hermes"]
         if "disabled" not in pdata or not isinstance(pdata["disabled"], list):
             pdata["disabled"] = default_disabled
         else:
-            # Legacy platform.json missing the init marker: fold in the key-first
-            # defaults (so cursor lands off) while guaranteeing hermes stays on.
+            # Legacy platform.json missing the init marker: fold in the standalone
+            # defaults (so every CLI adapter lands off) while guaranteeing the
+            # built-in agentic adapter stays on.
             merged = set(pdata["disabled"]) | set(default_disabled)
-            merged.discard("hermes")
+            merged.discard("agentic")
             pdata["disabled"] = sorted(merged)
         pdata["harness_initialized"] = True
         try:
             _write_platform_json_atomic(path, pdata)
         except Exception:
             pass
+
+
+def _seed_agentic_catalog() -> None:
+    """Seed the standalone 'agentic' models into the Puppetmaster registry.
+
+    auto_route can only pick a standalone model if one is in
+    ``~/.puppetmaster/models.json``. This merges the curated agentic catalog
+    (API-billed) filtered to the providers the user actually has a key for, so a
+    fresh install with, say, only an Anthropic key gets exactly the Anthropic
+    agentic models and nothing that would 401. Idempotent (refresh-or-add) and
+    never fatal -- a swarm must never fail to start over catalog seeding.
+    """
+    try:
+        from pathlib import Path as _Path
+        from puppetmaster.model_registry import load_registry, save_registry, default_registry_path
+        from puppetmaster.static_catalog import merge_curated_into_registry
+        from puppetmaster.providers import available_providers
+
+        env_path = os.environ.get("PUPPETMASTER_MODELS_PATH")
+        registry_path = _Path(env_path) if env_path else default_registry_path()
+        existing = load_registry(registry_path)
+        merged, _report = merge_curated_into_registry(
+            "agentic", "api", existing, allowed_providers=available_providers()
+        )
+        save_registry(merged, registry_path)
+    except Exception:
+        pass
 
 
 def _get_platform_adapters() -> dict:
@@ -111,6 +140,7 @@ def _get_platform_adapters() -> dict:
             pass
 
     adapters_config = [
+        {"name": "agentic", "implement_capable": True},
         {"name": "cursor", "implement_capable": True},
         {"name": "hermes", "implement_capable": True},
         {"name": "claude-code", "implement_capable": True},
@@ -124,7 +154,19 @@ def _get_platform_adapters() -> dict:
         enabled = name not in disabled_list
         
         # Best-effort availability
-        if name == "hermes":
+        if name == "agentic":
+            try:
+                from puppetmaster.providers import available_providers
+                ready = sorted(available_providers())
+            except Exception:
+                ready = []
+            available = bool(ready)
+            note = (
+                "Standalone (default). Runs directly on your provider keys -- no "
+                "external CLI. "
+                + (f"Ready: {', '.join(ready)}." if ready else "Add a provider key to enable.")
+            )
+        elif name == "hermes":
             available = ("OPENROUTER_API_KEY" in os.environ) or get_api_key_status("openrouter")["has_key"]
             note = "Hermes via OpenRouter. Uses standard API key."
         elif name == "openai":
@@ -428,6 +470,7 @@ from .pty_manager import PtyManager
 _pty = PtyManager()
 _pilot._mcp = _mcp
 _init_platform_lock()
+_seed_agentic_catalog()
 
 def _apply_model_context_window():
     """Recompute _cfg.max_context_tokens for the active driver's real window
@@ -1468,7 +1511,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/platform":
             name = body.get("name")
             enabled = body.get("enabled")
-            if name not in ("cursor", "hermes", "claude-code", "codex", "openai"):
+            if name not in ("agentic", "cursor", "hermes", "claude-code", "codex", "openai"):
                 return self._send(400, json.dumps({"error": f"Unknown adapter: {name}"}))
             if not isinstance(enabled, bool):
                 return self._send(400, json.dumps({"error": "enabled must be a boolean"}))

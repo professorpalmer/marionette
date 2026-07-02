@@ -148,7 +148,38 @@ def execute_intent(
     swarm_adapter = (_os.environ.get("HARNESS_SWARM_ADAPTER", "demo") or "demo").lower()
     repo_cwd = _os.environ.get("HARNESS_REPO", "").strip()
 
-    if swarm_adapter == "openai" and repo_cwd:
+    if swarm_adapter == "agentic" and repo_cwd:
+        # Standalone path: run READ-ONLY analysis workers on the built-in
+        # 'agentic' adapter, which calls a provider API directly on the user's
+        # own key -- no external agent CLI. auto_route lets Puppetmaster's router
+        # pick the right-sized model among ONLY the providers the user's keys
+        # unlock (key-aware filter) and the enabled platform lock. The agentic
+        # adapter's analyze mode exposes no edit tools, so this is safe on live
+        # repos even before the triple read-only guard below.
+        _warn_if_unindexed(repo_cwd)
+        from puppetmaster.workers import WorkerSpec
+        roles = intent.roles or ["explore"]
+        specs = []
+        for r in roles:
+            specs.append(WorkerSpec(
+                role=r,
+                instruction=(
+                    f"{intent.goal}\n\nAnalyze the REAL codebase at {repo_cwd}. "
+                    f"Emit evidenced findings/risks/decisions as artifacts. This is "
+                    f"a READ-ONLY analysis: do not edit, create, or delete any files."
+                ),
+                adapter="agentic",
+                payload={
+                    "read_only": True, "no_edit": True, "dry_run": True,
+                    "cwd": repo_cwd, "prompt": intent.goal,
+                    "auto_route": True,
+                },
+            ))
+        result = Orchestrator(store).run(
+            intent.goal, specs=specs, worker_mode=worker_mode or "inline",
+        )
+        adapter = "agentic"
+    elif swarm_adapter == "openai" and repo_cwd:
         _prepare_analysis_env()
         _warn_if_unindexed(repo_cwd)
         from puppetmaster.workers import WorkerSpec
