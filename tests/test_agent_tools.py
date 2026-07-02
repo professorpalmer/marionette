@@ -109,6 +109,53 @@ def test_agent_tools_execution():
         assert "rejected" in results[0].get("error", "").lower() or "traversal" in results[0].get("error", "").lower()
 
 
+def test_run_command_survives_cancel_poisoned_after_action_start():
+    """Regression for the "every shell command dies but reads work" bug.
+
+    In autopilot the action_start SSE write can detect a transient client
+    disconnect and call _pilot.cancel(), which sets the shared _cancel flag. The
+    very next run_command then launched with that flag already set and was killed
+    on the spot -- exit 130, "[interrupted by user]" -- even though nothing was
+    stopping THIS command. read_file/list_dir never consult the flag, which is why
+    they kept working while every run_command died.
+
+    We reproduce it deterministically: consume the generator and set _cancel the
+    instant the run_command action_start is emitted (i.e. right before the runner
+    launches). With edge-triggered cancellation the command must still complete."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        real_tmp = os.path.realpath(tmpdir)
+        cfg = HarnessConfig(repo=real_tmp, swarm_adapter="demo")
+        session = ConversationalSession(cfg)
+
+        class CmdPilot:
+            def __init__(self):
+                self.calls = 0
+
+            def complete(self, prompt, system=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return FakeResponse(text=json.dumps({
+                        "say": "Running command now",
+                        "actions": [{"kind": "run_command", "command": "sleep 0.3; echo alive_marker_42"}],
+                    }))
+                return FakeResponse(text=json.dumps({"say": "Done", "actions": []}))
+
+        session.pilot = CmdPilot()
+
+        cmd_result = None
+        for ev in session.send("start"):
+            if ev.kind == "action_start" and ev.data.get("kind") == "run_command":
+                # Simulate the sibling-stream / disconnect cancel landing between
+                # action_start and the runner launch -- exactly the poison window.
+                session._cancel.set()
+            if ev.kind == "action_result" and "command" in (ev.data.get("types") or []):
+                cmd_result = ev.data
+
+        assert cmd_result is not None, "run_command produced no result -- it was killed before launch"
+        headline = cmd_result["artifacts"][0]["headline"]
+        assert headline == "Command exited with 0", f"command was wrongly cancelled: {headline!r}"
+
+
 @dataclass
 class _ReadAct:
     path: str

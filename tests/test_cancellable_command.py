@@ -35,6 +35,38 @@ def test_cancel_kills_promptly():
     assert "interrupted by user" in out
 
 
+def test_stale_preset_cancel_does_not_kill_fresh_command():
+    """A cancel flag already set at launch is stale (sibling-stream poison /
+    leftover interrupt), NOT a stop aimed at this command. The runner must ignore
+    it and let the command complete, instead of instakilling it and mislabeling
+    the output "[interrupted by user]". This is the regression that made every
+    shell command die while file reads (which never consult the flag) worked."""
+    ev = threading.Event()
+    ev.set()  # poisoned BEFORE the command runs
+    # Must outlive one poll interval (0.1s) so the runner actually reaches its
+    # cancel check -- a sub-0.1s command finishes first and never exercises the
+    # race, so it cannot distinguish level- from edge-triggered behavior.
+    out, code, status = run_cancellable("sleep 0.3; echo alive", timeout=10, cancel_event=ev)
+    assert status == "ok", f"stale pre-set flag wrongly cancelled: {status}"
+    assert code == 0
+    assert "alive" in out
+    assert "interrupted by user" not in out
+
+
+def test_cancel_set_during_run_still_kills():
+    """Edge-triggering must not disarm a REAL stop: a clear->set transition that
+    happens while the command is running is honored and kills the group."""
+    ev = threading.Event()  # clear at launch
+    threading.Thread(target=lambda: (time.sleep(0.3), ev.set())).start()
+    t0 = time.time()
+    out, code, status = run_cancellable("sleep 30", timeout=None, cancel_event=ev)
+    elapsed = time.time() - t0
+    assert status == "cancelled"
+    assert code == 130
+    assert elapsed < 5, f"cancel took {elapsed}s -- should be sub-second"
+    assert "interrupted by user" in out
+
+
 def test_timeout_kills():
     t0 = time.time()
     out, code, status = run_cancellable("sleep 30", timeout=1)

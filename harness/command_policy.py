@@ -132,12 +132,27 @@ def run_cancellable(
     while waiting, killing the whole group (so shell=True children die too, not
     just the parent shell) the moment either fires.
 
+    Cancellation is EDGE-triggered, not level-triggered. cancel_event is a
+    process-global flag on a shared session: a sibling stream disconnect or a
+    stale interrupt from a prior turn can leave it set. If we honored a flag that
+    was ALREADY set the moment this command launched, a fresh command would be
+    killed instantly and mislabeled "[interrupted by user]" -- exactly the
+    "every shell command dies but reads work" failure. So we snapshot the flag at
+    launch and only treat a clear->set transition DURING the run as a real Stop.
+    A genuine Stop that predates this command has already halted the turn's action
+    loop before we get here; ignoring a pre-set flag for this one command is safe
+    (the loop's own cancel check still halts the turn afterward, with the command's
+    output preserved instead of destroyed).
+
     Returns (output: str, exit_code: int, status: str) where status is one of
     "ok" | "cancelled" | "timeout" | "error". Never raises.
     """
     import signal
     import time as _time
 
+    # Snapshot the cancel flag BEFORE launch. A flag already set here is stale
+    # (sibling-stream poison / leftover interrupt), not a stop aimed at us.
+    stale_cancel = cancel_event is not None and cancel_event.is_set()
     start = _time.monotonic()
     try:
         # start_new_session=True puts the child in its own process group so we
@@ -206,7 +221,7 @@ def run_cancellable(
             break  # process finished on its own
         except subprocess.TimeoutExpired:
             pass
-        if cancel_event is not None and cancel_event.is_set():
+        if cancel_event is not None and cancel_event.is_set() and not stale_cancel:
             _kill_group()
             status = "cancelled"
             break
