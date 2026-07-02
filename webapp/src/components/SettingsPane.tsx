@@ -522,23 +522,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   <div className="flex items-center gap-2 min-w-0">
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${connected ? "bg-good" : "bg-faint"}`} />
                     <span className="text-txt font-medium text-[11px]">{p.display_name || p.name}</span>
-                    {p.name === settings.reach && (
-                      <span
-                        title={settings.preflight_ok ? "Active provider -- preflight passed" : "Active provider -- key needed or invalid"}
-                        className={`shrink-0 rounded px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide border ${
-                          settings.preflight_ok
-                            ? "bg-good/10 text-good border-good/30"
-                            : "bg-risk/10 text-risk border-risk/30"
-                        }`}
-                      >
-                        {settings.preflight_ok ? "active - ready" : "active - key needed"}
-                      </span>
-                    )}
-                    <span className="text-faint text-[10px] font-mono truncate">
+                    <span
+                      title={envBacked ? `Key imported from your environment (${p.env_var || "env var"})` : undefined}
+                      className="text-faint text-[10px] font-mono truncate"
+                    >
                       {envBacked
-                        ? `${enabled ? "on" : "off"} - via ${p.env_var || "environment"}`
+                        ? `${enabled ? "connected" : "disabled"} - via env`
                         : p.has_key
-                          ? (p.masked ? `key ${p.masked}` : "connected")
+                          ? "connected - via key"
                           : "not connected"}
                     </span>
                   </div>

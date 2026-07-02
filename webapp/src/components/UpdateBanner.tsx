@@ -104,12 +104,12 @@ export default function UpdateBanner() {
   const versionLabel = latest ? (latest.startsWith("v") ? latest : `v${latest}`) : "A new version";
 
   return (
-    // pl-20 clears the macOS traffic-light window controls (this banner is the
-    // topmost strip, so nothing else reserves that corner). The whole bar is a
-    // drag region so the window can still be moved from the top; interactive
-    // controls opt back out with no-drag.
+    // pl-24 clears the macOS traffic-light window controls with a comfortable
+    // margin (this banner is the topmost strip, so nothing else reserves that
+    // corner). The whole bar is a drag region so the window can still be moved
+    // from the top; interactive controls opt back out with no-drag.
     <div
-      className="flex items-center gap-3 pl-20 pr-4 py-2 bg-accent/10 border-b border-accent/30 text-[12px] text-txt select-none shrink-0"
+      className="flex items-center gap-3 pl-24 pr-4 py-2 bg-accent/10 border-b border-accent/30 text-[12px] text-txt select-none shrink-0"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       <ArrowUpCircle size={15} className="text-accent shrink-0" />
