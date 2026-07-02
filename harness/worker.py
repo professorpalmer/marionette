@@ -3,10 +3,14 @@ from __future__ import annotations
 import os
 import re
 import uuid
+import logging
+import threading
 import subprocess
 import contextlib
 from dataclasses import dataclass, field
 from typing import Optional, Iterator, TYPE_CHECKING
+
+logger = logging.getLogger("pmharness.worker")
 
 from harness.autobudget import AutoBudget
 from harness.config import HarnessConfig
@@ -64,62 +68,77 @@ def is_obviously_destructive(cmd: str) -> bool:
         rm_rf + r"/(" + system_roots + r")(/)?" + end,   # rm -rf /etc , /home , ...
         rm_rf + r"~(/)?" + end,                          # rm -rf ~   or   ~/   or   ~/*
         rm_rf + r"\$home(/)?" + end,                     # rm -rf $HOME
-        r":\(\)\{\s*:\|\s*&\s*\}\s*;\s*:",               # Fork bomb
+        # Fork bomb `:(){:|:&};:` -- the recursive body is `:|:&` (call, pipe to
+        # call, background). Tolerate the usual whitespace variants.
+        r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:",
         r"\bmkfs\b",
         r"\bdd\s+if=",
         r">\s*/dev/sd",
-        r"git\s+push\s+.*--force",
+        # Force-push, but NOT the safe `--force-with-lease` variant.
+        r"git\s+push\s+.*--force(?!-with-lease)",
     ]
 
+    # Patterns are lowercase and cmd_lower is a case-folded superset, so matching
+    # cmd_lower alone catches everything the original-case pass would.
     for pattern in denylist:
-        if re.search(pattern, cmd) or re.search(pattern, cmd_lower):
-            return True
-
-    # Literal catches for non-path patterns that don't need boundary logic.
-    # (rm/root literals are deliberately omitted -- the regexes above handle
-    # them with proper boundaries so legitimate absolute paths aren't caught.)
-    literals = [
-        ":(){:|:&};:",
-        "git push --force",
-        "dd if=",
-    ]
-    for lit in literals:
-        if lit in cmd or lit in cmd_lower:
+        if re.search(pattern, cmd_lower):
             return True
 
     return False
 
 
+# subprocess.run is a process-global, so the destructive-command guard is
+# installed once and reference-counted: concurrent workers (run_parallel) share
+# a single armed guard and it is only restored when the LAST worker exits. A
+# naive save/restore-per-worker races -- whoever finishes first would disarm the
+# guard for every worker still running.
+_guard_lock = threading.Lock()
+_guard_depth = 0
+_original_run = None
+
+
+def _guarded_run(*args, **kwargs):
+    cmd = args[0] if args else kwargs.get("args")
+
+    if isinstance(cmd, (list, tuple)):
+        cmd_str = " ".join(str(part) for part in cmd)
+    else:
+        cmd_str = str(cmd or "")
+
+    if is_obviously_destructive(cmd_str):
+        return subprocess.CompletedProcess(
+            args=cmd or [],
+            returncode=1,
+            stdout="Command rejected by safety guardrails: obviously destructive.",
+            stderr="Command rejected by safety guardrails: obviously destructive.",
+        )
+
+    return _original_run(*args, **kwargs)
+
+
 @contextlib.contextmanager
 def patch_subprocess_run(repo_path: str):
     """
-    Temporarily patch subprocess.run to guard against obviously destructive commands.
+    Guard subprocess.run against obviously destructive commands for the duration
+    of the context. Safe to nest and to run concurrently across worker threads --
+    the guard is reference-counted and stays armed until the last holder exits.
     """
-    original_run = subprocess.run
-    
-    def guarded_run(*args, **kwargs):
-        cmd = args[0] if args else kwargs.get("args")
-        
-        if isinstance(cmd, list):
-            cmd_str = " ".join(cmd)
-        else:
-            cmd_str = str(cmd or "")
-            
-        if is_obviously_destructive(cmd_str):
-            return subprocess.CompletedProcess(
-                args=cmd or [],
-                returncode=1,
-                stdout="Command rejected by safety guardrails: obviously destructive.",
-                stderr="Command rejected by safety guardrails: obviously destructive."
-            )
-            
-        return original_run(*args, **kwargs)
-        
-    subprocess.run = guarded_run
+    global _guard_depth, _original_run
+
+    with _guard_lock:
+        if _guard_depth == 0:
+            _original_run = subprocess.run
+            subprocess.run = _guarded_run
+        _guard_depth += 1
+
     try:
         yield
     finally:
-        subprocess.run = original_run
+        with _guard_lock:
+            _guard_depth -= 1
+            if _guard_depth == 0:
+                subprocess.run = _original_run
+                _original_run = None
 
 
 class ProviderWorker:
@@ -314,10 +333,10 @@ class ProviderWorker:
                         pass
                     else:
                         remove_worktree(self.repo, wt_path, force=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("failed to remove worktree %s: %s", wt_path, exc)
 
             try:
                 delete_branch(self.repo, branch_name)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("failed to delete branch %s: %s", branch_name, exc)

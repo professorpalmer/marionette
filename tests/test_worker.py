@@ -31,6 +31,7 @@ def test_is_obviously_destructive():
     assert is_obviously_destructive("mkfs.ext4 /dev/sdb1") is True
     assert is_obviously_destructive("dd if=/dev/zero of=/dev/sd") is True
     assert is_obviously_destructive("git push origin --force") is True
+    assert is_obviously_destructive("git push --force") is True
     assert is_obviously_destructive("RM -RF /") is True  # Case insensitive
     assert is_obviously_destructive("  rm   -rf   ~  ") is True  # Whitespace robust
     
@@ -57,6 +58,31 @@ def test_is_obviously_destructive():
     assert is_obviously_destructive("rm -rf /Users/cary/pm-harness/dist") is False
     assert is_obviously_destructive("rm -rf /var/folders/tmp/xyz") is False
     assert is_obviously_destructive("rm -rf ~/project/node_modules") is False
+
+    # --force-with-lease is the SAFE variant and must not be denied, even though
+    # its substring is `--force`. (The plain force-push above stays blocked.)
+    assert is_obviously_destructive("git push --force-with-lease origin main") is False
+    assert is_obviously_destructive("git push --force-with-lease") is False
+
+
+def test_patch_subprocess_run_nested_guard_stays_armed():
+    """Concurrent workers share one reference-counted guard: an inner/earlier
+    holder exiting must not disarm the destructive-command guard while an outer
+    holder is still active (the run_parallel race)."""
+    from harness.worker import patch_subprocess_run
+
+    real_run = subprocess.run
+    with patch_subprocess_run("/tmp"):
+        assert subprocess.run is not real_run  # guard armed
+        with patch_subprocess_run("/tmp"):
+            assert subprocess.run is not real_run
+        # Inner holder exited; guard MUST remain armed for the outer holder.
+        assert subprocess.run is not real_run, "guard disarmed while an outer worker is still active"
+        blocked = subprocess.run("rm -rf /", shell=True)
+        assert blocked.returncode == 1
+        assert "rejected by safety guardrails" in (blocked.stdout or "")
+    # Last holder exited -> fully restored.
+    assert subprocess.run is real_run
 
 
 def test_worker_not_git_repo():

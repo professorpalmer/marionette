@@ -3,9 +3,12 @@ from __future__ import annotations
 import os
 import re
 import json
+import logging
 import subprocess
 import tempfile
 from typing import Optional
+
+logger = logging.getLogger("pmharness.worktrees")
 
 def _git(repo: str, *args: str, timeout: int = 15) -> tuple[int, str, str]:
     if not repo:
@@ -167,8 +170,8 @@ def set_max_worktrees(max_count: int) -> None:
             json.dump({"max_worktrees": max_count}, f)
         os.chmod(temp_path, 0o600)
         os.replace(temp_path, _WORKTREES_JSON)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("failed to persist max_worktrees to %s: %s", _WORKTREES_JSON, exc)
 
 def cleanup_old_worktrees(repo: str, max_count: int = 25) -> None:
     worktrees = list_worktrees(repo)
@@ -187,8 +190,8 @@ def cleanup_old_worktrees(repo: str, max_count: int = 25) -> None:
     for wt in to_remove:
         try:
             remove_worktree(repo, wt["path"], force=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("failed to remove stale worktree %s: %s", wt["path"], exc)
 
 def delete_branch(repo: str, branch: str) -> None:
     if not branch.startswith("pmworker-"):
