@@ -33,6 +33,7 @@ from . import workspaces as _ws
 from .sessions import SessionStore, save_transcript, load_transcript
 from .autobudget import AutoBudget
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd
+from .diag import note as _diag
 
 
 def _get_platform_json_path() -> str:
@@ -67,8 +68,8 @@ def _init_platform_lock() -> None:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 pdata = json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            _diag("server.platform_lock_read", e)
     if not isinstance(pdata, dict):
         pdata = {}
     
@@ -94,8 +95,8 @@ def _init_platform_lock() -> None:
         pdata["harness_initialized"] = True
         try:
             _write_platform_json_atomic(path, pdata)
-        except Exception:
-            pass
+        except Exception as e:
+            _diag("server.platform_lock_write", e)
 
 
 def _seed_agentic_catalog() -> None:
@@ -121,8 +122,8 @@ def _seed_agentic_catalog() -> None:
             "agentic", "api", existing, allowed_providers=available_providers()
         )
         save_registry(merged, registry_path)
-    except Exception:
-        pass
+    except Exception as e:
+        _diag("server.seed_agentic_catalog", e)
 
 
 def _get_platform_adapters() -> dict:
@@ -136,8 +137,8 @@ def _get_platform_adapters() -> dict:
                 pdata = json.load(f)
                 if isinstance(pdata, dict) and "disabled" in pdata and isinstance(pdata["disabled"], list):
                     disabled_list = pdata["disabled"]
-        except Exception:
-            pass
+        except Exception as e:
+            _diag("server.platform_disabled_read", e)
 
     adapters_config = [
         {"name": "agentic", "implement_capable": True},
@@ -246,8 +247,8 @@ def _save_workspace_driver(repo: str, driver: str) -> None:
         data[os.path.realpath(repo)] = driver
         from .registry_wizard import write_json_atomic
         write_json_atomic(path, data)
-    except Exception:
-        pass
+    except Exception as e:
+        _diag("server.workspace_driver_write", e)
 
 
 def _get_workspace_driver(repo: str):
@@ -396,8 +397,8 @@ if not os.environ.get("HARNESS_REPO") and os.path.exists(_ws_boot_path):
             if _ws_data.get("repo") and os.path.isdir(_ws_data["repo"]):
                 _cfg.repo = _ws_data["repo"]
                 os.environ["HARNESS_REPO"] = _ws_data["repo"]
-    except Exception:
-        pass
+    except Exception as e:
+        _diag("server.workspace_boot_load", e)
 
 if _state_dir:
     _cfg.state_dir = _state_dir
@@ -451,11 +452,11 @@ def _resolve_available_driver():
                     try:
                         from pmharness.registry import context_window
                         _cfg.max_context_tokens = context_window(_cfg.driver, default=200000)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _diag("server.resolve_driver_context_window", e)
                 return
-    except Exception:
-        pass
+    except Exception as e:
+        _diag("server.resolve_available_driver", e)
 
 
 _resolve_available_driver()
@@ -486,8 +487,8 @@ def _apply_model_context_window():
     try:
         from pmharness.registry import context_window
         _cfg.max_context_tokens = context_window(_cfg.driver, default=200000)
-    except Exception:
-        pass
+    except Exception as e:
+        _diag("server.apply_model_context_window", e)
 
 
 def _rebuild_pilot_and_session():
@@ -821,8 +822,8 @@ def _maybe_refresh_codegraph(repo_path: str, *, force: bool = False) -> None:
             _reindex_codegraph_bg(repo_path)
     try:
         threading.Thread(target=worker, daemon=True).start()
-    except Exception:
-        pass
+    except Exception as e:
+        _diag("server.codegraph_stale_check_thread", e)
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -1153,13 +1154,13 @@ class Handler(BaseHTTPRequestHandler):
                     if saved_driver in avail or not avail:
                         _cfg.driver = saved_driver
                         _apply_model_context_window()
-            except Exception:
-                pass
+            except Exception as e:
+                _diag("server.restore_workspace_driver", e)
 
             try:
                 recents = _record_recent_workspace(target_repo)
-            except Exception:
-                pass
+            except Exception as e:
+                _diag("server.record_recent_workspace", e)
 
             is_git = False
             branch = ""
@@ -1665,8 +1666,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not _driver_provider_available(_cfg.driver):
                         _resolve_available_driver()
                         _rebuild_pilot_and_session()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _diag("server.provider_toggle_driver_rebuild", e)
                 status = get_api_key_status(p.name)
                 return self._send(200, json.dumps({
                     "ok": True,
@@ -1686,8 +1687,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not _driver_provider_available(_cfg.driver):
                         _resolve_available_driver()
                         _rebuild_pilot_and_session()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _diag("server.provider_clear_driver_rebuild", e)
             else:
                 val = str(body.get("api_key", "")).strip()
                 if not val:
@@ -2562,10 +2563,10 @@ class Handler(BaseHTTPRequestHandler):
                             "tokens": tokens,
                             "est_cost_usd": round(total, 6)
                         })
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        _diag("server.usage_job_cost", e, msg=f"job={jid}")
+            except Exception as e:
+                _diag("server.usage_jobs_aggregate", e)
             response_data = {
                 "session": {
                     "tokens_used": tokens_used,
@@ -2682,8 +2683,8 @@ class Handler(BaseHTTPRequestHandler):
                         "artifacts": artifacts_list,
                         "tasks": tasks_list
                     })
-            except Exception:
-                pass
+            except Exception as e:
+                _diag("server.jobs_list_aggregate", e)
 
             # Merge in-process provider-native worker jobs (job_id "local-*").
             # These run on the user's own key rather than a Puppetmaster adapter,
@@ -2694,8 +2695,8 @@ class Handler(BaseHTTPRequestHandler):
                 for lj in _pilot.live_local_jobs():
                     if lj.get("id") not in existing_ids:
                         res_jobs.append(lj)
-            except Exception:
-                pass
+            except Exception as e:
+                _diag("server.jobs_list_merge_local", e)
             
             tokens_used = getattr(_pilot, "_tokens_used", 0)
             # Accurate split: input tokens at price_in, output at price_out. Falls
