@@ -342,6 +342,10 @@ function backendRequest(method, apiPath, body) {
   });
 }
 
+ipcMain.on("harness:rendererError", (_e, payload) => {
+  const p = payload || {};
+  logMain(`[rendererError:${p.scope || "app"}] ${p.message || ""}\n${p.stack || ""}${p.componentStack ? `\ncomponentStack:${p.componentStack}` : ""}`);
+});
 ipcMain.handle("harness:getJSON", (_e, p) => backendRequest("GET", p));
 ipcMain.handle("harness:postJSON", (_e, p, body) => backendRequest("POST", p, body));
 

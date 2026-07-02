@@ -8,6 +8,7 @@ import StatusBar from "./components/StatusBar";
 import UpdateBanner from "./components/UpdateBanner";
 import Resizer from "./components/Resizer";
 import RegistryWizard from "./components/RegistryWizard";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 const LS = {
   left: "pmharness.leftW", right: "pmharness.rightW",
@@ -136,18 +137,22 @@ export default function App() {
           </>
         )}
         <div className="flex-1 min-w-0 h-full">
-          <Conversation
-            config={config}
-            activeSessionId={activeSessionId}
-            onArtifacts={(a) => setArtifacts((prev) => [...a, ...prev])}
-            onJobChange={() => setJobsRefresh((n) => n + 1)}
-          />
+          <ErrorBoundary label="Chat">
+            <Conversation
+              config={config}
+              activeSessionId={activeSessionId}
+              onArtifacts={(a) => setArtifacts((prev) => [...a, ...prev])}
+              onJobChange={() => setJobsRefresh((n) => n + 1)}
+            />
+          </ErrorBoundary>
         </div>
         {rightOpen && (
           <>
             <Resizer side="right" onResize={(dx) => setRightW((w) => clamp(w + dx, 340, 640))} />
             <div style={{ width: rightW }} className="shrink-0 h-full overflow-hidden">
-              <RightPane artifacts={artifacts} onOpenWizard={() => setShowWizard(true)} />
+              <ErrorBoundary label="Side panel">
+                <RightPane artifacts={artifacts} onOpenWizard={() => setShowWizard(true)} />
+              </ErrorBoundary>
             </div>
           </>
         )}

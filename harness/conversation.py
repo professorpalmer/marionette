@@ -329,6 +329,14 @@ class ConversationalSession:
         self._swarm_futures: set[concurrent.futures.Future] = set()
         self._swarm_futures_lock = threading.Lock()
         self._interrupted_swarms = False
+        # In-process provider-native worker jobs (job_id "local-*"). These run on
+        # the user's own provider key instead of a Puppetmaster adapter, so they
+        # never land in the durable job store the swarm panel reads. Without a
+        # live registry the panel shows "No swarm jobs yet" while a worker is
+        # visibly running. Keyed by job_id; shaped like store jobs so the SwarmPane
+        # renders them uniformly. Merged into /api/swarm/live.
+        self._local_jobs: dict[str, dict] = {}
+        self._local_jobs_lock = threading.Lock()
         # Per-message CodeGraph slice cache. The codegraph_context() call is a
         # blocking Node subprocess (~270-500ms) -- recomputing it on every step
         # of a multi-step turn (same query) is pure dead time stacked in front of
@@ -837,13 +845,34 @@ class ConversationalSession:
         else:
             self._history.append({"role": "user", "content": clamped_content})
 
+    def _read_allowed_roots(self) -> list:
+        """Roots read_file may read from: the open workspace, plus the app's own
+        results-spill dir. Oversized tool outputs (a big web_fetch, a long
+        command) are persisted to {state_dir}/pmharness-results/<id>.txt and the
+        model is explicitly told to read them back with read_file. That dir lives
+        outside the workspace (a temp pilot-XXXX dir when no state_dir is set), so
+        without whitelisting it every such read was rejected as path traversal --
+        the pilot was told to read a file it was then refused, and stranded. Only
+        reads get this extra root; writes/edits stay workspace-confined."""
+        roots = []
+        if self.config.repo:
+            roots.append(self.config.repo)
+        try:
+            spill_root = os.path.join(
+                os.path.abspath(self._state_dir_or_tempdir), "pmharness-results"
+            )
+            roots.append(spill_root)
+        except Exception:
+            pass
+        return roots
+
     def _do_read_file(self, act: Any) -> tuple[bool, str, str]:
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
-        if not is_safe_path(target_path, self.config.repo):
+        if not any(is_safe_path(target_path, root) for root in self._read_allowed_roots()):
             return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
         try:
             if not os.path.exists(target_path):
@@ -2406,6 +2435,7 @@ class ConversationalSession:
                             short = uuid.uuid4().hex[:8]
                             job_id = f"local-{short}"
                             self._session_job_ids.append(job_id)
+                            self._register_local_job(job_id, act.goal, role="implement")
                             
                             # Submit the provider worker task to the thread pool
                             future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, act.goal)
@@ -2671,6 +2701,7 @@ class ConversationalSession:
                                 job_id = f"local-{short}"
                                 job_ids_collected.append(job_id)
                                 self._session_job_ids.append(job_id)
+                                self._register_local_job(job_id, sub_goal, role="implement")
                                 
                                 # Submit the provider worker task to the thread pool
                                 future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, sub_goal)
@@ -3242,6 +3273,61 @@ class ConversationalSession:
             "pending_review": pending_review_info
         }
 
+    def _register_local_job(self, job_id: str, goal: str, role: str = "implement") -> None:
+        """Record a dispatched provider-native worker so it appears in the swarm
+        panel while it runs (the panel otherwise only sees Puppetmaster store
+        jobs). Shaped like a store job: a single synthesized worker task carries
+        the live status the UI renders."""
+        import time
+        with self._local_jobs_lock:
+            self._local_jobs[job_id] = {
+                "id": job_id,
+                "goal": goal,
+                "status": "running",
+                "role": role,
+                "adapter": self.config.driver or "provider",
+                "created_at": time.time(),
+                "task_count": 1,
+                "tokens": 0,
+                "est_cost_usd": 0.0,
+                "artifacts": [],
+                "tasks": [{
+                    "id": f"{job_id}-w0",
+                    "role": "provider worker",
+                    "instruction": goal,
+                    "status": "running",
+                    "adapter": self.config.driver or "provider",
+                }],
+            }
+
+    def _finish_local_job(self, job_id: str, ok: bool, summary: str = "",
+                          files: Optional[list] = None, tokens: int = 0) -> None:
+        """Flip a live local job to its terminal state so the panel stops showing
+        a spinner and surfaces the outcome (files touched + a one-line summary)."""
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if not job:
+                return
+            job["status"] = "completed" if ok else "failed"
+            if tokens:
+                job["tokens"] = tokens
+            if job.get("tasks"):
+                job["tasks"][0]["status"] = "completed" if ok else "failed"
+            headline = (summary or "").strip().splitlines()[0] if summary else (
+                "Patch applied" if ok else "Worker failed")
+            if files:
+                headline = f"{headline} ({len(files)} file{'s' if len(files) != 1 else ''})"
+            job["artifacts"] = [{
+                "type": "patch" if ok else "error",
+                "headline": headline[:240],
+            }]
+
+    def live_local_jobs(self) -> list:
+        """Snapshot of in-process provider-native worker jobs for /api/swarm/live.
+        Returns copies so the server can merge without holding the session lock."""
+        with self._local_jobs_lock:
+            return [dict(job) for job in self._local_jobs.values()]
+
     def _run_provider_worker_background(self, job_id: str, objective: str) -> None:
         try:
             from harness.worker import ProviderWorker
@@ -3372,6 +3458,13 @@ class ConversationalSession:
                     "pending_review": pending_review_info
                 }
                 
+            self._finish_local_job(
+                job_id,
+                ok=not res_dict.get("error"),
+                summary=res_dict.get("summary", ""),
+                files=res_dict.get("files") or [],
+                tokens=res_dict.get("tokens_out", 0),
+            )
             self._swarm_results.put({
                 "job_id": job_id,
                 "objective": objective,
@@ -3380,6 +3473,7 @@ class ConversationalSession:
             })
             
         except Exception as e:
+            self._finish_local_job(job_id, ok=False, summary=f"Failed background worker: {e}")
             self._swarm_results.put({
                 "job_id": job_id,
                 "objective": objective,

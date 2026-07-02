@@ -62,3 +62,38 @@ def test_swarm_live_returns_expected_shape():
             httpd.shutdown()
     finally:
         shutil.rmtree(tmp_dir)
+
+
+def test_swarm_live_surfaces_local_provider_jobs():
+    """Regression: provider-native workers (job_id 'local-*') run on the user's
+    own key and never enter the durable store, so the swarm panel showed
+    "No swarm jobs yet" while one was visibly running. They must now appear in
+    /api/swarm/live and flip to a terminal state when the worker finishes."""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        httpd, port, srv = _server(tmp_dir)
+        try:
+            headers = {"X-Harness-Token": srv._TOKEN}
+
+            srv._pilot._register_local_job("local-abc123", "Build the scheduler")
+
+            data = json.loads(_get(port, "/api/swarm/live", headers=headers).read().decode())
+            live = [j for j in data["jobs"] if j.get("id") == "local-abc123"]
+            assert len(live) == 1, "running local job must show in the panel"
+            assert live[0]["goal"] == "Build the scheduler"
+            assert "run" in live[0]["status"].lower()
+            assert live[0]["tasks"] and live[0]["tasks"][0]["status"] == "running"
+
+            srv._pilot._finish_local_job(
+                "local-abc123", ok=True, summary="Applied patch", files=["a.py", "b.py"]
+            )
+
+            data = json.loads(_get(port, "/api/swarm/live", headers=headers).read().decode())
+            done = [j for j in data["jobs"] if j.get("id") == "local-abc123"][0]
+            assert done["status"] == "completed"
+            assert done["artifacts"] and "2 files" in done["artifacts"][0]["headline"]
+        finally:
+            httpd.shutdown()
+            srv._pilot._local_jobs.clear()
+    finally:
+        shutil.rmtree(tmp_dir)

@@ -2572,6 +2572,18 @@ class Handler(BaseHTTPRequestHandler):
                     })
             except Exception:
                 pass
+
+            # Merge in-process provider-native worker jobs (job_id "local-*").
+            # These run on the user's own key rather than a Puppetmaster adapter,
+            # so they never enter the durable store above -- without this the panel
+            # reads "No swarm jobs yet" while a worker is visibly running.
+            try:
+                existing_ids = {j.get("id") for j in res_jobs}
+                for lj in _pilot.live_local_jobs():
+                    if lj.get("id") not in existing_ids:
+                        res_jobs.append(lj)
+            except Exception:
+                pass
             
             tokens_used = getattr(_pilot, "_tokens_used", 0)
             # Accurate split: input tokens at price_in, output at price_out. Falls

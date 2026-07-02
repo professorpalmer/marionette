@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   postJSON: (path, body) => ipcRenderer.invoke("harness:postJSON", path, body),
   pickFolder: () => ipcRenderer.invoke("harness:pickFolder"),
   uploadFile: (payload) => ipcRenderer.invoke("harness:uploadFile", payload),
+  // Fire-and-forget: persist a caught renderer error to the Electron main log so
+  // a UI crash is diagnosable from ~/.pmharness/electron.log without devtools.
+  logError: (payload) => { try { ipcRenderer.send("harness:rendererError", payload); } catch (_) {} },
 
   // stream(path, onEvent, onDone, onError) -> cancel()
   stream: (path, onEvent, onDone, onError) => {

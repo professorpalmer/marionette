@@ -65,7 +65,7 @@ def test_maybe_persist_result():
         res = maybe_persist_result(large, "id2", tmpdir, config)
         assert PERSISTED_OUTPUT_TAG in res
         assert "pmharness-results/id2.txt" in res
-        assert "Use read_file with offset and limit to read specific sections" in res
+        assert "Use read_file with start_line and limit to read specific sections" in res
 
         # File contents should match
         file_path = os.path.join(tmpdir, "pmharness-results", "id2.txt")

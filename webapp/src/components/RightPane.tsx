@@ -11,6 +11,7 @@ import TerminalPane from "./TerminalPane";
 import CheckpointsPane from "./CheckpointsPane";
 import DiffReviewPane from "./DiffReviewPane";
 import SwarmPane from "./SwarmPane";
+import ErrorBoundary from "./ErrorBoundary";
 import { api, type PendingReview } from "../lib/api";
 
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "mcp" | "settings" | "checkpoints" | "review" | "swarm";
@@ -238,7 +239,13 @@ export default function RightPane({ artifacts, onOpenWizard }: {
   // Compute label visibility based on sub-pane widths
 
 
-  const renderTabContent = (tabName: Tab) => {
+  const renderTabContent = (tabName: Tab) => (
+    <ErrorBoundary key={tabName} label={TAB_CONFIG[tabName]?.label || tabName} inline>
+      {renderTabInner(tabName)}
+    </ErrorBoundary>
+  );
+
+  const renderTabInner = (tabName: Tab) => {
     switch (tabName) {
       case "state":
         return <StatePane artifacts={artifacts} embedded />;

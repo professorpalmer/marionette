@@ -156,7 +156,7 @@ def build_persisted_message(
     msg = f"{PERSISTED_OUTPUT_TAG}\n"
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
-    msg += "Use read_file with offset and limit to read specific sections\n\n"
+    msg += "Use read_file with start_line and limit to read specific sections\n\n"
     msg += f"Preview ({label}):\n"
     msg += preview
     if has_more:
