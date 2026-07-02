@@ -193,9 +193,8 @@ def run_native_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
         driver=config.driver, reach=config.reach,
         budget=AutoBudget.from_env(), require_codegraph=False,
     )
-    result = worker.run()
-    result.tokens_out = worker.budget.tokens_used
-    return result
+    # ProviderWorker.run() stamps tokens_out from the budget on every return path.
+    return worker.run()
 
 
 def run_agentic_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":

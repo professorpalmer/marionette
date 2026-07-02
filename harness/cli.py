@@ -138,6 +138,9 @@ def main(argv=None) -> int:
     if raw and raw[0] == "pm-exec":
         from puppetmaster.cli import main as _pm_main
         return _pm_main(raw[1:])
+    if raw and raw[0] == "import-selftest":
+        from .import_selftest import run_import_selftest
+        return run_import_selftest(raw[1:])
     if raw and raw[0] == "gui":
         return _run_gui(raw[1:])
     if raw and raw[0] == "eval":

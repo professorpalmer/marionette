@@ -115,8 +115,13 @@ class Session:
         budget = self.config.budget
         system = _system(budget)
         context = prompt
+        # This eval Session is gated by SWARM COUNT (`swarms >= budget`), not by
+        # tokens -- driver eval measures driving, so the brake is "how many swarms
+        # did it dispatch," not spend. Per-turn token counts are surfaced on each
+        # `intent` event (and re-derived by run_collect); there is deliberately no
+        # local token accumulator here. (ConversationalSession, the product loop,
+        # is the token-metered path via AutoBudget.add_tokens.)
         swarms = 0
-        tok = 0
         jobs: list = []
 
         if images:
@@ -136,10 +141,21 @@ class Session:
                 context = ("The user attached image(s). Transcription(s) below "
                            "(you cannot see the image, only this text):\n\n"
                            + "\n\n".join(blocks) + "\n\n---\n" + prompt)
+            else:
+                # Every transcription failed. The driver is text-only, so with no
+                # blocks it would silently answer as if no images were attached --
+                # a wrong answer dressed up as a normal turn. Fail loudly instead
+                # of pretending this was a text-only request.
+                yield SessionEvent("final", -1, {
+                    "action": "error",
+                    "rationale": (f"All {len(images)} image transcription(s) failed; "
+                                  "cannot answer an image request as text-only."),
+                    "forced": True,
+                })
+                return
 
         for i in range(HARD_TURN_CAP):
             intent, resp, repairs = drive_with_repair(self.driver, context, system)
-            tok += resp.tokens_out
             if intent is None:
                 yield SessionEvent("error", i, {"error": resp.error or "invalid intent",
                                                 "raw": resp.text[:300],

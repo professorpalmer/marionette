@@ -63,3 +63,27 @@ def test_no_images_no_vision_event(monkeypatch):
     s = Session(cfg)
     events = list(s.run("What is JSON?"))
     assert not any(e.kind == "vision" for e in events)
+
+
+def test_all_transcriptions_failed_stops_loudly(monkeypatch):
+    """Regression: if images were attached but EVERY transcription errors, the
+    driver (text-only) must not silently answer as though no image was sent --
+    that is a wrong answer dressed as a normal turn. The run must fail loudly and
+    never reach the drive/swarm loop."""
+    import harness.vision as v
+    monkeypatch.setattr(v, "transcribe_images",
+                        lambda paths, sidecar=None: [VisionResult(text="", error="vlm unavailable", model="fake") for _ in paths])
+    # If we regressed and proceeded, this stub would let the swarm "succeed" --
+    # so its absence from the event stream is what proves we bailed early.
+    _stub_execute_intent(monkeypatch)
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp(prefix="vh-"))
+    s = Session(cfg)
+    events = list(s.run("What secret is in this screenshot?", images=["/fake/a.png"]))
+    kinds = [e.kind for e in events]
+
+    assert "executing" not in kinds, "must not drive/swarm when all images failed"
+    finals = [e for e in events if e.kind == "final"]
+    assert finals and finals[-1].data.get("action") == "error"
+    # the per-image error was still surfaced
+    assert any(e.kind == "vision" and e.data.get("error") for e in events)

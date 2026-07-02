@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 from typing import Optional
 
+from .paths import path_within
+
 logger = logging.getLogger("pmharness.worktrees")
 
 def _git(repo: str, *args: str, timeout: int = 15) -> tuple[int, str, str]:
@@ -90,12 +92,11 @@ def _get_managed_dir(repo: str) -> str:
     return os.path.abspath(os.path.join(real_repo, "..", ".pmharness-worktrees"))
 
 def _is_confined(path: str, parent: str) -> bool:
-    try:
-        real_p = os.path.realpath(path)
-        real_parent = os.path.realpath(parent)
-        return os.path.commonpath([real_parent, real_p]) == real_parent and real_p != real_parent
-    except ValueError:
-        return False
+    """True if ``path`` is STRICTLY inside ``parent`` -- a managed worktree must
+    be nested within the managed dir, never the managed dir itself. Shares the
+    confinement primitive with is_safe_path; see harness.paths (allow_equal is
+    the only difference)."""
+    return path_within(path, parent, allow_equal=False)
 
 def _safe_branch_name(branch: str) -> str:
     safe = re.sub(r'[^a-zA-Z0-9_\-]', '_', branch)

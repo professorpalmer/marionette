@@ -171,6 +171,17 @@ class ProviderWorker:
         self.require_codegraph = require_codegraph
 
     def run(self) -> WorkerResult:
+        """Drive the worker and return a normalized result whose ``tokens_out``
+        always reflects the metered spend. Token metering happens on ``self.budget``
+        during the inner run; we stamp it onto the result here -- once, for EVERY
+        return path -- so cost accounting and autobudget attribution work no matter
+        which caller invoked the worker (not only run_native_edit)."""
+        result = self._run_impl()
+        if not result.tokens_out:
+            result.tokens_out = self.budget.tokens_used
+        return result
+
+    def _run_impl(self) -> WorkerResult:
         if not self.repo or not _is_repo(self.repo):
             return WorkerResult(ok=False, error="not a git repo")
 

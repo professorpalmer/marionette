@@ -8,6 +8,7 @@ import html.parser
 from typing import Optional
 
 from harness.url_safety import is_safe_url, normalize_url_for_request
+from harness.paths import path_within
 
 WEB_FETCH_LIMIT = 16000
 
@@ -43,12 +44,9 @@ def github_fetch_candidates(url: str) -> list[str]:
 
 
 def is_safe_path(path: str, parent: str) -> bool:
-    try:
-        real_p = os.path.realpath(path)
-        real_parent = os.path.realpath(parent)
-        return os.path.commonpath([real_parent, real_p]) == real_parent
-    except ValueError:
-        return False
+    """True if ``path`` is inside ``parent`` (the root itself counts as safe).
+    Shared confinement primitive; see harness.paths."""
+    return path_within(path, parent, allow_equal=True)
 
 
 class DDGParser(html.parser.HTMLParser):

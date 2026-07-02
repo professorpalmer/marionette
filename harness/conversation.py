@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Iterator, Optional, Any
 
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd
+from .paths import path_within
 
 from pmharness import registry as reg
 from . import providers as prov
@@ -54,12 +55,50 @@ def _strip_ansi(text: str) -> str:
 
 
 def is_safe_path(path: str, parent: str) -> bool:
+    """True if ``path`` is inside ``parent`` (the workspace root itself counts as
+    safe -- file tools legitimately operate on the root, e.g. list_dir). Shares
+    the confinement primitive with worktrees._is_confined; see harness.paths."""
+    return path_within(path, parent, allow_equal=True)
+
+
+_WORKER_IMPORTS_WARMED = False
+
+
+def _prewarm_worker_imports() -> None:
+    """Import the worker/edit-engine/Puppetmaster modules ONCE on the calling
+    (main) thread before any run_parallel/run_implement worker thread does.
+
+    Why this exists: run_parallel dispatches provider workers onto a thread pool,
+    and each worker lazily first-imports harness.worker -> harness.edit_engines ->
+    puppetmaster.*. In the PACKAGED app those modules live in PyInstaller's single
+    zlib-compressed PYZ archive, read through one shared handle. Two threads doing
+    their first-time import of different PYZ modules at once race on that reader,
+    which surfaced as the two swarm failures we saw:
+      - "Error -3 while decompressing data: incorrect header check" (a sibling's
+        read corrupting the shared zlib stream), and
+      - "cannot import name 'WorkerResult' from 'harness.worker'" (a half-built
+        module handed to a racing thread).
+    The unfrozen repo never hit this because CPython imports real .py files under
+    per-module locks. Warming the imports single-threaded populates sys.modules so
+    the worker threads only ever hit the cache -- never the archive reader.
+    Best-effort: a missing optional dep here is not fatal; the worker still runs
+    and surfaces its own error as before.
+    """
+    global _WORKER_IMPORTS_WARMED
+    if _WORKER_IMPORTS_WARMED:
+        return
+    _WORKER_IMPORTS_WARMED = True
     try:
-        real_p = os.path.realpath(path)
-        real_parent = os.path.realpath(parent)
-        return os.path.commonpath([real_parent, real_p]) == real_parent
-    except ValueError:
-        return False
+        import harness.worker  # noqa: F401
+        import harness.edit_engines  # noqa: F401
+    except Exception:
+        pass
+    for mod in ("puppetmaster.orchestrator", "puppetmaster.store_factory",
+                "puppetmaster.workers"):
+        try:
+            __import__(mod)
+        except Exception:
+            pass
 
 
 def _clamp_tool_result(text: str, max_chars: Optional[int] = None) -> str:
@@ -2441,6 +2480,9 @@ class ConversationalSession:
                             self._session_job_ids.append(job_id)
                             self._register_local_job(job_id, act.goal, role="implement")
                             
+                            # Warm heavy imports single-threaded before the worker
+                            # thread races the PyInstaller PYZ reader (see fn docs).
+                            _prewarm_worker_imports()
                             # Submit the selected edit engine to the thread pool
                             future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, act.goal, act.adapter or "")
                             with self._swarm_futures_lock:
@@ -2702,6 +2744,10 @@ class ConversationalSession:
                         
                         try:
                             import uuid
+                            # Warm heavy imports single-threaded BEFORE fanning out
+                            # parallel worker threads, so they never race the
+                            # PyInstaller PYZ archive reader (see fn docs).
+                            _prewarm_worker_imports()
                             job_ids_collected = []
                             for sub_goal in goals:
                                 short = uuid.uuid4().hex[:8]

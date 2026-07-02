@@ -2,6 +2,34 @@ import pytest
 import json
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
+from harness.autobudget import AutoBudget
+from harness.worker import ProviderWorker, WorkerResult
+
+
+def test_provider_worker_stamps_tokens_out_from_budget():
+    """Regression: ProviderWorker.run() must report metered token spend on EVERY
+    return path (not only when routed through run_native_edit). tokens_out was
+    documented but always 0, breaking cost accounting for direct callers."""
+    budget = AutoBudget(max_tokens=10_000)
+    worker = ProviderWorker("/tmp/does-not-matter", "goal", budget=budget)
+    budget.tokens_used = 1234  # simulate metered spend during the inner run
+
+    # Inner run returns a result that (like the real return sites) leaves
+    # tokens_out unset; the run() wrapper must stamp it from the budget.
+    worker._run_impl = lambda: WorkerResult(ok=True, summary="done")
+    result = worker.run()
+    assert result.tokens_out == 1234
+
+
+def test_provider_worker_preserves_explicit_tokens_out():
+    """If the inner result already carries tokens_out (e.g. the agentic engine
+    set it), the wrapper must not clobber it with the budget total."""
+    budget = AutoBudget(max_tokens=10_000)
+    worker = ProviderWorker("/tmp/does-not-matter", "goal", budget=budget)
+    budget.tokens_used = 999
+    worker._run_impl = lambda: WorkerResult(ok=True, tokens_out=42)
+    result = worker.run()
+    assert result.tokens_out == 42
 
 def test_add_worker_tokens_from_artifacts_basic():
     cfg = HarnessConfig()
