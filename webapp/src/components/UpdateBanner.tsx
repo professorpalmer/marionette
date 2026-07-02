@@ -67,6 +67,7 @@ export default function UpdateBanner() {
       if (p.stage === "error") {
         committedRef.current = false;
         setApplying(false);
+        window.dispatchEvent(new Event("harness-update-idle")); // release the pill mirror too
         if (p.message) window.dispatchEvent(new CustomEvent("harness-toast", { detail: p.message }));
         return;
       }
@@ -108,11 +109,15 @@ export default function UpdateBanner() {
     committedRef.current = true;
     setApplying(true);
     setProgress("Preparing update");
+    // Tell the StatusBar pill we're committing so both surfaces show the install
+    // view in lockstep (the banner is the sole apply() driver).
+    window.dispatchEvent(new Event("harness-update-committing"));
 
     // Recover the banner to an actionable state instead of stranding the user.
     const recover = (msg: string) => {
       committedRef.current = false;
       setApplying(false);
+      window.dispatchEvent(new Event("harness-update-idle")); // release the pill mirror too
       window.dispatchEvent(new CustomEvent("harness-toast", { detail: msg }));
     };
 
@@ -140,6 +145,17 @@ export default function UpdateBanner() {
         recover(`Update failed: ${String(e)}`);
       });
   };
+
+  // The StatusBar pill delegates here so there is exactly one apply() driver: a
+  // pill click dispatches harness-update-apply and we run the same robust
+  // restart() path. restart() only touches stable refs/state setters, so binding
+  // the listener once is safe.
+  useEffect(() => {
+    const onApplyRequest = () => restart();
+    window.addEventListener("harness-update-apply", onApplyRequest);
+    return () => window.removeEventListener("harness-update-apply", onApplyRequest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (dismissed || (!ready && !applying)) return null;
 

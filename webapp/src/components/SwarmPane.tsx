@@ -38,6 +38,26 @@ function taskState(t: Task): "running" | "done" | "fail" | "idle" {
   return "idle";
 }
 
+// Cheap, render-relevant fingerprint of a live-swarm payload. During a big swarm
+// the payload can be ~1MB; JSON.stringify-diffing it (or blindly setData every
+// poll) re-renders the whole tree for no delta and blocks the main thread. We
+// hash only the fields the UI actually draws -- job/task status, counts, tokens,
+// cost -- so an unchanged poll skips the re-render entirely. Artifacts are
+// append-only in a run, so their count is a sound proxy for "new finding landed".
+function swarmSignature(res: SwarmLive | null): string {
+  if (!res) return "";
+  const parts: string[] = [];
+  for (const j of res.jobs || []) {
+    const tasks = j.tasks || [];
+    const arts = j.artifacts || [];
+    parts.push(`${j.id}:${j.status}:${tasks.length}:${arts.length}:${j.tokens ?? 0}:${(j.est_cost_usd ?? 0).toFixed(4)}`);
+    for (const t of tasks) parts.push(`${t.id}=${t.status}`);
+  }
+  const s = res.session;
+  if (s) parts.push(`S:${s.tokens_used}:${(s.est_cost_usd ?? 0).toFixed(4)}:${s.driver ?? ""}`);
+  return parts.join("|");
+}
+
 // The four visible phases of a swarm's life. A job advances left-to-right; the
 // strip fills behind the active phase so a running swarm reads as *moving*
 // instead of a static spinner. "failed" paints the reached phase red.
@@ -104,32 +124,62 @@ function WorkerProgress({ tasks }: { tasks: Task[] }) {
 
 export default function SwarmPane() {
   const [data, setData] = useState<SwarmLive | null>(null);
-  const [pollInterval, setPollInterval] = useState(2000);
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
   const [expandedAlts, setExpandedAlts] = useState<Record<string, boolean>>({});
 
+  // Self-scheduling poll (not setInterval) so a new request is only ever queued
+  // AFTER the previous one settles. The old fixed 2s interval fired regardless of
+  // whether the last request had returned: during an active swarm the backend is
+  // slow (every /swarm/live formats all artifacts and holds a worker slot), so
+  // requests piled up, each grabbed a slot, saturated the server, and starved
+  // every other panel's fetch -- that was the "loads in chunks / can't X out of
+  // settings" jank. This loop guarantees at most one in-flight poll, pauses when
+  // the window is hidden, backs off when the backend is under load, and skips the
+  // re-render when nothing changed.
   useEffect(() => {
     let active = true;
-    const fetchSwarm = () => {
+    let timer: number | undefined;
+    let inFlight = false;
+    let lastSig = "";
+
+    const schedule = (ms: number) => {
+      if (active) timer = window.setTimeout(tick, ms);
+    };
+
+    const tick = () => {
+      if (document.hidden) { schedule(3000); return; }
+      if (inFlight) { schedule(500); return; }
+      inFlight = true;
+      const startedAt = performance.now();
       api.swarmLive()
         .then((res) => {
           if (!active) return;
-          setData(res);
+          const sig = swarmSignature(res);
+          if (sig !== lastSig) { lastSig = sig; setData(res); }
           const hasRunning = (res.jobs || []).some((j) => jobStatus(j) === "in_progress");
-          const nextInterval = hasRunning ? 2000 : 5000;
-          if (nextInterval !== pollInterval) setPollInterval(nextInterval);
+          const elapsed = performance.now() - startedAt;
+          // Base cadence by activity; add backoff proportional to how slow the
+          // backend just was, so we relieve rather than amplify contention.
+          const base = hasRunning ? 2000 : 5000;
+          const backoff = elapsed > 1500 ? Math.min(elapsed, 8000) : 0;
+          schedule(base + backoff);
         })
-        .catch((err) => {
-          console.error("Swarm Live polling error:", err);
-        });
+        .catch(() => { if (active) schedule(8000); })
+        .finally(() => { inFlight = false; });
     };
-    fetchSwarm();
-    const intervalId = setInterval(fetchSwarm, pollInterval);
+
+    tick();
+    // Resume promptly when the user returns to a paused tab.
+    const onVisible = () => {
+      if (!document.hidden && !inFlight) { window.clearTimeout(timer); tick(); }
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       active = false;
-      clearInterval(intervalId);
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [pollInterval]);
+  }, []);
 
   const jobs = data?.jobs || [];
   const runningCount = jobs.filter((j) => jobStatus(j) === "in_progress").length;
@@ -160,8 +210,11 @@ export default function SwarmPane() {
         </div>
       </div>
 
-      {/* Scrollable Jobs list */}
-      <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-2">
+      {/* Scrollable Jobs list. min-h-0 is load-bearing: without it a flex-1 item
+          in a flex-col defaults to min-height:auto, refuses to shrink below its
+          content, grows past the panel, and the root's overflow-hidden clips it
+          -- so overflow-y-auto never engages and the list can't scroll. */}
+      <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-2">
         {jobs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-center px-6 gap-2">
             <Network size={20} className="text-faint/50" />

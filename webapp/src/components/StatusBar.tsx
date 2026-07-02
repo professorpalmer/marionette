@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Circle, GitBranch, Boxes, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle, RefreshCw, Zap } from "lucide-react";
 import { api, type Config } from "../lib/api";
 import { isDesktop } from "../lib/transport";
@@ -45,32 +45,51 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
     return () => { cancelled = true; };
   }, []);
 
-  // Pull + rebuild + relaunch. Progress streams in over IPC; on success the app
-  // relaunches (this window goes away). On failure, surface a toast and reset.
+  // The UpdateBanner owns the single, robust apply() path (latching, error
+  // recovery, watchdog, idempotent install). The pill just asks it to start and
+  // then mirrors progress -- so the two surfaces can never show conflicting
+  // states. The old code ran its own independent apply() loop here and dropped
+  // its progress listener the instant apply() resolved, which froze the pill at
+  // "Installing update -- restarting" forever when the relaunch stalled.
   const runUpdate = () => {
-    const ipc = (window as any).harnessIPC;
-    if (!ipc || !ipc.updates || apply) return;
+    if (apply) return;
     setApply({ stage: "prepare", message: "Preparing update", percent: null });
-    const off = ipc.updates.onProgress((p: any) => setApply(p));
-    ipc.updates.apply()
-      .then((res: any) => {
-        if (off) off();
-        if (!res || !res.ok) {
-          setApply(null);
-          window.dispatchEvent(new CustomEvent("harness-toast", {
-            detail: `Update failed: ${(res && res.error) || "unknown error"}`,
-          }));
-        }
-        // On success the main process relaunches; nothing more to do here.
-      })
-      .catch((e: any) => {
-        if (off) off();
-        setApply(null);
-        window.dispatchEvent(new CustomEvent("harness-toast", { detail: `Update failed: ${String(e)}` }));
-      });
+    window.dispatchEvent(new Event("harness-update-apply"));
   };
 
+  // Mirror the banner-owned update flow: "committing" mounts the spinner, "idle"
+  // clears it, and progress events advance the label once we're committing. We
+  // ignore pre-commit background download churn (prev == null) so the pill never
+  // spins before the user actually asked to update.
+  useEffect(() => {
+    const ipc = (window as any).harnessIPC;
+    const onCommitting = () =>
+      setApply((prev) => prev || { stage: "prepare", message: "Preparing update", percent: null });
+    const onIdle = () => setApply(null);
+    window.addEventListener("harness-update-committing", onCommitting);
+    window.addEventListener("harness-update-idle", onIdle);
+    let off: (() => void) | null = null;
+    if (ipc && ipc.updates) {
+      off = ipc.updates.onProgress((p: any) => {
+        if (!p || !p.stage) return;
+        if (p.stage === "error") { setApply(null); return; }
+        setApply((prev) => (prev ? { stage: p.stage, message: p.message || "Updating", percent: p.percent ?? null } : prev));
+      });
+    }
+    return () => {
+      window.removeEventListener("harness-update-committing", onCommitting);
+      window.removeEventListener("harness-update-idle", onIdle);
+      if (off) off();
+    };
+  }, []);
+
+  // In-flight guard: while a swarm keeps the backend busy, getUsage can take
+  // longer than the 10s cadence. Skipping an overlapping poll keeps the status
+  // bar from adding to the request pileup that made panels load in chunks.
+  const usageInFlight = useRef(false);
   const fetchUsage = () => {
+    if (usageInFlight.current) return;
+    usageInFlight.current = true;
     api.getUsage()
       .then((data) => {
         if (data && data.session) {
@@ -80,7 +99,8 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
           });
         }
       })
-      .catch((err) => console.error("Failed to load usage in StatusBar", err));
+      .catch((err) => console.error("Failed to load usage in StatusBar", err))
+      .finally(() => { usageInFlight.current = false; });
   };
 
   useEffect(() => {

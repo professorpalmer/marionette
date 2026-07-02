@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import { api, type Config } from "../lib/api";
+import { usePolling } from "../lib/usePolling";
 import PilotPicker from "./PilotPicker";
 import { pickFolder } from "../lib/transport";
 import FileEditorPane from "./FileEditorPane";
@@ -465,7 +466,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
   const fetchContextUsage = () => {
     if (!activeSessionId) return;
-    api.getContextUsage()
+    return api.getContextUsage()
       .then((res) => {
         setContextUsage(res);
       })
@@ -480,12 +481,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     return () => window.removeEventListener("harness-context-changed", h);
   }, [activeSessionId]);
 
-  useEffect(() => {
-    if (!showContextPanel) return;
-    fetchContextUsage();
-    const interval = setInterval(fetchContextUsage, 5000);
-    return () => clearInterval(interval);
-  }, [showContextPanel, activeSessionId]);
+  usePolling(fetchContextUsage, 5000, { enabled: showContextPanel && !!activeSessionId });
 
   useEffect(() => {
     if (activeSessionId) {
@@ -1007,11 +1003,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     });
   };
 
-  useEffect(() => {
-    const isPending = pendingJobIds.length > 0 || backendPendingSwarms;
-    if (!isPending) return;
-
-    const poll = () => {
+  const swarmResultsPending = pendingJobIds.length > 0 || backendPendingSwarms;
+  // Guarded via usePolling: each tick fires two sequential backend calls
+  // (results + session state), so during a swarm this was the single heaviest
+  // always-on poller. The in-flight guard keeps at most one round-trip pair
+  // outstanding instead of stacking them onto an already-busy backend.
+  usePolling(
+    () =>
       api.getSwarmResults()
         .then((res) => {
           if (res && res.results && res.results.length > 0) {
@@ -1061,16 +1059,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         })
         .catch((err) => {
           console.error("Failed to poll swarm results:", err);
-        });
-    };
-
-    poll();
-    const timer = setInterval(poll, 2500);
-
-    return () => {
-      clearInterval(timer);
-    };
-  }, [pendingJobIds, backendPendingSwarms]);
+        }),
+    2500,
+    { enabled: swarmResultsPending },
+  );
 
   // Append decoded text to the streaming assistant bubble (one state update).
   const appendStreamingText = (chunk: string) => {

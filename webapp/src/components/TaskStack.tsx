@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, CheckCircle2, Circle, Loader2, XCircle, ListChecks } from "lucide-react";
 import { api, type Job } from "../lib/api";
+import { usePolling } from "../lib/usePolling";
 
 // Compact task strip (Cursor/Hermes composer-header pattern): a single slim line
 // at the TOP of the chat column summarizing this session's PM jobs, with a
@@ -24,12 +25,10 @@ export default function TaskStack({ refresh }: { refresh: number }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const load = () => api.jobs().then(setJobs).catch(() => {});
-    load();
-    const t = setInterval(load, 2500);
-    return () => clearInterval(t);
-  }, [refresh]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh forces a
+  // fresh fetch via the identity of the returned promise chain below.
+  usePolling(() => api.jobs().then(setJobs).catch(() => {}), 2500);
+  useEffect(() => { api.jobs().then(setJobs).catch(() => {}); }, [refresh]);
 
   useEffect(() => {
     if (!open) return;

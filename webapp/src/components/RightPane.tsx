@@ -13,6 +13,7 @@ import DiffReviewPane from "./DiffReviewPane";
 import SwarmPane from "./SwarmPane";
 import ErrorBoundary from "./ErrorBoundary";
 import { api, type PendingReview } from "../lib/api";
+import { usePolling } from "../lib/usePolling";
 
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "mcp" | "settings" | "checkpoints" | "review" | "swarm";
 
@@ -147,7 +148,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
   const [reviews, setReviews] = useState<PendingReview[]>([]);
 
   const fetchReviews = () => {
-    api.getReviews()
+    return api.getReviews()
       .then((data) => {
         if (Array.isArray(data)) {
           setReviews(data);
@@ -156,11 +157,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
       .catch((err) => console.error("Failed to load reviews:", err));
   };
 
-  useEffect(() => {
-    fetchReviews();
-    const interval = setInterval(fetchReviews, 4000);
-    return () => clearInterval(interval);
-  }, []);
+  usePolling(fetchReviews, 4000);
 
   const updateSplitState = (updater: Partial<SplitState> | ((prev: SplitState) => SplitState)) => {
     setSplitState(prev => {
