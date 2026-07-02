@@ -44,6 +44,35 @@ export default function BrowserPane() {
 
   const webviewsRef = useRef<Record<string, any>>({});
 
+  // Open a URL dispatched from elsewhere (e.g. a clicked chat link) in a fresh
+  // tab, so following a link never clobbers the tab the user was already on.
+  useEffect(() => {
+    const openInNewTab = (url: string) => {
+      const id = Math.random().toString(36).substring(2, 11);
+      setTabs((prev) => [
+        ...prev,
+        { id, url, initialUrl: url, title: "New Tab", loading: true, canBack: false, canFwd: false, nonce: 0 },
+      ]);
+      setActiveTabId(id);
+    };
+    const onOpenUrl = (e: Event) => {
+      const url = (e as CustomEvent<{ url?: string }>).detail?.url;
+      if (!url) return;
+      (window as any).__pmPendingBrowserUrl = null;
+      openInNewTab(url);
+    };
+    window.addEventListener("harness-open-url", onOpenUrl as EventListener);
+    // A link clicked while this pane was unmounted stashes its URL; the focus
+    // that mounts us fires the event before this listener exists, so consume the
+    // stash here to cover that race.
+    const pending = (window as any).__pmPendingBrowserUrl;
+    if (pending) {
+      (window as any).__pmPendingBrowserUrl = null;
+      openInNewTab(pending);
+    }
+    return () => window.removeEventListener("harness-open-url", onOpenUrl as EventListener);
+  }, []);
+
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
   const url = activeTab?.url || DEFAULT_URL;
   const loading = activeTab?.loading || false;

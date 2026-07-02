@@ -89,17 +89,40 @@ export default function StatePane({ artifacts }: {
     }
   };
 
-  // Group and Dedupe Logic
+  // Group and Dedupe Logic. Signal groups (what the user asked the swarm for)
+  // stay expanded and prominent; plumbing groups (internal telemetry the pilot
+  // emits along the way) default collapsed and de-emphasized, matching the quiet
+  // CodeGraph/Wiki strip above -- so the eye lands on findings, not machinery.
+  const PLUMBING_GROUPS = new Set(["VERIFICATION", "ROUTING", "MCP"]);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  // Effective collapse: an explicit user toggle wins; otherwise plumbing starts
+  // collapsed and signal starts open.
+  const isGroupCollapsed = (groupName: string) =>
+    collapsedGroups[groupName] !== undefined
+      ? collapsedGroups[groupName]
+      : PLUMBING_GROUPS.has(groupName);
 
   const toggleGroup = (groupName: string) => {
     setCollapsedGroups((prev) => ({
       ...prev,
-      [groupName]: !prev[groupName],
+      [groupName]: !isGroupCollapsed(groupName),
     }));
   };
 
-  const GROUP_ORDER = ["FINDING", "VERIFICATION", "ROUTING", "DECISION", "RISK", "MCP"];
+  // The whole artifacts section collapses to a one-line header, like the
+  // telemetry pills. Preference persists per user.
+  const [artifactsOpen, setArtifactsOpen] = useState(
+    () => localStorage.getItem("pmharness.statePane.artifactsOpen") !== "0",
+  );
+  const toggleArtifacts = () =>
+    setArtifactsOpen((v) => {
+      localStorage.setItem("pmharness.statePane.artifactsOpen", v ? "0" : "1");
+      return !v;
+    });
+
+  // Signal first, plumbing last.
+  const GROUP_ORDER = ["FINDING", "DECISION", "RISK", "VERIFICATION", "ROUTING", "MCP"];
   const getGroupIndex = (type: string) => {
     const idx = GROUP_ORDER.indexOf(type.toUpperCase());
     return idx === -1 ? 999 : idx;
@@ -304,15 +327,21 @@ export default function StatePane({ artifacts }: {
         </div>
       </div>
 
-      {/* Artifacts: the hero of this tab. Brighter header + the full remaining
-          height, now that telemetry no longer eats the top third. */}
-      <div className="text-[10px] px-3 pt-1.5 pb-1 flex justify-between items-center shrink-0 border-t border-edge/30">
-        <span className="font-semibold uppercase tracking-wider text-muted">
+      {/* Artifacts: the hero of this tab, but collapsible to a one-line header
+          so it can get out of the way like the telemetry strip above. */}
+      <button
+        onClick={toggleArtifacts}
+        className="text-[10px] px-3 pt-1.5 pb-1 flex justify-between items-center shrink-0 border-t border-edge/30 hover:bg-panel2/20 transition-colors"
+        title={artifactsOpen ? "Hide artifacts" : "Show artifacts"}
+      >
+        <span className="font-semibold uppercase tracking-wider text-muted flex items-center gap-1">
+          {artifactsOpen ? <ChevronDown className="w-3 h-3 text-faint" /> : <ChevronRight className="w-3 h-3 text-faint" />}
           Artifacts <span className="text-faint">({artifacts.length})</span>
         </span>
-      </div>
+      </button>
 
       {/* Artifacts Pane */}
+      {artifactsOpen && (
       <div className="flex-1 overflow-y-auto px-2 pb-2 flex flex-col gap-1.5">
         {artifacts.length === 0 && (
           <div className="text-[11px] text-muted italic px-2 py-1">Findings appear here as the pilot investigates.</div>
@@ -320,15 +349,21 @@ export default function StatePane({ artifacts }: {
 
         {sortedGroupNames.map((groupName) => {
           const items = groupsMap.get(groupName) || [];
-          const isCollapsed = !!collapsedGroups[groupName];
+          const isCollapsed = isGroupCollapsed(groupName);
+          const isPlumbing = PLUMBING_GROUPS.has(groupName);
           const count = items.reduce((acc, it) => acc + it.count, 0);
 
           return (
             <div key={groupName} className="mb-1.5">
-              {/* Group Header */}
+              {/* Group Header. Plumbing groups read fainter than signal so the
+                  eye stays on findings/decisions/risks. */}
               <button
                 onClick={() => toggleGroup(groupName)}
-                className="w-full flex items-center justify-between text-[10px] font-semibold text-muted hover:text-txt py-1 px-1.5 bg-panel/40 border border-edge/30 rounded mb-1 select-none transition-colors"
+                className={`w-full flex items-center justify-between text-[10px] font-semibold py-1 px-1.5 border rounded mb-1 select-none transition-colors ${
+                  isPlumbing
+                    ? "text-faint hover:text-muted bg-panel/20 border-edge/20"
+                    : "text-muted hover:text-txt bg-panel/40 border-edge/30"
+                }`}
               >
                 <span className="flex items-center gap-1">
                   {isCollapsed ? <ChevronRight className="w-3 h-3 text-faint" /> : <ChevronDown className="w-3 h-3 text-faint" />}
@@ -423,6 +458,7 @@ export default function StatePane({ artifacts }: {
           );
         })}
       </div>
+      )}
     </div>
   );
 }

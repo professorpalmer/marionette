@@ -16,7 +16,11 @@
 
 const REPO_HTML_URL = "https://github.com/professorpalmer/pm-harness";
 const RELEASES_URL = `${REPO_HTML_URL}/releases`;
-const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // re-check every 6h while running
+const CHECK_INTERVAL_MS = 30 * 60 * 1000; // re-check every 30m while running
+// Also re-check when the user refocuses the app, but no more than once per this
+// window -- so tabbing in and out doesn't hammer GitHub, while a release cut
+// while you were away is noticed the moment you come back.
+const FOCUS_RECHECK_MIN_MS = 5 * 60 * 1000;
 
 // Compare dotted numeric versions ("0.6.7"). Returns >0 if a is newer than b.
 function compareVersions(a, b) {
@@ -112,7 +116,9 @@ function registerAutoUpdater(ipcMain, app, shell, opts = {}) {
     state.error = String((err && err.message) || err);
   });
 
+  let lastCheckAt = 0;
   const check = async () => {
+    lastCheckAt = Date.now();
     try {
       const result = await autoUpdater.checkForUpdates();
       const info = result && result.updateInfo;
@@ -164,6 +170,12 @@ function registerAutoUpdater(ipcMain, app, shell, opts = {}) {
   // Kick an initial background check shortly after launch, then periodically.
   setTimeout(() => { void check(); }, 8000);
   setInterval(() => { void check(); }, CHECK_INTERVAL_MS);
+
+  // Refocusing the app re-checks (rate-limited), so a release cut while you were
+  // away shows up when you come back instead of only on the next 30m tick.
+  app.on("browser-window-focus", () => {
+    if (Date.now() - lastCheckAt >= FOCUS_RECHECK_MIN_MS) void check();
+  });
 }
 
 module.exports = { registerAutoUpdater, compareVersions };

@@ -3,10 +3,18 @@
 @tailwind utilities;
 
 html, body, #root { height: 100%; margin: 0; }
+
+/* Responsive root scale: the whole UI is sized in rem (Tailwind text + spacing),
+   so scaling the root font-size is a proportional zoom that keeps every
+   separation ratio intact while making the app denser as the window narrows.
+   Full-size (16px) on a normal/large window, shrinking toward 12px on a small
+   one -- fixes the "huge, no visual separation" look in a compact window. */
+html { font-size: clamp(12px, 0.53vw + 8.5px, 16px); }
+
 body {
   background: #0f1113; color: #ececef;
   overflow: hidden;
-  font-size: 13px;
+  font-size: 0.8125rem; /* was 13px; now scales with the responsive root */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   letter-spacing: 0.005em;

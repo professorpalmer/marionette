@@ -2512,8 +2512,8 @@ function FencedCodeBlock({ className, children, ...props }: any) {
   };
   
   return (
-    <div className="relative group/code my-1.5">
-      <code className={`${className || ""} block bg-panel border border-edge/40 rounded p-3 pr-10 overflow-x-auto font-mono text-[11.5px] text-txt/95`} {...props}>
+    <div className="relative group/code my-2">
+      <code className={`${className || ""} block bg-panel/80 border border-edge/30 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[11.5px] leading-[1.55] text-txt/90`} {...props}>
         {children}
       </code>
       <button
@@ -2527,34 +2527,77 @@ function FencedCodeBlock({ className, children, ...props }: any) {
   );
 }
 
+// Route a clicked markdown link to the right surface instead of a raw
+// new-window navigation: http(s) opens an in-app Browser tab, a file-ish path
+// opens in the editor, and everything else (mailto, anchors) falls through to
+// default behavior.
+function isExternalUrl(href: string): boolean {
+  return /^https?:\/\//i.test(href);
+}
+
+function looksLikeFilePath(href: string): boolean {
+  if (!href) return false;
+  if (/^(https?|mailto|tel|data):/i.test(href) || href.startsWith("#")) return false;
+  const clean = href.replace(/^file:\/\//, "");
+  // A slash, or a dotted extension (optionally trailed by :line[:col]).
+  return /[\\/]/.test(clean) || /\.\w{1,8}(:\d+){0,2}$/.test(clean);
+}
+
+function openMarkdownHref(href: string, e: React.MouseEvent): void {
+  if (!href) return;
+  if (isExternalUrl(href)) {
+    e.preventDefault();
+    // Stash the URL so a BrowserPane that mounts *because* of the focus below can
+    // consume it -- the open-url event alone races the pane's listener setup.
+    (window as any).__pmPendingBrowserUrl = href;
+    window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "browser" }));
+    window.dispatchEvent(new CustomEvent("harness-open-url", { detail: { url: href } }));
+    return;
+  }
+  if (looksLikeFilePath(href)) {
+    e.preventDefault();
+    const path = href.replace(/^file:\/\//, "").replace(/:(\d+)(:\d+)?$/, "");
+    window.dispatchEvent(new CustomEvent("harness-open-file", { detail: { path } }));
+  }
+}
+
 function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[rehypeHighlight]}
       components={{
-        h1: ({ children }: any) => <h1 className="text-sm font-semibold text-txt mt-2 mb-1 border-b border-edge pb-0.5">{children}</h1>,
-        h2: ({ children }: any) => <h2 className="text-[13px] font-semibold text-txt mt-2 mb-1">{children}</h2>,
-        h3: ({ children }: any) => <h3 className="text-[12px] font-semibold text-muted mt-1.5 mb-0.5">{children}</h3>,
+        h1: ({ children }: any) => <h1 className="text-sm font-semibold text-txt mt-3 mb-1.5 border-b border-edge pb-0.5">{children}</h1>,
+        h2: ({ children }: any) => <h2 className="text-[13px] font-semibold text-txt mt-3 mb-1.5">{children}</h2>,
+        h3: ({ children }: any) => <h3 className="text-[12px] font-semibold text-muted mt-2 mb-1">{children}</h3>,
+        p: ({ children }: any) => <p className="text-[13px] leading-[1.7] my-2 first:mt-0 last:mb-0">{children}</p>,
         strong: ({ children }: any) => <strong className="font-semibold text-txt">{children}</strong>,
         em: ({ children }: any) => <em className="italic text-txt/90">{children}</em>,
-        ul: ({ children }: any) => <ul className="list-disc pl-4 my-1 space-y-0.5 text-txt/90">{children}</ul>,
-        ol: ({ children }: any) => <ol className="list-decimal pl-4 my-1 space-y-0.5 text-txt/90">{children}</ol>,
-        li: ({ children }: any) => <li className="text-[13px] leading-relaxed">{children}</li>,
+        ul: ({ children }: any) => <ul className="list-disc pl-4 my-2 space-y-1 text-txt/90">{children}</ul>,
+        ol: ({ children }: any) => <ol className="list-decimal pl-4 my-2 space-y-1 text-txt/90">{children}</ol>,
+        li: ({ children }: any) => <li className="text-[13px] leading-[1.65]">{children}</li>,
         blockquote: ({ children }: any) => (
-          <blockquote className="border-l-2 border-edge pl-2.5 my-1 text-muted italic bg-panel2/30 rounded-r-sm py-0.5">
+          <blockquote className="border-l-2 border-edge pl-2.5 my-2 text-muted italic bg-panel2/30 rounded-r-sm py-1">
             {children}
           </blockquote>
         ),
         a: ({ href, children }: any) => (
           <a
             href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-accent underline hover:text-accent/80 transition"
+            onClick={(e) => openMarkdownHref(href, e)}
+            className="text-accent/90 no-underline hover:underline underline-offset-2 decoration-accent/40 cursor-pointer break-words"
           >
             {children}
           </a>
+        ),
+        img: ({ src, alt }: any) => (
+          <img
+            src={src}
+            alt={alt || ""}
+            loading="lazy"
+            onClick={() => { if (src && isExternalUrl(src)) openMarkdownHref(src, { preventDefault() {} } as React.MouseEvent); }}
+            className="max-w-full h-auto rounded-md border border-edge/40 my-2 cursor-zoom-in"
+          />
         ),
         table: ({ children }: any) => (
           <div className="overflow-x-auto my-1.5 border border-edge rounded bg-panel/40">
@@ -2581,7 +2624,7 @@ function Markdown({ text }: { text: string }) {
           const isInline = !className;
           if (isInline) {
             return (
-              <code className="bg-panel2 px-1 py-0.5 rounded text-accent font-mono text-[11.5px] border border-edge/20" {...props}>
+              <code className="bg-panel2/70 px-1 py-[1px] rounded text-[0.9em] font-mono text-txt/85" {...props}>
                 {children}
               </code>
             );
@@ -2684,7 +2727,7 @@ function Bubble({
       {showLabel && (
         <span className="text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-semibold mt-1">pilot</span>
       )}
-      <div className={`text-[13px] leading-relaxed break-words max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
+      <div className={`text-[13px] leading-[1.7] break-words max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
         <Markdown text={displayedText} />
         
         {/* Assistant copy & regenerate buttons */}
