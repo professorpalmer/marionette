@@ -108,6 +108,11 @@ let backend = null;
 let backendPort = 8799;
 let win = null;
 let quitting = false;
+// Self-dev Vite dev server: when Live Self-Editing is on, we serve the React UI
+// from a Vite dev server (real HMR) instead of the prebuilt dist/, so edits to
+// webapp/src/** are live with no rebuild/restart. Null until started.
+let viteProc = null;
+let viteUrl = null;
 // Instance-local auth token, minted by main and handed to BOTH the backend (via
 // HARNESS_TOKEN env) and the renderer. Previously each backend generated its own
 // token and wrote it to a SHARED ~/.pmharness/token file (last-writer-wins). When
@@ -169,6 +174,94 @@ function selfDevRuntimeViable(repoRoot) {
     return fs.existsSync(path.join(repoRoot, ".venv", "bin", "python")) &&
            fs.existsSync(path.join(repoRoot, "harness", "cli.py"));
   } catch { return false; }
+}
+
+// Live React needs the checkout's webapp with installed deps (the Vite binary).
+function viteDevViable(repoRoot) {
+  try {
+    return fs.existsSync(path.join(repoRoot, "webapp", "node_modules", ".bin", "vite")) &&
+           fs.existsSync(path.join(repoRoot, "webapp", "src"));
+  } catch { return false; }
+}
+
+// Whether the renderer should be served from the Vite HMR dev server (live React)
+// rather than the prebuilt dist/. Only in self-dev mode with a usable webapp
+// checkout; never in the classic dev flow (PMHARNESS_DEV_SERVER already owns it).
+function shouldUseViteDev(repoRoot) {
+  return !isDev && selfDevEnabled() && selfDevRuntimeViable(repoRoot) && viteDevViable(repoRoot);
+}
+
+// Start (or reuse) a Vite dev server for the editable webapp. Returns its URL, or
+// null if it can't start -- callers fall back to loadFile(dist). The renderer
+// talks to the backend over IPC (window.harnessIPC), so Vite's /api proxy is
+// irrelevant here; we only need the HMR-served page.
+async function ensureViteDevServer(repoRoot) {
+  if (viteUrl && viteProc && viteProc.exitCode === null) return viteUrl;
+  if (!viteDevViable(repoRoot)) return null;
+  const webappDir = path.join(repoRoot, "webapp");
+  const viteBin = path.join(webappDir, "node_modules", ".bin", "vite");
+  const port = await freePort();
+  const url = `http://127.0.0.1:${port}`;
+  try {
+    viteProc = spawn(viteBin, ["--host", "127.0.0.1", "--port", String(port), "--strictPort", "--clearScreen", "false"], {
+      cwd: webappDir,
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    viteProc.stdout.on("data", (d) => _dbg2(`[vite] ${d}`));
+    viteProc.stderr.on("data", (d) => _dbg2(`[vite:err] ${d}`));
+    viteProc.on("exit", (code) => { _dbg2(`[vite] exited code=${code}`); viteProc = null; viteUrl = null; });
+  } catch (e) {
+    _dbg2(`[vite] spawn failed: ${e && e.message}`);
+    viteProc = null;
+    return null;
+  }
+  // Wait for the dev server to answer before we point the window at it.
+  const ready = await new Promise((resolve) => {
+    const start = Date.now();
+    const probe = () => {
+      const req = http.get({ host: "127.0.0.1", port, path: "/", timeout: 1500 }, (res) => {
+        res.destroy();
+        resolve(true);
+      });
+      req.on("error", () => {
+        if (Date.now() - start > 20000) return resolve(false);
+        setTimeout(probe, 300);
+      });
+      req.on("timeout", () => { req.destroy(); });
+    };
+    probe();
+  });
+  if (!ready) {
+    _dbg2("[vite] dev server did not become ready; falling back to dist");
+    cleanupVite();
+    return null;
+  }
+  viteUrl = url;
+  _dbg2(`[vite] dev server ready at ${url} (live React HMR)`);
+  return viteUrl;
+}
+
+function cleanupVite() {
+  if (viteProc) {
+    try { viteProc.kill(); } catch { /* already gone */ }
+    viteProc = null;
+  }
+  viteUrl = null;
+}
+
+// Point the window at the right renderer source: the classic dev server, the
+// self-dev Vite HMR server (live React), or the prebuilt dist/ bundle.
+async function loadRenderer() {
+  if (!win) return;
+  if (isDev) { win.loadURL(process.env.PMHARNESS_DEV_SERVER); return; }
+  if (shouldUseViteDev(resolveRepoRoot())) {
+    const url = await ensureViteDevServer(resolveRepoRoot());
+    if (url) { win.loadURL(url); return; }
+  } else {
+    cleanupVite();  // self-dev turned off -> stop the dev server
+  }
+  win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
 }
 
 function freePort() {
@@ -455,7 +548,10 @@ async function restartBackend() {
     await startBackend();
     try {
       if (win && win.webContents && !win.webContents.isDestroyed()) {
-        win.webContents.reload();  // did-finish-load re-injects the new port/token
+        // Re-navigate to the correct renderer source. This also applies a
+        // self-dev toggle: on -> Vite HMR (live React), off -> prebuilt dist.
+        // did-finish-load re-injects the new backend port/token either way.
+        await loadRenderer();
       }
     } catch { /* window gone */ }
     return { ok: true, port: backendPort };
@@ -624,8 +720,7 @@ function createWindow() {
       `window.__HARNESS_PORT__=${backendPort};window.__HARNESS_TOKEN__=${JSON.stringify(harnessToken)};`
     ).catch(() => {});
   });
-  if (isDev) win.loadURL(process.env.PMHARNESS_DEV_SERVER);
-  else win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+  loadRenderer();
 
   // Drop the reference when the window is closed so a reopen builds a clean one
   // (and a failed renderer load doesn't leave a half-dead window bound to `win`).
@@ -636,10 +731,7 @@ function createWindow() {
     if (isMainFrame && errorCode !== -3) {  // -3 = aborted (navigation), ignore
       _dbg2(`renderer did-fail-load ${errorCode} ${errorDesc} ${validatedURL}`);
       setTimeout(() => {
-        try {
-          if (isDev) win && win.loadURL(process.env.PMHARNESS_DEV_SERVER);
-          else win && win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
-        } catch {}
+        try { if (win) loadRenderer(); } catch {}
       }, 500);
     }
   });
@@ -720,7 +812,8 @@ app.on("window-all-closed", () => {
   // API call errors. The backend is torn down only on a real quit (before-quit).
   if (process.platform !== "darwin") {
     cleanupBackend();
+    cleanupVite();
     app.quit();
   }
 });
-app.on("before-quit", () => { quitting = true; cleanupBackend(); });
+app.on("before-quit", () => { quitting = true; cleanupBackend(); cleanupVite(); });

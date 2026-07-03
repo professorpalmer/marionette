@@ -756,8 +756,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           </span>
           <p className="text-[10px] text-muted">
             Run the backend from the editable source checkout so edits to the repo go
-            live on restart -- Marionette can rewrite its own code and apply it without
-            a full app reinstall. The conversation resumes across the restart.
+            live -- Marionette can rewrite its own code and apply it without a full app
+            reinstall. React UI edits (webapp/src) hot-reload instantly via the dev
+            server; backend edits (harness/**) apply on restart, and the conversation
+            resumes across it.
           </p>
           <button
             onClick={toggleSelfDev}
