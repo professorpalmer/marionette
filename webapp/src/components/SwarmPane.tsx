@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network } from "lucide-react";
+import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X } from "lucide-react";
 import { api, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
 
 type Status = "pending" | "in_progress" | "completed" | "cancelled";
@@ -30,12 +30,43 @@ function jobStatus(j: Job): Status {
   return "pending";
 }
 
+// A job is "finished" once it can no longer change -- completed or failed. These
+// are the runs we fold away so a long session doesn't stack into a wall.
+function isTerminal(j: Job): boolean {
+  const st = jobStatus(j);
+  return st === "completed" || st === "cancelled";
+}
+
 function taskState(t: Task): "running" | "done" | "fail" | "idle" {
   const s = (t.status || "").toLowerCase();
   if (s.includes("run") || s.includes("progress") || s.includes("active")) return "running";
   if (s.includes("complete") || s.includes("done")) return "done";
   if (s.includes("fail") || s.includes("cancel") || s.includes("error")) return "fail";
   return "idle";
+}
+
+// Dismissed job ids are VIEW state, never a deletion: the durable Puppetmaster
+// store (and the PM dashboard) remain the archive, so anything hidden here is
+// still recallable there. Persisted so a cleared tracker stays clean across
+// reloads, soft-capped so a very long-lived install can't grow it unbounded.
+const DISMISS_KEY = "swarm.dismissed.v1";
+
+function loadDismissed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISMISS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissed(ids: Set<string>): void {
+  try {
+    localStorage.setItem(DISMISS_KEY, JSON.stringify([...ids].slice(-2000)));
+  } catch {
+    // localStorage full/unavailable -- dismissal still works for this session.
+  }
 }
 
 // Cheap, render-relevant fingerprint of a live-swarm payload. During a big swarm
@@ -150,6 +181,10 @@ export default function SwarmPane() {
   const [data, setData] = useState<SwarmLive | null>(null);
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
   const [expandedAlts, setExpandedAlts] = useState<Record<string, boolean>>({});
+  const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
+  const [finishedOpen, setFinishedOpen] = useState(false);
+
+  useEffect(() => { saveDismissed(dismissed); }, [dismissed]);
 
   // Self-scheduling poll (not setInterval) so a new request is only ever queued
   // AFTER the previous one settles. The old fixed 2s interval fired regardless of
@@ -205,10 +240,282 @@ export default function SwarmPane() {
     };
   }, []);
 
-  const jobs = data?.jobs || [];
-  const runningCount = jobs.filter((j) => jobStatus(j) === "in_progress").length;
-  const doneCount = jobs.filter((j) => jobStatus(j) === "completed").length;
+  const allJobs = data?.jobs || [];
+  const visibleJobs = allJobs.filter((j) => !dismissed.has(j.id));
+  const running = visibleJobs.filter((j) => !isTerminal(j));
+  const finished = visibleJobs.filter((j) => isTerminal(j));
+  const failedCount = finished.filter((j) => jobStatus(j) === "cancelled").length;
+  const runningCount = running.filter((j) => jobStatus(j) === "in_progress").length;
   const anyRunning = runningCount > 0;
+
+  const dismissJob = (id: string) =>
+    setDismissed((prev) => new Set(prev).add(id));
+  const clearFinished = () =>
+    setDismissed((prev) => {
+      const next = new Set(prev);
+      for (const j of finished) next.add(j.id);
+      return next;
+    });
+
+  // One card renderer, reused by both the running list and the Finished
+  // accordion. Defined in-scope so it closes over the expand/dismiss state
+  // instead of threading a dozen props.
+  const renderJob = (j: Job) => {
+    const st = jobStatus(j);
+    const manualExpanded = expandedJobs[j.id];
+    const isExpanded = manualExpanded !== undefined ? manualExpanded : (st === "in_progress");
+    const phase = jobPhase(j);
+
+    const artifacts = j.artifacts || [];
+    const routingArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() === "ROUTING");
+    const streamArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() !== "ROUTING");
+    const tasks = j.tasks || [];
+    const routerModel = routingArts.find((a: Artifact) => a.model)?.model || "";
+    const workerCount = tasks.length;
+    const adapter = j.adapter || tasks[0]?.adapter || "";
+    const terminal = isTerminal(j);
+
+    const toggle = () => setExpandedJobs((prev) => ({ ...prev, [j.id]: !isExpanded }));
+
+    return (
+      <div
+        key={j.id}
+        // shrink-0 is load-bearing: as a flex child of the flex-col scroll list,
+        // an overflow-hidden card is allowed to shrink BELOW its content, so it
+        // collapsed and clipped its own findings instead of pushing the list into
+        // overflow. Pinning shrink-0 keeps the card at full content height so the
+        // list actually scrolls.
+        className={`shrink-0 rounded-md border bg-panel2/30 flex flex-col overflow-hidden transition-colors ${
+          st === "in_progress" ? "border-accent/30" : st === "completed" ? "border-good/25" : st === "cancelled" ? "border-risk/25" : "border-edge"
+        }`}
+      >
+        {/* Header row. A div (not a button) so the dismiss control can be a real
+            nested button without invalid button-in-button markup. */}
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={toggle}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
+          className="w-full flex flex-col gap-0 p-2 hover:bg-panel2/50 text-left transition-colors select-none cursor-pointer focus:outline-none"
+        >
+          <div className="flex items-center justify-between w-full">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <span className="shrink-0 text-faint">
+                {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              </span>
+              <span className="shrink-0">
+                {st === "in_progress" ? (
+                  <Loader2 size={12} className="animate-spin text-accent" />
+                ) : st === "completed" ? (
+                  <CheckCircle2 size={12} className="text-good" />
+                ) : st === "cancelled" ? (
+                  <XCircle size={12} className="text-risk" />
+                ) : (
+                  <Circle size={12} className="text-muted" />
+                )}
+              </span>
+              <span className="font-semibold text-[11px] text-txt truncate" title={j.goal}>
+                {j.goal}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 shrink-0 text-[10px] pl-2">
+              {j.est_cost_usd !== undefined && j.est_cost_usd > 0 && (
+                <span className="font-mono text-good">${Number(j.est_cost_usd).toFixed(4)}</span>
+              )}
+              {j.tokens !== undefined && j.tokens > 0 && (
+                <span className="text-muted font-mono">{j.tokens.toLocaleString()}t</span>
+              )}
+              {/* Dismiss: terminal runs only -- hiding a live worker would be
+                  confusing. Non-destructive; the run stays in PM history. */}
+              {terminal && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); dismissJob(j.id); }}
+                  title="Dismiss from tracker (stays in Puppetmaster history)"
+                  className="text-faint/50 hover:text-risk transition-colors focus:outline-none"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Model + worker count + adapter -- the "who's doing this and on what"
+              line, so the swarm's shape reads without expanding. */}
+          {(routerModel || workerCount > 0 || adapter) && (
+            <div className="flex items-center gap-1.5 pl-6 pr-1 mt-1 flex-wrap">
+              {routerModel && (
+                <span className="flex items-center gap-1 text-[9px] font-mono text-accent/90 bg-accent/10 px-1.5 py-0.5 rounded" title={`Router model: ${routerModel}`}>
+                  <Cpu size={9} /> {routerModel}
+                </span>
+              )}
+              {workerCount > 0 && (
+                <span className="text-[9px] text-muted bg-panel2/60 px-1.5 py-0.5 rounded tabular-nums">
+                  {workerCount} worker{workerCount > 1 ? "s" : ""}
+                </span>
+              )}
+              {adapter && (
+                <span className="text-[9px] text-faint bg-panel2/40 px-1.5 py-0.5 rounded lowercase">{adapter}</span>
+              )}
+            </div>
+          )}
+
+          {/* Phase strip + label -- the at-a-glance "where is this swarm". */}
+          <div className="flex items-center gap-2 pl-6 pr-1 mt-1">
+            <div className="flex-1"><PhaseStrip job={j} /></div>
+            <span className={`text-[9px] font-medium tabular-nums shrink-0 ${
+              phase.failed ? "text-risk/80" : phase.key === "done" ? "text-good/80" : "text-accent/80"
+            }`}>
+              {phase.label}
+            </span>
+          </div>
+        </div>
+
+        {/* Expanded details */}
+        {isExpanded && (
+          <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10">
+            {/* Routing */}
+            {routingArts.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                {routingArts.map((art: Artifact, idx: number) => {
+                  const hasRejected = art.rejected && art.rejected.length > 0;
+                  const key = `${art.id || idx}`;
+                  const altsExpanded = !!expandedAlts[key];
+                  return (
+                    <div key={key} className="p-2 bg-panel rounded border border-edge/45 text-[10px] flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between text-muted">
+                        <span className="flex items-center gap-1.5 truncate max-w-[72%]">
+                          <Cpu size={11} className="text-accent shrink-0" />
+                          <span className="text-txt font-mono font-medium truncate" title={art.model}>
+                            {art.model || "Unknown model"}
+                          </span>
+                        </span>
+                        <span className="font-mono text-good shrink-0 font-semibold">
+                          {art.est_cost_usd !== undefined && art.est_cost_usd > 0
+                            ? `$${Number(art.est_cost_usd).toFixed(4)}`
+                            : "$0"}
+                        </span>
+                      </div>
+                      {/* One plain-language line on why this model won. */}
+                      <div className="text-[9.5px] text-faint leading-relaxed">
+                        {summarizeRouting(art)}
+                      </div>
+                      {/* Alternatives, deliberately de-emphasized: a muted count,
+                          expanding to model-name chips (full reason on hover)
+                          instead of a red-looking wall of text. */}
+                      {hasRejected && (
+                        <div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setExpandedAlts((prev) => ({ ...prev, [key]: !altsExpanded })); }}
+                            className="text-[9px] text-faint/80 hover:text-muted flex items-center gap-0.5 focus:outline-none"
+                          >
+                            {altsExpanded ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
+                            {art.rejected?.length} alternatives considered
+                          </button>
+                          {altsExpanded && (
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {art.rejected?.map((rej: { model: string; reason: string }, ridx: number) => (
+                                <span
+                                  key={ridx}
+                                  title={rej.reason}
+                                  className="font-mono text-[8.5px] text-faint bg-panel2/50 border border-edge/30 px-1.5 py-0.5 rounded cursor-default"
+                                >
+                                  {rej.model}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Workers -- with a completion progress bar so a wave of parallel
+                workers reads as a single advancing unit. */}
+            {tasks.length > 0 && (
+              <div className="border-t border-edge/20 pt-1.5 flex flex-col gap-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] uppercase tracking-wider text-faint font-medium">Workers ({tasks.length})</span>
+                </div>
+                <WorkerProgress tasks={tasks} />
+                <div className="flex flex-col gap-1 mt-0.5">
+                  {tasks.map((task) => {
+                    const ts = taskState(task);
+                    return (
+                      <div key={task.id} className="p-1.5 rounded bg-panel/25 border border-edge/20 flex items-start gap-2 text-[10px]">
+                        <span className="mt-0.5 shrink-0">
+                          {ts === "running" ? <Loader2 size={10} className="animate-spin text-accent" />
+                            : ts === "done" ? <CheckCircle2 size={10} className="text-good" />
+                            : ts === "fail" ? <XCircle size={10} className="text-risk" />
+                            : <Circle size={10} className="text-muted" />}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-txt truncate">
+                              {task.role || "Worker"}{" "}
+                              <span className="text-faint font-normal">({task.adapter || "no-adapter"})</span>
+                            </span>
+                            <span className={`text-[8px] uppercase font-bold px-1 rounded ${
+                              ts === "running" ? "text-accent bg-accent/10"
+                                : ts === "done" ? "text-good bg-good/10"
+                                : ts === "fail" ? "text-risk bg-risk/10"
+                                : "text-muted bg-panel"
+                            }`}>{task.status}</span>
+                          </div>
+                          {task.instruction && (
+                            <div className="text-muted text-[9.5px] mt-0.5 truncate" title={task.instruction}>{task.instruction}</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Findings / artifacts stream -- the substance of an audit, made
+                first-class: type badge, confidence, headline. */}
+            {streamArts.length > 0 && (() => {
+              const findingRows = dedupeFindings(streamArts);
+              return (
+              <div className="border-t border-edge/20 pt-1.5 flex flex-col">
+                <div className="text-[9px] uppercase tracking-wider text-faint font-medium mb-1">
+                  Findings ({findingRows.length}{findingRows.length !== streamArts.length ? ` of ${streamArts.length}` : ""})
+                </div>
+                <div className="pr-1 flex flex-col gap-1 border border-edge/20 rounded p-1.5 bg-panel/30">
+                  {findingRows.map(({ art, count }, idx: number) => (
+                    <div key={art.id || idx} className="text-[9.5px] border-b border-edge/10 pb-1 last:border-0 last:pb-0 flex flex-col gap-0.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-accent uppercase tracking-wider text-[8px] flex items-center gap-1">
+                          {art.type}
+                          {count > 1 && <span className="text-faint bg-edge/20 px-1 rounded normal-case tracking-normal">x{count}</span>}
+                        </span>
+                        {art.confidence !== undefined && art.confidence !== null && (
+                          <span className="text-[8px] text-faint bg-edge/20 px-1 rounded shrink-0">
+                            {Math.round(art.confidence * 100)}%
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-txt break-words leading-relaxed line-clamp-2" title={art.headline}>{art.headline}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              );
+            })()}
+
+            {tasks.length === 0 && streamArts.length === 0 && routingArts.length === 0 && (
+              <div className="text-[9.5px] text-faint italic px-1 py-0.5">
+                {st === "in_progress" ? "Worker running -- artifacts will stream in as they land." : "No artifacts recorded."}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-panel">
@@ -218,7 +525,7 @@ export default function SwarmPane() {
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
           <Network size={11} className="text-faint/70" />
           <span>Swarm Tracker</span>
-          {jobs.length > 0 && <span className="text-faint/60 normal-case tracking-normal">({jobs.length})</span>}
+          {visibleJobs.length > 0 && <span className="text-faint/60 normal-case tracking-normal">({visibleJobs.length})</span>}
         </div>
         <div className="flex items-center gap-2.5 text-[10px]">
           {anyRunning && (
@@ -226,9 +533,9 @@ export default function SwarmPane() {
               <Loader2 size={10} className="animate-spin" /> {runningCount} running
             </span>
           )}
-          {doneCount > 0 && (
+          {finished.length > 0 && (
             <span className="flex items-center gap-1 text-good/80">
-              <CheckCircle2 size={10} /> {doneCount}
+              <CheckCircle2 size={10} /> {finished.length - failedCount}
             </span>
           )}
         </div>
@@ -239,7 +546,7 @@ export default function SwarmPane() {
           content, grows past the panel, and the root's overflow-hidden clips it
           -- so overflow-y-auto never engages and the list can't scroll. */}
       <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-2">
-        {jobs.length === 0 ? (
+        {visibleJobs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-center px-6 gap-2">
             <Network size={20} className="text-faint/50" />
             <span className="text-[12px] text-muted font-medium">No swarm jobs yet</span>
@@ -250,245 +557,38 @@ export default function SwarmPane() {
             </span>
           </div>
         ) : (
-          jobs.slice().reverse().map((j) => {
-            const st = jobStatus(j);
-            const manualExpanded = expandedJobs[j.id];
-            const isExpanded = manualExpanded !== undefined ? manualExpanded : (st === "in_progress");
-            const phase = jobPhase(j);
+          <>
+            {/* Active runs pinned on top, newest first. */}
+            {running.slice().reverse().map(renderJob)}
 
-            const artifacts = j.artifacts || [];
-            const routingArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() === "ROUTING");
-            const streamArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() !== "ROUTING");
-            const tasks = j.tasks || [];
-            const routerModel = routingArts.find((a: Artifact) => a.model)?.model || "";
-            const workerCount = tasks.length;
-            const adapter = j.adapter || tasks[0]?.adapter || "";
-
-            return (
-              <div
-                key={j.id}
-                // shrink-0 is load-bearing: as a flex child of the flex-col
-                // scroll list, an overflow-hidden card is allowed to shrink
-                // BELOW its content, so it collapsed and clipped its own
-                // findings instead of pushing the list into overflow. Pinning
-                // shrink-0 keeps the card at full content height so the list
-                // actually scrolls.
-                className={`shrink-0 rounded-md border bg-panel2/30 flex flex-col overflow-hidden transition-colors ${
-                  st === "in_progress" ? "border-accent/30" : st === "completed" ? "border-good/25" : st === "cancelled" ? "border-risk/25" : "border-edge"
-                }`}
-              >
-                {/* Header Row */}
-                <button
-                  onClick={() => setExpandedJobs((prev) => ({ ...prev, [j.id]: !isExpanded }))}
-                  className="w-full flex flex-col gap-0 p-2 hover:bg-panel2/50 text-left transition-colors select-none focus:outline-none"
-                >
-                  <div className="flex items-center justify-between w-full">
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <span className="shrink-0 text-faint">
-                        {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                      </span>
-                      <span className="shrink-0">
-                        {st === "in_progress" ? (
-                          <Loader2 size={12} className="animate-spin text-accent" />
-                        ) : st === "completed" ? (
-                          <CheckCircle2 size={12} className="text-good" />
-                        ) : st === "cancelled" ? (
-                          <XCircle size={12} className="text-risk" />
-                        ) : (
-                          <Circle size={12} className="text-muted" />
-                        )}
-                      </span>
-                      <span className="font-semibold text-[11px] text-txt truncate" title={j.goal}>
-                        {j.goal}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0 text-[10px] pl-2">
-                      {j.est_cost_usd !== undefined && j.est_cost_usd > 0 && (
-                        <span className="font-mono text-good">${Number(j.est_cost_usd).toFixed(4)}</span>
-                      )}
-                      {j.tokens !== undefined && j.tokens > 0 && (
-                        <span className="text-muted font-mono">{j.tokens.toLocaleString()}t</span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Model + worker count + adapter -- the "who's doing this and
-                      on what" line, so the swarm's shape reads without expanding. */}
-                  {(routerModel || workerCount > 0 || adapter) && (
-                    <div className="flex items-center gap-1.5 pl-6 pr-1 mt-1 flex-wrap">
-                      {routerModel && (
-                        <span className="flex items-center gap-1 text-[9px] font-mono text-accent/90 bg-accent/10 px-1.5 py-0.5 rounded" title={`Router model: ${routerModel}`}>
-                          <Cpu size={9} /> {routerModel}
-                        </span>
-                      )}
-                      {workerCount > 0 && (
-                        <span className="text-[9px] text-muted bg-panel2/60 px-1.5 py-0.5 rounded tabular-nums">
-                          {workerCount} worker{workerCount > 1 ? "s" : ""}
-                        </span>
-                      )}
-                      {adapter && (
-                        <span className="text-[9px] text-faint bg-panel2/40 px-1.5 py-0.5 rounded lowercase">{adapter}</span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Phase strip + label -- the at-a-glance "where is this swarm". */}
-                  <div className="flex items-center gap-2 pl-6 pr-1 mt-1">
-                    <div className="flex-1"><PhaseStrip job={j} /></div>
-                    <span className={`text-[9px] font-medium tabular-nums shrink-0 ${
-                      phase.failed ? "text-risk/80" : phase.key === "done" ? "text-good/80" : "text-accent/80"
-                    }`}>
-                      {phase.label}
-                    </span>
-                  </div>
-                </button>
-
-                {/* Expanded details */}
-                {isExpanded && (
-                  <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10">
-                    {/* Routing */}
-                    {routingArts.length > 0 && (
-                      <div className="flex flex-col gap-1.5">
-                        {routingArts.map((art: Artifact, idx: number) => {
-                          const hasRejected = art.rejected && art.rejected.length > 0;
-                          const key = `${art.id || idx}`;
-                          const altsExpanded = !!expandedAlts[key];
-                          return (
-                            <div key={key} className="p-2 bg-panel rounded border border-edge/45 text-[10px] flex flex-col gap-1.5">
-                              <div className="flex items-center justify-between text-muted">
-                                <span className="flex items-center gap-1.5 truncate max-w-[72%]">
-                                  <Cpu size={11} className="text-accent shrink-0" />
-                                  <span className="text-txt font-mono font-medium truncate" title={art.model}>
-                                    {art.model || "Unknown model"}
-                                  </span>
-                                </span>
-                                <span className="font-mono text-good shrink-0 font-semibold">
-                                  {art.est_cost_usd !== undefined && art.est_cost_usd > 0
-                                    ? `$${Number(art.est_cost_usd).toFixed(4)}`
-                                    : "$0"}
-                                </span>
-                              </div>
-                              {/* One plain-language line on why this model won. */}
-                              <div className="text-[9.5px] text-faint leading-relaxed">
-                                {summarizeRouting(art)}
-                              </div>
-                              {/* Alternatives, deliberately de-emphasized: a muted
-                                  count, expanding to model-name chips (full reason on
-                                  hover) instead of a red-looking wall of text. */}
-                              {hasRejected && (
-                                <div>
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); setExpandedAlts((prev) => ({ ...prev, [key]: !altsExpanded })); }}
-                                    className="text-[9px] text-faint/80 hover:text-muted flex items-center gap-0.5 focus:outline-none"
-                                  >
-                                    {altsExpanded ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
-                                    {art.rejected?.length} alternatives considered
-                                  </button>
-                                  {altsExpanded && (
-                                    <div className="mt-1.5 flex flex-wrap gap-1">
-                                      {art.rejected?.map((rej: { model: string; reason: string }, ridx: number) => (
-                                        <span
-                                          key={ridx}
-                                          title={rej.reason}
-                                          className="font-mono text-[8.5px] text-faint bg-panel2/50 border border-edge/30 px-1.5 py-0.5 rounded cursor-default"
-                                        >
-                                          {rej.model}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
+            {/* Finished runs folded into a collapsible section so a long session
+                stays a short list. Non-destructive: "Clear" only hides. */}
+            {finished.length > 0 && (
+              <div className="shrink-0 flex flex-col gap-2">
+                <div className="flex items-center justify-between px-1 pt-0.5">
+                  <button
+                    onClick={() => setFinishedOpen((o) => !o)}
+                    className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-faint font-semibold hover:text-muted focus:outline-none"
+                  >
+                    {finishedOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                    Finished
+                    <span className="text-faint/60 normal-case tracking-normal">({finished.length})</span>
+                    {failedCount > 0 && (
+                      <span className="text-risk/70 normal-case tracking-normal">{"\u00b7"} {failedCount} failed</span>
                     )}
-
-                    {/* Workers -- with a completion progress bar so a wave of
-                        parallel workers reads as a single advancing unit. */}
-                    {tasks.length > 0 && (
-                      <div className="border-t border-edge/20 pt-1.5 flex flex-col gap-1.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[9px] uppercase tracking-wider text-faint font-medium">Workers ({tasks.length})</span>
-                        </div>
-                        <WorkerProgress tasks={tasks} />
-                        <div className="flex flex-col gap-1 mt-0.5">
-                          {tasks.map((task) => {
-                            const ts = taskState(task);
-                            return (
-                              <div key={task.id} className="p-1.5 rounded bg-panel/25 border border-edge/20 flex items-start gap-2 text-[10px]">
-                                <span className="mt-0.5 shrink-0">
-                                  {ts === "running" ? <Loader2 size={10} className="animate-spin text-accent" />
-                                    : ts === "done" ? <CheckCircle2 size={10} className="text-good" />
-                                    : ts === "fail" ? <XCircle size={10} className="text-risk" />
-                                    : <Circle size={10} className="text-muted" />}
-                                </span>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center justify-between">
-                                    <span className="font-semibold text-txt truncate">
-                                      {task.role || "Worker"}{" "}
-                                      <span className="text-faint font-normal">({task.adapter || "no-adapter"})</span>
-                                    </span>
-                                    <span className={`text-[8px] uppercase font-bold px-1 rounded ${
-                                      ts === "running" ? "text-accent bg-accent/10"
-                                        : ts === "done" ? "text-good bg-good/10"
-                                        : ts === "fail" ? "text-risk bg-risk/10"
-                                        : "text-muted bg-panel"
-                                    }`}>{task.status}</span>
-                                  </div>
-                                  {task.instruction && (
-                                    <div className="text-muted text-[9.5px] mt-0.5 truncate" title={task.instruction}>{task.instruction}</div>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Findings / artifacts stream -- the substance of an audit,
-                        made first-class: type badge, confidence, headline. */}
-                    {streamArts.length > 0 && (() => {
-                      const findingRows = dedupeFindings(streamArts);
-                      return (
-                      <div className="border-t border-edge/20 pt-1.5 flex flex-col">
-                        <div className="text-[9px] uppercase tracking-wider text-faint font-medium mb-1">
-                          Findings ({findingRows.length}{findingRows.length !== streamArts.length ? ` of ${streamArts.length}` : ""})
-                        </div>
-                        <div className="pr-1 flex flex-col gap-1 border border-edge/20 rounded p-1.5 bg-panel/30">
-                          {findingRows.map(({ art, count }, idx: number) => (
-                            <div key={art.id || idx} className="text-[9.5px] border-b border-edge/10 pb-1 last:border-0 last:pb-0 flex flex-col gap-0.5">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-bold text-accent uppercase tracking-wider text-[8px] flex items-center gap-1">
-                                  {art.type}
-                                  {count > 1 && <span className="text-faint bg-edge/20 px-1 rounded normal-case tracking-normal">x{count}</span>}
-                                </span>
-                                {art.confidence !== undefined && art.confidence !== null && (
-                                  <span className="text-[8px] text-faint bg-edge/20 px-1 rounded shrink-0">
-                                    {Math.round(art.confidence * 100)}%
-                                  </span>
-                                )}
-                              </div>
-                              <div className="text-txt break-words leading-relaxed line-clamp-2" title={art.headline}>{art.headline}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      );
-                    })()}
-
-                    {tasks.length === 0 && streamArts.length === 0 && routingArts.length === 0 && (
-                      <div className="text-[9.5px] text-faint italic px-1 py-0.5">
-                        {st === "in_progress" ? "Worker running -- artifacts will stream in as they land." : "No artifacts recorded."}
-                      </div>
-                    )}
-                  </div>
-                )}
+                  </button>
+                  <button
+                    onClick={clearFinished}
+                    title="Hide all finished runs from the tracker (stays in Puppetmaster history)"
+                    className="text-[9px] text-faint/70 hover:text-risk uppercase tracking-wider focus:outline-none"
+                  >
+                    Clear
+                  </button>
+                </div>
+                {finishedOpen && finished.slice().reverse().map(renderJob)}
               </div>
-            );
-          })
+            )}
+          </>
         )}
       </div>
 
