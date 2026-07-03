@@ -410,8 +410,8 @@ from .wiki_config import load_wiki_config_on_startup, get_wiki_config, set_wiki_
 from .wiki_backend import ensure_wiki_backend_async
 load_api_keys_on_startup(_cfg.reach)
 load_wiki_config_on_startup()
-# If the wiki is configured at a local URL and a wiki checkout is present, boot
-# its backend automatically so the panel connects without a manual terminal.
+# Auto-provision (clone + venv + token) and boot a local wiki backend so the
+# panel works out of the box with no manual terminal. Opt out: MARIONETTE_NO_WIKI=1.
 ensure_wiki_backend_async()
 
 
