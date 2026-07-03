@@ -108,25 +108,52 @@ def test_puppetmaster_available_caches(monkeypatch):
         assert len(which_calls) == count_before
 
 
-def test_startup_auto_index_skips_when_exists(monkeypatch):
-    # Setup a temp repo containing .codegraph/
+def test_startup_auto_index_skips_when_indexed(monkeypatch):
+    # A repo with a BUILT CodeGraph DB (not just the .codegraph/ dir) is ready
+    # and must not be re-indexed on boot.
     temp_dir = tempfile.mkdtemp()
-    os.makedirs(os.path.join(temp_dir, ".codegraph"), exist_ok=True)
+    cg_dir = os.path.join(temp_dir, ".codegraph")
+    os.makedirs(cg_dir, exist_ok=True)
+    with open(os.path.join(cg_dir, "codegraph.db"), "wb") as f:
+        f.write(b"\x00")  # presence of the DB file is what marks "indexed"
 
     try:
         monkeypatch.setattr(server._cfg, "repo", temp_dir)
         monkeypatch.setattr(server, "_puppetmaster_available", lambda: True)
 
-        # Mock _index_codegraph_bg
         mock_index_bg = MagicMock()
         monkeypatch.setattr(server, "_index_codegraph_bg", mock_index_bg)
 
-        # Run the auto index startup check
         server._maybe_auto_index_codegraph()
 
-        # It should check and set status to ready, and not call _index_codegraph_bg
         assert server._codegraph_status == "ready"
         mock_index_bg.assert_not_called()
+
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_startup_auto_index_fires_when_dir_present_but_no_db(monkeypatch):
+    # A .codegraph/ dir with config.json but no DB (init'd, never indexed) must
+    # still trigger a background index -- the fresh-install bug that showed
+    # "unsupported" because status hung on a DB-less checkout.
+    temp_dir = tempfile.mkdtemp()
+    cg_dir = os.path.join(temp_dir, ".codegraph")
+    os.makedirs(cg_dir, exist_ok=True)
+    with open(os.path.join(cg_dir, "config.json"), "w") as f:
+        f.write("{}")
+
+    try:
+        monkeypatch.setattr(server._cfg, "repo", temp_dir)
+        monkeypatch.setattr(server, "_puppetmaster_available", lambda: True)
+
+        mock_index_bg = MagicMock()
+        monkeypatch.setattr(server, "_index_codegraph_bg", mock_index_bg)
+
+        server._maybe_auto_index_codegraph()
+        time.sleep(0.1)  # let the daemon thread run
+
+        mock_index_bg.assert_called_once_with(temp_dir)
 
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)

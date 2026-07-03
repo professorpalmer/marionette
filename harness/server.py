@@ -407,8 +407,12 @@ if _state_dir:
 # expected env var for the chosen reach before the Session builds its driver.
 from .keys import load_api_keys_on_startup, get_api_key_status, get_env_var_for_reach, set_api_key, clear_api_key
 from .wiki_config import load_wiki_config_on_startup, get_wiki_config, set_wiki_config
+from .wiki_backend import ensure_wiki_backend_async
 load_api_keys_on_startup(_cfg.reach)
 load_wiki_config_on_startup()
+# If the wiki is configured at a local URL and a wiki checkout is present, boot
+# its backend automatically so the panel connects without a manual terminal.
+ensure_wiki_backend_async()
 
 
 def _driver_provider_available(spec: str) -> bool:
@@ -617,6 +621,21 @@ _WIKI_GRAPH_TTL = 60.0  # seconds
 # manifested as the panel locking up + metrics vanishing).
 _codegraph_index_proc = None  # tuple[str, subprocess.Popen] | None
 _codegraph_index_lock = threading.Lock()
+
+
+def _codegraph_indexed(repo_path: str) -> bool:
+    """True only when a built CodeGraph DB exists for the repo.
+
+    The `.codegraph/` directory alone is NOT proof of an index: `codegraph init`
+    writes `config.json` there before any indexing, and `codegraph status` hangs
+    on a config-only checkout (no DB) until it times out -- which surfaced as
+    "unsupported" on fresh installs. Gate on the actual DB file so an init'd-but-
+    unindexed checkout is treated as needing an index, not as ready.
+    """
+    try:
+        return os.path.isfile(os.path.join(repo_path, ".codegraph", "codegraph.db"))
+    except Exception:
+        return False
 
 
 def _codegraph_index_alive() -> bool:
@@ -2316,7 +2335,7 @@ class Handler(BaseHTTPRequestHandler):
             # status query so the panel shows live metrics instead of nulls --
             # this is what previously stuck the panel on INDEXING until a restart.
             if _codegraph_status == "indexing" and not _codegraph_index_alive():
-                _codegraph_status = "ready" if os.path.isdir(os.path.join(repo, ".codegraph")) else "unsupported"
+                _codegraph_status = "ready" if _codegraph_indexed(repo) else "unsupported"
                 _codegraph_status_cache.pop(repo, None)
 
             if _codegraph_status == "indexing" and _codegraph_index_alive():
@@ -2349,6 +2368,26 @@ class Handler(BaseHTTPRequestHandler):
                     "languages": None,
                     "last_indexed": last_indexed,
                     "repo": repo
+                }))
+
+            # No built DB yet and no indexer running: start one and report
+            # "indexing" rather than shelling out to `codegraph status --json`,
+            # which hangs on a config-only checkout until the 20s timeout and then
+            # mis-reports "unsupported". This makes a fresh install self-heal.
+            if not _codegraph_indexed(repo) and not _codegraph_index_alive():
+                def _kick_index():
+                    _index_codegraph_bg(repo)
+                threading.Thread(target=_kick_index, daemon=True).start()
+                return self._send(200, json.dumps({
+                    "indexed": False,
+                    "status": "indexing",
+                    "reason": None,
+                    "nodes": None,
+                    "edges": None,
+                    "files": None,
+                    "languages": None,
+                    "last_indexed": None,
+                    "repo": repo,
                 }))
 
             # Serve a recent cached payload instead of re-spawning the status
@@ -3455,10 +3494,12 @@ def _maybe_auto_index_codegraph():
             _codegraph_status_reason = "puppetmaster not found -- codegraph/swarm unavailable"
             return
         
-        cg_dir = os.path.join(repo, ".codegraph")
-        if os.path.isdir(cg_dir):
+        if _codegraph_indexed(repo):
             _codegraph_status = "ready"
         else:
+            # No built DB yet (fresh checkout, or init'd-but-never-indexed):
+            # build it in the background so the panel comes up ready without a
+            # manual re-index. `_index_codegraph_bg` runs `codegraph init --index`.
             def target():
                 _index_codegraph_bg(repo)
             t = threading.Thread(target=target, daemon=True)
