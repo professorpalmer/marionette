@@ -13,10 +13,10 @@ afterSign: build/notarize.cjs
 mac:
   category: public.app-category.developer-tools
   target:
-    - dmg
-    - zip
-  arch:
-    - universal
+    - target: dmg
+      arch: universal
+    - target: zip
+      arch: universal
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
