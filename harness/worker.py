@@ -14,7 +14,6 @@ logger = logging.getLogger("pmharness.worker")
 
 from harness.autobudget import AutoBudget
 from harness.config import HarnessConfig
-from harness.conversation import ConversationalSession, ConvEvent
 from harness.worktrees import (
     _is_repo,
     add_worktree,
@@ -23,6 +22,15 @@ from harness.worktrees import (
     _git,
     delete_branch
 )
+
+if TYPE_CHECKING:
+    # ConvEvent is used only in annotations (strings under `from __future__ import
+    # annotations`), so it never needs to exist at import time. ConversationalSession
+    # is imported lazily at its single call site instead of here: conversation.py
+    # transitively imports this module, so a top-level import back into conversation
+    # created a cycle. See import_selftest.py for the concurrent-import failure this
+    # removes ("cannot import name 'WorkerResult' from 'harness.worker'").
+    from harness.conversation import ConvEvent
 
 @dataclass
 class WorkerResult:
@@ -229,7 +237,9 @@ class ProviderWorker:
             # Start the budget
             self.budget.start()
             
-            # 3. Construct ConversationalSession and drive run_auto
+            # 3. Construct ConversationalSession and drive run_auto. Imported here
+            # (not at module top) to keep worker <-> conversation acyclic.
+            from harness.conversation import ConversationalSession
             session = ConversationalSession(worker_cfg)
             
             with patch_subprocess_run(wt_path):

@@ -65,40 +65,65 @@ _WORKER_IMPORTS_WARMED = False
 
 
 def _prewarm_worker_imports() -> None:
-    """Import the worker/edit-engine/Puppetmaster modules ONCE on the calling
-    (main) thread before any run_parallel/run_implement worker thread does.
+    """Warm the ENTIRE worker-reachable module graph ONCE, single-threaded, before
+    any run_parallel/run_implement worker thread starts.
 
-    Why this exists: run_parallel dispatches provider workers onto a thread pool,
-    and each worker lazily first-imports harness.worker -> harness.edit_engines ->
-    puppetmaster.*. In the PACKAGED app those modules live in PyInstaller's single
-    zlib-compressed PYZ archive, read through one shared handle. Two threads doing
-    their first-time import of different PYZ modules at once race on that reader,
-    which surfaced as the two swarm failures we saw:
-      - "Error -3 while decompressing data: incorrect header check" (a sibling's
-        read corrupting the shared zlib stream), and
-      - "cannot import name 'WorkerResult' from 'harness.worker'" (a half-built
-        module handed to a racing thread).
-    The unfrozen repo never hit this because CPython imports real .py files under
-    per-module locks. Warming the imports single-threaded populates sys.modules so
-    the worker threads only ever hit the cache -- never the archive reader.
-    Best-effort: a missing optional dep here is not fatal; the worker still runs
-    and surfaces its own error as before.
+    Why: run_parallel dispatches provider workers onto a ThreadPoolExecutor, and
+    each worker lazily first-imports harness.worker / harness.edit_engines and a
+    large slice of puppetmaster.*. In the PACKAGED (PyInstaller) app, several of
+    those first-time imports happen concurrently across the pool, and in the field
+    that produced two paired swarm failures:
+      - "cannot import name 'WorkerResult' from 'harness.worker'", and
+      - "Error -3 while decompressing data: incorrect header check".
+    The unfrozen repo never reproduces it (real .py files, different timing), so
+    rather than chase the exact frozen import-machinery interaction, we remove the
+    whole class of bug: if every module a worker could touch is already in
+    sys.modules, no worker thread ever performs a first-import, so there is nothing
+    left to race. This warms the full harness + pmharness + puppetmaster graph on
+    the main thread; the earlier version only warmed five modules, leaving the rest
+    to be first-imported concurrently.
+
+    Best-effort and idempotent: __main__/test modules are skipped, and any module
+    that fails to import is ignored (the worker surfaces its own error later,
+    exactly as before). Cost is a one-time few-hundred-ms walk on first parallel
+    dispatch, paid once per process.
     """
     global _WORKER_IMPORTS_WARMED
     if _WORKER_IMPORTS_WARMED:
         return
     _WORKER_IMPORTS_WARMED = True
-    try:
-        import harness.worker  # noqa: F401
-        import harness.edit_engines  # noqa: F401
-    except Exception:
-        pass
-    for mod in ("puppetmaster.orchestrator", "puppetmaster.store_factory",
-                "puppetmaster.workers"):
+
+    import importlib
+    import pkgutil
+
+    # Essentials first, so the worker path is guaranteed warm even if the broad
+    # walk below is interrupted.
+    for mod in ("harness.worker", "harness.edit_engines"):
         try:
-            __import__(mod)
+            importlib.import_module(mod)
         except Exception:
             pass
+
+    for pkg_name in ("harness", "pmharness", "puppetmaster"):
+        try:
+            pkg = importlib.import_module(pkg_name)
+        except Exception:
+            continue
+        pkg_path = getattr(pkg, "__path__", None)
+        if not pkg_path:
+            continue
+        try:
+            modules = list(pkgutil.walk_packages(pkg_path, prefix=pkg_name + "."))
+        except Exception:
+            continue
+        for info in modules:
+            name = info.name
+            if name.endswith("__main__") or ".tests" in name or ".test_" in name:
+                continue
+            try:
+                importlib.import_module(name)
+            except Exception:
+                pass
 
 
 def _clamp_tool_result(text: str, max_chars: Optional[int] = None) -> str:

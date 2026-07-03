@@ -1,11 +1,12 @@
 """Guards the fix for the packaged-app swarm failures.
 
-run_parallel dispatches provider workers onto a thread pool; each worker lazily
-first-imports harness.worker -> edit_engines -> puppetmaster.*. In the frozen
-(PyInstaller) app those come from one shared zlib PYZ archive, and concurrent
-first-time imports raced its reader, producing "incorrect header check" and
-"cannot import name 'WorkerResult'". _prewarm_worker_imports() warms them
-single-threaded so worker threads only ever hit the sys.modules cache.
+run_parallel dispatches provider workers onto a ThreadPoolExecutor; each worker
+lazily first-imports harness.worker -> edit_engines -> a large slice of
+puppetmaster.*. In the frozen (PyInstaller) app, concurrent first-time imports
+across that pool produced the paired failures "incorrect header check" and
+"cannot import name 'WorkerResult'". _prewarm_worker_imports() warms the full
+worker-reachable module graph single-threaded, so worker threads only ever hit
+the sys.modules cache and never perform a first-import (nothing left to race).
 """
 import sys
 import threading
