@@ -39,3 +39,37 @@ def test_drain_works_when_free():
     # Lock free -> drain runs (yields nothing since the queue is empty, no error).
     out = list(s.drain_swarm_results())
     assert out == []
+
+
+def test_drain_injects_pilot_resume_continuation():
+    """A finished background result must not just land silently. After draining,
+    a user-role continuation message re-activates the pilot so it reports the
+    finding and takes the next step without a new user message, and a
+    pilot_resume event is emitted for the UI."""
+    s = _session()
+    s._swarm_results.put({
+        "job_id": "abc123",
+        "objective": "fix the parser",
+        "result": {
+            "applied": True,
+            "files": ["parser.py"],
+            "summary": "patched the tokenizer",
+        },
+    })
+    events = list(s.drain_swarm_results())
+    kinds = [e.kind for e in events]
+    assert "swarm_result" in kinds
+    assert "pilot_resume" in kinds
+
+    # Raw result recorded as an assistant message...
+    assert any(
+        m["role"] == "assistant" and "[swarm result for: fix the parser]" in m["content"]
+        for m in s._history
+    )
+    # ...and a user-role continuation re-activates the pilot.
+    resume = [
+        m for m in s._history
+        if m["role"] == "user" and "[background job abc123 finished]" in m["content"]
+    ]
+    assert resume, "expected a user-role pilot-resume continuation in history"
+    assert "without waiting for the user to ask" in resume[0]["content"]

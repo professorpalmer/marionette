@@ -1460,7 +1460,17 @@ class ConversationalSession:
                                      "(you cannot see the image, only this text):\n\n"
                                      + "\n\n".join(blocks) + "\n\n---\n" + user_message)
 
-        self._history.append({"role": "user", "content": processed_message})
+        # Preserve strict user/assistant alternation in _history: if the last
+        # message is already a user turn (e.g. a background job just drained a
+        # pilot-resume continuation before the user typed), merge into it rather
+        # than appending a second adjacent user message, which some chat APIs
+        # (Anthropic) reject and the concurrency stress test forbids.
+        if self._history and self._history[-1].get("role") == "user":
+            self._history[-1]["content"] = (
+                self._history[-1]["content"].rstrip() + "\n\n" + processed_message
+            )
+        else:
+            self._history.append({"role": "user", "content": processed_message})
         self._display_transcript.append({"type": "message", "role": "user", "text": user_message})
         swarms = 0
         action_seq = 0
@@ -3684,13 +3694,44 @@ class ConversationalSession:
                     msg_content += f"; patch failed to apply: {res_job.get('apply_msg')}"
                 
                 self._history.append({"role": "assistant", "content": msg_content})
-                
+
+                # The assistant "[swarm result ...]" line above is only a RECORD of
+                # the raw result -- there is nothing for the pilot to respond to, so
+                # it would otherwise sit until the user prompts "check it". Append a
+                # short user-role continuation that re-activates the pilot so it
+                # reports the finding and takes the next step on its own. Written
+                # here under the single-writer _busy lock, exactly like the record.
+                resume_text = (
+                    f"[background job {job_id} finished] The result above is now "
+                    "available. Report the outcome to the user concisely and take "
+                    "the appropriate next step (validate, run tests, apply/fix, or "
+                    "run a narrowed follow-up) without waiting for the user to ask."
+                )
+                # Re-activate the pilot with a user-role continuation. But never
+                # create two adjacent user messages: some chat APIs (Anthropic)
+                # require strict user/assistant alternation, and the concurrency
+                # stress test guards it. If the last message is already a user turn
+                # (e.g. the user typed while a job was in flight), MERGE the resume
+                # text into it instead of appending a second user message.
+                if self._history and self._history[-1].get("role") == "user":
+                    self._history[-1]["content"] = (
+                        self._history[-1]["content"].rstrip() + "\n\n" + resume_text
+                    )
+                else:
+                    self._history.append({"role": "user", "content": resume_text})
+
                 # Yield ConvEvent kind="swarm_result"
                 yield ConvEvent("swarm_result", {
                     "job_id": job_id,
                     "objective": objective,
                     "result": res_job,
                     "message": msg_content
+                })
+
+                # Signal the UI that the pilot is being resumed to interpret this.
+                yield ConvEvent("pilot_resume", {
+                    "job_id": job_id,
+                    "objective": objective
                 })
 
                 pending_review = res_job.get("pending_review")
