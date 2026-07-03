@@ -65,10 +65,20 @@ class HarnessConfig:
         #   3. a safe 96K default for unknown models
         # This stops every model from being throttled to a flat 96K when many
         # carry 200K-1M windows.
+        max_ctx_val = None
         if "HARNESS_MAX_CONTEXT_TOKENS" in os.environ:
-            max_ctx = int(os.environ["HARNESS_MAX_CONTEXT_TOKENS"])
+            try:
+                max_ctx_val = int(os.environ["HARNESS_MAX_CONTEXT_TOKENS"])
+            except (ValueError, TypeError):
+                pass
         elif "max_context_tokens" in file_cfg:
-            max_ctx = int(file_cfg["max_context_tokens"])
+            try:
+                max_ctx_val = int(file_cfg["max_context_tokens"])
+            except (ValueError, TypeError):
+                pass
+
+        if max_ctx_val is not None:
+            max_ctx = max_ctx_val
         else:
             try:
                 from pmharness.registry import context_window

@@ -37,7 +37,7 @@ def run_analysis_bench(model: str, repo: str, *, worker_mode: str = "inline") ->
         sc["adapter"] = adapter
         sc["chars"] = len(text)
         rows.append(sc)
-    mean = sum(r["score"] for r in rows) / len(rows) * 100
+    mean = (sum(r["score"] for r in rows) / len(rows) * 100) if rows else 0.0
     hits = sum(1 for r in rows if r["hit"])
     fabs = sum(1 for r in rows if r["fab"])
     return {"model": model, "mean": round(mean, 1), "hits": hits, "fabs": fabs,

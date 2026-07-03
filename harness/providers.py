@@ -219,7 +219,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
     # silently cut off big tool-call JSON, which is why edit_file "lost" its args.
     if max_tokens is None:
         try:
-            max_tokens = int(os.environ.get("HARNESS_MAX_TOKENS", "8000"))
+            max_tokens = int(os.environ.get("HARNESS_MAX_TOKENS", "").strip() or "8000")
         except (ValueError, TypeError):
             max_tokens = 8000
 

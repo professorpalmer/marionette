@@ -8,6 +8,7 @@ LIST + which is active. Transcript bodies live with the live session objects.
 
 import json
 import os
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, asdict
@@ -35,15 +36,30 @@ class SessionStore:
     def _load(self) -> None:
         if os.path.exists(self.path):
             try:
-                data = json.load(open(self.path))
+                with open(self.path, encoding="utf-8") as f:
+                    data = json.load(f)
                 self._sessions = data.get("sessions", [])
                 self._active = data.get("active")
             except Exception:
                 self._sessions, self._active = [], None
 
     def _save(self) -> None:
-        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        json.dump({"sessions": self._sessions, "active": self._active}, open(self.path, "w"))
+        # Atomic write (temp + os.replace) so a crash or concurrent reader never
+        # sees a truncated session file -- matches memory_store/rule_store/keys.
+        target_dir = os.path.dirname(self.path) or "."
+        os.makedirs(target_dir, exist_ok=True)
+        payload = {"sessions": self._sessions, "active": self._active}
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".sessions_")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, self.path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def list(self) -> list[dict]:
         return [{

@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger("pmharness.checkpoints")
 
-_GIT_TIMEOUT_SECONDS = 30
+CHECKPOINT_GIT_TIMEOUT = 30
 
 
 class CheckpointStore:
@@ -29,7 +29,7 @@ class CheckpointStore:
                     cwd=self.repo,
                     capture_output=True,
                     text=True,
-                    timeout=_GIT_TIMEOUT_SECONDS,
+                    timeout=CHECKPOINT_GIT_TIMEOUT,
                 )
                 if res.returncode == 0 and res.stdout.strip() == "true":
                     self._enabled = True
@@ -61,7 +61,7 @@ class CheckpointStore:
                 capture_output=True,
                 text=True,
                 check=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             git_dir = os.path.abspath(os.path.join(self.repo, git_dir_res.stdout.strip()))
 
@@ -71,7 +71,7 @@ class CheckpointStore:
                 cwd=self.repo,
                 capture_output=True,
                 text=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             head_sha = head_res.stdout.strip() if head_res.returncode == 0 else None
 
@@ -89,7 +89,7 @@ class CheckpointStore:
                 capture_output=True,
                 env=env,
                 check=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
 
             # git write-tree: write the staged state into a new tree object
@@ -100,7 +100,7 @@ class CheckpointStore:
                 text=True,
                 env=env,
                 check=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             tree_sha = write_tree_res.stdout.strip()
 
@@ -121,7 +121,7 @@ class CheckpointStore:
                 capture_output=True,
                 text=True,
                 check=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             commit_sha = commit_res.stdout.strip()
 
@@ -163,7 +163,7 @@ class CheckpointStore:
                 ["git", "cat-file", "-e", f"{checkpoint_id}^" + "{commit}"],
                 cwd=self.repo,
                 capture_output=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             if chk_res.returncode != 0:
                 return {"ok": False, "error": f"Checkpoint {checkpoint_id} not found in Git"}
@@ -201,7 +201,7 @@ class CheckpointStore:
                 cwd=self.repo,
                 capture_output=True,
                 text=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             if checkout_res.returncode != 0:
                 return {
@@ -214,7 +214,7 @@ class CheckpointStore:
                 ["git", "reset"],
                 cwd=self.repo,
                 capture_output=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
 
             return {
@@ -242,7 +242,7 @@ class CheckpointStore:
                 ["git", "cat-file", "-e", f"{checkpoint_id}^" + "{commit}"],
                 cwd=self.repo,
                 capture_output=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             if chk_res.returncode != 0:
                 return {"ok": False, "error": f"Checkpoint {checkpoint_id} not found in Git"}
@@ -268,7 +268,7 @@ class CheckpointStore:
                 cwd=self.repo,
                 capture_output=True,
                 text=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             modified_candidates = set()
             if diff_names_res.returncode == 0:
@@ -295,7 +295,7 @@ class CheckpointStore:
                 cwd=self.repo,
                 capture_output=True,
                 text=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             
             diff_text = diff_res.stdout or ""
@@ -345,7 +345,7 @@ class CheckpointStore:
                 input="\n".join(f"{i}^{{commit}}" for i in ids),
                 capture_output=True,
                 text=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
         except Exception:
             return []
@@ -405,7 +405,7 @@ class CheckpointStore:
                 capture_output=True,
                 text=True,
                 check=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             return [line.strip() for line in res.stdout.splitlines() if line.strip()]
         except Exception:
@@ -419,7 +419,7 @@ class CheckpointStore:
                 capture_output=True,
                 text=True,
                 check=True,
-                timeout=_GIT_TIMEOUT_SECONDS,
+                timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             return [line.strip() for line in res.stdout.splitlines() if line.strip()]
         except Exception:

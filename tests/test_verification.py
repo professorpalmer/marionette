@@ -1,8 +1,14 @@
 import os
+import sys
 import shutil
 import tempfile
 import subprocess
 import pytest
+
+# Use the interpreter running the tests, not a bare "python" that may not be on
+# PATH (this env has only python3 / .venv/bin/python). Keeps these tests
+# PATH-independent.
+PY = sys.executable
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession, ConvEvent
@@ -24,13 +30,13 @@ def create_temp_git_repo():
 def test_run_verification():
     temp_dir = tempfile.mkdtemp()
     try:
-        config = HarnessConfig(repo=temp_dir, verify_cmd='python -c "print(1)"')
+        config = HarnessConfig(repo=temp_dir, verify_cmd=f'{PY} -c "print(1)"')
         session = ConversationalSession(config)
         passed, out = session._run_verification()
         assert passed is True
         assert "1" in out
 
-        config2 = HarnessConfig(repo=temp_dir, verify_cmd='python -c "import sys; sys.exit(1)"')
+        config2 = HarnessConfig(repo=temp_dir, verify_cmd=f'{PY} -c "import sys; sys.exit(1)"')
         session2 = ConversationalSession(config2)
         passed2, out2 = session2._run_verification()
         assert passed2 is False
@@ -42,7 +48,7 @@ def test_run_auto_verification_passing(monkeypatch):
     try:
         config = HarnessConfig(
             repo=temp_dir,
-            verify_cmd='python -c "print(\'Verification passes\')"'
+            verify_cmd=f'{PY} -c "print(\'Verification passes\')"'
         )
         session = ConversationalSession(config)
         
@@ -70,7 +76,7 @@ def test_run_auto_verification_failing_with_retry(monkeypatch):
     try:
         config = HarnessConfig(
             repo=temp_dir,
-            verify_cmd='python -c "import sys; sys.exit(1)"'
+            verify_cmd=f'{PY} -c "import sys; sys.exit(1)"'
         )
         session = ConversationalSession(config)
         
@@ -132,7 +138,7 @@ def test_worker_run_tests_failing_and_passing(monkeypatch):
         worker_fail = ProviderWorker(
             repo=repo_dir,
             goal="test failing verification",
-            run_tests='python -c "import sys; sys.exit(1)"',
+            run_tests=f'{PY} -c "import sys; sys.exit(1)"',
             keep_worktree_on_failure=True
         )
         res_fail = worker_fail.run()
@@ -147,7 +153,7 @@ def test_worker_run_tests_failing_and_passing(monkeypatch):
         worker_pass = ProviderWorker(
             repo=repo_dir,
             goal="test passing verification",
-            run_tests='python -c "print(\'tests passed\')"',
+            run_tests=f'{PY} -c "print(\'tests passed\')"',
             keep_worktree_on_failure=True
         )
         res_pass = worker_pass.run()
