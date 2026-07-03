@@ -26,6 +26,7 @@ Events yielded (for GUI/CLI):
 """
 
 import os
+import sys
 import hashlib
 import threading
 import time
@@ -1330,8 +1331,16 @@ class ConversationalSession:
                     return True
         return False
 
-    def send(self, user_message: str, images: Optional[list] = None, plan: bool = False) -> Iterator[ConvEvent]:
-        """Process one user message: drive the pilot loop until it yields back."""
+    def send(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:
+        """Process one user message: drive the pilot loop until it yields back.
+
+        ``resume=True`` is the keep-alive continuation path: a background swarm
+        finished and ``drain_swarm_results`` already appended the result record
+        plus a user-role continuation to history. We generate off that existing
+        history WITHOUT appending a new user turn, so the pilot autonomously
+        assesses the result and takes the next step -- no new user message and no
+        autopilot required.
+        """
         self._cancel.clear()
         if not self._busy.acquire(blocking=False):
             # The lock is held. Normally that means a turn is genuinely streaming.
@@ -1354,7 +1363,7 @@ class ConversationalSession:
                 yield ConvEvent("error", {"error": "session busy: another request is in flight"})
                 return
         self._busy_since = __import__("time").monotonic()
-        if self._is_correction(user_message):
+        if not resume and self._is_correction(user_message):
             self._corrections.append(user_message)
         original_sys = self._history[0]["content"]
         if plan:
@@ -1364,7 +1373,7 @@ class ConversationalSession:
             import time
             action_starts = {}
             pending_cards = {}
-            for ev in self._send_locked(user_message, images=images, plan=plan):
+            for ev in self._send_locked(user_message, images=images, plan=plan, resume=resume):
                 if ev.kind == "action_start":
                     self._total_tool_calls += 1
                     aid = ev.data.get("id")
@@ -1433,45 +1442,138 @@ class ConversationalSession:
             self._busy_since = 0.0
             self._busy.release()
 
-    def _send_locked(self, user_message: str, images: Optional[list] = None, plan: bool = False) -> Iterator[ConvEvent]:
+    def _send_locked(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:
         self._state = "thinking"
         try:
-            yield from self._send_locked_inner(user_message, images=images, plan=plan)
+            yield from self._send_locked_inner(user_message, images=images, plan=plan, resume=resume)
         finally:
             self._state = "idle"
 
-    def _send_locked_inner(self, user_message: str, images: Optional[list] = None, plan: bool = False) -> Iterator[ConvEvent]:
-        processed_message = user_message
-        if images:
-            from .vision import transcribe_images
-            yield ConvEvent("vision", {"count": len(images), "status": "transcribing"})
-            results = transcribe_images(images)
-            blocks = []
-            for path, r in zip(images, results):
-                if r.error:
-                    yield ConvEvent("vision", {"path": path, "error": r.error})
-                else:
-                    blocks.append(f"[Image: {path}]\n{r.text}")
-                    yield ConvEvent("vision", {"path": path,
-                        "chars": len(r.text), "model": r.model,
-                        "preview": r.text[:200]})
-            if blocks:
-                processed_message = ("The user attached image(s). Transcription(s) below "
-                                     "(you cannot see the image, only this text):\n\n"
-                                     + "\n\n".join(blocks) + "\n\n---\n" + user_message)
+    def _get_codegraph_context(self, query: str) -> str:
+        """Build a relevance-ranked CodeGraph context block for ``query``.
 
-        # Preserve strict user/assistant alternation in _history: if the last
-        # message is already a user turn (e.g. a background job just drained a
-        # pilot-resume continuation before the user typed), merge into it rather
-        # than appending a second adjacent user message, which some chat APIs
-        # (Anthropic) reject and the concurrency stress test forbids.
-        if self._history and self._history[-1].get("role") == "user":
-            self._history[-1]["content"] = (
-                self._history[-1]["content"].rstrip() + "\n\n" + processed_message
+        Shells out to ``python -m puppetmaster codegraph search <query>`` (same
+        interpreter, cwd = the open repo), parses ``path:line`` hit locations,
+        reads a small +/-8 line source window for the top hits, and returns a
+        single <codegraph-context> ... </codegraph-context> block. Returns "" on
+        any failure or when there are no hits. Fully exception-guarded: this
+        NEVER raises into the pilot loop and degrades to a pure no-op.
+        """
+        MAX_HITS = 5
+        WINDOW = 8
+        MAX_BYTES = 4096
+        repo = getattr(self.config, "repo", None)
+        if not repo or not query or not query.strip():
+            return ""
+        from harness.context_budget import truncate_bytes
+        try:
+            cmd = [sys.executable, "-m", "puppetmaster", "codegraph", "search", query]
+            p = subprocess.run(
+                cmd,
+                cwd=repo,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=15,
             )
+            if p.returncode != 0:
+                return ""
+            output = _strip_ansi((p.stdout or ""))
+        except Exception:
+            return ""
+
+        # Parse "path:line" hit locations (first two colon-separated fields where
+        # the second is an integer line number). Dedupe, preserve rank order.
+        hit_re = re.compile(r"([^\s:]+):(\d+)")
+        seen: set = set()
+        hits: list[tuple[str, int]] = []
+        for line in output.splitlines():
+            m = hit_re.search(line)
+            if not m:
+                continue
+            path, lineno = m.group(1), int(m.group(2))
+            key = (path, lineno)
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append((path, lineno))
+            if len(hits) >= MAX_HITS:
+                break
+        if not hits:
+            return ""
+
+        blocks: list[str] = []
+        for path, lineno in hits:
+            try:
+                abs_path = path if os.path.isabs(path) else os.path.join(repo, path)
+                if not is_safe_path(abs_path, repo):
+                    continue
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as fh:
+                    lines = fh.readlines()
+            except Exception:
+                continue
+            start = max(0, lineno - 1 - WINDOW)
+            end = min(len(lines), lineno + WINDOW)
+            snippet = "".join(lines[start:end]).rstrip("\n")
+            blocks.append(f"# {path}:{lineno}\n{snippet}")
+
+        if not blocks:
+            return ""
+        body = "\n\n".join(blocks)
+        body = truncate_bytes(body, MAX_BYTES)
+        return f"<codegraph-context>\n{body}\n</codegraph-context>"
+
+    def _send_locked_inner(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:
+        if resume:
+            # Keep-alive continuation: drain_swarm_results already appended the
+            # result record + a user-role continuation. Generate off that history
+            # WITHOUT appending anything. If the last turn is not a user message
+            # there is nothing to respond to -- bail cleanly so a stray resume
+            # trigger never fabricates an empty turn.
+            if not (self._history and self._history[-1].get("role") == "user"):
+                return
         else:
-            self._history.append({"role": "user", "content": processed_message})
-        self._display_transcript.append({"type": "message", "role": "user", "text": user_message})
+            processed_message = user_message
+            if images:
+                from .vision import transcribe_images
+                yield ConvEvent("vision", {"count": len(images), "status": "transcribing"})
+                results = transcribe_images(images)
+                blocks = []
+                for path, r in zip(images, results):
+                    if r.error:
+                        yield ConvEvent("vision", {"path": path, "error": r.error})
+                    else:
+                        blocks.append(f"[Image: {path}]\n{r.text}")
+                        yield ConvEvent("vision", {"path": path,
+                            "chars": len(r.text), "model": r.model,
+                            "preview": r.text[:200]})
+                if blocks:
+                    processed_message = ("The user attached image(s). Transcription(s) below "
+                                         "(you cannot see the image, only this text):\n\n"
+                                         + "\n\n".join(blocks) + "\n\n---\n" + user_message)
+
+            # Preserve strict user/assistant alternation in _history: if the last
+            # message is already a user turn (e.g. a background job just drained a
+            # pilot-resume continuation before the user typed), merge into it rather
+            # than appending a second adjacent user message, which some chat APIs
+            # (Anthropic) reject and the concurrency stress test forbids.
+            if self._history and self._history[-1].get("role") == "user":
+                self._history[-1]["content"] = (
+                    self._history[-1]["content"].rstrip() + "\n\n" + processed_message
+                )
+            else:
+                self._history.append({"role": "user", "content": processed_message})
+            self._display_transcript.append({"type": "message", "role": "user", "text": user_message})
+
+            # Inject relevance-ranked CodeGraph context (best-effort, exception-guarded)
+            # so the driver sees the most relevant code BEFORE it starts calling tools.
+            # Skip for no_delegation worker sessions (they run in a fresh worktree with
+            # no CodeGraph index). Degrades to a no-op when codegraph is unavailable.
+            if not getattr(self.config, "no_delegation", False):
+                cg_context = self._get_codegraph_context(user_message)
+                if cg_context:
+                    self._history.append({"role": "user", "content": cg_context})
+
         swarms = 0
         action_seq = 0
         demo_swarms = 0  # count swarms that returned the demo substrate
@@ -3122,10 +3224,37 @@ class ConversationalSession:
                 if three_way_p.returncode == 0:
                     self._last_checkpoint_id = checkpoint_id
                     return True, files, "applied with 3way merge"
-                else:
-                    err_msg = three_way_p.stderr.strip() or check_p.stderr.strip() or "patch did not apply cleanly"
+
+                # d. Last resort: retry with reduced context matching. A patch
+                # that misses on full context usually drifted because the file
+                # was touched by an earlier, overlapping worker (the common
+                # "duplicate swarm" case) or normal base movement. --recount
+                # tolerates stale hunk line counts; -C1 requires only one line
+                # of surrounding context to match, so an intact hunk still lands
+                # even when its neighbourhood shifted. Still gated by the
+                # checkpoint taken above, so any bad landing is fully undoable.
+                lenient_p = subprocess.run(
+                    ["git", "apply", "--3way", "--recount", "-C1", temp_path],
+                    cwd=self.config.repo,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                if lenient_p.returncode == 0:
                     self._last_checkpoint_id = checkpoint_id
-                    return False, files, f"patch did not apply cleanly: {err_msg}"
+                    return True, files, "applied with reduced-context 3way merge"
+
+                raw = three_way_p.stderr.strip() or check_p.stderr.strip() or "patch did not apply cleanly"
+                # Make the failure actionable for the pilot's keep-alive resume:
+                # the fix is almost never to retry the same stale diff -- it is to
+                # re-derive the change against the CURRENT tree state.
+                err_msg = (
+                    f"{raw} -- the target files likely already moved (an overlapping "
+                    "edit landed, or the base shifted). Re-generate the change against "
+                    "the current file contents rather than re-applying this diff."
+                )
+                self._last_checkpoint_id = checkpoint_id
+                return False, files, f"patch did not apply cleanly: {err_msg}"
         except Exception as e:
             self._last_checkpoint_id = None
             return False, files, f"error during patch application: {e}"

@@ -542,6 +542,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const feedRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const planTurnRef = useRef(false);
+  // Keep-alive: set when a background swarm finishes (pilot_resume) while a turn
+  // is still streaming. The in-flight turn's onDone drains it so the pilot
+  // continues automatically instead of going to sleep after dispatching work.
+  const resumeQueuedRef = useRef(false);
+  // Stable indirection so the always-on swarm-results poll (defined before the
+  // trigger) can fire a keep-alive turn without a declaration-order dependency.
+  const resumeTriggerRef = useRef<() => void>(() => {});
   // Typewriter buffer: network deltas arrive in bursts (whole sentences at a
   // time). To render smoothly like Cursor/Hermes we DON'T paint on arrival --
   // we queue incoming text here and drain it at a steady per-frame cadence via
@@ -1331,6 +1338,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               const anyEvt = evt as any;
               if (anyEvt.kind === "swarm_result" && anyEvt.data) {
                 handleSwarmResult(anyEvt.data);
+              } else if (anyEvt.kind === "pilot_resume") {
+                // Background job finished while the session was idle. The backend
+                // already extended history with the result + continuation; kick
+                // off a keep-alive turn so the pilot continues without a prompt.
+                resumeTriggerRef.current();
               } else if (anyEvt.kind === "distilled" && anyEvt.data) {
                 const d = anyEvt.data;
                 const parts: string[] = [];
@@ -1436,14 +1448,20 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     }
   };
 
-  const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false) => {
+  const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false, resume: boolean = false) => {
     planTurnRef.current = usePlan;
-    const imgsToSend = [...attachedImages];
+    const imgsToSend = resume ? [] : [...attachedImages];
     const imgPaths = imgsToSend.map((img) => img.path);
-    setAttachedImages([]);
-    setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: msg, images: imgsToSend } }]);
+    if (!resume) {
+      // A resume turn carries no new user message -- the pilot is continuing off
+      // a finished background job, so we don't add a user bubble or send images.
+      setAttachedImages([]);
+      setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: msg, images: imgsToSend } }]);
+    }
     setStatus("thinking");
-    const streamer = useAuto
+    const streamer = resume
+      ? (cb: any, done: any, err: any) => api.resume(cb, done, err)
+      : useAuto
       ? (cb: any, done: any, err: any) => api.auto(msg, cb, done, err)
       : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths);
     cancelRef.current = streamer((ev: any) => {
@@ -1592,6 +1610,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         window.dispatchEvent(new Event("harness-repo-mutated"));
       } else if (ev.kind === "swarm_result") {
         handleSwarmResult(d);
+      } else if (ev.kind === "pilot_resume") {
+        // A background job finished and the backend injected a continuation into
+        // history. Queue a keep-alive turn; it fires from this turn's onDone.
+        resumeQueuedRef.current = true;
       } else if (ev.kind === "assistant_done") {
         setStatus("done");
         fetchContextUsage();
@@ -1605,9 +1627,34 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setStatus("error");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
       }
-    }, () => { flushTypewriter(); setStatus("done"); cancelRef.current = null; setCompactingStatus(null); },
-       () => { flushTypewriter(); setStatus("error"); cancelRef.current = null; setCompactingStatus(null); });
+    }, () => { flushTypewriter(); setStatus("done"); cancelRef.current = null; setCompactingStatus(null); maybeRunQueuedResume(); },
+       () => { flushTypewriter(); setStatus("error"); cancelRef.current = null; setCompactingStatus(null); maybeRunQueuedResume(); });
   };
+
+  // Keep-alive driver: after a turn ends, if a background swarm finished while it
+  // was running (resumeQueuedRef), fire a continuation turn so the pilot assesses
+  // the result and takes the next step on its own -- no user prompt, no autopilot.
+  // Chains naturally: each continuation can dispatch more work whose completion
+  // queues the next resume, so the pilot "runs run runs" until the work is done.
+  const maybeRunQueuedResume = () => {
+    if (!resumeQueuedRef.current) return;
+    // Still busy? Leave the flag set -- the next turn's onDone (or the poll) will
+    // pick it up. Only clear it once we've actually committed to running.
+    if (cancelRef.current) return;
+    resumeQueuedRef.current = false;
+    setTimeout(() => {
+      if (cancelRef.current) { resumeQueuedRef.current = true; return; }
+      executeSendRef.current("", false, false, true);
+    }, 60);
+  };
+
+  // A pilot_resume can also arrive via the swarm-results poll while the session is
+  // idle (the common background-job case). Trigger a continuation immediately.
+  const triggerResume = () => {
+    if (cancelRef.current) { resumeQueuedRef.current = true; return; }
+    executeSendRef.current("", false, false, true);
+  };
+  resumeTriggerRef.current = triggerResume;
 
   const send = () => {
     const msg = input.trim(); if (!msg) return;

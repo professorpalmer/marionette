@@ -2830,7 +2830,8 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
             plan_val = q.get("plan", ["false"])[0].lower() in ("true", "1", "yes")
-            return self._stream_chat(q.get("message", [""])[0], imgs, plan=plan_val)
+            resume_val = q.get("resume", ["false"])[0].lower() in ("true", "1", "yes")
+            return self._stream_chat(q.get("message", [""])[0], imgs, plan=plan_val, resume=resume_val)
         if u.path == "/api/terminal/stream":
             q = parse_qs(u.query)
             return self._stream_terminal(q.get("id", [""])[0])
@@ -3109,9 +3110,13 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    def _stream_chat(self, message: str, images=None, plan: bool = False):
+    def _stream_chat(self, message: str, images=None, plan: bool = False, resume: bool = False):
         """Stream the conversational PILOT loop: prose messages + collapsible
-        action cards (run_swarm) + assistant_done."""
+        action cards (run_swarm) + assistant_done.
+
+        ``resume=True`` runs a keep-alive continuation turn: no new user message
+        is appended -- the pilot generates off the history that drain_swarm_results
+        already extended with the finished job's result + continuation."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -3253,7 +3258,7 @@ class Handler(BaseHTTPRequestHandler):
         # subsequent message silently fails with "session busy" and the pilot
         # appears to "stop doing anything." Closing the generator in finally is
         # the fix.
-        gen = _pilot.send(message, images=images or None, plan=plan)
+        gen = _pilot.send(message, images=images or None, plan=plan, resume=resume)
         try:
             for ev in gen:
                 payload = json.dumps({"kind": ev.kind, "data": ev.data})

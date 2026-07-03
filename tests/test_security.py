@@ -378,7 +378,7 @@ def test_api_chat_multi_image_path_traversal_blocked():
         # We mock _stream_chat to avoid running actual VLM/Pilot during this security test
         original_stream_chat = srv.Handler._stream_chat
         called_with_imgs = []
-        def mock_stream_chat(handler_self, message, images=None, plan=False):
+        def mock_stream_chat(handler_self, message, images=None, plan=False, resume=False):
             called_with_imgs.append(images)
             handler_self.send_response(200)
             handler_self.end_headers()

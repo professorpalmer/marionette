@@ -361,6 +361,11 @@ export const api = {
     }
     return stream(url, onEvent, onDone, onError);
   },
+  // Keep-alive continuation: generate a pilot turn off existing history (no new
+  // user message). Fired when a background swarm finishes so the pilot assesses
+  // the result and continues on its own -- even without autopilot.
+  resume: (onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void) =>
+    stream("/api/chat?resume=true", onEvent, onDone, onError),
   mcp: () => getJSON<{ servers: any[]; tools: any[] }>("/api/mcp"),
   mcpCatalog: () => getJSON<{ catalog: Record<string, any> }>("/api/mcp/catalog"),
   mcpAdd: (name: string, command?: string, args?: string[], env?: Record<string, string>, url?: string) => {

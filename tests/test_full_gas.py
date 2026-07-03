@@ -178,6 +178,8 @@ def test_executor_smoke_run_implement():
                     is_pm = "puppetmaster" in args
                     
                 if is_pm:
+                    if "codegraph" in args:
+                        return MagicMock(returncode=0, stdout="")
                     if "await" in args:
                         return MagicMock(returncode=0)
                     elif "artifacts" in args:
@@ -313,6 +315,8 @@ def test_executor_smoke_run_parallel():
                     is_pm = "puppetmaster" in args
                     
                 if is_pm:
+                    if "codegraph" in args:
+                        return MagicMock(returncode=0, stdout="")
                     if "await" in args:
                         return MagicMock(returncode=0)
                     elif "artifacts" in args:
