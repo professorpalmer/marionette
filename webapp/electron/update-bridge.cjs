@@ -33,13 +33,15 @@ function pmharnessHome() {
   return path.join(os.homedir(), ".pmharness");
 }
 
-// One-shot git capture: resolve { ok, out, err } (never rejects).
-function gitCapture(repoRoot, args, timeoutMs = 30000) {
+// One-shot git capture: resolve { ok, out, err } (never rejects). `env`, when
+// given, is the login-shell-augmented environment so a Finder-launched app can
+// still resolve git and reach an SSH remote.
+function gitCapture(repoRoot, args, timeoutMs = 30000, env) {
   return new Promise((resolve) => {
     execFile(
       "git",
       ["-C", repoRoot, ...args],
-      { timeout: timeoutMs, maxBuffer: 10_000_000, encoding: "utf8" },
+      { timeout: timeoutMs, maxBuffer: 10_000_000, encoding: "utf8", ...(env ? { env } : {}) },
       (err, stdout, stderr) => {
         if (err) return resolve({ ok: false, out: (stdout || "").trim(), err: (stderr || String(err)).trim() });
         resolve({ ok: true, out: (stdout || "").trim(), err: (stderr || "").trim() });
@@ -50,12 +52,12 @@ function gitCapture(repoRoot, args, timeoutMs = 30000) {
 
 // One-shot process capture: resolve { ok, out, err } (never rejects). Used to
 // read `pip show` output when deciding whether to upgrade Puppetmaster.
-function execCapture(cmd, args, timeoutMs = 30000) {
+function execCapture(cmd, args, { timeoutMs = 30000, env } = {}) {
   return new Promise((resolve) => {
     execFile(
       cmd,
       args,
-      { timeout: timeoutMs, maxBuffer: 10_000_000, encoding: "utf8" },
+      { timeout: timeoutMs, maxBuffer: 10_000_000, encoding: "utf8", ...(env ? { env } : {}) },
       (err, stdout, stderr) => {
         resolve({ ok: !err, out: (stdout || "").trim(), err: (stderr || String(err || "")).trim() });
       }
@@ -64,10 +66,11 @@ function execCapture(cmd, args, timeoutMs = 30000) {
 }
 
 // Is `uv` on PATH? (Marionette venvs are made by `uv venv`, which omits pip, so
-// the updater prefers `uv pip ...` and only falls back to `python -m pip`.)
-function detectUv() {
+// the updater prefers `uv pip ...` and only falls back to `python -m pip`.) Uses
+// the augmented env so a Finder launch can find a Homebrew/curl-installed uv.
+function detectUv(env) {
   return new Promise((resolve) => {
-    execFile("uv", ["--version"], { timeout: 5000 }, (err) => resolve(!err));
+    execFile("uv", ["--version"], { timeout: 5000, ...(env ? { env } : {}) }, (err) => resolve(!err));
   });
 }
 
@@ -118,13 +121,13 @@ function runStreamed(cmd, args, opts, onLine) {
 // Compare the running app version against the tracked branch. Fetches the tip
 // (public HTTPS for the official SSH remote to avoid a passkey prompt), then
 // resolves how many commits the checkout is behind. Never throws.
-async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersion = "" }) {
+async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersion = "", env }) {
   try {
     const origin = await gitCapture(repoRoot, ["config", "--get", "remote.origin.url"]);
     if (!origin.ok) return { available: false, error: "no git remote (not a checkout)" };
 
     const fetchRemote = chooseFetchRemote(origin.out);
-    const fetched = await gitCapture(repoRoot, ["fetch", "--no-tags", fetchRemote, branch], 45000);
+    const fetched = await gitCapture(repoRoot, ["fetch", "--no-tags", fetchRemote, branch], 45000, env);
     if (!fetched.ok) return { available: false, error: fetched.err || "git fetch failed" };
 
     const cur = await gitCapture(repoRoot, ["rev-parse", "HEAD"]);
@@ -178,9 +181,13 @@ async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersio
 //              survive the update.
 // A tree that is *ahead* (local commits) can never fast-forward; that is a real
 // fork divergence and always returns code:"diverged" -- we never rewrite commits.
-async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" }, emit) {
+async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff", env }, emit) {
   const home = pmharnessHome();
   marker.writeMarker(home);
+  // Login-shell-augmented env so a Finder/Dock launch (stripped launchd PATH)
+  // can still find npm/uv/git and reach an SSH remote. Falls back to the inherited
+  // env when the caller does not supply one (dev/CLI runs already have a full env).
+  const childEnv = env || process.env;
   const progress = (stage, message, ratio = 0) =>
     emit && emit({ stage, message, percent: overallPercent(stage, ratio) });
   let stashed = false;
@@ -191,7 +198,7 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" 
     progress("fetch", "Fetching latest changes", 0);
     const origin = await gitCapture(repoRoot, ["config", "--get", "remote.origin.url"]);
     if (!origin.ok) return { ok: false, error: "not a git checkout (no origin remote)" };
-    const fetched = await runStreamed("git", ["-C", repoRoot, "fetch", "--no-tags", "origin", branch], {},
+    const fetched = await runStreamed("git", ["-C", repoRoot, "fetch", "--no-tags", "origin", branch], { env: childEnv },
       (l) => progress("fetch", l, 0.5));
     if (fetched.code !== 0) return { ok: false, error: fetched.tail || "git fetch failed" };
 
@@ -224,7 +231,7 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" 
 
     // pull (fast-forward only -- never rewrite the user's local work silently)
     progress("pull", "Updating source", 0.3);
-    const pulled = await runStreamed("git", ["-C", repoRoot, "merge", "--ff-only", "FETCH_HEAD"], {},
+    const pulled = await runStreamed("git", ["-C", repoRoot, "merge", "--ff-only", "FETCH_HEAD"], { env: childEnv },
       (l) => progress("pull", l, 0.5));
     if (pulled.code !== 0) {
       // Restore stashed edits before surfacing the failure so we never strand
@@ -270,20 +277,20 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" 
     // Marionette venvs are created by `uv venv`, which does NOT install pip, so
     // prefer `uv pip ...`. Fall back to `python -m pip` for an older pip-bearing
     // venv. Detected once and reused for both the app and the Puppetmaster step.
-    const hasUv = await detectUv();
+    const hasUv = await detectUv(childEnv);
 
     if (pyChanged) {
       progress("deps", "Updating Python dependencies", 0.3);
       const dep = hasUv
         ? await runStreamed("uv", ["pip", "install", "--python", py, "-e", "."],
-            { cwd: repoRoot }, (l) => progress("deps", l, 0.4))
+            { cwd: repoRoot, env: childEnv }, (l) => progress("deps", l, 0.4))
         : await runStreamed(py, ["-m", "pip", "install", "-e", ".", "--quiet"],
-            { cwd: repoRoot }, (l) => progress("deps", l, 0.4));
+            { cwd: repoRoot, env: childEnv }, (l) => progress("deps", l, 0.4));
       if (dep.code !== 0) return { ok: false, error: dep.tail || "python dependency install failed" };
     }
     if (nodeChanged) {
       progress("deps", "Updating node dependencies", 0.7);
-      const npmci = await runStreamed("npm", ["ci"], { cwd: path.join(repoRoot, "webapp") },
+      const npmci = await runStreamed("npm", ["ci"], { cwd: path.join(repoRoot, "webapp"), env: childEnv },
         (l) => progress("deps", l, 0.8));
       if (npmci.code !== 0) return { ok: false, error: npmci.tail || "npm ci failed" };
     }
@@ -295,8 +302,8 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" 
     // never strand an otherwise-successful app update -- PM just stays put.
     progress("deps", "Checking Puppetmaster", 0.85);
     const pmShow = hasUv
-      ? await execCapture("uv", ["pip", "show", "--python", py, DEFAULT_PUPPETMASTER_SPEC])
-      : await execCapture(py, ["-m", "pip", "show", DEFAULT_PUPPETMASTER_SPEC]);
+      ? await execCapture("uv", ["pip", "show", "--python", py, DEFAULT_PUPPETMASTER_SPEC], { env: childEnv })
+      : await execCapture(py, ["-m", "pip", "show", DEFAULT_PUPPETMASTER_SPEC], { env: childEnv });
     const pmPlan = planPuppetmasterUpgrade({
       specEnv: process.env.MARIONETTE_PUPPETMASTER_SPEC,
       pipShowOutput: pmShow.out,
@@ -307,9 +314,9 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" 
       progress("deps", "Updating Puppetmaster", 0.9);
       const pm = hasUv
         ? await runStreamed("uv", ["pip", "install", "--python", py, "--upgrade", pmPlan.spec],
-            { cwd: repoRoot }, (l) => progress("deps", l, 0.92))
+            { cwd: repoRoot, env: childEnv }, (l) => progress("deps", l, 0.92))
         : await runStreamed(py, ["-m", "pip", "install", "--upgrade", pmPlan.spec, "--quiet"],
-            { cwd: repoRoot }, (l) => progress("deps", l, 0.92));
+            { cwd: repoRoot, env: childEnv }, (l) => progress("deps", l, 0.92));
       if (pm.code !== 0) {
         progress("deps", "Puppetmaster upgrade skipped: " + (pm.tail || "unavailable"), 0.95);
       }
@@ -319,7 +326,7 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" 
     // trip on a still-settling tree; the second is a near-no-op if the first won.
     const rebuild = async (attempt) => {
       progress("build", attempt === 0 ? "Rebuilding app" : "Rebuilding app (retry)", 0.1);
-      return runStreamed("npm", ["run", "build"], { cwd: path.join(repoRoot, "webapp") },
+      return runStreamed("npm", ["run", "build"], { cwd: path.join(repoRoot, "webapp"), env: childEnv },
         (l) => progress("build", l, 0.5));
     };
     const built = await runRebuildWithRetry(rebuild);
@@ -342,11 +349,15 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" 
 function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   const getRepoRoot = opts.getRepoRoot || (() => path.join(os.homedir(), "pm-harness"));
   const relaunch = opts.relaunch || (() => { app.relaunch(); app.exit(0); });
+  // Login-shell-augmented env for the updater's child processes (git/npm/uv), so
+  // a Finder/Dock launch with a stripped launchd PATH can still find them. Omit
+  // to inherit process.env (dev/CLI runs already have a full env).
+  const getEnv = opts.getEnv || (() => process.env);
   let applying = false;
 
   ipcMain.handle("updates:check", async () => {
     const currentVersion = app.getVersion();
-    const res = await checkForUpdate({ repoRoot: getRepoRoot(), currentVersion });
+    const res = await checkForUpdate({ repoRoot: getRepoRoot(), currentVersion, env: getEnv() });
     return { current: currentVersion, ...res };
   });
 
@@ -361,7 +372,7 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
       } catch { void 0; }
     };
     try {
-      const result = await applyUpdate({ repoRoot: getRepoRoot(), strategy }, emit);
+      const result = await applyUpdate({ repoRoot: getRepoRoot(), strategy, env: getEnv() }, emit);
       if (result.ok) {
         // Give the renderer a beat to paint the final "relaunching" state.
         setTimeout(() => { try { relaunch(); } catch { void 0; } }, 400);

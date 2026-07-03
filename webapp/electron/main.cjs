@@ -619,6 +619,7 @@ ipcMain.on("harness:stream", (event, channelId, apiPath) => {
 const { registerFsBridge } = require("./fs-bridge.cjs");
 const { registerGitBridge } = require("./git-bridge.cjs");
 const { registerUpdateBridge } = require("./update-bridge.cjs");
+const { buildUpdaterEnv } = require("./update-env.cjs");
 registerFsBridge(ipcMain);
 registerGitBridge(ipcMain);
 // One delivery model (StatusBar's update pill): Marionette always runs from a
@@ -626,6 +627,11 @@ registerGitBridge(ipcMain);
 // relaunch. There is no signed bundle to swap.
 registerUpdateBridge(ipcMain, app, shell, {
   getRepoRoot: resolveRepoRoot,
+  // A Finder/Dock launch gets a stripped launchd PATH, so npm/uv are not found
+  // and the rebuild spawns with ENOENT ("spawn npm ENOENT") -- the source pulls
+  // but the app never rebuilds. Hand the updater the user's real login-shell env
+  // (same recovery the backend uses) so its child tools resolve like a terminal.
+  getEnv: () => (isDev ? process.env : buildUpdaterEnv({ processEnv: process.env, shellEnv: loginShellEnv() })),
   relaunch: () => {
     try { cleanupBackend(); } catch { /* ignore */ }
     app.relaunch();

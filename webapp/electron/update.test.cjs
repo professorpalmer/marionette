@@ -14,6 +14,7 @@ const count = require("./update-count.cjs");
 const steps = require("./update-steps.cjs");
 const rebuild = require("./update-rebuild.cjs");
 const pm = require("./update-pm.cjs");
+const env = require("./update-env.cjs");
 const marker = require("./update-marker.cjs");
 
 test("canonicalGitHubRemote: ssh and https forms of the same repo compare equal", () => {
@@ -114,6 +115,24 @@ test("isEditableInstall: matches only the editable marker line", () => {
   assert.equal(pm.isEditableInstall("Editable project location: /x"), true);
   assert.equal(pm.isEditableInstall("Location: /x/site-packages"), false);
   assert.equal(pm.isEditableInstall(""), false);
+});
+
+test("buildUpdaterEnv: login-shell PATH is prepended so npm/uv resolve (fixes spawn ENOENT)", () => {
+  const merged = env.buildUpdaterEnv({
+    processEnv: { PATH: "/usr/bin:/bin", HARNESS_TOKEN: "keep-me" },
+    shellEnv: { PATH: "/opt/homebrew/bin:/usr/bin", SSH_AUTH_SOCK: "/tmp/agent.sock" },
+  });
+  const parts = merged.PATH.split(require("node:path").delimiter);
+  assert.equal(parts[0], "/opt/homebrew/bin", "homebrew (shell) dir comes first");
+  assert.ok(parts.includes("/bin"), "base PATH dirs are preserved");
+  assert.equal(parts.filter((p) => p === "/usr/bin").length, 1, "duplicate dirs are de-duplicated");
+  assert.equal(merged.SSH_AUTH_SOCK, "/tmp/agent.sock", "shell-only vars are merged in");
+  assert.equal(merged.HARNESS_TOKEN, "keep-me", "base env vars are preserved");
+});
+
+test("buildUpdaterEnv: an empty shell env leaves the base PATH intact", () => {
+  const merged = env.buildUpdaterEnv({ processEnv: { PATH: "/usr/bin:/bin" }, shellEnv: {} });
+  assert.equal(merged.PATH, "/usr/bin:/bin");
 });
 
 test("readLiveUpdateMarker: live pid within age ceiling is reported", () => {
