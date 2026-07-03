@@ -87,29 +87,30 @@ Puppetmaster's free local adapter so ground truth is deterministic and key-free.
 
 ## Install and updates
 
-Marionette is a real installed app that updates itself the way Hermes Desktop
-does. Install it once from the DMG (drag to `/Applications`), and from then on
-new releases download in the background and apply on the next relaunch -- no
-script to run, no DMG to re-download per change. The status-bar `update` pill
-shows when a new version is ready; click it (or just quit and reopen) and the
-app relaunches on the new version. Cutting a release is described in
-`RELEASING.md`.
-
-Contributors who want to hack on Marionette run it from a git checkout instead;
-in that mode the same pill pulls + rebuilds the source in place (see below).
-
-One-command setup on a fresh machine (macOS, Apple Silicon):
+Marionette runs from source, the way Hermes does -- there is no DMG and nothing
+arch-specific to download. One installer works on Intel Macs, Apple Silicon, and
+Linux: it clones the repo, builds a per-machine Python venv with `uv`, installs
+node deps, builds the renderer, and drops a `marionette` launcher on your PATH.
+Native modules compile locally, so the same command covers every machine.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/professorpalmer/pm-harness/main/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/professorpalmer/marionette/main/scripts/install.sh | bash
 ```
 
-Then launch it for daily use (production renderer; the self-updater rebuilds
-into this mode):
+Then:
 
 ```bash
-bash scripts/start.sh          # or add:  alias marionette='bash ~/pm-harness/scripts/start.sh'
+marionette            # daily use (built renderer, in-app updates)
+marionette dev        # contributor hot-reload (Vite HMR)
+marionette doctor     # re-check the environment
+marionette update     # git pull + rebuild
 ```
+
+Updates are in-app: the status-bar `update` pill runs `git pull` + rebuild +
+relaunch. Merging to `main` reaches everyone on their next click -- no signed
+build, no per-arch packaging. Because Marionette can edit its own source, the
+updater knows how to stash + reapply local self-edits and flags a diverged fork
+instead of failing silently. Cutting a version tag is described in `RELEASING.md`.
 
 ## Run it (contributor / dev)
 
@@ -122,12 +123,12 @@ cd webapp && npm install && npm run electron:dev
 Or the one-command dev launcher (cleans stale processes, then launches):
 
 ```bash
-bash scripts/dev.sh
+bash scripts/dev.sh          # same as: marionette dev
 ```
 
-The signed, auto-updating DMG is cut with `scripts/release.sh` -- see
-`RELEASING.md`. That installed app is the primary channel for everyone; the git
-checkout above is for people actively developing Marionette.
+Requirements: `git`, a C/C++ toolchain (Xcode Command Line Tools on macOS,
+`build-essential` on Linux) for CodeGraph's native module, and Node >= 20. `uv`
+provides Python; `marionette doctor` verifies the whole environment.
 
 Research rig (offline, no keys):
 

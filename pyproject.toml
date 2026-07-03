@@ -19,8 +19,7 @@ harness = "harness.cli:main"
 # editable from the local checkout in dev; not pinned here to avoid coupling
 # the research rig to a PyPI release of an internal tool.
 dev = [
-    "pytest>=7",
-    "pyinstaller"
+    "pytest>=7"
 ]
 
 [tool.setuptools.packages.find]

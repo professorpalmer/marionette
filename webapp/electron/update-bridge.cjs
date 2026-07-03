@@ -26,7 +26,7 @@ const { runRebuildWithRetry } = require("./update-rebuild.cjs");
 const marker = require("./update-marker.cjs");
 
 const DEFAULT_BRANCH = process.env.PMHARNESS_UPDATE_BRANCH || "main";
-const REPO_HTML_URL = "https://github.com/professorpalmer/pm-harness";
+const REPO_HTML_URL = "https://github.com/professorpalmer/marionette";
 
 function pmharnessHome() {
   return path.join(os.homedir(), ".pmharness");
@@ -45,6 +45,22 @@ function gitCapture(repoRoot, args, timeoutMs = 30000) {
       }
     );
   });
+}
+
+// Inspect the working tree so the updater can tell a clean checkout apart from
+// one the user (or Marionette editing itself) has modified. `dirty` = tracked
+// changes exist besides results/ (which is gitignored churn). `ahead` = local
+// commits not on the tracked upstream. Both drive the diverged-tree update UX:
+// a dirty tree can be stashed + reapplied, but an ahead/diverged tree needs the
+// user to rebase or reset -- we never rewrite their commits silently.
+async function inspectTree(repoRoot, branch) {
+  const status = await gitCapture(repoRoot, ["status", "--porcelain"]);
+  const dirty = status.ok &&
+    status.out.split("\n").some((l) => l.trim() && !/\bresults\//.test(l));
+  // Commits on HEAD that FETCH_HEAD (the fetched branch tip) doesn't contain.
+  const aheadRes = await gitCapture(repoRoot, ["rev-list", "--count", "FETCH_HEAD..HEAD"]);
+  const ahead = aheadRes.ok ? (parseInt(aheadRes.out, 10) || 0) : 0;
+  return { dirty, ahead };
 }
 
 // Stream a child process, forwarding trimmed output lines to onLine, resolving
@@ -104,6 +120,10 @@ async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersio
     }
     const behind = resolveBehindCount({ countStr, currentSha, targetSha, isShallow, hasMergeBase });
 
+    // Tree state so the UI can pick an apply strategy up front (a self-edited
+    // checkout is dirty and/or ahead of origin).
+    const { dirty, ahead } = await inspectTree(repoRoot, branch);
+
     return {
       available: behind > 0,
       behind,
@@ -111,6 +131,8 @@ async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersio
       currentSha: currentSha.slice(0, 8),
       targetSha: targetSha.slice(0, 8),
       currentVersion,
+      dirty,
+      ahead,
       url: REPO_HTML_URL,
     };
   } catch (e) {
@@ -120,12 +142,24 @@ async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersio
 
 // Apply the update against the checkout: pull, refresh deps only if their
 // lockfiles changed, rebuild the renderer. Streams progress via emit(stage,
-// message, ratio). Returns { ok, error } -- on ok:true the caller relaunches.
-async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH }, emit) {
+// message, ratio). Returns { ok, error, code } -- on ok:true the caller
+// relaunches.
+//
+// strategy resolves the self-edit vs update collision (Marionette can edit its
+// own source, so the tree is often dirty/ahead):
+//   "ff"    (default) -- fast-forward only; refuse on a dirty/diverged tree and
+//                         return a structured { code } so the UI can offer a choice.
+//   "stash" -- set aside uncommitted edits (git stash -u), fast-forward, then
+//              reapply them (git stash pop) before the rebuild, so self-edits
+//              survive the update.
+// A tree that is *ahead* (local commits) can never fast-forward; that is a real
+// fork divergence and always returns code:"diverged" -- we never rewrite commits.
+async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" }, emit) {
   const home = pmharnessHome();
   marker.writeMarker(home);
   const progress = (stage, message, ratio = 0) =>
     emit && emit({ stage, message, percent: overallPercent(stage, ratio) });
+  let stashed = false;
   try {
     const beforeSha = (await gitCapture(repoRoot, ["rev-parse", "HEAD"])).out;
 
@@ -137,17 +171,66 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH }, emit) {
       (l) => progress("fetch", l, 0.5));
     if (fetched.code !== 0) return { ok: false, error: fetched.tail || "git fetch failed" };
 
+    // Diverged/dirty preflight: decide whether we can fast-forward at all.
+    const { dirty, ahead } = await inspectTree(repoRoot, branch);
+    if (ahead > 0) {
+      return {
+        ok: false,
+        code: "diverged",
+        error:
+          `Your checkout has ${ahead} local commit(s) that aren't on origin/${branch} ` +
+          `(a diverged fork). Rebase onto origin/${branch} or reset --hard origin/${branch}, then update again.`,
+      };
+    }
+    if (dirty && strategy !== "stash") {
+      return {
+        ok: false,
+        code: "dirty",
+        error:
+          "You have uncommitted changes (self-edits). Choose 'Stash & update' to set them " +
+          "aside and reapply them after updating, or commit them first.",
+      };
+    }
+    if (dirty && strategy === "stash") {
+      progress("pull", "Stashing local self-edits", 0.1);
+      const st = await gitCapture(repoRoot, ["stash", "push", "-u", "-m", "marionette-auto-update"]);
+      if (!st.ok) return { ok: false, error: st.err || "git stash failed" };
+      stashed = true;
+    }
+
     // pull (fast-forward only -- never rewrite the user's local work silently)
-    progress("pull", "Updating source", 0);
+    progress("pull", "Updating source", 0.3);
     const pulled = await runStreamed("git", ["-C", repoRoot, "merge", "--ff-only", "FETCH_HEAD"], {},
       (l) => progress("pull", l, 0.5));
     if (pulled.code !== 0) {
+      // Restore stashed edits before surfacing the failure so we never strand
+      // the user's work in the stash on a failed update.
+      if (stashed) { await gitCapture(repoRoot, ["stash", "pop"]); stashed = false; }
       return {
         ok: false,
+        code: "diverged",
         error:
-          "Could not fast-forward: you have local commits or uncommitted changes on this branch. " +
-          "Commit/stash them or reset to origin/" + branch + ", then update again.",
+          "Could not fast-forward onto origin/" + branch + ". Commit/stash your changes or " +
+          "reset to origin/" + branch + ", then update again.",
       };
+    }
+
+    // Reapply the stashed self-edits onto the updated source before rebuilding,
+    // so the new build includes them. A conflict here means the upstream change
+    // touched the same lines -- surface it clearly instead of silently dropping.
+    if (stashed) {
+      progress("pull", "Reapplying local self-edits", 0.8);
+      const pop = await gitCapture(repoRoot, ["stash", "pop"]);
+      stashed = false;
+      if (!pop.ok) {
+        return {
+          ok: false,
+          code: "conflict",
+          error:
+            "Updated, but your self-edits conflict with the new code. Resolve the conflict in " +
+            repoRoot + " (git status), then rebuild. Your changes are in the working tree.",
+        };
+      }
     }
     const afterSha = (await gitCapture(repoRoot, ["rev-parse", "HEAD"])).out;
 
@@ -162,9 +245,18 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH }, emit) {
     if (pyChanged) {
       progress("deps", "Updating Python dependencies", 0.3);
       const py = process.env.PMHARNESS_PYTHON || path.join(repoRoot, ".venv", "bin", "python");
-      const pip = await runStreamed(py, ["-m", "pip", "install", "-e", ".", "--quiet"],
-        { cwd: repoRoot }, (l) => progress("deps", l, 0.4));
-      if (pip.code !== 0) return { ok: false, error: pip.tail || "pip install failed" };
+      // Marionette venvs are created by `uv venv`, which does NOT install pip, so
+      // prefer `uv pip install --python <venv>`. Fall back to `python -m pip` for
+      // an older pip-bearing venv.
+      const hasUv = await new Promise((resolve) => {
+        execFile("uv", ["--version"], { timeout: 5000 }, (err) => resolve(!err));
+      });
+      const dep = hasUv
+        ? await runStreamed("uv", ["pip", "install", "--python", py, "-e", "."],
+            { cwd: repoRoot }, (l) => progress("deps", l, 0.4))
+        : await runStreamed(py, ["-m", "pip", "install", "-e", ".", "--quiet"],
+            { cwd: repoRoot }, (l) => progress("deps", l, 0.4));
+      if (dep.code !== 0) return { ok: false, error: dep.tail || "python dependency install failed" };
     }
     if (nodeChanged) {
       progress("deps", "Updating node dependencies", 0.7);
@@ -188,6 +280,9 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH }, emit) {
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   } finally {
+    // Never leave the user's self-edits trapped in the stash if we bailed out
+    // between the stash push and its pop.
+    if (stashed) { try { await gitCapture(repoRoot, ["stash", "pop"]); } catch { /* leave in stash */ } }
     marker.clearMarker(home);
   }
 }
@@ -205,16 +300,18 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
     return { current: currentVersion, ...res };
   });
 
-  ipcMain.handle("updates:apply", async (event) => {
+  ipcMain.handle("updates:apply", async (event, arg) => {
     if (applying) return { ok: false, error: "an update is already in progress" };
     applying = true;
+    // arg may be a strategy string ("ff"|"stash") or an options object.
+    const strategy = (arg && typeof arg === "object" ? arg.strategy : arg) || "ff";
     const emit = (payload) => {
       try {
         if (event.sender && !event.sender.isDestroyed()) event.sender.send("updates:progress", payload);
       } catch { void 0; }
     };
     try {
-      const result = await applyUpdate({ repoRoot: getRepoRoot() }, emit);
+      const result = await applyUpdate({ repoRoot: getRepoRoot(), strategy }, emit);
       if (result.ok) {
         // Give the renderer a beat to paint the final "relaunching" state.
         setTimeout(() => { try { relaunch(); } catch { void 0; } }, 400);

@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpCircle, RefreshCw, X } from "lucide-react";
 
-// The loud counterpart to the StatusBar's small "update" pill. When a new
-// release has been downloaded in the background (electron-updater, autoDownload),
-// this slides a prominent bar across the top of the window -- Hermes-style --
-// so a waiting update is impossible to miss. Restart applies it (bundle swap +
-// relaunch); dismiss hides it until the next launch or the next release lands.
+// The loud counterpart to the StatusBar's small "update" pill. When the tracked
+// branch has moved ahead of this checkout, this slides a prominent bar across the
+// top of the window -- Hermes-style -- so a waiting update is impossible to miss.
+// Restart applies it (git pull + rebuild + relaunch); dismiss hides it until the
+// next launch or the next commit lands. Because Marionette can edit its own
+// source, apply() may return a structured code (dirty/diverged/conflict) that we
+// turn into a real choice (stash + reapply, or point at the diverged commits)
+// instead of a dead-end error.
 //
 // The pill stays as the always-present compact indicator; this banner is the
 // occasional "your update is ready, one click to finish" nudge.
@@ -102,7 +105,7 @@ export default function UpdateBanner() {
     };
   }, []);
 
-  const restart = () => {
+  const restart = (strategy?: "ff" | "stash") => {
     const ipc = (window as any).harnessIPC;
     if (!ipc || !ipc.updates) return;
     if (committedRef.current) return; // idempotent: a second click while applying is a no-op
@@ -131,12 +134,30 @@ export default function UpdateBanner() {
     }, 90000);
 
     ipc.updates
-      .apply()
+      .apply(strategy ? { strategy } : undefined)
       .then((r: any) => {
         // apply() resolves { ok:false, error } when there's nothing to install
         // (e.g. a stale banner) -- surface it instead of spinning.
         if (r && r.ok === false) {
           window.clearTimeout(watchdog);
+          // A self-edited checkout collides with fast-forward. Offer the sane
+          // recovery for each case instead of a dead-end error (Marionette
+          // edits its own source, so this is a normal path, not an edge case).
+          if (r.code === "dirty") {
+            recover(r.error || "You have local self-edits.");
+            if (window.confirm(
+              "You have local self-edits in your Marionette checkout.\n\n" +
+              "Stash them, update, then reapply them automatically?"
+            )) {
+              restart("stash");
+            }
+            return;
+          }
+          if (r.code === "diverged" || r.code === "conflict") {
+            recover(r.error || "Your checkout has diverged from origin.");
+            ipc.updates.openRepo?.("commits").catch?.(() => {});
+            return;
+          }
           recover(`Update failed: ${r.error || "no update available"}`);
         }
       })
@@ -185,7 +206,7 @@ export default function UpdateBanner() {
           <span className="text-muted">Restart to finish updating.</span>
           <div className="flex-1" />
           <button
-            onClick={restart}
+            onClick={() => restart()}
             className="px-2.5 py-1 rounded-md bg-accent text-panel font-semibold hover:brightness-110 transition text-[11px]"
           >
             Restart now

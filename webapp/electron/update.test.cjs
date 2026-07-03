@@ -14,33 +14,23 @@ const count = require("./update-count.cjs");
 const steps = require("./update-steps.cjs");
 const rebuild = require("./update-rebuild.cjs");
 const marker = require("./update-marker.cjs");
-const { compareVersions } = require("./auto-updater.cjs");
-
-test("compareVersions: orders semver-ish dotted versions and treats equal as 0", () => {
-  assert.ok(compareVersions("0.6.7", "0.6.6") > 0);
-  assert.ok(compareVersions("0.6.6", "0.6.7") < 0);
-  assert.equal(compareVersions("0.6.6", "0.6.6"), 0);
-  assert.ok(compareVersions("1.0.0", "0.9.9") > 0);
-  assert.ok(compareVersions("0.7.0", "0.6.10") > 0); // numeric, not lexical
-  assert.equal(compareVersions("0.6", "0.6.0"), 0); // missing patch == 0
-});
 
 test("canonicalGitHubRemote: ssh and https forms of the same repo compare equal", () => {
-  const ssh = remote.canonicalGitHubRemote("git@github.com:professorpalmer/pm-harness.git");
-  const https = remote.canonicalGitHubRemote("https://github.com/professorpalmer/pm-harness.git");
-  assert.equal(ssh, "github.com/professorpalmer/pm-harness");
+  const ssh = remote.canonicalGitHubRemote("git@github.com:professorpalmer/marionette.git");
+  const https = remote.canonicalGitHubRemote("https://github.com/professorpalmer/marionette.git");
+  assert.equal(ssh, "github.com/professorpalmer/marionette");
   assert.equal(ssh, https);
 });
 
 test("chooseFetchRemote: official SSH remote -> public HTTPS (dodge passkey prompt)", () => {
   assert.equal(
-    remote.chooseFetchRemote("git@github.com:professorpalmer/pm-harness.git"),
+    remote.chooseFetchRemote("git@github.com:professorpalmer/marionette.git"),
     remote.OFFICIAL_REPO_HTTPS_URL
   );
 });
 
 test("chooseFetchRemote: HTTPS origin and forks fetch from 'origin' unchanged", () => {
-  assert.equal(remote.chooseFetchRemote("https://github.com/professorpalmer/pm-harness.git"), "origin");
+  assert.equal(remote.chooseFetchRemote("https://github.com/professorpalmer/marionette.git"), "origin");
   assert.equal(remote.chooseFetchRemote("git@github.com:someone/fork.git"), "origin");
 });
 

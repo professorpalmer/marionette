@@ -132,22 +132,21 @@ let respawnTimes = [];
 // UI. A single in-flight promise guarantees at most one backend launch at a time.
 let startInFlight = null;
 
-// The source checkout the app runs from. The backend is `harness.cli` under this
-// root, and the self-updater pulls + rebuilds it in place. HARNESS_REPO wins;
-// otherwise a packaged shell assumes ~/pm-harness and a dev run resolves the repo
-// two levels up from webapp/electron/.
+// The source checkout the app runs from. Marionette always runs from source
+// (Hermes model): the backend is `harness.cli` under this root, and the updater
+// pulls + rebuilds it in place. HARNESS_REPO wins; otherwise the repo is two
+// levels up from webapp/electron/ (the installer clones to ~/.marionette/marionette
+// and the `marionette` launcher runs electron from that checkout's webapp/).
 function resolveRepoRoot() {
-  return (
-    process.env.HARNESS_REPO ||
-    (app.isPackaged ? path.join(os.homedir(), "pm-harness") : path.resolve(__dirname, "..", ".."))
-  );
+  return process.env.HARNESS_REPO || path.resolve(__dirname, "..", "..");
 }
 
-// Self-dev mode: run the backend from the editable source checkout (python -m
-// harness.cli) instead of the frozen bundled binary, so editing ~/pm-harness/**
-// changes the LIVE code after a restart -- the Hermes-style "edit myself" loop.
-// Sourced from MARIONETTE_SELF_DEV env or ~/.pmharness/self-dev.json so the UI
-// can toggle it durably. Persisted in userData-adjacent state, not the repo.
+// Live-UI mode: serve the React renderer from a Vite HMR dev server instead of
+// the prebuilt dist/, so edits to webapp/src/** are live with no rebuild. The
+// backend already always runs from the editable source checkout (Marionette is
+// source-run), so this toggle governs the UI only. Sourced from MARIONETTE_SELF_DEV
+// env or ~/.pmharness/self-dev.json so the UI can toggle it durably. Persisted in
+// userData-adjacent state, not the repo.
 function selfDevConfigPath() {
   return path.join(os.homedir(), ".pmharness", "self-dev.json");
 }
@@ -167,14 +166,6 @@ function setSelfDevEnabled(enabled) {
     return true;
   } catch { return false; }
 }
-// A self-dev backend is only viable when the editable checkout + its venv exist;
-// otherwise we must fall back to the frozen binary rather than brick the app.
-function selfDevRuntimeViable(repoRoot) {
-  try {
-    return fs.existsSync(path.join(repoRoot, ".venv", "bin", "python")) &&
-           fs.existsSync(path.join(repoRoot, "harness", "cli.py"));
-  } catch { return false; }
-}
 
 // Live React needs the checkout's webapp with installed deps (the Vite binary).
 function viteDevViable(repoRoot) {
@@ -185,10 +176,11 @@ function viteDevViable(repoRoot) {
 }
 
 // Whether the renderer should be served from the Vite HMR dev server (live React)
-// rather than the prebuilt dist/. Only in self-dev mode with a usable webapp
-// checkout; never in the classic dev flow (PMHARNESS_DEV_SERVER already owns it).
+// rather than the prebuilt dist/. Only when Live UI is toggled on and the webapp
+// checkout is usable; never in the classic dev flow (PMHARNESS_DEV_SERVER already
+// owns it).
 function shouldUseViteDev(repoRoot) {
-  return !isDev && selfDevEnabled() && selfDevRuntimeViable(repoRoot) && viteDevViable(repoRoot);
+  return !isDev && selfDevEnabled() && viteDevViable(repoRoot);
 }
 
 // Start (or reuse) a Vite dev server for the editable webapp. Returns its URL, or
@@ -340,115 +332,48 @@ async function _startBackendOnce() {
     await new Promise((r) => setTimeout(r, 500));
   }
 
-  // 1c. Fresh spawn implies NO backend should legitimately be running (the
-  // single-instance lock guarantees we are the only Marionette main, and reuse
-  // above already returned if a healthy one existed). Sweep any orphaned
-  // pmharness-backend a crash or update-relaunch left behind on the old port so
-  // we never end up with two backends racing the same SQLite state and clobbering
-  // each other's token file -- the root cause of the "completely disconnected"
-  // regression. Packaged-only: the bundled binary is named `pmharness-backend`; a
-  // dev backend runs as `python -m harness.cli` and is deliberately not matched.
-  if (app.isPackaged) {
-    try {
-      require("node:child_process").execFileSync("/usr/bin/pkill", ["-f", "pmharness-backend"], { stdio: "ignore" });
-    } catch { /* nothing to sweep */ }
-  }
-
   // 2. Spawn a fresh backend on a free port and record the marker.
   backendPort = await freePort();
   // Backend resolution: the source checkout the app runs from (see
-  // resolveRepoRoot). A fully self-contained bundle (PyInstaller) is the
-  // distribution path; for a source/checkout run we use the repo's venv.
+  // resolveRepoRoot). Marionette always runs the backend from the repo's venv --
+  // `python -m harness.cli` -- so self-edits go live on the next restart.
   const repoRoot = resolveRepoRoot();
-
-  // Self-dev: prefer the editable checkout so self-edits go live on restart.
-  // Falls back to the frozen binary if the checkout/venv is missing.
-  const selfDev = selfDevEnabled() && selfDevRuntimeViable(repoRoot);
-
-  let binaryPath = null;
-  if (!selfDev && app.isPackaged && process.resourcesPath) {
-    const p = path.join(process.resourcesPath, "pmharness-backend");
-    if (fs.existsSync(p)) {
-      binaryPath = p;
-    }
-  }
 
   const _dbg = (msg) => { try { fs.appendFileSync(path.join(os.homedir(), ".pmharness", "electron.log"), `${new Date().toISOString()} ${msg}\n`); } catch {} };
 
   // Merge the user's real login-shell environment UNDER process.env so the
   // backend (and every run_command it spawns -- ssh, git, etc.) sees the same
   // PATH, ssh-agent socket, and profile vars it would in a terminal. process.env
-  // still wins for anything the app set deliberately. Only fills in when a GUI
-  // launch left those vars stripped.
-  const _shellEnv = app.isPackaged ? loginShellEnv() : {};
+  // still wins for anything the app set deliberately. A GUI launch (Dock/Finder
+  // or the `marionette` launcher) gets a stripped launchd env, so we fill it in
+  // for every non-dev run; classic terminal dev (PMHARNESS_DEV_SERVER) already
+  // has a full env, so we skip the extra login-shell spawn there.
+  const _shellEnv = isDev ? {} : loginShellEnv();
   // PYTHONUNBUFFERED: stream backend stdout/stderr to the log immediately instead
   // of sitting in a pipe buffer (that buffering hid the real startup/crash lines
   // and left a ~20-min gap between "spawning" and "GUI on" in the log).
   const customEnv = { ..._shellEnv, ...process.env, PYTHONUNBUFFERED: "1", HARNESS_REPO: process.env.HARNESS_REPO || repoRoot, HARNESS_TOKEN: harnessToken };
 
-  // Hand the (frozen) backend a REAL interpreter for dispatching Puppetmaster /
-  // implement workers. Without this, a packaged app re-enters its own PyInstaller
-  // snapshot via `pm-exec` to run workers, which fails worktree packaging (zlib
-  // "incorrect header check") and imports a stale harness.worker (missing
-  // WorkerResult). The checkout's venv has editable harness + puppetmaster (the
-  // live source), so point PMHARNESS_PYTHON at it when present; the backend's
-  // resolver validates puppetmaster-importability before trusting it.
+  // Point PMHARNESS_PYTHON at the checkout's venv interpreter for dispatching
+  // Puppetmaster / implement workers. The venv has editable harness + puppetmaster
+  // (the live source); the backend's resolver validates puppetmaster-importability
+  // before trusting it.
   if (!customEnv.PMHARNESS_PYTHON) {
     const venvPy = path.join(repoRoot, ".venv", "bin", "python");
     if (fs.existsSync(venvPy)) customEnv.PMHARNESS_PYTHON = venvPy;
   }
 
-  // codegraph self-containment: only safe with a REAL bundled `node` binary.
-  // The electron-as-node trick (ELECTRON_RUN_AS_NODE) does NOT work for codegraph because
-  // codegraph uses worker_threads (new Worker), which re-launch the Electron binary and recurse
-  // infinitely (verified 2026-06-26). So we ONLY inject codegraph/node shims when a bundled real
-  // node binary is shipped at Resources/node/bin/node; otherwise we leave PATH alone so a system
-  // codegraph/node (dev machines) keeps working. See .hermes/plans node-bundling verdict.
-  try {
-    const bundledNode = app.isPackaged
-      ? path.join(process.resourcesPath, "node", "bin", "node")
-      : "";
-    let codegraphJsPath = "";
-    if (app.isPackaged) {
-      const cg = path.join(process.resourcesPath, "codegraph", "dist", "bin", "codegraph.js");
-      if (fs.existsSync(cg)) codegraphJsPath = cg;
-    }
-    if (bundledNode && fs.existsSync(bundledNode) && codegraphJsPath) {
-      const shimDir = path.join(app.getPath("userData"), "bin");
-      fs.mkdirSync(shimDir, { recursive: true });
-      const codegraphShimPath = path.join(shimDir, "codegraph");
-      fs.writeFileSync(codegraphShimPath,
-        `#!/bin/sh\nexec "${bundledNode}" "${codegraphJsPath}" "$@"\n`, "utf8");
-      fs.chmodSync(codegraphShimPath, 0o755);
-      const nodeShimPath = path.join(shimDir, "node");
-      fs.writeFileSync(nodeShimPath, `#!/bin/sh\nexec "${bundledNode}" "$@"\n`, "utf8");
-      fs.chmodSync(nodeShimPath, 0o755);
-      customEnv.PATH = shimDir + path.delimiter + (customEnv.PATH || process.env.PATH || "");
-      customEnv.PUPPETMASTER_CODEGRAPH_NO_NPX = "1";
-      _dbg(`codegraph self-contained via bundled node at ${bundledNode}`);
-    } else {
-      _dbg("No bundled node binary; using system codegraph/node if present (no shim).");
-    }
-  } catch (e) {
-    _dbg(`codegraph shim setup skipped: ${e}`);
-  }
+  // CodeGraph runs off the system `node` + the `codegraph` binary from the
+  // installed Puppetmaster (the installer ensures both). No bundled-node shim is
+  // needed in the source-run model.
 
-  if (binaryPath) {
-    _dbg(`spawning bundled binary: ${binaryPath} cwd=${repoRoot} port=${backendPort} packaged=${app.isPackaged}`);
-    backend = spawn(binaryPath, ["gui", "--port", String(backendPort)], {
-      cwd: repoRoot,
-      env: customEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } else {
-    const py = process.env.PMHARNESS_PYTHON || path.join(repoRoot, ".venv", "bin", "python");
-    _dbg(`spawning python backend: ${py} cwd=${repoRoot} port=${backendPort} packaged=${app.isPackaged} selfDev=${selfDev}`);
-    backend = spawn(py, ["-m", "harness.cli", "gui", "--port", String(backendPort)], {
-      cwd: repoRoot,
-      env: customEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  }
+  const py = process.env.PMHARNESS_PYTHON || path.join(repoRoot, ".venv", "bin", "python");
+  _dbg(`spawning python backend: ${py} cwd=${repoRoot} port=${backendPort}`);
+  backend = spawn(py, ["-m", "harness.cli", "gui", "--port", String(backendPort)], {
+    cwd: repoRoot,
+    env: customEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 
   backend.on("error", (e) => _dbg(`spawn error: ${e.message}`));
   // Recover from an unexpected backend death instead of leaving the window
@@ -562,7 +487,7 @@ async function restartBackend() {
   }
 }
 ipcMain.handle("harness:restart", () => restartBackend());
-ipcMain.handle("harness:selfDev:get", () => ({ enabled: selfDevEnabled(), viable: selfDevRuntimeViable(resolveRepoRoot()), packaged: app.isPackaged }));
+ipcMain.handle("harness:selfDev:get", () => ({ enabled: selfDevEnabled(), viable: viteDevViable(resolveRepoRoot()) }));
 ipcMain.handle("harness:selfDev:set", (_e, enabled) => ({ ok: setSelfDevEnabled(!!enabled), enabled: selfDevEnabled() }));
 
 // Image upload bridge: the renderer hands us raw bytes (File over IPC can't carry
@@ -680,29 +605,19 @@ ipcMain.on("harness:stream", (event, channelId, apiPath) => {
 const { registerFsBridge } = require("./fs-bridge.cjs");
 const { registerGitBridge } = require("./git-bridge.cjs");
 const { registerUpdateBridge } = require("./update-bridge.cjs");
-const { registerAutoUpdater } = require("./auto-updater.cjs");
 registerFsBridge(ipcMain);
 registerGitBridge(ipcMain);
-// Two delivery models behind one IPC surface (StatusBar's update pill):
-//   - Installed .app: swap the whole signed bundle via electron-updater. New
-//     GitHub releases download in the background and apply on relaunch -- the
-//     "install once, updates just land" path for everyone on the DMG.
-//   - Git checkout (contributors): pull + rebuild the source in place, then
-//     relaunch. Working from source has no bundle to swap.
-if (app.isPackaged) {
-  registerAutoUpdater(ipcMain, app, shell, {
-    cleanup: () => { try { cleanupBackend(); } catch { /* ignore */ } },
-  });
-} else {
-  registerUpdateBridge(ipcMain, app, shell, {
-    getRepoRoot: resolveRepoRoot,
-    relaunch: () => {
-      try { cleanupBackend(); } catch { /* ignore */ }
-      app.relaunch();
-      app.exit(0);
-    },
-  });
-}
+// One delivery model (StatusBar's update pill): Marionette always runs from a
+// git checkout, so an update is `git pull` + rebuild the source in place, then
+// relaunch. There is no signed bundle to swap.
+registerUpdateBridge(ipcMain, app, shell, {
+  getRepoRoot: resolveRepoRoot,
+  relaunch: () => {
+    try { cleanupBackend(); } catch { /* ignore */ }
+    app.relaunch();
+    app.exit(0);
+  },
+});
 
 function createWindow() {
   win = new BrowserWindow({

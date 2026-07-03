@@ -2,7 +2,6 @@ results/*.sqlite
 __pycache__/
 *.pyc
 .venv/
-.venv-universal/
 *.egg-info/
 .env
 
@@ -12,26 +11,16 @@ __pycache__/
 webapp/node_modules/
 webapp/dist/
 webapp/.vite/
-webapp/release/
-webapp/codegraph-vendor/
 webapp/out/
-
-# PyInstaller
-webapp/backend-dist/
-build/pyinstaller-work/
 
 # Temporary iconset directories
 webapp/build/*.iconset/
 build/*.iconset/
 
-
 # Agent artifacts (plans, local agent state) -- never commit
 .hermes/
-webapp/node-vendor/
 
-# Apple code-signing secrets (never commit)
+# Stray secrets -- never commit
 signing.env
-
-# Apple signing private key + CSR (never commit)
 .signing-keys/
 .DS_Store

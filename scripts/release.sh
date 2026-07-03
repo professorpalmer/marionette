@@ -1,20 +1,11 @@
 #!/bin/bash
-# One-command Tier-1 release: build the notarized DMG and publish a GitHub Release
-# so testers' apps see the "update available" nudge.
+# Source-run release: bump the version, tag it, and push to main. There is no
+# DMG, no notarization, and no uploaded binary -- Marionette runs from a source
+# checkout, so a release reaches everyone the moment they hit "Update & Relaunch"
+# (git pull + rebuild). The tag/version exists only so app.getVersion() and the
+# update pill can show a human-readable version.
 #
-# Usage:  scripts/release.sh 0.4.1   ["release notes line"]
-#
-# What it does, in order:
-#   1. Sanity: clean tree, on main, gh authed as professorpalmer.
-#   2. Sets webapp/package.json version to the given version.
-#   3. Builds the fully self-contained notarized DMG (dist:full).
-#   4. Commits the version bump, tags vX.Y.Z, pushes both.
-#   5. Creates a GitHub Release on professorpalmer/pm-harness with the DMG attached.
-#
-# REQUIRES (env, single-use, not persisted): Apple notarization creds already in
-# the environment the same way dist:full expects them (APPLE_ID / APPLE_TEAM_ID /
-# APPLE_APP_SPECIFIC_PASSWORD). gh must be authed; we force the professorpalmer
-# account. The PUBLIC release makes the DMG downloadable; source stays private.
+# Usage:  scripts/release.sh 0.7.0   ["release notes line"]
 set -euo pipefail
 
 VERSION="${1:-}"
@@ -23,7 +14,6 @@ if [ -z "$VERSION" ]; then
   echo "usage: scripts/release.sh X.Y.Z [\"notes\"]" >&2
   exit 1
 fi
-# strip any leading v the user typed
 VERSION="${VERSION#v}"
 TAG="v${VERSION}"
 
@@ -31,7 +21,7 @@ REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 cd "$REPO_ROOT"
 
 echo "== preflight =="
-if [ -n "$(git status --porcelain | grep -v 'results/')" ]; then
+if [ -n "$(git status --porcelain | grep -v 'results/' || true)" ]; then
   echo "ERROR: working tree is dirty. Commit or stash first." >&2
   git status --short | grep -v 'results/' >&2
   exit 1
@@ -46,7 +36,7 @@ gh auth switch --user professorpalmer >/dev/null 2>&1 || true
 
 echo "== set version $VERSION =="
 python3 - "$VERSION" <<'PY'
-import json, sys, re
+import re, sys
 v = sys.argv[1]
 p = "webapp/package.json"
 s = open(p).read()
@@ -54,33 +44,6 @@ s = re.sub(r'"version":\s*"[^"]*"', f'"version": "{v}"', s, count=1)
 open(p, "w").write(s)
 print("package.json ->", v)
 PY
-
-echo "== build notarized DMG + auto-update zip (dist:full) -- this is the slow part =="
-( cd webapp && npm run dist:full )
-
-DMG="$(ls -t webapp/release/*.dmg 2>/dev/null | head -1 || true)"
-if [ -z "$DMG" ] || [ ! -f "$DMG" ]; then
-  echo "ERROR: no DMG produced under webapp/release/." >&2
-  exit 1
-fi
-echo "built: $DMG"
-
-# electron-updater (installed .app auto-update) needs the zip + latest-mac.yml
-# (and their blockmaps for delta downloads) on the release, not just the DMG.
-ZIP="$(ls -t webapp/release/*.zip 2>/dev/null | head -1 || true)"
-LATEST_YML="webapp/release/latest-mac.yml"
-if [ -z "$ZIP" ] || [ ! -f "$ZIP" ] || [ ! -f "$LATEST_YML" ]; then
-  echo "ERROR: missing auto-update artifacts (zip / latest-mac.yml) under webapp/release/." >&2
-  echo "       Installed apps would NOT auto-update. Check the mac targets + publish config." >&2
-  exit 1
-fi
-echo "built: $ZIP"
-
-# Every artifact electron-updater consults, in one array (blockmaps are optional
-# but enable delta downloads, so upload them when present).
-UPDATE_ASSETS=( "$DMG" "$ZIP" "$LATEST_YML" )
-[ -f "${DMG}.blockmap" ] && UPDATE_ASSETS+=( "${DMG}.blockmap" )
-[ -f "${ZIP}.blockmap" ] && UPDATE_ASSETS+=( "${ZIP}.blockmap" )
 
 echo "== commit + tag + push =="
 git -c user.name=professorpalmer -c user.email=professorpalmer@users.noreply.github.com \
@@ -91,41 +54,20 @@ git tag -f "$TAG"
 git push origin main
 git push -f origin "$TAG"
 
-echo "== github release =="
+# A GitHub Release is optional (source-run needs no attached binary), but we cut
+# one anyway so the tag carries notes and shows up on the releases page.
+echo "== github release (notes only, no assets) =="
 REL_NOTES="${NOTES:-Marionette ${VERSION}}"
-if gh release view "$TAG" --repo professorpalmer/pm-harness >/dev/null 2>&1; then
-  gh release upload "$TAG" "${UPDATE_ASSETS[@]}" --repo professorpalmer/pm-harness --clobber
+if gh release view "$TAG" --repo professorpalmer/marionette >/dev/null 2>&1; then
+  gh release edit "$TAG" --repo professorpalmer/marionette --notes "$REL_NOTES"
 else
-  gh release create "$TAG" "${UPDATE_ASSETS[@]}" \
-    --repo professorpalmer/pm-harness \
+  gh release create "$TAG" \
+    --repo professorpalmer/marionette \
     --title "Marionette ${VERSION}" \
     --notes "$REL_NOTES" \
     --latest
 fi
 
-# --- keep the release folder tidy ---------------------------------------------
-# electron-builder leaves stale blockmaps, orphan .zip/.dmg from prior builds,
-# and a .DS_Store behind every run. Prune everything that is not THIS release's
-# DMG (+ its blockmap), the active mac-arm64 staging dir, or builder metadata, so
-# webapp/release/ does not pile up to gigabytes over many releases.
-REL_DIR="webapp/release"
-KEEP_DMG="$(basename "$DMG")"
-KEEP_ZIP="$(basename "$ZIP")"
 echo
-echo "Pruning stale artifacts from ${REL_DIR}/ (keeping ${KEEP_DMG} + ${KEEP_ZIP}) ..."
-if [ -d "$REL_DIR" ]; then
-  for f in "$REL_DIR"/*; do
-    [ -e "$f" ] || continue
-    base="$(basename "$f")"
-    case "$base" in
-      "$KEEP_DMG"|"${KEEP_DMG}.blockmap"|"$KEEP_ZIP"|"${KEEP_ZIP}.blockmap"|"mac-arm64"|"builder-debug.yml"|"latest-mac.yml"|"latest.yml")
-        : ;;  # keep
-      *)
-        rm -rf "$f" && echo "  pruned ${base}" ;;
-    esac
-  done
-fi
-
-echo
-echo "DONE. Release ${TAG} published with $(basename "$DMG") + auto-update assets."
-echo "Installed apps on an older build will download ${VERSION} in the background and apply it on the next relaunch."
+echo "DONE. Release ${TAG} tagged + pushed."
+echo "Checkouts on an older commit get ${VERSION} on their next 'Update & Relaunch' (git pull + rebuild)."

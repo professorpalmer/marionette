@@ -1,4 +1,4 @@
-# Contributing to Marionette (pm-harness)
+# Contributing to Marionette
 
 Welcome. This is an internal-first research rig + Electron desktop app. These are
 the conventions that keep the codebase coherent -- please follow them.
@@ -19,24 +19,31 @@ the conventions that keep the codebase coherent -- please follow them.
 
 ## Local setup
 
-Backend (Python, 3.9+):
+Easiest path -- the source installer (uv-based, provisions Python + venv + node
+deps + a `marionette` launcher):
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]" puppetmaster-ai
+curl -fsSL https://raw.githubusercontent.com/professorpalmer/marionette/main/scripts/install.sh | bash
+```
+
+Or set up a checkout by hand. Backend (uv provides Python per `.python-version`):
+
+```bash
+uv venv .venv
+uv pip install --python .venv -e . puppetmaster-ai
 .venv/bin/python -m pytest -q          # full offline suite -- must be green
 ```
 
-Frontend + app (dev mode with hot-reload -- NO DMG rebuild needed):
+Frontend + app (dev mode with hot-reload):
 
 ```bash
 cd webapp && npm install
-bash scripts/dev.sh                    # Vite HMR + source backend
+bash scripts/dev.sh                    # Vite HMR + source backend (marionette dev)
 ```
 
 Editing a `.tsx` hot-reloads instantly; editing a `.py` is picked up on the next
-backend spawn (Cmd+R the window). You only build a DMG to ship a release -- never
-to test your own changes.
+backend spawn (Cmd+R the window). There is no packaging step -- Marionette always
+runs from source.
 
 ## Workflow
 
@@ -50,17 +57,17 @@ to test your own changes.
 
 ## How updates reach users (contributing IS the release)
 
-Marionette self-updates from git, Hermes-style: the installed app tracks `main`
-and every running instance shows an `update (N)` pill when it's behind, then
-pulls + rebuilds + relaunches in place. So **merging a green PR to `main` ships
-your change to the whole circle** on their next relaunch -- no DMG hand-off.
+Marionette self-updates from git, Hermes-style: every checkout tracks `main` and
+shows an `update (N)` pill when it's behind, then pulls + rebuilds + relaunches
+in place. So **merging a green PR to `main` ships your change to the whole circle**
+on their next relaunch -- no DMG, no per-arch build.
 
 Keep `main` releasable: it must build (`npm run build`) and pass CI, because a
-red `main` is what everyone's app tries to pull. The updater fast-forwards only,
-so never force-push `main`.
+red `main` is what everyone's checkout tries to pull. The updater fast-forwards
+only, so never force-push `main`.
 
 ## Releases
 
-See `RELEASING.md`. The primary channel is the git self-update above. A signed +
-notarized DMG (`scripts/release.sh X.Y.Z`) still exists for non-dev testers who
-don't keep a checkout; don't hand-edit release artifacts.
+See `RELEASING.md`. Distribution is the git self-update above; cutting a version
+tag (`scripts/release.sh X.Y.Z`) is optional and only sets the human-readable
+version -- there is no binary to attach.

@@ -10,8 +10,8 @@
 //
 // Extracted so the remote detection is unit-testable without booting Electron.
 
-const OFFICIAL_REPO_HTTPS_URL = "https://github.com/professorpalmer/pm-harness.git";
-const OFFICIAL_REPO_CANONICAL = "github.com/professorpalmer/pm-harness";
+const OFFICIAL_REPO_HTTPS_URL = "https://github.com/professorpalmer/marionette.git";
+const OFFICIAL_REPO_CANONICAL = "github.com/professorpalmer/marionette";
 
 // Normalize common GitHub remote URL forms to `host/owner/repo` (lowercased, no
 // trailing slash, no .git suffix) so SSH and HTTPS forms of the same repo

@@ -96,12 +96,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     localStorage.setItem("pmharness.queueMessages", String(newVal));
   };
 
-  // Self-development (Hermes-style live self-editing): run the backend from the
-  // editable source checkout so edits to ~/pm-harness go live on restart. Only
-  // available in the desktop app (needs Electron to swap the backend process).
+  // Live UI (Vite HMR): the backend always runs from the source checkout, so this
+  // toggle only governs whether the React UI is served from a Vite dev server
+  // (instant hot-reload) instead of the prebuilt dist/. Desktop-only (needs
+  // Electron to swap the renderer source and restart the backend).
   const _selfDevIpc = (typeof window !== "undefined" && (window as any).harnessIPC?.selfDev) || null;
   const _restartIpc = (typeof window !== "undefined" && (window as any).harnessIPC?.restart) || null;
-  const [selfDev, setSelfDev] = useState<{ enabled: boolean; viable: boolean; packaged: boolean } | null>(null);
+  const [selfDev, setSelfDev] = useState<{ enabled: boolean; viable: boolean } | null>(null);
   const [selfDevBusy, setSelfDevBusy] = useState(false);
   const [restarting, setRestarting] = useState(false);
 
@@ -749,17 +750,16 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
         </>)}
         {show("advanced") && _selfDevIpc && (<>
-        {/* Self-Development Section (live self-editing, Hermes-style) */}
+        {/* Live UI Section (Vite HMR). The backend always runs from source. */}
         <div className="border-t border-edge pt-3 space-y-2">
           <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Live Self-Editing
+            <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Live UI (Vite HMR)
           </span>
           <p className="text-[10px] text-muted">
-            Run the backend from the editable source checkout so edits to the repo go
-            live -- Marionette can rewrite its own code and apply it without a full app
-            reinstall. React UI edits (webapp/src) hot-reload instantly via the dev
-            server; backend edits (harness/**) apply on restart, and the conversation
-            resumes across it.
+            Marionette always runs its backend from the source checkout, so backend
+            edits (harness/**) go live on the next restart and the conversation resumes
+            across it. Turn this on to also serve the React UI from a Vite dev server,
+            so edits to webapp/src hot-reload instantly instead of needing a rebuild.
           </p>
           <button
             onClick={toggleSelfDev}
@@ -770,15 +770,15 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 : "bg-panel2 border-edge text-muted"
             } disabled:opacity-50`}
           >
-            <span className="font-medium text-[11px]">Run backend from editable source</span>
+            <span className="font-medium text-[11px]">Serve UI from Vite dev server (HMR)</span>
             <span className="text-[10px] uppercase font-bold tracking-wider">
               {selfDev && selfDev.enabled ? "on" : "off"}
             </span>
           </button>
           {selfDev && !selfDev.viable && (
             <p className="text-[10px] text-warn">
-              Editable checkout not found at ~/pm-harness (needs .venv + harness/). Self-editing
-              runs the frozen bundled backend until the source checkout is present.
+              Vite dev server not available (needs webapp/node_modules + webapp/src).
+              The UI is served from the prebuilt dist/ until node deps are installed.
             </p>
           )}
           <button

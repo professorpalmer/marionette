@@ -452,7 +452,7 @@ def build(name: str, *, reach: str = "openrouter") -> Driver:
             name=name, model=slug, base_url=OPENROUTER_BASE,
             api_key_env=OPENROUTER_KEY_ENV, max_tokens=_mt,
             extra_headers={
-                "HTTP-Referer": "https://github.com/professorpalmer/pm-harness",
+                "HTTP-Referer": "https://github.com/professorpalmer/marionette",
                 "X-Title": "pm-harness driver eval",
             },
         )

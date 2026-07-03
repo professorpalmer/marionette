@@ -53,7 +53,7 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   // and a progress subscription for the apply. openRepo opens the repo/commits.
   updates: {
     check: () => ipcRenderer.invoke("updates:check"),
-    apply: () => ipcRenderer.invoke("updates:apply"),
+    apply: (opts) => ipcRenderer.invoke("updates:apply", opts),
     openRepo: (sub) => ipcRenderer.invoke("updates:openRepo", sub),
     onProgress: (cb) => {
       const handler = (_e, payload) => cb(payload);
