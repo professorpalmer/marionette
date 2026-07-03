@@ -24,3 +24,7 @@ build/*.iconset/
 signing.env
 .signing-keys/
 .DS_Store
+
+# CodeGraph artifacts -- regenerated per machine (init --index); never track.
+# Tracking .codegraph/.gitignore churned on every machine and blocked ff updates.
+.codegraph/
