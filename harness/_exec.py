@@ -176,8 +176,20 @@ def _puppetmaster_cmd(*args) -> list[str]:
             return [ext, "-m", "puppetmaster", *args]
         return [sys.executable, "pm-exec", *args]
 
+    # Prefer the interpreter running THIS backend when it can import puppetmaster
+    # (the source-run case: the repo's .venv/bin/python). This is guaranteed
+    # consistent with the running process and avoids PATH `puppetmaster` shims --
+    # notably pyenv shims, which resolve to a different Python that lacks
+    # puppetmaster and exit 127 ("pyenv: puppetmaster: command not found"),
+    # making codegraph/swarm calls fail and the panel show "unsupported".
+    try:
+        import importlib.util
+        if importlib.util.find_spec("puppetmaster") is not None:
+            return [sys.executable, "-m", "puppetmaster", *args]
+    except Exception:
+        pass
+
     pm_script = shutil.which("puppetmaster")
     if pm_script:
         return [pm_script, *args]
-    else:
-        return [_puppetmaster_python(), "-m", "puppetmaster", *args]
+    return [_puppetmaster_python(), "-m", "puppetmaster", *args]

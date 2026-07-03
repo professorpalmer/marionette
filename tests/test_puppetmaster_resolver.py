@@ -30,8 +30,22 @@ def reset_cache():
     server._codegraph_status_reason = None
 
 
+def test_puppetmaster_cmd_prefers_running_interpreter():
+    # Primary path: when the backend's own interpreter can import puppetmaster,
+    # run it directly via sys.executable -- never a PATH `puppetmaster` shim
+    # (pyenv shims resolve to a different Python and exit 127).
+    import importlib.util as _ilu
+    with patch.object(_ilu, "find_spec", return_value=object()):
+        cmd = _puppetmaster_cmd("codegraph", "status")
+        assert cmd == [sys.executable, "-m", "puppetmaster", "codegraph", "status"]
+
+
 def test_puppetmaster_cmd_console_script(monkeypatch):
-    # Mock shutil.which to find puppetmaster console script
+    # Fallback: running interpreter CANNOT import puppetmaster -> use the console
+    # script found on PATH.
+    import importlib.util as _ilu
+    monkeypatch.setattr(_ilu, "find_spec", lambda name: None)
+
     def mock_which(cmd):
         if cmd == "puppetmaster":
             return "/mocked/bin/puppetmaster"
@@ -44,13 +58,12 @@ def test_puppetmaster_cmd_console_script(monkeypatch):
 
 
 def test_puppetmaster_cmd_python_m(monkeypatch):
-    # Mock shutil.which to not find puppetmaster console script
-    def mock_which(cmd):
-        return None
+    # Fallback: running interpreter can't import puppetmaster AND no console
+    # script -> run `-m puppetmaster` under a resolved interpreter.
+    import importlib.util as _ilu
+    monkeypatch.setattr(_ilu, "find_spec", lambda name: None)
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
 
-    monkeypatch.setattr(shutil, "which", mock_which)
-
-    # Let's mock _puppetmaster_python to return a dummy path
     with patch("harness._exec._puppetmaster_python", return_value="/mocked/python"):
         cmd = _puppetmaster_cmd("codegraph", "status")
         assert cmd == ["/mocked/python", "-m", "puppetmaster", "codegraph", "status"]
