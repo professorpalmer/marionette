@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Marionette - a coding agent that runs a swarm, not a chat</title>
-  <meta name="description" content="Marionette is a desktop AI coding agent that inverts the usual model: instead of one model in a chat loop, it dispatches parallel worker swarms and routes each task to the cheapest capable model -- durable, replayable, auditable, over a live CodeGraph of your repo. The LLM is a swappable part; the orchestration is the product. One-click installers for macOS, Windows, and Linux.">
+  <title>Marionette - a coding agent built on the Puppetmaster orchestrator</title>
+  <meta name="description" content="Marionette is a desktop AI coding agent built on Puppetmaster, an orchestration engine: instead of one model in a chat loop, it dispatches parallel worker swarms and routes each task to the cheapest capable model -- durable, replayable, auditable, over a live CodeGraph of your repo. The LLM is a swappable part; the orchestration is the product. One-click installers for macOS, Windows, and Linux.">
   <style>
     :root {
       color-scheme: dark;
@@ -92,17 +92,19 @@
   <main class="wrap">
     <div class="brand"><span class="dot"></span> Marionette</div>
 
+    <p class="eyebrow" style="margin-top:0">Powered by the <span class="em">Puppetmaster</span> orchestrator</p>
     <h1>Not a chat. A <span class="em">swarm</span>.</h1>
     <p class="lede">
-      Every other coding agent is one model in a chat loop. Marionette is the orchestrator instead:
-      it splits work into <strong>parallel worker swarms</strong> and routes each task to the
-      <strong>cheapest model that can do it</strong>. The LLM is a swappable part &mdash; the
+      Every other coding agent is one model in a chat loop. Marionette is a desktop agent built on
+      <strong>Puppetmaster</strong> &mdash; an orchestration engine that splits work into
+      <strong>parallel worker swarms</strong> and routes each task to the
+      <strong>cheapest model that can do it</strong>. The LLM is a swappable part; the
       orchestration is the product.
     </p>
 
     <ul class="why">
-      <li><b>Swarms, not a single chat.</b> <span>Work fans out to many workers running in parallel, each a real subprocess with durable, replayable, auditable state &mdash; not one linear conversation.</span></li>
-      <li><b>Any model, cheapest that fits.</b> <span>A tiered router picks the model per task, so trivial work runs near-free and only the hard parts hit a frontier model. You are never locked to one pricey LLM.</span></li>
+      <li><b>Swarms, not a single chat.</b> <span>Puppetmaster fans work out to many workers running in parallel, each a real subprocess with durable, replayable, auditable state &mdash; not one linear conversation.</span></li>
+      <li><b>Any model, cheapest that fits.</b> <span>Puppetmaster's tiered router picks the model per task, so trivial work runs near-free and only the hard parts hit a frontier model &mdash; you are never locked to one pricey LLM.</span></li>
       <li><b>Yours, end to end.</b> <span>It runs from source over a live CodeGraph of your repo, edits its own code, and self-updates &mdash; the same on macOS, Windows, and Linux.</span></li>
     </ul>
 
