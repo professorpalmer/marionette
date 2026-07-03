@@ -3,45 +3,214 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Marionette</title>
+  <title>Marionette - the coding agent that edits its own source</title>
+  <meta name="description" content="Marionette is a desktop AI coding harness: an Electron shell over a source-run Python backend with CodeGraph retrieval and Puppetmaster worker delegation. One-click installers for macOS, Windows, and Linux.">
   <style>
-    :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
-    body { max-width: 42rem; margin: 2rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
-    p { color: #555; }
-    @media (prefers-color-scheme: dark) { p { color: #aaa; } }
-    pre { background: #f4f4f4; padding: 1rem; overflow-x: auto; border-radius: 4px; font-size: 0.875rem; }
-    @media (prefers-color-scheme: dark) { pre { background: #222; } }
-    h2 { font-size: 1rem; margin-top: 2rem; }
-    a { color: inherit; }
+    :root {
+      color-scheme: dark;
+      --bg: #0b0b0f;
+      --panel: #15151c;
+      --line: #26262f;
+      --fg: #f4f4f6;
+      --muted: #9a9aa6;
+      --accent: #7c5cff;
+      --accent-fg: #ffffff;
+      --code: #c9c6ff;
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 52rem; margin: 0 auto; padding: 4.5rem 1.25rem 5rem; }
+    .brand { display: flex; align-items: center; gap: .6rem; font-weight: 600; letter-spacing: .01em; font-size: 1.05rem; }
+    .brand .dot { width: .7rem; height: .7rem; border-radius: 50%; background: var(--accent); box-shadow: 0 0 18px var(--accent); }
+    h1 {
+      font-family: Georgia, "Times New Roman", serif;
+      font-weight: 600;
+      font-size: clamp(2.6rem, 8vw, 4.6rem);
+      line-height: 1.02;
+      letter-spacing: -0.01em;
+      margin: 2.6rem 0 1.1rem;
+    }
+    h1 .em { color: var(--accent); font-style: italic; }
+    .lede { color: var(--muted); font-size: 1.12rem; max-width: 40rem; margin: 0 0 2.6rem; }
+    .eyebrow { text-transform: uppercase; letter-spacing: .18em; font-size: .74rem; color: var(--muted); font-weight: 600; margin: 2.6rem 0 .9rem; }
+
+    .dl-primary {
+      display: inline-flex; align-items: center; gap: .7rem;
+      background: var(--accent); color: var(--accent-fg);
+      text-decoration: none; font-weight: 600; font-size: 1.05rem;
+      padding: .95rem 1.5rem; border-radius: var(--radius);
+      border: 1px solid transparent; transition: transform .08s ease, filter .15s ease;
+    }
+    .dl-primary:hover { filter: brightness(1.08); }
+    .dl-primary:active { transform: translateY(1px); }
+    .dl-primary svg { width: 1.25rem; height: 1.25rem; fill: currentColor; }
+    .dl-sub { margin: .9rem 0 0; font-size: .92rem; color: var(--muted); }
+    .dl-sub a { color: var(--code); text-decoration: none; border-bottom: 1px solid var(--line); }
+    .dl-sub a:hover { border-color: var(--code); }
+
+    .term { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+    .tabs { display: flex; gap: .25rem; padding: .5rem .5rem 0; border-bottom: 1px solid var(--line); }
+    .tab {
+      appearance: none; background: transparent; border: 0; color: var(--muted);
+      font: inherit; font-size: .9rem; font-weight: 600; cursor: pointer;
+      padding: .55rem .9rem; border-radius: 8px 8px 0 0;
+    }
+    .tab[aria-selected="true"] { color: var(--fg); background: var(--bg); }
+    .cmdrow { display: flex; align-items: center; gap: .75rem; padding: 1rem 1.1rem; }
+    .cmdrow code {
+      flex: 1; color: var(--code); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92rem; white-space: pre-wrap; word-break: break-all;
+    }
+    .copy {
+      appearance: none; background: transparent; border: 1px solid var(--line); color: var(--muted);
+      border-radius: 8px; padding: .45rem .6rem; cursor: pointer; font: inherit; font-size: .8rem;
+      white-space: nowrap; transition: color .15s, border-color .15s;
+    }
+    .copy:hover { color: var(--fg); border-color: var(--muted); }
+
+    .foot { margin-top: 3.4rem; padding-top: 1.6rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .92rem; }
+    .foot a { color: var(--code); text-decoration: none; }
+    .foot a:hover { text-decoration: underline; }
+    .note { color: var(--muted); font-size: .92rem; margin-top: 1rem; }
   </style>
 </head>
 <body>
-  <h1>Marionette</h1>
-  <p>
-    Marionette is a desktop AI coding harness: an Electron shell over a source-run
-    Python backend with CodeGraph-aware retrieval and Puppetmaster worker delegation.
-    Install clones the repo, builds a local venv with uv, and compiles native modules
-    on your machine -- the same Hermes-style model on macOS, Linux, and Windows.
-  </p>
+  <main class="wrap">
+    <div class="brand"><span class="dot"></span> Marionette</div>
 
-  <h2>macOS / Linux</h2>
-  <pre>curl -fsSL https://professorpalmer.github.io/marionette/install.sh | bash</pre>
+    <h1>The coding agent that <span class="em">edits its own source</span>.</h1>
+    <p class="lede">
+      A desktop AI harness: an Electron shell over a source-run Python backend with
+      CodeGraph-aware retrieval and Puppetmaster worker delegation. It installs from
+      source and updates itself live &mdash; the same model on macOS, Windows, and Linux.
+    </p>
 
-  <h2>Windows (PowerShell)</h2>
-  <pre>irm https://professorpalmer.github.io/marionette/install.ps1 | iex</pre>
+    <p class="eyebrow">Install desktop app</p>
+    <a class="dl-primary" id="dlPrimary" href="https://github.com/professorpalmer/marionette/releases/latest">
+      <svg id="dlIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16.365 1.43c0 1.14-.42 2.2-1.12 3-.76.87-2.02 1.54-3.06 1.46-.13-1.1.42-2.28 1.08-3.02.75-.85 2.06-1.5 3.1-1.44zM20.9 17.1c-.55 1.27-.82 1.84-1.53 2.96-.99 1.57-2.39 3.52-4.12 3.54-1.54.02-1.93-1-4.02-.99-2.09.01-2.52 1.01-4.06.98-1.73-.03-3.06-1.79-4.05-3.36C-.73 15.9-1.02 10.87 1.5 8.2c.88-.95 2.16-1.55 3.5-1.55 1.36 0 2.22.99 3.9.99 1.62 0 2.61-.99 4.19-.99 1.19 0 2.45.65 3.35 1.77-2.94 1.61-2.46 5.81.46 6.68z"/></svg>
+      <span id="dlLabel">Download</span>
+    </a>
+    <p class="dl-sub" id="dlOther">Also available for other platforms.</p>
 
-  <h2>Download the desktop app</h2>
-  <p>Signed and notarized installers (<code>v0.6.41</code>, <a href="https://github.com/professorpalmer/marionette/releases/latest">all releases</a>):</p>
-  <ul>
-    <li><a href="https://github.com/professorpalmer/marionette/releases/download/v0.6.41/Marionette-0.6.41-universal.dmg">macOS (universal .dmg)</a></li>
-    <li><a href="https://github.com/professorpalmer/marionette/releases/download/v0.6.41/Marionette-0.6.41-Setup.exe">Windows (.exe)</a></li>
-    <li><a href="https://github.com/professorpalmer/marionette/releases/download/v0.6.41/Marionette-0.6.41.AppImage">Linux (.AppImage)</a></li>
-  </ul>
+    <p class="eyebrow">Or install via terminal</p>
+    <div class="term">
+      <div class="tabs" role="tablist">
+        <button class="tab" id="tabUnix" role="tab" aria-selected="true">macOS / Linux</button>
+        <button class="tab" id="tabWin" role="tab" aria-selected="false">Windows</button>
+      </div>
+      <div class="cmdrow">
+        <code id="cmd">curl -fsSL https://professorpalmer.github.io/marionette/install.sh | bash</code>
+        <button class="copy" id="copyBtn">Copy</button>
+      </div>
+    </div>
+    <p class="note">
+      Updates are live: the in-app <strong>update</strong> pill runs <code>git pull</code> + rebuild + relaunch,
+      so merging to <code>main</code> reaches everyone on their next click.
+    </p>
 
-  <h2>Source</h2>
-  <p>
-    <a href="https://github.com/professorpalmer/marionette">github.com/professorpalmer/marionette</a>
-  </p>
+    <div class="foot">
+      Open source &middot;
+      <a href="https://github.com/professorpalmer/marionette">github.com/professorpalmer/marionette</a> &middot;
+      <a href="https://github.com/professorpalmer/marionette/releases/latest">all releases</a>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      var REPO = "professorpalmer/marionette";
+      var RELEASES = "https://github.com/" + REPO + "/releases/latest";
+
+      var UNIX_CMD = "curl -fsSL https://professorpalmer.github.io/marionette/install.sh | bash";
+      var WIN_CMD  = "irm https://professorpalmer.github.io/marionette/install.ps1 | iex";
+
+      // Fallback direct links, pinned to a known-good release. Replaced with the
+      // newest release's assets once the GitHub API responds.
+      var FALLBACK = {
+        mac:   RELEASES + "/download/Marionette-0.6.41-universal.dmg",
+        win:   RELEASES + "/download/Marionette-0.6.41-Setup.exe",
+        linux: RELEASES + "/download/Marionette-0.6.41.AppImage"
+      };
+      var LABELS = { mac: "Download for macOS", win: "Download for Windows", linux: "Download for Linux" };
+      var OTHER = {
+        mac:   'Also for <a href="' + RELEASES + '">Windows and Linux</a>.',
+        win:   'Also for <a href="' + RELEASES + '">macOS and Linux</a>.',
+        linux: 'Also for <a href="' + RELEASES + '">macOS and Windows</a>.'
+      };
+
+      var APPLE = '<path d="M16.365 1.43c0 1.14-.42 2.2-1.12 3-.76.87-2.02 1.54-3.06 1.46-.13-1.1.42-2.28 1.08-3.02.75-.85 2.06-1.5 3.1-1.44zM20.9 17.1c-.55 1.27-.82 1.84-1.53 2.96-.99 1.57-2.39 3.52-4.12 3.54-1.54.02-1.93-1-4.02-.99-2.09.01-2.52 1.01-4.06.98-1.73-.03-3.06-1.79-4.05-3.36C-.73 15.9-1.02 10.87 1.5 8.2c.88-.95 2.16-1.55 3.5-1.55 1.36 0 2.22.99 3.9.99 1.62 0 2.61-.99 4.19-.99 1.19 0 2.45.65 3.35 1.77-2.94 1.61-2.46 5.81.46 6.68z"/>';
+      var WINICON = '<path d="M3 5.1 10.4 4v7.3H3V5.1zM3 12.7h7.4V20L3 18.9v-6.2zM11.3 3.9 21 2.5v8.8h-9.7V3.9zM11.3 12.7H21V21.5l-9.7-1.4v-7.4z"/>';
+      var TUX = '<path d="M12 2c-2 0-3.3 1.7-3.3 4 0 1 .1 1.9-.4 2.8C7.3 10.4 5.4 12 5.4 15c0 1.2-.7 2-1.3 2.8-.5.7-.3 1.6.6 1.8 1.1.3 2 .9 3 1.4.8.4 1.6.6 2.3.6h.1c.7 0 1.5-.2 2.3-.6 1-.5 1.9-1.1 3-1.4.9-.2 1.1-1.1.6-1.8-.6-.8-1.3-1.6-1.3-2.8 0-3-1.9-4.6-2.9-6.2-.5-.9-.4-1.8-.4-2.8 0-2.3-1.3-4-3.3-4z"/>';
+
+      function detectOS() {
+        var ua = (navigator.userAgent || "") + " " + (navigator.platform || "");
+        if (/Win/i.test(ua)) return "win";
+        if (/Mac/i.test(ua) && !/iPhone|iPad|iPod/i.test(ua)) return "mac";
+        if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) return "linux";
+        return "mac";
+      }
+
+      var os = detectOS();
+      var primary = document.getElementById("dlPrimary");
+      var label = document.getElementById("dlLabel");
+      var icon = document.getElementById("dlIcon");
+      var other = document.getElementById("dlOther");
+
+      function paint(hrefs) {
+        primary.href = hrefs[os] || RELEASES;
+        label.textContent = LABELS[os];
+        icon.innerHTML = os === "win" ? WINICON : os === "linux" ? TUX : APPLE;
+        other.innerHTML = OTHER[os];
+      }
+      paint(FALLBACK);
+
+      // Upgrade the buttons to the newest release's real assets.
+      fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (rel) {
+          if (!rel || !rel.assets) return;
+          var hrefs = {};
+          rel.assets.forEach(function (a) {
+            var n = a.name.toLowerCase();
+            if (n.endsWith(".dmg")) hrefs.mac = a.browser_download_url;
+            else if (n.endsWith(".exe")) hrefs.win = a.browser_download_url;
+            else if (n.endsWith(".appimage")) hrefs.linux = a.browser_download_url;
+          });
+          if (Object.keys(hrefs).length) paint(hrefs);
+        })
+        .catch(function () { /* keep fallback links */ });
+
+      // Terminal tabs: default to the detected OS.
+      var tabUnix = document.getElementById("tabUnix");
+      var tabWin = document.getElementById("tabWin");
+      var cmd = document.getElementById("cmd");
+      function selectTab(which) {
+        var isWin = which === "win";
+        tabWin.setAttribute("aria-selected", String(isWin));
+        tabUnix.setAttribute("aria-selected", String(!isWin));
+        cmd.textContent = isWin ? WIN_CMD : UNIX_CMD;
+      }
+      tabUnix.addEventListener("click", function () { selectTab("unix"); });
+      tabWin.addEventListener("click", function () { selectTab("win"); });
+      selectTab(os === "win" ? "win" : "unix");
+
+      // Copy button.
+      var copyBtn = document.getElementById("copyBtn");
+      copyBtn.addEventListener("click", function () {
+        navigator.clipboard.writeText(cmd.textContent).then(function () {
+          var prev = copyBtn.textContent;
+          copyBtn.textContent = "Copied";
+          setTimeout(function () { copyBtn.textContent = prev; }, 1400);
+        });
+      });
+    })();
+  </script>
 </body>
 </html>
