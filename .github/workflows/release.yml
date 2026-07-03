@@ -61,7 +61,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            webapp/release/**/*
+            webapp/release/*.dmg
+            webapp/release/*.zip
+            webapp/release/*.exe
+            webapp/release/*.AppImage
+            webapp/release/*.blockmap
+            webapp/release/latest*.yml
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
