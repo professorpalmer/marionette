@@ -123,9 +123,18 @@ marionette doctor     # re-check the environment
 marionette update     # git pull + rebuild
 ```
 
-You can also install the thin desktop shell from [GitHub Releases](https://github.com/professorpalmer/marionette/releases)
-(DMG on macOS, NSIS on Windows, AppImage on Linux). The packaged app bootstraps
-the same source checkout into `~/.marionette/marionette` on first launch.
+### Download the desktop app
+
+Prefer a click-to-install build? Grab a signed/notarized installer
+(`v0.6.41`, [all releases](https://github.com/professorpalmer/marionette/releases/latest)):
+
+- macOS (universal, Intel + Apple Silicon): [Marionette-0.6.41-universal.dmg](https://github.com/professorpalmer/marionette/releases/download/v0.6.41/Marionette-0.6.41-universal.dmg)
+- Windows: [Marionette-0.6.41-Setup.exe](https://github.com/professorpalmer/marionette/releases/download/v0.6.41/Marionette-0.6.41-Setup.exe)
+- Linux: [Marionette-0.6.41.AppImage](https://github.com/professorpalmer/marionette/releases/download/v0.6.41/Marionette-0.6.41.AppImage)
+
+The packaged app is a thin shell: on first launch it bootstraps the same source
+checkout into `~/.marionette/marionette`, so it stays self-updating like the
+installer path.
 
 Updates are in-app: the status-bar `update` pill runs `git pull` + rebuild +
 relaunch. Merging to `main` reaches everyone on their next click. Because
