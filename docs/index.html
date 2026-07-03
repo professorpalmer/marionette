@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marionette</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
+    body { max-width: 42rem; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
+    p { color: #555; }
+    @media (prefers-color-scheme: dark) { p { color: #aaa; } }
+    pre { background: #f4f4f4; padding: 1rem; overflow-x: auto; border-radius: 4px; font-size: 0.875rem; }
+    @media (prefers-color-scheme: dark) { pre { background: #222; } }
+    h2 { font-size: 1rem; margin-top: 2rem; }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <h1>Marionette</h1>
+  <p>
+    Marionette is a desktop AI coding harness: an Electron shell over a source-run
+    Python backend with CodeGraph-aware retrieval and Puppetmaster worker delegation.
+    Install clones the repo, builds a local venv with uv, and compiles native modules
+    on your machine -- the same Hermes-style model on macOS, Linux, and Windows.
+  </p>
+
+  <h2>macOS / Linux</h2>
+  <pre>curl -fsSL https://professorpalmer.github.io/marionette/install.sh | bash</pre>
+
+  <h2>Windows (PowerShell)</h2>
+  <pre>irm https://professorpalmer.github.io/marionette/install.ps1 | iex</pre>
+
+  <h2>Source</h2>
+  <p>
+    <a href="https://github.com/professorpalmer/marionette">github.com/professorpalmer/marionette</a>
+  </p>
+</body>
+</html>

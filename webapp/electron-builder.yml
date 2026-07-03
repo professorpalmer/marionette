@@ -1,0 +1,35 @@
+appId: com.marionette.app
+productName: Marionette
+directories:
+  output: release
+  buildResources: build
+files:
+  - package.json
+  - dist/**/*
+  - electron/**/*
+  - "!electron/**/*.test.cjs"
+  - node_modules/**/*
+afterSign: build/notarize.cjs
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+  arch:
+    - universal
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+win:
+  target:
+    - nsis
+  artifactName: "${productName}-${version}-Setup.${ext}"
+linux:
+  target:
+    - AppImage
+  category: Development
+  artifactName: "${productName}-${version}.${ext}"
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

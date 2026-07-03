@@ -17,8 +17,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { readLiveUpdateMarker } = require("./update-marker.cjs");
+const { isInstallComplete, runBootstrap } = require("./bootstrap.cjs");
 
 const isDev = !!process.env.PMHARNESS_DEV_SERVER;
+const isPackaged = app.isPackaged;
 
 // Persistent main-process log, shared with the backend [out]/[err] lines under
 // ~/.pmharness/electron.log so a death is always diagnosable after the fact.
@@ -134,11 +136,23 @@ let startInFlight = null;
 
 // The source checkout the app runs from. Marionette always runs from source
 // (Hermes model): the backend is `harness.cli` under this root, and the updater
-// pulls + rebuilds it in place. HARNESS_REPO wins; otherwise the repo is two
-// levels up from webapp/electron/ (the installer clones to ~/.marionette/marionette
-// and the `marionette` launcher runs electron from that checkout's webapp/).
+// pulls + rebuilds it in place. HARNESS_REPO wins; in a packaged thin shell the
+// checkout lives at ~/.marionette/marionette (bootstrapped on first launch); in
+// dev the repo is two levels up from webapp/electron/.
+function packagedRepoRoot() {
+  return path.join(os.homedir(), ".marionette", "marionette");
+}
+
 function resolveRepoRoot() {
-  return process.env.HARNESS_REPO || path.resolve(__dirname, "..", "..");
+  if (process.env.HARNESS_REPO) return process.env.HARNESS_REPO;
+  if (isPackaged) return packagedRepoRoot();
+  return path.resolve(__dirname, "..", "..");
+}
+
+function venvPython(repoRoot) {
+  return process.platform === "win32"
+    ? path.join(repoRoot, ".venv", "Scripts", "python.exe")
+    : path.join(repoRoot, ".venv", "bin", "python");
 }
 
 // Live-UI mode: serve the React renderer from a Vite HMR dev server instead of
@@ -359,7 +373,7 @@ async function _startBackendOnce() {
   // (the live source); the backend's resolver validates puppetmaster-importability
   // before trusting it.
   if (!customEnv.PMHARNESS_PYTHON) {
-    const venvPy = path.join(repoRoot, ".venv", "bin", "python");
+    const venvPy = venvPython(repoRoot);
     if (fs.existsSync(venvPy)) customEnv.PMHARNESS_PYTHON = venvPy;
   }
 
@@ -367,7 +381,7 @@ async function _startBackendOnce() {
   // installed Puppetmaster (the installer ensures both). No bundled-node shim is
   // needed in the source-run model.
 
-  const py = process.env.PMHARNESS_PYTHON || path.join(repoRoot, ".venv", "bin", "python");
+  const py = process.env.PMHARNESS_PYTHON || venvPython(repoRoot);
   _dbg(`spawning python backend: ${py} cwd=${repoRoot} port=${backendPort}`);
   backend = spawn(py, ["-m", "harness.cli", "gui", "--port", String(backendPort)], {
     cwd: repoRoot,
@@ -619,6 +633,63 @@ registerUpdateBridge(ipcMain, app, shell, {
   },
 });
 
+// Packaged thin shell: bootstrap a source checkout on first launch, streaming
+// progress to a small window. Dev/source-tree runs skip this entirely.
+let bootstrapWin = null;
+
+function createBootstrapWindow() {
+  bootstrapWin = new BrowserWindow({
+    width: 520,
+    height: 280,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    title: "Marionette Setup",
+    backgroundColor: "#0f1113",
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  });
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    body{font-family:system-ui,sans-serif;background:#0f1113;color:#e8eaed;margin:0;padding:24px}
+    h1{font-size:16px;margin:0 0 8px}#msg{font-size:13px;color:#9aa0a6;margin-bottom:16px;min-height:40px}
+    #bar{height:6px;background:#2a2f36;border-radius:3px;overflow:hidden}
+    #fill{height:100%;width:0;background:#5b8def;transition:width .2s}
+  </style></head><body>
+    <h1>Setting up Marionette</h1>
+    <div id="msg">Preparing...</div><div id="bar"><div id="fill"></div></div>
+  </body></html>`;
+  bootstrapWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  return bootstrapWin;
+}
+
+function sendBootstrapProgress(win, msg, pct) {
+  try {
+    if (win && win.webContents && !win.webContents.isDestroyed()) {
+      const js = `document.getElementById('msg').textContent=${JSON.stringify(msg || "")};` +
+        `document.getElementById('fill').style.width=${JSON.stringify(String(pct || 0))}+'%';`;
+      win.webContents.executeJavaScript(js).catch(() => {});
+    }
+  } catch { /* window gone */ }
+}
+
+async function ensurePackagedCheckout() {
+  if (!isPackaged) return resolveRepoRoot();
+  const repoRoot = packagedRepoRoot();
+  if (isInstallComplete(repoRoot)) {
+    process.env.HARNESS_REPO = repoRoot;
+    return repoRoot;
+  }
+  const win = createBootstrapWindow();
+  const send = (msg, pct) => sendBootstrapProgress(win, msg, pct);
+  try {
+    await runBootstrap(repoRoot, send);
+    process.env.HARNESS_REPO = repoRoot;
+    return repoRoot;
+  } finally {
+    try { if (bootstrapWin) bootstrapWin.close(); } catch {}
+    bootstrapWin = null;
+  }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1440, height: 900, backgroundColor: "#0f1113",
@@ -696,6 +767,14 @@ app.on("web-contents-created", (_e, contents) => {
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return; // a prior instance owns the backend
   configureBrowserSession();
+  if (isPackaged) {
+    try { await ensurePackagedCheckout(); } catch (e) {
+      console.error("bootstrap failed:", e);
+      dialog.showErrorBox("Marionette setup failed", String(e && e.message ? e.message : e));
+      app.quit();
+      return;
+    }
+  }
   try { await startBackend(); } catch (e) { console.error("backend start failed:", e); }
   createWindow();
   // Re-open: ensure a healthy backend, THEN (re)create the window. startBackend()

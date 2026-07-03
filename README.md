@@ -87,14 +87,31 @@ Puppetmaster's free local adapter so ground truth is deterministic and key-free.
 
 ## Install and updates
 
-Marionette runs from source, the way Hermes does -- there is no DMG and nothing
-arch-specific to download. One installer works on Intel Macs, Apple Silicon, and
-Linux: it clones the repo, builds a per-machine Python venv with `uv`, installs
-node deps, builds the renderer, and drops a `marionette` launcher on your PATH.
-Native modules compile locally, so the same command covers every machine.
+Marionette runs from source, the way Hermes does. One installer works on macOS,
+Linux, and Windows: it clones the repo, builds a per-machine Python venv with
+`uv`, installs node deps, builds the renderer, and drops a `marionette` launcher
+on your PATH. Native modules compile locally on your machine.
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://professorpalmer.github.io/marionette/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://professorpalmer.github.io/marionette/install.ps1 | iex
+```
+
+Fallback (raw GitHub URLs):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/professorpalmer/marionette/main/scripts/install.sh | bash
+```
+
+```powershell
+irm https://raw.githubusercontent.com/professorpalmer/marionette/main/scripts/install.ps1 | iex
 ```
 
 Then:
@@ -106,11 +123,15 @@ marionette doctor     # re-check the environment
 marionette update     # git pull + rebuild
 ```
 
+You can also install the thin desktop shell from [GitHub Releases](https://github.com/professorpalmer/marionette/releases)
+(DMG on macOS, NSIS on Windows, AppImage on Linux). The packaged app bootstraps
+the same source checkout into `~/.marionette/marionette` on first launch.
+
 Updates are in-app: the status-bar `update` pill runs `git pull` + rebuild +
-relaunch. Merging to `main` reaches everyone on their next click -- no signed
-build, no per-arch packaging. Because Marionette can edit its own source, the
-updater knows how to stash + reapply local self-edits and flags a diverged fork
-instead of failing silently. Cutting a version tag is described in `RELEASING.md`.
+relaunch. Merging to `main` reaches everyone on their next click. Because
+Marionette can edit its own source, the updater knows how to stash + reapply
+local self-edits and flags a diverged fork instead of failing silently. Cutting a
+version tag triggers signed/notarized release builds; see `RELEASING.md`.
 
 ## Run it (contributor / dev)
 
