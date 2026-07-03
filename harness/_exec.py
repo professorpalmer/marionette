@@ -1,5 +1,7 @@
 import os
+import re
 import sys
+import glob
 import shutil
 import subprocess
 
@@ -7,12 +9,78 @@ _PM_PYTHON_CACHE = None
 _PM_AVAILABLE_CACHE = None
 # Sentinel: None = not yet probed, "" = probed, none found, str = resolved path.
 _PM_EXT_PYTHON_CACHE = None
+_NODE_PATH_ENSURED = False
 
 def _clear_puppetmaster_cache():
-    global _PM_PYTHON_CACHE, _PM_AVAILABLE_CACHE, _PM_EXT_PYTHON_CACHE
+    global _PM_PYTHON_CACHE, _PM_AVAILABLE_CACHE, _PM_EXT_PYTHON_CACHE, _NODE_PATH_ENSURED
     _PM_PYTHON_CACHE = None
     _PM_AVAILABLE_CACHE = None
     _PM_EXT_PYTHON_CACHE = None
+    _NODE_PATH_ENSURED = False
+
+
+def _node_candidate_dirs() -> list[str]:
+    """Directories that commonly hold a `node` binary, most-preferred first.
+
+    Covers the harness-provisioned portable Node, standard user/system prefixes,
+    and the popular version managers (nvm, fnm, n, volta). Version-manager globs
+    are expanded newest-first so we pick a recent Node (CodeGraph needs the
+    node:sqlite backend from Node 20+)."""
+    home = os.path.expanduser("~")
+    dirs = [
+        os.path.join(home, ".marionette", "tools", "node"),          # portable (unix layout)
+        os.path.join(home, ".marionette", "tools", "node", "bin"),
+        os.path.join(home, ".local", "bin"),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/opt/local/bin",
+        os.path.join(home, ".volta", "bin"),
+    ]
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
+        dirs.insert(0, os.path.join(local, "marionette", "tools", "node"))
+
+    def _ver_key(path: str):
+        nums = re.findall(r"(\d+)\.(\d+)\.(\d+)", path)
+        return tuple(int(n) for n in nums[-1]) if nums else (0, 0, 0)
+
+    for pattern in (
+        os.path.join(home, ".nvm", "versions", "node", "*", "bin"),
+        os.path.join(home, ".fnm", "node-versions", "*", "installation", "bin"),
+        os.path.join(home, "Library", "Application Support", "fnm", "node-versions", "*", "installation", "bin"),
+        os.path.join(home, "n", "bin"),
+        "/usr/local/n/versions/node/*/bin",
+    ):
+        matches = sorted(glob.glob(pattern), key=_ver_key, reverse=True)
+        dirs.extend(matches)
+    return dirs
+
+
+def _ensure_node_on_path() -> None:
+    """Make `node` discoverable for CodeGraph even when the backend was spawned
+    with a stripped PATH.
+
+    The Electron host launches the Python backend with PATH=/usr/bin:/bin:...
+    (no user shell profile), so a Node installed under ~/.local/bin, Homebrew,
+    or a version manager is invisible -- and CodeGraph (a Node CLI using
+    node:sqlite) reports "unavailable"/"unsupported" even though Node is on the
+    machine. Prepend the first candidate dir that actually contains a `node`
+    binary. Idempotent, best-effort, no-op once Node resolves."""
+    global _NODE_PATH_ENSURED
+    if _NODE_PATH_ENSURED:
+        return
+    if shutil.which("node"):
+        _NODE_PATH_ENSURED = True
+        return
+    exe = "node.exe" if os.name == "nt" else "node"
+    for d in _node_candidate_dirs():
+        try:
+            if d and os.path.isfile(os.path.join(d, exe)):
+                os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+                break
+        except Exception:
+            continue
+    _NODE_PATH_ENSURED = True
 
 
 def _external_puppetmaster_python() -> str:
@@ -163,6 +231,10 @@ def _puppetmaster_available() -> bool:
     return False
 
 def _puppetmaster_cmd(*args) -> list[str]:
+    # CodeGraph (and any Node-backed worker) needs `node` on PATH; the Electron
+    # host spawns us with a stripped PATH, so resolve Node before we build any
+    # puppetmaster command. Idempotent + best-effort.
+    _ensure_node_on_path()
     is_frozen = getattr(sys, "frozen", False)
     if is_frozen:
         # Prefer a real external interpreter running the LIVE installed source

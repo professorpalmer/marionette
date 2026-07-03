@@ -32,7 +32,7 @@ from .memory_store import MemoryStore, MEMORY_CHAR_LIMIT
 from . import workspaces as _ws
 from .sessions import SessionStore, save_transcript, load_transcript
 from .autobudget import AutoBudget
-from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd
+from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd, _ensure_node_on_path
 from .diag import note as _diag
 
 
@@ -409,6 +409,9 @@ from .keys import load_api_keys_on_startup, get_api_key_status, get_env_var_for_
 from .wiki_config import load_wiki_config_on_startup, get_wiki_config, set_wiki_config
 from .wiki_backend import ensure_wiki_backend_async
 load_api_keys_on_startup(_cfg.reach)
+# The Electron host spawns the backend with a stripped PATH; make Node visible so
+# CodeGraph (a Node CLI) works out of the box instead of reporting "unsupported".
+_ensure_node_on_path()
 load_wiki_config_on_startup()
 # Auto-provision (clone + venv + token) and boot a local wiki backend so the
 # panel works out of the box with no manual terminal. Opt out: MARIONETTE_NO_WIKI=1.

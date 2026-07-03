@@ -30,6 +30,33 @@ def reset_cache():
     server._codegraph_status_reason = None
 
 
+def test_ensure_node_on_path_prepends_found_dir(tmp_path, monkeypatch):
+    # Simulate the Electron-spawned backend: a stripped PATH with no node.
+    from harness import _exec
+    node_dir = tmp_path / "nodebin"
+    node_dir.mkdir()
+    node_bin = node_dir / ("node.exe" if os.name == "nt" else "node")
+    node_bin.write_text("#!/bin/sh\necho v22.0.0\n")
+    node_bin.chmod(0o755)
+
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)  # node not resolvable
+    monkeypatch.setattr(_exec, "_node_candidate_dirs", lambda: [str(node_dir)])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    _exec._NODE_PATH_ENSURED = False
+
+    _exec._ensure_node_on_path()
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(node_dir)
+
+
+def test_ensure_node_on_path_noop_when_node_present(monkeypatch):
+    from harness import _exec
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/node")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    _exec._NODE_PATH_ENSURED = False
+    _exec._ensure_node_on_path()
+    assert os.environ["PATH"] == "/usr/bin:/bin"  # unchanged
+
+
 def test_puppetmaster_cmd_prefers_running_interpreter():
     # Primary path: when the backend's own interpreter can import puppetmaster,
     # run it directly via sys.executable -- never a PATH `puppetmaster` shim
