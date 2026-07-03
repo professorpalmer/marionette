@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Quote, ChevronRight, Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Play, Copy, Check, Pencil, RefreshCw, FileText, History, X, Code, Share2, CheckCircle2, XCircle } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, memo } from "react";
+import { ChevronRight, Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Play, Copy, Check, Pencil, RefreshCw, FileText, History, X, Code, Share2, CheckCircle2, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -171,6 +171,320 @@ const SLASH_COMMANDS = [
 ];
 
 
+
+// PERF: Stable per-item keys for the transcript map. Array-index keys forced
+// React to reconcile every sibling whenever the list changed (streaming,
+// grouping); a stable identity lets React skip untouched rows. We derive the
+// key from the item's underlying object identity where possible (msg objects
+// keep stable references across renders because setItems only appends), and
+// fall back to content + index only when no object identity is available.
+const __transcriptKeys = new WeakMap<object, string>();
+let __transcriptKeySeq = 0;
+function objKey(obj: object): string {
+  let k = __transcriptKeys.get(obj);
+  if (!k) {
+    k = `k${__transcriptKeySeq++}`;
+    __transcriptKeys.set(obj, k);
+  }
+  return k;
+}
+function stableItemKey(it: GroupedItem, i: number): string {
+  switch (it.kind) {
+    case "msg":
+      return `msg-${objKey(it.msg)}`;
+    case "activity_group":
+      // Key off the first inner item's identity so the group stays stable as
+      // long as its lead item does; falls back to index for empty groups.
+      return `grp-${it.items[0] ? objKey(it.items[0]) : i}`;
+    case "swarm_result":
+      return `swres-${it.job_id}`;
+    case "swarm_pending":
+      return `swpen-${(it.job_ids || []).join("_") || i}`;
+    case "checkpoint":
+      return `ckpt-${it.id}`;
+    case "compaction":
+      return `cmp-${it.before_tokens}-${it.after_tokens}-${i}`;
+    case "codegraph_context":
+      return `cg-${i}-${it.symbols}`;
+    case "command_blocked":
+      return `blk-${i}-${it.category}`;
+    case "steer":
+      return `steer-${i}`;
+    case "thinking":
+      return `think-${i}`;
+    default:
+      return `item-${i}`;
+  }
+}
+
+// PERF: Long sessions grow the transcript without bound, and every displayed
+// group is an expensive subtree (markdown + syntax highlight + tool cards). Cap
+// the DOM at the newest RENDER_WINDOW groups; a "Show earlier messages" affordance
+// prepends another window on demand. This is pure rendering -- older groups are
+// simply not mounted -- so it never touches scrollTop and can't fight the
+// parent's stick-to-bottom autoscroll. Adapted from the Hermes desktop thread's
+// render-budget windowing (which counts message parts; Marionette counts the
+// coarser display groups, one rendered subtree each). Short sessions render in
+// full and never show the button.
+const RENDER_WINDOW = 200;
+
+// PERF: Memoized transcript renderer. Its props are intentionally free of the
+// composer `input` (or any per-keystroke state), so React.memo lets typing skip
+// re-rendering the whole transcript. Only transcript-affecting state (items,
+// status, compactingStatus, editingIndex, auto, plan) plus stable callbacks are
+// passed in; all callbacks are useCallback-stabilized in the parent so the memo
+// comparison holds.
+type TranscriptListProps = {
+  items: Item[];
+  status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming";
+  compactingStatus: string | null;
+  editingIndex: number | null;
+  auto: boolean;
+  plan: boolean;
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+  onEditMessage: (idx: number, originalText: string) => void;
+  onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
+  onImageClick: (url: string) => void;
+  onSetCard: (id: string, patch: Partial<Card>) => void;
+  onExecutePlan: (planText: string) => void;
+};
+
+const TranscriptList = memo(function TranscriptList({
+  items,
+  status,
+  compactingStatus,
+  editingIndex,
+  auto,
+  plan,
+  scrollContainerRef,
+  onEditMessage,
+  onExecuteSend,
+  onImageClick,
+  onSetCard,
+  onExecutePlan,
+}: TranscriptListProps) {
+  const intermediateItems = new Set<Item>();
+  let hasSeenCardOrAssistantMsgInTurn = false;
+  for (let j = items.length - 1; j >= 0; j--) {
+    const item = items[j];
+    if (item.kind === "msg" && item.msg.role === "user") {
+      hasSeenCardOrAssistantMsgInTurn = false;
+    } else if (item.kind === "msg" && item.msg.role === "assistant") {
+      if (hasSeenCardOrAssistantMsgInTurn) {
+        intermediateItems.add(item);
+      }
+      hasSeenCardOrAssistantMsgInTurn = true;
+    } else if (item.kind === "card") {
+      hasSeenCardOrAssistantMsgInTurn = true;
+    }
+  }
+
+  const grouped = groupAgentActivity(items);
+
+  // PERF: window to the newest RENDER_WINDOW display groups. Walk newest-first,
+  // counting groups until the window is filled; everything before that is hidden
+  // behind the "Show earlier messages" button. Short sessions never fill the
+  // window, so hiddenCount stays 0 and nothing changes for them.
+  const [renderWindow, setRenderWindow] = useState(RENDER_WINDOW);
+  let firstVisible = grouped.length;
+  for (let i = grouped.length - 1, shown = 0; i >= 0; i--) {
+    shown += 1;
+    firstVisible = i;
+    if (shown >= renderWindow) break;
+  }
+  const hiddenCount = firstVisible;
+
+  // Prepend an older window while preserving the reading position: capture the
+  // distance from the bottom before the content grows, restore it once the taller
+  // content has laid out. The user is scrolled up here, so the parent's
+  // stick-to-bottom autoscroll is already released and won't fight this.
+  const restoreFromBottomRef = useRef<number | null>(null);
+  const showEarlier = useCallback(() => {
+    const el = scrollContainerRef.current;
+    restoreFromBottomRef.current = el ? el.scrollHeight - el.scrollTop : null;
+    setRenderWindow((w) => w + RENDER_WINDOW);
+  }, [scrollContainerRef]);
+  useLayoutEffect(() => {
+    const el = scrollContainerRef.current;
+    if (el && restoreFromBottomRef.current != null) {
+      el.scrollTop = el.scrollHeight - restoreFromBottomRef.current;
+      restoreFromBottomRef.current = null;
+    }
+  }, [renderWindow, scrollContainerRef]);
+
+  // Find the last assistant message inside the original items array
+  let lastAssistantRawIdx = -1;
+  for (let idx = items.length - 1; idx >= 0; idx--) {
+    const itm = items[idx];
+    if (itm.kind === "msg") {
+      const msgItm = itm as { kind: "msg"; msg: Msg };
+      if (msgItm.msg.role === "assistant") {
+        lastAssistantRawIdx = idx;
+        break;
+      }
+    }
+  }
+
+  // Find the last user message text
+  let lastUserText = "";
+  for (let idx = items.length - 1; idx >= 0; idx--) {
+    const itm = items[idx];
+    if (itm.kind === "msg") {
+      const msgItm = itm as { kind: "msg"; msg: Msg };
+      if (msgItm.msg.role === "user") {
+        lastUserText = msgItm.msg.text;
+        break;
+      }
+    }
+  }
+
+  const list = grouped.map((it, i) => {
+    if (i < hiddenCount) return null;
+    const key = stableItemKey(it, i);
+    if (it.kind === "msg") {
+      const rawIdx = items.findIndex(raw => raw.kind === "msg" && (raw as { kind: "msg"; msg: Msg }).msg === it.msg);
+
+      let prevMsg: Msg | null = null;
+      for (let j = i - 1; j >= 0; j--) {
+        const prevItem = grouped[j];
+        if (prevItem.kind === "msg") {
+          prevMsg = prevItem.msg;
+          break;
+        }
+      }
+      const isFirstInRun = !prevMsg || prevMsg.role !== "assistant";
+      const isIntermediate = intermediateItems.has(it as Item);
+
+      const onEdit = it.msg.role === "user" ? () => onEditMessage(rawIdx, it.msg.text) : undefined;
+      const isEditing = editingIndex === rawIdx;
+
+      const isLastAssistant = rawIdx === lastAssistantRawIdx;
+      const isNotBusy = status === "idle" || status === "done" || status === "error";
+      const onRegenerate = (isLastAssistant && isNotBusy && lastUserText)
+        ? () => { onExecuteSend(lastUserText, auto, plan); }
+        : undefined;
+
+      return (
+        <Bubble
+          key={key}
+          msg={it.msg}
+          showLabel={it.msg.role === "assistant" ? isFirstInRun : false}
+          isIntermediate={isIntermediate}
+          onExecutePlan={(planText) => onExecutePlan(planText)}
+          onEdit={onEdit}
+          isEditing={isEditing}
+          onRegenerate={onRegenerate}
+          onImageClick={(url) => onImageClick(url)}
+        />
+      );
+    } else if (it.kind === "swarm_pending") {
+      const objText = it.objective || "";
+      const truncatedObj = objText.length > 60 ? objText.slice(0, 60) + "..." : objText;
+      const jobIdsStr = (it.job_ids || []).join(", ");
+      if (it.resolved) {
+        return (
+          <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/20 border border-edge/30 text-[11px] text-faint w-fit my-1 select-none">
+            <span className="w-1.5 h-1.5 rounded-full bg-good/40" />
+            <span>swarm done: {truncatedObj} ({jobIdsStr})</span>
+          </div>
+        );
+      }
+      return (
+        <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/60 border border-edge/60 text-[11px] text-muted w-fit my-1 select-none">
+          <Loader2 size={11} className="animate-spin text-accent" />
+          <span>swarm running: {truncatedObj} ({jobIdsStr})</span>
+        </div>
+      );
+    } else if (it.kind === "swarm_result") {
+      return (
+        <SwarmResultCard
+          key={key}
+          applied={it.applied}
+          files={it.files}
+          summary={it.summary}
+          error={it.error}
+          objective={it.objective}
+        />
+      );
+    } else if (it.kind === "checkpoint") {
+      return (
+        <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10px] text-faint w-fit my-1 select-none">
+          <History size={11} className="text-accent" />
+          <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
+        </div>
+      );
+    } else if (it.kind === "codegraph_context") {
+      return (
+        <div key={key} className="flex items-center gap-1.5 py-0.5 text-[10px] text-accent/70 w-fit my-0.5 select-none" title={it.query ? `CodeGraph consulted for: ${it.query}` : "CodeGraph consulted"}>
+          <Share2 size={9} className="text-accent/70" />
+          <span>CodeGraph consulted{it.symbols > 0 ? ` -- ${it.symbols} symbols` : ""}</span>
+        </div>
+      );
+    } else if (it.kind === "command_blocked") {
+      return (
+        <div key={key} className="flex items-start gap-1.5 py-1.5 px-3 rounded-lg bg-red-500/8 border border-red-500/30 text-[11px] text-red-300/90 w-fit max-w-full my-1 select-none" title={it.matched ? `matched: ${it.matched}` : undefined}>
+          <span className="font-medium shrink-0">Blocked in full-auto:</span>
+          <span className="min-w-0">
+            <span className="text-red-300/70">{it.reason}</span>
+            {it.command ? <code className="block mt-0.5 text-[10px] text-faint/80 font-mono truncate">{it.command}</code> : null}
+          </span>
+        </div>
+      );
+    } else if (it.kind === "compaction") {
+      return (
+        <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-edge/10 text-[10.5px] text-faint w-fit my-1 select-none font-mono">
+          <span>Context summarized: {it.before_tokens} → {it.after_tokens} tokens</span>
+        </div>
+      );
+    } else if (it.kind === "steer") {
+      return (
+        <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10.5px] text-faint w-fit my-1 select-none font-mono animate-in fade-in duration-200">
+          <span className="text-muted">steer:</span>
+          <span>{it.text}</span>
+        </div>
+      );
+    } else if (it.kind === "thinking") {
+      return <ThinkingBlock key={key} text={it.text} />;
+    } else if (it.kind === "activity_group") {
+      return (
+        <ActivityGroup
+          key={key}
+          items={it.items}
+          onToggleCard={(card) => onSetCard(card.id, { open: !card.open })}
+        />
+      );
+    }
+    return null;
+  });
+
+  const isBusy = status === "thinking" || status === "executing" || status === "streaming";
+  return (
+    <>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={showEarlier}
+          className="mx-auto mb-1 rounded-full border border-edge/60 bg-panel2/40 px-3 py-1 text-[11px] text-muted hover:text-txt hover:bg-panel2/70 transition-colors select-none"
+        >
+          Show earlier messages ({hiddenCount})
+        </button>
+      )}
+      {list}
+      {compactingStatus && (
+        <div className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[11px] text-faint w-fit my-1 select-none animate-pulse">
+          <Loader2 size={11} className="animate-spin text-accent" />
+          <span>{compactingStatus}</span>
+        </div>
+      )}
+      {isBusy && !compactingStatus && (
+        <div className="flex items-center gap-1.5 py-1 text-[12px] text-muted select-none mt-1 pl-0.5">
+          <Loader2 size={12} className="animate-spin text-muted" />
+          <span>{status === "thinking" ? "thinking..." : status === "streaming" ? "streaming..." : "running..."}</span>
+        </div>
+      )}
+    </>
+  );
+});
 
 export default function Conversation({ config, activeSessionId, onArtifacts, onJobChange }: {
   config: Config | null;
@@ -1448,6 +1762,42 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     api.interruptSession().catch((e) => console.error("Failed to interrupt session on backend:", e));
   };
 
+  // PERF: Stabilize the callbacks handed to the memoized TranscriptList. The
+  // underlying functions (handleEditMessage, executeSend, ...) are recreated on
+  // every render, which would defeat React.memo. We route through refs holding
+  // the latest implementation and expose useCallback wrappers with EMPTY deps,
+  // so the prop identities never change across renders -- keeping the memo
+  // boundary intact even while `input`/streaming state churns in the parent.
+  const handleEditMessageRef = useRef(handleEditMessage);
+  handleEditMessageRef.current = handleEditMessage;
+  const executeSendRef = useRef(executeSend);
+  executeSendRef.current = executeSend;
+  const setCardRef = useRef(setCard);
+  setCardRef.current = setCard;
+
+  const stableEditMessage = useCallback(
+    (idx: number, originalText: string) => handleEditMessageRef.current(idx, originalText),
+    []
+  );
+  const stableExecuteSend = useCallback(
+    (msg: string, useAuto: boolean, usePlan?: boolean) => executeSendRef.current(msg, useAuto, usePlan),
+    []
+  );
+  const stableSetCard = useCallback(
+    (id: string, patch: Partial<Card>) => setCardRef.current(id, patch),
+    []
+  );
+  const handleTranscriptImageClick = useCallback((url: string) => setLightboxUrl(url), []);
+  const handleTranscriptExecutePlan = useCallback((planText: string) => {
+    setAuto(true);
+    setPlan(false);
+    executeSendRef.current(
+      "Execute the following approved plan. Implement it fully, using run_implement/run_parallel as needed:\n\n" + planText,
+      true,
+      false
+    );
+  }, []);
+
   return (
     <main
       className="flex flex-col h-full min-w-0 bg-bg"
@@ -1527,191 +1877,29 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               Message the pilot. It plans, investigates via swarms, and explains.
             </div>
           )}
-          {(() => {
-            const intermediateItems = new Set<Item>();
-            let hasSeenCardOrAssistantMsgInTurn = false;
-            for (let j = items.length - 1; j >= 0; j--) {
-              const item = items[j];
-              if (item.kind === "msg" && item.msg.role === "user") {
-                hasSeenCardOrAssistantMsgInTurn = false;
-              } else if (item.kind === "msg" && item.msg.role === "assistant") {
-                if (hasSeenCardOrAssistantMsgInTurn) {
-                  intermediateItems.add(item);
-                }
-                hasSeenCardOrAssistantMsgInTurn = true;
-              } else if (item.kind === "card") {
-                hasSeenCardOrAssistantMsgInTurn = true;
-              }
-            }
-
-            const grouped = groupAgentActivity(items);
-            
-            // Find the last assistant message inside the original items array
-            let lastAssistantRawIdx = -1;
-            for (let idx = items.length - 1; idx >= 0; idx--) {
-              const itm = items[idx];
-              if (itm.kind === "msg") {
-                const msgItm = itm as { kind: "msg"; msg: Msg };
-                if (msgItm.msg.role === "assistant") {
-                  lastAssistantRawIdx = idx;
-                  break;
-                }
-              }
-            }
-
-            // Find the last user message text
-            let lastUserText = "";
-            for (let idx = items.length - 1; idx >= 0; idx--) {
-              const itm = items[idx];
-              if (itm.kind === "msg") {
-                const msgItm = itm as { kind: "msg"; msg: Msg };
-                if (msgItm.msg.role === "user") {
-                  lastUserText = msgItm.msg.text;
-                  break;
-                }
-              }
-            }
-
-            const list = grouped.map((it, i) => {
-              if (it.kind === "msg") {
-                const rawIdx = items.findIndex(raw => raw.kind === "msg" && (raw as { kind: "msg"; msg: Msg }).msg === it.msg);
-                
-                let prevMsg: Msg | null = null;
-                for (let j = i - 1; j >= 0; j--) {
-                  const prevItem = grouped[j];
-                  if (prevItem.kind === "msg") {
-                    prevMsg = prevItem.msg;
-                    break;
-                  }
-                }
-                const isFirstInRun = !prevMsg || prevMsg.role !== "assistant";
-                const isIntermediate = intermediateItems.has(it as Item);
-                
-                const onEdit = it.msg.role === "user" ? () => handleEditMessage(rawIdx, it.msg.text) : undefined;
-                const isEditing = editingIndex === rawIdx;
-                
-                const isLastAssistant = rawIdx === lastAssistantRawIdx;
-                const isNotBusy = status === "idle" || status === "done" || status === "error";
-                const onRegenerate = (isLastAssistant && isNotBusy && lastUserText)
-                  ? () => { executeSend(lastUserText, auto, plan); }
-                  : undefined;
-
-                return (
-                  <Bubble
-                    key={i}
-                    msg={it.msg}
-                    showLabel={it.msg.role === "assistant" ? isFirstInRun : false}
-                    isIntermediate={isIntermediate}
-                    onExecutePlan={(planText) => {
-                      setAuto(true);
-                      setPlan(false);
-                      executeSend("Execute the following approved plan. Implement it fully, using run_implement/run_parallel as needed:\n\n" + planText, true, false);
-                    }}
-                    onEdit={onEdit}
-                    isEditing={isEditing}
-                    onRegenerate={onRegenerate}
-                    onImageClick={(url) => setLightboxUrl(url)}
-                  />
-                );
-              } else if (it.kind === "swarm_pending") {
-                const objText = it.objective || "";
-                const truncatedObj = objText.length > 60 ? objText.slice(0, 60) + "..." : objText;
-                const jobIdsStr = (it.job_ids || []).join(", ");
-                if (it.resolved) {
-                  return (
-                    <div key={i} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/20 border border-edge/30 text-[11px] text-faint w-fit my-1 select-none">
-                      <span className="w-1.5 h-1.5 rounded-full bg-good/40" />
-                      <span>swarm done: {truncatedObj} ({jobIdsStr})</span>
-                    </div>
-                  );
-                }
-                return (
-                  <div key={i} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/60 border border-edge/60 text-[11px] text-muted w-fit my-1 select-none">
-                    <Loader2 size={11} className="animate-spin text-accent" />
-                    <span>swarm running: {truncatedObj} ({jobIdsStr})</span>
-                  </div>
-                );
-              } else if (it.kind === "swarm_result") {
-                return (
-                  <SwarmResultCard
-                    key={i}
-                    applied={it.applied}
-                    files={it.files}
-                    summary={it.summary}
-                    error={it.error}
-                    objective={it.objective}
-                  />
-                );
-              } else if (it.kind === "checkpoint") {
-                return (
-                  <div key={i} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10px] text-faint w-fit my-1 select-none">
-                    <History size={11} className="text-accent" />
-                    <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
-                  </div>
-                );
-              } else if (it.kind === "codegraph_context") {
-                return (
-                  <div key={i} className="flex items-center gap-1.5 py-0.5 text-[10px] text-accent/70 w-fit my-0.5 select-none" title={it.query ? `CodeGraph consulted for: ${it.query}` : "CodeGraph consulted"}>
-                    <Share2 size={9} className="text-accent/70" />
-                    <span>CodeGraph consulted{it.symbols > 0 ? ` -- ${it.symbols} symbols` : ""}</span>
-                  </div>
-                );
-              } else if (it.kind === "command_blocked") {
-                return (
-                  <div key={i} className="flex items-start gap-1.5 py-1.5 px-3 rounded-lg bg-red-500/8 border border-red-500/30 text-[11px] text-red-300/90 w-fit max-w-full my-1 select-none" title={it.matched ? `matched: ${it.matched}` : undefined}>
-                    <span className="font-medium shrink-0">Blocked in full-auto:</span>
-                    <span className="min-w-0">
-                      <span className="text-red-300/70">{it.reason}</span>
-                      {it.command ? <code className="block mt-0.5 text-[10px] text-faint/80 font-mono truncate">{it.command}</code> : null}
-                    </span>
-                  </div>
-                );
-              } else if (it.kind === "compaction") {
-                return (
-                  <div key={i} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-edge/10 text-[10.5px] text-faint w-fit my-1 select-none font-mono">
-                    <span>Context summarized: {it.before_tokens} → {it.after_tokens} tokens</span>
-                  </div>
-                );
-              } else if (it.kind === "steer") {
-                return (
-                  <div key={i} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10.5px] text-faint w-fit my-1 select-none font-mono animate-in fade-in duration-200">
-                    <span className="text-muted">steer:</span>
-                    <span>{it.text}</span>
-                  </div>
-                );
-              } else if (it.kind === "thinking") {
-                return <ThinkingBlock key={i} text={it.text} />;
-              } else if (it.kind === "activity_group") {
-                return (
-                  <ActivityGroup
-                    key={i}
-                    items={it.items}
-                    onToggleCard={(card) => setCard(card.id, { open: !card.open })}
-                  />
-                );
-              }
-              return null;
-            });
-
-            const isBusy = status === "thinking" || status === "executing" || status === "streaming";
-            return (
-              <>
-                {list}
-                {compactingStatus && (
-                  <div className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[11px] text-faint w-fit my-1 select-none animate-pulse">
-                    <Loader2 size={11} className="animate-spin text-accent" />
-                    <span>{compactingStatus}</span>
-                  </div>
-                )}
-                {isBusy && !compactingStatus && (
-                  <div className="flex items-center gap-1.5 py-1 text-[12px] text-muted select-none mt-1 pl-0.5">
-                    <Loader2 size={12} className="animate-spin text-muted" />
-                    <span>{status === "thinking" ? "thinking..." : status === "streaming" ? "streaming..." : "running..."}</span>
-                  </div>
-                )}
-              </>
-            );
-          })()}
+          {/*
+            PERF: The transcript is rendered by TranscriptList, a React.memo
+            component whose props are deliberately independent of the composer
+            `input` state. Because typing only mutates `input` (which lives in
+            this parent) and none of TranscriptList's props change per keystroke,
+            React skips re-rendering the transcript on every keystroke. This
+            breaks the old coupling where items.map ran on the ENTIRE transcript
+            for each character typed (cost grew with message count).
+          */}
+          <TranscriptList
+            items={items}
+            status={status}
+            compactingStatus={compactingStatus}
+            editingIndex={editingIndex}
+            auto={auto}
+            plan={plan}
+            scrollContainerRef={feedRef}
+            onEditMessage={stableEditMessage}
+            onExecuteSend={stableExecuteSend}
+            onImageClick={handleTranscriptImageClick}
+            onSetCard={stableSetCard}
+            onExecutePlan={handleTranscriptExecutePlan}
+          />
         </div>
       </div>
 
