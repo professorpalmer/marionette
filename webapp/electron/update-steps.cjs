@@ -9,7 +9,8 @@
 // checkout the app is launched from:
 //   fetch  -> git fetch the branch tip
 //   pull   -> fast-forward the working tree to origin/<branch>
-//   deps   -> refresh Python + node deps if their lockfiles changed
+//   deps   -> refresh Python + node deps if their lockfiles changed, and always
+//             upgrade Puppetmaster (the integral runtime dep ships out-of-band)
 //   build  -> rebuild the renderer (tsc -b && vite build) into dist/
 //   relaunch is a terminal action, not a measured stage.
 

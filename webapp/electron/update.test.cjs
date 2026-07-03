@@ -13,6 +13,7 @@ const remote = require("./update-remote.cjs");
 const count = require("./update-count.cjs");
 const steps = require("./update-steps.cjs");
 const rebuild = require("./update-rebuild.cjs");
+const pm = require("./update-pm.cjs");
 const marker = require("./update-marker.cjs");
 
 test("canonicalGitHubRemote: ssh and https forms of the same repo compare equal", () => {
@@ -80,6 +81,39 @@ test("runRebuildWithRetry: a first-try success does not retry", async () => {
   });
   assert.equal(attempts, 1);
   assert.equal(res.code, 0);
+});
+
+test("planPuppetmasterUpgrade: a plain PyPI install upgrades to puppetmaster-ai latest", () => {
+  const plan = pm.planPuppetmasterUpgrade({
+    specEnv: "",
+    pipShowOutput: "Name: puppetmaster-ai\nVersion: 1.1.0\nLocation: /app/.venv/lib/python3.11/site-packages",
+  });
+  assert.equal(plan.skip, false);
+  assert.equal(plan.spec, pm.DEFAULT_PUPPETMASTER_SPEC);
+});
+
+test("planPuppetmasterUpgrade: an editable dev checkout is left untouched", () => {
+  const plan = pm.planPuppetmasterUpgrade({
+    specEnv: "",
+    pipShowOutput: "Name: puppetmaster-ai\nVersion: 1.1.0\nEditable project location: /Users/dev/Puppetmaster",
+  });
+  assert.equal(plan.skip, true);
+  assert.match(plan.reason, /editable/);
+});
+
+test("planPuppetmasterUpgrade: a custom MARIONETTE_PUPPETMASTER_SPEC is honored (never clobbered)", () => {
+  const plan = pm.planPuppetmasterUpgrade({
+    specEnv: "/Users/dev/Puppetmaster",
+    pipShowOutput: "Name: puppetmaster-ai\nVersion: 1.1.0",
+  });
+  assert.equal(plan.skip, true);
+  assert.match(plan.reason, /MARIONETTE_PUPPETMASTER_SPEC/);
+});
+
+test("isEditableInstall: matches only the editable marker line", () => {
+  assert.equal(pm.isEditableInstall("Editable project location: /x"), true);
+  assert.equal(pm.isEditableInstall("Location: /x/site-packages"), false);
+  assert.equal(pm.isEditableInstall(""), false);
 });
 
 test("readLiveUpdateMarker: live pid within age ceiling is reported", () => {

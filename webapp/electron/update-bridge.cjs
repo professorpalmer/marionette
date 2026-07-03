@@ -23,6 +23,7 @@ const { chooseFetchRemote } = require("./update-remote.cjs");
 const { resolveBehindCount, shouldCountCommits } = require("./update-count.cjs");
 const { overallPercent } = require("./update-steps.cjs");
 const { runRebuildWithRetry } = require("./update-rebuild.cjs");
+const { planPuppetmasterUpgrade, DEFAULT_PUPPETMASTER_SPEC } = require("./update-pm.cjs");
 const marker = require("./update-marker.cjs");
 
 const DEFAULT_BRANCH = process.env.PMHARNESS_UPDATE_BRANCH || "main";
@@ -44,6 +45,29 @@ function gitCapture(repoRoot, args, timeoutMs = 30000) {
         resolve({ ok: true, out: (stdout || "").trim(), err: (stderr || "").trim() });
       }
     );
+  });
+}
+
+// One-shot process capture: resolve { ok, out, err } (never rejects). Used to
+// read `pip show` output when deciding whether to upgrade Puppetmaster.
+function execCapture(cmd, args, timeoutMs = 30000) {
+  return new Promise((resolve) => {
+    execFile(
+      cmd,
+      args,
+      { timeout: timeoutMs, maxBuffer: 10_000_000, encoding: "utf8" },
+      (err, stdout, stderr) => {
+        resolve({ ok: !err, out: (stdout || "").trim(), err: (stderr || String(err || "")).trim() });
+      }
+    );
+  });
+}
+
+// Is `uv` on PATH? (Marionette venvs are made by `uv venv`, which omits pip, so
+// the updater prefers `uv pip ...` and only falls back to `python -m pip`.)
+function detectUv() {
+  return new Promise((resolve) => {
+    execFile("uv", ["--version"], { timeout: 5000 }, (err) => resolve(!err));
   });
 }
 
@@ -242,15 +266,14 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" 
     const pyChanged = changed.some((f) => /(^|\/)(pyproject\.toml|setup\.cfg|setup\.py|requirements[^/]*\.txt)$/.test(f));
     const nodeChanged = changed.some((f) => f === "webapp/package-lock.json" || f === "webapp/package.json");
 
+    const py = process.env.PMHARNESS_PYTHON || path.join(repoRoot, ".venv", "bin", "python");
+    // Marionette venvs are created by `uv venv`, which does NOT install pip, so
+    // prefer `uv pip ...`. Fall back to `python -m pip` for an older pip-bearing
+    // venv. Detected once and reused for both the app and the Puppetmaster step.
+    const hasUv = await detectUv();
+
     if (pyChanged) {
       progress("deps", "Updating Python dependencies", 0.3);
-      const py = process.env.PMHARNESS_PYTHON || path.join(repoRoot, ".venv", "bin", "python");
-      // Marionette venvs are created by `uv venv`, which does NOT install pip, so
-      // prefer `uv pip install --python <venv>`. Fall back to `python -m pip` for
-      // an older pip-bearing venv.
-      const hasUv = await new Promise((resolve) => {
-        execFile("uv", ["--version"], { timeout: 5000 }, (err) => resolve(!err));
-      });
       const dep = hasUv
         ? await runStreamed("uv", ["pip", "install", "--python", py, "-e", "."],
             { cwd: repoRoot }, (l) => progress("deps", l, 0.4))
@@ -263,6 +286,33 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff" 
       const npmci = await runStreamed("npm", ["ci"], { cwd: path.join(repoRoot, "webapp") },
         (l) => progress("deps", l, 0.8));
       if (npmci.code !== 0) return { ok: false, error: npmci.tail || "npm ci failed" };
+    }
+
+    // Puppetmaster -- the one integral runtime dep -- ships independently of this
+    // repo (unpinned PyPI package), so a git pull never carries a PM release.
+    // Upgrade it on every update so overhauls reach existing installs, unless a
+    // dev/custom spec owns it. Non-fatal: a PyPI blip or offline machine must
+    // never strand an otherwise-successful app update -- PM just stays put.
+    progress("deps", "Checking Puppetmaster", 0.85);
+    const pmShow = hasUv
+      ? await execCapture("uv", ["pip", "show", "--python", py, DEFAULT_PUPPETMASTER_SPEC])
+      : await execCapture(py, ["-m", "pip", "show", DEFAULT_PUPPETMASTER_SPEC]);
+    const pmPlan = planPuppetmasterUpgrade({
+      specEnv: process.env.MARIONETTE_PUPPETMASTER_SPEC,
+      pipShowOutput: pmShow.out,
+    });
+    if (pmPlan.skip) {
+      progress("deps", "Puppetmaster: " + pmPlan.reason + ", leaving as-is", 0.9);
+    } else {
+      progress("deps", "Updating Puppetmaster", 0.9);
+      const pm = hasUv
+        ? await runStreamed("uv", ["pip", "install", "--python", py, "--upgrade", pmPlan.spec],
+            { cwd: repoRoot }, (l) => progress("deps", l, 0.92))
+        : await runStreamed(py, ["-m", "pip", "install", "--upgrade", pmPlan.spec, "--quiet"],
+            { cwd: repoRoot }, (l) => progress("deps", l, 0.92));
+      if (pm.code !== 0) {
+        progress("deps", "Puppetmaster upgrade skipped: " + (pm.tail || "unavailable"), 0.95);
+      }
     }
 
     // build -- rebuild the renderer into dist/. Retry once: a first build can
