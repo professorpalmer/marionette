@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Marionette - a coding agent on the Puppetmaster kernel</title>
-  <meta name="description" content="Marionette is a desktop AI coding agent on the Puppetmaster orchestration kernel: it dispatches durable, cost-routed worker swarms over a live CodeGraph of your repo -- parallel, replayable, auditable. One-click installers for macOS, Windows, and Linux.">
+  <title>Marionette - a coding agent that runs a swarm, not a chat</title>
+  <meta name="description" content="Marionette is a desktop AI coding agent that inverts the usual model: instead of one model in a chat loop, it dispatches parallel worker swarms and routes each task to the cheapest capable model -- durable, replayable, auditable, over a live CodeGraph of your repo. The LLM is a swappable part; the orchestration is the product. One-click installers for macOS, Windows, and Linux.">
   <style>
     :root {
       color-scheme: dark;
@@ -41,6 +41,12 @@
     h1 .em { color: var(--accent); font-style: italic; }
     .lede { color: var(--muted); font-size: 1.12rem; max-width: 40rem; margin: 0 0 2.6rem; }
     .eyebrow { text-transform: uppercase; letter-spacing: .18em; font-size: .74rem; color: var(--muted); font-weight: 600; margin: 2.6rem 0 .9rem; }
+
+    .why { list-style: none; margin: 0 0 2.6rem; padding: 0; display: grid; gap: 1rem; max-width: 40rem; }
+    .why li { padding-left: 1.1rem; position: relative; }
+    .why li::before { content: ""; position: absolute; left: 0; top: .62em; width: .42rem; height: .42rem; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+    .why b { color: var(--fg); font-weight: 600; }
+    .why span { color: var(--muted); }
 
     .dl-primary {
       display: inline-flex; align-items: center; gap: .7rem;
@@ -86,13 +92,19 @@
   <main class="wrap">
     <div class="brand"><span class="dot"></span> Marionette</div>
 
-    <h1>The coding agent with a <span class="em">kernel</span>.</h1>
+    <h1>Not a chat. A <span class="em">swarm</span>.</h1>
     <p class="lede">
-      Marionette is a desktop agent on the <strong>Puppetmaster</strong> kernel &mdash; it doesn't
-      just chat back, it dispatches durable, cost-routed worker swarms over a live CodeGraph of
-      your repo. Parallel, replayable, auditable. Source-run and self-updating, so the same model
-      runs on macOS, Windows, and Linux &mdash; and edits its own source.
+      Every other coding agent is one model in a chat loop. Marionette is the orchestrator instead:
+      it splits work into <strong>parallel worker swarms</strong> and routes each task to the
+      <strong>cheapest model that can do it</strong>. The LLM is a swappable part &mdash; the
+      orchestration is the product.
     </p>
+
+    <ul class="why">
+      <li><b>Swarms, not a single chat.</b> <span>Work fans out to many workers running in parallel, each a real subprocess with durable, replayable, auditable state &mdash; not one linear conversation.</span></li>
+      <li><b>Any model, cheapest that fits.</b> <span>A tiered router picks the model per task, so trivial work runs near-free and only the hard parts hit a frontier model. You are never locked to one pricey LLM.</span></li>
+      <li><b>Yours, end to end.</b> <span>It runs from source over a live CodeGraph of your repo, edits its own code, and self-updates &mdash; the same on macOS, Windows, and Linux.</span></li>
+    </ul>
 
     <p class="eyebrow">Install desktop app</p>
     <a class="dl-primary" id="dlPrimary" href="https://github.com/professorpalmer/marionette/releases/latest">
@@ -135,9 +147,9 @@
       // Fallback direct links, pinned to a known-good release. Replaced with the
       // newest release's assets once the GitHub API responds.
       var FALLBACK = {
-        mac:   RELEASES + "/download/Marionette-0.6.42-universal.dmg",
-        win:   RELEASES + "/download/Marionette-0.6.42-Setup.exe",
-        linux: RELEASES + "/download/Marionette-0.6.42.AppImage"
+        mac:   RELEASES + "/download/Marionette-0.6.43-universal.dmg",
+        win:   RELEASES + "/download/Marionette-0.6.43-Setup.exe",
+        linux: RELEASES + "/download/Marionette-0.6.43.AppImage"
       };
       var LABELS = { mac: "Download for macOS", win: "Download for Windows", linux: "Download for Linux" };
       var OTHER = {
