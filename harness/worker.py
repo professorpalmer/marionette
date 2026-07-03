@@ -43,7 +43,11 @@ class WorkerResult:
     error: str = ""
     events: list[ConvEvent] = field(default_factory=list)
     test_passed: bool = True
-    tokens_out: int = 0  # normalized token count so every edit engine reports spend
+    # Both token directions are normalized so every edit engine reports full
+    # spend. tokens_in was previously dropped (hardcoded 0 downstream), which
+    # undercounted every implement worker's prompt cost (audit finding #5).
+    tokens_out: int = 0
+    tokens_in: int = 0
 
 
 def is_obviously_destructive(cmd: str) -> bool:
@@ -177,19 +181,35 @@ class ProviderWorker:
         self.run_tests = run_tests
         self.keep_worktree_on_failure = keep_worktree_on_failure
         self.require_codegraph = require_codegraph
+        # Inner-session token split, captured during _run_impl and read by run().
+        # Defaulted here so run() is safe even if _run_impl is stubbed (tests) or
+        # exits before a session exists.
+        self._session_tokens_in = 0
+        self._session_tokens_total = 0
 
     def run(self) -> WorkerResult:
-        """Drive the worker and return a normalized result whose ``tokens_out``
-        always reflects the metered spend. Token metering happens on ``self.budget``
-        during the inner run; we stamp it onto the result here -- once, for EVERY
-        return path -- so cost accounting and autobudget attribution work no matter
-        which caller invoked the worker (not only run_native_edit)."""
+        """Drive the worker and return a normalized result whose token counts
+        always reflect the metered spend. Metering happens on ``self.budget`` (the
+        cumulative total, in+out) and on the inner session's ``_tokens_in`` during
+        the run; we stamp both onto the result here -- once, for EVERY return path
+        -- so cost accounting and autobudget attribution work no matter which
+        caller invoked the worker (not only run_native_edit). Splitting out the
+        prompt tokens keeps implement-worker cost from being undercounted."""
         result = self._run_impl()
+        total = self.budget.tokens_used or self._session_tokens_total
+        if not result.tokens_in:
+            result.tokens_in = self._session_tokens_in
         if not result.tokens_out:
-            result.tokens_out = self.budget.tokens_used
+            # budget.tokens_used is the cumulative in+out total; the completion
+            # share is the remainder after prompt tokens.
+            result.tokens_out = max(0, total - result.tokens_in)
         return result
 
     def _run_impl(self) -> WorkerResult:
+        # Defaults so run() can stamp token counts on EVERY return path, including
+        # the early exits below that never construct an inner session.
+        self._session_tokens_in = 0
+        self._session_tokens_total = 0
         if not self.repo or not _is_repo(self.repo):
             return WorkerResult(ok=False, error="not a git repo")
 
@@ -249,7 +269,13 @@ class ProviderWorker:
                     require_codegraph=self.require_codegraph
                 ):
                     events.append(ev)
-                    
+
+            # Capture the inner session's real token split (in vs. total) so run()
+            # can report accurate prompt/completion spend instead of dropping
+            # prompt tokens.
+            self._session_tokens_in = int(getattr(session, "_tokens_in", 0) or 0)
+            self._session_tokens_total = int(getattr(session, "_tokens_used", 0) or 0)
+
             # 4. Finalize -> PATCH. Stage everything, drop build/agent artifacts
             # the worker may have created (git add -A otherwise sweeps untracked
             # __pycache__/*.pyc, .pytest_cache, etc.), and capture the diff. Shared

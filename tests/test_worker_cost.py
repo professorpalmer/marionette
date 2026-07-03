@@ -31,6 +31,34 @@ def test_provider_worker_preserves_explicit_tokens_out():
     result = worker.run()
     assert result.tokens_out == 42
 
+def test_provider_worker_reports_tokens_in_split():
+    """Regression for audit finding #5: prompt tokens must survive to the result.
+    The inner session meters _tokens_in (prompt) and _tokens_used (in+out total);
+    run() must split them so tokens_in is not silently dropped and tokens_out is
+    only the completion share."""
+    budget = AutoBudget(max_tokens=10_000)
+    worker = ProviderWorker("/tmp/does-not-matter", "goal", budget=budget)
+    budget.tokens_used = 1000  # total metered (in + out)
+    worker._session_tokens_in = 300
+    worker._run_impl = lambda: WorkerResult(ok=True, summary="done")
+    result = worker.run()
+    assert result.tokens_in == 300
+    assert result.tokens_out == 700  # 1000 total - 300 prompt
+
+
+def test_provider_worker_preserves_explicit_tokens_in():
+    """If the inner result already carries tokens_in (agentic engine set it),
+    the wrapper must not overwrite it."""
+    budget = AutoBudget(max_tokens=10_000)
+    worker = ProviderWorker("/tmp/does-not-matter", "goal", budget=budget)
+    budget.tokens_used = 500
+    worker._session_tokens_in = 999  # must be ignored -- result already has one
+    worker._run_impl = lambda: WorkerResult(ok=True, tokens_in=120, tokens_out=380)
+    result = worker.run()
+    assert result.tokens_in == 120
+    assert result.tokens_out == 380
+
+
 def test_add_worker_tokens_from_artifacts_basic():
     cfg = HarnessConfig()
     session = ConversationalSession(cfg)

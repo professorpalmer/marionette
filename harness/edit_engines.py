@@ -24,6 +24,7 @@ model) -- never when agentic ran and simply produced no changes.
 
 import contextlib
 import os
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -241,12 +242,19 @@ def run_agentic_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
                 adapter="agentic",
                 payload=payload,
             )
+            # The PM sqlite store is scratch state for this single inline run; we
+            # read everything we need from the returned `result`, not the store,
+            # so it is removed as soon as the run returns. Without this every
+            # agentic implement worker leaked a pmh-edit-* dir (audit finding #3).
             tmp = tempfile.mkdtemp(prefix="pmh-edit-")
-            store = create_store("sqlite", tmp)
-            result = Orchestrator(store).run(goal, specs=[spec], worker_mode="inline")
+            try:
+                store = create_store("sqlite", tmp)
+                result = Orchestrator(store).run(goal, specs=[spec], worker_mode="inline")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
 
             patch, files_changed = finalize_worktree_patch(wt_path)
-            tokens_out, failure, final_text = _summarize_agentic_result(result)
+            tokens_out, tokens_in, failure, final_text = _summarize_agentic_result(result)
 
             if not patch.strip():
                 # Distinguish "engine could not run" (route/provider failure) from
@@ -254,12 +262,12 @@ def run_agentic_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
                 if failure in ("no_model", "unknown_provider", "route_failed"):
                     return WorkerResult(ok=False, error=AGENTIC_ROUTE_FAILED,
                                         summary=final_text or "Agentic engine could not select a model/provider.")
-                return WorkerResult(ok=False, tokens_out=tokens_out,
+                return WorkerResult(ok=False, tokens_out=tokens_out, tokens_in=tokens_in,
                                     summary=final_text or "no changes produced")
 
             return WorkerResult(
                 ok=True, patch=patch, files_changed=files_changed,
-                tokens_out=tokens_out,
+                tokens_out=tokens_out, tokens_in=tokens_in,
                 summary=final_text or (f"Files changed: {', '.join(files_changed)}" if files_changed else "Patch generated"),
             )
     except Exception as exc:
@@ -267,17 +275,22 @@ def run_agentic_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
         return WorkerResult(ok=False, error=AGENTIC_ERROR, summary=f"Agentic engine error: {exc}")
 
 
-def _summarize_agentic_result(result) -> tuple[int, str, str]:
-    """Pull (tokens_out, failure_reason, final_text) from PM artifacts."""
+def _summarize_agentic_result(result) -> tuple[int, int, str, str]:
+    """Pull (tokens_out, tokens_in, failure_reason, final_text) from PM artifacts.
+
+    Both token directions are summed so cost/telemetry counts the prompt tokens
+    an implement worker burned, not just its completion tokens (audit finding #5)."""
     tokens_out = 0
+    tokens_in = 0
     failure = ""
     final_text = ""
     for art in getattr(result, "artifacts", []) or []:
         payload = getattr(art, "payload", {}) or {}
         tokens_out += int(payload.get("tokens_out") or 0)
+        tokens_in += int(payload.get("tokens_in") or 0)
         if not failure and payload.get("failure"):
             failure = str(payload.get("failure"))
         stdout = payload.get("stdout")
         if stdout and not final_text:
             final_text = str(stdout)[:2000]
-    return tokens_out, failure, final_text
+    return tokens_out, tokens_in, failure, final_text

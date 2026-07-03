@@ -80,6 +80,48 @@ def test_diff_parser_and_reconstruct():
     assert "Delta" not in new_diff
 
 
+def test_reconstruct_diff_preserves_index_headers():
+    """Partial-hunk accept must keep the `index <blob>..<blob>` ancestor SHAs
+    (and the diff --git / --- / +++ headers). Those blob identities are exactly
+    what lets `git apply --3way` reconstruct the ancestor and do a REAL 3-way
+    merge onto a moved tree. If reconstruct_diff ever drops them, the apply
+    silently degrades to context-only matching -- the corruption class we
+    removed the lenient tier to prevent. This locks the invariant."""
+    diff_text = (
+        "diff --git a/file1.txt b/file1.txt\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/file1.txt\n"
+        "+++ b/file1.txt\n"
+        "@@ -1,3 +1,4 @@\n"
+        " Line A\n"
+        "+Line A.5\n"
+        " Line B\n"
+        " Line C\n"
+        "@@ -10,2 +11,3 @@\n"
+        " Line J\n"
+        "+Line J.5\n"
+        " Line K\n"
+    )
+
+    parsed = parse_unified_diff(diff_text)
+    assert len(parsed) == 1
+    assert len(parsed[0]["hunks"]) == 2
+
+    # Accept only the first hunk, reject the second.
+    hunk_a = parsed[0]["hunks"][0]["id"]
+    hunk_b = parsed[0]["hunks"][1]["id"]
+    rebuilt = reconstruct_diff(parsed, {hunk_a: "accept", hunk_b: "reject"})
+
+    # The ancestor-blob line and every file header must survive verbatim.
+    assert "index 1111111..2222222 100644" in rebuilt
+    assert "diff --git a/file1.txt b/file1.txt" in rebuilt
+    assert "--- a/file1.txt" in rebuilt
+    assert "+++ b/file1.txt" in rebuilt
+    # Accepted hunk present, rejected hunk gone.
+    assert "Line A.5" in rebuilt
+    assert "Line J.5" not in rebuilt
+
+
 def test_apply_review(temp_git_repo):
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     cfg.repo = temp_git_repo

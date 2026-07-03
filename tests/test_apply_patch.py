@@ -132,6 +132,59 @@ def test_apply_worker_patch_not_cleanly(temp_git_repo):
     with open(base_filepath, "r") as f:
         assert f.read() == "Line 1\nLine 2\nLine 3\n"
 
+def _capture_git_patch(repo, rel_path, new_content):
+    """Produce a real `git diff` patch (carrying the `index <blob>..<blob>`
+    ancestor SHAs) for editing rel_path to new_content, then restore the file.
+    Mirrors what finalize_worktree_patch emits from a worker worktree."""
+    abs_path = os.path.join(repo, rel_path)
+    with open(abs_path, "r") as f:
+        original = f.read()
+    try:
+        with open(abs_path, "w") as f:
+            f.write(new_content)
+        p = subprocess.run(
+            ["git", "diff", "--no-color", "--", rel_path],
+            cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+        )
+        return p.stdout
+    finally:
+        with open(abs_path, "w") as f:
+            f.write(original)
+
+
+def test_apply_worker_patch_conflict_restores_tree(temp_git_repo):
+    """A genuinely conflicting patch must FAIL loudly (no lenient force-land)
+    AND leave the working tree byte-identical -- git apply --3way writes
+    conflict markers and returns non-zero on a real conflict, so the harness
+    must restore the pre-apply bytes. This guards audit finding #8: a stale
+    diff never silently corrupts a file that a concurrent edit already moved."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = temp_git_repo
+    session = ConversationalSession(cfg)
+
+    # Worker patch (real git diff, has an index line) that rewrites Line 2.
+    worker_patch = _capture_git_patch(temp_git_repo, "base.txt", "Line 1\nLine 2 WORKER\nLine 3\n")
+    assert "index " in worker_patch  # ancestor blob SHAs present
+
+    # A conflicting edit landed on the SAME line since the worker branched.
+    base_filepath = os.path.join(temp_git_repo, "base.txt")
+    local_content = "Line 1\nLine 2 LOCAL\nLine 3\n"
+    with open(base_filepath, "w") as f:
+        f.write(local_content)
+
+    artifacts = [{"type": "patch", "payload": {"files": ["base.txt"], "unified_diff": worker_patch}}]
+    applied, files, msg = session._apply_worker_patch(artifacts)
+
+    assert applied is False
+    assert "patch did not apply cleanly" in msg
+    # Tree restored exactly -- no conflict markers, no half-applied worker hunk.
+    with open(base_filepath, "r") as f:
+        restored = f.read()
+    assert restored == local_content
+    assert "<<<<<<<" not in restored
+    assert "WORKER" not in restored
+
+
 def test_apply_worker_patch_no_patch_artifact(temp_git_repo):
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     cfg.repo = temp_git_repo

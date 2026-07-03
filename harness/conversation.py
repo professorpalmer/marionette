@@ -348,6 +348,14 @@ class ConversationalSession:
         # silently corrupting. (The harness is a local single-user tool.)
         self._busy = threading.Lock()
         self._busy_since = 0.0  # monotonic time the lock was acquired (0 = free)
+        # Generation guard for the single-writer lock. The watchdog can force-
+        # release a wedged turn's _busy so drain/new turns recover (audit finding
+        # #6); the generation lets the reaped turn's own finally detect it was
+        # reaped and skip its release, so it can never free a lock a LATER turn
+        # now holds (which would break the single-writer invariant). _busy_meta
+        # guards these two fields and the release decision.
+        self._busy_gen = 0
+        self._busy_meta = threading.Lock()
         # cooperative cancel: set by the server when the SSE client disconnects
         # so run_auto halts promptly instead of burning budget for a gone client.
         self._cancel = threading.Event()
@@ -402,6 +410,13 @@ class ConversationalSession:
         # renders them uniformly. Merged into /api/swarm/live.
         self._local_jobs: dict[str, dict] = {}
         self._local_jobs_lock = threading.Lock()
+        # In-flight implement objectives, so the same objective cannot be
+        # dispatched concurrently (audit finding #2). The "one objective -> one
+        # worker / disjoint file sets" rule lived only in the system prompt; this
+        # enforces it in code, which stops the PATCH-DID-NOT-APPLY re-dispatch
+        # loop where a duplicate worker races the original against a moving tree.
+        self._inflight_objectives: set[str] = set()
+        self._inflight_lock = threading.Lock()
         # Per-message CodeGraph slice cache. The codegraph_context() call is a
         # blocking Node subprocess (~270-500ms) -- recomputing it on every step
         # of a multi-step turn (same query) is pure dead time stacked in front of
@@ -1358,17 +1373,23 @@ class ConversationalSession:
             held_for = _t.monotonic() - self._busy_since if self._busy_since else 0.0
             stale = self._busy_since and held_for > 1.5 and self._state == "idle"
             if stale:
-                try:
-                    self._busy.release()
-                except RuntimeError:
-                    pass
+                # Advance the generation as we force-release so the leaked holder's
+                # own finally (if it ever runs) treats its release as a no-op and
+                # cannot free the lock this new turn is about to take.
+                with self._busy_meta:
+                    self._busy_gen += 1
+                    self._busy_since = 0.0
+                    try:
+                        self._busy.release()
+                    except RuntimeError:
+                        pass
                 if not self._busy.acquire(blocking=False):
                     yield ConvEvent("error", {"error": "session busy: another request is in flight"})
                     return
             else:
                 yield ConvEvent("error", {"error": "session busy: another request is in flight"})
                 return
-        self._busy_since = __import__("time").monotonic()
+        busy_gen = self._mark_busy_acquired()
         if not resume and self._is_correction(user_message):
             self._corrections.append(user_message)
         original_sys = self._history[0]["content"]
@@ -1445,8 +1466,7 @@ class ConversationalSession:
                 yield ev
         finally:
             self._history[0]["content"] = original_sys
-            self._busy_since = 0.0
-            self._busy.release()
+            self._release_busy(busy_gen)
 
     def _send_locked(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:
         self._state = "thinking"
@@ -2616,7 +2636,23 @@ class ConversationalSession:
                             "mode": engine,
                         })
                         
+                        claimed = False
+                        dispatched = False
                         try:
+                            if not self._claim_objective(act.goal):
+                                dedup_msg = (
+                                    "An identical objective is already running in a "
+                                    "background worker -- not dispatching a duplicate. "
+                                    "Wait for the in-flight worker's patch instead of "
+                                    "re-issuing the same edit; duplicate workers race the "
+                                    "same files and cause PATCH-DID-NOT-APPLY."
+                                )
+                                yield ConvEvent("action_result", {
+                                    "id": aid, "status": "skipped", "message": dedup_msg,
+                                })
+                                self._append_action_result(act, aid, f"(run_implement {aid} skipped -- duplicate objective already in flight)", is_native)
+                                continue
+                            claimed = True
                             import uuid
                             short = uuid.uuid4().hex[:8]
                             job_id = f"local-{short}"
@@ -2628,6 +2664,7 @@ class ConversationalSession:
                             _prewarm_worker_imports()
                             # Submit the selected edit engine to the thread pool
                             future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, act.goal, act.adapter or "")
+                            dispatched = True  # worker owns the objective release from here
                             with self._swarm_futures_lock:
                                 self._swarm_futures.add(future)
                             
@@ -2656,6 +2693,11 @@ class ConversationalSession:
                             yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms + 1})
                             return
                         except Exception as e:
+                            # If we claimed the objective but never handed it to a
+                            # worker, release it here -- otherwise it leaks and blocks
+                            # all future dispatch of the same work.
+                            if claimed and not dispatched:
+                                self._release_objective(act.goal)
                             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
                             self._append_action_result(act, aid, f"(run_implement {aid} failed: {e})", is_native)
                         continue
@@ -2892,15 +2934,27 @@ class ConversationalSession:
                             # PyInstaller PYZ archive reader (see fn docs).
                             _prewarm_worker_imports()
                             job_ids_collected = []
+                            skipped_goals = []
                             for sub_goal in goals:
+                                # Dedup within the wave AND against already in-flight
+                                # objectives: a duplicate worker only races the same
+                                # files (audit finding #2). Skip, don't dispatch.
+                                if not self._claim_objective(sub_goal):
+                                    skipped_goals.append(sub_goal)
+                                    continue
                                 short = uuid.uuid4().hex[:8]
                                 job_id = f"local-{short}"
+                                try:
+                                    self._register_local_job(job_id, sub_goal, role="implement")
+                                    # Submit the selected edit engine to the thread pool
+                                    future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, sub_goal, act.adapter or "")
+                                except Exception:
+                                    # Never dispatched -> release so it is not leaked.
+                                    self._release_objective(sub_goal)
+                                    raise
+                                # Dispatched: the worker now owns the objective release.
                                 job_ids_collected.append(job_id)
                                 self._session_job_ids.append(job_id)
-                                self._register_local_job(job_id, sub_goal, role="implement")
-                                
-                                # Submit the selected edit engine to the thread pool
-                                future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, sub_goal, act.adapter or "")
                                 with self._swarm_futures_lock:
                                     self._swarm_futures.add(future)
                                 
@@ -2910,6 +2964,19 @@ class ConversationalSession:
                                             self._swarm_futures.discard(f)
                                     return _cleanup
                                 future.add_done_callback(make_cleanup(future))
+                            
+                            if not job_ids_collected:
+                                # Every goal was a duplicate already in flight.
+                                skip_msg = (
+                                    "All parallel objectives are already running in "
+                                    "background workers -- nothing new dispatched. Wait "
+                                    "for the in-flight workers rather than re-issuing them."
+                                )
+                                yield ConvEvent("action_result", {
+                                    "id": aid, "status": "skipped", "message": skip_msg,
+                                })
+                                self._append_action_result(act, aid, f"(run_parallel {aid} skipped -- all {len(goals)} objectives already in flight)", is_native)
+                                continue
                             
                             # Emit ConvEvent kind="swarm_pending" with {job_ids, objective}
                             yield ConvEvent("swarm_pending", {
@@ -3219,10 +3286,26 @@ class ConversationalSession:
                     self._last_checkpoint_id = checkpoint_id
                     return False, files, f"git apply failed: {err_msg}"
             else:
-                # c. If git apply --check fails (e.g. partial overlap), try git apply --3way
+                # c. --check failed (context drift / partial overlap). Try a REAL
+                # 3-way merge. git apply --3way can leave conflict markers in the
+                # working tree AND return non-zero on a genuine conflict, so we
+                # snapshot every target file first and restore it verbatim if the
+                # merge does not apply. An autonomous re-derive must read clean
+                # source -- never marker-polluted files -- and we must never
+                # clobber an earlier worker's already-landed (unstaged) edit.
+                repo_root = self.config.repo
+                pre_apply_bytes = {}
+                for rel_path in files:
+                    abs_path = os.path.join(repo_root, rel_path)
+                    try:
+                        with open(abs_path, "rb") as snap_f:
+                            pre_apply_bytes[rel_path] = snap_f.read()
+                    except OSError:
+                        pre_apply_bytes[rel_path] = None  # absent pre-apply
+
                 three_way_p = subprocess.run(
                     ["git", "apply", "--3way", temp_path],
-                    cwd=self.config.repo,
+                    cwd=repo_root,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True
@@ -3231,25 +3314,36 @@ class ConversationalSession:
                     self._last_checkpoint_id = checkpoint_id
                     return True, files, "applied with 3way merge"
 
-                # d. Last resort: retry with reduced context matching. A patch
-                # that misses on full context usually drifted because the file
-                # was touched by an earlier, overlapping worker (the common
-                # "duplicate swarm" case) or normal base movement. --recount
-                # tolerates stale hunk line counts; -C1 requires only one line
-                # of surrounding context to match, so an intact hunk still lands
-                # even when its neighbourhood shifted. Still gated by the
-                # checkpoint taken above, so any bad landing is fully undoable.
-                lenient_p = subprocess.run(
-                    ["git", "apply", "--3way", "--recount", "-C1", temp_path],
-                    cwd=self.config.repo,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                if lenient_p.returncode == 0:
-                    self._last_checkpoint_id = checkpoint_id
-                    return True, files, "applied with reduced-context 3way merge"
+                # --3way failed: a genuine content conflict. Restore every target
+                # file to its exact pre-apply bytes so no conflict markers or
+                # half-applied hunks survive for the re-derive.
+                for rel_path, original in pre_apply_bytes.items():
+                    abs_path = os.path.join(repo_root, rel_path)
+                    try:
+                        if original is None:
+                            if os.path.exists(abs_path):
+                                os.remove(abs_path)
+                        else:
+                            with open(abs_path, "wb") as restore_f:
+                                restore_f.write(original)
+                    except OSError:
+                        pass
 
+                # d. --3way is the terminal apply tier -- and it is a REAL 3-way
+                # merge, not context-guessing: our worker patches are produced by
+                # `git diff` (finalize_worktree_patch), so each hunk carries the
+                # `index <blob>..<blob>` ancestor SHAs. git reconstructs the base
+                # blob and merges onto the CURRENT tree, so disjoint hunks land
+                # cleanly even after HEAD moved under a parallel wave, and only a
+                # genuine content conflict fails here.
+                #
+                # We deliberately do NOT fall back to a lenient
+                # `--recount -C1` force. That tier discarded context matching and
+                # could land an intact hunk in the WRONG place after the tree
+                # moved, while reporting success ("reduced-context 3way merge") --
+                # a silent-corruption risk (audit finding #8). A --3way failure is
+                # a true conflict: the correct move is to re-derive the change
+                # against the current file contents, not to force a stale diff.
                 raw = three_way_p.stderr.strip() or check_p.stderr.strip() or "patch did not apply cleanly"
                 # Make the failure actionable for the pilot's keep-alive resume:
                 # the fix is almost never to retry the same stale diff -- it is to
@@ -3496,6 +3590,35 @@ class ConversationalSession:
             "pending_review": pending_review_info
         }
 
+    @staticmethod
+    def _normalize_objective(goal: str) -> str:
+        """Canonical form for objective dedup: whitespace-collapsed, lowercased.
+        Two dispatches that differ only in spacing/case target the same work."""
+        return " ".join((goal or "").split()).lower()
+
+    def _claim_objective(self, goal: str) -> bool:
+        """Atomically reserve an objective for dispatch. Returns False if an
+        identical objective is already in flight (caller must NOT dispatch a
+        duplicate), True if the claim succeeded. Empty objectives are never
+        deduped (nothing meaningful to collide on)."""
+        key = self._normalize_objective(goal)
+        if not key:
+            return True
+        with self._inflight_lock:
+            if key in self._inflight_objectives:
+                return False
+            self._inflight_objectives.add(key)
+            return True
+
+    def _release_objective(self, goal: str) -> None:
+        """Release an in-flight objective once its worker settles so the same
+        work can be legitimately dispatched again later."""
+        key = self._normalize_objective(goal)
+        if not key:
+            return
+        with self._inflight_lock:
+            self._inflight_objectives.discard(key)
+
     def _register_local_job(self, job_id: str, goal: str, role: str = "implement") -> None:
         """Record a dispatched provider-native worker so it appears in the swarm
         panel while it runs (the panel otherwise only sees Puppetmaster store
@@ -3553,10 +3676,19 @@ class ConversationalSession:
 
     def _run_provider_worker_background(self, job_id: str, objective: str, requested_adapter: str = "") -> None:
         try:
-            from harness.edit_engines import run_edit_worker
+            from harness.worker import WorkerResult
 
-            res = run_edit_worker(self.config, objective, requested_adapter=requested_adapter)
-            
+            # Bounded run so a wedged worker frees its _swarm_pool slot on the
+            # hard deadline instead of occupying it forever (audit finding #4).
+            res = self._run_edit_worker_bounded(objective, requested_adapter)
+            if res is None:
+                deadline = int(self._worker_deadline_seconds())
+                res = WorkerResult(
+                    ok=False,
+                    error=f"worker exceeded {deadline}s wall-clock deadline",
+                    summary=f"Worker exceeded its {deadline}s deadline and was abandoned to free the pool slot.",
+                )
+
             if not res.ok:
                 res_dict = {
                     "job_id": job_id,
@@ -3583,10 +3715,14 @@ class ConversationalSession:
                     }
                 })
                 
-                tokens_in = 0
+                tokens_in = res.tokens_in
                 tokens_out = res.tokens_out
                 with self._apply_lock:
-                    self._tokens_used += tokens_out
+                    # Attribute the worker's FULL spend (prompt + completion) to
+                    # the parent session's cost meter -- prompt tokens were being
+                    # dropped here, undercounting every implement worker.
+                    self._tokens_used += tokens_out + tokens_in
+                    self._tokens_in += tokens_in
                 
                 patch_summary = ""
                 if res.files_changed:
@@ -3677,7 +3813,7 @@ class ConversationalSession:
                 ok=not res_dict.get("error"),
                 summary=res_dict.get("summary", ""),
                 files=res_dict.get("files") or [],
-                tokens=res_dict.get("tokens_out", 0),
+                tokens=res_dict.get("tokens_out", 0) + res_dict.get("tokens_in", 0),
             )
             self._swarm_results.put({
                 "job_id": job_id,
@@ -3708,6 +3844,10 @@ class ConversationalSession:
                 },
                 "state_dir": None
             })
+        finally:
+            # Free the objective for legitimate future dispatch regardless of
+            # how this worker settled (applied, failed, or crashed).
+            self._release_objective(objective)
 
     def _run_distill_and_wiki_background(self, objective: str) -> None:
         try:
@@ -3787,6 +3927,111 @@ class ConversationalSession:
                 import shutil
                 shutil.rmtree(state_dir, ignore_errors=True)
 
+    def _mark_busy_acquired(self) -> int:
+        """Record that the caller now holds _busy and return this turn's
+        generation token. The token is what the finally passes to _release_busy
+        so a reaped turn never releases a lock a later turn owns."""
+        import time as _t
+        with self._busy_meta:
+            self._busy_gen += 1
+            self._busy_since = _t.monotonic()
+            return self._busy_gen
+
+    def _release_busy(self, gen: int) -> None:
+        """Release _busy only if this turn (identified by gen) still owns it. If a
+        watchdog reaped the turn, the generation advanced and this is a no-op --
+        preventing a double-release that would corrupt the single-writer lock."""
+        with self._busy_meta:
+            if gen != self._busy_gen or not self._busy_since:
+                return  # reaped (or already released) -- not ours to release
+            self._busy_since = 0.0
+            try:
+                self._busy.release()
+            except RuntimeError:
+                pass
+
+    def _turn_deadline_seconds(self) -> float:
+        """Hard wall-clock ceiling after which a still-held _busy is assumed
+        wedged and reaped. Generous by default so a legitimately long turn is
+        never clobbered; 0 disables reaping."""
+        try:
+            v = float(os.environ.get("HARNESS_TURN_DEADLINE_SECONDS", "").strip() or 600)
+        except ValueError:
+            v = 600.0
+        return v if v > 0 else 0.0
+
+    def _reap_stuck_turn(self) -> bool:
+        """Force-recover a wedged turn: if _busy has been held past the hard turn
+        deadline, a step-boundary budget check cannot help (the turn is stuck
+        mid-call), so we advance the generation, force-release _busy, and reset
+        state. Queued worker patches can then surface and new turns proceed. The
+        generous deadline keeps this from ever reaping a healthy long turn (audit
+        finding #6). Returns True if a reap happened."""
+        deadline = self._turn_deadline_seconds()
+        if not deadline:
+            return False
+        import time as _t
+        with self._busy_meta:
+            if not self._busy_since:
+                return False
+            held = _t.monotonic() - self._busy_since
+            if held <= deadline:
+                return False
+            # Reap: bump the generation so the stale holder's _release_busy is a
+            # no-op, then free the lock and reset visible state.
+            self._busy_gen += 1
+            self._busy_since = 0.0
+            try:
+                self._busy.release()
+            except RuntimeError:
+                return False
+        try:
+            self._state = "idle"
+        except Exception:
+            pass
+        print(f"reaped wedged turn: _busy held {held:.0f}s past {deadline:.0f}s deadline", file=sys.stderr)
+        return True
+
+    def _worker_deadline_seconds(self) -> float:
+        """Hard wall-clock ceiling for a single background edit worker. Bounds a
+        wedged provider call or runaway agentic loop so it cannot occupy a
+        _swarm_pool slot forever (audit finding #4). 0 disables the bound."""
+        try:
+            v = float(os.environ.get("HARNESS_WORKER_DEADLINE_SECONDS", "").strip() or 900)
+        except ValueError:
+            v = 900.0
+        return v if v > 0 else 0.0
+
+    def _run_edit_worker_bounded(self, objective: str, requested_adapter: str):
+        """Run the edit worker under a hard wall-clock deadline. The work runs in
+        a daemon thread; if it blows the deadline we return None so the caller can
+        free its _swarm_pool slot immediately. The orphaned worker thread is a
+        daemon (dies with the process) and its worktree is reclaimed by the
+        engine's own managed_worktree/finally, so the slot -- the scarce resource
+        -- is what we protect here."""
+        from harness.edit_engines import run_edit_worker
+        deadline = self._worker_deadline_seconds()
+        box: dict = {}
+        done = threading.Event()
+
+        def _run():
+            try:
+                box["res"] = run_edit_worker(self.config, objective, requested_adapter=requested_adapter)
+            except Exception as exc:  # surfaced to the caller after join
+                box["exc"] = exc
+            finally:
+                done.set()
+
+        t = threading.Thread(target=_run, name="edit-worker-bounded", daemon=True)
+        t.start()
+        if not deadline:
+            done.wait()
+        elif not done.wait(timeout=deadline):
+            return None  # timed out -> free the pool slot
+        if "exc" in box:
+            raise box["exc"]
+        return box.get("res")
+
     def drain_swarm_results(self) -> Iterator[ConvEvent]:
         # Drain finished background-swarm results, appending follow-up messages to
         # history under the single-writer _busy lock. CRITICAL: acquire NON-blocking.
@@ -3796,6 +4041,12 @@ class ConversationalSession:
         # forever / app hung" symptom. If we can't get the lock right now, just
         # return nothing; the next poll (2.5s later) drains it once the turn frees
         # the lock. Results stay queued, so nothing is lost.
+        #
+        # But a turn that WEDGED (a hung provider call the step-boundary budget
+        # check can't interrupt) would hold _busy forever and starve this drain --
+        # completed worker patches would never surface. The reaper force-recovers
+        # such a turn past the hard deadline so the app self-heals (audit #6).
+        self._reap_stuck_turn()
         if not self._busy.acquire(blocking=False):
             return
         try:
