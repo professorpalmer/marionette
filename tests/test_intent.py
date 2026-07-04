@@ -28,6 +28,48 @@ def test_infer_roles_narrow_goal_is_single_explorer():
     assert infer_roles("") == ["explore"]
 
 
+def test_infer_roles_broadened_natural_language_fans_out():
+    # Common "look at the whole thing" phrasings that previously collapsed to a
+    # lone explorer must now fan out across every lens.
+    for goal in (
+        "look through the codebase for bugs",
+        "find all the dead code and slop",
+        "sweep the code base for smells",
+        "find signs of vibe code everywhere",
+    ):
+        roles = infer_roles(goal)
+        assert len(roles) == 5, goal
+        assert set(roles) == set(KNOWN_ROLES), goal
+
+
+def test_infer_roles_subsystem_goal_gets_focused_team():
+    # A goal spanning a whole area (but not a full audit) gets a focused
+    # multi-lens team, not a single explorer.
+    for goal in (
+        "how does the worker system work",
+        "understand the queue layer",
+        "investigate the swarm dispatch module",
+        "walk me through the architecture",
+    ):
+        roles = infer_roles(goal)
+        assert roles == ["explore", "conflict-auditor", "pipeline-mapper"], goal
+
+
+def test_infer_roles_pinpoint_stays_single_even_with_area_word():
+    # A pinpoint lookup that happens to mention a subsystem word must stay one
+    # explorer -- pinpoint beats breadth.
+    assert infer_roles("where is the queue system defined") == ["explore"]
+    assert infer_roles("which file has the worker module") == ["explore"]
+
+
+def test_infer_roles_locator_beats_broad_word():
+    # A locator query must stay a single explorer even when it contains a broad
+    # word like "find all" -- pinpoint precedes the audit fan-out.
+    assert infer_roles("find all callers of send()") == ["explore"]
+    assert infer_roles("who calls enqueue_prompt") == ["explore"]
+    assert infer_roles("usages of ROLE_LENSES across the codebase") == ["explore"]
+
+
 def test_role_lenses_cover_every_known_role():
     # Every role must carry a distinct lens so multi-role swarms don't duplicate.
     assert set(ROLE_LENSES) == set(KNOWN_ROLES)

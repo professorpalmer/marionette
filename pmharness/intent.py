@@ -72,8 +72,39 @@ _BROAD_AUDIT_SIGNALS = (
     "scalab", "improve", "better", "health", "tech debt", "weakness",
     "vulnerab", "overall", "comprehensive", "entire", "whole", "deep dive",
     "harden", "best practice",
+    # Broadened so common natural-language "look at the whole thing" asks fan out
+    # instead of collapsing to a lone explorer. These are the phrasings users
+    # actually type for a platform-wide pass.
+    "bug", "bugs", "slop", "vibe code", "dead code", "smell", "refactor",
+    "codebase", "code base", "whole system", "look through", "look over",
+    "go through", "comb through", "sweep", "find all", "find any",
+    "find signs", "everywhere", "anywhere", "across the",
 )
 _FLOW_SIGNALS = ("pipeline", "data flow", "control flow", "end to end", "end-to-end", "trace")
+
+# Mid-breadth: a goal that clearly spans a whole subsystem/area but is not a
+# full-platform audit gets a focused multi-lens team (structure + conflicts +
+# flow) rather than a single explorer. Deliberately smaller than the full audit.
+_BREADTH_ROLES = ["explore", "conflict-auditor", "pipeline-mapper"]
+
+# Signals that a goal is BROAD in scope (names a whole area / open-ended verb)
+# even without an audit keyword: "how does the X system work", "understand the
+# worker layer", "investigate the queue", "map the architecture".
+_BREADTH_SIGNALS = (
+    "system", "subsystem", "architecture", "arch ", "layer", "module",
+    "how does", "how do", "understand", "figure out", "investigate",
+    "map the", "map out", "explain the", "walk me through", "give me a tour",
+    "the whole", "all the ", "each of the",
+)
+
+# Pinpoint signals: a narrow, single-facet lookup that should stay ONE explorer
+# regardless of the above (a specific symbol, a "where is X" locator, one file).
+_PINPOINT_SIGNALS = (
+    "where is", "where's", "where are", "find the definition", "definition of",
+    "line ", "defined", "which file", "what file", "one function", "this function",
+    "callers of", "caller of", "usages of", "uses of", "references to",
+    "who calls", "what calls", "call sites",
+)
 
 # The full audit fan-out, ordered by descending payoff for a broad platform pass.
 _FULL_AUDIT_ROLES = [
@@ -94,10 +125,34 @@ def infer_roles(goal: str) -> list:
     deterministic -- a function of the goal text only.
     """
     text = (goal or "").lower()
+    # PINPOINT FIRST: a locator query ("callers of X", "where is X", "usages of
+    # X", or a bare "symbol()" reference) is a single-facet lookup and must stay
+    # one explorer even if it also contains a broad word like "find all". This
+    # check precedes the audit fan-out so "find all callers of send()" does not
+    # spin up five workers for what is really one graph query.
+    _LOCATOR_PINPOINT = (
+        "callers of", "caller of", "usages of", "uses of", "references to",
+        "who calls", "what calls", "call sites", "where is", "where's",
+        "where are", "definition of", "which file", "what file",
+    )
+    if any(sig in text for sig in _LOCATOR_PINPOINT):
+        return ["explore"]
+    # A full-platform audit/quality pass fans out across every lens.
     if any(signal in text for signal in _BROAD_AUDIT_SIGNALS):
         return list(_FULL_AUDIT_ROLES)
+    # A flow-shaped goal adds the pipeline lens to the explorer.
     if any(signal in text for signal in _FLOW_SIGNALS):
         return ["explore", "pipeline-mapper"]
+    # A pinpoint lookup (specific symbol / "where is X" / one file) stays a
+    # single explorer even if it happens to mention a subsystem word.
+    if any(signal in text for signal in _PINPOINT_SIGNALS):
+        return ["explore"]
+    # Otherwise: a goal that spans a whole area (names a system/layer/module or
+    # uses an open-ended "how does / understand / investigate" verb) gets a
+    # focused multi-lens team instead of a lone explorer -- this is the common
+    # "look at the worker system" ask that previously collapsed to one worker.
+    if any(signal in text for signal in _BREADTH_SIGNALS):
+        return list(_BREADTH_ROLES)
     return ["explore"]
 
 
