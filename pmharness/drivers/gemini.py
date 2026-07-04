@@ -112,14 +112,18 @@ class GeminiDriver:
             usage = raw.get("usageMetadata", {}) or {}
             tokens_in = int(usage.get("promptTokenCount", 0) or 0)
             tokens_out = int(usage.get("candidatesTokenCount", 0) or 0)
-            
+            # Gemini 2.5 caches stable prompt prefixes IMPLICITLY (no request
+            # flag needed). Surface the cached-token count so the cost meter can
+            # credit the savings, matching the OpenAI driver's cache_read_tokens.
+            cache_read = int(usage.get("cachedContentTokenCount", 0) or 0)
+
             return DriverResponse(
                 text=text,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 latency_ms=latency,
                 model=self.name,
-                meta={}
+                meta={"cache_read_tokens": cache_read} if cache_read else {}
             )
 
         return with_retry(_call, sleep=self._sleep)
@@ -311,6 +315,8 @@ class GeminiDriver:
             usage = raw.get("usageMetadata", {}) or {}
             tokens_in = int(usage.get("promptTokenCount", 0) or 0)
             tokens_out = int(usage.get("candidatesTokenCount", 0) or 0)
+            # Implicit-cache credit (see chat()): surface cached prefix tokens.
+            cache_read = int(usage.get("cachedContentTokenCount", 0) or 0)
 
             return DriverResponse(
                 text=full_text,
@@ -321,7 +327,8 @@ class GeminiDriver:
                 meta={
                     "tool_calls": tool_calls,
                     "finish_reason": finish_reason,
-                    "reasoning": ""
+                    "reasoning": "",
+                    "cache_read_tokens": cache_read,
                 }
             )
 

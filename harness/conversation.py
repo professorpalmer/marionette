@@ -2557,9 +2557,25 @@ class ConversationalSession:
                         yield ConvEvent("swarm_auth_failure", {
                             "id": aid, "job_id": result.job_id, "message": auth_failure,
                         })
+                    # Signal-first ordering: a real swarm returns routing +
+                    # verification "plumbing" artifacts BEFORE the actual
+                    # finding/risk/decision signal. A naive artifacts[:8] slice
+                    # was getting entirely consumed by 5 routing + 5 verification
+                    # entries, so a swarm that produced a dozen genuine findings
+                    # looked like "only verifications, no findings." Hoist signal
+                    # to the front and give it real headroom so the pilot always
+                    # sees the findings the swarm actually produced.
+                    _SIGNAL = {"finding", "risk", "decision"}
+                    _all_arts = list(result.artifacts)
+                    _signal = [a for a in _all_arts if str(a.get("type")) in _SIGNAL]
+                    _plumbing = [a for a in _all_arts if str(a.get("type")) not in _SIGNAL]
+                    ordered = _signal + _plumbing
+                    # Show ALL signal artifacts (capped generously) plus a little
+                    # plumbing for context, rather than a blind first-N slice.
+                    digest_arts = (_signal[:20] + _plumbing[:3]) if _signal else _plumbing[:8]
                     yield ConvEvent("action_result", {
                         "id": aid, "job_id": result.job_id, "num": result.num_artifacts,
-                        "types": result.artifact_types, "artifacts": result.artifacts[:8],
+                        "types": result.artifact_types, "artifacts": ordered[:12],
                         "adapter": result.adapter, "mode": result.mode,
                         "auth_failure": auth_failure,
                     })
@@ -2569,7 +2585,7 @@ class ConversationalSession:
                             a for a in result.artifacts if a.get("type") != "verification")
                     # 5. Feed DISTILLED artifacts back into the transcript (not raw files).
                     digest = "\n".join(f"  - [{a['type']}] {a['headline']}"
-                                       for a in result.artifacts[:8]) or "  (no artifacts)"
+                                       for a in digest_arts) or "  (no artifacts)"
                     stall = ""
                     if demo_swarms >= 2:
                         stall = ("\n(NOTE: swarms are running on the DEMO substrate, which "
