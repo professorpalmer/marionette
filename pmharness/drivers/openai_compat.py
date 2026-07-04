@@ -54,6 +54,22 @@ class OpenAICompatDriver:
             raise RuntimeError(f"missing API key in env var {self.api_key_env}")
         return key
 
+    def _reasoning_unsupported(self, code: int, detail: str) -> bool:
+        """True when an endpoint rejected the OpenRouter-style `reasoning` field.
+
+        Many OpenAI-compatible endpoints/models do not accept the `reasoning`
+        parameter and return a 400 'Unknown parameter: reasoning'. When we see
+        that, we disable reasoning for the rest of the session and let the caller
+        retry once -- so a model that lacks reasoning support self-heals instead
+        of hard-failing every pilot turn.
+        """
+        if code != 400 or not self.enable_reasoning:
+            return False
+        d = (detail or "").lower()
+        return "reasoning" in d and ("unknown parameter" in d or "unsupported" in d
+                                     or "invalid_request" in d or "not supported" in d
+                                     or "unexpected" in d)
+
     def complete(self, task_prompt: str, *, system: str = SYSTEM_PROMPT) -> DriverResponse:
         url = f"{self.base_url}/chat/completions"
         body = {
@@ -142,17 +158,37 @@ class OpenAICompatDriver:
         headers.update(self.extra_headers)
 
         def _call() -> DriverResponse:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            nonlocal data
             t0 = time.time()
             try:
+                req = urllib.request.Request(url, data=data, headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
-                return DriverResponse(
-                    text="", model=self.name, error=f"HTTP {e.code}: {detail}",
-                    latency_ms=(time.time() - t0) * 1000.0,
-                )
+                if self._reasoning_unsupported(e.code, detail) and body.get("reasoning") is not None:
+                    # Drop the unsupported reasoning field for the rest of the
+                    # session and retry once so the pilot turn succeeds.
+                    self.enable_reasoning = False
+                    body.pop("reasoning", None)
+                    data = json.dumps(body).encode("utf-8")
+                    try:
+                        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+                        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                            raw = json.loads(resp.read().decode("utf-8"))
+                    except urllib.error.HTTPError as e2:
+                        d2 = e2.read().decode("utf-8", "replace")[:500]
+                        return DriverResponse(text="", model=self.name,
+                                              error=f"HTTP {e2.code}: {d2}",
+                                              latency_ms=(time.time() - t0) * 1000.0)
+                    except Exception as e2:
+                        return DriverResponse(text="", model=self.name, error=repr(e2),
+                                              latency_ms=(time.time() - t0) * 1000.0)
+                else:
+                    return DriverResponse(
+                        text="", model=self.name, error=f"HTTP {e.code}: {detail}",
+                        latency_ms=(time.time() - t0) * 1000.0,
+                    )
             except Exception as e:
                 return DriverResponse(
                     text="", model=self.name, error=repr(e),
@@ -315,6 +351,14 @@ class OpenAICompatDriver:
 
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
+                # Endpoint rejected the `reasoning` field: disable it for the
+                # session and fall back to the non-streaming chat() (which shares
+                # the retry path) so the turn still succeeds. Only safe before any
+                # tokens streamed -- otherwise a partial stream would double-emit.
+                if (not stream_started and self._reasoning_unsupported(e.code, detail)
+                        and body.get("reasoning") is not None):
+                    self.enable_reasoning = False
+                    return self.chat(messages, tools=tools, system=system)
                 return DriverResponse(
                     text="", model=self.name, error=f"HTTP {e.code}: {detail}",
                     latency_ms=(time.time() - t0) * 1000.0,
