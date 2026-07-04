@@ -176,18 +176,37 @@ def _compact_artifact(a: Any) -> dict:
     """Reduce a Puppetmaster Artifact to a small dict suitable for feeding back
     to a driver model on a follow-up turn without blowing context."""
     payload = getattr(a, "payload", {}) or {}
-    headline = (
-        payload.get("claim")
-        or payload.get("decision")
-        or payload.get("risk")
-        or payload.get("check")
-        or payload.get("summary")
-        or payload.get("change")
-        or ""
+    # Priority-ordered keys where a real finding's text may live. Broadened so a
+    # worker that put its analysis under a non-canonical key (report, message,
+    # etc.) is never surfaced as an empty headline and silently dropped.
+    _headline_keys = (
+        "claim", "decision", "risk", "check", "summary", "change",
+        "report", "mitigation", "why", "result", "observation",
+        "note", "detail", "message", "text", "body", "content",
     )
+    headline = ""
+    for _k in _headline_keys:
+        _v = payload.get(_k)
+        if isinstance(_v, str) and _v.strip():
+            headline = _v
+            break
+    if not (isinstance(headline, str) and headline.strip()):
+        # Last resort: first non-empty string value anywhere in the payload so a
+        # genuine finding is NEVER surfaced as empty.
+        for _v in payload.values():
+            if isinstance(_v, str) and _v.strip():
+                headline = _v
+                break
+    # empty_headline: True when a payload existed but yielded no usable text, so
+    # the digest can be honest about "present but empty" vs "genuinely no
+    # artifact". After the broadening above this should essentially never happen.
+    empty_headline = not (isinstance(headline, str) and headline.strip())
+    if empty_headline and payload:
+        headline = str(getattr(a, "type", "") or "artifact")
     return {
         "type": str(getattr(a, "type", "")),
         "headline": str(headline)[:240],
+        "empty_headline": empty_headline,
         "confidence": getattr(a, "confidence", None),
         # Carry the machine-readable failure tag so consumers can branch on a
         # provider auth rejection (auth_failed:401/403) instead of mistaking it
