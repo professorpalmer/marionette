@@ -335,6 +335,16 @@ class ConversationalSession:
         self._steer_queue = collections.deque()
         self._steer_lock = threading.Lock()
         self._steer_pending = False
+        # PROMPT QUEUE: distinct from and complementary to the steer queue.
+        # steer = an OUT-OF-BAND interrupt that redirects the CURRENT running turn
+        # (injected into the last tool result or delivered at finalization).
+        # prompt_queue = a "playlist" of FULL user prompts that each run as their
+        # OWN complete turn, one after the previous fully finishes. Items are
+        # editable/removable/reorderable BEFORE they run. Drained at the turn-
+        # completion boundary AFTER any pending steers so steer keeps priority.
+        # Shape: [{"id": str, "text": str}, ...]. Never raises.
+        self._prompt_queue: list[dict] = []
+        self._prompt_queue_lock = threading.Lock()
         # self-learning: accumulate this session's real findings for distillation
         self._session_findings: list = []
         self._first_objective: str = ""
@@ -1295,6 +1305,104 @@ class ConversationalSession:
             self._steer_queue.clear()
             return items
 
+    # ------------------------------------------------------------------
+    # Prompt queue: sequential playlist of full user turns. Distinct from
+    # the steer queue (which is a mid-turn interrupt). See __init__ note.
+    # All methods are lock-guarded and never raise; they return neutral
+    # values on unexpected input rather than exploding the caller.
+    # ------------------------------------------------------------------
+    def enqueue_prompt(self, text: str) -> dict:
+        """Append a full prompt to the queue and return the created item.
+
+        Empty/whitespace-only text is rejected with an empty item -- callers
+        (server / UI) validate before invoking, this is defense in depth.
+        """
+        try:
+            t = (text or "").strip()
+            if not t:
+                return {"id": "", "text": ""}
+            import uuid as _uuid
+            item = {"id": _uuid.uuid4().hex[:8], "text": t}
+            with self._prompt_queue_lock:
+                self._prompt_queue.append(item)
+            return dict(item)
+        except Exception:
+            return {"id": "", "text": ""}
+
+    def list_prompts(self) -> list:
+        """Return a snapshot copy of the queue in order."""
+        try:
+            with self._prompt_queue_lock:
+                return [dict(x) for x in self._prompt_queue]
+        except Exception:
+            return []
+
+    def remove_prompt(self, id: str) -> bool:
+        """Remove the item with the given id. Returns False if not found."""
+        try:
+            if not id:
+                return False
+            with self._prompt_queue_lock:
+                for i, it in enumerate(self._prompt_queue):
+                    if it.get("id") == id:
+                        del self._prompt_queue[i]
+                        return True
+                return False
+        except Exception:
+            return False
+
+    def reorder_prompts(self, ordered_ids: list) -> list:
+        """Reorder the queue to match the given id order.
+
+        Unknown ids are ignored. Any items whose ids are NOT mentioned in
+        ordered_ids are appended at the end in their existing relative order.
+        Returns the new snapshot.
+        """
+        try:
+            ids = [str(x) for x in (ordered_ids or []) if x]
+            with self._prompt_queue_lock:
+                by_id = {it.get("id"): it for it in self._prompt_queue}
+                new_order: list[dict] = []
+                seen: set = set()
+                for id_ in ids:
+                    it = by_id.get(id_)
+                    if it is not None and id_ not in seen:
+                        new_order.append(it)
+                        seen.add(id_)
+                for it in self._prompt_queue:
+                    iid = it.get("id")
+                    if iid not in seen:
+                        new_order.append(it)
+                        seen.add(iid)
+                self._prompt_queue = new_order
+                return [dict(x) for x in self._prompt_queue]
+        except Exception:
+            with self._prompt_queue_lock:
+                return [dict(x) for x in self._prompt_queue]
+
+    def clear_prompts(self) -> int:
+        """Empty the queue. Returns the number of items removed."""
+        try:
+            with self._prompt_queue_lock:
+                n = len(self._prompt_queue)
+                self._prompt_queue = []
+                return n
+        except Exception:
+            return 0
+
+    def _pop_next_prompt(self) -> dict:
+        """Pop and return the first queued prompt, or {} if the queue is empty.
+
+        Internal helper for the turn-completion drain. Never raises.
+        """
+        try:
+            with self._prompt_queue_lock:
+                if not self._prompt_queue:
+                    return {}
+                return self._prompt_queue.pop(0)
+        except Exception:
+            return {}
+
     @staticmethod
     def _steer_marker(text: str) -> str:
         """Single definition of the OUT-OF-BAND USER MESSAGE marker wrapping a
@@ -1932,6 +2040,23 @@ class ConversationalSession:
                         yield ConvEvent("steer", {"text": steer})
                         self._history.append({"role": "user", "content": self._steer_marker(steer)})
                     self._steer_pending = False
+                    continue
+                # Steer took priority above; only if no steer was pending do we
+                # look at the PROMPT QUEUE ("playlist"). A queued prompt runs as
+                # a genuine next-turn user message -- NOT wrapped in the OUT-OF-
+                # BAND marker used for steer -- so it flows through the pilot as
+                # a normal fresh turn. The `continue` re-enters the same step
+                # loop, which is bounded by the existing HARD_PILOT_STEPS /
+                # max_steps cap; the queue cannot make the loop unbounded.
+                queued = self._pop_next_prompt()
+                if queued and queued.get("text"):
+                    yield ConvEvent("queued_prompt", {"id": queued.get("id", ""), "text": queued.get("text", "")})
+                    self._history.append({"role": "user", "content": queued["text"]})
+                    # Refresh the "current user message" reference so downstream
+                    # per-turn hooks (compaction, ingest, budget) attribute work
+                    # to the newly-running queued prompt instead of the previous
+                    # completed one.
+                    user_message = queued["text"]
                     continue
                 self._maybe_ingest(user_message, turn_prose, turn_findings)
                 yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})

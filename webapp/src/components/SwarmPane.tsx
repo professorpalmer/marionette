@@ -566,6 +566,28 @@ export default function SwarmPane() {
               </div>
             )}
 
+            {/* Single-worker / provider jobs (run_implement, run_parallel) have
+                NO routing artifact, so the per-worker cost row above never
+                rendered for them -- the dash showed a single-worker swarm with no
+                price. Synthesize a cost/model line from the job fields so every
+                job surfaces its spend, matching multi-worker swarms. */}
+            {routingArts.length === 0 && ((j.est_cost_usd ?? 0) > 0 || (j.tokens ?? 0) > 0) && (
+              <div className="p-2 bg-panel rounded border border-edge/45 text-[10px] flex items-center justify-between text-muted">
+                <span className="flex items-center gap-1.5 truncate max-w-[72%]">
+                  <Cpu size={11} className="text-accent shrink-0" />
+                  <span className="text-txt font-mono font-medium truncate" title={j.adapter}>
+                    {j.adapter || "provider worker"}
+                  </span>
+                </span>
+                <span className="flex items-center gap-2 shrink-0 font-mono">
+                  {(j.tokens ?? 0) > 0 && <span className="text-faint">{j.tokens!.toLocaleString()}t</span>}
+                  <span className="text-good font-semibold">
+                    {(j.est_cost_usd ?? 0) > 0 ? `$${Number(j.est_cost_usd).toFixed(4)}` : "$0"}
+                  </span>
+                </span>
+              </div>
+            )}
+
             {/* Workers -- with a completion progress bar so a wave of parallel
                 workers reads as a single advancing unit. */}
             {tasks.length > 0 && (

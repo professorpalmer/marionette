@@ -960,6 +960,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/sessions/create", "/api/sessions/switch",
                       "/api/sessions/delete", "/api/sessions/archive", "/api/sessions/rename",
                       "/api/session/interrupt", "/api/session/compact", "/api/session/steer",
+                      "/api/session/queue", "/api/session/queue/reorder",
                       "/api/session/persist", "/api/restart",
                       "/api/swarm/cancel",
                       "/api/mcp/add", "/api/mcp/remove", "/api/mcp/start",
@@ -1576,6 +1577,54 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, json.dumps({"error": "no active session"}))
             _pilot.enqueue_steer(text)
             return self._send(200, json.dumps({"ok": True}))
+        if path == "/api/session/queue":
+            # PROMPT QUEUE mutations, mirroring the auth/token guard already
+            # applied to every POST. Distinct from /api/session/steer: the queue
+            # is a "playlist" of FULL user prompts that each run as their own
+            # complete turn once the current one finishes. Never raises.
+            if not _pilot:
+                return self._send(404, json.dumps({"error": "no active session"}))
+            # DELETE-style body: {clear: true} clears the queue; {id: "..."}
+            # removes a single item. We accept these via POST so the browser
+            # transport shim (which lacks a DELETE helper) can drive both.
+            if body.get("clear") is True:
+                try:
+                    n = _pilot.clear_prompts()
+                except Exception:
+                    n = 0
+                return self._send(200, json.dumps({"ok": True, "cleared": n}))
+            rid = (body.get("id") or "").strip() if isinstance(body.get("id"), str) else ""
+            if rid:
+                try:
+                    ok = _pilot.remove_prompt(rid)
+                except Exception:
+                    ok = False
+                return self._send(200, json.dumps({"ok": bool(ok), "id": rid}))
+            # Otherwise: enqueue a new prompt.
+            text = (body.get("text") or "").strip()
+            if not text:
+                return self._send(400, json.dumps({"error": "missing text"}))
+            try:
+                item = _pilot.enqueue_prompt(text)
+            except Exception as e:
+                return self._send(500, json.dumps({"error": str(e)}))
+            if not item or not item.get("id"):
+                return self._send(400, json.dumps({"error": "enqueue failed"}))
+            return self._send(200, json.dumps({"ok": True, "item": item}))
+        if path == "/api/session/queue/reorder":
+            if not _pilot:
+                return self._send(404, json.dumps({"error": "no active session"}))
+            ids = body.get("ids") or []
+            if not isinstance(ids, list):
+                return self._send(400, json.dumps({"error": "ids must be a list"}))
+            try:
+                items = _pilot.reorder_prompts([str(x) for x in ids])
+            except Exception:
+                try:
+                    items = _pilot.list_prompts()
+                except Exception:
+                    items = []
+            return self._send(200, json.dumps({"ok": True, "items": items}))
         if path == "/api/terminal/create":
             try:
                 # Reap any dead PTY sessions first so exited/stuck terminals do
@@ -2140,6 +2189,21 @@ class Handler(BaseHTTPRequestHandler):
             for ev in _pilot.drain_swarm_results():
                 results.append({"kind": ev.kind, "data": ev.data})
             return self._send(200, json.dumps({"results": results}))
+        if u.path == "/api/session/queue":
+            # PROMPT QUEUE snapshot -- the sequential "playlist" of full user
+            # prompts that will each run as their own complete turn after the
+            # current one finishes. Distinct from /api/session/steer (which is
+            # a mid-turn interrupt on the CURRENT running turn).
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            try:
+                items = _pilot.list_prompts() if _pilot else []
+            except Exception:
+                items = []
+            return self._send(200, json.dumps({"items": items}))
         if u.path == "/api/checkpoints":
             if self._guard():
                 return

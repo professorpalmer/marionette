@@ -416,6 +416,15 @@ export const api = {
   inlineEdit: (path: string, selection: string, instruction: string, prefix: string, suffix: string, language: string) => postJSON<{ ok: boolean; edit?: string; error?: string }>("/api/inline-edit", { path, selection, instruction, prefix, suffix, language }),
   compactSession: () => postJSON<{ ok: boolean; before_tokens: number; after_tokens: number }>("/api/session/compact", {}),
   steerSession: (text: string) => postJSON<{ ok: boolean }>("/api/session/steer", { text }),
+  // PROMPT QUEUE: a "playlist" of full user prompts that each run as their own
+  // complete turn one after the previous fully finishes. Distinct from steer
+  // (a mid-turn interrupt on the CURRENT running turn). Items can be edited /
+  // removed / reordered before they run.
+  queueList: () => getJSON<{ items: { id: string; text: string }[] }>(withToken("/api/session/queue")),
+  queueAdd: (text: string) => postJSON<{ ok: boolean; item: { id: string; text: string } }>("/api/session/queue", { text }),
+  queueRemove: (id: string) => postJSON<{ ok: boolean; id: string }>("/api/session/queue", { id }),
+  queueReorder: (ids: string[]) => postJSON<{ ok: boolean; items: { id: string; text: string }[] }>("/api/session/queue/reorder", { ids }),
+  queueClear: () => postJSON<{ ok: boolean; cleared: number }>("/api/session/queue", { clear: true }),
   getContextUsage: () => getJSON<ContextUsageResponse>(withToken("/api/context/usage")),
 
   getCheckpoints: () => getJSON<Checkpoint[]>(withToken("/api/checkpoints")),
