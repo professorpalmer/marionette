@@ -121,9 +121,12 @@ export default function StatePane({ artifacts }: {
   };
 
   // The whole artifacts section collapses to a one-line header, like the
-  // telemetry pills. Preference persists per user.
+  // telemetry pills. Defaults CLOSED: raw findings/decisions/risks are an
+  // auditable "hidden advantage" people rarely browse, so the State tab leads
+  // cleanly with CodeGraph + Wiki status and Artifacts is opt-in expand.
+  // Preference persists per user (once toggled, their choice sticks).
   const [artifactsOpen, setArtifactsOpen] = useState(
-    () => localStorage.getItem("pmharness.statePane.artifactsOpen") !== "0",
+    () => localStorage.getItem("pmharness.statePane.artifactsOpen") === "1",
   );
   const toggleArtifacts = () =>
     setArtifactsOpen((v) => {
