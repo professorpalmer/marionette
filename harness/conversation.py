@@ -2535,10 +2535,19 @@ class ConversationalSession:
                     swarms += 1
                     if result.adapter == "demo":
                         demo_swarms += 1
+                    auth_failure = getattr(result, "auth_failure", "") or ""
+                    if auth_failure:
+                        # A provider rejected the key: surface it as its own loud
+                        # event so the UI flags a dead/revoked key as the cause,
+                        # not a generic "no findings" degrade.
+                        yield ConvEvent("swarm_auth_failure", {
+                            "id": aid, "job_id": result.job_id, "message": auth_failure,
+                        })
                     yield ConvEvent("action_result", {
                         "id": aid, "job_id": result.job_id, "num": result.num_artifacts,
                         "types": result.artifact_types, "artifacts": result.artifacts[:8],
                         "adapter": result.adapter, "mode": result.mode,
+                        "auth_failure": auth_failure,
                     })
                     # collect non-substrate findings for durable knowledge capture
                     if result.adapter != "demo":
@@ -2554,6 +2563,14 @@ class ConversationalSession:
                                  "Do NOT keep retrying; explain this to the user and finish "
                                  "with no actions. Real analysis needs --repo + "
                                  "--swarm-adapter openai.)")
+                    if auth_failure:
+                        # Put the auth failure at the TOP of what the pilot reads and
+                        # tell it plainly not to keep retrying a dead key -- the fix
+                        # is to repair the credential, not to re-swarm.
+                        stall = (f"\n(PROVIDER AUTH FAILURE -- {auth_failure} This is a "
+                                 "dead/revoked/wrong API key, NOT a weak model or bad "
+                                 "prompt. Do NOT re-run the swarm; tell the user to fix "
+                                 "the named key, then stop.)") + stall
                     self._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {result.num_artifacts} artifacts via {result.adapter}:\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
                     continue
 

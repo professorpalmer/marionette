@@ -117,6 +117,9 @@ class BridgeResult:
     artifact_types: list
     summary: str
     artifacts: list  # list of compact dicts (type, claim/decision/etc snippet)
+    auth_failure: str = ""  # loud one-liner when a provider rejected the key
+    #   (dead/revoked/wrong key). Empty when no auth failure occurred. Lets the
+    #   harness flag the real cause instead of "completed without findings".
     adapter: str = "demo"  # "demo" = local deterministic substrate (not real
     #   codebase analysis); set to a real worker adapter when configured. Surfaces
     #   use this to label generic substrate so it is never mistaken for real
@@ -140,7 +143,31 @@ def _compact_artifact(a: Any) -> dict:
         "type": str(getattr(a, "type", "")),
         "headline": str(headline)[:240],
         "confidence": getattr(a, "confidence", None),
+        # Carry the machine-readable failure tag so consumers can branch on a
+        # provider auth rejection (auth_failed:401/403) instead of mistaking it
+        # for a weak-model / bad-prompt degrade.
+        "failure": str(payload.get("failure") or "") or None,
     }
+
+
+def _auth_failure_note(compact: list) -> str:
+    """Return a loud, human one-liner when any artifact is a provider auth
+    rejection, else empty. Lets the harness surface a dead/revoked key as the
+    real cause rather than burying it as "no structured findings"."""
+    for a in compact:
+        fail = str(a.get("failure") or "")
+        if fail.startswith("auth_failed"):
+            return str(a.get("headline") or "Provider auth failure").strip()
+    return ""
+
+
+def _hoist_auth_risks(compact: list) -> list:
+    """Sort provider auth-failure artifacts to the front so a fixed-size digest
+    slice (e.g. artifacts[:8]) can never drop the one finding that explains the
+    whole run."""
+    auth = [a for a in compact if str(a.get("failure") or "").startswith("auth_failed")]
+    rest = [a for a in compact if not str(a.get("failure") or "").startswith("auth_failed")]
+    return auth + rest if auth else compact
 
 
 def execute_intent(
@@ -253,6 +280,7 @@ def execute_intent(
             adapter = "demo"
 
         artifacts = list(result.artifacts)
+        compact = _hoist_auth_risks([_compact_artifact(a) for a in artifacts])
         return BridgeResult(
             job_id=result.job.id,
             status=str(result.job.status),
@@ -260,7 +288,8 @@ def execute_intent(
             num_artifacts=len(artifacts),
             artifact_types=sorted({str(a.type) for a in artifacts}),
             summary=result.summary or "",
-            artifacts=[_compact_artifact(a) for a in artifacts],
+            artifacts=compact,
+            auth_failure=_auth_failure_note(compact),
             adapter=adapter,
         )
     finally:
