@@ -14,7 +14,17 @@ _WIKI_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "wiki.json")
 def _path() -> str:
     state_dir = os.environ.get("HARNESS_STATE_DIR", "")
     if state_dir:
-        return os.path.join(state_dir, "wiki.json")
+        p = os.path.join(state_dir, "wiki.json")
+        # MIGRATION: earlier builds (and any run without HARNESS_STATE_DIR) wrote
+        # wiki.json to ~/.pmharness/wiki.json. Once the stable state dir was
+        # anchored to ~/.pmharness/state, _path() pointed into state/ and a
+        # previously-saved config became invisible -- the wiki read as "not
+        # connected" despite valid saved creds. If the state-dir copy is missing
+        # but the legacy parent file exists, adopt the legacy file so the config
+        # keeps working across the state-dir move.
+        if not os.path.exists(p) and os.path.exists(_WIKI_FILE):
+            return _WIKI_FILE
+        return p
     return _WIKI_FILE
 
 
