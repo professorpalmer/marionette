@@ -431,6 +431,10 @@ class ConversationalSession:
         # backend restart (the durable store already persists adapter jobs; this
         # in-memory dict was the only piece lost across restarts).
         self._local_jobs_path = os.path.join(self.state_dir, "swarm_local_jobs.json")
+        # On-disk mirror of the server-side prompt queue so queued prompts
+        # survive a backend restart (transcripts and swarm_local_jobs already
+        # persist; the in-memory _prompt_queue was the only piece lost).
+        self._prompt_queue_path = os.path.join(self.state_dir, "prompt_queue.json")
         # In-flight implement objectives, so the same objective cannot be
         # dispatched concurrently (audit finding #2). The "one objective -> one
         # worker / disjoint file sets" rule lived only in the system prompt; this
@@ -455,6 +459,58 @@ class ConversationalSession:
         # swarm panel keeps its history across a backend restart. Stale 'running'
         # jobs (whose thread died with the old process) are marked interrupted.
         self._load_local_jobs()
+        # Reload any persisted prompt queue from a prior process so queued
+        # prompts survive a backend restart. Tolerates a missing/corrupt file.
+        self._load_prompt_queue()
+
+    def _save_prompt_queue(self) -> None:
+        """Atomically mirror the current _prompt_queue to disk. Writes a .tmp
+        then os.replace so a crash mid-write never leaves a corrupt file. Reads a
+        snapshot under the lock, then writes OUTSIDE the lock so callers that
+        already hold self._prompt_queue_lock do not deadlock (the lock is not
+        reentrant). Best-effort: a persistence failure must never raise."""
+        import json
+        try:
+            with self._prompt_queue_lock:
+                items = [dict(x) for x in self._prompt_queue]
+        except Exception:
+            return
+        try:
+            tmp = self._prompt_queue_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"queue": items}, f)
+            os.replace(tmp, self._prompt_queue_path)
+        except Exception:
+            # Persistence is a convenience; never let it take down the session.
+            pass
+
+    def _load_prompt_queue(self) -> None:
+        """Reload the prompt queue written by a prior process. Tolerates a
+        missing or corrupt file by leaving the queue empty. Each item must be a
+        dict with a text key to be kept."""
+        import json
+        try:
+            with open(self._prompt_queue_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception:
+            # Corrupt/unreadable file: start empty rather than crash on restart.
+            return
+        queue = data.get("queue") if isinstance(data, dict) else None
+        if not isinstance(queue, list):
+            return
+        restored: list[dict] = []
+        for it in queue:
+            if not isinstance(it, dict) or "text" not in it:
+                continue
+            restored.append({
+                "id": str(it.get("id") or ""),
+                "text": str(it.get("text") or ""),
+                "images": [str(p) for p in (it.get("images") or []) if p],
+            })
+        with self._prompt_queue_lock:
+            self._prompt_queue = restored
 
     def state(self) -> str:
         if self._state == "thinking":
@@ -1356,6 +1412,7 @@ class ConversationalSession:
             item = {"id": _uuid.uuid4().hex[:8], "text": t, "images": imgs}
             with self._prompt_queue_lock:
                 self._prompt_queue.append(item)
+            self._save_prompt_queue()
             return dict(item)
         except Exception:
             return {"id": "", "text": "", "images": []}
@@ -1374,11 +1431,15 @@ class ConversationalSession:
             if not id:
                 return False
             with self._prompt_queue_lock:
+                found = False
                 for i, it in enumerate(self._prompt_queue):
                     if it.get("id") == id:
                         del self._prompt_queue[i]
-                        return True
-                return False
+                        found = True
+                        break
+            if found:
+                self._save_prompt_queue()
+            return found
         except Exception:
             return False
 
@@ -1406,7 +1467,9 @@ class ConversationalSession:
                         new_order.append(it)
                         seen.add(iid)
                 self._prompt_queue = new_order
-                return [dict(x) for x in self._prompt_queue]
+                snapshot = [dict(x) for x in self._prompt_queue]
+            self._save_prompt_queue()
+            return snapshot
         except Exception:
             with self._prompt_queue_lock:
                 return [dict(x) for x in self._prompt_queue]
@@ -1417,7 +1480,8 @@ class ConversationalSession:
             with self._prompt_queue_lock:
                 n = len(self._prompt_queue)
                 self._prompt_queue = []
-                return n
+            self._save_prompt_queue()
+            return n
         except Exception:
             return 0
 
@@ -1430,7 +1494,9 @@ class ConversationalSession:
             with self._prompt_queue_lock:
                 if not self._prompt_queue:
                     return {}
-                return self._prompt_queue.pop(0)
+                popped = self._prompt_queue.pop(0)
+            self._save_prompt_queue()
+            return popped
         except Exception:
             return {}
 
