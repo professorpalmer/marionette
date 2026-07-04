@@ -20,13 +20,13 @@ from harness.conversation import ConversationalSession
 
 def test_history_survives_restart_with_stable_state_dir():
     stable = tempfile.mkdtemp(prefix="pmh-stable-")
-    first = ConversationalSession(HarnessConfig(state_dir=stable, driver="claude-sonnet-4-5"))
+    first = ConversationalSession(HarnessConfig(state_dir=stable))
     first._register_local_job("job-A", "audit the platform")
     first._finish_local_job("job-A", ok=True, summary="done", tokens=120000)
     first._register_local_job("job-B", "fix the parser")  # left running
 
     # Fresh process on the SAME stable dir = a backend restart.
-    second = ConversationalSession(HarnessConfig(state_dir=stable, driver="claude-sonnet-4-5"))
+    second = ConversationalSession(HarnessConfig(state_dir=stable))
     reloaded = {j["id"]: j for j in second.live_local_jobs()}
     assert "job-A" in reloaded and "job-B" in reloaded, "history must reload after restart"
     assert reloaded["job-A"]["status"] in ("completed", "done")
@@ -39,7 +39,7 @@ def test_ephemeral_dirs_do_not_share_history():
     # which is exactly why the stable-dir anchor is required for persistence.
     a = tempfile.mkdtemp(prefix="pmh-a-")
     b = tempfile.mkdtemp(prefix="pmh-b-")
-    s1 = ConversationalSession(HarnessConfig(state_dir=a, driver="claude-sonnet-4-5"))
+    s1 = ConversationalSession(HarnessConfig(state_dir=a))
     s1._register_local_job("only-in-a", "x")
-    s2 = ConversationalSession(HarnessConfig(state_dir=b, driver="claude-sonnet-4-5"))
+    s2 = ConversationalSession(HarnessConfig(state_dir=b))
     assert all(j["id"] != "only-in-a" for j in s2.live_local_jobs())

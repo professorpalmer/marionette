@@ -282,14 +282,17 @@ function resolveDistIndex() {
   const bundled = path.join(__dirname, "..", "dist", "index.html");
   try {
     const checkoutDist = path.join(resolveRepoRoot(), "webapp", "dist", "index.html");
-    // Only prefer the checkout build when it is at least as new as the bundled
-    // one, so a fresh install (no checkout build yet, or an older leftover) still
-    // uses the shipped UI rather than a stale checkout artifact.
+    // Prefer the checkout build WHENEVER it exists and is non-empty. Its mere
+    // existence means the user ran `npm run build` in the source checkout (where
+    // the backend runs from), which is the explicit signal that the checkout is
+    // the UI source of truth. We deliberately do NOT compare mtimes: an asar
+    // repack stamps the bundled index.html with "now", which would spuriously
+    // out-date a valid fresh checkout build and pin the UI to the stale bundled
+    // dist -- the exact bug that made rebuilt Steer/Queue UI never appear.
     if (fs.existsSync(checkoutDist) && checkoutDist !== bundled) {
-      const co = fs.statSync(checkoutDist).mtimeMs;
-      let bu = 0;
-      try { bu = fs.statSync(bundled).mtimeMs; } catch { bu = 0; }
-      if (co >= bu) {
+      let ok = false;
+      try { ok = fs.statSync(checkoutDist).size > 0; } catch { ok = false; }
+      if (ok) {
         _dbg2(`loadRenderer: using checkout dist (${checkoutDist})`);
         return checkoutDist;
       }
