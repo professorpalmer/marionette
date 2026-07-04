@@ -961,6 +961,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/sessions/delete", "/api/sessions/archive", "/api/sessions/rename",
                       "/api/session/interrupt", "/api/session/compact", "/api/session/steer",
                       "/api/session/persist", "/api/restart",
+                      "/api/swarm/cancel",
                       "/api/mcp/add", "/api/mcp/remove", "/api/mcp/start",
                       "/api/mcp/stop", "/api/mcp/call",
                       "/api/skills/distill", "/api/skills/approve",
@@ -1032,6 +1033,52 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "Missing review id"}))
             success = _pilot.dismiss_review(review_id)
             return self._send(200, json.dumps({"ok": success}))
+        if path == "/api/swarm/cancel":
+            # Cooperative cancel for a swarm job. Best-effort and never raises:
+            # local (provider-worker) jobs are cancelled via the per-job Event on
+            # the conversation; durable store jobs are marked cancelled in the
+            # store where possible. Mirrors the auth/token guard already applied to
+            # every POST (see do_POST). Shape: {ok, job_id} or {ok:false,error}.
+            job_id = (body.get("job_id") or "").strip()
+            if not job_id:
+                return self._send(400, json.dumps({"ok": False, "error": "missing job_id"}))
+            # 1) Local provider-worker job on the live conversation.
+            try:
+                if hasattr(_pilot, "cancel_local_job") and _pilot.cancel_local_job(job_id):
+                    return self._send(200, json.dumps({"ok": True, "job_id": job_id}))
+            except Exception as e:
+                _diag("server.swarm_cancel_local", e)
+            # 2) Durable Puppetmaster store job -- best-effort mark cancelled.
+            try:
+                state_obj = _session.state()
+                store = getattr(state_obj, "store", None)
+                known = False
+                try:
+                    known = any(j.get("id") == job_id for j in state_obj.list_jobs())
+                except Exception:
+                    known = False
+                if known and store is not None:
+                    marked = False
+                    for meth in ("cancel_job", "set_job_status", "update_job_status"):
+                        fn = getattr(store, meth, None)
+                        if fn is None:
+                            continue
+                        try:
+                            if meth == "cancel_job":
+                                fn(job_id)
+                            else:
+                                fn(job_id, "cancelled")
+                            marked = True
+                            break
+                        except Exception:
+                            continue
+                    return self._send(200, json.dumps({
+                        "ok": True, "job_id": job_id, "durable": True,
+                        "marked": marked,
+                    }))
+            except Exception as e:
+                _diag("server.swarm_cancel_durable", e)
+            return self._send(404, json.dumps({"ok": False, "error": "unknown job_id", "job_id": job_id}))
         if path == "/api/session/persist":
             # Flush the live transcript to disk on demand. Called right before a
             # backend restart (self-edit apply) so the fresh process restores the

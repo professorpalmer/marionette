@@ -62,6 +62,7 @@ export type Job = {
   role?: string;
   adapter?: string;
   created_at?: string | null;
+  updated_at?: number | string | null;
   tokens?: number;
   est_cost_usd?: number;
   task_count?: number;
@@ -327,6 +328,8 @@ export const api = {
   updateSettings: (partial: Partial<Settings> & { api_key?: string; clear_api_key?: boolean }) => postJSON<Settings>("/api/settings", partial),
   jobs: () => getJSON<Job[]>("/api/jobs"),
   swarmLive: () => getJSON<SwarmLive>(withToken("/api/swarm/live")),
+  swarmCancel: (jobId: string) =>
+    postJSON<{ ok: boolean; job_id?: string; error?: string }>(withToken("/api/swarm/cancel"), { job_id: jobId }),
   artifacts: (jobId: string) => getJSON<Artifact[]>(`/api/artifacts?job_id=${encodeURIComponent(jobId)}`),
   workspaces: () => getJSON<Workspace[]>("/api/workspaces"),
   switchWorkspace: (name: string) => postJSON("/api/workspaces/switch", { name }),

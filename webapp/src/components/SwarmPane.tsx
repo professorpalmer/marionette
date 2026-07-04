@@ -38,6 +38,27 @@ function Tooltip({ label, children, className }: { label: string; children: Reac
 
 type Status = "pending" | "in_progress" | "completed" | "cancelled";
 
+// Compact "how long ago" label for a job's last activity. Accepts epoch seconds
+// or an ISO string (the backend sends created_at/updated_at as either). Returns
+// "" when we can't parse a timestamp so the caller can omit the affordance.
+function relativeSince(ts: unknown, nowMs: number): string {
+  let t: number | null = null;
+  if (typeof ts === "number" && isFinite(ts)) {
+    // Heuristic: seconds vs milliseconds.
+    t = ts > 1e12 ? ts : ts * 1000;
+  } else if (typeof ts === "string" && ts) {
+    const parsed = Date.parse(ts);
+    if (!isNaN(parsed)) t = parsed;
+  }
+  if (t === null) return "";
+  const secs = Math.max(0, Math.round((nowMs - t) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ago`;
+}
+
 // Turn the router's raw policy string ("policy=balanced: cheapest sufficient
 // model whose capability_score (99) >= needed (50) (plan-billed...)") into one
 // plain-language sentence. The raw string + a per-model rejection wall reads
@@ -219,11 +240,48 @@ export default function SwarmPane() {
   const [expandedFindings, setExpandedFindings] = useState<Record<string, boolean>>({});
   const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
   const [finishedOpen, setFinishedOpen] = useState(false);
+  // Job ids we have asked the backend to cancel. Held in local view state so the
+  // row can show a subtle 'cancelling...' affordance immediately, before the next
+  // poll reflects the terminal 'cancelled' status from /api/swarm/live.
+  const [cancelling, setCancelling] = useState<Set<string>>(new Set());
+  // Bumped every second so relative "last activity" times re-render while a job
+  // runs, making a live worker visibly move rather than freeze between polls.
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
   const toggleTask = (id: string) => setExpandedTasks((p) => ({ ...p, [id]: !p[id] }));
   const toggleFinding = (id: string) => setExpandedFindings((p) => ({ ...p, [id]: !p[id] }));
 
   useEffect(() => { saveDismissed(dismissed); }, [dismissed]);
+
+  // Drive a 1s clock only while something is running so relative "last activity"
+  // labels advance live. Stops ticking when nothing is running to avoid needless
+  // re-renders.
+  const hasLiveJob = (data?.jobs || []).some((j) => jobStatus(j) === "in_progress");
+  useEffect(() => {
+    if (!hasLiveJob) return;
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [hasLiveJob]);
+
+  // Fire-and-refetch cancel. Best-effort on the backend (a provider call in a
+  // Python thread cannot be force-killed), so the row shows 'cancelling...' until
+  // the next poll surfaces the terminal 'cancelled' state.
+  const cancelJob = async (id: string) => {
+    setCancelling((prev) => new Set(prev).add(id));
+    try {
+      await api.swarmCancel(id);
+    } catch {
+      // Swallow -- a failed cancel just means the next poll keeps showing the job
+      // as running; the user can retry.
+    } finally {
+      try {
+        const res = await api.swarmLive();
+        setData(res);
+      } catch {
+        // Ignore; the poll loop will refetch shortly.
+      }
+    }
+  };
 
   // Self-scheduling poll (not setInterval) so a new request is only ever queued
   // AFTER the previous one settles. The old fixed 2s interval fired regardless of
@@ -358,11 +416,27 @@ export default function SwarmPane() {
               </Tooltip>
             </div>
             <div className="flex items-center gap-3 shrink-0 text-[10px] pl-2">
-              {j.est_cost_usd !== undefined && j.est_cost_usd > 0 && (
-                <span className="font-mono text-good">${Number(j.est_cost_usd).toFixed(4)}</span>
-              )}
+              {/* Per-job cost is intentionally NOT shown here: the session's
+                  total cost lives in the bottom status bar, so a per-row copy is
+                  redundant noise. Tokens stay as a lightweight progress signal. */}
               {j.tokens !== undefined && j.tokens > 0 && (
                 <span className="text-muted font-mono">{j.tokens.toLocaleString()}t</span>
+              )}
+              {/* Kill: running jobs only. Best-effort cooperative cancel on the
+                  backend. Shows 'cancelling...' until the next poll flips the job
+                  to a terminal state. */}
+              {st === "in_progress" && (
+                cancelling.has(j.id) ? (
+                  <span className="text-[9px] text-risk/70 italic tabular-nums">cancelling...</span>
+                ) : (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); void cancelJob(j.id); }}
+                    title="Cancel this job"
+                    className="text-faint/50 hover:text-risk transition-colors focus:outline-none"
+                  >
+                    <X size={12} />
+                  </button>
+                )
               )}
               {/* Dismiss: terminal runs only -- hiding a live worker would be
                   confusing. Non-destructive; the run stays in PM history. */}
@@ -407,6 +481,27 @@ export default function SwarmPane() {
               {phase.label}
             </span>
           </div>
+
+          {/* Live-progress line for a running job: a "last activity" relative time
+              plus a compact token readout that updates on each poll, so the row
+              visibly moves instead of sitting on a static spinner. Cost is
+              deliberately omitted here (shown once in the bottom status bar). */}
+          {st === "in_progress" && (() => {
+            const since = relativeSince(j.updated_at ?? j.created_at, nowTick);
+            const showTokens = j.tokens !== undefined && j.tokens > 0;
+            if (!since && !showTokens) return null;
+            return (
+              <div className="flex items-center gap-2 pl-6 pr-1 mt-1 text-[9px] text-faint tabular-nums">
+                {since && (
+                  <span className="flex items-center gap-1">
+                    <Activity size={9} className="text-accent/70 animate-pulse" />
+                    {since}
+                  </span>
+                )}
+                {showTokens && <span className="font-mono text-muted">{j.tokens!.toLocaleString()}t</span>}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Expanded details */}

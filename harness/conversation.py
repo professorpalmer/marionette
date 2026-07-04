@@ -410,6 +410,16 @@ class ConversationalSession:
         # renders them uniformly. Merged into /api/swarm/live.
         self._local_jobs: dict[str, dict] = {}
         self._local_jobs_lock = threading.Lock()
+        # Per-job cooperative cancel flags. Python threads cannot be force-killed,
+        # so cancelling a local worker is best-effort: we set this Event and the
+        # worker checks it at its wall-clock boundary (see _run_edit_worker_bounded).
+        # A set event flips the job to a terminal 'cancelled' state immediately for
+        # the UI even though the underlying provider call may run to completion.
+        self._local_job_cancels: dict[str, "threading.Event"] = {}
+        # On-disk mirror of _local_jobs so provider-worker history survives a
+        # backend restart (the durable store already persists adapter jobs; this
+        # in-memory dict was the only piece lost across restarts).
+        self._local_jobs_path = os.path.join(self.state_dir, "swarm_local_jobs.json")
         # In-flight implement objectives, so the same objective cannot be
         # dispatched concurrently (audit finding #2). The "one objective -> one
         # worker / disjoint file sets" rule lived only in the system prompt; this
@@ -430,6 +440,10 @@ class ConversationalSession:
         # already-shown (the frontend finalizes the streaming bubble in place
         # rather than re-dumping the text).
         self._streamed_prose = ""
+        # Reload any persisted provider-worker history from a prior process so the
+        # swarm panel keeps its history across a backend restart. Stale 'running'
+        # jobs (whose thread died with the old process) are marked interrupted.
+        self._load_local_jobs()
 
     def state(self) -> str:
         if self._state == "thinking":
@@ -3682,13 +3696,16 @@ class ConversationalSession:
         the live status the UI renders."""
         import time
         with self._local_jobs_lock:
+            self._local_job_cancels[job_id] = threading.Event()
+            now = time.time()
             self._local_jobs[job_id] = {
                 "id": job_id,
                 "goal": goal,
                 "status": "running",
                 "role": role,
                 "adapter": self.config.driver or "provider",
-                "created_at": time.time(),
+                "created_at": now,
+                "updated_at": now,
                 "task_count": 1,
                 "tokens": 0,
                 "est_cost_usd": 0.0,
@@ -3701,28 +3718,154 @@ class ConversationalSession:
                     "adapter": self.config.driver or "provider",
                 }],
             }
+            self._persist_local_jobs_locked()
 
     def _finish_local_job(self, job_id: str, ok: bool, summary: str = "",
-                          files: Optional[list] = None, tokens: int = 0) -> None:
+                          files: Optional[list] = None, tokens: int = 0,
+                          status: str = "") -> None:
         """Flip a live local job to its terminal state so the panel stops showing
         a spinner and surfaces the outcome (files touched + a one-line summary)."""
+        import time
         with self._local_jobs_lock:
             job = self._local_jobs.get(job_id)
             if not job:
                 return
-            job["status"] = "completed" if ok else "failed"
+            # A user-cancelled job settles into a distinct 'cancelled' state so the
+            # UI can render it differently from a natural completion/failure.
+            cancelled = bool(job.get("status") == "cancelled" or status == "cancelled")
+            if cancelled:
+                terminal = "cancelled"
+            else:
+                terminal = "completed" if ok else "failed"
+            job["status"] = terminal
+            job["updated_at"] = time.time()
             if tokens:
                 job["tokens"] = tokens
+                # Single-worker / provider-worker jobs previously recorded tokens
+                # but never a cost, so the tracker showed $0 for them (only
+                # multi-worker store jobs, which sum ROUTING artifact costs, had a
+                # price). Derive an estimate from tokens x the driver model's
+                # blended per-token price so every job carries a cost.
+                try:
+                    from pmharness.registry import resolve_price
+                    price_in, price_out = resolve_price(self.config.driver)
+                    blended = (float(price_in) + float(price_out)) / 2.0
+                    job["est_cost_usd"] = round(tokens / 1_000_000.0 * blended, 6)
+                except Exception:
+                    pass
             if job.get("tasks"):
-                job["tasks"][0]["status"] = "completed" if ok else "failed"
-            headline = (summary or "").strip().splitlines()[0] if summary else (
-                "Patch applied" if ok else "Worker failed")
+                job["tasks"][0]["status"] = terminal
+            if cancelled and not summary:
+                headline = "Cancelled by user"
+            else:
+                headline = (summary or "").strip().splitlines()[0] if summary else (
+                    "Patch applied" if ok else "Worker failed")
             if files:
                 headline = f"{headline} ({len(files)} file{'s' if len(files) != 1 else ''})"
             job["artifacts"] = [{
-                "type": "patch" if ok else "error",
+                "type": "patch" if (ok and not cancelled) else "error",
                 "headline": headline[:240],
             }]
+            self._persist_local_jobs_locked()
+
+    # Cap persisted history so the on-disk file cannot grow without bound.
+    _LOCAL_JOBS_HISTORY_CAP = 200
+
+    def _persist_local_jobs_locked(self) -> None:
+        """Atomically mirror the current _local_jobs dict to disk. MUST be called
+        while holding self._local_jobs_lock. Writes a .tmp then os.replace so a
+        crash mid-write never leaves a half-written (corrupt) file. Best-effort:
+        a persistence failure must never break a running worker."""
+        import json
+        try:
+            items = list(self._local_jobs.values())
+            # Keep only the most recent N by created_at to bound growth.
+            items.sort(key=lambda j: j.get("created_at") or 0.0)
+            if len(items) > self._LOCAL_JOBS_HISTORY_CAP:
+                items = items[-self._LOCAL_JOBS_HISTORY_CAP:]
+            tmp = self._local_jobs_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"jobs": items}, f)
+            os.replace(tmp, self._local_jobs_path)
+        except Exception:
+            # Persistence is a convenience; never let it take down the session.
+            pass
+
+    def _persist_local_jobs(self) -> None:
+        """Lock-taking wrapper around _persist_local_jobs_locked for callers that
+        do not already hold the lock."""
+        with self._local_jobs_lock:
+            self._persist_local_jobs_locked()
+
+    def _load_local_jobs(self) -> None:
+        """Reload provider-worker history written by a prior process. Tolerates a
+        missing or corrupt file by starting empty. Any job still marked 'running'
+        is stale -- its thread died with the old process -- so we flip it to
+        'cancelled' with an 'Interrupted by backend restart' note instead of
+        leaving a permanently-spinning ghost in the panel. Reloaded jobs are kept
+        in history but get NO live cancel Event (nothing to cancel)."""
+        import json
+        try:
+            with open(self._local_jobs_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception:
+            # Corrupt/unreadable file: start empty rather than crash on restart.
+            return
+        jobs = data.get("jobs") if isinstance(data, dict) else None
+        if not isinstance(jobs, list):
+            return
+        with self._local_jobs_lock:
+            for job in jobs:
+                if not isinstance(job, dict):
+                    continue
+                jid = job.get("id")
+                if not jid:
+                    continue
+                if job.get("status") == "running":
+                    job["status"] = "cancelled"
+                    job["updated_at"] = job.get("updated_at") or job.get("created_at")
+                    if job.get("tasks"):
+                        try:
+                            job["tasks"][0]["status"] = "cancelled"
+                        except Exception:
+                            pass
+                    job["artifacts"] = [{
+                        "type": "error",
+                        "headline": "Interrupted by backend restart",
+                    }]
+                self._local_jobs[jid] = job
+            # Rewrite so the healed statuses are the new on-disk baseline.
+            self._persist_local_jobs_locked()
+
+    def cancel_local_job(self, job_id: str) -> bool:
+        """Cooperatively cancel a running local (provider-worker) job. Sets the
+        per-job cancel Event (best-effort: a Python thread cannot be force-killed,
+        so the underlying provider call may still run to completion) and flips the
+        job to a terminal 'cancelled' state immediately so the UI stops spinning.
+        Returns True if the job existed and was running, False otherwise."""
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if job is None:
+                return False
+            already_terminal = job.get("status") in ("completed", "failed", "cancelled")
+            ev = self._local_job_cancels.get(job_id)
+            if ev is not None:
+                ev.set()
+            if already_terminal:
+                return False
+            job["status"] = "cancelled"
+        # _finish_local_job re-acquires the lock and persists.
+        self._finish_local_job(job_id, ok=False, summary="Cancelled by user",
+                               status="cancelled")
+        return True
+
+    def _local_job_cancelled(self, job_id: str) -> bool:
+        """True if a cancel was requested for this job. Checked by the worker at
+        its wall-clock boundary (best-effort cooperative cancel)."""
+        ev = self._local_job_cancels.get(job_id)
+        return bool(ev is not None and ev.is_set())
 
     def live_local_jobs(self) -> list:
         """Snapshot of in-process provider-native worker jobs for /api/swarm/live.
@@ -3736,7 +3879,12 @@ class ConversationalSession:
 
             # Bounded run so a wedged worker frees its _swarm_pool slot on the
             # hard deadline instead of occupying it forever (audit finding #4).
-            res = self._run_edit_worker_bounded(objective, requested_adapter)
+            res = self._run_edit_worker_bounded(objective, requested_adapter, job_id=job_id)
+            if self._local_job_cancelled(job_id):
+                # A cancel landed while the worker was running. The job was already
+                # flipped to 'cancelled' by cancel_local_job(); drop the result so
+                # we do not re-open/overwrite the terminal state, and stop here.
+                return
             if res is None:
                 deadline = int(self._worker_deadline_seconds())
                 res = WorkerResult(
@@ -4058,15 +4206,24 @@ class ConversationalSession:
             v = 900.0
         return v if v > 0 else 0.0
 
-    def _run_edit_worker_bounded(self, objective: str, requested_adapter: str):
+    def _run_edit_worker_bounded(self, objective: str, requested_adapter: str,
+                                 job_id: str = ""):
         """Run the edit worker under a hard wall-clock deadline. The work runs in
         a daemon thread; if it blows the deadline we return None so the caller can
         free its _swarm_pool slot immediately. The orphaned worker thread is a
         daemon (dies with the process) and its worktree is reclaimed by the
         engine's own managed_worktree/finally, so the slot -- the scarce resource
-        -- is what we protect here."""
+        -- is what we protect here.
+
+        Cancellation is best-effort and cooperative: a Python thread cannot be
+        force-killed, so when a per-job cancel Event is set we simply stop WAITING
+        on the worker and return None. The daemon thread keeps running to natural
+        completion (the provider call cannot be interrupted mid-flight) but is
+        detached and dies with the process; the caller treats the job as
+        cancelled immediately for the UI."""
         from harness.edit_engines import run_edit_worker
         deadline = self._worker_deadline_seconds()
+        cancel_ev = self._local_job_cancels.get(job_id) if job_id else None
         box: dict = {}
         done = threading.Event()
 
@@ -4080,10 +4237,19 @@ class ConversationalSession:
 
         t = threading.Thread(target=_run, name="edit-worker-bounded", daemon=True)
         t.start()
-        if not deadline:
-            done.wait()
-        elif not done.wait(timeout=deadline):
-            return None  # timed out -> free the pool slot
+        # Poll in short slices so a cancel request is observed promptly rather than
+        # only at the full deadline. Without a per-job cancel Event this collapses
+        # to the original single wait.
+        import time as _t
+        start = _t.monotonic()
+        poll = 0.25
+        while True:
+            if done.wait(timeout=poll):
+                break
+            if cancel_ev is not None and cancel_ev.is_set():
+                return None  # cooperative cancel -> free the pool slot
+            if deadline and (_t.monotonic() - start) >= deadline:
+                return None  # timed out -> free the pool slot
         if "exc" in box:
             raise box["exc"]
         return box.get("res")
