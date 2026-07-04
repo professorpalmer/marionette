@@ -124,7 +124,7 @@ function deduplicateConsecutiveAssistantMessages(items: Item[]): Item[] {
   return result;
 }
 
-function groupAgentActivity(items: Item[]): GroupedItem[] {
+function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
   // Mental model (Cursor/Hermes): a turn is [user msg] + [investigation] +
   // [final answer]. The investigation -- every tool card, reasoning block,
   // codegraph chip, AND per-step micro-narration -- folds into ONE collapsible
@@ -150,12 +150,17 @@ function groupAgentActivity(items: Item[]): GroupedItem[] {
     if (item.kind === "thinking" && (!item.text || !item.text.trim())) continue;
 
     if (item.kind === "msg") {
-      // ALL assistant/user prose breaks out as standalone text -- never folded
-      // inside a tool-call collapse. This keeps the flow readable as
-      // text -> collapsed tool calls -> text, so narration is always visible and
-      // its markdown formatting never breaks inside the box.
-      flush();
-      grouped.push(item);
+      // Cursor-tight model: intermediate per-step narration -- an assistant
+      // message with MORE tool activity still to come this turn -- folds INTO the
+      // collapsed activity box as a tight muted line, instead of a full standalone
+      // bubble that spams the transcript and scrolls the view. Only user messages
+      // and the FINAL assistant answer break out standalone at full size.
+      if (item.msg.role === "assistant" && intermediateItems.has(item) && !item.msg.streaming) {
+        currentGroup.push(item);
+      } else {
+        flush();
+        grouped.push(item);
+      }
     } else if (item.kind === "swarm_pending" || item.kind === "swarm_result" || item.kind === "checkpoint" || item.kind === "compaction" || item.kind === "command_blocked" || item.kind === "auth_failure" || item.kind === "steer") {
       flush();
       grouped.push(item);
@@ -288,7 +293,7 @@ const TranscriptList = memo(function TranscriptList({
     }
   }
 
-  const grouped = groupAgentActivity(items);
+  const grouped = groupAgentActivity(items, intermediateItems);
 
   // PERF: window to the newest RENDER_WINDOW display groups. Walk newest-first,
   // counting groups until the window is filled; everything before that is hidden
@@ -791,16 +796,27 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // NOT on in-place mutations like expanding a tool card. Toggling a card open
   // calls setItems (to flip card.open), which used to yank the view to the
   // bottom and force the user to scroll back up to read what they just opened.
-  const prevItemCountRef = useRef(0);
+  // Stick-to-bottom that RESPECTS the user's scroll. A scroll listener records
+  // whether the view is pinned to the bottom; the transcript only auto-follows
+  // the live stream while pinned. The moment the user scrolls up to read we stop
+  // snapping them back -- following resumes only once they scroll back down to
+  // the bottom (which re-pins). A programmatic scroll-to-bottom lands at the
+  // bottom, so it never un-pins itself, and there is no fight with the stream.
+  const pinnedToBottomRef = useRef(true);
   useEffect(() => {
     const el = feedRef.current;
     if (!el) return;
-    const grew = items.length > prevItemCountRef.current;
-    prevItemCountRef.current = items.length;
-    // Distance from the bottom; if the user is within ~120px we keep them
-    // pinned (live streaming), otherwise we leave their scroll position alone.
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    if (grew || nearBottom) {
+    const onScroll = () => {
+      pinnedToBottomRef.current =
+        el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+  useEffect(() => {
+    const el = feedRef.current;
+    if (!el) return;
+    if (pinnedToBottomRef.current) {
       el.scrollTo(0, el.scrollHeight);
     }
   }, [items]);
@@ -1626,18 +1642,26 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (ev.kind === "action_result") {
         setCompactingStatus(null);
         setStatus("thinking");
-        // The swarm is done: its real output arrives as artifacts/summary below,
-        // so DROP the ephemeral worker-stream preview entirely rather than freezing
-        // a wall of concatenated worker tokens into the transcript. A non-worker
-        // streaming bubble (the pilot's own narration) is still finalized in place.
+        // The swarm is done: its structured artifacts/summary land below. Retire
+        // the ephemeral, height-capped worker-stream PREVIEW, but don't let the
+        // reasoning vanish -- convert it into a COLLAPSED reasoning row (folded
+        // into the activity group), the way Cursor keeps "Thought for Xs" after
+        // the fact. A non-worker streaming bubble (the pilot's own narration) is
+        // still finalized in place.
         flushTypewriter();
         setItems((p) => {
           const lastIdx = p.length - 1;
           if (lastIdx >= 0 && p[lastIdx].kind === "msg") {
             const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
             if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
-              const finalText = lastMsg.msg.text || "";
-              if (lastMsg.msg.workerStream || !finalText.trim()) {
+              const finalText = (lastMsg.msg.text || "").trim();
+              if (lastMsg.msg.workerStream) {
+                const withoutStream = p.slice(0, lastIdx);
+                return finalText
+                  ? [...withoutStream, { kind: "thinking" as const, text: finalText }]
+                  : withoutStream;
+              }
+              if (!finalText) {
                 return p.slice(0, lastIdx);
               }
               const updated = [...p];
@@ -2719,13 +2743,27 @@ function ActivityGroup({
   const cgItems = items.filter((it) => it.kind === "codegraph_context") as { kind: "codegraph_context"; symbols: number; query: string }[];
   const actionCount = cards.length;
   const anyRunning = cards.some((c) => c.card.running);
+  const narrationMsgs = items.filter(
+    (it) => it.kind === "msg" && (it as { kind: "msg"; msg: Msg }).msg.text.trim()
+  ) as { kind: "msg"; msg: Msg }[];
+  const thinkingItems = items.filter(
+    (it) => it.kind === "thinking" && (it as { kind: "thinking"; text: string }).text.trim()
+  ) as { kind: "thinking"; text: string }[];
 
-  // A group with NO tool actions (just a lone CodeGraph chip from the per-step
-  // auto-injection) should not render a misleading "0 steps" box. Suppress it
-  // entirely -- the CodeGraph work shows in the group that actually has actions.
-  if (actionCount === 0) {
+  // A group with NO tool actions, no narration AND no reasoning (just a lone
+  // CodeGraph chip from the per-step auto-injection) would render a misleading
+  // "0 steps" box -- suppress it. But folded intermediate narration OR a reasoning
+  // trace must still show (collapsed), so reasoning never silently vanishes from
+  // the step list the way it used to.
+  if (actionCount === 0 && narrationMsgs.length === 0 && thinkingItems.length === 0) {
     return null;
   }
+
+  const narrationPreview = narrationMsgs.length
+    ? narrationMsgs[narrationMsgs.length - 1].msg.text.trim().split("\n", 1)[0]
+    : (thinkingItems.length
+        ? thinkingItems[thinkingItems.length - 1].text.trim().split("\n", 1)[0]
+        : "");
 
   // Build a tight one-line summary of what kinds of actions ran.
   const kindCounts: Record<string, number> = {};
@@ -2783,10 +2821,12 @@ function ActivityGroup({
         {open ? <ChevronDown size={11} className="text-faint/70" /> : <ChevronRight size={11} className="text-faint/70" />}
         {anyRunning ? <Loader2 size={11} className="animate-spin text-faint" /> : <Share2 size={10} className="text-faint/70" />}
         <span className="text-txt/70 font-medium tracking-tight">
-          {anyRunning ? "Investigating" : "Investigated"}
+          {actionCount > 0 ? (anyRunning ? "Investigating" : "Investigated") : "Thought"}
         </span>
-        <span className="text-faint">
-          {actionCount} step{actionCount === 1 ? "" : "s"}{kindSummary ? ` -- ${kindSummary}` : ""}
+        <span className="text-faint truncate max-w-[46ch] normal-case">
+          {actionCount > 0
+            ? `${actionCount} step${actionCount === 1 ? "" : "s"}${kindSummary ? ` -- ${kindSummary}` : ""}`
+            : narrationPreview}
         </span>
         {cgItems.length > 0 && (
           <span className="ml-0.5 text-faint/70">+ CodeGraph</span>
@@ -2831,7 +2871,7 @@ function ThinkingBlock({ text }: { text: string }) {
         )}
       </button>
       {expanded && (
-        <div className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-muted text-[0.8125rem] whitespace-pre-wrap leading-relaxed max-w-[92%] max-h-[40dvh]">
+        <div className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] whitespace-pre-wrap leading-[1.65] max-w-[92%] max-h-[34dvh]">
           {text}
         </div>
       )}
@@ -3058,7 +3098,7 @@ function Bubble({
         </span>
         <div
           ref={workerScrollRef}
-          className="w-full max-w-[95%] max-h-[9rem] overflow-y-auto overscroll-contain pl-2.5 border-l-2 border-edge/40 text-[0.75rem] leading-relaxed text-muted/75 whitespace-pre-wrap font-mono"
+          className="w-full max-w-[95%] max-h-[7.5rem] overflow-y-auto overscroll-contain pl-2.5 border-l-2 border-edge/40 text-[10.5px] leading-[1.7] text-faint/70 whitespace-pre-wrap font-mono"
           style={{
             maskImage: "linear-gradient(to bottom, transparent 0%, black 24%, black 100%)",
             WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 24%, black 100%)",
