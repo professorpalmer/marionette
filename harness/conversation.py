@@ -352,6 +352,7 @@ class ConversationalSession:
         self._tokens_used: int = 0
         self._tokens_in: int = 0   # cumulative prompt tokens (for accurate cost)
         self._tokens_out: int = 0  # cumulative completion tokens
+        self._tokens_cached: int = 0  # cumulative prompt tokens served from cache
         # concurrency: a single ConversationalSession is single-flight. Two
         # concurrent send()/run_auto() calls would interleave self._history and
         # corrupt the transcript, so we reject re-entrant streams rather than
@@ -1928,6 +1929,15 @@ class ConversationalSession:
                 self._tokens_used += _t_out + _t_in
                 self._tokens_out += _t_out
                 self._tokens_in += _t_in
+                # Cache-read credit: all three drivers report prompt-prefix cache
+                # hits (Anthropic breakpoints / OpenAI + Gemini implicit) in
+                # meta.cache_read_tokens. Accumulate so the UI can show how much
+                # input was served near-free -- proof we are not token-hungry.
+                try:
+                    _meta = getattr(resp, "meta", None) or {}
+                    self._tokens_cached += int(_meta.get("cache_read_tokens", 0) or 0)
+                except Exception:
+                    pass
 
                 if resp and resp.error:
                     from pmharness.drivers import error_classifier

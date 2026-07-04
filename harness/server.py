@@ -2989,7 +2989,10 @@ class Handler(BaseHTTPRequestHandler):
                 "session": {
                     "tokens_used": tokens_used,
                     "est_cost_usd": round(est_session_cost, 6),
-                    "driver": _cfg.driver
+                    "driver": _cfg.driver,
+                    # Prompt-cache hits (near-free input) so the UI can show how
+                    # much was cached -- proof the harness is not token-hungry.
+                    "tokens_cached": int(getattr(_pilot, "_tokens_cached", 0) or 0),
                 },
                 "jobs": res_jobs
             }

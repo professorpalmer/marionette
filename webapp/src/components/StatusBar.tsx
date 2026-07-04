@@ -11,7 +11,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
   onToggleLeft: () => void; onToggleRight: () => void;
 }) {
   const [branch, setBranch] = useState("");
-  const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number } | null>(null);
+  const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number; tokens_cached?: number } | null>(null);
   const [update, setUpdate] = useState<{ behind: number; branch: string; version: string } | null>(null);
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -96,6 +96,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
           setUsage({
             tokens_used: data.session.tokens_used,
             est_cost_usd: data.session.est_cost_usd,
+            tokens_cached: (data.session as { tokens_cached?: number }).tokens_cached,
           });
         }
       })
@@ -155,6 +156,11 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
           <span className="flex items-center gap-1 text-muted/80" title="Session token usage and estimated cost">
             <Coins size={10} className="text-faint" />
             <span>{formatTokens(usage.tokens_used)} tok</span>
+            {usage.tokens_cached && usage.tokens_cached > 0 ? (
+              <span className="text-accent/80" title="Prompt tokens served from cache (near-free input)">
+                {formatTokens(usage.tokens_cached)} cached
+              </span>
+            ) : null}
             <span className="text-good font-medium">~{formatCost(usage.est_cost_usd)}</span>
           </span>
         </>
