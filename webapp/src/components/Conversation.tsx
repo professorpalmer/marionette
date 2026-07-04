@@ -16,6 +16,11 @@ type Msg = {
   isPlan?: boolean;
   images?: { path: string; name: string; previewUrl: string }[];
   streaming?: boolean;
+  // Ephemeral live preview of a swarm worker's token stream. Rendered in a
+  // height-capped, auto-scrolling window and DROPPED when the action finalizes
+  // (the worker's real output is carried by the swarm artifacts/summary), so a
+  // multi-worker swarm can't concatenate into one unbounded permanent bubble.
+  workerStream?: boolean;
 };
 type Card = {
   id: string; goal: string; cwd?: string | null;
@@ -39,6 +44,7 @@ type Item =
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
+  | { kind: "auth_failure"; message: string; id?: string }
   | { kind: "steer"; text: string };
 
 type GroupedItem =
@@ -50,6 +56,7 @@ type GroupedItem =
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
+  | { kind: "auth_failure"; message: string; id?: string }
   | { kind: "steer"; text: string }
   | { kind: "activity_group"; items: ( { kind: "card"; card: Card } | { kind: "thinking"; text: string } | { kind: "codegraph_context"; symbols: number; query: string } | { kind: "msg"; msg: Msg } )[] };
 
@@ -149,7 +156,7 @@ function groupAgentActivity(items: Item[]): GroupedItem[] {
       // its markdown formatting never breaks inside the box.
       flush();
       grouped.push(item);
-    } else if (item.kind === "swarm_pending" || item.kind === "swarm_result" || item.kind === "checkpoint" || item.kind === "compaction" || item.kind === "command_blocked" || item.kind === "steer") {
+    } else if (item.kind === "swarm_pending" || item.kind === "swarm_result" || item.kind === "checkpoint" || item.kind === "compaction" || item.kind === "command_blocked" || item.kind === "auth_failure" || item.kind === "steer") {
       flush();
       grouped.push(item);
     } else if (item.kind === "card" || item.kind === "thinking" || item.kind === "codegraph_context") {
@@ -208,6 +215,8 @@ function stableItemKey(it: GroupedItem, i: number): string {
       return `cg-${i}-${it.symbols}`;
     case "command_blocked":
       return `blk-${i}-${it.category}`;
+    case "auth_failure":
+      return `auth-${it.id || i}`;
     case "steer":
       return `steer-${i}`;
     case "thinking":
@@ -427,6 +436,17 @@ const TranscriptList = memo(function TranscriptList({
           <span className="min-w-0">
             <span className="text-red-300/70">{it.reason}</span>
             {it.command ? <code className="block mt-0.5 text-[10px] text-faint/80 font-mono truncate">{it.command}</code> : null}
+          </span>
+        </div>
+      );
+    } else if (it.kind === "auth_failure") {
+      return (
+        <div key={key} role="alert" className="flex items-start gap-2 py-2.5 px-3.5 rounded-lg bg-red-500/12 border border-red-500/50 text-[12px] text-red-200 w-full max-w-full my-1.5 shadow-sm animate-in fade-in duration-200">
+          <XCircle size={15} className="text-red-400 shrink-0 mt-0.5" />
+          <span className="min-w-0">
+            <span className="font-semibold text-red-300">Provider auth failure.</span>{" "}
+            <span className="text-red-200/90">The API key was rejected -- this is a dead, revoked, or wrong key, not a weak model or bad prompt. Fix the named credential (e.g. OPENAI_API_KEY), then re-run.</span>
+            {it.message ? <code className="block mt-1 text-[10.5px] text-red-200/80 font-mono break-all whitespace-pre-wrap">{it.message}</code> : null}
           </span>
         </div>
       );
@@ -1423,9 +1443,16 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       if (!typeDoneRef.current) typeRafRef.current = requestAnimationFrame(pumpTypewriter);
       return;
     }
-    // Reveal speed: ~3 chars/frame live (~180 cps at 60fps); when the stream is
-    // done, drain a larger slice so the tail finishes promptly.
-    const perFrame = typeDoneRef.current ? Math.max(12, Math.ceil(buf.length / 4)) : 3;
+    // Reveal speed. A fixed live cadence (3 chars/frame ~= 180 cps) falls
+    // arbitrarily far behind a fast agentic worker, so the visible text lags
+    // seconds-to-minutes behind reality until the final flush -- defeating the
+    // "live" stream. Make the live slice scale with the pending backlog: 3
+    // chars/frame keeps a smooth, readable floor when the buffer is small, but
+    // as it grows we drain proportionally faster so cadence stays smooth and
+    // never lags arbitrarily. On done, drain a larger slice to finish promptly.
+    const perFrame = typeDoneRef.current
+      ? Math.max(12, Math.ceil(buf.length / 4))
+      : Math.max(3, Math.ceil(buf.length / 8));
     const take = buf.slice(0, perFrame);
     typeBufRef.current = buf.slice(perFrame);
     appendStreamingText(take);
@@ -1476,6 +1503,15 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setCompactingStatus(d.message || "Summarizing chat context");
       } else if (ev.kind === "command_blocked") {
         setItems((p) => [...p, { kind: "command_blocked" as const, command: d.command || "", category: d.category || "", reason: d.reason || "", matched: d.matched || "" }]);
+      } else if (ev.kind === "swarm_auth_failure") {
+        // A provider rejected the API key. Surface it as a loud, persistent
+        // banner so a dead/revoked key is never silently read as a generic
+        // "completed without findings" degrade. Deduped by action id.
+        setItems((p) => (
+          p.some((it) => it.kind === "auth_failure" && it.id === d.id)
+            ? p
+            : [...p, { kind: "auth_failure" as const, message: d.message || "", id: d.id }]
+        ));
       } else if (ev.kind === "wiki_prepared") {
         const pages = d.pages || [];
         if (pages.length > 0) {
@@ -1518,8 +1554,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         startTypewriter();
       } else if (ev.kind === "worker_delta") {
         // Live token stream from an inline swarm worker (the agentic adapter).
-        // Inline workers run one at a time, so it is safe to reuse the single
-        // streaming assistant bubble; the subsequent action_result finalizes it.
+        // This is an EPHEMERAL preview: it renders in a height-capped, auto-
+        // scrolling window (see Bubble) and is dropped when the action finalizes,
+        // because the worker's real output arrives as swarm artifacts/summary.
+        // Reuse only a prior workerStream bubble -- never merge worker tokens into
+        // the pilot's own message bubble, and never let several workers pile into
+        // one unbounded permanent bubble.
         if (d.kind === "text" && d.text) {
           setCompactingStatus(null);
           setStatus("streaming");
@@ -1527,11 +1567,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             const lastIdx = p.length - 1;
             if (lastIdx >= 0 && p[lastIdx].kind === "msg") {
               const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
-              if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
+              if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming && lastMsg.msg.workerStream) {
                 return p;
               }
             }
-            return [...p, { kind: "msg", msg: { role: "assistant", text: "", streaming: true, isPlan: planTurnRef.current } }];
+            return [...p, { kind: "msg", msg: { role: "assistant", text: "", streaming: true, workerStream: true, isPlan: planTurnRef.current } }];
           });
           typeBufRef.current += (d.text || "");
           startTypewriter();
@@ -1541,7 +1581,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setStatus("thinking");
         // Drain any queued typed text before finalizing, so the bubble is whole.
         flushTypewriter();
-        setItems((p) => {
+        setItems((p0) => {
+          // A pilot message must never adopt a worker's ephemeral stream: drop a
+          // trailing worker-stream preview before finalizing the pilot's own text.
+          const p = (p0.length > 0 && p0[p0.length - 1].kind === "msg" && (p0[p0.length - 1] as { kind: "msg"; msg: Msg }).msg.workerStream)
+            ? p0.slice(0, -1) : p0;
           const lastIdx = p.length - 1;
           if (lastIdx >= 0 && p[lastIdx].kind === "msg") {
             const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
@@ -1582,9 +1626,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (ev.kind === "action_result") {
         setCompactingStatus(null);
         setStatus("thinking");
-        // Finalize any dangling worker-streamed bubble: swarm worker tokens
-        // arrive as worker_delta with no terminating `message` event, so turn
-        // the live bubble into a permanent one here (or drop it if it's empty).
+        // The swarm is done: its real output arrives as artifacts/summary below,
+        // so DROP the ephemeral worker-stream preview entirely rather than freezing
+        // a wall of concatenated worker tokens into the transcript. A non-worker
+        // streaming bubble (the pilot's own narration) is still finalized in place.
         flushTypewriter();
         setItems((p) => {
           const lastIdx = p.length - 1;
@@ -1592,7 +1637,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
             if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
               const finalText = lastMsg.msg.text || "";
-              if (!finalText.trim()) {
+              if (lastMsg.msg.workerStream || !finalText.trim()) {
                 return p.slice(0, lastIdx);
               }
               const updated = [...p];
@@ -1602,6 +1647,16 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           }
           return p;
         });
+        // Fallback: if the card carries an auth_failure but the dedicated
+        // swarm_auth_failure event was missed, still raise the loud banner so a
+        // dead key is never buried in a quiet "completed" card. Deduped by id.
+        if (d.auth_failure) {
+          setItems((p) => (
+            p.some((it) => it.kind === "auth_failure" && it.id === d.id)
+              ? p
+              : [...p, { kind: "auth_failure" as const, message: d.auth_failure, id: d.id }]
+          ));
+        }
         setCard(d.id, { running: false, open: false, result: d });
         if (d.artifacts && !d.error) onArtifacts(d.artifacts);
         onJobChange();
@@ -2976,11 +3031,44 @@ function Bubble({
   }, [displayedText, isUser]);
   const userCollapsed = isUser && userOverflowing && !userExpanded;
 
+  // Keep the ephemeral worker-stream window pinned to its latest tokens so it
+  // reads as a live ticker rather than scrolling the whole page.
+  const workerScrollRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (msg.workerStream && workerScrollRef.current) {
+      workerScrollRef.current.scrollTop = workerScrollRef.current.scrollHeight;
+    }
+  }, [displayedText, msg.workerStream]);
+
   const handleCopy = () => {
     navigator.clipboard.writeText(displayedText);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
+
+  // A swarm worker's live token stream: a compact, height-capped, auto-scrolling
+  // preview (fades older lines at the top) instead of an unbounded bubble. It is
+  // ephemeral -- the finalizers drop it once the swarm's artifacts land.
+  if (!isUser && msg.workerStream) {
+    if (!displayedText.trim()) return null;
+    return (
+      <div className="flex flex-col items-start gap-0.5 my-1 w-full">
+        <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-mono">
+          <Loader2 size={10} className="animate-spin text-faint/70" /> worker streaming
+        </span>
+        <div
+          ref={workerScrollRef}
+          className="w-full max-w-[95%] max-h-[9rem] overflow-y-auto overscroll-contain pl-2.5 border-l-2 border-edge/40 text-[0.75rem] leading-relaxed text-muted/75 whitespace-pre-wrap font-mono"
+          style={{
+            maskImage: "linear-gradient(to bottom, transparent 0%, black 24%, black 100%)",
+            WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 24%, black 100%)",
+          }}
+        >
+          {displayedText}
+        </div>
+      </div>
+    );
+  }
 
   if (isUser) {
     return (

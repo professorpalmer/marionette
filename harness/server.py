@@ -17,7 +17,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import secrets as _secrets
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
-import cgi
 import tempfile
 import uuid
 
@@ -864,7 +863,45 @@ def _strip_markdown_fences(text: str) -> str:
     return text
 
 
+def _parse_multipart_files(body: bytes, content_type: str) -> list:
+    """Extract uploaded files from a multipart/form-data body using the stdlib
+    email parser. Replaces cgi.FieldStorage, which was removed in Python 3.13.
+    Returns a list of (filename, data_bytes) for every part carrying a filename.
+    The body is already size-capped by the caller, so buffering it is bounded."""
+    from email.parser import BytesParser
+    # Synthesize the MIME header block the parser needs, then feed it the body.
+    header = (b"MIME-Version: 1.0\r\nContent-Type: "
+              + content_type.encode("latin-1", "replace") + b"\r\n\r\n")
+    message = BytesParser().parsebytes(header + body)
+    files = []
+    if not message.is_multipart():
+        return files
+    for part in message.get_payload():
+        filename = part.get_filename()
+        if not filename:
+            continue
+        data = part.get_payload(decode=True)
+        if data is None:
+            continue
+        files.append((filename, data))
+    return files
+
+
 class Handler(BaseHTTPRequestHandler):
+    def handle_one_request(self):
+        # A client (the Electron renderer) closing the socket mid-request --
+        # navigating away, stopping a stream, swapping models -- or a handler
+        # that answers early without draining the request body (e.g. a 413 for an
+        # oversized upload) raises ConnectionError/TimeoutError deep in the stdlib
+        # request machinery. That is benign, but on a bare ThreadingHTTPServer it
+        # escapes to socketserver's default handle_error and dumps a traceback to
+        # stderr. Swallow only those transport errors so a disconnect never prints
+        # noise; genuine handler bugs still surface unchanged.
+        try:
+            super().handle_one_request()
+        except (ConnectionError, TimeoutError):
+            self.close_connection = True
+
     def log_message(self, *a):  # quiet
         pass
 
@@ -1963,7 +2000,6 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _handle_upload(self):
-        import shutil
         ctype = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in ctype:
             return self._send(400, json.dumps({"error": "expected multipart/form-data"}))
@@ -1976,26 +2012,22 @@ class Handler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError:
             content_length = 0
+        if content_length <= 0:
+            return self._send(400, json.dumps({"error": "missing or empty body"}))
         if content_length > max_bytes:
             return self._send(413, json.dumps({
                 "error": f"upload too large: {content_length} bytes exceeds cap of {max_bytes}"
             }))
-        fs = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
-                              environ={"REQUEST_METHOD": "POST",
-                                       "CONTENT_TYPE": ctype})
+        body = self.rfile.read(content_length)
         saved = []
-        items = fs.list or []
-        for item in items:
-            if getattr(item, "filename", None) and item.file:
-                ext = os.path.splitext(item.filename)[1].lower() or ".png"
-                if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
-                    continue
-                path = os.path.join(_UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
-                # Stream in chunks rather than item.file.read() so a big file
-                # isn't pulled fully into memory just to be written back out.
-                with open(path, "wb") as out:
-                    shutil.copyfileobj(item.file, out, 64 * 1024)
-                saved.append({"path": path, "name": item.filename})
+        for filename, data in _parse_multipart_files(body, ctype):
+            ext = os.path.splitext(filename)[1].lower() or ".png"
+            if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                continue
+            path = os.path.join(_UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
+            with open(path, "wb") as out:
+                out.write(data)
+            saved.append({"path": path, "name": filename})
         return self._send(200, json.dumps({"saved": saved}))
 
     def do_GET(self):
