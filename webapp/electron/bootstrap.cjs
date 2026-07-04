@@ -128,6 +128,47 @@ function addToPath(dir) {
   process.env.PATH = dir + path.delimiter + process.env.PATH;
 }
 
+// A macOS/Linux GUI app launched from Finder/Dock inherits a MINIMAL PATH
+// (/usr/bin:/bin:/usr/sbin:/sbin) that excludes Homebrew and every Node version
+// manager -- so `which node` fails even when the user has a modern Node, and the
+// bootstrap wrongly reports "Node too old / not found" (real report: Node v26 via
+// Homebrew rejected). Prepend the standard install locations so tool discovery
+// matches what the user sees in their terminal. Best-effort and idempotent;
+// only real, existing dirs are added.
+function hydratePath() {
+  if (process.platform === "win32") return;
+  const home = os.homedir();
+  const candidates = [
+    "/opt/homebrew/bin",      // Apple Silicon Homebrew
+    "/usr/local/bin",         // Intel Homebrew + common installs
+    "/opt/local/bin",         // MacPorts
+    path.join(home, ".local", "bin"),
+    path.join(home, ".volta", "bin"),
+    path.join(home, ".fnm"),
+    path.join(home, "n", "bin"),
+  ];
+  // Version managers keep the active Node under a versioned dir; add the newest.
+  for (const vm of [path.join(home, ".nvm", "versions", "node"),
+                    path.join(home, ".local", "share", "fnm", "node-versions")]) {
+    try {
+      const versions = fs.readdirSync(vm)
+        .filter((v) => /^v?\d/.test(v))
+        .sort()
+        .reverse();
+      for (const v of versions) {
+        const bin = path.join(vm, v, process.platform === "win32" ? "" : "bin");
+        if (fs.existsSync(path.join(bin, "node"))) { candidates.unshift(bin); break; }
+        // fnm nests under <version>/installation/bin on some setups
+        const alt = path.join(vm, v, "installation", "bin");
+        if (fs.existsSync(path.join(alt, "node"))) { candidates.unshift(alt); break; }
+      }
+    } catch { /* no such manager */ }
+  }
+  for (const dir of candidates) {
+    try { if (fs.existsSync(dir)) addToPath(dir); } catch { /* ignore */ }
+  }
+}
+
 async function ensurePortableNode(onProgress) {
   if (nodeMajor() >= VERSIONS.NODE_MIN_MAJOR) return;
   if (process.platform !== "win32") {
@@ -237,6 +278,10 @@ async function runBootstrap(targetDir, onProgress = () => {}) {
   const branch = process.env.MARIONETTE_BRANCH || DEFAULT_BRANCH;
 
   onProgress("Checking prerequisites...", 5);
+  // A Finder/Dock-launched app has a minimal PATH; hydrate it with Homebrew and
+  // Node version-manager locations so node/git/uv are discoverable (fixes the
+  // false "Node too old / not found" on machines with Homebrew Node).
+  hydratePath();
   await ensurePortableGit(onProgress);
   ensureUv(onProgress);
   await ensurePortableNode(onProgress);

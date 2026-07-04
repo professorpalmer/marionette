@@ -824,6 +824,23 @@ app.on("web-contents-created", (_e, contents) => {
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return; // a prior instance owns the backend
   configureBrowserSession();
+  // A Finder/Dock launch inherits a minimal launchd PATH that omits Homebrew and
+  // Node version managers, so the FIRST-RUN bootstrap (git/node/uv discovery) can
+  // wrongly fail with "Node too old / not found" even when the user has a modern
+  // Node in their terminal (real report: Homebrew Node v26 rejected). Merge the
+  // user's real login-shell PATH into this process BEFORE bootstrap so tool
+  // discovery matches their terminal. bootstrap.cjs also hydrates PATH as a
+  // second layer of defense.
+  if (isPackaged && process.platform !== "win32") {
+    try {
+      const shellPath = loginShellEnv().PATH;
+      if (shellPath) {
+        const have = new Set(String(process.env.PATH || "").split(path.delimiter));
+        const extra = String(shellPath).split(path.delimiter).filter((p) => p && !have.has(p));
+        if (extra.length) process.env.PATH = extra.join(path.delimiter) + path.delimiter + (process.env.PATH || "");
+      }
+    } catch { /* fall back to bootstrap's hydratePath() */ }
+  }
   if (isPackaged) {
     try { await ensurePackagedCheckout(); } catch (e) {
       console.error("bootstrap failed:", e);
