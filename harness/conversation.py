@@ -2487,11 +2487,50 @@ class ConversationalSession:
                 if act.kind == "run_swarm":
                     intent = DriverIntent(action="run_swarm", goal=act.goal,
                                           roles=act.roles or None, rationale="pilot")
-                    try:
-                        result: BridgeResult = execute_intent(intent, state_dir=self.state_dir)
-                    except Exception as e:
-                        yield ConvEvent("action_result", {"id": aid, "error": f"execute: {e}"})
-                        self._append_action_result(act, aid, f"(swarm {aid} failed: {e})", is_native)
+                    # Run the (blocking, in-process) swarm on a background thread so
+                    # the generator can drain live token deltas from the agentic
+                    # worker and forward them to the UI, mirroring the pilot's own
+                    # chat_stream(on_delta=...) pattern. Inline workers run
+                    # sequentially, so deltas belong to one worker at a time.
+                    import queue as _queue
+                    import threading as _threading
+                    _delta_q: "_queue.Queue" = _queue.Queue()
+
+                    def _stream_swarm(_intent=intent):
+                        try:
+                            r = execute_intent(
+                                _intent, state_dir=self.state_dir,
+                                on_delta=lambda wid, kind, text: _delta_q.put(
+                                    ("delta", (wid, kind, text))),
+                            )
+                            _delta_q.put(("done", r))
+                        except Exception as ex:  # noqa: BLE001 - surfaced below
+                            _delta_q.put(("error", ex))
+
+                    _swarm_thread = _threading.Thread(target=_stream_swarm, daemon=True)
+                    _swarm_thread.start()
+                    result = None
+                    swarm_error = None
+                    while True:
+                        msg_kind, msg_val = _delta_q.get()
+                        if msg_kind == "delta":
+                            wid, dkind, dtext = msg_val
+                            yield ConvEvent("worker_delta", {
+                                "id": aid, "worker_id": wid, "kind": dkind, "text": dtext,
+                            })
+                        elif msg_kind == "done":
+                            result = msg_val
+                            break
+                        else:
+                            swarm_error = msg_val
+                            break
+                    if swarm_error is not None:
+                        yield ConvEvent("action_result", {"id": aid, "error": f"execute: {swarm_error}"})
+                        self._append_action_result(act, aid, f"(swarm {aid} failed: {swarm_error})", is_native)
+                        continue
+                    if result is None:
+                        yield ConvEvent("action_result", {"id": aid, "error": "execute: no result"})
+                        self._append_action_result(act, aid, f"(swarm {aid} failed: no result)", is_native)
                         continue
                     swarms += 1
                     if result.adapter == "demo":

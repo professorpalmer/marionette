@@ -1516,6 +1516,26 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         });
         typeBufRef.current += (d.text || "");
         startTypewriter();
+      } else if (ev.kind === "worker_delta") {
+        // Live token stream from an inline swarm worker (the agentic adapter).
+        // Inline workers run one at a time, so it is safe to reuse the single
+        // streaming assistant bubble; the subsequent action_result finalizes it.
+        if (d.kind === "text" && d.text) {
+          setCompactingStatus(null);
+          setStatus("streaming");
+          setItems((p) => {
+            const lastIdx = p.length - 1;
+            if (lastIdx >= 0 && p[lastIdx].kind === "msg") {
+              const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
+              if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
+                return p;
+              }
+            }
+            return [...p, { kind: "msg", msg: { role: "assistant", text: "", streaming: true, isPlan: planTurnRef.current } }];
+          });
+          typeBufRef.current += (d.text || "");
+          startTypewriter();
+        }
       } else if (ev.kind === "message") {
         setCompactingStatus(null);
         setStatus("thinking");
@@ -1562,6 +1582,26 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (ev.kind === "action_result") {
         setCompactingStatus(null);
         setStatus("thinking");
+        // Finalize any dangling worker-streamed bubble: swarm worker tokens
+        // arrive as worker_delta with no terminating `message` event, so turn
+        // the live bubble into a permanent one here (or drop it if it's empty).
+        flushTypewriter();
+        setItems((p) => {
+          const lastIdx = p.length - 1;
+          if (lastIdx >= 0 && p[lastIdx].kind === "msg") {
+            const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
+            if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
+              const finalText = lastMsg.msg.text || "";
+              if (!finalText.trim()) {
+                return p.slice(0, lastIdx);
+              }
+              const updated = [...p];
+              updated[lastIdx] = { kind: "msg", msg: { ...lastMsg.msg, streaming: false } };
+              return updated;
+            }
+          }
+          return p;
+        });
         setCard(d.id, { running: false, open: false, result: d });
         if (d.artifacts && !d.error) onArtifacts(d.artifacts);
         onJobChange();

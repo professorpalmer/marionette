@@ -16,9 +16,27 @@ model, not worker quality (a separate question).
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .intent import DriverIntent, ROLE_LENSES, infer_roles
+
+
+def _install_delta_sink(
+    on_delta: "Optional[Callable[[str, str, str], None]]",
+) -> "Callable[[], None]":
+    """Register ``on_delta`` as Puppetmaster's broadcast delta sink and return a
+    zero-arg cleanup that clears it. Guarded for older bundled puppetmaster
+    builds without the streaming bus: if the module isn't importable we no-op, so
+    swarm runs still work (just without live token streaming).
+    """
+    if on_delta is None:
+        return lambda: None
+    try:
+        from puppetmaster.adapters._delta_bus import set_broadcast_sink
+    except Exception:
+        return lambda: None
+    set_broadcast_sink(on_delta)
+    return lambda: set_broadcast_sink(None)
 
 
 def _analysis_instruction(goal: str, repo_cwd: str, role: str) -> str:
@@ -130,12 +148,18 @@ def execute_intent(
     *,
     state_dir: Optional[str] = None,
     worker_mode: Optional[str] = None,
+    on_delta: Optional[Callable[[str, str, str], None]] = None,
 ) -> Optional[BridgeResult]:
     """Run a run_swarm intent against Puppetmaster. Returns None for non-swarm
     actions (answer/stop) since there is nothing to execute.
 
     Imports of puppetmaster are local so the schema/validation layer stays
     importable with zero PM dependency (keeps unit tests fast and hermetic).
+
+    When ``on_delta`` is given (``on_delta(worker_id, kind, text)``), inline
+    agentic workers stream their token deltas to it live via Puppetmaster's
+    delta bus. The bus registration is guarded so an older bundled puppetmaster
+    without streaming support simply runs blocking, as before.
     """
     if intent.action != "run_swarm":
         return None
@@ -146,94 +170,98 @@ def execute_intent(
     from puppetmaster.store_factory import create_store
     from puppetmaster.orchestrator import Orchestrator
 
+    _clear_delta_sink = _install_delta_sink(on_delta)
     tmp = state_dir or tempfile.mkdtemp(prefix="pmh-exec-")
     store = create_store("sqlite", tmp)
 
-    # Swarm adapter selection (safety-first):
-    #   demo (default)  -> built-in local demo adapter: deterministic, free, no
-    #                      real code analysis. The substrate for driver eval.
-    #   openai          -> REAL LLM analysis of REAL code. We build READ-ONLY
-    #                      analysis WorkerSpecs pointed at the target repo cwd so
-    #                      Puppetmaster injects CodeGraph context. The "openai"
-    #                      adapter is NOT in _EDIT_CAPABLE_ADAPTERS, and we also
-    #                      stamp read_only=True -- a triple guard so a real run
-    #                      can NEVER edit a target repo (safe even on live repos).
-    swarm_adapter = (_os.environ.get("HARNESS_SWARM_ADAPTER", "demo") or "demo").lower()
-    repo_cwd = _os.environ.get("HARNESS_REPO", "").strip()
+    try:
+        # Swarm adapter selection (safety-first):
+        #   demo (default)  -> built-in local demo adapter: deterministic, free, no
+        #                      real code analysis. The substrate for driver eval.
+        #   openai          -> REAL LLM analysis of REAL code. We build READ-ONLY
+        #                      analysis WorkerSpecs pointed at the target repo cwd so
+        #                      Puppetmaster injects CodeGraph context. The "openai"
+        #                      adapter is NOT in _EDIT_CAPABLE_ADAPTERS, and we also
+        #                      stamp read_only=True -- a triple guard so a real run
+        #                      can NEVER edit a target repo (safe even on live repos).
+        swarm_adapter = (_os.environ.get("HARNESS_SWARM_ADAPTER", "demo") or "demo").lower()
+        repo_cwd = _os.environ.get("HARNESS_REPO", "").strip()
 
-    if swarm_adapter == "agentic" and repo_cwd:
-        # Standalone path: run READ-ONLY analysis workers on the built-in
-        # 'agentic' adapter, which calls a provider API directly on the user's
-        # own key -- no external agent CLI. auto_route lets Puppetmaster's router
-        # pick the right-sized model among ONLY the providers the user's keys
-        # unlock (key-aware filter) and the enabled platform lock. The agentic
-        # adapter's analyze mode exposes no edit tools, so this is safe on live
-        # repos even before the triple read-only guard below.
-        _warn_if_unindexed(repo_cwd)
-        from puppetmaster.workers import WorkerSpec
-        roles = intent.roles or infer_roles(intent.goal)
-        specs = []
-        for r in roles:
-            specs.append(WorkerSpec(
-                role=r,
-                instruction=_analysis_instruction(intent.goal, repo_cwd, r),
-                adapter="agentic",
-                payload={
-                    "read_only": True, "no_edit": True, "dry_run": True,
-                    "cwd": repo_cwd, "prompt": intent.goal,
-                    "auto_route": True,
-                },
-            ))
-        result = Orchestrator(store).run(
-            intent.goal, specs=specs, worker_mode=worker_mode or "inline",
-        )
-        adapter = "agentic"
-    elif swarm_adapter == "openai" and repo_cwd:
-        _prepare_analysis_env()
-        _warn_if_unindexed(repo_cwd)
-        from puppetmaster.workers import WorkerSpec
-        roles = intent.roles or infer_roles(intent.goal)
-        specs = []
-        for r in roles:
-            specs.append(WorkerSpec(
-                role=r,
-                instruction=_analysis_instruction(intent.goal, repo_cwd, r),
-                adapter="openai",
-                payload={
-                    "read_only": True, "no_edit": True, "dry_run": True,
-                    "cwd": repo_cwd, "prompt": intent.goal,
-                    "auto_route": False,
-                    # Route analysis through OpenRouter (funded, open models) by
-                    # default; the OpenAI adapter speaks the OpenAI-compatible
-                    # schema so base_url + key + an open model just works. Falls
-                    # back to native OpenAI only if HARNESS_ANALYSIS_REACH=openai.
-                    **_analysis_provider_payload(),
-                },
-            ))
-        # inline: the analysis worker runs in-process so the env-based key
-        # wiring propagates reliably, and it yields richer multi-artifact output.
-        result = Orchestrator(store).run(
-            intent.goal, specs=specs, worker_mode=worker_mode or "inline",
-        )
-        adapter = "openai"
-    else:
-        # The default role path (roles=None) uses the built-in local demo adapter:
-        # no API keys, deterministic, free. Label as demo substrate honestly.
-        result = Orchestrator(store).run(
-            intent.goal,
-            roles=intent.roles,
-            worker_mode=worker_mode or "subprocess",
-        )
-        adapter = "demo"
+        if swarm_adapter == "agentic" and repo_cwd:
+            # Standalone path: run READ-ONLY analysis workers on the built-in
+            # 'agentic' adapter, which calls a provider API directly on the user's
+            # own key -- no external agent CLI. auto_route lets Puppetmaster's router
+            # pick the right-sized model among ONLY the providers the user's keys
+            # unlock (key-aware filter) and the enabled platform lock. The agentic
+            # adapter's analyze mode exposes no edit tools, so this is safe on live
+            # repos even before the triple read-only guard below.
+            _warn_if_unindexed(repo_cwd)
+            from puppetmaster.workers import WorkerSpec
+            roles = intent.roles or infer_roles(intent.goal)
+            specs = []
+            for r in roles:
+                specs.append(WorkerSpec(
+                    role=r,
+                    instruction=_analysis_instruction(intent.goal, repo_cwd, r),
+                    adapter="agentic",
+                    payload={
+                        "read_only": True, "no_edit": True, "dry_run": True,
+                        "cwd": repo_cwd, "prompt": intent.goal,
+                        "auto_route": True,
+                    },
+                ))
+            result = Orchestrator(store).run(
+                intent.goal, specs=specs, worker_mode=worker_mode or "inline",
+            )
+            adapter = "agentic"
+        elif swarm_adapter == "openai" and repo_cwd:
+            _prepare_analysis_env()
+            _warn_if_unindexed(repo_cwd)
+            from puppetmaster.workers import WorkerSpec
+            roles = intent.roles or infer_roles(intent.goal)
+            specs = []
+            for r in roles:
+                specs.append(WorkerSpec(
+                    role=r,
+                    instruction=_analysis_instruction(intent.goal, repo_cwd, r),
+                    adapter="openai",
+                    payload={
+                        "read_only": True, "no_edit": True, "dry_run": True,
+                        "cwd": repo_cwd, "prompt": intent.goal,
+                        "auto_route": False,
+                        # Route analysis through OpenRouter (funded, open models) by
+                        # default; the OpenAI adapter speaks the OpenAI-compatible
+                        # schema so base_url + key + an open model just works. Falls
+                        # back to native OpenAI only if HARNESS_ANALYSIS_REACH=openai.
+                        **_analysis_provider_payload(),
+                    },
+                ))
+            # inline: the analysis worker runs in-process so the env-based key
+            # wiring propagates reliably, and it yields richer multi-artifact output.
+            result = Orchestrator(store).run(
+                intent.goal, specs=specs, worker_mode=worker_mode or "inline",
+            )
+            adapter = "openai"
+        else:
+            # The default role path (roles=None) uses the built-in local demo adapter:
+            # no API keys, deterministic, free. Label as demo substrate honestly.
+            result = Orchestrator(store).run(
+                intent.goal,
+                roles=intent.roles,
+                worker_mode=worker_mode or "subprocess",
+            )
+            adapter = "demo"
 
-    artifacts = list(result.artifacts)
-    return BridgeResult(
-        job_id=result.job.id,
-        status=str(result.job.status),
-        mode=str(result.mode),
-        num_artifacts=len(artifacts),
-        artifact_types=sorted({str(a.type) for a in artifacts}),
-        summary=result.summary or "",
-        artifacts=[_compact_artifact(a) for a in artifacts],
-        adapter=adapter,
-    )
+        artifacts = list(result.artifacts)
+        return BridgeResult(
+            job_id=result.job.id,
+            status=str(result.job.status),
+            mode=str(result.mode),
+            num_artifacts=len(artifacts),
+            artifact_types=sorted({str(a.type) for a in artifacts}),
+            summary=result.summary or "",
+            artifacts=[_compact_artifact(a) for a in artifacts],
+            adapter=adapter,
+        )
+    finally:
+        _clear_delta_sink()
