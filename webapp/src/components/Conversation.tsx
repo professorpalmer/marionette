@@ -1437,6 +1437,14 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      const busy = status === "thinking" || status === "executing" || status === "streaming";
+      // While a turn is running, plain Enter STEERS (redirects the current turn);
+      // Cmd/Ctrl+Enter QUEUES (runs after the current turn finishes). When idle,
+      // Enter always sends a normal turn.
+      if (busy && (e.metaKey || e.ctrlKey)) {
+        handleQueueAdd();
+        return;
+      }
       send();
     }
   };
@@ -1906,7 +1914,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   resumeTriggerRef.current = triggerResume;
 
   const send = () => {
-    const msg = input.trim(); if (!msg) return;
+    const msg = input.trim();
+    // Allow a send/steer that is only attached image(s) with no text -- the
+    // backend accepts text OR images.
+    if (!msg && attachedImages.length === 0) return;
 
     // Intercept slash commands locally
     if (msg.startsWith("/")) {
@@ -2025,11 +2036,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     const isBusy = status === "thinking" || status === "executing" || status === "streaming";
 
     if (isBusy) {
-      setInput("");
-      // Include any attached images so a steer with a screenshot actually reaches
-      // the model (the backend transcribes them into the steer text). Clear the
-      // attachments after, matching the normal send flow.
+      // Snapshot the attached image paths BEFORE clearing input/attachments or
+      // making the async call, so we never read a stale/cleared closure value
+      // and images are never silently dropped from the steer request. The
+      // backend transcribes them into the steer text.
       const steerImages = attachedImages.map((img) => img.path).filter(Boolean);
+      setInput("");
       setAttachedImages([]);
       api.steerSession(msg, steerImages)
         .then(() => {
@@ -2347,6 +2359,70 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                         <Trash2 size={12} />
                       </button>
                     </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
+              so the "runs next" items are always visible right over the input.
+              These prompts are drained by the backend one full turn at a time. */}
+          {queueItems.length > 0 && (
+            <div className="mb-2 space-y-1">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-[10px] uppercase tracking-wider text-faint font-semibold">
+                  {queueItems.length} queued to send
+                </span>
+                {queueItems.length >= 2 && (
+                  <button
+                    onClick={handleQueueClearAll}
+                    className="text-[10px] text-faint hover:text-muted transition font-semibold"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+              {queueItems.map((item, idx) => {
+                const isDragging = queueDragIndex === idx;
+                const isDragOverQ = queueDragOverIndex === idx;
+                return (
+                  <div
+                    key={item.id}
+                    draggable
+                    onDragStart={() => handleQueueDragStart(idx)}
+                    onDragOver={(e) => handleQueueDragOver(e, idx)}
+                    onDragLeave={() => handleQueueDragLeave(idx)}
+                    onDrop={(e) => handleQueueDrop(e, idx)}
+                    onDragEnd={handleQueueDragEnd}
+                    className={`flex items-center gap-2 bg-panel2/60 border rounded-lg px-2.5 py-1 text-[11px] text-muted transition-all duration-150 select-none
+                      ${isDragging ? "opacity-40" : ""}
+                      ${isDragOverQ ? "border-accent/40 bg-accent/5" : "border-edge/60 hover:border-edge2"}`}
+                  >
+                    <div className="text-faint hover:text-muted cursor-grab active:cursor-grabbing flex items-center justify-center shrink-0">
+                      <GripVertical size={11} />
+                    </div>
+                    {idx === 0 && (
+                      <span
+                        title="Runs next"
+                        className="shrink-0 text-[9px] uppercase font-bold px-1 py-0.5 bg-accent/15 text-accent rounded"
+                      >
+                        next
+                      </span>
+                    )}
+                    <span
+                      onClick={() => handleQueueEdit(item)}
+                      title={item.text}
+                      className="truncate flex-1 min-w-0 cursor-pointer hover:text-txt hover:underline transition-colors"
+                    >
+                      {item.text}
+                    </span>
+                    <button
+                      onClick={() => handleQueueRemove(item.id)}
+                      title="Remove from queue"
+                      className="p-0.5 rounded text-faint hover:text-risk hover:bg-risk/10 border border-transparent hover:border-risk/20 transition-all shrink-0"
+                    >
+                      <X size={11} />
+                    </button>
                   </div>
                 );
               })}
@@ -2674,85 +2750,26 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               {input.trim() && (
                 <button
                   onClick={handleQueueAdd}
-                  title="Add to queue (runs after the current turn)"
+                  title="Queue: runs after the current turn finishes (same as Cmd/Ctrl+Enter)"
                   className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition"
                 >
                   <ListChecks size={9} />Queue
                 </button>
               )}
               {status === "thinking" || status === "executing" || status === "streaming"
-                ? <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
+                ? <>
+                    <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
+                    <button onClick={send} disabled={!input.trim() && attachedImages.length === 0}
+                      title="Steer: redirect the current turn now (Enter). Cmd/Ctrl+Enter or Queue = run after this turn finishes."
+                      className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
+                      <Send size={9} />Steer</button>
+                  </>
                 : <button onClick={send} disabled={!input.trim() && attachedImages.length === 0}
                     className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                     <Send size={9} />{auto ? "Run" : plan ? "Plan" : "Send"}</button>}
             </div>
           </div>
 
-          {/* Server-side PROMPT QUEUE: prompts the backend itself drains one at a
-              time as full turns complete, distinct from the client-only msgQueue
-              above. Rendered directly below the composer so the "runs next" item
-              is always visible. */}
-          {queueItems.length > 0 && (
-            <div className="mt-2 space-y-1">
-              <div className="flex items-center justify-between px-1">
-                <span className="text-[10px] uppercase tracking-wider text-faint font-semibold">
-                  Prompt queue ({queueItems.length})
-                </span>
-                {queueItems.length >= 2 && (
-                  <button
-                    onClick={handleQueueClearAll}
-                    className="text-[10px] text-faint hover:text-muted transition font-semibold"
-                  >
-                    Clear all
-                  </button>
-                )}
-              </div>
-              {queueItems.map((item, idx) => {
-                const isDragging = queueDragIndex === idx;
-                const isDragOverQ = queueDragOverIndex === idx;
-                return (
-                  <div
-                    key={item.id}
-                    draggable
-                    onDragStart={() => handleQueueDragStart(idx)}
-                    onDragOver={(e) => handleQueueDragOver(e, idx)}
-                    onDragLeave={() => handleQueueDragLeave(idx)}
-                    onDrop={(e) => handleQueueDrop(e, idx)}
-                    onDragEnd={handleQueueDragEnd}
-                    className={`flex items-center gap-2 bg-panel2/60 border rounded-lg px-2.5 py-1 text-[11px] text-muted transition-all duration-150 select-none
-                      ${isDragging ? "opacity-40" : ""}
-                      ${isDragOverQ ? "border-accent/40 bg-accent/5" : "border-edge/60 hover:border-edge2"}`}
-                  >
-                    <div className="text-faint hover:text-muted cursor-grab active:cursor-grabbing flex items-center justify-center shrink-0">
-                      <GripVertical size={11} />
-                    </div>
-                    {idx === 0 && (
-                      <span
-                        title="Runs next"
-                        className="shrink-0 text-[9px] uppercase font-bold px-1 py-0.5 bg-accent/15 text-accent rounded"
-                      >
-                        next
-                      </span>
-                    )}
-                    <span
-                      onClick={() => handleQueueEdit(item)}
-                      title={item.text}
-                      className="truncate flex-1 min-w-0 cursor-pointer hover:text-txt hover:underline transition-colors"
-                    >
-                      {item.text}
-                    </span>
-                    <button
-                      onClick={() => handleQueueRemove(item.id)}
-                      title="Remove from queue"
-                      className="p-0.5 rounded text-faint hover:text-risk hover:bg-risk/10 border border-transparent hover:border-risk/20 transition-all shrink-0"
-                    >
-                      <X size={11} />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       </div>
     </>
