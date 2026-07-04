@@ -401,6 +401,21 @@ if not os.environ.get("HARNESS_REPO") and os.path.exists(_ws_boot_path):
 
 if _state_dir:
     _cfg.state_dir = _state_dir
+elif not _cfg.state_dir:
+    # DURABLE STATE (fixes swarm-history loss across restart): with no explicit
+    # HARNESS_STATE_DIR and no config value, state_dir was left blank -- so the
+    # session and pilot each fell back to their OWN throwaway mkdtemp(), landing
+    # swarm history / transcripts / job stores in a fresh temp dir every launch
+    # that nothing ever reads again. Anchor to a stable per-install dir under the
+    # state home so history (swarm_local_jobs.json, transcripts, sqlite job
+    # stores) survives close/reopen and backend restarts, tied to the install.
+    _stable = os.path.join(_state_home(), "state")
+    try:
+        os.makedirs(_stable, exist_ok=True)
+        _cfg.state_dir = _stable
+        os.environ.setdefault("HARNESS_STATE_DIR", _stable)
+    except Exception as e:
+        _diag("server.stable_state_dir", e)
 
 # Masker-safe live key: if HARNESS_KEY_FILE points at a file, load it into the
 # expected env var for the chosen reach before the Session builds its driver.
