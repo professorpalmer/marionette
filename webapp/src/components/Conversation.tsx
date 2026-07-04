@@ -596,6 +596,15 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
+  // PROMPT QUEUE (server-side "playlist"): distinct from the client-only
+  // msgQueue above. These items live on the backend and are drained by the
+  // harness itself at turn completion (an SSE "queued_prompt" event fires when
+  // one starts running) -- so they persist across reloads and survive even if
+  // this tab isn't watching. We just mirror the backend list here for display.
+  const [queueItems, setQueueItems] = useState<{ id: string; text: string }[]>([]);
+  const [queueDragIndex, setQueueDragIndex] = useState<number | null>(null);
+  const [queueDragOverIndex, setQueueDragOverIndex] = useState<number | null>(null);
+
   const [pendingJobIds, setPendingJobIds] = useState<string[]>([]);
   const processedSwarmJobIdsRef = useRef<string[]>([]);
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
@@ -665,6 +674,27 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     }
   }, [slashSearch]);
 
+  // PROMPT QUEUE: light refresh -- on mount, on a small poll interval, and
+  // after any local mutation (add/remove/reorder/clear). Never throws; a
+  // failed fetch just leaves the last-known list on screen.
+  const refreshQueue = () => {
+    api.queueList()
+      .then((res) => {
+        if (res && Array.isArray(res.items)) {
+          setQueueItems(res.items);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load prompt queue:", err);
+      });
+  };
+
+  useEffect(() => {
+    refreshQueue();
+    const t = window.setInterval(refreshQueue, 3000);
+    return () => window.clearInterval(t);
+  }, []);
+
   const moveQueueItem = (index: number, direction: "up" | "down") => {
     if (direction === "up" && index === 0) return;
     if (direction === "down" && index === msgQueue.length - 1) return;
@@ -713,6 +743,94 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const handleDragEnd = () => {
     setDragIndex(null);
     setDragOverIndex(null);
+  };
+
+  // PROMPT QUEUE drag-to-reorder. Mirrors the tab reorder pattern in
+  // RightPane.tsx (handleDragStart/handleDragOver/handleDragEnd): optimistic
+  // local reorder on drop, then persist to the backend; resync from the
+  // server on failure so the UI never drifts from what will actually run.
+  const handleQueueDragStart = (idx: number) => {
+    setQueueDragIndex(idx);
+  };
+
+  const handleQueueDragOver = (e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    setQueueDragOverIndex(idx);
+  };
+
+  const handleQueueDragLeave = (idx: number) => {
+    if (queueDragOverIndex === idx) {
+      setQueueDragOverIndex(null);
+    }
+  };
+
+  const handleQueueDrop = (e: React.DragEvent, targetIdx: number) => {
+    e.preventDefault();
+    const fromIdx = queueDragIndex;
+    setQueueDragIndex(null);
+    setQueueDragOverIndex(null);
+    if (fromIdx === null || fromIdx === targetIdx) return;
+    setQueueItems((prev) => {
+      const next = [...prev];
+      const [dragged] = next.splice(fromIdx, 1);
+      next.splice(targetIdx, 0, dragged);
+      api.queueReorder(next.map((it) => it.id))
+        .catch((err) => {
+          console.error("Failed to reorder prompt queue:", err);
+          refreshQueue();
+        });
+      return next;
+    });
+  };
+
+  const handleQueueDragEnd = () => {
+    setQueueDragIndex(null);
+    setQueueDragOverIndex(null);
+  };
+
+  const handleQueueEdit = (item: { id: string; text: string }) => {
+    // Load the prompt back into the composer for editing, and pull it out of
+    // the queue -- sending again will re-add it (as a normal turn, not a
+    // requeue), matching the existing msgQueue "click to edit" ergonomics.
+    setInput(item.text);
+    setEditingIndex(null);
+    setQueueItems((prev) => prev.filter((it) => it.id !== item.id));
+    api.queueRemove(item.id).catch((err) => {
+      console.error("Failed to remove queued prompt for edit:", err);
+      refreshQueue();
+    });
+    taRef.current?.focus();
+  };
+
+  const handleQueueRemove = (id: string) => {
+    setQueueItems((prev) => prev.filter((it) => it.id !== id));
+    api.queueRemove(id)
+      .then(() => refreshQueue())
+      .catch((err) => {
+        console.error("Failed to remove queued prompt:", err);
+        refreshQueue();
+      });
+  };
+
+  const handleQueueClearAll = () => {
+    setQueueItems([]);
+    api.queueClear()
+      .then(() => refreshQueue())
+      .catch((err) => {
+        console.error("Failed to clear prompt queue:", err);
+        refreshQueue();
+      });
+  };
+
+  const handleQueueAdd = () => {
+    const text = input.trim();
+    if (!text) return;
+    setInput("");
+    api.queueAdd(text)
+      .then(() => refreshQueue())
+      .catch((err) => {
+        console.error("Failed to add prompt to queue:", err);
+      });
   };
 
   // Request notifications permission on mount
@@ -1739,6 +1857,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         // A background job finished and the backend injected a continuation into
         // history. Queue a keep-alive turn; it fires from this turn's onDone.
         resumeQueuedRef.current = true;
+      } else if (ev.kind === "queued_prompt") {
+        // The backend drained one item off the server-side prompt queue and
+        // started running it as the next turn -- refetch so the chip list
+        // drops it (and promotes the new first item) immediately instead of
+        // waiting for the next poll tick.
+        refreshQueue();
       } else if (ev.kind === "assistant_done") {
         setStatus("done");
         fetchContextUsage();
@@ -2542,6 +2666,15 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                 </span>
               </button>
               <div className="flex-1" />
+              {input.trim() && (
+                <button
+                  onClick={handleQueueAdd}
+                  title="Add to queue (runs after the current turn)"
+                  className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition"
+                >
+                  <ListChecks size={9} />Queue
+                </button>
+              )}
               {status === "thinking" || status === "executing" || status === "streaming"
                 ? <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
                 : <button onClick={send} disabled={!input.trim() && attachedImages.length === 0}
@@ -2549,6 +2682,72 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                     <Send size={9} />{auto ? "Run" : plan ? "Plan" : "Send"}</button>}
             </div>
           </div>
+
+          {/* Server-side PROMPT QUEUE: prompts the backend itself drains one at a
+              time as full turns complete, distinct from the client-only msgQueue
+              above. Rendered directly below the composer so the "runs next" item
+              is always visible. */}
+          {queueItems.length > 0 && (
+            <div className="mt-2 space-y-1">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-[10px] uppercase tracking-wider text-faint font-semibold">
+                  Prompt queue ({queueItems.length})
+                </span>
+                {queueItems.length >= 2 && (
+                  <button
+                    onClick={handleQueueClearAll}
+                    className="text-[10px] text-faint hover:text-muted transition font-semibold"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+              {queueItems.map((item, idx) => {
+                const isDragging = queueDragIndex === idx;
+                const isDragOverQ = queueDragOverIndex === idx;
+                return (
+                  <div
+                    key={item.id}
+                    draggable
+                    onDragStart={() => handleQueueDragStart(idx)}
+                    onDragOver={(e) => handleQueueDragOver(e, idx)}
+                    onDragLeave={() => handleQueueDragLeave(idx)}
+                    onDrop={(e) => handleQueueDrop(e, idx)}
+                    onDragEnd={handleQueueDragEnd}
+                    className={`flex items-center gap-2 bg-panel2/60 border rounded-lg px-2.5 py-1 text-[11px] text-muted transition-all duration-150 select-none
+                      ${isDragging ? "opacity-40" : ""}
+                      ${isDragOverQ ? "border-accent/40 bg-accent/5" : "border-edge/60 hover:border-edge2"}`}
+                  >
+                    <div className="text-faint hover:text-muted cursor-grab active:cursor-grabbing flex items-center justify-center shrink-0">
+                      <GripVertical size={11} />
+                    </div>
+                    {idx === 0 && (
+                      <span
+                        title="Runs next"
+                        className="shrink-0 text-[9px] uppercase font-bold px-1 py-0.5 bg-accent/15 text-accent rounded"
+                      >
+                        next
+                      </span>
+                    )}
+                    <span
+                      onClick={() => handleQueueEdit(item)}
+                      title={item.text}
+                      className="truncate flex-1 min-w-0 cursor-pointer hover:text-txt hover:underline transition-colors"
+                    >
+                      {item.text}
+                    </span>
+                    <button
+                      onClick={() => handleQueueRemove(item.id)}
+                      title="Remove from queue"
+                      className="p-0.5 rounded text-faint hover:text-risk hover:bg-risk/10 border border-transparent hover:border-risk/20 transition-all shrink-0"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </>
