@@ -126,11 +126,11 @@ marionette update     # git pull + rebuild
 ### Download the desktop app
 
 Prefer a click-to-install build? Grab a signed/notarized installer
-(`v0.7.5`, [all releases](https://github.com/professorpalmer/marionette/releases/latest)):
+(`v0.7.6`, [all releases](https://github.com/professorpalmer/marionette/releases/latest)):
 
-- macOS (universal, Intel + Apple Silicon): [Marionette-0.7.5-universal.dmg](https://github.com/professorpalmer/marionette/releases/download/v0.7.5/Marionette-0.7.5-universal.dmg)
-- Windows: [Marionette-0.7.5-Setup.exe](https://github.com/professorpalmer/marionette/releases/download/v0.7.5/Marionette-0.7.5-Setup.exe)
-- Linux: [Marionette-0.7.5.AppImage](https://github.com/professorpalmer/marionette/releases/download/v0.7.5/Marionette-0.7.5.AppImage)
+- macOS (universal, Intel + Apple Silicon): [Marionette-0.7.6-universal.dmg](https://github.com/professorpalmer/marionette/releases/download/v0.7.6/Marionette-0.7.6-universal.dmg)
+- Windows: [Marionette-0.7.6-Setup.exe](https://github.com/professorpalmer/marionette/releases/download/v0.7.6/Marionette-0.7.6-Setup.exe)
+- Linux: [Marionette-0.7.6.AppImage](https://github.com/professorpalmer/marionette/releases/download/v0.7.6/Marionette-0.7.6.AppImage)
 
 The packaged app is a thin shell: on first launch it bootstraps the same source
 checkout into `~/.marionette/marionette`, so it stays self-updating like the
