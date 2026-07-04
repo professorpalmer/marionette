@@ -415,7 +415,8 @@ export const api = {
   writeFile: (path: string, content: string) => postJSON<{ ok: boolean; bytes?: number; error?: string }>("/api/file/write", { path, content }),
   inlineEdit: (path: string, selection: string, instruction: string, prefix: string, suffix: string, language: string) => postJSON<{ ok: boolean; edit?: string; error?: string }>("/api/inline-edit", { path, selection, instruction, prefix, suffix, language }),
   compactSession: () => postJSON<{ ok: boolean; before_tokens: number; after_tokens: number }>("/api/session/compact", {}),
-  steerSession: (text: string) => postJSON<{ ok: boolean }>("/api/session/steer", { text }),
+  steerSession: (text: string, images?: string[]) =>
+    postJSON<{ ok: boolean }>("/api/session/steer", { text, images: images && images.length ? images : undefined }),
   // PROMPT QUEUE: a "playlist" of full user prompts that each run as their own
   // complete turn one after the previous fully finishes. Distinct from steer
   // (a mid-turn interrupt on the CURRENT running turn). Items can be edited /

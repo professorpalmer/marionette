@@ -1586,11 +1586,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({"ok": True}))
         if path == "/api/session/steer":
             text = body.get("text", "").strip()
-            if not text:
+            images = body.get("images") or []
+            if isinstance(images, str):
+                images = [p for p in images.split("|") if p]
+            if not text and not images:
                 return self._send(400, json.dumps({"error": "missing text"}))
             if not _pilot:
                 return self._send(404, json.dumps({"error": "no active session"}))
-            _pilot.enqueue_steer(text)
+            # Route through steer_with_images so an attached screenshot is
+            # transcribed into the steer text (a steer is a text injection and
+            # cannot carry raw image blocks mid-turn).
+            if images and hasattr(_pilot, "steer_with_images"):
+                _pilot.steer_with_images(text, images)
+            else:
+                _pilot.enqueue_steer(text)
             return self._send(200, json.dumps({"ok": True}))
         if path == "/api/session/queue":
             # PROMPT QUEUE mutations, mirroring the auth/token guard already

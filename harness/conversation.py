@@ -1293,6 +1293,31 @@ class ConversationalSession:
         """Signal any in-flight run_auto/send to stop at the next checkpoint."""
         self.cancel()
 
+    def steer_with_images(self, text: str, images: Optional[list] = None) -> None:
+        """Enqueue a steer, transcribing any attached images into the steer text.
+
+        A steer injects as TEXT into the active turn's tool-output stream, so it
+        cannot carry raw image blocks mid-run. Previously an image attached to a
+        steer was dropped and only its screenshot id/path survived as opaque
+        text. We now run the same vision transcription used by view_image and
+        append it, so 'look at this + <image>' actually reaches the model.
+        """
+        parts = [text.strip()] if text and text.strip() else []
+        paths = [p for p in (images or []) if p]
+        if paths:
+            try:
+                from .vision import transcribe_images
+                for r in transcribe_images(paths):
+                    if getattr(r, "error", None):
+                        parts.append(f"[attached image could not be read: {r.error}]")
+                    elif getattr(r, "text", ""):
+                        parts.append(f"[attached image]\n{r.text}")
+            except Exception as e:
+                parts.append(f"[attached image transcription failed: {e}]")
+        combined = "\n\n".join(p for p in parts if p)
+        if combined:
+            self.enqueue_steer(combined)
+
     def enqueue_steer(self, text: str) -> None:
         """Append an out-of-band user message."""
         with self._steer_lock:

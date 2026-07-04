@@ -2026,7 +2026,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
     if (isBusy) {
       setInput("");
-      api.steerSession(msg)
+      // Include any attached images so a steer with a screenshot actually reaches
+      // the model (the backend transcribes them into the steer text). Clear the
+      // attachments after, matching the normal send flow.
+      const steerImages = attachedImages.map((img) => img.path).filter(Boolean);
+      setAttachedImages([]);
+      api.steerSession(msg, steerImages)
         .then(() => {
           setItems((prev) => [...prev, { kind: "steer", text: msg }]);
         })
