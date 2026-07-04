@@ -201,8 +201,31 @@ class AnthropicDriver:
             body["temperature"] = self.temperature
 
         if anthropic_tools:
+            # Prompt-cache the tool schema too. It is large (~15 rich tool defs)
+            # and IDENTICAL every turn, so without a breakpoint here we re-bill the
+            # whole schema on every call. Anthropic caches the prefix up to the
+            # LAST cache_control marker, so marking the final tool caches
+            # system + tools together -- the big-dog multi-turn cost win.
+            if self.enable_prompt_cache and anthropic_tools:
+                anthropic_tools[-1] = {**anthropic_tools[-1],
+                                       "cache_control": {"type": "ephemeral"}}
             body["tools"] = anthropic_tools
             body["tool_choice"] = {"type": "auto"}
+
+        # Cache the stable conversation-history PREFIX: put a breakpoint on the
+        # last message so each turn only pays full input price for the new
+        # suffix, not the entire growing transcript. Anthropic allows up to 4
+        # cache breakpoints; system + tools + history prefix stays within that.
+        if self.enable_prompt_cache and anthropic_msgs:
+            last = anthropic_msgs[-1]
+            content = last.get("content")
+            if isinstance(content, list) and content:
+                # structured content blocks -> mark the final block
+                if isinstance(content[-1], dict):
+                    content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+            elif isinstance(content, str):
+                last["content"] = [{"type": "text", "text": content,
+                                    "cache_control": {"type": "ephemeral"}}]
 
         return body
 
