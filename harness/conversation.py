@@ -1337,23 +1337,28 @@ class ConversationalSession:
     # All methods are lock-guarded and never raise; they return neutral
     # values on unexpected input rather than exploding the caller.
     # ------------------------------------------------------------------
-    def enqueue_prompt(self, text: str) -> dict:
+    def enqueue_prompt(self, text: str, images: Optional[list] = None) -> dict:
         """Append a full prompt to the queue and return the created item.
 
         Empty/whitespace-only text is rejected with an empty item -- callers
         (server / UI) validate before invoking, this is defense in depth.
+
+        A queued prompt runs as its own fresh user turn, so it can carry image
+        attachments (list of file paths). They are stored verbatim after basic
+        sanitization and delivered when the prompt drains (see the turn loop).
         """
         try:
             t = (text or "").strip()
             if not t:
-                return {"id": "", "text": ""}
+                return {"id": "", "text": "", "images": []}
+            imgs = [str(p) for p in (images or []) if p and str(p).strip()]
             import uuid as _uuid
-            item = {"id": _uuid.uuid4().hex[:8], "text": t}
+            item = {"id": _uuid.uuid4().hex[:8], "text": t, "images": imgs}
             with self._prompt_queue_lock:
                 self._prompt_queue.append(item)
             return dict(item)
         except Exception:
-            return {"id": "", "text": ""}
+            return {"id": "", "text": "", "images": []}
 
     def list_prompts(self) -> list:
         """Return a snapshot copy of the queue in order."""
@@ -2085,13 +2090,42 @@ class ConversationalSession:
                 # max_steps cap; the queue cannot make the loop unbounded.
                 queued = self._pop_next_prompt()
                 if queued and queued.get("text"):
-                    yield ConvEvent("queued_prompt", {"id": queued.get("id", ""), "text": queued.get("text", "")})
-                    self._history.append({"role": "user", "content": queued["text"]})
+                    q_text = queued.get("text", "")
+                    q_images = [p for p in (queued.get("images") or []) if p]
+                    yield ConvEvent("queued_prompt", {"id": queued.get("id", ""), "text": q_text, "images": list(q_images)})
+                    # A queued prompt is a genuine fresh user turn, so it carries
+                    # its image attachments the same way a normal turn does
+                    # (_send_locked_inner). The step loop already holds a valid
+                    # assistant history tail, so we deliver the images as vision
+                    # transcription appended to the user content -- identical to
+                    # the normal-turn plumbing above.
+                    content = q_text
+                    if q_images:
+                        try:
+                            from .vision import transcribe_images
+                            yield ConvEvent("vision", {"count": len(q_images), "status": "transcribing"})
+                            results = transcribe_images(q_images)
+                            blocks = []
+                            for path, r in zip(q_images, results):
+                                if getattr(r, "error", None):
+                                    yield ConvEvent("vision", {"path": path, "error": r.error})
+                                elif getattr(r, "text", ""):
+                                    blocks.append(f"[Image: {path}]\n{r.text}")
+                                    yield ConvEvent("vision", {"path": path,
+                                        "chars": len(r.text), "model": r.model,
+                                        "preview": r.text[:200]})
+                            if blocks:
+                                content = ("The user attached image(s). Transcription(s) below "
+                                           "(you cannot see the image, only this text):\n\n"
+                                           + "\n\n".join(blocks) + "\n\n---\n" + q_text)
+                        except Exception:
+                            pass
+                    self._history.append({"role": "user", "content": content})
                     # Refresh the "current user message" reference so downstream
                     # per-turn hooks (compaction, ingest, budget) attribute work
                     # to the newly-running queued prompt instead of the previous
                     # completed one.
-                    user_message = queued["text"]
+                    user_message = q_text
                     continue
                 self._maybe_ingest(user_message, turn_prose, turn_findings)
                 yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})

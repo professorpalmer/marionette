@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, memo } from "react";
-import { ChevronRight, Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Play, Copy, Check, Pencil, RefreshCw, FileText, History, X, Code, Share2, CheckCircle2, XCircle } from "lucide-react";
+import { ChevronRight, Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Play, Copy, Check, Pencil, RefreshCw, FileText, History, X, Code, Share2, CheckCircle2, XCircle, Image as ImageIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -601,7 +601,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // harness itself at turn completion (an SSE "queued_prompt" event fires when
   // one starts running) -- so they persist across reloads and survive even if
   // this tab isn't watching. We just mirror the backend list here for display.
-  const [queueItems, setQueueItems] = useState<{ id: string; text: string }[]>([]);
+  const [queueItems, setQueueItems] = useState<{ id: string; text: string; images?: string[] }[]>([]);
+  // Ref mirror so the status-transition effect (deps [status]) reads the CURRENT
+  // queue when a turn ends, not a stale snapshot, without re-running on poll.
+  const queueItemsRef = useRef<{ id: string; text: string; images?: string[] }[]>([]);
+  useEffect(() => { queueItemsRef.current = queueItems; }, [queueItems]);
   const [queueDragIndex, setQueueDragIndex] = useState<number | null>(null);
   const [queueDragOverIndex, setQueueDragOverIndex] = useState<number | null>(null);
 
@@ -825,8 +829,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const handleQueueAdd = () => {
     const text = input.trim();
     if (!text) return;
+    // Snapshot the attached image paths BEFORE clearing input/attachments, so a
+    // queued prompt carries its images just like a normal turn. The backend
+    // delivers them as real image content when the prompt drains.
+    const queueImages = attachedImages.map((img) => img.path).filter(Boolean);
     setInput("");
-    api.queueAdd(text)
+    setAttachedImages([]);
+    api.queueAdd(text, queueImages)
       .then(() => refreshQueue())
       .catch((err) => {
         console.error("Failed to add prompt to queue:", err);
@@ -906,6 +915,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setMsgQueue((prev) => prev.slice(1));
         executeSend(nextMsg.text, nextMsg.auto, nextMsg.plan || false);
       }
+      // NOTE: server-side prompt-queue auto-drain is NOT done here. This effect
+      // keys on `status` and status is set to "done" on the assistant_done SSE
+      // event WHILE the stream is still open (cancelRef still set), then set to
+      // "done" AGAIN in the terminal onDone -- which does not re-fire the effect
+      // (status unchanged). So the drain lives in maybeDrainQueue(), called from
+      // the stream's terminal onDone/onError callbacks, exactly like the
+      // maybeRunQueuedResume() keep-alive pattern.
     }
   }, [status]);
 
@@ -1623,9 +1639,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     }
   };
 
-  const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false, resume: boolean = false) => {
+  const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false, resume: boolean = false, imagesOverride?: { path: string; name: string; previewUrl: string }[]) => {
     planTurnRef.current = usePlan;
-    const imgsToSend = resume ? [] : [...attachedImages];
+    // imagesOverride lets the idle queue-drain path (maybeDrainQueue) carry a
+    // queued prompt's image attachments even though they were never placed in
+    // the live attachedImages composer state.
+    const imgsToSend = resume ? [] : (imagesOverride ? imagesOverride : [...attachedImages]);
     const imgPaths = imgsToSend.map((img) => img.path);
     if (!resume) {
       // A resume turn carries no new user message -- the pilot is continuing off
@@ -1867,9 +1886,21 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         resumeQueuedRef.current = true;
       } else if (ev.kind === "queued_prompt") {
         // The backend drained one item off the server-side prompt queue and
-        // started running it as the next turn -- refetch so the chip list
-        // drops it (and promotes the new first item) immediately instead of
-        // waiting for the next poll tick.
+        // started running it as the next turn IN THE SAME STREAM. It already
+        // appended the prompt to history, but the transcript UI never saw a
+        // user message for it -- so the queued turn ran invisibly (no "you
+        // said X" bubble). Render the user bubble here so the auto-run queued
+        // prompt shows up in chat exactly like a normally-sent turn. Then
+        // refetch so the chip list drops it and promotes the next item.
+        if (d.text) {
+          const qImgs: string[] = Array.isArray(d.images) ? d.images : [];
+          const bubbleImgs = qImgs.map((p: string) => ({
+            path: p,
+            name: (p.split("/").pop() || p),
+            previewUrl: p,
+          }));
+          setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: d.text, images: bubbleImgs } }]);
+        }
         refreshQueue();
       } else if (ev.kind === "assistant_done") {
         setStatus("done");
@@ -1884,8 +1915,38 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setStatus("error");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
       }
-    }, () => { flushTypewriter(); setStatus("done"); cancelRef.current = null; setCompactingStatus(null); maybeRunQueuedResume(); },
-       () => { flushTypewriter(); setStatus("error"); cancelRef.current = null; setCompactingStatus(null); maybeRunQueuedResume(); });
+    }, () => { flushTypewriter(); setStatus("done"); cancelRef.current = null; setCompactingStatus(null); maybeRunQueuedResume(); maybeDrainQueue(); },
+       () => { flushTypewriter(); setStatus("error"); cancelRef.current = null; setCompactingStatus(null); maybeRunQueuedResume(); maybeDrainQueue(); });
+  };
+
+  // AUTO-QUEUE ("playlist") from idle: the backend auto-drains the server-side
+  // prompt queue only WITHIN a running turn's completion loop. When a turn ends
+  // and the session goes IDLE with items still queued (the user lined up a
+  // playlist while nothing ran, or added items after the turn ended), nothing
+  // would kick off the next one. Fire it here -- from the stream's TERMINAL
+  // callback (cancelRef already nulled), so it never collides with the still-open
+  // stream. Pop the next item, remove it server-side, and send it as a normal
+  // turn. Each turn's terminal callback re-invokes this, so the whole ordered
+  // queue drains by itself, one turn after the next. Resume takes priority: if a
+  // background-job continuation is pending, let it run first (it re-enters here
+  // when it finishes).
+  const maybeDrainQueue = () => {
+    if (cancelRef.current) return;            // a turn is (re)starting -- not idle
+    if (resumeQueuedRef.current) return;      // keep-alive continuation wins
+    const next = queueItemsRef.current[0];
+    if (!next || !next.text) return;
+    setTimeout(() => {
+      if (cancelRef.current || resumeQueuedRef.current) return;
+      setQueueItems((prev) => prev.filter((it) => it.id !== next.id));
+      queueItemsRef.current = queueItemsRef.current.filter((it) => it.id !== next.id);
+      api.queueRemove(next.id).catch(() => {}).finally(() => refreshQueue());
+      const nextImgs = (next.images || []).map((p: string) => ({
+        path: p,
+        name: (p.split("/").pop() || p),
+        previewUrl: p,
+      }));
+      executeSendRef.current(next.text, auto, plan, false, nextImgs);
+    }, 60);
   };
 
   // Keep-alive driver: after a turn ends, if a background swarm finished while it
@@ -2416,6 +2477,14 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                     >
                       {item.text}
                     </span>
+                    {item.images && item.images.length > 0 && (
+                      <span
+                        title={`${item.images.length} image attachment(s)`}
+                        className="shrink-0 flex items-center gap-0.5 text-[9px] font-semibold px-1 py-0.5 bg-panel border border-edge/60 text-faint rounded"
+                      >
+                        <ImageIcon size={9} />{item.images.length}
+                      </span>
+                    )}
                     <button
                       onClick={() => handleQueueRemove(item.id)}
                       title="Remove from queue"

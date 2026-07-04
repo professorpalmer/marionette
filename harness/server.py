@@ -1628,8 +1628,28 @@ class Handler(BaseHTTPRequestHandler):
             text = (body.get("text") or "").strip()
             if not text:
                 return self._send(400, json.dumps({"error": "missing text"}))
+            # Optional image attachments: accept a list or a '|'-joined string
+            # (mirror the steer endpoint) and validate every path lives inside
+            # the upload dir (mirror /api/run and /api/chat validation). A queued
+            # prompt runs as its own fresh turn so it can carry real images.
+            images = body.get("images") or []
+            if isinstance(images, str):
+                images = [p for p in images.split("|") if p]
+            valid_imgs = []
+            upload_dir_real = os.path.realpath(_UPLOAD_DIR)
+            for p in images:
+                if not p:
+                    continue
+                real_p = os.path.realpath(p)
+                try:
+                    if os.path.commonpath([upload_dir_real, real_p]) == upload_dir_real:
+                        valid_imgs.append(p)
+                    else:
+                        return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
+                except ValueError:
+                    return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
             try:
-                item = _pilot.enqueue_prompt(text)
+                item = _pilot.enqueue_prompt(text, images=valid_imgs)
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)}))
             if not item or not item.get("id"):
