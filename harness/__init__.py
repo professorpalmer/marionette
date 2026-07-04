@@ -7,4 +7,4 @@ DurableState read layer is what the GUI renders.
 
 Driver default: glm-5.2 (MIT, efficient, 100% on the discriminating eval).
 """
-__version__ = "0.7.10"
+__version__ = "0.7.11"
