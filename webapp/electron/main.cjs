@@ -267,7 +267,37 @@ async function loadRenderer() {
   } else {
     cleanupVite();  // self-dev turned off -> stop the dev server
   }
-  win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+  win.loadFile(resolveDistIndex());
+}
+
+// Resolve which built renderer to load. The packaged app normally serves the
+// dist baked into app.asar (path.join(__dirname, "..", "dist")), which is FROZEN
+// at build time -- so a `npm run build` in the editable checkout (where the
+// backend runs from) never shows up, and UI edits appear stale until an
+// Update & Relaunch or a manual asar repack. Marionette is source-run, so prefer
+// the checkout's freshly-built webapp/dist/index.html when it exists; fall back
+// to the bundled dist otherwise. This makes `npm run build` the source of truth
+// for the UI on the next relaunch, matching how backend edits already go live.
+function resolveDistIndex() {
+  const bundled = path.join(__dirname, "..", "dist", "index.html");
+  try {
+    const checkoutDist = path.join(resolveRepoRoot(), "webapp", "dist", "index.html");
+    // Only prefer the checkout build when it is at least as new as the bundled
+    // one, so a fresh install (no checkout build yet, or an older leftover) still
+    // uses the shipped UI rather than a stale checkout artifact.
+    if (fs.existsSync(checkoutDist) && checkoutDist !== bundled) {
+      const co = fs.statSync(checkoutDist).mtimeMs;
+      let bu = 0;
+      try { bu = fs.statSync(bundled).mtimeMs; } catch { bu = 0; }
+      if (co >= bu) {
+        _dbg2(`loadRenderer: using checkout dist (${checkoutDist})`);
+        return checkoutDist;
+      }
+    }
+  } catch (e) {
+    try { _dbg2(`resolveDistIndex fallback: ${e && e.message ? e.message : e}`); } catch {}
+  }
+  return bundled;
 }
 
 function freePort() {
