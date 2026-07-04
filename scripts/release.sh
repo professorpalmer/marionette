@@ -35,19 +35,36 @@ fi
 gh auth switch --user professorpalmer >/dev/null 2>&1 || true
 
 echo "== set version $VERSION =="
+# Marionette has THREE version stamps that MUST stay in lockstep (guarded by
+# tests/test_version_consistency.py): webapp/package.json, pyproject.toml, and
+# harness/__init__.py __version__. Bump all three here so a release can never
+# ship with version drift (which previously red-CI'd the docs commit).
 python3 - "$VERSION" <<'PY'
 import re, sys
 v = sys.argv[1]
+
 p = "webapp/package.json"
 s = open(p).read()
 s = re.sub(r'"version":\s*"[^"]*"', f'"version": "{v}"', s, count=1)
 open(p, "w").write(s)
 print("package.json ->", v)
+
+p = "pyproject.toml"
+s = open(p).read()
+s = re.sub(r'(?m)^version\s*=\s*"[^"]*"', f'version = "{v}"', s, count=1)
+open(p, "w").write(s)
+print("pyproject.toml ->", v)
+
+p = "harness/__init__.py"
+s = open(p).read()
+s = re.sub(r'(?m)^__version__\s*=\s*"[^"]*"', f'__version__ = "{v}"', s, count=1)
+open(p, "w").write(s)
+print("harness.__version__ ->", v)
 PY
 
 echo "== commit + tag + push =="
 git -c user.name=professorpalmer -c user.email=professorpalmer@users.noreply.github.com \
-  add webapp/package.json
+  add webapp/package.json pyproject.toml harness/__init__.py
 git -c user.name=professorpalmer -c user.email=professorpalmer@users.noreply.github.com \
   commit -q -m "release: ${TAG}" || echo "(nothing to commit)"
 git tag -f "$TAG"
