@@ -18,7 +18,11 @@ def _server():
 
 
 def _get(port, path, headers=None):
-    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=headers or {}, method="GET")
+    h = dict(headers or {})
+    if "X-Harness-Token" not in h:
+        import harness.server as _srv
+        h["X-Harness-Token"] = _srv._TOKEN
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=h, method="GET")
     return urllib.request.urlopen(req, timeout=10)
 
 

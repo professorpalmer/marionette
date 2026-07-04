@@ -2185,9 +2185,28 @@ class Handler(BaseHTTPRequestHandler):
             saved.append({"path": path, "name": filename})
         return self._send(200, json.dumps({"saved": saved}))
 
+    # GET endpoints that are intentionally public (the same-origin renderer
+    # bootstrap assets, which must load BEFORE the page has the token to make
+    # authenticated calls). Everything else under /api requires the token.
+    _PUBLIC_GET_PATHS = frozenset({"/", "/index.html", "/app.js", "/app.css"})
+
     def do_GET(self):
         global _codegraph_status
         u = urlparse(self.path)
+        # CENTRALIZED AUTH GATE (defense against per-handler drift): do_POST has
+        # a single token check at its top, but do_GET historically required each
+        # handler to re-add a copy-pasted token check -- and ~11 endpoints
+        # (/api/memory, /api/config, /api/skills, /api/rules, /api/commands,
+        # /api/settings, /api/platform, /api/jobs, /api/workspace, /api/mcp*)
+        # were left unauthenticated, leaking durable memory/config/skills to any
+        # local caller with no token. Gate every non-public path here so a newly
+        # added GET endpoint is authenticated by default; the redundant
+        # per-handler checks below are now harmless no-ops.
+        if u.path not in self._PUBLIC_GET_PATHS:
+            if self._guard():
+                return
+            if not self._token_ok():
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
         if u.path in ("/", "/index.html"):
             html = (_WEB / "index.html").read_text()
             # inject the auth token so the same-origin page can call the API
@@ -3760,7 +3779,17 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
                             if resp.status == 200:
                                 print(f"pm-harness already running at http://{host}:{m_port} — reusing")
                                 return
+                    except urllib.error.HTTPError as he:
+                        # A live server that answers with an HTTP status (e.g. 403
+                        # from the auth gate on /api/config) is DEFINITELY running
+                        # -- the probe carries no token by design. Any HTTP
+                        # response, including 403, proves reuse; treat it as alive.
+                        if getattr(he, "code", 0):
+                            print(f"pm-harness already running at http://{host}:{m_port} — reusing")
+                            return
                     except Exception:
+                        # Connection refused / unreachable -> stale marker, fall
+                        # through to bind a fresh server below.
                         pass
         except Exception:
             pass

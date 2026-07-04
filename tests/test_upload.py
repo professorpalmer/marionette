@@ -40,8 +40,11 @@ def test_upload_then_config_roundtrip():
     httpd, port = _start_server(None)
     try:
         base = f"http://127.0.0.1:{port}"
-        # config reachable
-        cfg = json.load(urllib.request.urlopen(base + "/api/config", timeout=10))
+        import harness.server as _srv
+        # config reachable (GET now requires the auth token)
+        _cfg_req = urllib.request.Request(base + "/api/config",
+                                          headers={"X-Harness-Token": _srv._TOKEN}, method="GET")
+        cfg = json.load(urllib.request.urlopen(_cfg_req, timeout=10))
         assert cfg["driver"] == "stub-oracle-v2"
         # upload a tiny PNG (1x1)
         png = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
