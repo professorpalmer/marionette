@@ -27,6 +27,7 @@ import subprocess
 from dataclasses import dataclass
 
 DEFAULT_TIMEOUT = 120
+MAX_CAPTURED_OUTPUT = 2 * 1024 * 1024  # 2 MiB
 
 
 def resolve_timeout(env: dict | None = None) -> int | None:
@@ -77,6 +78,12 @@ _RULES = [
     ("pipe-to-shell",
      "download piped directly into a shell",
      r"(curl|wget|fetch)\b[^|]*\|\s*(sudo\s+)?(ba|z|k|c|fi|da)?sh\b"),
+    ("dynamic-code-exec",
+     "execution of base64-decoded or dynamically evaluated content",
+     r"base64\s+(-d|--decode)\s*\||\beval\s+\$\("),
+    ("shell-exec-fetch",
+     "shell executing a fetched command",
+     r"\b(ba|z|k|c|fi|da)?sh\s+-c\s+.*(curl|wget|fetch)\b"),
     ("force-push",
      "history-rewriting git push",
      r"\bgit\s+push\b[^\n]*(--force(?!-with-lease)|\s-f\b)"),
@@ -103,7 +110,14 @@ _COMPILED = [(cat, reason, re.compile(pat, re.IGNORECASE)) for cat, reason, pat 
 def classify_command(command: str) -> CommandVerdict:
     """Classify a shell command. Returns a CommandVerdict; danger=True means the
     command matches an irreversible/remote/escalating pattern and should be gated
-    in full-auto mode. Never raises."""
+    in full-auto mode. Never raises.
+
+    This is a best-effort, full-auto SAFETY GATE, not a sandbox. It is intended to
+    catch obvious high-signal "danger" patterns, not to be a comprehensive command
+    auditor resistant to adversarial obfuscation. The intentional shell=True design
+    of the harness command runner is a deliberate choice; this classifier is a
+    defense-in-depth hardening measure, not a primary security boundary.
+    """
     cmd = (command or "").strip()
     if not cmd:
         return CommandVerdict(False, "", "", "")
@@ -144,9 +158,14 @@ def run_cancellable(
     (the loop's own cancel check still halts the turn afterward, with the command's
     output preserved instead of destroyed).
 
+    A runaway command's output is capped at MAX_CAPTURED_OUTPUT bytes to avoid
+    exhausting memory. When the cap is hit, the process group is killed and the
+    output is marked as truncated.
+
     Returns (output: str, exit_code: int, status: str) where status is one of
-    "ok" | "cancelled" | "timeout" | "error". Never raises.
+    "ok" | "cancelled" | "timeout" | "truncated" | "error". Never raises.
     """
+    import fcntl
     import signal
     import time as _time
 
@@ -164,10 +183,22 @@ def run_cancellable(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            errors="backslashreplace",
             start_new_session=True,
         )
     except Exception as e:
         return (f"Failed to execute command: {e}", -1, "error")
+
+    # Set the pipe to non-blocking so we can read from it without stalling.
+    if proc.stdout:
+        try:
+            fd = proc.stdout.fileno()
+            fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        except Exception:
+            # Fallback for platforms where this isn't supported (e.g. Windows).
+            # The logic below handles a blocking read(), but polling is preferred.
+            pass
 
     def _kill_group():
         # Capture the group id BEFORE the parent exits -- once proc is reaped,
@@ -214,13 +245,26 @@ def run_cancellable(
         except Exception:
             pass
 
+    output_chunks = []
+    total_read = 0
     status = "ok"
-    while True:
-        try:
-            proc.wait(timeout=poll_interval)
-            break  # process finished on its own
-        except subprocess.TimeoutExpired:
-            pass
+
+    while proc.poll() is None:
+        if proc.stdout:
+            try:
+                chunk = proc.stdout.read(65536)
+                if chunk:
+                    output_chunks.append(chunk)
+                    total_read += len(chunk)
+            except (IOError, TypeError):
+                # IOError/TypeError on read from a closed/non-blocking pipe is fine.
+                pass
+
+        if total_read > MAX_CAPTURED_OUTPUT:
+            _kill_group()
+            status = "truncated"
+            break
+
         if cancel_event is not None and cancel_event.is_set() and not stale_cancel:
             _kill_group()
             status = "cancelled"
@@ -229,16 +273,33 @@ def run_cancellable(
             _kill_group()
             status = "timeout"
             break
+        _time.sleep(poll_interval)
 
-    try:
-        output = proc.stdout.read() if proc.stdout else ""
-    except Exception:
-        output = ""
-    exit_code = proc.returncode if proc.returncode is not None else -1
-    if status == "cancelled":
-        output = (output or "") + "\n\n[interrupted by user]"
-        exit_code = 130  # conventional SIGINT exit code
-    elif status == "timeout":
-        output = (output or "") + f"\n\n[TimeoutExpired after {timeout} seconds]"
+    # One final read to drain the pipe after the process has exited.
+    if proc.stdout:
+        try:
+            chunk = proc.stdout.read()
+            if chunk:
+                output_chunks.append(chunk)
+                total_read += len(chunk)
+        except (IOError, TypeError):
+            pass
+
+    output = "".join(output_chunks)
+    if status != "truncated" and total_read > MAX_CAPTURED_OUTPUT:
+        status = "truncated"
+
+    if status == "truncated":
+        output = output[:MAX_CAPTURED_OUTPUT]
+        output += f"\n\n[output truncated at {int(MAX_CAPTURED_OUTPUT / 1024 / 1024)} MiB cap]"
         exit_code = -1
+    else:
+        exit_code = proc.returncode if proc.returncode is not None else -1
+        if status == "cancelled":
+            output = (output or "") + "\n\n[interrupted by user]"
+            exit_code = 130  # conventional SIGINT exit code
+        elif status == "timeout":
+            output = (output or "") + f"\n\n[TimeoutExpired after {timeout} seconds]"
+            exit_code = -1
+            
     return (output, exit_code, status)

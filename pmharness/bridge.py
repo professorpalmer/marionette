@@ -39,6 +39,42 @@ def _install_delta_sink(
     return lambda: set_broadcast_sink(None)
 
 
+# Analyze-mode turn budget for swarm workers. Puppetmaster's agentic adapter
+# defaults to 16 analyze turns; on a broad multi-part audit a cheaper model
+# (haiku/flash) spends all 16 reading files and hits max_turns WITHOUT ever
+# calling submit_findings, which the bridge then surfaces as a generic
+# "completed without structured findings" degrade. Give analysis workers more
+# headroom so exploration AND submission both fit. Overridable via env for
+# tuning without a code change.
+def _analyze_max_turns() -> int:
+    import os as _os
+    try:
+        return max(16, int(_os.environ.get("HARNESS_ANALYZE_MAX_TURNS", "40")))
+    except (TypeError, ValueError):
+        return 40
+
+
+def _analysis_capability_payload() -> dict:
+    """Cap the capability the analysis swarm asks for so the router lands on a
+    balanced mid-tier model (sonnet / gemini-pro) instead of first-picking the
+    frontier model for a routine read-only audit.
+
+    The agentic adapter carries its own retry+degrade envelope, so a mid-tier
+    model is more than sufficient for read-only analysis. Set an explicit
+    capability ceiling of 85 (clears the strongest analysis roles' need without
+    demanding a 99-cap frontier model). Opt back into frontier depth by setting
+    HARNESS_ANALYSIS_DEEP=1, which removes the cap.
+    """
+    import os as _os
+    if _os.environ.get("HARNESS_ANALYSIS_DEEP", "").strip() in ("1", "true", "yes"):
+        return {}
+    try:
+        ceiling = int(_os.environ.get("HARNESS_ANALYSIS_MAX_CAPABILITY", "85"))
+    except (TypeError, ValueError):
+        ceiling = 85
+    return {"min_capability": max(0, min(100, ceiling))}
+
+
 def _analysis_instruction(goal: str, repo_cwd: str, role: str) -> str:
     """Build a read-only analysis worker's instruction from the shared goal plus
     the role's lens, so a multi-role swarm fans out into distinct investigations
@@ -48,7 +84,17 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str) -> str:
     return (
         f"{goal}{lens_line}\n\nAnalyze the REAL codebase at {repo_cwd}. "
         f"Emit evidenced findings/risks/decisions as artifacts. This is "
-        f"a READ-ONLY analysis: do not edit, create, or delete any files."
+        f"a READ-ONLY analysis: do not edit, create, or delete any files.\n\n"
+        # Turn-budget guardrail: broad-audit workers on cheaper models were
+        # burning every turn exploring and hitting max_turns WITHOUT ever
+        # calling submit_findings -- surfacing as a "completed without
+        # structured findings" degrade. Tell the worker to budget explicitly
+        # and always submit what it has rather than exhausting its turns.
+        "IMPORTANT: You have a limited number of tool-call turns. Do a focused "
+        "investigation (a handful of reads/searches), then ALWAYS call "
+        "submit_findings with whatever concrete findings you have BEFORE you run "
+        "out of turns. A few well-evidenced findings submitted is far better than "
+        "a deep exploration that never submits. If unsure, submit early and stop."
     )
 
 
@@ -235,6 +281,23 @@ def execute_intent(
                         "read_only": True, "no_edit": True, "dry_run": True,
                         "cwd": repo_cwd, "prompt": intent.goal,
                         "auto_route": True,
+                        # Extra turn headroom so broad-audit workers submit
+                        # findings instead of starving out at max_turns.
+                        "max_turns": _analyze_max_turns(),
+                        # Cost guardrail: several analysis roles (audit=85,
+                        # security-review=90, conflict-auditor=75) carry a high
+                        # role base score, which pushes the router to first-pick
+                        # the frontier model (opus, ~$15/$75 per Mtok) even for a
+                        # routine read-only audit -- ~$12/run. Cap the capability
+                        # need at a "balanced" ceiling and route with the cheapest
+                        # policy so a sufficient mid-tier model (sonnet / gemini-
+                        # pro) wins, and prefer the cheapest sufficient model.
+                        # Opus stays available via HARNESS_ANALYSIS_DEEP=1.
+                        # 'balanced' = cheapest model whose capability clears the
+                        # need (not the absolute-cheapest 'cheap' policy, which
+                        # would grab a too-weak model that starves out).
+                        "routing_policy": "balanced",
+                        **_analysis_capability_payload(),
                     },
                 ))
             result = Orchestrator(store).run(
@@ -256,6 +319,7 @@ def execute_intent(
                         "read_only": True, "no_edit": True, "dry_run": True,
                         "cwd": repo_cwd, "prompt": intent.goal,
                         "auto_route": False,
+                        "max_turns": _analyze_max_turns(),
                         # Route analysis through OpenRouter (funded, open models) by
                         # default; the OpenAI adapter speaks the OpenAI-compatible
                         # schema so base_url + key + an open model just works. Falls

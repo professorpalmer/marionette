@@ -4,6 +4,7 @@ import os
 import re
 import urllib.request
 import urllib.parse
+import urllib.error
 import html.parser
 from typing import Optional
 
@@ -11,6 +12,38 @@ from harness.url_safety import is_safe_url, normalize_url_for_request
 from harness.paths import path_within
 
 WEB_FETCH_LIMIT = 16000
+WEB_FETCH_MAX_BYTES = 8 * 1024 * 1024  # 8 MiB
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate EVERY redirect hop against is_safe_url.
+
+    is_safe_url() only guards the URL we are handed. urlopen()'s default opener
+    silently follows 30x redirects, so a safe-looking URL can 302 to an internal
+    address (cloud metadata 169.254.169.254, localhost, RFC-1918) and defeat the
+    check -- a classic SSRF. This handler intercepts each redirect and refuses to
+    follow one whose target fails is_safe_url, closing that hole.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        ok, reason = is_safe_url(newurl)
+        if not ok:
+            raise urllib.error.HTTPError(
+                newurl, code, f"unsafe redirect target ({reason})", headers, fp
+            )
+        # Normalize the vetted target the same way direct fetches are normalized.
+        newurl = normalize_url_for_request(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# Module-level opener that re-checks redirect hops for SSRF safety. Used for all
+# outbound fetches instead of the bare urllib.request.urlopen.
+_SAFE_OPENER = urllib.request.build_opener(_SafeRedirectHandler)
+
+
+def _safe_urlopen(req, timeout):
+    """urlopen replacement that validates redirect targets (SSRF guard)."""
+    return _SAFE_OPENER.open(req, timeout=timeout)
 
 
 def github_fetch_candidates(url: str) -> list[str]:
@@ -162,8 +195,15 @@ def web_search(query: str, timeout: int = 10) -> str:
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
         })
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            html_content = response.read().decode("utf-8", errors="replace")
+        with _safe_urlopen(req, timeout) as response:
+            # Cap the read to WEB_FETCH_MAX_BYTES to prevent memory exhaustion.
+            raw_bytes = response.read(WEB_FETCH_MAX_BYTES + 1)
+            if len(raw_bytes) > WEB_FETCH_MAX_BYTES:
+                raw_bytes = raw_bytes[:WEB_FETCH_MAX_BYTES]
+                html_content = raw_bytes.decode("utf-8", errors="replace")
+                html_content += f"\n\n... (truncated to {WEB_FETCH_MAX_BYTES} bytes)"
+            else:
+                html_content = raw_bytes.decode("utf-8", errors="replace")
         
         parser = DDGParser()
         parser.feed(html_content)
@@ -202,11 +242,14 @@ def _fetch_one(url: str, timeout: int) -> str:
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     })
-    with urllib.request.urlopen(req, timeout=timeout) as response:
+    with _safe_urlopen(req, timeout) as response:
         content_type = response.headers.get("Content-Type", "").lower()
 
         if "application/pdf" in content_type or url.lower().split("?")[0].endswith(".pdf"):
-            pdf_data = response.read()
+            # Cap the read to WEB_FETCH_MAX_BYTES to prevent memory exhaustion.
+            pdf_data = response.read(WEB_FETCH_MAX_BYTES + 1)
+            if len(pdf_data) > WEB_FETCH_MAX_BYTES:
+                return f"Refused to fetch PDF: exceeds {WEB_FETCH_MAX_BYTES // 1024 // 1024} MiB size cap."
             import tempfile
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(pdf_data)
@@ -217,14 +260,20 @@ def _fetch_one(url: str, timeout: int) -> str:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
 
-        raw_bytes = response.read()
+        # Cap the read to WEB_FETCH_MAX_BYTES to prevent memory exhaustion.
+        raw_bytes = response.read(WEB_FETCH_MAX_BYTES + 1)
+        truncation_note = ""
+        if len(raw_bytes) > WEB_FETCH_MAX_BYTES:
+            raw_bytes = raw_bytes[:WEB_FETCH_MAX_BYTES]
+            truncation_note = f"\n\n... (truncated to {WEB_FETCH_MAX_BYTES} bytes)"
+
         if "application/json" in content_type:
-            text = raw_bytes.decode("utf-8", errors="replace")
+            text = raw_bytes.decode("utf-8", errors="replace") + truncation_note
             return _truncate(text, url)
 
         # Raw text/markdown (e.g. raw.githubusercontent.com) needs no HTML parse.
         is_markup = "text/html" in content_type or "xml" in content_type
-        text_body = raw_bytes.decode("utf-8", errors="replace")
+        text_body = raw_bytes.decode("utf-8", errors="replace") + truncation_note
         if not is_markup:
             return _truncate(text_body, url)
 
@@ -253,8 +302,11 @@ def read_pdf(path_or_url: str, workspace_repo: Optional[str] = None) -> str:
             req = urllib.request.Request(path_or_url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
             })
-            with urllib.request.urlopen(req, timeout=12) as response:
-                pdf_data = response.read()
+            with _safe_urlopen(req, 12) as response:
+                # Cap the read to WEB_FETCH_MAX_BYTES to prevent memory exhaustion.
+                pdf_data = response.read(WEB_FETCH_MAX_BYTES + 1)
+                if len(pdf_data) > WEB_FETCH_MAX_BYTES:
+                    return f"Refused to fetch PDF: exceeds {WEB_FETCH_MAX_BYTES // 1024 // 1024} MiB size cap."
             import tempfile
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(pdf_data)

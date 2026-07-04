@@ -15,6 +15,20 @@ logger = logging.getLogger("pmharness.checkpoints")
 CHECKPOINT_GIT_TIMEOUT = 30
 
 
+def _within(base: str, target: str) -> bool:
+    """
+    Returns true if target path is within base path, without string-prefix
+    vulnerabilities.
+    """
+    try:
+        base_abs = os.path.abspath(base)
+        target_abs = os.path.abspath(target)
+        return os.path.commonpath([base_abs, target_abs]) == base_abs
+    except ValueError:
+        # Thrown if paths are on different drives
+        return False
+
+
 class CheckpointStore:
     def __init__(self, repo_path: Optional[str]):
         # Resolve to realpath to ensure realpath-confinement works reliably.
@@ -186,7 +200,7 @@ class CheckpointStore:
             for f_rel in to_delete:
                 abs_path = os.path.realpath(os.path.join(self.repo, f_rel))
                 # Security: realpath-confinement check to prevent escaping repo
-                if abs_path.startswith(self.repo):
+                if _within(self.repo, abs_path):
                     if os.path.isfile(abs_path) or os.path.islink(abs_path):
                         try:
                             os.unlink(abs_path)
@@ -325,8 +339,12 @@ class CheckpointStore:
             raw = self._list_raw_checkpoints()
             valid = self._filter_existing_commits(raw)
             valid = valid[-50:]
-            with open(self._meta_file, "w") as f:
+            temp_file = str(self._meta_file) + ".tmp"
+            with open(temp_file, "w") as f:
                 json.dump(valid, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_file, self._meta_file)
         except Exception as exc:
             logger.warning("failed to prune checkpoint metadata in %s: %s", self._meta_file, exc)
 
@@ -391,8 +409,12 @@ class CheckpointStore:
             if len(checkpoints) > 50:
                 checkpoints = checkpoints[-50:]
 
-            with open(self._meta_file, "w") as f:
+            temp_file = str(self._meta_file) + ".tmp"
+            with open(temp_file, "w") as f:
                 json.dump(checkpoints, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_file, self._meta_file)
         except Exception as e:
             import sys
             print(f"Checkpoint error saving metadata: {e}", file=sys.stderr)

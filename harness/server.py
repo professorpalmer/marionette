@@ -1664,9 +1664,15 @@ class Handler(BaseHTTPRequestHandler):
                 if val:
                     set_api_key(reach_to_use, val)
                     _rebuild_pilot_and_session()
+                    # Resync agentic registry when a key is added
+                    from .auto_registry import sync_agentic_registry_safe
+                    sync_agentic_registry_safe()
             elif body.get("clear_api_key") is True:
                 clear_api_key(reach_to_use)
                 _rebuild_pilot_and_session()
+                # Resync agentic registry when a key is cleared
+                from .auto_registry import sync_agentic_registry_safe
+                sync_agentic_registry_safe()
 
             driver = body.get("driver")
             if driver is not None:
@@ -1758,6 +1764,9 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     enabled = action == "enable"
                 set_provider_enabled(p.name, enabled)
+                # Resync agentic registry when a provider is enabled/disabled
+                from .auto_registry import sync_agentic_registry_safe
+                sync_agentic_registry_safe()
                 # Keep the active driver honest: enabling may make a better model
                 # reachable; disabling may kill the current one.
                 try:
@@ -1776,6 +1785,9 @@ class Handler(BaseHTTPRequestHandler):
                 }))
             if action == "clear" or body.get("clear") is True:
                 clear_api_key(p.name)
+                # Resync agentic registry when a provider key is cleared
+                from .auto_registry import sync_agentic_registry_safe
+                sync_agentic_registry_safe()
                 # If the active driver's provider is no longer available (we just
                 # disconnected the provider backing it -- whether a 'provider:model'
                 # spec OR a bare name routed through the reach), re-resolve to the
@@ -1792,6 +1804,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not val:
                     return self._send(400, json.dumps({"error": "api_key required to set"}))
                 set_api_key(p.name, val)
+                # Resync agentic registry when a provider key is set
+                from .auto_registry import sync_agentic_registry_safe
+                sync_agentic_registry_safe()
             status = get_api_key_status(p.name)
             return self._send(200, json.dumps({
                 "ok": True,
@@ -3673,6 +3688,10 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
         except (ValueError, OSError):
             pass  # not on the main thread (e.g. under tests) -- atexit still covers it
     try:
+        # Sync the agentic registry at startup so models.json reflects current keys
+        from .auto_registry import sync_agentic_registry_safe
+        sync_agentic_registry_safe()
+        
         _maybe_auto_index_codegraph()
         srv.serve_forever()
     except SystemExit:

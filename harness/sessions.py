@@ -9,6 +9,7 @@ LIST + which is active. Transcript bodies live with the live session objects.
 import json
 import os
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, asdict
@@ -31,6 +32,7 @@ class SessionStore:
         self.path = path
         self._sessions: list[dict] = []
         self._active: Optional[str] = None
+        self._lock = threading.RLock()
         self._load()
 
     def _load(self) -> None:
@@ -44,22 +46,23 @@ class SessionStore:
                 self._sessions, self._active = [], None
 
     def _save(self) -> None:
-        # Atomic write (temp + os.replace) so a crash or concurrent reader never
-        # sees a truncated session file -- matches memory_store/rule_store/keys.
-        target_dir = os.path.dirname(self.path) or "."
-        os.makedirs(target_dir, exist_ok=True)
-        payload = {"sessions": self._sessions, "active": self._active}
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".sessions_")
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
-            os.replace(tmp_path, self.path)
-        except Exception:
+        with self._lock:
+            # Atomic write (temp + os.replace) so a crash or concurrent reader never
+            # sees a truncated session file -- matches memory_store/rule_store/keys.
+            target_dir = os.path.dirname(self.path) or "."
+            os.makedirs(target_dir, exist_ok=True)
+            payload = {"sessions": self._sessions, "active": self._active}
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".sessions_")
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
+                os.replace(tmp_path, self.path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
     def list(self) -> list[dict]:
         return [{
@@ -71,62 +74,69 @@ class SessionStore:
         } for s in self._sessions]
 
     def create(self, title: Optional[str] = None, repo: str = "", branch: str = "") -> dict:
-        sid = uuid.uuid4().hex[:12]
-        meta = asdict(SessionMeta(id=sid, title=title or "New session", created=time.time(), repo=repo, branch=branch))
-        self._sessions.append(meta)
-        self._active = sid
-        self._save()
-        return {**meta, "active": True}
+        with self._lock:
+            sid = uuid.uuid4().hex[:12]
+            meta = asdict(SessionMeta(id=sid, title=title or "New session", created=time.time(), repo=repo, branch=branch))
+            self._sessions.append(meta)
+            self._active = sid
+            self._save()
+            return {**meta, "active": True}
 
     def switch(self, sid: str) -> dict:
-        if not any(s["id"] == sid for s in self._sessions):
-            return {"ok": False, "error": "unknown session"}
-        self._active = sid
-        self._save()
-        return {"ok": True, "active": sid}
+        with self._lock:
+            if not any(s["id"] == sid for s in self._sessions):
+                return {"ok": False, "error": "unknown session"}
+            self._active = sid
+            self._save()
+            return {"ok": True, "active": sid}
 
     def delete(self, sid: str) -> Optional[str]:
-        self._sessions = [s for s in self._sessions if s["id"] != sid]
-        if self._active == sid:
-            if self._sessions:
-                most_recent = max(self._sessions, key=lambda s: s.get("created", 0))
-                self._active = most_recent["id"]
-            else:
-                self._active = None
-        self._save()
-        return self._active
+        with self._lock:
+            self._sessions = [s for s in self._sessions if s["id"] != sid]
+            if self._active == sid:
+                if self._sessions:
+                    most_recent = max(self._sessions, key=lambda s: s.get("created", 0))
+                    self._active = most_recent["id"]
+                else:
+                    self._active = None
+            self._save()
+            return self._active
 
     def archive(self, sid: str, archived: bool = True) -> None:
-        for s in self._sessions:
-            if s["id"] == sid:
-                s["archived"] = archived
-                break
-        self._save()
+        with self._lock:
+            for s in self._sessions:
+                if s["id"] == sid:
+                    s["archived"] = archived
+                    break
+            self._save()
 
     def set_title_if_default(self, sid: str, title: str) -> None:
-        for s in self._sessions:
-            if s["id"] == sid:
-                current = s.get("title", "")
-                if not current or current == "New session":
-                    s["title"] = title
-                    self._save()
-                break
+        with self._lock:
+            for s in self._sessions:
+                if s["id"] == sid:
+                    current = s.get("title", "")
+                    if not current or current == "New session":
+                        s["title"] = title
+                        self._save()
+                    break
 
     def rename(self, sid: str, title: str) -> bool:
-        for s in self._sessions:
-            if s["id"] == sid:
-                s["title"] = title
-                self._save()
-                return True
-        return False
+        with self._lock:
+            for s in self._sessions:
+                if s["id"] == sid:
+                    s["title"] = title
+                    self._save()
+                    return True
+            return False
 
     def stamp_session(self, sid: str, repo: str, branch: str) -> None:
-        for s in self._sessions:
-            if s["id"] == sid:
-                s["repo"] = repo
-                s["branch"] = branch
-                self._save()
-                break
+        with self._lock:
+            for s in self._sessions:
+                if s["id"] == sid:
+                    s["repo"] = repo
+                    s["branch"] = branch
+                    self._save()
+                    break
 
     @property
     def active(self) -> Optional[str]:

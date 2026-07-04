@@ -231,6 +231,20 @@ def run_agentic_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
                 "prompt": goal,
                 "auto_route": not (provider and model),
             }
+            if not (provider and model):
+                # Cost guardrail (mirrors the analysis-swarm cap in bridge.py):
+                # role="implement" has a high base score that first-picks the
+                # frontier model (opus, ~$15/$75 per Mtok). A balanced policy with
+                # a capability ceiling lands on a strong-but-far-cheaper coder
+                # (sonnet, ~$3/$15) that is more than capable of edits. Opt into
+                # frontier depth with HARNESS_IMPLEMENT_DEEP=1.
+                payload["routing_policy"] = "balanced"
+                if os.environ.get("HARNESS_IMPLEMENT_DEEP", "").strip() not in ("1", "true", "yes"):
+                    try:
+                        payload["min_capability"] = int(
+                            os.environ.get("HARNESS_IMPLEMENT_MAX_CAPABILITY", "86"))
+                    except (TypeError, ValueError):
+                        payload["min_capability"] = 86
             if provider:
                 payload["provider"] = provider
             if model:

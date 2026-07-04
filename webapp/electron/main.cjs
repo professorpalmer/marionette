@@ -756,6 +756,22 @@ function _dbg2(msg) {
 // give it a real BrowserWindow bound to the SAME persistent partition so the
 // login completes and its cookie lands in the session the webview shares.
 app.on("web-contents-created", (_e, contents) => {
+  // Let any pop-out window toggle its own always-on-top pin with
+  // Cmd/Ctrl+Shift+T -- so you can un-pin a floated video when you no longer
+  // want it on top, without hunting for a menu.
+  contents.on("before-input-event", (evt, input) => {
+    try {
+      const mod = process.platform === "darwin" ? input.meta : input.control;
+      if (mod && input.shift && String(input.key).toLowerCase() === "t") {
+        const win = BrowserWindow.fromWebContents(contents);
+        if (win) {
+          const next = !win.isAlwaysOnTop();
+          win.setAlwaysOnTop(next);
+          evt.preventDefault();
+        }
+      }
+    } catch {}
+  });
   if (contents.getType() === "webview") {
     contents.setWindowOpenHandler(({ url }) => {
       return {
@@ -764,6 +780,11 @@ app.on("web-contents-created", (_e, contents) => {
           webPreferences: { partition: "persist:browser", contextIsolation: true },
           width: 600,
           height: 750,
+          // Pop-outs float above the main window so you can pop a video out and
+          // go back to the terminal/editor pane without the pop-out vanishing
+          // behind the app when you click elsewhere. Toggle at runtime from the
+          // pop-out's own window controls (see the always-on-top IPC below).
+          alwaysOnTop: true,
         },
       };
     });

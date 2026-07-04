@@ -12,8 +12,13 @@ class FakeResponse:
         self.content = content
         self.headers = headers if headers is not None else {}
 
-    def read(self):
-        return self.content
+    def read(self, amt=None):
+        # Mirror http.client.HTTPResponse.read(amt=None): an optional byte cap.
+        # web_tools now does bounded reads (response.read(MAX_BYTES + 1)) to
+        # guard against memory exhaustion, so the mock must accept the arg.
+        if amt is None:
+            return self.content
+        return self.content[:amt]
 
     def __enter__(self):
         return self
@@ -28,6 +33,9 @@ def mock_urlopen(monkeypatch):
     calls = []
 
     def _mock(req, timeout=None):
+        # web_tools routes all fetches through _safe_urlopen(req, timeout) (an
+        # SSRF-safe opener that re-validates redirect hops). Accept timeout
+        # positionally-or-by-keyword so this mock matches that call shape.
         url = req.full_url if hasattr(req, "full_url") else req
         calls.append(url)
         
@@ -70,7 +78,7 @@ def mock_urlopen(monkeypatch):
         else:
             return FakeResponse(b"Bare text response", {"Content-Type": "text/plain"})
 
-    monkeypatch.setattr(urllib.request, "urlopen", _mock)
+    import harness.web_tools as _wt; monkeypatch.setattr(_wt, "_safe_urlopen", _mock)
     return calls
 
 
@@ -87,7 +95,7 @@ def test_web_search_empty_or_blocked(monkeypatch):
     def _mock_blocked(req, timeout=None):
         return FakeResponse(b"<html>Blocked or Bot Challenge</html>", {"Content-Type": "text/html"})
     
-    monkeypatch.setattr(urllib.request, "urlopen", _mock_blocked)
+    import harness.web_tools as _wt; monkeypatch.setattr(_wt, "_safe_urlopen", _mock_blocked)
     res = web_search("blocked query")
     assert "No results found" in res
 

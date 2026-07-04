@@ -146,9 +146,9 @@ export default function CheckpointsPane() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-panel text-txt text-xs">
+    <div className="flex flex-col h-full min-h-0 bg-panel text-txt text-xs">
       {/* Header */}
-      <div className="p-3 border-b border-edge flex items-center justify-between bg-panel2/15 shrink-0">
+      <div className="px-3 py-2 border-b border-edge flex items-center justify-between bg-panel2/15 shrink-0">
         <div className="flex items-center gap-1.5 font-semibold text-muted">
           <History size={14} className="text-accent" />
           <span>Restore Points</span>
@@ -164,27 +164,23 @@ export default function CheckpointsPane() {
       </div>
 
       {/* Manual Snapshot Form */}
-      <form onSubmit={handleCreateSnapshot} className="p-3 border-b border-edge bg-panel2/5 flex flex-col gap-2 shrink-0">
-        <div className="text-[10px] uppercase tracking-wider text-faint font-semibold">
-          Take Manual Snapshot
-        </div>
-        <div className="flex gap-1.5">
-          <input
-            type="text"
-            placeholder="Label e.g. Before changing UI..."
-            value={snapshotLabel}
-            onChange={(e) => setSnapshotLabel(e.target.value)}
-            disabled={isCreatingSnapshot}
-            className="flex-1 px-2.5 py-1.5 bg-panel2 border border-edge rounded text-txt placeholder-faint focus:outline-none focus:border-accent/50 text-xs"
-          />
-          <button
-            type="submit"
-            disabled={isCreatingSnapshot || !snapshotLabel.trim()}
-            className="px-3 py-1.5 bg-accent/10 hover:bg-accent/20 border border-accent/20 rounded font-medium text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-xs"
-          >
-            {isCreatingSnapshot ? "Saving..." : "Snapshot"}
-          </button>
-        </div>
+      <form onSubmit={handleCreateSnapshot} className="px-3 py-2 border-b border-edge bg-panel2/5 flex items-center gap-1.5 shrink-0">
+        <input
+          type="text"
+          placeholder="Label a manual snapshot..."
+          value={snapshotLabel}
+          onChange={(e) => setSnapshotLabel(e.target.value)}
+          disabled={isCreatingSnapshot}
+          title="Auto-snapshots are taken before agent edits and swarm patches. Restores are fully undoable."
+          className="flex-1 min-w-0 px-2 py-1 bg-panel2 border border-edge rounded text-txt placeholder-faint focus:outline-none focus:border-accent/50 text-xs"
+        />
+        <button
+          type="submit"
+          disabled={isCreatingSnapshot || !snapshotLabel.trim()}
+          className="px-2.5 py-1 bg-accent/10 hover:bg-accent/20 border border-accent/20 rounded font-medium text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-xs shrink-0"
+        >
+          {isCreatingSnapshot ? "Saving..." : "Snapshot"}
+        </button>
       </form>
 
       {/* Status messages */}
@@ -201,13 +197,8 @@ export default function CheckpointsPane() {
         </div>
       )}
 
-      {/* Info Notice */}
-      <div className="p-3 text-[11px] text-faint leading-relaxed border-b border-edge/30 bg-panel2/5 shrink-0">
-        Workspace state is auto-snapshotted before agent edits (write_file and swarm patch application). Restores are fully undoable.
-      </div>
-
       {/* List */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+      <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5">
         {isLoading && checkpoints.length === 0 ? (
           <div className="flex items-center justify-center py-8 text-faint">
             Loading restore points...
@@ -223,7 +214,7 @@ export default function CheckpointsPane() {
             return (
               <div
                 key={cp.id}
-                className="p-2.5 bg-panel2 hover:bg-edge/20 border border-edge/60 rounded flex flex-col gap-1.5 transition-colors"
+                className="px-2 py-1.5 bg-panel2 hover:bg-edge/20 border border-edge/60 rounded flex flex-col gap-1 transition-colors"
               >
                 <div className="flex items-start justify-between gap-2 min-w-0">
                   <div className="font-medium text-txt break-all leading-snug flex-1 min-w-0">
@@ -233,17 +224,13 @@ export default function CheckpointsPane() {
                     {formatTrigger(cp.trigger)}
                   </span>
                 </div>
-                
+
                 <div className="flex items-center justify-between text-[10px] text-faint shrink-0">
-                  <div className="font-mono">
-                    {cp.id.slice(0, 8)}
-                  </div>
-                  <div>
-                    {formatTime(cp.timestamp)}
-                  </div>
+                  <span className="font-mono">{cp.id.slice(0, 8)}</span>
+                  <span>{formatTime(cp.timestamp)}</span>
                 </div>
 
-                <div className="flex gap-1.5 mt-1 border-t border-edge/30 pt-2 shrink-0">
+                <div className="flex gap-1.5 shrink-0">
                   <button
                     onClick={() => toggleDiff(cp.id)}
                     className="py-1 px-2.5 bg-panel border border-edge/80 hover:bg-edge/40 rounded font-medium text-muted hover:text-txt transition-colors text-[10px] flex items-center gap-1"
