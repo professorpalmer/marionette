@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.6.x, deliberately pre-1.0. Vetted privately before any wider release.
+> Status: v0.7.x, deliberately pre-1.0. Vetted privately before any wider release.
 
 ## What it is
 
@@ -126,11 +126,11 @@ marionette update     # git pull + rebuild
 ### Download the desktop app
 
 Prefer a click-to-install build? Grab a signed/notarized installer
-(`v0.6.49`, [all releases](https://github.com/professorpalmer/marionette/releases/latest)):
+(`v0.7.2`, [all releases](https://github.com/professorpalmer/marionette/releases/latest)):
 
-- macOS (universal, Intel + Apple Silicon): [Marionette-0.6.49-universal.dmg](https://github.com/professorpalmer/marionette/releases/download/v0.6.49/Marionette-0.6.49-universal.dmg)
-- Windows: [Marionette-0.6.49-Setup.exe](https://github.com/professorpalmer/marionette/releases/download/v0.6.49/Marionette-0.6.49-Setup.exe)
-- Linux: [Marionette-0.6.49.AppImage](https://github.com/professorpalmer/marionette/releases/download/v0.6.49/Marionette-0.6.49.AppImage)
+- macOS (universal, Intel + Apple Silicon): [Marionette-0.7.2-universal.dmg](https://github.com/professorpalmer/marionette/releases/download/v0.7.2/Marionette-0.7.2-universal.dmg)
+- Windows: [Marionette-0.7.2-Setup.exe](https://github.com/professorpalmer/marionette/releases/download/v0.7.2/Marionette-0.7.2-Setup.exe)
+- Linux: [Marionette-0.7.2.AppImage](https://github.com/professorpalmer/marionette/releases/download/v0.7.2/Marionette-0.7.2.AppImage)
 
 The packaged app is a thin shell: on first launch it bootstraps the same source
 checkout into `~/.marionette/marionette`, so it stays self-updating like the
