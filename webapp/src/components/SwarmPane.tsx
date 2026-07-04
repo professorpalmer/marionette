@@ -788,7 +788,8 @@ export default function SwarmPane() {
             )}
           </div>
           <div className="flex items-center gap-3 shrink-0">
-            <span>Cost: <strong className="text-good font-mono font-semibold">${Number(data.session.est_cost_usd).toFixed(4)}</strong></span>
+            {/* Session cost lives once in the bottom IDE StatusBar; the tracker
+                shows only the token count so it isn't a redundant cost readout. */}
             <span>Tokens: <strong className="text-txt font-mono font-semibold">{data.session.tokens_used.toLocaleString()}</strong></span>
           </div>
         </div>

@@ -147,58 +147,54 @@ export default function CheckpointsPane() {
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-panel text-txt text-xs">
-      {/* Header */}
-      <div className="px-3 py-2 border-b border-edge flex items-center justify-between bg-panel2/15 shrink-0">
-        <div className="flex items-center gap-1.5 font-semibold text-muted">
-          <History size={14} className="text-accent" />
-          <span>Restore Points</span>
-        </div>
+      {/* Header + inline manual-snapshot: one compact row to save vertical space
+          in a split pane (was a separate header + form section). */}
+      <div className="px-2 py-1.5 border-b border-edge flex items-center gap-1.5 bg-panel2/15 shrink-0">
+        <History size={12} className="text-accent shrink-0" />
+        <form onSubmit={handleCreateSnapshot} className="flex items-center gap-1 flex-1 min-w-0">
+          <input
+            type="text"
+            placeholder="Snapshot label..."
+            value={snapshotLabel}
+            onChange={(e) => setSnapshotLabel(e.target.value)}
+            disabled={isCreatingSnapshot}
+            title="Auto-snapshots are taken before agent edits and swarm patches. Restores are fully undoable."
+            className="flex-1 min-w-0 px-1.5 py-0.5 bg-panel2 border border-edge rounded text-txt placeholder-faint focus:outline-none focus:border-accent/50 text-[11px]"
+          />
+          <button
+            type="submit"
+            disabled={isCreatingSnapshot || !snapshotLabel.trim()}
+            className="px-2 py-0.5 bg-accent/10 hover:bg-accent/20 border border-accent/20 rounded font-medium text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-[11px] shrink-0"
+          >
+            {isCreatingSnapshot ? "..." : "Snap"}
+          </button>
+        </form>
         <button
           onClick={fetchCheckpoints}
           disabled={isLoading}
           title="Refresh checkpoints"
-          className="p-1 hover:bg-edge/50 rounded text-faint hover:text-muted transition-colors"
+          className="p-0.5 hover:bg-edge/50 rounded text-faint hover:text-muted transition-colors shrink-0"
         >
-          <RefreshCw size={12} className={isLoading ? "animate-spin" : ""} />
+          <RefreshCw size={11} className={isLoading ? "animate-spin" : ""} />
         </button>
       </div>
 
-      {/* Manual Snapshot Form */}
-      <form onSubmit={handleCreateSnapshot} className="px-3 py-2 border-b border-edge bg-panel2/5 flex items-center gap-1.5 shrink-0">
-        <input
-          type="text"
-          placeholder="Label a manual snapshot..."
-          value={snapshotLabel}
-          onChange={(e) => setSnapshotLabel(e.target.value)}
-          disabled={isCreatingSnapshot}
-          title="Auto-snapshots are taken before agent edits and swarm patches. Restores are fully undoable."
-          className="flex-1 min-w-0 px-2 py-1 bg-panel2 border border-edge rounded text-txt placeholder-faint focus:outline-none focus:border-accent/50 text-xs"
-        />
-        <button
-          type="submit"
-          disabled={isCreatingSnapshot || !snapshotLabel.trim()}
-          className="px-2.5 py-1 bg-accent/10 hover:bg-accent/20 border border-accent/20 rounded font-medium text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-xs shrink-0"
-        >
-          {isCreatingSnapshot ? "Saving..." : "Snapshot"}
-        </button>
-      </form>
-
       {/* Status messages */}
       {error && (
-        <div className="mx-3 mt-3 p-2.5 bg-risk/10 border border-risk/20 text-risk rounded flex items-start gap-2 shrink-0">
-          <ShieldAlert size={14} className="shrink-0 mt-0.5" />
-          <span className="leading-normal">{error}</span>
+        <div className="mx-2 mt-1.5 p-1.5 bg-risk/10 border border-risk/20 text-risk rounded flex items-start gap-1.5 shrink-0 text-[10px]">
+          <ShieldAlert size={12} className="shrink-0 mt-0.5" />
+          <span className="leading-snug">{error}</span>
         </div>
       )}
       {successMsg && (
-        <div className="mx-3 mt-3 p-2.5 bg-accent2/10 border border-accent2/20 text-accent rounded flex items-start gap-2 shrink-0">
-          <Check size={14} className="shrink-0 mt-0.5" />
-          <span className="leading-normal">{successMsg}</span>
+        <div className="mx-2 mt-1.5 p-1.5 bg-accent2/10 border border-accent2/20 text-accent rounded flex items-start gap-1.5 shrink-0 text-[10px]">
+          <Check size={12} className="shrink-0 mt-0.5" />
+          <span className="leading-snug">{successMsg}</span>
         </div>
       )}
 
       {/* List */}
-      <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1.5">
+      <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-1">
         {isLoading && checkpoints.length === 0 ? (
           <div className="flex items-center justify-center py-8 text-faint">
             Loading restore points...
@@ -214,47 +210,39 @@ export default function CheckpointsPane() {
             return (
               <div
                 key={cp.id}
-                className="px-2 py-1.5 bg-panel2 hover:bg-edge/20 border border-edge/60 rounded flex flex-col gap-1 transition-colors"
+                className="px-1.5 py-1 bg-panel2 hover:bg-edge/20 border border-edge/60 rounded flex flex-col gap-0.5 transition-colors"
               >
-                <div className="flex items-start justify-between gap-2 min-w-0">
-                  <div className="font-medium text-txt break-all leading-snug flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-1.5 min-w-0">
+                  <div className="font-medium text-txt truncate leading-snug flex-1 min-w-0 text-[11px]" title={cp.label}>
                     {cp.label}
                   </div>
-                  <span className="px-1.5 py-0.5 text-[9px] uppercase font-semibold tracking-wider bg-panel border border-edge/80 rounded text-faint shrink-0 select-none">
+                  <span className="px-1 py-px text-[8px] uppercase font-semibold tracking-wide bg-panel border border-edge/80 rounded text-faint shrink-0 select-none">
                     {formatTrigger(cp.trigger)}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between text-[10px] text-faint shrink-0">
+                <div className="flex items-center justify-between text-[9px] text-faint shrink-0">
                   <span className="font-mono">{cp.id.slice(0, 8)}</span>
                   <span>{formatTime(cp.timestamp)}</span>
                 </div>
 
-                <div className="flex gap-1.5 shrink-0">
+                <div className="flex gap-1 shrink-0">
                   <button
                     onClick={() => toggleDiff(cp.id)}
-                    className="py-1 px-2.5 bg-panel border border-edge/80 hover:bg-edge/40 rounded font-medium text-muted hover:text-txt transition-colors text-[10px] flex items-center gap-1"
+                    title={expandedDiffs[cp.id] ? "Hide diff" : "View diff"}
+                    className="py-0.5 px-1.5 bg-panel border border-edge/80 hover:bg-edge/40 rounded font-medium text-muted hover:text-txt transition-colors text-[10px] flex items-center gap-1 shrink-0"
                   >
-                    {expandedDiffs[cp.id] ? (
-                      <>
-                        <EyeOff size={10} />
-                        <span>Hide diff</span>
-                      </>
-                    ) : (
-                      <>
-                        <Eye size={10} />
-                        <span>View diff</span>
-                      </>
-                    )}
+                    {expandedDiffs[cp.id] ? <EyeOff size={10} /> : <Eye size={10} />}
+                    <span>Diff</span>
                   </button>
 
                   <button
                     onClick={() => handleRestore(cp)}
                     disabled={isRestoring !== null}
-                    className="flex-1 py-1 px-2.5 bg-accent/5 hover:bg-accent/15 border border-accent/25 hover:border-accent/40 rounded font-medium text-accent hover:text-accent-bright transition-colors text-center text-[10px] flex items-center justify-center gap-1 disabled:opacity-40"
+                    className="flex-1 py-0.5 px-1.5 bg-accent/5 hover:bg-accent/15 border border-accent/25 hover:border-accent/40 rounded font-medium text-accent hover:text-accent-bright transition-colors text-center text-[10px] flex items-center justify-center gap-1 disabled:opacity-40"
                   >
                     <Play size={10} className="fill-accent/20" />
-                    {isPending ? "Restoring..." : "Restore to this point"}
+                    {isPending ? "Restoring..." : "Restore"}
                   </button>
                 </div>
 
