@@ -2748,29 +2748,35 @@ function ActivityGroup({
 
 
 function ThinkingBlock({ text }: { text: string }) {
-  // Narration shows inline by default (followable conversation, Hermes/Cursor style).
-  // Collapsible to tuck away when the reader wants just the actions.
-  const [collapsed, setCollapsed] = useState(false);
+  // Cursor/Hermes-style compression: reasoning collapses to a single header line
+  // by default (a faint preview of the first line hints at the content), and
+  // expands into a height-capped, scrollable window rather than dumping its full
+  // height inline. Unbounded inline reasoning is what used to blow up the window
+  // and bury the actual answer, so the compact default is the legibility win.
+  const [expanded, setExpanded] = useState(false);
 
   if (!text || !text.trim()) {
     return null;
   }
 
-  const toggle = () => {
-    setCollapsed(!collapsed);
-  };
+  const preview = text.trim().split("\n", 1)[0].slice(0, 160);
 
   return (
-    <div className="flex flex-col w-full py-0.5">
+    <div className="flex flex-col w-full py-0.5 min-w-0">
       <button
-        onClick={toggle}
-        className="flex items-center gap-1 text-faint/70 hover:text-muted transition font-mono text-[10px] text-left w-fit select-none uppercase tracking-wide"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 text-faint/70 hover:text-muted transition font-mono text-[10px] text-left w-full min-w-0 select-none uppercase tracking-wide"
+        aria-expanded={expanded}
+        title={expanded ? "Collapse reasoning" : "Expand reasoning"}
       >
-        {collapsed ? <ChevronRight size={9} className="text-faint/70" /> : <ChevronDown size={9} className="text-faint/70" />}
-        <span>reasoning</span>
+        {expanded ? <ChevronDown size={9} className="text-faint/70 shrink-0" /> : <ChevronRight size={9} className="text-faint/70 shrink-0" />}
+        <span className="shrink-0">reasoning</span>
+        {!expanded && (
+          <span className="ml-1 truncate normal-case tracking-normal font-sans text-faint/50">{preview}</span>
+        )}
       </button>
-      {!collapsed && (
-        <div className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 text-muted text-[0.8125rem] whitespace-pre-wrap leading-relaxed max-w-[92%]">
+      {expanded && (
+        <div className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-muted text-[0.8125rem] whitespace-pre-wrap leading-relaxed max-w-[92%] max-h-[40dvh]">
           {text}
         </div>
       )}
