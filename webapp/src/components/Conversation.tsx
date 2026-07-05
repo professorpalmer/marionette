@@ -240,7 +240,14 @@ function stableItemKey(it: GroupedItem, i: number): string {
 // render-budget windowing (which counts message parts; Marionette counts the
 // coarser display groups, one rendered subtree each). Short sessions render in
 // full and never show the button.
-const RENDER_WINDOW = 200;
+//
+// Sized so a LONG session actually windows: at 200 the cap effectively never
+// fired (a session needs 200+ grouped turns before anything collapses), so long
+// sessions never cut off and never showed "Show earlier messages" -- the exact
+// symptom users hit. 40 groups keeps a comfortably long recent window mounted
+// (each group is a full user-turn subtree) while genuinely long sessions cap and
+// surface the button; "Show earlier" prepends another 40 on demand.
+const RENDER_WINDOW = 40;
 
 // PERF: Memoized transcript renderer. Its props are intentionally free of the
 // composer `input` (or any per-keystroke state), so React.memo lets typing skip
