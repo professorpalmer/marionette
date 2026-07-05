@@ -466,6 +466,13 @@ class ConversationalSession:
         self._swarm_results: queue.Queue = queue.Queue()
         self._swarm_futures: set[concurrent.futures.Future] = set()
         self._swarm_futures_lock = threading.Lock()
+        # Bounded-inflight ceiling for _swarm_pool submissions. The executor's
+        # own work queue is unbounded, so a burst of run_parallel/run_swarm
+        # dispatches faster than max_workers can drain would silently balloon
+        # memory. 4x the worker count is a generous ceiling that leaves
+        # everyday bursts untouched but rejects pathological floods with a
+        # notice to the pilot (see _submit_swarm).
+        self._swarm_capacity = max(1, int(getattr(config, "max_workers", 4)) * 4)
         self._interrupted_swarms = False
         # In-process provider-native worker jobs (job_id "local-*"). These run on
         # the user's own provider key instead of a Puppetmaster adapter, so they
@@ -576,6 +583,60 @@ class ConversationalSession:
     def has_pending_swarms(self) -> bool:
         with self._swarm_futures_lock:
             return len(self._swarm_futures) > 0
+
+    def _swarm_inflight(self) -> int:
+        """Number of futures currently tracked in ``_swarm_futures``.
+
+        Snapshot under ``_swarm_futures_lock`` so callers see a coherent
+        value even while the done-callbacks are draining the set.
+        """
+        with self._swarm_futures_lock:
+            return len(self._swarm_futures)
+
+    def _swarm_at_capacity(self) -> bool:
+        """True iff inflight count is at or above ``_swarm_capacity``."""
+        return self._swarm_inflight() >= self._swarm_capacity
+
+    def _submit_swarm(self, fn, *args) -> bool:
+        """Bounded-inflight choke point for ``_swarm_pool.submit``.
+
+        The executor's work queue is unbounded, so if the pilot fires more
+        dispatches than ``max_workers`` can drain the queue can grow without
+        limit. This gate rejects new submissions once ``_swarm_capacity``
+        futures are already in flight; callers surface a short "swarm
+        capacity reached" notice instead of silently piling work onto the
+        executor. Returns True on submit, False on reject. Never blocks
+        (that would risk deadlocking the pilot loop) and never raises.
+
+        On successful submit, the future is registered in ``_swarm_futures``
+        and a done-callback is attached that removes it under the lock. The
+        removal is via ``discard`` so calling any additional cleanup path
+        (e.g. a bulk drain elsewhere) is idempotent.
+        """
+        try:
+            if self._swarm_at_capacity():
+                return False
+            future = self._swarm_pool.submit(fn, *args)
+        except Exception:
+            # Never raise from the gate; caller treats this as "not
+            # dispatched" the same as an at-capacity reject.
+            return False
+        with self._swarm_futures_lock:
+            self._swarm_futures.add(future)
+
+        def _cleanup(f):
+            with self._swarm_futures_lock:
+                # discard, not remove: safe if another drain path already
+                # took the future out of the set.
+                self._swarm_futures.discard(f)
+
+        try:
+            future.add_done_callback(_cleanup)
+        except Exception:
+            # If registering the callback fails for any reason, the future
+            # is still tracked; a bulk drain elsewhere will clean it up.
+            pass
+        return True
 
     def apply_review(self, review_id: str, decisions: dict) -> dict:
         with self._pending_reviews_lock:
@@ -2144,16 +2205,16 @@ class ConversationalSession:
                     else:
                         # Interactive mode: background the work to keep the UI completely responsive
                         if self._auto_distill or self._wiki_orchestrate:
-                            future = self._swarm_pool.submit(self._run_distill_and_wiki_background, user_message)
-                            with self._swarm_futures_lock:
-                                self._swarm_futures.add(future)
-                            
-                            def make_cleanup(fut):
-                                def _cleanup(f):
-                                    with self._swarm_futures_lock:
-                                        self._swarm_futures.discard(f)
-                                return _cleanup
-                            future.add_done_callback(make_cleanup(future))
+                            if not self._submit_swarm(self._run_distill_and_wiki_background, user_message):
+                                # Background auto-distill/wiki is best-effort;
+                                # surface a compact notice and drop it rather
+                                # than piling on the executor.
+                                yield ConvEvent("notice", {
+                                    "message": (
+                                        f"Swarm capacity reached ({self._swarm_inflight()} in flight); "
+                                        "skipping background distill/wiki this turn."
+                                    )
+                                })
                 yield ev
         finally:
             self._history[0]["content"] = original_sys
@@ -3483,17 +3544,18 @@ class ConversationalSession:
                             if job_id:
                                 self._session_job_ids.append(job_id)
                                 # Submit the await+apply task to the thread pool
-                                future = self._swarm_pool.submit(self._run_swarm_background, job_id, act.goal, None)
-                                with self._swarm_futures_lock:
-                                    self._swarm_futures.add(future)
-                                
-                                def make_cleanup(fut):
-                                    def _cleanup(f):
-                                        with self._swarm_futures_lock:
-                                            self._swarm_futures.discard(f)
-                                    return _cleanup
-                                future.add_done_callback(make_cleanup(future))
-                                
+                                # through the bounded-inflight gate. If we are at
+                                # capacity, refuse to dispatch and tell the pilot
+                                # to wait rather than silently queuing more work.
+                                if not self._submit_swarm(self._run_swarm_background, job_id, act.goal, None):
+                                    cap_msg = (
+                                        f"Swarm capacity reached ({self._swarm_inflight()} in flight); "
+                                        "not dispatching more right now. Wait for an in-flight worker to finish."
+                                    )
+                                    yield ConvEvent("action_result", {"id": aid, "error": cap_msg})
+                                    self._append_action_result(act, aid, f"(run_implement {aid} deferred: {cap_msg})", is_native)
+                                    continue
+
                                 # Emit ConvEvent kind="swarm_pending" with {job_ids, objective}
                                 yield ConvEvent("swarm_pending", {
                                     "job_ids": [job_id],
@@ -3563,18 +3625,25 @@ class ConversationalSession:
                             # Warm heavy imports single-threaded before the worker
                             # thread races the PyInstaller PYZ reader (see fn docs).
                             _prewarm_worker_imports()
-                            # Submit the selected edit engine to the thread pool
-                            future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, act.goal, act.adapter or "", _target_repo_override)
+                            # Submit the selected edit engine through the
+                            # bounded-inflight gate. At capacity we refuse
+                            # rather than queueing unbounded on the executor;
+                            # the objective release below happens via the
+                            # existing "claimed and not dispatched" cleanup.
+                            if not self._submit_swarm(self._run_provider_worker_background, job_id, act.goal, act.adapter or "", _target_repo_override):
+                                cap_msg = (
+                                    f"Swarm capacity reached ({self._swarm_inflight()} in flight); "
+                                    "not dispatching more right now. Wait for an in-flight worker to finish."
+                                )
+                                # Nothing was handed to a worker, so release
+                                # the objective we just claimed -- otherwise
+                                # it leaks and blocks re-issuing the same edit.
+                                # (dispatched is still False here.)
+                                self._release_objective(act.goal)
+                                yield ConvEvent("action_result", {"id": aid, "status": "deferred", "message": cap_msg})
+                                self._append_action_result(act, aid, f"(run_implement {aid} deferred: {cap_msg})", is_native)
+                                continue
                             dispatched = True  # worker owns the objective release from here
-                            with self._swarm_futures_lock:
-                                self._swarm_futures.add(future)
-                            
-                            def make_cleanup(fut):
-                                def _cleanup(f):
-                                    with self._swarm_futures_lock:
-                                        self._swarm_futures.discard(f)
-                                return _cleanup
-                            future.add_done_callback(make_cleanup(future))
                             
                             # Emit ConvEvent kind="swarm_pending" with {job_ids, objective}
                             yield ConvEvent("swarm_pending", {
@@ -3760,23 +3829,25 @@ class ConversationalSession:
                                         pass
 
                                 if job_id:
+                                    # Bounded-inflight gate: if the pool is
+                                    # full, refuse this sub-goal's follow-up
+                                    # worker rather than piling more onto the
+                                    # executor. The CLI subprocess has already
+                                    # run at this point, so we surface a notice
+                                    # and leave state_dir for the local finally
+                                    # block to clean up.
+                                    if not self._submit_swarm(self._run_swarm_background, job_id, sub_goal, state_dir):
+                                        cap_msg = (
+                                            f"Swarm capacity reached ({self._swarm_inflight()} in flight); "
+                                            f"not dispatching follow-up for job {job_id}."
+                                        )
+                                        yield ConvEvent("action_result", {"id": sub_aid, "status": "deferred", "message": cap_msg})
+                                        aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' deferred: {cap_msg}")
+                                        continue
+
                                     job_ids_collected.append(job_id)
                                     self._session_job_ids.append(job_id)
-                                    
-                                    # Submit to background pool.
-                                    # Note: state_dir is passed, and _run_swarm_background will clean it up!
-                                    # So we do NOT clean up state_dir in the finally block if the job started.
-                                    future = self._swarm_pool.submit(self._run_swarm_background, job_id, sub_goal, state_dir)
-                                    with self._swarm_futures_lock:
-                                        self._swarm_futures.add(future)
-                                    
-                                    def make_cleanup(fut):
-                                        def _cleanup(f):
-                                            with self._swarm_futures_lock:
-                                                self._swarm_futures.discard(f)
-                                        return _cleanup
-                                    future.add_done_callback(make_cleanup(future))
-                                    
+
                                     # Prevent cleanup of state_dir in local finally block by setting p_info["state_dir"] = None
                                     p_info["state_dir"] = None
                                     
@@ -3848,6 +3919,7 @@ class ConversationalSession:
                             _prewarm_worker_imports()
                             job_ids_collected = []
                             skipped_goals = []
+                            deferred_goals = []
                             for sub_goal in goals:
                                 # Dedup within the wave AND against already in-flight
                                 # objectives: a duplicate worker only races the same
@@ -3859,24 +3931,36 @@ class ConversationalSession:
                                 job_id = f"local-{short}"
                                 try:
                                     self._register_local_job(job_id, sub_goal, role="implement")
-                                    # Submit the selected edit engine to the thread pool
-                                    future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, sub_goal, act.adapter or "", _target_repo_override)
+                                    # Submit the selected edit engine through the
+                                    # bounded-inflight gate. A False return means
+                                    # the pool is at capacity: release the
+                                    # objective, record a deferred goal, and move on.
+                                    submitted = self._submit_swarm(
+                                        self._run_provider_worker_background,
+                                        job_id, sub_goal, act.adapter or "", _target_repo_override,
+                                    )
                                 except Exception:
                                     # Never dispatched -> release so it is not leaked.
                                     self._release_objective(sub_goal)
                                     raise
+                                if not submitted:
+                                    # Never dispatched -> release so it is not leaked.
+                                    self._release_objective(sub_goal)
+                                    deferred_goals.append(sub_goal)
+                                    continue
                                 # Dispatched: the worker now owns the objective release.
                                 job_ids_collected.append(job_id)
                                 self._session_job_ids.append(job_id)
-                                with self._swarm_futures_lock:
-                                    self._swarm_futures.add(future)
-                                
-                                def make_cleanup(fut):
-                                    def _cleanup(f):
-                                        with self._swarm_futures_lock:
-                                            self._swarm_futures.discard(f)
-                                    return _cleanup
-                                future.add_done_callback(make_cleanup(future))
+
+                            if deferred_goals:
+                                # Surface a compact notice so the pilot sees
+                                # which goals were rejected by the gate.
+                                cap_msg = (
+                                    f"Swarm capacity reached ({self._swarm_inflight()} in flight); "
+                                    f"deferred {len(deferred_goals)} of {len(goals)} goal(s): "
+                                    + ", ".join(deferred_goals)
+                                )
+                                yield ConvEvent("notice", {"message": cap_msg})
                             
                             if not job_ids_collected:
                                 # Every goal was a duplicate already in flight.
