@@ -1568,6 +1568,23 @@ class ConversationalSession:
                     # Superseded read -> compact pointer, preserving pairing keys.
                     pointer = (f"[earlier read of {p} elided to save tokens -- a newer "
                                f"read of this file appears later in the conversation]")
+                    # Enrich the pointer with a one-line delta (what changed vs
+                    # the newer, kept read) so the model keeps knowing WHAT
+                    # changed instead of losing it. Fully guarded: any failure to
+                    # extract content or summarize falls back to the bare pointer.
+                    try:
+                        newer_idx = latest_by_path.get(p)
+                        old_text = self._extract_read_text(m)
+                        new_text = self._extract_read_text(messages[newer_idx])
+                        if old_text is not None and new_text is not None:
+                            from harness.change_summary import summarize_change
+                            summary = summarize_change(old_text, new_text)
+                            if summary and summary != "no change":
+                                pointer = (f"[earlier read of {p} elided; "
+                                           f"changed since: {summary}]")
+                    except Exception:
+                        pointer = (f"[earlier read of {p} elided to save tokens -- a newer "
+                                   f"read of this file appears later in the conversation]")
                     nm = {k: v for k, v in m.items() if k != "_read_path"}
                     nm["content"] = pointer
                     out.append(nm)
@@ -1581,6 +1598,37 @@ class ConversationalSession:
             return out
         except Exception:
             return messages
+
+    @staticmethod
+    def _extract_read_text(m) -> "str | None":
+        """Pull the file-text body out of a read message's content.
+
+        A tool/user message content is normally a plain string (the file text),
+        but providers may also carry a list of content blocks. Return the text
+        as a string, or None if it cannot be extracted -- callers treat None as
+        "fall back to the bare pointer" so nothing ever regresses.
+        """
+        try:
+            if not isinstance(m, dict):
+                return None
+            content = m.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, str):
+                        parts.append(block)
+                    elif isinstance(block, dict):
+                        txt = block.get("text")
+                        if isinstance(txt, str):
+                            parts.append(txt)
+                if not parts:
+                    return None
+                return "".join(parts)
+            return None
+        except Exception:
+            return None
 
     def _humanize_pilot_error(self, raw: str) -> str:
         """Turn a raw provider error into a clear, actionable one-liner.

@@ -29,8 +29,11 @@ def _hist():
 
 def test_earlier_read_is_elided_latest_kept():
     out = _s()._elide_stale_reads(_hist())
-    # first foo read -> pointer; latest foo read -> full; bar -> untouched
-    assert "elided to save tokens" in out[0]["content"]
+    # first foo read -> pointer; latest foo read -> full; bar -> untouched.
+    # The two foo reads differ, so the pointer is enriched with a delta summary;
+    # either way it names the elided path and is no longer the full stale copy.
+    assert "earlier read of foo.py elided" in out[0]["content"]
+    assert "FOO V1" not in out[0]["content"]
     assert "FOO V2 LATEST" in out[3]["content"]
     assert out[2]["content"].startswith("BAR")
 

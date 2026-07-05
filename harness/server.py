@@ -1143,7 +1143,8 @@ class Handler(BaseHTTPRequestHandler):
                 store = getattr(state_obj, "store", None)
                 known = False
                 try:
-                    known = any(j.get("id") == job_id for j in state_obj.list_jobs())
+                    job_ids = {j.get("id") for j in state_obj.list_jobs()}
+                    known = job_id in job_ids
                 except Exception:
                     known = False
                 if known and store is not None:
@@ -1188,8 +1189,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if _sessions.active:
                     save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
-            except Exception:
-                pass
+            except Exception as e:
+                _diag("server.self_edit_restart_persist", e)
             self._send(200, json.dumps({"ok": True, "restarting": True}))
 
             def _delayed_self_terminate():
@@ -1637,8 +1638,8 @@ class Handler(BaseHTTPRequestHandler):
                 if p.startswith(trans_dir) and os.path.exists(p):
                     try:
                         os.remove(p)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _diag("server.session_delete_transcript", e, msg=f"sid={safe_sid}")
             if is_active:
                 if new_active:
                     history = load_transcript(_cfg.state_dir or _tf.gettempdir(), new_active)
@@ -1860,8 +1861,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     with open(path_file, "r", encoding="utf-8") as f:
                         pdata = json.load(f)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _diag("server.platform_toggle_load", e)
             if not isinstance(pdata, dict):
                 pdata = {}
             if "disabled" not in pdata or not isinstance(pdata["disabled"], list):
@@ -2124,8 +2125,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     with open(dest_path) as f:
                         current_data = json.load(f)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _diag("server.routing_overrides_load", e)
             
             current_overrides = current_data.get("overrides", {})
             current_overrides.update(validated_overrides)
@@ -3234,8 +3235,8 @@ class Handler(BaseHTTPRequestHandler):
                         data = json.load(f)
                         overrides = data.get("overrides", {})
                         policy = data.get("routing_policy", "balanced")
-                except Exception:
-                    pass
+                except Exception as e:
+                    _diag("server.roles_routing_load", e)
             
             roles_mapping = {}
             for k, v in REAL_BASE_SCORES.items():

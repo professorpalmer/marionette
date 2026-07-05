@@ -1,3 +1,10 @@
+// LEGACY FALLBACK browser GUI -- do NOT treat this as the real UI.
+// The shipping desktop app renders through webapp/src (React/TS), whose main
+// conversation view lives in webapp/src/components/Conversation.tsx.
+// This harness/web/ directory is only the minimal, no-build browser fallback
+// served by harness/server.py (the /app.js route). Future edits to the actual
+// product UI must target webapp/src, NOT this file. Touch this file only for
+// browser-fallback fixes. See docs/LEGACY_FRONTEND.md for details.
 const $ = s => document.querySelector(s);
 const feed = $("#feed"), artList = $("#artifact-list"), jobList = $("#job-list"),
       pill = $("#status-pill"), promptEl = $("#prompt"), picker = $("#pilot-picker"),
