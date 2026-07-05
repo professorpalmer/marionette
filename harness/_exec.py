@@ -77,6 +77,76 @@ def _is_app_bundle_path(p: str) -> bool:
     return ".app/contents/" in norm or norm.endswith(".app/contents")
 
 
+def sanitized_path(path: str | None = None) -> str:
+    """Return a PATH string with `.app/Contents/` entries demoted to the end.
+
+    Generalization of the node-only fix in `_ensure_node_on_path()`. Any
+    subprocess Marionette spawns should run with a PATH that does NOT prefer
+    binaries living inside another app's `.app/Contents/` bundle (Cursor.app,
+    VS Code.app, ...), because spawning a sibling app's bundled binary is the
+    cross-app launch that triggers the macOS TCC "wants to access data from
+    other apps" prompt and pulls in foreign runtimes.
+
+    Behavior:
+    - Splits `path` on `os.pathsep` (defaults to `os.environ['PATH']`).
+    - Preserves relative order within kept (clean) entries and within moved
+      (app-bundle) entries.
+    - De-duplicates while keeping the FIRST occurrence's position.
+    - Moves (does NOT delete) `.app/Contents/` entries to the tail, so anything
+      that ONLY exists inside an app bundle remains reachable as a last resort.
+    - Best-effort and pure: on any exception, returns the input unchanged.
+    - Never raises; empty/None inputs yield an empty string.
+    """
+    try:
+        if path is None:
+            path = os.environ.get("PATH", "")
+        if not path:
+            return ""
+        seen: set[str] = set()
+        kept: list[str] = []
+        moved: list[str] = []
+        for entry in path.split(os.pathsep):
+            if entry in seen:
+                continue
+            seen.add(entry)
+            if _is_app_bundle_path(entry):
+                moved.append(entry)
+            else:
+                kept.append(entry)
+        return os.pathsep.join(kept + moved)
+    except Exception:
+        return path if isinstance(path, str) else ""
+
+
+def sanitized_env(env: dict | None = None) -> dict:
+    """Return a COPY of `env` with PATH replaced by `sanitized_path(env['PATH'])`.
+
+    Never mutates the input dict or `os.environ`. Best-effort: on any failure
+    the copy is returned with PATH untouched (or a plain copy of the input).
+    Defaults to `os.environ` when `env` is None.
+    """
+    try:
+        source = os.environ if env is None else env
+        copy = dict(source)
+        try:
+            # Only rewrite PATH when the source actually had one. Passing None
+            # to sanitized_path() would fall back to os.environ['PATH'], which
+            # would surprise callers who intentionally handed us a PATH-less
+            # env dict.
+            if "PATH" in copy:
+                copy["PATH"] = sanitized_path(copy["PATH"])
+        except Exception:
+            # Fall back to the original PATH untouched.
+            pass
+        return copy
+    except Exception:
+        # Absolute last-resort fallback: never raise from a sanitizer helper.
+        try:
+            return dict(env if env is not None else os.environ)
+        except Exception:
+            return {}
+
+
 def _ensure_node_on_path() -> None:
     """Make a CLEAN `node` discoverable for CodeGraph even when the backend was
     spawned with a stripped or cross-app-polluted PATH.

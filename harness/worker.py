@@ -515,6 +515,17 @@ class ProviderWorker:
             test_passed = True
             if self.run_tests:
                 test_timeout = max(10, int(self.budget.max_seconds - self.budget.elapsed))
+                # Sanitize PATH so any child (pytest, npm test, ...) does not
+                # prefer binaries inside another app's .app/Contents/ bundle
+                # (Cursor.app, VS Code.app, ...). Spawning a sibling app's
+                # bundled binary is the cross-app launch that triggers macOS
+                # TCC prompts and pulls in foreign runtimes. Best-effort: on
+                # any failure, fall back to the current environment untouched.
+                try:
+                    from harness._exec import sanitized_env as _sanitized_env
+                    _test_env = _sanitized_env()
+                except Exception:
+                    _test_env = None
                 try:
                     p_test = subprocess.run(
                         self.run_tests,
@@ -523,7 +534,8 @@ class ProviderWorker:
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
-                        timeout=test_timeout
+                        timeout=test_timeout,
+                        env=_test_env,
                     )
                     test_output = p_test.stdout or ""
                     test_passed = (p_test.returncode == 0)
