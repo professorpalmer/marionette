@@ -3079,11 +3079,14 @@ function ActivityGroup({
     if (it.kind === "card") return <ActionCard key={idx} card={it.card} onToggle={() => onToggleCard(it.card)} />;
     if (it.kind === "thinking") return <ThinkingBlock key={idx} text={it.text} />;
     if (it.kind === "msg") {
-      // Per-step micro-narration: small muted line inside the box.
+      // Per-step micro-narration inside the collapsible tool-call breakdown.
+      // Render through <Markdown> (not raw whitespace-pre-wrap) so code blocks,
+      // bold, lists, etc. survive here exactly like they do in the main
+      // transcript -- previously these folded messages lost all formatting.
       if (!it.msg.text || !it.msg.text.trim()) return null;
       return (
-        <div key={idx} className="text-[12px] text-muted/90 py-0.5 leading-relaxed whitespace-pre-wrap">
-          {it.msg.text}
+        <div key={idx} className="text-[12px] text-muted/90 py-0.5 leading-relaxed">
+          <Markdown text={it.msg.text} />
         </div>
       );
     }
@@ -3168,8 +3171,8 @@ function ThinkingBlock({ text }: { text: string }) {
         )}
       </button>
       {expanded && (
-        <div className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] whitespace-pre-wrap leading-[1.65] max-w-[92%] max-h-[34dvh]">
-          {text}
+        <div className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] leading-[1.65] max-w-[92%] max-h-[34dvh]">
+          <Markdown text={text} />
         </div>
       )}
     </div>
