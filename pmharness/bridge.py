@@ -99,6 +99,21 @@ def _analysis_capability_payload() -> dict:
     return {"min_capability": max(0, min(100, ceiling))}
 
 
+# First-principles STOP conditions, ported from the ARC-AGI winning harnesses'
+# operations-manual style. Kept short and in plain words so it hardens the brief
+# without bloating it. Guards the two real loop-burn failure modes we saw: a
+# worker retrying the same idea forever, and a worker resetting its own progress
+# to "start clean" -- both of which stop it ever concluding and reporting back.
+_STOP_CONDITIONS = (
+    "STOP CONDITIONS: If 2-3 variations of an approach fail to produce the "
+    "expected result, STOP and report back to whoever called you with what you "
+    "learned -- do not keep looping on the same idea. Never restart or reset "
+    "your work to 'think more carefully' or 'try a clean approach': that "
+    "discards the progress you already have. Prefer returning a few "
+    "well-evidenced findings over an exhaustive exploration that never concludes."
+)
+
+
 def _analysis_instruction(goal: str, repo_cwd: str, role: str,
                           *, browser: bool = False) -> str:
     """Build a read-only analysis worker's instruction from the shared goal plus
@@ -121,7 +136,8 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
             f"This is READ-ONLY: do not edit, create, or delete any files, and "
             f"do not submit credentials or perform destructive actions on the "
             f"site. Emit what each browser tool returned as evidenced findings, "
-            f"then ALWAYS call submit_findings before you run out of turns."
+            f"then ALWAYS call submit_findings before you run out of turns.\n\n"
+            f"{_STOP_CONDITIONS}"
         )
     return (
         f"{goal}{lens_line}\n\nAnalyze the REAL codebase at {repo_cwd}. "
@@ -137,6 +153,7 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
         "submit_findings with whatever concrete findings you have BEFORE you run "
         "out of turns. A few well-evidenced findings submitted is far better than "
         "a deep exploration that never submits. If unsure, submit early and stop."
+        "\n\n" + _STOP_CONDITIONS
     )
 
 

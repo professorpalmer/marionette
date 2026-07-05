@@ -13,6 +13,38 @@ from typing import Optional, Iterator, TYPE_CHECKING
 logger = logging.getLogger("pmharness.worker")
 
 from harness.autobudget import AutoBudget
+
+# Ambient shared budget for the current spawn tree. A supervising Conversation
+# running in fully-auto mode installs its governing AutoBudget here (per-thread)
+# before dispatching a worker, so a ProviderWorker built deep in the
+# pilot->swarm->worker tree binds to the SAME decrementing ceiling instead of
+# minting a fresh default that resets the budget for its level. Supervised runs
+# leave this unset, so a worker keeps its own independent default (no regression).
+_ambient_budget = threading.local()
+
+
+def set_ambient_budget(budget: Optional[AutoBudget]):
+    """Install (or clear) the governing budget for workers spawned on THIS
+    thread. Returns the previous value so callers can restore it. Passing None
+    clears the ambient budget (restores supervised behavior)."""
+    prev = getattr(_ambient_budget, "value", None)
+    _ambient_budget.value = budget
+    return prev
+
+
+def get_ambient_budget() -> Optional[AutoBudget]:
+    """The governing budget installed for workers on this thread, or None."""
+    return getattr(_ambient_budget, "value", None)
+
+
+@contextlib.contextmanager
+def ambient_budget(budget: Optional[AutoBudget]):
+    """Scope an ambient governing budget for the duration of a ``with`` block."""
+    prev = set_ambient_budget(budget)
+    try:
+        yield budget
+    finally:
+        set_ambient_budget(prev)
 from harness.config import HarnessConfig
 from harness.worktrees import (
     _is_repo,
@@ -290,12 +322,24 @@ class ProviderWorker:
         self.driver = driver
         self.reach = reach
         self.base = base
-        self.budget = budget or AutoBudget(
-            max_tokens=40000,
-            max_seconds=300,
-            max_swarms=2,
-            max_idle_steps=2
-        )
+        # Shared-budget threading: if a supervising fully-auto run installed a
+        # governing budget for this thread, adopt a child() of it so this
+        # worker's spend rolls up into the ONE tree-wide ceiling that never
+        # resets per spawn level. This takes precedence over any per-level
+        # default budget passed in (the whole point is that the tree ceiling
+        # wins over local defaults). When no ambient budget is present
+        # (supervised mode), fall back to the caller's budget or a fresh
+        # per-worker default -- preserving existing behavior exactly.
+        _governing = get_ambient_budget()
+        if _governing is not None:
+            self.budget = _governing.child()
+        else:
+            self.budget = budget or AutoBudget(
+                max_tokens=40000,
+                max_seconds=300,
+                max_swarms=2,
+                max_idle_steps=2
+            )
         self.run_tests = run_tests
         self.keep_worktree_on_failure = keep_worktree_on_failure
         self.require_codegraph = require_codegraph

@@ -394,6 +394,13 @@ class ConversationalSession:
         self._tokens_in: int = 0   # cumulative prompt tokens (for accurate cost)
         self._tokens_out: int = 0  # cumulative completion tokens
         self._tokens_cached: int = 0  # cumulative prompt tokens served from cache
+        # The governing AutoBudget for the CURRENT fully-auto run, if any. Set
+        # by run_auto for the duration of the run and cleared afterward. When
+        # present it is threaded (as a child()) into every worker/swarm spawned
+        # during the run so the whole pilot->swarm->worker spawn tree shares
+        # ONE decrementing ceiling that never resets per level. None in
+        # supervised mode -- so supervised workers keep their own default.
+        self._auto_budget: Optional["AutoBudget"] = None
         # Most recent turn's REAL prompt (input) token count, as billed by the
         # driver for the current history. 0 until a real response is metered;
         # used to make the live context estimate track reality instead of the
@@ -5059,9 +5066,17 @@ class ConversationalSession:
             except Exception:
                 _effective_config = self.config
 
+        # Thread the governing budget (fully-auto only) into the worker so its
+        # spend rolls up into the ONE tree-wide ceiling. ProviderWorker binds a
+        # child() of the ambient budget installed on ITS thread; supervised runs
+        # leave it None so the worker keeps its own independent default budget.
+        from harness.worker import ambient_budget as _ambient_budget_ctx
+        _governing = self._auto_budget
+
         def _run():
             try:
-                box["res"] = run_edit_worker(_effective_config, objective, requested_adapter=requested_adapter)
+                with _ambient_budget_ctx(_governing):
+                    box["res"] = run_edit_worker(_effective_config, objective, requested_adapter=requested_adapter)
             except Exception as exc:  # surfaced to the caller after join
                 box["exc"] = exc
             finally:
@@ -5408,6 +5423,9 @@ class ConversationalSession:
             yield from self._run_auto_inner(objective, budget, require_codegraph=require_codegraph)
         finally:
             self._auto_mode = False
+            # Drop the governing budget so the next interactive/supervised
+            # command is never wrongly threaded onto a stale tree ceiling.
+            self._auto_budget = None
 
     def _run_auto_inner(self, objective: str, budget: "AutoBudget" = None,
                  *, require_codegraph: bool = True):
@@ -5424,6 +5442,9 @@ class ConversationalSession:
             night). Override only with require_codegraph=False.
         """
         budget = (budget or AutoBudget.from_env()).start()
+        # Publish the governing budget so background worker/swarm spawns thread a
+        # child() of it and share this run's single tree-wide ceiling.
+        self._auto_budget = budget
 
         # Precondition: real analysis on an unindexed repo is refused unattended.
         if (require_codegraph and self.config.swarm_adapter == "openai"

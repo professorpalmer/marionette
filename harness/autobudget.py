@@ -41,6 +41,19 @@ class AutoBudget:
     started_at: float = field(default_factory=time.time)
     _halted_reason: Optional[str] = field(default=None)
 
+    # Shared-ceiling propagation. When a governor spawns a sub-agent tree
+    # (pilot -> swarm -> worker), nesting must NOT reset the ceiling: each
+    # child links back to the parent so its spend rolls up into the SAME
+    # cumulative counters. Otherwise a deep spawn tree blows the overall
+    # ceiling because every level starts a fresh 0/max budget.
+    #
+    # ``parent`` is not part of ``__eq__`` / ``repr`` so budgets stay simple
+    # value objects for the existing tests, and it is excluded from the
+    # dataclass-generated fields' comparison to avoid reference cycles in repr.
+    parent: Optional["AutoBudget"] = field(
+        default=None, repr=False, compare=False
+    )
+
     def start(self) -> "AutoBudget":
         self.started_at = time.time()
         self.tokens_used = 0
@@ -54,10 +67,55 @@ class AutoBudget:
         return time.time() - self.started_at
 
     def add_tokens(self, n: int) -> None:
-        self.tokens_used += max(0, int(n or 0))
+        amount = max(0, int(n or 0))
+        self.tokens_used += amount
+        # Roll spend up the spawn tree so nested sub-agents share ONE ceiling
+        # that never resets. Walk parents defensively (a mis-wired cycle would
+        # otherwise loop forever).
+        node = self.parent
+        seen = {id(self)}
+        while node is not None and id(node) not in seen:
+            node.tokens_used += amount
+            seen.add(id(node))
+            node = node.parent
 
     def add_swarm(self) -> None:
         self.swarms_used += 1
+        node = self.parent
+        seen = {id(self)}
+        while node is not None and id(node) not in seen:
+            node.swarms_used += 1
+            seen.add(id(node))
+            node = node.parent
+
+    def child(self) -> "AutoBudget":
+        """Return a budget that shares THIS budget's ceiling for a spawned
+        sub-agent. Threading the child down a pilot->swarm->worker tree keeps
+        the whole tree under one cumulative cap that never resets per level
+        (the arcgentica bounded_submit_action pattern).
+
+        The child forwards its ``add_tokens`` / ``add_swarm`` to this parent,
+        so the parent's ``tokens_used`` / ``swarms_used`` (and therefore
+        ``check()``) see the child's spend. The child inherits the parent's
+        ceilings and killswitch, and its ``check()`` also honours the parent's
+        already-tripped halt. Its own local counters start at the parent's
+        current totals so the child sees spend that happened before it existed
+        (a second sequential worker sees the first worker's spend).
+        """
+        c = AutoBudget(
+            max_tokens=self.max_tokens,
+            max_seconds=self.max_seconds,
+            max_swarms=self.max_swarms,
+            max_idle_steps=self.max_idle_steps,
+            killswitch_path=self.killswitch_path,
+            parent=self,
+        )
+        # Share the parent's clock and current totals so the child inherits the
+        # tree-wide position (elapsed time and already-spent tokens/swarms).
+        c.started_at = self.started_at
+        c.tokens_used = self.tokens_used
+        c.swarms_used = self.swarms_used
+        return c
 
     def note_findings(self, new_count: int) -> None:
         """Track stall: a step that produced no new findings increments idle."""
@@ -73,6 +131,16 @@ class AutoBudget:
         """Return a HALT reason, or None to proceed. Checked every loop step."""
         if self._halted_reason:
             return self._halted_reason
+        # A child honours its parent's already-tripped halt: once any node in
+        # the spawn tree hits the shared ceiling, the whole tree stops.
+        if self.parent is not None:
+            node = self.parent
+            seen = {id(self)}
+            while node is not None and id(node) not in seen:
+                if node._halted_reason:
+                    return self._halt(node._halted_reason)
+                seen.add(id(node))
+                node = node.parent
         if self.killed():
             return self._halt(f"killswitch tripped ({self.killswitch_path})")
         if self.tokens_used >= self.max_tokens:
