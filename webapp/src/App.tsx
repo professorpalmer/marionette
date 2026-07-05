@@ -97,6 +97,29 @@ export default function App() {
     checkSetupStatus();
   }, []);
 
+  // PERF: pause CSS animations when the app is backgrounded or the OS window is
+  // not focused. Toggles html.app-idle (see index.css) so the shared macOS GPU
+  // compositor goes idle instead of driving dozens of spinners/pulses at 60fps
+  // while you are in another window -- the cause of alt-tab/window-switch stutter
+  // during a long session with live swarms. blur/focus covers alt-tab (the window
+  // can stay "visible" but unfocused); visibilitychange covers minimize/hide.
+  useEffect(() => {
+    const root = document.documentElement;
+    const setIdle = () => {
+      const idle = document.hidden || !document.hasFocus();
+      root.classList.toggle("app-idle", idle);
+    };
+    setIdle();
+    window.addEventListener("blur", setIdle);
+    window.addEventListener("focus", setIdle);
+    document.addEventListener("visibilitychange", setIdle);
+    return () => {
+      window.removeEventListener("blur", setIdle);
+      window.removeEventListener("focus", setIdle);
+      document.removeEventListener("visibilitychange", setIdle);
+    };
+  }, []);
+
   // persist layout
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
   useEffect(() => { localStorage.setItem(LS.right, String(rightW)); }, [rightW]);

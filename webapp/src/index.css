@@ -4,6 +4,29 @@
 
 html, body, #root { height: 100%; margin: 0; }
 
+/* PERF: pause every CSS animation/transition while the app is backgrounded or
+   the OS window is not focused. macOS shares ONE GPU compositor across all
+   windows, so dozens of always-running spinners/pulses (swarm rows, status bar,
+   composer) keep the compositor pinned even after you alt-tab away -- which is
+   exactly what makes window-switching stutter during a long session with live
+   swarms. When hidden or blurred we set animation-play-state: paused so the
+   compositor goes idle and the window server gets its frames back. Visible/
+   focused restores everything with zero code changes at the call sites. */
+html.app-idle *,
+html.app-idle *::before,
+html.app-idle *::after {
+  animation-play-state: paused !important;
+}
+
+/* Respect users who ask for less motion: kill the continuous spinners/pulses. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
 /* Responsive root scale: the whole UI is sized in rem (Tailwind text + spacing),
    so scaling the root font-size is a proportional zoom that keeps every
    separation ratio intact while making the app denser as the window narrows.

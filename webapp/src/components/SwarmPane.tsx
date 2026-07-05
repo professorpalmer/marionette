@@ -259,8 +259,20 @@ export default function SwarmPane() {
   const hasLiveJob = (data?.jobs || []).some((j) => jobStatus(j) === "in_progress");
   useEffect(() => {
     if (!hasLiveJob) return;
-    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
-    return () => window.clearInterval(id);
+    // PERF: 5s, not 1s. This tick exists only to refresh relative "3s ago /
+    // 2m ago" labels, which do not need per-second precision -- and each tick
+    // re-renders the whole SwarmPane (every job row + phase strip). At 1s that
+    // was a steady re-render tax stacked on top of a long transcript while a
+    // swarm ran. Also pause it entirely while the app is backgrounded.
+    let id: number | undefined;
+    const start = () => {
+      if (id == null && !document.hidden) id = window.setInterval(() => setNowTick(Date.now()), 5000);
+    };
+    const stop = () => { if (id != null) { window.clearInterval(id); id = undefined; } };
+    const onVis = () => { if (document.hidden) stop(); else start(); };
+    start();
+    document.addEventListener("visibilitychange", onVis);
+    return () => { stop(); document.removeEventListener("visibilitychange", onVis); };
   }, [hasLiveJob]);
 
   // Fire-and-refetch cancel. Best-effort on the backend (a provider call in a
