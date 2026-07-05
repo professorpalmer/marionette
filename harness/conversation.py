@@ -3909,20 +3909,26 @@ class ConversationalSession:
         self._display_transcript.append({"type": "message", "role": "assistant", "text": limit_msg})
         yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
 
-    def _add_worker_tokens_from_artifacts(self, artifacts_json: Any) -> tuple[int, int]:
-        """Extracts token counts from worker job artifacts defensively, summing tokens_in/out
-        while deduping across the same task_id to avoid double-counting.
+    def _add_worker_tokens_from_artifacts(self, artifacts_json: Any) -> tuple[int, int, int]:
+        """Extracts token counts from worker job artifacts defensively, summing
+        tokens_in/out (and tokens_cached) while deduping across the same
+        task_id to avoid double-counting.
+
+        Returns (sum_in, sum_out, sum_cached). tokens_cached is a subset of
+        tokens_in and is NOT added to self._tokens_used -- it only feeds
+        self._tokens_cached so the parent session's cache_savings_usd
+        (server.py._cache_savings) reflects worker/swarm cache reads.
         """
         if isinstance(artifacts_json, str):
             try:
                 import json
                 artifacts = json.loads(artifacts_json)
             except Exception:
-                return (0, 0)
+                return (0, 0, 0)
         elif isinstance(artifacts_json, list):
             artifacts = artifacts_json
         else:
-            return (0, 0)
+            return (0, 0, 0)
 
         task_map = {}
         no_task_seen = set()
@@ -3942,6 +3948,9 @@ class ConversationalSession:
             tokens_out = art.get("tokens_out")
             if tokens_out is None:
                 tokens_out = payload.get("tokens_out")
+            tokens_cached = art.get("tokens_cached")
+            if tokens_cached is None:
+                tokens_cached = payload.get("tokens_cached")
 
             t_in = 0
             if tokens_in is not None:
@@ -3955,30 +3964,46 @@ class ConversationalSession:
                     t_out = int(tokens_out)
                 except (ValueError, TypeError):
                     t_out = 0
+            t_cached = 0
+            if tokens_cached is not None:
+                try:
+                    t_cached = int(tokens_cached)
+                except (ValueError, TypeError):
+                    t_cached = 0
 
-            if t_in == 0 and t_out == 0:
+            if t_in == 0 and t_out == 0 and t_cached == 0:
                 continue
 
             if task_id:
                 if task_id in task_map:
-                    old_in, old_out = task_map[task_id]
-                    task_map[task_id] = (max(old_in, t_in), max(old_out, t_out))
+                    old_in, old_out, old_cached = task_map[task_id]
+                    task_map[task_id] = (
+                        max(old_in, t_in),
+                        max(old_out, t_out),
+                        max(old_cached, t_cached),
+                    )
                 else:
-                    task_map[task_id] = (t_in, t_out)
+                    task_map[task_id] = (t_in, t_out, t_cached)
             else:
-                no_task_seen.add((t_in, t_out))
+                no_task_seen.add((t_in, t_out, t_cached))
 
         sum_in = 0
         sum_out = 0
-        for t_in, t_out in task_map.values():
+        sum_cached = 0
+        for t_in, t_out, t_cached in task_map.values():
             sum_in += t_in
             sum_out += t_out
-        for t_in, t_out in no_task_seen:
+            sum_cached += t_cached
+        for t_in, t_out, t_cached in no_task_seen:
             sum_in += t_in
             sum_out += t_out
+            sum_cached += t_cached
 
         self._tokens_used += sum_in + sum_out
-        return (sum_in, sum_out)
+        # tokens_cached is a subset of tokens_in already counted above; only
+        # feed the cache-savings meter, do NOT add to _tokens_used.
+        self._tokens_cached += sum_cached
+        return (sum_in, sum_out, sum_cached)
 
     def _apply_worker_patch(self, artifacts: list, job_id: str = "") -> tuple[bool, list[str], str]:
         """Finds the patch artifact (type=="patch"), extracts its unified_diff,
@@ -4262,7 +4287,7 @@ class ConversationalSession:
             artifacts = []
 
         # 3. Add worker tokens
-        tokens_in, tokens_out = self._add_worker_tokens_from_artifacts(artifacts)
+        tokens_in, tokens_out, tokens_cached = self._add_worker_tokens_from_artifacts(artifacts)
 
         # 4. Process artifacts
         num_artifacts = len(artifacts)
@@ -4403,6 +4428,7 @@ class ConversationalSession:
             "files": applied_files,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
+            "tokens_cached": tokens_cached,
             "summary": summary,
             "error": error,
             "artifacts": artifacts,
@@ -4665,17 +4691,23 @@ class ConversationalSession:
                 # showed no price at all while normal completions did).
                 _nc_t_in = int(getattr(res, "tokens_in", 0) or 0)
                 _nc_t_out = int(getattr(res, "tokens_out", 0) or 0)
-                if _nc_t_in or _nc_t_out:
+                _nc_t_cached = int(getattr(res, "tokens_cached", 0) or 0)
+                if _nc_t_in or _nc_t_out or _nc_t_cached:
                     with self._apply_lock:
                         self._tokens_used += _nc_t_out + _nc_t_in
                         self._tokens_in += _nc_t_in
                         self._tokens_out += _nc_t_out
+                        # Cached prompt tokens are a SUBSET of tokens_in already
+                        # counted above; do NOT re-add to _tokens_used, only
+                        # feed the cache-savings meter.
+                        self._tokens_cached += _nc_t_cached
                 res_dict = {
                     "job_id": job_id,
                     "applied": False,
                     "files": [],
                     "tokens_in": _nc_t_in,
                     "tokens_out": _nc_t_out,
+                    "tokens_cached": _nc_t_cached,
                     "summary": res.summary or res.error or "Worker failed to produce patch",
                     "error": res.error,
                     "artifacts": [],
@@ -4697,6 +4729,7 @@ class ConversationalSession:
                 
                 tokens_in = res.tokens_in
                 tokens_out = res.tokens_out
+                tokens_cached = int(getattr(res, "tokens_cached", 0) or 0)
                 with self._apply_lock:
                     # Attribute the worker's FULL spend (prompt + completion) to
                     # the parent session's cost meter. Track _tokens_out too, not
@@ -4707,6 +4740,10 @@ class ConversationalSession:
                     self._tokens_used += tokens_out + tokens_in
                     self._tokens_in += tokens_in
                     self._tokens_out += tokens_out
+                    # Cached prompt tokens are already inside tokens_in above;
+                    # feed the parent's cache-savings meter without inflating
+                    # _tokens_used (avoids double-counting).
+                    self._tokens_cached += tokens_cached
                 
                 patch_summary = ""
                 if res.files_changed:
@@ -4779,6 +4816,7 @@ class ConversationalSession:
                     "files": applied_files,
                     "tokens_in": tokens_in,
                     "tokens_out": tokens_out,
+                    "tokens_cached": tokens_cached,
                     "summary": summary,
                     "error": error,
                     "artifacts": artifacts,

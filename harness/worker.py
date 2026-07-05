@@ -48,6 +48,12 @@ class WorkerResult:
     # undercounted every implement worker's prompt cost (audit finding #5).
     tokens_out: int = 0
     tokens_in: int = 0
+    # Prompt tokens that were served from the provider's prompt cache during
+    # this worker's inner session. Propagated to the parent session's
+    # _tokens_cached so cache savings (server.py._cache_savings) reflect
+    # swarm/worker caching, not just the parent's own turns. Optional with a
+    # default to keep positional construction back-compatible.
+    tokens_cached: int = 0
     # Absolute paths the worker wrote to via run_command that fall OUTSIDE its
     # worktree. Populated best-effort by _detect_escaped_writes so callers can
     # tell "no diff" apart from "the agent shelled out to another repo".
@@ -298,6 +304,10 @@ class ProviderWorker:
         # exits before a session exists.
         self._session_tokens_in = 0
         self._session_tokens_total = 0
+        # Prompt tokens served from cache during the inner session. Mirrored to
+        # WorkerResult.tokens_cached in run() so the parent session's cache
+        # savings include worker/swarm cache reads.
+        self._session_tokens_cached = 0
 
     def run(self) -> WorkerResult:
         """Drive the worker and return a normalized result whose token counts
@@ -315,6 +325,12 @@ class ProviderWorker:
             # budget.tokens_used is the cumulative in+out total; the completion
             # share is the remainder after prompt tokens.
             result.tokens_out = max(0, total - result.tokens_in)
+        # Backfill cached prompt tokens from the inner session onto EVERY return
+        # path so the parent session's cache_savings_usd accounts for
+        # worker/swarm cache reads. tokens_cached is a subset of tokens_in
+        # (never added on top), so we only need to mirror it here.
+        if not result.tokens_cached:
+            result.tokens_cached = self._session_tokens_cached
         return result
 
     def _run_impl(self) -> WorkerResult:
@@ -322,6 +338,7 @@ class ProviderWorker:
         # the early exits below that never construct an inner session.
         self._session_tokens_in = 0
         self._session_tokens_total = 0
+        self._session_tokens_cached = 0
         if not self.repo or not _is_repo(self.repo):
             return WorkerResult(ok=False, error="not a git repo")
 
@@ -387,6 +404,10 @@ class ProviderWorker:
             # prompt tokens.
             self._session_tokens_in = int(getattr(session, "_tokens_in", 0) or 0)
             self._session_tokens_total = int(getattr(session, "_tokens_used", 0) or 0)
+            # Cached prompt tokens flow up too: the parent session's
+            # _tokens_cached feeds server.py's cache_savings_usd, and without
+            # this capture, worker/swarm cache reads never reach the parent.
+            self._session_tokens_cached = int(getattr(session, "_tokens_cached", 0) or 0)
 
             # 4. Finalize -> PATCH. Stage everything, drop build/agent artifacts
             # the worker may have created (git add -A otherwise sweeps untracked
