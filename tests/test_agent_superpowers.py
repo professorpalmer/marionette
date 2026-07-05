@@ -88,7 +88,7 @@ def test_wiki_query_success(monkeypatch):
     client = WikiClient(base_url="http://wiki", token="secret")
     res = client.query("How does Auth work?")
     assert res == "Auth uses JWT in middleware.py"
-    assert captured["url"] == "http://wiki/owner/query"
+    assert captured["url"] == "http://wiki/wiki/query"
     assert captured["body"] == {"question": "How does Auth work?"}
     assert captured["auth"] == "Bearer secret"
 

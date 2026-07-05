@@ -92,20 +92,23 @@ class WikiClient:
 
     def query(self, question: str) -> str:
         """Query the wiki's LLM query/search surface.
-        Try documented endpoints (POST /owner/query, POST /api/query, POST /llm, etc.).
-        If all fail or return error, fall back to fetching the manifest and compiling a helpful summary.
-        Cap result to ~4000 chars.
+
+        Uses the portable-llm-wiki public read API, verified against its OpenAPI
+        spec: POST /wiki/query (RAG answer), then POST /wiki/chat, then the
+        GET /wiki/search retrieval fallback. If those all fail, fall back to
+        the manifest index summary. Cap result to ~4000 chars.
         """
         if not self.configured:
             return "wiki not configured"
 
-        # Try a few common query endpoints
+        # Real portable-llm-wiki endpoints (see GET /openapi.json).
         endpoints = [
-            ("/owner/query", "POST", {"question": question}),
-            ("/api/query", "POST", {"question": question}),
-            ("/owner/search", "POST", {"query": question}),
-            ("/llm", "POST", {"question": question}),
+            ("/wiki/query", "POST", {"question": question}),
+            ("/wiki/chat", "POST", {"message": question}),
         ]
+        # The RAG answer endpoint invokes an LLM server-side, so it can be slow;
+        # give it more room than the default (health/ingest) timeout.
+        query_timeout = max(self.timeout, 60)
 
         for path, method, payload in endpoints:
             url = f"{self.base_url}{path}"
@@ -119,7 +122,7 @@ class WikiClient:
             body = json.dumps(payload).encode()
             req = urllib.request.Request(url, data=body, method=method, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                with urllib.request.urlopen(req, timeout=query_timeout) as r:
                     if r.status == 200:
                         res = r.read().decode("utf-8", "replace")
                         try:
@@ -136,6 +139,30 @@ class WikiClient:
                         return res[:4000]
             except Exception:
                 continue
+
+        # Retrieval fallback: GET /wiki/search returns matching pages even when
+        # the RAG/chat LLM surface is unavailable.
+        try:
+            url = f"{self.base_url}/wiki/search?q=" + urllib.parse.quote(question)
+            headers = {"Accept": "application/json"}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+            req = urllib.request.Request(url, method="GET", headers=headers)
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                if r.status == 200:
+                    data = json.loads(r.read().decode("utf-8", "replace"))
+                    results = data.get("results", []) if isinstance(data, dict) else []
+                    if results:
+                        lines = ["Wiki search results:"]
+                        for hit in results[:8]:
+                            if isinstance(hit, dict):
+                                title = hit.get("title") or hit.get("slug", "")
+                                slug = hit.get("slug", "")
+                                snip = hit.get("snippet") or hit.get("description") or ""
+                                lines.append(f"- {title} ({slug}): {snip}")
+                        return "\n".join(lines)[:4000]
+        except Exception:
+            pass
 
         # Fallback to fetching manifest + returning a helpful summary if no query endpoint succeeded
         try:
