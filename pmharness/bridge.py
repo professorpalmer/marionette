@@ -231,6 +231,19 @@ def _promote_degraded_prose(compact: list) -> list:
     but a verification artifact carries substantial prose, promote a copy of it to
     a 'finding' so the analysis actually reaches the pilot/UI. Pure and
     deterministic; leaves the originals intact.
+
+    WHY THIS LIVES IN MARIONETTE'S BRIDGE, NOT UPSTREAM IN PUPPETMASTER:
+    The cleaner-looking fix is to make puppetmaster's agentic adapter emit a
+    finding directly instead of a degraded verification artifact. Do NOT move it
+    there. Puppetmaster ships to users as the PyPI package `puppetmaster-ai`
+    (scripts/install.sh: `uv pip install puppetmaster-ai`); only the author has it
+    editable-installed from a local checkout. An upstream fix would therefore do
+    nothing for anyone until a NEW puppetmaster-ai is published AND Marionette
+    pins `puppetmaster-ai>=<that version>` -- adding version coupling and joining
+    friction for new users, for zero benefit over normalizing here. Keeping the
+    normalization at the harness boundary means the fix ships WITH Marionette,
+    works for every install regardless of the Puppetmaster version, and correctly
+    treats worker output as an untrusted boundary. Leave it here.
     """
     try:
         has_signal = any(str(a.get("type")) in _SIGNAL_TYPES
