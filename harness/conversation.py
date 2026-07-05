@@ -364,6 +364,7 @@ class ConversationalSession:
         # silently corrupting. (The harness is a local single-user tool.)
         self._busy = threading.Lock()
         self._busy_since = 0.0  # monotonic time the lock was acquired (0 = free)
+        self._interrupt_requested = False  # user hit Stop; allow faster busy recovery
         # Generation guard for the single-writer lock. The watchdog can force-
         # release a wedged turn's _busy so drain/new turns recover (audit finding
         # #6); the generation lets the reaped turn's own finally detect it was
@@ -1376,6 +1377,15 @@ class ConversationalSession:
     def interrupt(self) -> None:
         """Signal any in-flight run_auto/send to stop at the next checkpoint."""
         self.cancel()
+        # Mark an EXPLICIT user stop. The in-flight generator may be blocked
+        # inside a subprocess/tool call (run_command, a worker) and can't check
+        # _cancel -- so it can't run its finally to release _busy -- until that
+        # call returns. If the user then sends a new message, the lock is still
+        # held and the normal stale-recovery is too strict (it needs _state ==
+        # 'idle', but the session is still 'executing' mid-tool), so the next
+        # turn wrongly errored 'session busy'. This flag lets the busy-acquire
+        # path force-recover after a short grace once the user has asked to stop.
+        self._interrupt_requested = True
 
     def steer_with_images(self, text: str, images: Optional[list] = None) -> None:
         """Enqueue a steer, transcribing any attached images into the steer text.
@@ -1618,7 +1628,16 @@ class ConversationalSession:
             import time as _t
             held_for = _t.monotonic() - self._busy_since if self._busy_since else 0.0
             stale = self._busy_since and held_for > 1.5 and self._state == "idle"
+            # If the user EXPLICITLY interrupted the previous turn, recover the
+            # lock even when _state is still 'executing' (the abandoned turn is
+            # blocked in a subprocess/tool and may never reach its finally). A
+            # shorter grace here is safe because the user asked to stop -- this is
+            # the "stop a chat right as it runs tool calls" case that wrongly
+            # errored 'session busy'.
+            if not stale and self._interrupt_requested and self._busy_since and held_for > 0.5:
+                stale = True
             if stale:
+                self._interrupt_requested = False
                 # Advance the generation as we force-release so the leaked holder's
                 # own finally (if it ever runs) treats its release as a no-op and
                 # cannot free the lock this new turn is about to take.
@@ -4468,6 +4487,9 @@ class ConversationalSession:
         with self._busy_meta:
             self._busy_gen += 1
             self._busy_since = _t.monotonic()
+            # A new turn owns the lock now; clear any stale interrupt intent so it
+            # can't trigger a spurious force-recovery against this healthy turn.
+            self._interrupt_requested = False
             return self._busy_gen
 
     def _release_busy(self, gen: int) -> None:

@@ -3113,7 +3113,11 @@ function ActivityGroup({
   }
 
   return (
-    <div className="my-1 w-full">
+    // Gentle fade+slide so a just-finished streaming bubble EASES into the
+    // collapsed "Investigated" box instead of snapping shut. The prior instant
+    // swap (tall standalone bubble -> one-line box) reflowed the transcript
+    // abruptly -- the "types out fast then disappears real fast and snappy" jump.
+    <div className="my-1 w-full animate-in fade-in slide-in-from-top-1 duration-200 ease-out">
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-panel2/20 border border-edge/30 hover:bg-panel2/40 transition text-[11px] text-muted w-fit select-none"

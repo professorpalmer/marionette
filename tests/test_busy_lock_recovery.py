@@ -97,3 +97,34 @@ def test_reaped_turn_release_cannot_steal_a_later_turns_lock(monkeypatch):
     s._release_busy(gen_b)
     assert s._busy.acquire(blocking=False) is True
     s._busy.release()
+
+
+def test_interrupt_recovers_lock_even_when_executing():
+    # The "stop a chat right as it runs tool calls" case: the interrupted turn is
+    # blocked in a subprocess so it never released _busy AND _state is still
+    # 'executing' (not idle). Without the interrupt flag the normal stale-recovery
+    # (which requires _state == 'idle') would NOT fire and the next message would
+    # wrongly error 'session busy'. An explicit interrupt() must let the next turn
+    # recover after a short grace.
+    s = _session()
+    s._busy.acquire(blocking=False)
+    s._busy_since = time.monotonic() - 1.0  # held 1s, past the 0.5s interrupt grace
+    s._state = "executing"  # still mid-tool, NOT idle
+    s.interrupt()           # user hit Stop
+
+    events = list(s.send("next message"))
+    busy = [e for e in events if e.kind == "error" and "busy" in str(e.data.get("error", ""))]
+    assert not busy, f"interrupt should have recovered the lock: {busy}"
+
+
+def test_no_interrupt_executing_lock_still_rejected():
+    # Without an explicit interrupt, a fresh executing turn must still reject
+    # re-entry (we didn't loosen recovery for the normal case).
+    s = _session()
+    s._busy.acquire(blocking=False)
+    s._busy_since = time.monotonic()  # just now
+    s._state = "executing"
+    # no interrupt() call
+    events = list(s.send("hello"))
+    busy = [e for e in events if e.kind == "error" and "busy" in str(e.data.get("error", ""))]
+    assert busy, "a genuinely in-flight (non-interrupted) turn must reject re-entry"
