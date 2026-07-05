@@ -183,6 +183,9 @@ def _compact_artifact(a: Any) -> dict:
         "claim", "decision", "risk", "check", "summary", "change",
         "report", "mitigation", "why", "result", "observation",
         "note", "detail", "message", "text", "body", "content",
+        # A degraded agentic worker parks its prose analysis in a verification
+        # artifact's stdout; read it so that text can be promoted to a finding.
+        "stdout",
     )
     headline = ""
     for _k in _headline_keys:
@@ -213,6 +216,48 @@ def _compact_artifact(a: Any) -> dict:
         # for a weak-model / bad-prompt degrade.
         "failure": str(payload.get("failure") or "") or None,
     }
+
+
+_SIGNAL_TYPES = frozenset({"finding", "risk", "decision"})
+
+
+def _promote_degraded_prose(compact: list) -> list:
+    """Rescue a swarm whose worker analyzed in PROSE instead of calling
+    submit_findings. When the agentic adapter's worker produces no structured
+    findings but real final_text, that text is parked in a VERIFICATION artifact's
+    stdout and marked degraded -- which the pilot digest treats as plumbing and
+    hides, so a swarm that did real analysis reads as 'completed without
+    structured findings'. If there are NO signal artifacts (finding/risk/decision)
+    but a verification artifact carries substantial prose, promote a copy of it to
+    a 'finding' so the analysis actually reaches the pilot/UI. Pure and
+    deterministic; leaves the originals intact.
+    """
+    try:
+        has_signal = any(str(a.get("type")) in _SIGNAL_TYPES
+                         and not a.get("empty_headline")
+                         and str(a.get("headline") or "").strip()
+                         for a in compact)
+        if has_signal:
+            return compact
+        promoted = list(compact)
+        for a in compact:
+            if str(a.get("type")) != "verification":
+                continue
+            text = str(a.get("headline") or "").strip()
+            # Only promote genuine prose analysis, not a one-word "passed"/"blocked".
+            if len(text) < 40:
+                continue
+            promoted.append({
+                "type": "finding",
+                "headline": text[:240],
+                "empty_headline": False,
+                "confidence": a.get("confidence"),
+                "failure": None,
+                "promoted_from": "verification",
+            })
+        return promoted
+    except Exception:
+        return compact
 
 
 def _auth_failure_note(compact: list) -> str:
@@ -364,6 +409,7 @@ def execute_intent(
 
         artifacts = list(result.artifacts)
         compact = _hoist_auth_risks([_compact_artifact(a) for a in artifacts])
+        compact = _promote_degraded_prose(compact)
         return BridgeResult(
             job_id=result.job.id,
             status=str(result.job.status),
