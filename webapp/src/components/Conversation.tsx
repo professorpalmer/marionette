@@ -3113,11 +3113,7 @@ function ActivityGroup({
   }
 
   return (
-    // Gentle fade+slide so a just-finished streaming bubble EASES into the
-    // collapsed "Investigated" box instead of snapping shut. The prior instant
-    // swap (tall standalone bubble -> one-line box) reflowed the transcript
-    // abruptly -- the "types out fast then disappears real fast and snappy" jump.
-    <div className="my-1 w-full animate-in fade-in slide-in-from-top-1 duration-200 ease-out">
+    <div className="my-1 w-full">
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-panel2/20 border border-edge/30 hover:bg-panel2/40 transition text-[11px] text-muted w-fit select-none"
@@ -3256,7 +3252,11 @@ function openMarkdownHref(href: string, e: React.MouseEvent): void {
   }
 }
 
-function Markdown({ text }: { text: string }) {
+// Memoized so a streaming bubble only re-parses when the text actually changes.
+// The typewriter re-renders the parent every animation frame; without this the
+// full remark/rehype pipeline would run each frame even when no character was
+// added. Restores formatted-while-streaming without the old ~40% CPU cost.
+const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -3336,7 +3336,7 @@ function Markdown({ text }: { text: string }) {
       {text}
     </ReactMarkdown>
   );
-}
+});
 
 function Bubble({
   msg,
@@ -3498,16 +3498,13 @@ function Bubble({
         <span className="text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-semibold mt-1">pilot</span>
       )}
       <div className={`text-[0.8125rem] leading-[1.7] break-words max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
-        {/* PERF: while the bubble is still STREAMING, render plain text -- the
-            typewriter re-renders this at ~60fps, and running the full ReactMarkdown
-            + remarkGfm + rehypeHighlight pipeline on a growing message every frame
-            was the dominant focused-state CPU cost (~40%). Syntax-highlighting
-            half-written code is noise anyway. We parse Markdown ONCE the moment
-            streaming finalizes (streaming flips to false), which looks identical
-            to the user. */}
-        {msg.streaming
-          ? <div className="whitespace-pre-wrap break-words">{displayedText}</div>
-          : <Markdown text={displayedText} />}
+        {/* Render Markdown even WHILE streaming so text types out formatted (code
+            stays fenced, bold/lists render) instead of showing raw markdown that
+            then reflows -- the "types out broken, then snaps" look. The <Markdown>
+            component is memoized on its text, so a typewriter frame that adds no
+            new characters does not re-parse; the earlier plain-text-while-streaming
+            optimization traded polish for CPU, which read as unprofessional. */}
+        <Markdown text={displayedText} />
         
         {/* Assistant copy & regenerate buttons */}
         <div className="absolute right-0 top-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 select-none">

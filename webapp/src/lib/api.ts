@@ -368,7 +368,22 @@ export const api = {
   // Durable src for an uploaded image: the composer's blob: preview URL is
   // revoked right after send, so sent-message thumbnails (and reloaded
   // transcripts) must load the saved file from disk via this tokened GET.
-  imageUrl: (path: string): string => withToken("/api/image?path=" + encodeURIComponent(path)),
+  // An <img> tag loads a raw browser resource -- it does NOT route through the
+  // Electron IPC transport the way getJSON/stream do. In the packaged app the
+  // renderer is served from file:// (win.loadFile), so a RELATIVE "/api/image"
+  // src resolves to file:///api/image and fails -> broken thumbnail. Build an
+  // ABSOLUTE backend URL using the port Electron injects as window.__HARNESS_PORT__
+  // (present on load and respawn), with the token in the query so the tag can
+  // authenticate (an <img> cannot send headers). Falls back to a relative,
+  // tokened path for the plain web build (served same-origin from the backend).
+  imageUrl: (path: string): string => {
+    const rel = withToken("/api/image?path=" + encodeURIComponent(path));
+    if (typeof window !== "undefined") {
+      const port = (window as any).__HARNESS_PORT__;
+      if (port) return `http://127.0.0.1:${port}${rel}`;
+    }
+    return rel;
+  },
   chat: (message: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void, plan: boolean = false, images?: string[]) => {
     // The chat stream is an SSE GET (EventSource is GET-only), so the message
     // normally rides in the URL query string. A large paste (e.g. a huge
