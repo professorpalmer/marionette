@@ -609,6 +609,32 @@ _memory = MemoryStore()
 _UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "harness-uploads")
 os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
+# Message stash: large chat/autopilot payloads cannot ride in the SSE GET's
+# query string (they'd blow past the HTTP request-line limit and get
+# silently dropped -- real data loss on a big paste). The client instead
+# POSTs the payload here first and hands the stream only a short id via
+# ?mid=. Small in-process dict, capped so a client that stashes-and-never-
+# consumes (e.g. an abandoned tab) can't leak memory forever.
+_CHAT_STASH: dict[str, dict] = {}
+_CHAT_STASH_MAX = 32
+
+
+def _stash_put(message: str, images=None) -> str:
+    mid = _secrets.token_hex(8)
+    _CHAT_STASH[mid] = {"message": message, "images": images or []}
+    # Evict oldest entries beyond the cap (insertion order == age in a dict).
+    while len(_CHAT_STASH) > _CHAT_STASH_MAX:
+        try:
+            _CHAT_STASH.pop(next(iter(_CHAT_STASH)))
+        except StopIteration:
+            break
+    return mid
+
+
+def _stash_pop(mid: str):
+    """Returns the stashed {'message', 'images'} dict, or None if unknown/expired."""
+    return _CHAT_STASH.pop(mid, None)
+
 # Per-process auth token (defense-in-depth). Written chmod-600 so the local
 # client (Electron main / served page) can read it; required on mutating
 # endpoints. Origin/Host validation below is the primary anti-RCE guard.
@@ -1023,6 +1049,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/session/interrupt", "/api/session/compact", "/api/session/steer",
                       "/api/session/queue", "/api/session/queue/reorder",
                       "/api/session/persist", "/api/restart",
+                      "/api/chat/stash",
                       "/api/swarm/cancel",
                       "/api/mcp/add", "/api/mcp/remove", "/api/mcp/start",
                       "/api/mcp/stop", "/api/mcp/call",
@@ -1627,6 +1654,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "missing title"}))
             ok = _sessions.rename(sid, title)
             return self._send(200, json.dumps({"ok": ok}))
+        if path == "/api/chat/stash":
+            # Companion to GET /api/chat's ?mid= param (see _CHAT_STASH above).
+            # A large paste or autopilot objective can't fit in the URL that
+            # EventSource requires for the SSE GET, so the client POSTs it
+            # here first and gets back a short id to reference instead.
+            message = body.get("message", "")
+            images = body.get("images") or []
+            if isinstance(images, str):
+                images = [p for p in images.split("|") if p]
+            if not message and not images:
+                return self._send(400, json.dumps({"error": "missing message"}))
+            mid = _stash_put(message, images)
+            return self._send(200, json.dumps({"id": mid}))
         if path == "/api/session/interrupt":
             _pilot.interrupt()
             return self._send(200, json.dumps({"ok": True}))
@@ -3179,9 +3219,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._stream_run(q.get("prompt", [""])[0], imgs)
         if u.path == "/api/chat":
             q = parse_qs(u.query)
+            # A stashed message (see POST /api/chat/stash) takes precedence: it
+            # exists precisely because the real message/images were too big for
+            # this URL. Falls back to the query-param message for small chats,
+            # keeping today's behavior unchanged when no ?mid= is present.
+            mid = q.get("mid", [""])[0]
+            raw_images = q.get("images", [""])[0]
+            message = q.get("message", [""])[0]
+            if mid:
+                stashed = _stash_pop(mid)
+                if stashed is not None:
+                    message = stashed.get("message", "")
+                    stashed_images = stashed.get("images") or []
+                    if stashed_images and not raw_images:
+                        raw_images = "|".join(stashed_images)
+                # unknown/expired mid: fall through gracefully with whatever
+                # message/images (if any) were also on the query string.
             imgs = []
             upload_dir_real = os.path.realpath(_UPLOAD_DIR)
-            for p in q.get("images", [""])[0].split("|"):
+            for p in raw_images.split("|"):
                 if not p:
                     continue
                 real_p = os.path.realpath(p)
@@ -3194,7 +3250,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
             plan_val = q.get("plan", ["false"])[0].lower() in ("true", "1", "yes")
             resume_val = q.get("resume", ["false"])[0].lower() in ("true", "1", "yes")
-            return self._stream_chat(q.get("message", [""])[0], imgs, plan=plan_val, resume=resume_val)
+            return self._stream_chat(message, imgs, plan=plan_val, resume=resume_val)
         if u.path == "/api/terminal/stream":
             q = parse_qs(u.query)
             return self._stream_terminal(q.get("id", [""])[0])
@@ -3316,7 +3372,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(_sessions.list()))
         if u.path == "/api/auto":
             q = parse_qs(u.query)
-            return self._stream_auto(q.get("objective", [""])[0])
+            objective = q.get("objective", [""])[0]
+            mid = q.get("mid", [""])[0]
+            if mid:
+                stashed = _stash_pop(mid)
+                if stashed is not None:
+                    objective = stashed.get("message", "")
+            return self._stream_auto(objective)
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _stream_run(self, prompt: str, images=None):

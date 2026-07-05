@@ -307,6 +307,11 @@ export type ContextUsageResponse = {
   categories: ContextCategory[];
 };
 
+// Above this many characters, a chat message / autopilot objective is routed
+// through POST /api/chat/stash instead of the SSE GET's query string -- see
+// api.chat() for why (URL length limits silently drop large pastes).
+const CHAT_STASH_THRESHOLD = 4000;
+
 export const api = {
   providers: () => getJSON<ProviderInfo[]>("/api/providers"),
   probeProvider: (provider: string) => postJSON<ProbeResult>("/api/providers/probe", { provider }),
@@ -361,11 +366,39 @@ export const api = {
     return saved[0];
   },
   chat: (message: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void, plan: boolean = false, images?: string[]) => {
-    let url = `/api/chat?message=${encodeURIComponent(message)}${plan ? "&plan=true" : ""}`;
-    if (images && images.length > 0) {
-      url += `&images=${encodeURIComponent(images.join("|"))}`;
+    // The chat stream is an SSE GET (EventSource is GET-only), so the message
+    // normally rides in the URL query string. A large paste (e.g. a huge
+    // transcript) can push that URL past the HTTP request-line limit and the
+    // request gets silently rejected -- the message never reaches the backend
+    // and never appears in the chat. Route anything sizeable through a POST
+    // "stash" first (see harness /api/chat/stash) and hand the stream only a
+    // short id via ?mid= instead. Small messages keep the original, simpler
+    // query-param path unchanged.
+    const imagesStr = images && images.length > 0 ? images.join("|") : "";
+    const needsStash = message.length > CHAT_STASH_THRESHOLD || imagesStr.length > CHAT_STASH_THRESHOLD;
+    let cancelled = false;
+    let cancelStream: (() => void) | null = null;
+    const startStream = (url: string) => {
+      if (cancelled) return;
+      cancelStream = stream(url, onEvent, onDone, onError);
+    };
+    if (needsStash) {
+      postJSON<{ id: string }>("/api/chat/stash", { message, images: images || [] })
+        .then((res) => {
+          startStream(`/api/chat?mid=${encodeURIComponent(res.id)}${plan ? "&plan=true" : ""}`);
+        })
+        .catch((e) => onError?.(e));
+    } else {
+      let url = `/api/chat?message=${encodeURIComponent(message)}${plan ? "&plan=true" : ""}`;
+      if (imagesStr) {
+        url += `&images=${encodeURIComponent(imagesStr)}`;
+      }
+      startStream(url);
     }
-    return stream(url, onEvent, onDone, onError);
+    return () => {
+      cancelled = true;
+      cancelStream?.();
+    };
   },
   // Keep-alive continuation: generate a pilot turn off existing history (no new
   // user message). Fired when a background swarm finishes so the pilot assesses
@@ -395,8 +428,25 @@ export const api = {
   memory: () => getJSON<{ memory: { id: string; text: string; category: string; created_at: number; source: string }[]; total_chars: number; limit: number }>("/api/memory"),
   memoryAdd: (text: string, category?: string) => postJSON<{ id: string; text: string; category: string }>("/api/memory/add", { text, category }),
   memoryRemove: (id: string) => postJSON<{ ok: boolean }>("/api/memory/remove", { id }),
-  auto: (objective: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void) =>
-    stream(`/api/auto?objective=${encodeURIComponent(objective)}`, onEvent, onDone, onError),
+  auto: (objective: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void) => {
+    // Same URL-length hazard as chat() (autopilot objective can be a large
+    // pasted brief) -- route big ones through the stash, small ones inline.
+    if (objective.length > CHAT_STASH_THRESHOLD) {
+      let cancelled = false;
+      let cancelStream: (() => void) | null = null;
+      postJSON<{ id: string }>("/api/chat/stash", { message: objective })
+        .then((res) => {
+          if (cancelled) return;
+          cancelStream = stream(`/api/auto?mid=${encodeURIComponent(res.id)}`, onEvent, onDone, onError);
+        })
+        .catch((e) => onError?.(e));
+      return () => {
+        cancelled = true;
+        cancelStream?.();
+      };
+    }
+    return stream(`/api/auto?objective=${encodeURIComponent(objective)}`, onEvent, onDone, onError);
+  },
   exportUrl: (sessionId: string, format: "md" | "json") =>
     withToken(`/api/sessions/export?session=${encodeURIComponent(sessionId)}&format=${format}`),
 
