@@ -353,6 +353,11 @@ class ConversationalSession:
         self._tokens_in: int = 0   # cumulative prompt tokens (for accurate cost)
         self._tokens_out: int = 0  # cumulative completion tokens
         self._tokens_cached: int = 0  # cumulative prompt tokens served from cache
+        # Most recent turn's REAL prompt (input) token count, as billed by the
+        # driver for the current history. 0 until a real response is metered;
+        # used to make the live context estimate track reality instead of the
+        # chars//4 heuristic (see _estimate_context_tokens).
+        self._last_prompt_tokens: int = 0
         # concurrency: a single ConversationalSession is single-flight. Two
         # concurrent send()/run_auto() calls would interleave self._history and
         # corrupt the transcript, so we reject re-entrant streams rather than
@@ -696,7 +701,23 @@ class ConversationalSession:
         return (total_chars // 4) + total_overhead
 
     def _estimate_context_tokens(self) -> int:
-        return self._estimate_context_tokens_for_list(self._history)
+        # Prefer the driver's REAL last prompt-token count when available; the
+        # chars//4 heuristic (below) can UNDER-count code / tool-arg-heavy
+        # content (which tokenizes denser than 4 chars/token), which would trip
+        # the 75% compaction trigger too LATE and risk context overflow.
+        #
+        # Use max() rather than trusting either alone: the real count reflects
+        # the last billed turn but the history may have grown since, so the
+        # heuristic can be the larger (fresher) number. Taking the greater of
+        # the two biases toward safety -- we never under-estimate, only ever
+        # compact slightly early with a small safety margin.
+        heuristic = self._estimate_context_tokens_for_list(self._history)
+        real = int(getattr(self, "_last_prompt_tokens", 0) or 0)
+        if real > 0:
+            return max(real, heuristic)
+        # Offline / no real usage yet: fall back to the char heuristic so tests
+        # and pre-first-turn state still behave deterministically.
+        return heuristic
 
     def _find_safe_split(self, start_idx: int) -> int:
         split_idx = start_idx
@@ -790,7 +811,7 @@ class ConversationalSession:
             else:
                 conversation_tokens += msg_tokens
                 
-        total_tokens = (
+        heuristic_total = (
             system_prompt_tokens +
             tool_definitions_tokens +
             rules_tokens +
@@ -799,6 +820,12 @@ class ConversationalSession:
             summarized_tokens +
             conversation_tokens
         )
+        # Prefer the driver's REAL last prompt-token count so the composer's
+        # context-usage % matches the actual billed context, not a chars//4
+        # estimate. Mirror _estimate_context_tokens: take the greater of the
+        # real number and the heuristic so we never under-report usage.
+        real_total = int(getattr(self, "_last_prompt_tokens", 0) or 0)
+        total_tokens = max(real_total, heuristic_total) if real_total > 0 else heuristic_total
         
         categories = [
             {"name": "System prompt", "tokens": system_prompt_tokens},
@@ -2000,6 +2027,11 @@ class ConversationalSession:
                 self._tokens_used += _t_out + _t_in
                 self._tokens_out += _t_out
                 self._tokens_in += _t_in
+                # Remember this turn's REAL prompt size so the live context
+                # estimate (compaction trigger + composer % meter) can prefer
+                # the driver's actual number over the chars//4 heuristic.
+                if _t_in > 0:
+                    self._last_prompt_tokens = _t_in
                 # Cache-read credit: all three drivers report prompt-prefix cache
                 # hits (Anthropic breakpoints / OpenAI + Gemini implicit) in
                 # meta.cache_read_tokens. Accumulate so the UI can show how much
@@ -4020,13 +4052,18 @@ class ConversationalSession:
                 # Single-worker / provider-worker jobs previously recorded tokens
                 # but never a cost, so the tracker showed $0 for them (only
                 # multi-worker store jobs, which sum ROUTING artifact costs, had a
-                # price). Derive an estimate from tokens x the driver model's
-                # blended per-token price so every job carries a cost.
+                # price). Derive an estimate from the driver model's real prices.
+                # These jobs only carry a single combined `tokens` total (no
+                # in/out split), so we price it at the OUTPUT rate rather than a
+                # 50/50 blend: completion tokens run 3-5x input and dominate cost,
+                # so a blend systematically under-prices output-heavy jobs. This
+                # matches the /api/usage session fallback (_job_cost/_session_cost).
                 try:
                     from pmharness.registry import resolve_price
+                    from harness.server import _job_cost
                     price_in, price_out = resolve_price(self.config.driver)
-                    blended = (float(price_in) + float(price_out)) / 2.0
-                    job["est_cost_usd"] = round(tokens / 1_000_000.0 * blended, 6)
+                    job["est_cost_usd"] = round(
+                        _job_cost(0, 0, tokens, price_in, price_out), 6)
                 except Exception:
                     pass
             if job.get("tasks"):
@@ -4170,12 +4207,24 @@ class ConversationalSession:
                 )
 
             if not res.ok:
+                # A worker that produced NO patch ("no changes produced" /
+                # degrade path) still SPENT tokens exploring -- read the real
+                # counts off the result instead of hard-coding 0, so the job
+                # surfaces its true cost in the tracker (previously these jobs
+                # showed no price at all while normal completions did).
+                _nc_t_in = int(getattr(res, "tokens_in", 0) or 0)
+                _nc_t_out = int(getattr(res, "tokens_out", 0) or 0)
+                if _nc_t_in or _nc_t_out:
+                    with self._apply_lock:
+                        self._tokens_used += _nc_t_out + _nc_t_in
+                        self._tokens_in += _nc_t_in
+                        self._tokens_out += _nc_t_out
                 res_dict = {
                     "job_id": job_id,
                     "applied": False,
                     "files": [],
-                    "tokens_in": 0,
-                    "tokens_out": 0,
+                    "tokens_in": _nc_t_in,
+                    "tokens_out": _nc_t_out,
                     "summary": res.summary or res.error or "Worker failed to produce patch",
                     "error": res.error,
                     "artifacts": [],
@@ -4199,10 +4248,14 @@ class ConversationalSession:
                 tokens_out = res.tokens_out
                 with self._apply_lock:
                     # Attribute the worker's FULL spend (prompt + completion) to
-                    # the parent session's cost meter -- prompt tokens were being
-                    # dropped here, undercounting every implement worker.
+                    # the parent session's cost meter. Track _tokens_out too, not
+                    # just _tokens_in: the cost accounting prices output at the
+                    # (higher) completion rate, so dropping _tokens_out here made
+                    # implement-worker output get billed at the cheaper input
+                    # rate -- undercounting every implement worker's real cost.
                     self._tokens_used += tokens_out + tokens_in
                     self._tokens_in += tokens_in
+                    self._tokens_out += tokens_out
                 
                 patch_summary = ""
                 if res.files_changed:

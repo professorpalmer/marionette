@@ -35,6 +35,52 @@ from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_
 from .diag import note as _diag
 
 
+# Prompt-cache reads are billed at a steep discount vs fresh input tokens:
+# Anthropic prompt caching and OpenAI/Gemini cached-input reads are ~10% of the
+# normal input price. We meter cache_read_tokens separately (see
+# ConversationalSession) and re-bill that slice at this multiplier instead of
+# the full input rate. 0.1 is the published cache-read ratio and is
+# conservative (some providers go lower), so we never *under*-count spend.
+CACHE_READ_MULTIPLIER = 0.1
+
+
+def _session_cost(t_in: float, t_out: float, cached: float,
+                  price_in: float, price_out: float) -> float:
+    """Deterministic session cost from tokens + per-Mtok prices.
+
+    Cached prompt tokens are a subset of ``t_in`` and are billed at the
+    cache-read discount rather than full input price. Falls back to pricing the
+    whole total at ``price_out`` when no in/out split is available (completion
+    dominates cost, so this is the least-wrong single-rate estimate)."""
+    if t_in or t_out:
+        cached = max(0.0, min(float(cached), float(t_in)))
+        uncached_in = max(0.0, float(t_in) - cached)
+        return ((uncached_in / 1.0e6) * price_in
+                + (cached / 1.0e6) * price_in * CACHE_READ_MULTIPLIER
+                + (float(t_out) / 1.0e6) * price_out)
+    # No split tracked: price the combined total at the output rate.
+    total = float(t_in) + float(t_out)
+    return (total / 1.0e6) * price_out
+
+
+def _cache_savings(cached: float, price_in: float) -> float:
+    """USD saved by billing ``cached`` prompt tokens at the cache-read discount
+    instead of the full input price."""
+    return (float(cached) / 1.0e6) * price_in * (1.0 - CACHE_READ_MULTIPLIER)
+
+
+def _job_cost(tokens_in: float, tokens_out: float, tokens_total: float,
+              price_in: float, price_out: float) -> float:
+    """Deterministic per-job cost. Uses the real in/out split when the job
+    carries it; otherwise prices the single ``tokens`` total at ``price_out``
+    (completion tokens dominate cost, matching the session fallback) rather than
+    a naive 50/50 blend that mis-prices output-heavy jobs."""
+    if tokens_in or tokens_out:
+        return ((float(tokens_in) / 1.0e6) * price_in
+                + (float(tokens_out) / 1.0e6) * price_out)
+    return (float(tokens_total) / 1.0e6) * price_out
+
+
 def _get_platform_json_path() -> str:
     override = os.environ.get("TEST_PLATFORM_JSON_PATH")
     if override:
@@ -2826,14 +2872,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 price_in, price_out = 0.5, 2.0
             tokens_used = getattr(_pilot, "_tokens_used", 0)
-            # Accurate split: input tokens at price_in, output at price_out. Falls
-            # back to a blended estimate if the in/out split isn't tracked yet.
+            # Accurate split: input tokens at price_in, output at price_out, with
+            # cached prompt tokens re-billed at the cache-read discount. Falls
+            # back to a single-rate estimate if the in/out split isn't tracked.
             _t_in = getattr(_pilot, "_tokens_in", 0)
             _t_out = getattr(_pilot, "_tokens_out", 0)
-            if _t_in or _t_out:
-                est_session_cost = (_t_in / 1.0e6) * price_in + (_t_out / 1.0e6) * price_out
-            else:
-                est_session_cost = (tokens_used / 1.0e6) * price_out
+            _t_cached = int(getattr(_pilot, "_tokens_cached", 0) or 0)
+            est_session_cost = _session_cost(_t_in, _t_out, _t_cached, price_in, price_out)
+            _cache_savings_usd = _cache_savings(_t_cached, price_in)
             jobs_list = []
             try:
                 from puppetmaster.models import ArtifactType
@@ -2889,7 +2935,11 @@ class Handler(BaseHTTPRequestHandler):
                     "est_cost_usd": round(est_session_cost, 6),
                     "driver": _cfg.driver,
                     "price_in": price_in,
-                    "price_out": price_out
+                    "price_out": price_out,
+                    # Prompt-cache hits (billed at the cache-read discount) and
+                    # the USD that discount saved vs full input price.
+                    "tokens_cached": _t_cached,
+                    "cache_savings_usd": round(_cache_savings_usd, 6),
                 },
                 "jobs": jobs_list
             }
@@ -3015,23 +3065,25 @@ class Handler(BaseHTTPRequestHandler):
                 _diag("server.jobs_list_merge_local", e)
             
             tokens_used = getattr(_pilot, "_tokens_used", 0)
-            # Accurate split: input tokens at price_in, output at price_out. Falls
-            # back to a blended estimate if the in/out split isn't tracked yet.
+            # Accurate split: input tokens at price_in, output at price_out, with
+            # cached prompt tokens re-billed at the cache-read discount. Falls
+            # back to a single-rate estimate if the in/out split isn't tracked.
             _t_in = getattr(_pilot, "_tokens_in", 0)
             _t_out = getattr(_pilot, "_tokens_out", 0)
-            if _t_in or _t_out:
-                est_session_cost = (_t_in / 1.0e6) * price_in + (_t_out / 1.0e6) * price_out
-            else:
-                est_session_cost = (tokens_used / 1.0e6) * price_out
+            _t_cached = int(getattr(_pilot, "_tokens_cached", 0) or 0)
+            est_session_cost = _session_cost(_t_in, _t_out, _t_cached, price_in, price_out)
+            _cache_savings_usd = _cache_savings(_t_cached, price_in)
             
             response_data = {
                 "session": {
                     "tokens_used": tokens_used,
                     "est_cost_usd": round(est_session_cost, 6),
                     "driver": _cfg.driver,
-                    # Prompt-cache hits (near-free input) so the UI can show how
-                    # much was cached -- proof the harness is not token-hungry.
-                    "tokens_cached": int(getattr(_pilot, "_tokens_cached", 0) or 0),
+                    # Prompt-cache hits (billed at the cache-read discount) so the
+                    # UI can show how much input was served near-free -- proof the
+                    # harness is not token-hungry -- plus the USD it saved.
+                    "tokens_cached": _t_cached,
+                    "cache_savings_usd": round(_cache_savings_usd, 6),
                 },
                 "jobs": res_jobs
             }

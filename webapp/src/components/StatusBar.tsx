@@ -11,7 +11,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
   onToggleLeft: () => void; onToggleRight: () => void;
 }) {
   const [branch, setBranch] = useState("");
-  const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number; tokens_cached?: number } | null>(null);
+  const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number; tokens_cached?: number; cache_savings_usd?: number } | null>(null);
   const [update, setUpdate] = useState<{ behind: number; branch: string; version: string } | null>(null);
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -97,6 +97,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
             tokens_used: data.session.tokens_used,
             est_cost_usd: data.session.est_cost_usd,
             tokens_cached: (data.session as { tokens_cached?: number }).tokens_cached,
+            cache_savings_usd: (data.session as { cache_savings_usd?: number }).cache_savings_usd,
           });
         }
       })
@@ -157,8 +158,18 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
             <Coins size={10} className="text-faint" />
             <span>{formatTokens(usage.tokens_used)} tok</span>
             {usage.tokens_cached && usage.tokens_cached > 0 ? (
-              <span className="text-accent/80" title="Prompt tokens served from cache (near-free input)">
+              <span
+                className="text-accent/80"
+                title={`Prompt tokens served from cache (near-free input)${
+                  usage.cache_savings_usd && usage.cache_savings_usd > 0
+                    ? ` -- saved ~${formatCost(usage.cache_savings_usd)} vs no caching`
+                    : ""
+                }`}
+              >
                 {formatTokens(usage.tokens_cached)} cached
+                {usage.cache_savings_usd && usage.cache_savings_usd > 0
+                  ? ` (~${formatCost(usage.cache_savings_usd)} saved)`
+                  : ""}
               </span>
             ) : null}
             <span className="text-good font-medium">~{formatCost(usage.est_cost_usd)}</span>
