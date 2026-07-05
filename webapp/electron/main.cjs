@@ -870,10 +870,24 @@ app.whenReady().then(async () => {
 });
 
 function cleanupBackend() {
+  // Tear the backend down on a REAL quit so the next launch always starts a fresh
+  // backend running the latest code. Two things matter for the "Cmd+Q then reopen
+  // picks up my changes" workflow:
+  //   1. Remove the marker FIRST -- startBackend adopts any healthy backend it
+  //      finds on the marker port, so a lingering survivor would be reused (old
+  //      code). No marker => reopen can only spawn fresh.
+  //   2. SIGTERM, then SIGKILL after a short grace, so a backend that is slow to
+  //      exit (mid tool call / draining) can never survive into the next session.
+  try { fs.unlinkSync(markerPath()); } catch {}
   if (backend) {
-    try { fs.unlinkSync(markerPath()); } catch {}
-    backend.kill();
+    const b = backend;
     backend = null;
+    try { b.kill("SIGTERM"); } catch {}
+    // Escalate if it hasn't exited promptly. On quit the event loop is tearing
+    // down, so keep the grace short; the SIGKILL is a safety net, not the norm.
+    try {
+      setTimeout(() => { try { if (!b.killed) b.kill("SIGKILL"); } catch {} }, 800);
+    } catch {}
   }
 }
 app.on("window-all-closed", () => {
