@@ -1412,6 +1412,35 @@ class ConversationalSession:
         if combined:
             self.enqueue_steer(combined)
 
+    def _humanize_pilot_error(self, raw: str) -> str:
+        """Turn a raw provider error into a clear, actionable one-liner.
+
+        The most common confusing case: the selected model is not on the user's
+        key/plan (e.g. a new model an enterprise key hasn't been granted). The
+        provider returns a terse 400/404 that reads as "something broke." Detect
+        that shape and name the real cause + the fix (switch model or use a key
+        that includes it), so a less-technical user isn't lost.
+        """
+        s = str(raw or "")
+        low = s.lower()
+        model = getattr(self, "config", None) and getattr(self.config, "driver", "") or ""
+        # Model not available / not authorized for this key or plan.
+        if (("not_found" in low or "404" in low or "does not exist" in low
+             or "model" in low and ("not found" in low or "no access" in low
+                                    or "not authorized" in low or "unavailable" in low
+                                    or "not permitted" in low or "invalid model" in low
+                                    or "does not have access" in low))):
+            m = f" '{model}'" if model else ""
+            return (f"pilot: the selected model{m} isn't available on your current "
+                    f"API key or plan. Switch to a model your key includes (model "
+                    f"picker, bottom bar), or use a key that grants access to it. "
+                    f"[provider said: {s[:200]}]")
+        # Auth/credential problems.
+        if "401" in low or "invalid_api_key" in low or "authentication" in low or "unauthorized" in low:
+            return (f"pilot: your API key was rejected (authentication failed). "
+                    f"Check the key for this provider in Settings. [provider said: {s[:200]}]")
+        return f"pilot: {s}"
+
     def enqueue_steer(self, text: str) -> None:
         """Append an out-of-band user message."""
         with self._steer_lock:
@@ -2078,7 +2107,7 @@ class ConversationalSession:
                 break
 
             if resp and resp.error:
-                yield ConvEvent("error", {"error": f"pilot: {resp.error}"})
+                yield ConvEvent("error", {"error": self._humanize_pilot_error(resp.error)})
                 return
 
             is_native = False

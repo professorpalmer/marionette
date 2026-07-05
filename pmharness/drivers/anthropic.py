@@ -230,11 +230,22 @@ class AnthropicDriver:
         # the conversation grows.
         if self.enable_prompt_cache and anthropic_msgs:
             def _mark(msg: dict) -> None:
+                # Anthropic rejects cache_control on EMPTY text blocks (400
+                # "cache_control cannot be set for empty text blocks"). Only mark
+                # a block that carries real content, and skip whitespace-only
+                # text entirely -- otherwise the whole request 400s.
                 content = msg.get("content")
                 if isinstance(content, list) and content:
-                    if isinstance(content[-1], dict):
-                        content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+                    last = content[-1]
+                    if isinstance(last, dict):
+                        # A text block must be non-empty; non-text blocks
+                        # (tool_use / tool_result / image) can carry the marker.
+                        if last.get("type") == "text" and not str(last.get("text") or "").strip():
+                            return
+                        content[-1] = {**last, "cache_control": {"type": "ephemeral"}}
                 elif isinstance(content, str):
+                    if not content.strip():
+                        return  # never mark an empty string block
                     msg["content"] = [{"type": "text", "text": content,
                                        "cache_control": {"type": "ephemeral"}}]
             # Stable prefix breakpoint (second-to-last message): this position was
