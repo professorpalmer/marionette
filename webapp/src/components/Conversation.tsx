@@ -3494,7 +3494,16 @@ function Bubble({
         <span className="text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-semibold mt-1">pilot</span>
       )}
       <div className={`text-[0.8125rem] leading-[1.7] break-words max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
-        <Markdown text={displayedText} />
+        {/* PERF: while the bubble is still STREAMING, render plain text -- the
+            typewriter re-renders this at ~60fps, and running the full ReactMarkdown
+            + remarkGfm + rehypeHighlight pipeline on a growing message every frame
+            was the dominant focused-state CPU cost (~40%). Syntax-highlighting
+            half-written code is noise anyway. We parse Markdown ONCE the moment
+            streaming finalizes (streaming flips to false), which looks identical
+            to the user. */}
+        {msg.streaming
+          ? <div className="whitespace-pre-wrap break-words">{displayedText}</div>
+          : <Markdown text={displayedText} />}
         
         {/* Assistant copy & regenerate buttons */}
         <div className="absolute right-0 top-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 select-none">
