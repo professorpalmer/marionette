@@ -27,6 +27,9 @@ class HarnessConfig:
     # check when set.
     auto_verify: bool = True
     verify_command: str = ""
+    # Native browser / computer-use tools (raw CDP over local Chrome). Enabled
+    # by default; set HARNESS_BROWSER_ENABLED=0 to hide the browser_* tools.
+    browser_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "HarnessConfig":
@@ -106,4 +109,5 @@ class HarnessConfig:
             verify_cmd=pick("HARNESS_VERIFY_CMD", "verify_cmd", ""),
             auto_verify=str(pick("HARNESS_AUTO_VERIFY", "auto_verify", "true")).strip() in ("1","true","yes","True"),
             verify_command=pick("HARNESS_VERIFY_COMMAND", "verify_command", ""),
+            browser_enabled=str(pick("HARNESS_BROWSER_ENABLED", "browser_enabled", "true")).strip() in ("1","true","yes","True"),
         )

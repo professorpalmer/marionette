@@ -54,6 +54,30 @@ def _analyze_max_turns() -> int:
         return 40
 
 
+def _browser_swarm_enabled(goal: str) -> bool:
+    """Whether a swarm worker should get the CDP browser toolset. Opt in either
+    explicitly (HARNESS_SWARM_BROWSER=1) or when the goal reads as a
+    live-site/browser task (navigate a URL, inspect a rendered page, etc.).
+
+    Read-only analysis workers are code-inspection by default; browsing a live
+    site is a distinct, opt-in capability. The agentic adapter's own
+    _browser_enabled gate honors payload['allow_browser'], so setting that flag
+    is all the bridge has to do to unlock browser_* tools for the worker."""
+    import os as _os
+    if _os.environ.get("HARNESS_SWARM_BROWSER", "").strip() in ("1", "true", "yes"):
+        return True
+    g = (goal or "").lower()
+    # A URL in the goal, or explicit browser verbs, signal a live-page task.
+    if "http://" in g or "https://" in g:
+        return True
+    signals = (
+        "browser", "browse ", "navigate to", "open the page", "open the site",
+        "open the url", "the website", "live site", "rendered page",
+        "screenshot of", "click the", "on the page",
+    )
+    return any(s in g for s in signals)
+
+
 def _analysis_capability_payload() -> dict:
     """Cap the capability the analysis swarm asks for so the router lands on a
     balanced mid-tier model (sonnet / gemini-pro) instead of first-picking the
@@ -75,12 +99,30 @@ def _analysis_capability_payload() -> dict:
     return {"min_capability": max(0, min(100, ceiling))}
 
 
-def _analysis_instruction(goal: str, repo_cwd: str, role: str) -> str:
+def _analysis_instruction(goal: str, repo_cwd: str, role: str,
+                          *, browser: bool = False) -> str:
     """Build a read-only analysis worker's instruction from the shared goal plus
     the role's lens, so a multi-role swarm fans out into distinct investigations
-    rather than N identical passes over the same goal."""
+    rather than N identical passes over the same goal.
+
+    When ``browser`` is set the worker is told it has the live browser toolset
+    (browser_navigate/browser_snapshot/browser_get_text/...) so a live-site task
+    drives a real page instead of only reading source. Browsing stays read-only:
+    it must not edit, create, or delete files."""
     lens = ROLE_LENSES.get(role, "")
     lens_line = f"\n\n{lens}" if lens else ""
+    if browser:
+        return (
+            f"{goal}{lens_line}\n\nYou have a real headless browser. Use the "
+            f"browser tools to complete this: browser_navigate(url) to open a "
+            f"page, then browser_snapshot() to list interactable elements with "
+            f"@e-style refs, browser_get_text() for the readable page text, and "
+            f"browser_click/browser_type/browser_scroll/browser_back as needed. "
+            f"This is READ-ONLY: do not edit, create, or delete any files, and "
+            f"do not submit credentials or perform destructive actions on the "
+            f"site. Emit what each browser tool returned as evidenced findings, "
+            f"then ALWAYS call submit_findings before you run out of turns."
+        )
     return (
         f"{goal}{lens_line}\n\nAnalyze the REAL codebase at {repo_cwd}. "
         f"Emit evidenced findings/risks/decisions as artifacts. This is "
@@ -348,16 +390,25 @@ def execute_intent(
             _warn_if_unindexed(repo_cwd)
             from puppetmaster.workers import WorkerSpec
             roles = intent.roles or infer_roles(intent.goal)
+            _browser = _browser_swarm_enabled(intent.goal)
             specs = []
             for r in roles:
                 specs.append(WorkerSpec(
                     role=r,
-                    instruction=_analysis_instruction(intent.goal, repo_cwd, r),
+                    instruction=_analysis_instruction(
+                        intent.goal, repo_cwd, r, browser=_browser),
                     adapter="agentic",
                     payload={
                         "read_only": True, "no_edit": True, "dry_run": True,
                         "cwd": repo_cwd, "prompt": intent.goal,
                         "auto_route": True,
+                        # Opt this worker into the CDP browser toolset. The
+                        # agentic adapter's _browser_enabled gate reads this flag
+                        # and registers/dispatches the browser_* tools; without
+                        # it the worker is code-inspection only (the reason a
+                        # browser goal previously came back with no browser
+                        # tools). Read-only stays true: browsing is not editing.
+                        "allow_browser": _browser,
                         # Extra turn headroom so broad-audit workers submit
                         # findings instead of starving out at max_turns.
                         "max_turns": _analyze_max_turns(),

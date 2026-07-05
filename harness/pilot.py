@@ -37,7 +37,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project"}
+VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project",
+                      "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
+                      "browser_scroll", "browser_back", "browser_get_text", "browser_screenshot"}
 
 
 @dataclass
@@ -63,6 +65,10 @@ class PilotAction:
     memory_content: str = ""
     memory_id: str = ""
     memory_category: str = "general"
+    # Browser tools: element ref (@e3), text to type, scroll direction.
+    ref: str = ""
+    text: str = ""
+    direction: str = ""
     start_line: Optional[int] = None
     limit: Optional[int] = None
 
@@ -171,7 +177,7 @@ def _coerce_actions(raw_actions) -> list:
     return actions
 
 
-def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = False) -> list:
+def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = False, browser_enabled: bool = True) -> list:
     schema = []
 
     # open_project
@@ -525,6 +531,93 @@ def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = F
         }
     })
 
+    # Native browser / computer-use tools (raw CDP over local Chrome).
+    # Model workflow: browser_navigate -> browser_snapshot (to get @e refs) ->
+    # browser_click / browser_type on those refs.
+    if browser_enabled:
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "browser_navigate",
+                "description": "Open a URL in a real Chrome browser (native, not via MCP). Navigates and returns the page title/url. After navigating, call browser_snapshot to get element refs before interacting.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"url": {"type": "string", "description": "The URL to open (http/https)."}},
+                    "required": ["url"]
+                }
+            }
+        })
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "browser_snapshot",
+                "description": "Return a compact accessibility-tree snapshot of the current page, assigning stable ref ids (@e1, @e2, ...) to interactable elements (links, buttons, inputs) with their role and name. ALWAYS call this before browser_click/browser_type so you have current refs.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        })
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "browser_click",
+                "description": "Click the element identified by a ref (e.g. @e3) from the latest browser_snapshot.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"ref": {"type": "string", "description": "Element ref like @e3 from browser_snapshot."}},
+                    "required": ["ref"]
+                }
+            }
+        })
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "browser_type",
+                "description": "Focus the element for a ref (e.g. @e5) and type text into it. Get the ref from browser_snapshot first.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ref": {"type": "string", "description": "Element ref like @e5 from browser_snapshot."},
+                        "text": {"type": "string", "description": "The text to type."}
+                    },
+                    "required": ["ref", "text"]
+                }
+            }
+        })
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "browser_scroll",
+                "description": "Scroll the current page up or down.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"direction": {"type": "string", "enum": ["up", "down"], "description": "Scroll direction."}}
+                }
+            }
+        })
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "browser_back",
+                "description": "Navigate back to the previous page in browser history.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        })
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "browser_get_text",
+                "description": "Return the main readable text of the current page (document body innerText, truncated).",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        })
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "browser_screenshot",
+                "description": "Capture a PNG screenshot of the current page and save it; returns the file path (use view_image to look at it).",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        })
+
     # MCP tools
     if mcp_tools:
         for tool in mcp_tools:
@@ -623,6 +716,10 @@ def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> Pilot
             memory_category=memory_category,
             start_line=start_line,
             limit=limit,
+            # Browser tool args (url reused from above).
+            ref=(args.get("ref") or "").strip(),
+            text=(args.get("text") or args.get("value") or "").strip() if kind == "browser_type" else "",
+            direction=(args.get("direction") or "").strip(),
             arguments=args,
             tool_call_id=tool_call_id
         ).validate()
