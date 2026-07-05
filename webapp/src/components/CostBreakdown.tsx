@@ -1,0 +1,89 @@
+// CostBreakdown -- a compact, presentational cost popover for the StatusBar.
+//
+// It turns Marionette's per-task model routing into a visible value prop:
+// "why this model / what it saved". It consumes ONLY fields already served by
+// /api/usage (est_cost_usd, cache_savings_usd, price_in, price_out,
+// tokens_used, tokens_cached) and degrades gracefully -- any field that is
+// absent or zero simply renders nothing rather than "$0.000000" noise or NaN.
+
+export type CostBreakdownData = {
+  tokens_used: number;
+  est_cost_usd: number;
+  tokens_cached?: number;
+  cache_savings_usd?: number;
+  price_in?: number;
+  price_out?: number;
+};
+
+// Local formatter so this subcomponent stays self-contained. Mirrors the
+// StatusBar cost formatting (coarser as the number grows) but never emits a
+// bare "$0.00" for a value that is meaningfully zero -- callers gate on that.
+function fmtCost(num: number): string {
+  if (!isFinite(num) || num <= 0) return "$0.00";
+  if (num < 0.001) return `$${num.toFixed(4)}`;
+  if (num < 0.01) return `$${num.toFixed(3)}`;
+  return `$${num.toFixed(2)}`;
+}
+
+function fmtTokens(num: number): string {
+  if (!isFinite(num) || num <= 0) return "0";
+  if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+  return String(num);
+}
+
+export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
+  const est = isFinite(data.est_cost_usd) ? data.est_cost_usd : 0;
+  const cacheSavings =
+    typeof data.cache_savings_usd === "number" && isFinite(data.cache_savings_usd) && data.cache_savings_usd > 0
+      ? data.cache_savings_usd
+      : 0;
+  const cached =
+    typeof data.tokens_cached === "number" && isFinite(data.tokens_cached) && data.tokens_cached > 0
+      ? data.tokens_cached
+      : 0;
+
+  return (
+    <div className="w-[260px] rounded-md border border-edge bg-panel shadow-lg p-3 text-[11px] text-txt">
+      <div className="text-[10px] uppercase tracking-wide text-faint mb-2">Session cost</div>
+
+      {/* (a) Session estimated cost. Always shown when a positive figure exists. */}
+      {est > 0 ? (
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-muted">Estimated spend</span>
+          <span className="text-good font-medium tabular-nums">~{fmtCost(est)}</span>
+        </div>
+      ) : null}
+
+      {/* (b) Cache savings -- only when there is a real, positive dollar figure. */}
+      {cacheSavings > 0 ? (
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-muted">Prompt-cache saved</span>
+          <span className="text-accent font-medium tabular-nums">~{fmtCost(cacheSavings)}</span>
+        </div>
+      ) : null}
+
+      {cached > 0 ? (
+        <div className="flex items-center justify-between mb-1 text-faint">
+          <span>Tokens from cache</span>
+          <span className="tabular-nums">{fmtTokens(cached)}</span>
+        </div>
+      ) : null}
+
+      {/* (c) The routing value proposition. Cache savings are concrete dollars
+          the router-plus-cache path already banked; the framing line explains
+          the mechanism that keeps spend low even absent a flat-frontier
+          baseline. Kept to one short line. */}
+      <div className="mt-2 pt-2 border-t border-edge/60 text-[10px] leading-snug text-muted/90">
+        {cacheSavings > 0 ? (
+          <span>
+            Routed per-step to the cheapest capable model, with{" "}
+            <span className="text-accent">~{fmtCost(cacheSavings)}</span> already saved via prompt caching.
+          </span>
+        ) : (
+          <span>Each task step is routed to the cheapest capable model instead of a single flat-frontier model.</span>
+        )}
+      </div>
+    </div>
+  );
+}

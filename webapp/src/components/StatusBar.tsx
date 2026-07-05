@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Circle, GitBranch, Boxes, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle, RefreshCw, Zap } from "lucide-react";
 import { api, type Config } from "../lib/api";
 import { isDesktop } from "../lib/transport";
+import CostBreakdown from "./CostBreakdown";
 
 // Bottom status strip (Hermes shell/statusbar pattern): runtime health, active
 // workspace branch, job count, pilot model, build mode, and panel toggles.
@@ -11,7 +12,9 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
   onToggleLeft: () => void; onToggleRight: () => void;
 }) {
   const [branch, setBranch] = useState("");
-  const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number; tokens_cached?: number; cache_savings_usd?: number } | null>(null);
+  const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number; tokens_cached?: number; cache_savings_usd?: number; price_in?: number; price_out?: number } | null>(null);
+  const [costOpen, setCostOpen] = useState(false);
+  const costRef = useRef<HTMLDivElement | null>(null);
   const [update, setUpdate] = useState<{ behind: number; branch: string; version: string } | null>(null);
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -98,6 +101,8 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
             est_cost_usd: data.session.est_cost_usd,
             tokens_cached: (data.session as { tokens_cached?: number }).tokens_cached,
             cache_savings_usd: (data.session as { cache_savings_usd?: number }).cache_savings_usd,
+            price_in: (data.session as { price_in?: number }).price_in,
+            price_out: (data.session as { price_out?: number }).price_out,
           });
         }
       })
@@ -117,6 +122,22 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
     const interval = setInterval(fetchUsage, 10000);
     return () => clearInterval(interval);
   }, [jobCount]);
+
+  // Dismiss the cost breakdown popover on outside click or Escape, matching the
+  // PilotPicker dropdown behavior so the status bar has one consistent pattern.
+  useEffect(() => {
+    if (!costOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (costRef.current && !costRef.current.contains(e.target as Node)) setCostOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCostOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [costOpen]);
 
   const formatTokens = (num: number) => {
     if (num >= 1000000) {
@@ -172,7 +193,33 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
                   : ""}
               </span>
             ) : null}
-            <span className="text-good font-medium">~{formatCost(usage.est_cost_usd)}</span>
+            {/* The estimated cost is now a click/hover trigger for a compact
+                routing-value breakdown (why this model / what it saved). It
+                stays a plain figure when there is nothing meaningful to expand. */}
+            <span className="relative inline-flex items-center" ref={costRef}>
+              <button
+                type="button"
+                onClick={() => setCostOpen((v) => !v)}
+                title="Session estimated cost -- click for the routing cost breakdown"
+                className="text-good font-medium hover:text-good/80 transition cursor-pointer"
+              >
+                ~{formatCost(usage.est_cost_usd)}
+              </button>
+              {costOpen && (
+                <div className="absolute bottom-full right-0 mb-1.5 z-50">
+                  <CostBreakdown
+                    data={{
+                      tokens_used: usage.tokens_used,
+                      est_cost_usd: usage.est_cost_usd,
+                      tokens_cached: usage.tokens_cached,
+                      cache_savings_usd: usage.cache_savings_usd,
+                      price_in: usage.price_in,
+                      price_out: usage.price_out,
+                    }}
+                  />
+                </div>
+              )}
+            </span>
           </span>
         </>
       )}

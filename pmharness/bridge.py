@@ -263,11 +263,19 @@ def _compact_artifact(a: Any) -> dict:
     # the digest can be honest about "present but empty" vs "genuinely no
     # artifact". After the broadening above this should essentially never happen.
     empty_headline = not (isinstance(headline, str) and headline.strip())
+    # Preserve the FULL extracted prose BEFORE we truncate the headline for
+    # display. A degraded agentic worker parks 1000s of chars of real audit
+    # analysis in a verification artifact's stdout; clipping it to 240 for the
+    # headline used to silently discard the rest. `body` carries the untruncated
+    # text so downstream (finding promotion, digest) can surface the real
+    # analysis without breaking existing consumers that only read `headline`.
+    body = str(headline) if (isinstance(headline, str) and headline.strip()) else ""
     if empty_headline and payload:
         headline = str(getattr(a, "type", "") or "artifact")
     return {
         "type": str(getattr(a, "type", "")),
         "headline": str(headline)[:240],
+        "body": body,
         "empty_headline": empty_headline,
         "confidence": getattr(a, "confidence", None),
         # Carry the machine-readable failure tag so consumers can branch on a
@@ -315,13 +323,20 @@ def _promote_degraded_prose(compact: list) -> list:
         for a in compact:
             if str(a.get("type")) != "verification":
                 continue
-            text = str(a.get("headline") or "").strip()
+            # Use the FULL body (untruncated stdout prose), falling back to the
+            # display headline. Detection and the promoted finding both rely on
+            # the full text so a broad audit's 3000-char analysis survives whole
+            # instead of collapsing to the 240-char headline clip.
+            body = str(a.get("body") or a.get("headline") or "").strip()
             # Only promote genuine prose analysis, not a one-word "passed"/"blocked".
-            if len(text) < 40:
+            if len(body) < 40:
                 continue
             promoted.append({
                 "type": "finding",
-                "headline": text[:240],
+                # headline stays clipped for display, but the full body is carried
+                # verbatim so the pilot/digest can render the real analysis.
+                "headline": body[:240],
+                "body": body,
                 "empty_headline": False,
                 "confidence": a.get("confidence"),
                 "failure": None,
