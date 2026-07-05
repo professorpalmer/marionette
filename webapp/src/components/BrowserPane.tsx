@@ -130,6 +130,18 @@ export default function BrowserPane() {
     }
   };
 
+  // Pop the current page out into a standalone, always-on-top window that
+  // PERSISTS even when you switch the panel away from the Browser tab. On the
+  // desktop build this goes through the main process (see ipc "browser:popout");
+  // on the web build it falls back to a normal new tab.
+  const popOut = (target: string) => {
+    const ipc = (window as any).harnessIPC;
+    if (ipc && typeof ipc.popoutBrowser === "function") {
+      try { ipc.popoutBrowser(target); return; } catch {}
+    }
+    try { window.open(target, "_blank"); } catch {}
+  };
+
   const back = () => {
     if (isDesktop) {
       const wv = webviewsRef.current[activeTabId];
@@ -254,7 +266,7 @@ export default function BrowserPane() {
             className="w-full bg-bg border border-edge rounded-md px-2 h-6 text-[11px] text-txt
                        focus:outline-none focus:border-accent2" />
         </form>
-        <NavBtn label="Open externally" onClick={() => window.open(url, "_blank")}><ExternalLink size={12} /></NavBtn>
+        <NavBtn label="Pop out (always-on-top, persists when you switch tabs)" onClick={() => popOut(url)}><ExternalLink size={12} /></NavBtn>
       </div>
 
       <div className="flex-1 relative overflow-hidden bg-bg" style={{ backgroundColor: "#0f1113" }}>

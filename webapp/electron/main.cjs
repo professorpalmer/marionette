@@ -785,42 +785,182 @@ function _dbg2(msg) {
   try { fs.appendFileSync(path.join(os.homedir(), ".pmharness", "electron.log"), `${new Date().toISOString()} ${msg}\n`); } catch {}
 }
 
-// When the in-app browser opens a popup (window.open from an OAuth/login page),
-// give it a real BrowserWindow bound to the SAME persistent partition so the
-// login completes and its cookie lands in the session the webview shares.
-app.on("web-contents-created", (_e, contents) => {
-  // Let any pop-out window toggle its own always-on-top pin with
-  // Cmd/Ctrl+Shift+T -- so you can un-pin a floated video when you no longer
-  // want it on top, without hunting for a menu.
+// Live pop-out windows. Holding strong references here is what makes a pop-out
+// PERSIST when the user switches the panel away from the Browser tab: the pane
+// (and its <webview>) unmounts, but these are independent top-level windows the
+// main process owns, so nothing tears them down. They only close when the user
+// closes them, or when the whole app quits.
+const popoutWindows = new Set();
+
+// A small always-on-top PIN toggle injected into every pop-out, so the toggle is
+// DISCOVERABLE (no menu hunting) and reflects the current pinned state. It calls
+// back into main via a tiny synchronous console.* channel we listen for below.
+function injectPopoutPinButton(contents, pinned) {
+  const js = `(() => {
+    try {
+      if (window.__mePinInit) { window.__mePinSet && window.__mePinSet(${pinned ? "true" : "false"}); return; }
+      window.__mePinInit = true;
+      const btn = document.createElement('button');
+      btn.id = '__me_pin_btn';
+      btn.title = 'Keep this window on top (Cmd/Ctrl+Shift+T)';
+      Object.assign(btn.style, {
+        position: 'fixed', top: '8px', right: '8px', zIndex: '2147483647',
+        width: '34px', height: '24px', borderRadius: '8px', border: 'none',
+        cursor: 'pointer', fontSize: '10px', fontWeight: '700', lineHeight: '24px', padding: '0',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.4)', userSelect: 'none',
+      });
+      window.__mePinSet = (on) => {
+        btn.textContent = on ? 'PIN' : 'pin';
+        btn.style.background = on ? '#2563eb' : 'rgba(30,30,30,0.85)';
+        btn.style.color = '#fff';
+        btn.style.opacity = on ? '1' : '0.75';
+      };
+      window.__mePinSet(${pinned ? "true" : "false"});
+      btn.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        console.log('__ME_TOGGLE_PIN__');
+      });
+      const mount = () => { if (document.body) document.body.appendChild(btn); };
+      if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount);
+    } catch (_) {}
+  })();`;
+  try { contents.executeJavaScript(js, true).catch(() => {}); } catch {}
+}
+
+// Wire always-on-top toggling (keyboard + injected pin) and persistence onto a
+// pop-out window's webContents. Shared by webview-spawned popups and the
+// explicit "Open externally" IPC path so both behave identically.
+function wirePopoutWindow(win) {
+  if (!win || win.isDestroyed()) return;
+  popoutWindows.add(win);
+  win.on("closed", () => popoutWindows.delete(win));
+
+  const contents = win.webContents;
+  const reflectPin = () => injectPopoutPinButton(contents, win.isAlwaysOnTop());
+  const togglePin = () => {
+    try {
+      const next = !win.isAlwaysOnTop();
+      win.setAlwaysOnTop(next, "floating");
+      reflectPin();
+    } catch {}
+  };
+
+  // Keyboard toggle: Cmd/Ctrl+Shift+T.
   contents.on("before-input-event", (evt, input) => {
     try {
       const mod = process.platform === "darwin" ? input.meta : input.control;
       if (mod && input.shift && String(input.key).toLowerCase() === "t") {
-        const win = BrowserWindow.fromWebContents(contents);
-        if (win) {
-          const next = !win.isAlwaysOnTop();
-          win.setAlwaysOnTop(next);
-          evt.preventDefault();
-        }
+        togglePin();
+        evt.preventDefault();
       }
     } catch {}
   });
+  // Injected pin button posts this sentinel through console-message.
+  contents.on("console-message", (_evt, _level, message) => {
+    if (message === "__ME_TOGGLE_PIN__") togglePin();
+  });
+  // (Re)inject the pin after every load so SPA navigations keep the toggle.
+  contents.on("did-finish-load", reflectPin);
+  reflectPin();
+}
+
+// When the in-app browser opens a popup (window.open from an OAuth/login page,
+// OR a Cmd/Ctrl+click on a link inside the webview), give it a real independent
+// BrowserWindow bound to the SAME persistent partition so the login completes
+// and its cookie lands in the shared session -- and so the window PERSISTS when
+// the Browser panel is swapped away.
+// Capture-phase click catcher injected into every in-panel webview: a plain
+// <a href> Cmd/Ctrl+click does NOT reliably reach setWindowOpenHandler in an
+// Electron webview, so we intercept modified clicks on links ourselves and post
+// the resolved URL back through the console-message sentinel channel. This makes
+// "Cmd/Ctrl+click a link -> pop it out (always-on-top, persistent)" work on any
+// site, matching the pop-out BUTTON behavior.
+const POPOUT_CLICK_SENTINEL = "__ME_POPOUT__:";
+function injectPopoutClickCatcher(contents) {
+  const js = `(() => {
+    try {
+      if (window.__mePopoutClickInit) return;
+      window.__mePopoutClickInit = true;
+      document.addEventListener('click', (e) => {
+        try {
+          const mod = e.metaKey || e.ctrlKey;
+          if (!mod || e.button !== 0) return;
+          let a = e.target;
+          while (a && a.tagName !== 'A') a = a.parentElement;
+          if (!a || !a.href) return;
+          e.preventDefault(); e.stopPropagation();
+          console.log(${JSON.stringify(POPOUT_CLICK_SENTINEL)} + a.href);
+        } catch (_) {}
+      }, true);
+    } catch (_) {}
+  })();`;
+  try { contents.executeJavaScript(js, true).catch(() => {}); } catch {}
+}
+
+app.on("web-contents-created", (_e, contents) => {
   if (contents.getType() === "webview") {
-    contents.setWindowOpenHandler(({ url }) => {
+    contents.setWindowOpenHandler(() => {
       return {
         action: "allow",
         overrideBrowserWindowOptions: {
           webPreferences: { partition: "persist:browser", contextIsolation: true },
           width: 600,
           height: 750,
-          // Pop-outs float above the main window so you can pop a video out and
-          // go back to the terminal/editor pane without the pop-out vanishing
-          // behind the app when you click elsewhere. Toggle at runtime from the
-          // pop-out's own window controls (see the always-on-top IPC below).
+          // Default pinned: pop a video/meeting out, then go back to the
+          // editor/terminal pane without it vanishing behind the app.
           alwaysOnTop: true,
         },
       };
     });
+    // Attach persistence + pin toggle to the freshly created pop-out window.
+    contents.on("did-create-window", (childWindow) => {
+      try { childWindow.setAlwaysOnTop(true, "floating"); } catch {}
+      wirePopoutWindow(childWindow);
+    });
+    // Guarantee Cmd/Ctrl+click pop-out on every load (incl. SPA navigations).
+    contents.on("did-finish-load", () => injectPopoutClickCatcher(contents));
+    contents.on("console-message", (_evt, _level, message) => {
+      if (typeof message === "string" && message.startsWith(POPOUT_CLICK_SENTINEL)) {
+        const url = message.slice(POPOUT_CLICK_SENTINEL.length);
+        try { openPopoutWindow(url); } catch (err) { logMain(`popout click failed: ${err && err.message ? err.message : err}`); }
+      }
+    });
+  }
+});
+
+// Explicit pop-out from the renderer ("Open externally" button / Cmd+click):
+// create a standalone, always-on-top, persistent browser window.
+// Shared standalone-popout factory: an always-on-top, persistent, main-process
+// BrowserWindow on the shared browser partition. Used by BOTH the explicit
+// "Pop out" button/IPC and the injected Cmd/Ctrl+click catcher so every pop-out
+// behaves identically (floats on top, survives switching off the Browser tab).
+function openPopoutWindow(url) {
+  const target = typeof url === "string" && url.trim() ? url.trim() : "about:blank";
+  const win = new BrowserWindow({
+    width: 900,
+    height: 700,
+    alwaysOnTop: true,
+    title: "Browser",
+    backgroundColor: "#0f1113",
+    webPreferences: {
+      partition: "persist:browser",
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  try { win.setAlwaysOnTop(true, "floating"); } catch {}
+  wirePopoutWindow(win);
+  win.loadURL(target);
+  return win;
+}
+
+ipcMain.handle("browser:popout", (_e, url) => {
+  try {
+    openPopoutWindow(url);
+    return { ok: true };
+  } catch (e) {
+    logMain(`browser:popout failed: ${e && e.message ? e.message : e}`);
+    return { ok: false, error: String(e && e.message ? e.message : e) };
   }
 });
 
