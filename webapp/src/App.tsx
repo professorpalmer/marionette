@@ -78,14 +78,20 @@ export default function App() {
       try {
         const provs = await api.providers();
         const hasAnyKey = provs.some((p) => p.has_key);
-        if (!hasAnyKey || seen === null) {
+        // Only auto-open the setup wizard when there is genuinely NO provider key
+        // configured (real first-run onboarding). Previously `seen === null` also
+        // forced it open, so it popped up on EVERY launch even with keys already
+        // set, until the user manually dismissed it. If a key already exists,
+        // mark the wizard as seen so it never nags again.
+        if (!hasAnyKey) {
           setShowWizard(true);
+        } else {
+          localStorage.setItem("pmharness.wizardSeen", "1");
         }
       } catch (err) {
         console.error("Failed to check provider setup", err);
-        if (seen === null) {
-          setShowWizard(true);
-        }
+        // On a status-check failure, do NOT force the wizard open -- an API hiccup
+        // shouldn't shove the setup menu in the user's face on every launch.
       }
     };
     checkSetupStatus();
@@ -176,7 +182,7 @@ export default function App() {
         leftOpen={leftOpen} rightOpen={rightOpen}
         onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)} />
 
-      {showWizard && <RegistryWizard onClose={() => setShowWizard(false)} />}
+      {showWizard && <RegistryWizard onClose={() => { localStorage.setItem("pmharness.wizardSeen", "1"); setShowWizard(false); }} />}
     </div>
   );
 }
