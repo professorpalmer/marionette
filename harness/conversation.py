@@ -1035,10 +1035,28 @@ class ConversationalSession:
             state_dir=self._state_dir_or_tempdir,
             config=self.context_budget_config,
         )
+        # Tag full-file reads with their path so the pre-send pass can elide an
+        # EARLIER read of the same file once a newer read supersedes it (the
+        # stale copy still costs tokens every turn otherwise). Only whole-file
+        # reads (no start_line/limit) are safe to elide -- a ranged read is a
+        # distinct slice the model may still need.
+        read_path = None
+        try:
+            if (getattr(act, "kind", "") == "read_file"
+                    and getattr(act, "path", None)
+                    and getattr(act, "start_line", None) is None
+                    and getattr(act, "limit", None) is None):
+                read_path = str(act.path)
+        except Exception:
+            read_path = None
+
         if is_native:
-            self._history.append({"role": "tool", "tool_call_id": tc_id, "content": clamped_content})
+            msg = {"role": "tool", "tool_call_id": tc_id, "content": clamped_content}
         else:
-            self._history.append({"role": "user", "content": clamped_content})
+            msg = {"role": "user", "content": clamped_content}
+        if read_path:
+            msg["_read_path"] = read_path
+        self._history.append(msg)
 
     def _read_allowed_roots(self) -> list:
         """Roots read_file may read from: the open workspace, plus the app's own
@@ -1411,6 +1429,52 @@ class ConversationalSession:
         combined = "\n\n".join(p for p in parts if p)
         if combined:
             self.enqueue_steer(combined)
+
+    def _elide_stale_reads(self, messages: list) -> list:
+        """Return a COPY of messages where superseded whole-file reads are elided.
+
+        When the model reads the same file more than once in a session, the
+        earlier full copies sit in history being re-sent (and re-billed) every
+        turn even though only the latest read matters. Keep the LATEST read of
+        each path intact and replace every earlier read of that same path with a
+        one-line pointer, cutting input tokens on long sessions -- the same
+        stale-read elision top agents use. Never mutates stored history; only the
+        outgoing copy is trimmed, so nothing is lost from the durable transcript.
+
+        Whitespace/pointer safety: only messages tagged with _read_path (whole
+        file, no range) are candidates; tool_call_id/role are preserved so the
+        provider's tool-result pairing stays valid.
+        """
+        try:
+            # Find, per path, the index of the LATEST read; earlier ones elide.
+            latest_by_path: dict = {}
+            for i, m in enumerate(messages):
+                p = m.get("_read_path") if isinstance(m, dict) else None
+                if p:
+                    latest_by_path[p] = i
+            if not latest_by_path:
+                return messages  # no tagged reads at all -> nothing to strip
+
+            out = []
+            for i, m in enumerate(messages):
+                p = m.get("_read_path") if isinstance(m, dict) else None
+                if p and latest_by_path.get(p) != i:
+                    # Superseded read -> compact pointer, preserving pairing keys.
+                    pointer = (f"[earlier read of {p} elided to save tokens -- a newer "
+                               f"read of this file appears later in the conversation]")
+                    nm = {k: v for k, v in m.items() if k != "_read_path"}
+                    nm["content"] = pointer
+                    out.append(nm)
+                else:
+                    # Keep as-is but drop our internal tag from the wire copy.
+                    if p:
+                        nm = {k: v for k, v in m.items() if k != "_read_path"}
+                        out.append(nm)
+                    else:
+                        out.append(m)
+            return out
+        except Exception:
+            return messages
 
     def _humanize_pilot_error(self, raw: str) -> str:
         """Turn a raw provider error into a clear, actionable one-liner.
@@ -2061,7 +2125,7 @@ class ConversationalSession:
                             def run_stream():
                                 try:
                                     r = self.pilot.chat_stream(
-                                        self._history[1:],
+                                        self._elide_stale_reads(self._history[1:]),
                                         tools=tools_schema,
                                         system=sys_prompt,
                                         on_delta=lambda delta: q.put(("delta", delta))
@@ -2095,7 +2159,7 @@ class ConversationalSession:
                                     raise val
                             self._streamed_prose = "".join(streamed_prose)
                         else:
-                            resp = self.pilot.chat(self._history[1:], tools=tools_schema, system=sys_prompt)
+                            resp = self.pilot.chat(self._elide_stale_reads(self._history[1:]), tools=tools_schema, system=sys_prompt)
                     else:
                         resp = self.pilot.complete(prompt, system=sys_prompt)
                 except Exception as e:
