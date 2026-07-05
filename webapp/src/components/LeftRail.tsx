@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { GitBranch, Plus, MessageSquare, Boxes, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2 } from "lucide-react";
-import { api, type Workspace, type Session, type Job } from "../lib/api";
+import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, XCircle } from "lucide-react";
+import { api, type Workspace, type Session, type Job, type Artifact } from "../lib/api";
 import { pickFolder } from "../lib/transport";
 
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
@@ -25,6 +25,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   } | null>(null);
   const [confirmForgetPath, setConfirmForgetPath] = useState<string | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
+  // /api/jobs only carries an artifact COUNT per job; the full artifact list is
+  // fetched lazily the first time a card is expanded and cached here.
+  const [artifactsByJob, setArtifactsByJob] = useState<Record<string, Artifact[]>>({});
+
+  const toggleJobCard = (j: Job) => {
+    const opening = !expandedJobs[j.id];
+    setExpandedJobs((p) => ({ ...p, [j.id]: opening }));
+    if (opening && artifactsByJob[j.id] === undefined) {
+      api.artifacts(j.id)
+        .then((arts) => setArtifactsByJob((p) => ({ ...p, [j.id]: Array.isArray(arts) ? arts : [] })))
+        .catch(() => setArtifactsByJob((p) => ({ ...p, [j.id]: [] })));
+    }
+  };
 
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -427,15 +441,81 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         </Section>
       )}
 
-      {/* JOBS */}
+      {/* JOBS -- clean task-list styling (mirrors the composer TaskStack): a
+          slim status row per job, click to expand a card with richer detail
+          (adapter/role, tokens/cost, artifact headlines) instead of a lone
+          line of truncated text. */}
       <Section title="Session Jobs" grow>
         {jobs.length === 0 && <Empty>No jobs yet</Empty>}
-        {jobs.slice().reverse().map((j) => (
-          <div key={j.id} className="rounded px-2 py-1.5 mb-0.5 bg-panel2 border border-edge">
-            <div className="text-[12px] truncate flex items-center gap-1.5"><Boxes size={11} className="text-muted" />{j.goal}</div>
-            <div className="text-[10px] text-muted mt-0.5">{(j.status || "").split(".").pop()}</div>
-          </div>
-        ))}
+        {jobs.slice().reverse().map((j) => {
+          const st = jobStatus(j);
+          const isOpen = !!expandedJobs[j.id];
+          const detail = jobDetailBits(j);
+          const loadedArts = artifactsByJob[j.id];
+          const arts = (loadedArts || []).filter((a) => a && a.headline);
+          const diff = jobDiffstat(loadedArts || []);
+          return (
+            <div key={j.id} className="rounded mb-0.5 bg-panel2 border border-edge overflow-hidden">
+              <button
+                onClick={() => toggleJobCard(j)}
+                className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left hover:bg-panel2/60 transition-colors focus:outline-none"
+              >
+                <JobStatusIcon status={st} />
+                <span
+                  className={`flex-1 truncate text-[12px] ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}
+                  title={j.goal}
+                >
+                  {j.goal}
+                </span>
+                {diff && (
+                  <span
+                    className="shrink-0 flex items-center gap-1 text-[10px] tabular-nums font-medium"
+                    title={`${diff.files} file${diff.files === 1 ? "" : "s"} changed, ${diff.insertions} insertion${diff.insertions === 1 ? "" : "s"}, ${diff.deletions} deletion${diff.deletions === 1 ? "" : "s"}`}
+                  >
+                    {diff.insertions > 0 && <span className="text-good">+{diff.insertions}</span>}
+                    {diff.deletions > 0 && <span className="text-red-400/90">-{diff.deletions}</span>}
+                  </span>
+                )}
+                <ChevronDown size={11} className={`text-faint shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+              </button>
+              {isOpen && (
+                <div className="px-2 pb-1.5 pt-0.5 border-t border-edge/50 space-y-1">
+                  {detail.length > 0 && (
+                    <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-faint">
+                      {detail.map((d, i) => (
+                        <span key={i} className="tabular-nums">{d}</span>
+                      ))}
+                    </div>
+                  )}
+                  {diff && (
+                    <div className="flex items-center gap-2 text-[10px] tabular-nums text-faint">
+                      <span>{diff.files} file{diff.files === 1 ? "" : "s"} changed</span>
+                      {diff.insertions > 0 && <span className="text-good">+{diff.insertions}</span>}
+                      {diff.deletions > 0 && <span className="text-red-400/90">-{diff.deletions}</span>}
+                    </div>
+                  )}
+                  {arts.length > 0 ? (
+                    <div className="space-y-0.5">
+                      {arts.slice(0, 4).map((a, i) => (
+                        <div key={a.id || i} className="text-[11px] text-txt/90 flex items-start gap-1.5 leading-snug">
+                          <span className="text-good mt-[3px] shrink-0">·</span>
+                          <span className="flex-1">{a.headline}</span>
+                        </div>
+                      ))}
+                      {arts.length > 4 && (
+                        <div className="text-[10px] text-faint pl-3">+{arts.length - 4} more</div>
+                      )}
+                    </div>
+                  ) : loadedArts === undefined ? (
+                    <div className="text-[10px] text-faint italic">Loading artifacts...</div>
+                  ) : (
+                    <div className="text-[10px] text-faint italic">No artifacts recorded</div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </Section>
 
       {/* CONTEXT MENU */}
@@ -560,6 +640,56 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       )}
     </aside>
   );
+}
+
+type JobStatus = "pending" | "in_progress" | "completed" | "cancelled";
+
+function jobStatus(j: Job): JobStatus {
+  const s = (j.status || "").toLowerCase();
+  if (s.includes("complete") || s.includes("done")) return "completed";
+  if (s.includes("fail") || s.includes("cancel") || s.includes("error")) return "cancelled";
+  if (s.includes("run") || s.includes("progress") || s.includes("active")) return "in_progress";
+  return "pending";
+}
+
+// Compact metadata chips shown when a job card is expanded -- role/adapter and
+// usage so the card carries real signal instead of a truncated goal line.
+function jobDetailBits(j: Job): string[] {
+  const bits: string[] = [];
+  const status = (j.status || "").split(".").pop();
+  if (status) bits.push(status);
+  if (j.role) bits.push(j.role);
+  if (j.adapter) bits.push(j.adapter);
+  if (typeof j.task_count === "number" && j.task_count > 0) bits.push(`${j.task_count} task${j.task_count === 1 ? "" : "s"}`);
+  if (typeof j.tokens === "number" && j.tokens > 0) bits.push(`${j.tokens.toLocaleString()} tok`);
+  if (typeof j.est_cost_usd === "number" && j.est_cost_usd > 0) bits.push(`$${j.est_cost_usd.toFixed(3)}`);
+  return bits;
+}
+
+// Aggregate diffstat across a job's patch artifacts so a card can show a
+// git-style "+40 -12" summary at a glance. Returns null when the job produced
+// no patch (audits, reviews) so the caller can skip the row entirely.
+function jobDiffstat(artifacts: Artifact[]): { files: number; insertions: number; deletions: number } | null {
+  const patches = artifacts.filter((a) => a && a.diffstat);
+  if (patches.length === 0) return null;
+  let files = 0;
+  let insertions = 0;
+  let deletions = 0;
+  for (const a of patches) {
+    const d = a.diffstat!;
+    files += d.files || 0;
+    insertions += d.insertions || 0;
+    deletions += d.deletions || 0;
+  }
+  if (!(files || insertions || deletions)) return null;
+  return { files, insertions, deletions };
+}
+
+function JobStatusIcon({ status }: { status: JobStatus }) {
+  if (status === "completed") return <CheckCircle2 size={12} className="text-good shrink-0" />;
+  if (status === "in_progress") return <Loader2 size={12} className="animate-spin text-accent shrink-0" />;
+  if (status === "cancelled") return <XCircle size={12} className="text-red-400 shrink-0" />;
+  return <Circle size={12} className="text-muted shrink-0" />;
 }
 
 function Section({ title, action, children, grow }: any) {

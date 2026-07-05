@@ -28,6 +28,41 @@ def _normalize_rejected(rejected: Any) -> Optional[list]:
     return out
 
 
+def _diffstat(unified_diff: str) -> Optional[dict]:
+    """Parse a unified diff into {files, insertions, deletions}. Best-effort and
+    stdlib-only: counts +/- body lines (ignoring the +++/--- file headers) and
+    the number of distinct files touched. Returns None on empty/invalid input so
+    callers can test truthiness. Never raises."""
+    if not unified_diff or not isinstance(unified_diff, str):
+        return None
+    try:
+        files = 0
+        insertions = 0
+        deletions = 0
+        for line in unified_diff.splitlines():
+            if line.startswith("+++") or line.startswith("---"):
+                continue
+            if line.startswith("diff --git ") or (line.startswith("--- ") is False and line[:6] == "diff -"):
+                files += 1
+                continue
+            if line.startswith("+"):
+                insertions += 1
+            elif line.startswith("-"):
+                deletions += 1
+        # Fall back to counting "--- " header pairs when there are no
+        # "diff --git" markers (e.g. plain `diff -u` or `git diff` without
+        # the extended header).
+        if files == 0:
+            files = sum(1 for ln in unified_diff.splitlines() if ln.startswith("--- "))
+        if files == 0 and (insertions or deletions):
+            files = 1
+        if not (files or insertions or deletions):
+            return None
+        return {"files": files, "insertions": insertions, "deletions": deletions}
+    except Exception:
+        return None
+
+
 class DurableState:
     def __init__(self, state_dir: str, backend: str = "sqlite") -> None:
         self.state_dir = state_dir
@@ -110,6 +145,25 @@ class DurableState:
             headline = (payload.get("claim") or payload.get("decision")
                         or payload.get("risk") or payload.get("check")
                         or payload.get("summary") or payload.get("change") or "")
+            # Patch artifacts carry the concrete edit result (files + unified
+            # diff). Surface a compact file list and a parsed diffstat so the
+            # GUI can show "3 files, +40 -12" in a job card instead of a lone
+            # truncated goal line. Best-effort: never let a malformed patch
+            # payload break artifact listing.
+            files = None
+            diffstat = None
+            if str(getattr(a, "type", "")).lower().endswith("patch"):
+                try:
+                    files = payload.get("files") or []
+                    if not isinstance(files, list):
+                        files = []
+                    diffstat = _diffstat(payload.get("unified_diff") or "")
+                    if files and not headline:
+                        shown = ", ".join(str(f) for f in files[:4])
+                        more = f" +{len(files) - 4} more" if len(files) > 4 else ""
+                        headline = f"Patch: {shown}{more}"
+                except Exception:
+                    files, diffstat = None, None
             out.append({
                 "id": getattr(a, "id", ""),
                 "type": str(getattr(a, "type", "")),
@@ -128,6 +182,10 @@ class DurableState:
                 # instead of "undefined".
                 "rejected": _normalize_rejected(payload.get("rejected")),
                 "detail": payload.get("reason") or payload.get("detail"),
+                # Only present for patch artifacts; None elsewhere so the GUI can
+                # cheaply test truthiness before rendering a diffstat row.
+                "files": files,
+                "diffstat": diffstat,
             })
         return out
 

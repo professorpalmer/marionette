@@ -68,7 +68,9 @@ export type Job = {
   est_cost_usd?: number;
   task_count?: number;
   tasks?: Task[];
-  artifacts?: Artifact[];
+  // /api/jobs sends an artifact COUNT; embedded views may send the full list.
+  // Use the /api/artifacts endpoint to fetch details for a job.
+  artifacts?: Artifact[] | number;
 };
 export type Artifact = {
   id?: string;
@@ -81,7 +83,16 @@ export type Artifact = {
   role?: string;
   rejected?: { model: string; reason: string }[];
   detail?: any;
+  // Present only for patch artifacts: the list of touched files and a parsed
+  // diffstat so job cards can show "3 files +40 -12" instead of truncated text.
+  files?: string[] | null;
+  diffstat?: { files: number; insertions: number; deletions: number } | null;
 };
+// Job.artifacts is a count in /api/jobs but a full list in /swarm/live; this
+// narrows to the embedded list (empty when the payload only carried a count).
+export function jobArtifactList(j: Job): Artifact[] {
+  return Array.isArray(j.artifacts) ? j.artifacts : [];
+}
 export type SwarmLive = {
   session: {
     tokens_used: number;

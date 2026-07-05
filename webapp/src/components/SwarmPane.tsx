@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X } from "lucide-react";
-import { api, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
+import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
 
 // A clean, self-contained hover tooltip. The native `title=` tooltip renders as a
 // large unstyled OS box that covers the tracker and never wraps sensibly; this
@@ -135,7 +135,7 @@ function swarmSignature(res: SwarmLive | null): string {
   const parts: string[] = [];
   for (const j of res.jobs || []) {
     const tasks = j.tasks || [];
-    const arts = j.artifacts || [];
+    const arts = jobArtifactList(j);
     parts.push(`${j.id}:${j.status}:${tasks.length}:${arts.length}:${j.tokens ?? 0}:${(j.est_cost_usd ?? 0).toFixed(4)}`);
     for (const t of tasks) parts.push(`${t.id}=${t.status}`);
   }
@@ -179,7 +179,7 @@ function jobPhase(j: Job): { key: string; label: string; index: number; failed: 
   const total = tasks.length;
   const running = tasks.filter((t) => taskState(t) === "running").length;
   const doneCount = tasks.filter((t) => taskState(t) === "done").length;
-  const hasRouting = (j.artifacts || []).some((a) => (a.type || "").toUpperCase() === "ROUTING");
+  const hasRouting = jobArtifactList(j).some((a) => (a.type || "").toUpperCase() === "ROUTING");
 
   if (st === "cancelled") {
     const reached = total > 0 ? 2 : hasRouting ? 1 : 0;
@@ -375,7 +375,7 @@ export default function SwarmPane() {
     const isExpanded = manualExpanded !== undefined ? manualExpanded : (st === "in_progress");
     const phase = jobPhase(j);
 
-    const artifacts = j.artifacts || [];
+    const artifacts = jobArtifactList(j);
     const routingArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() === "ROUTING");
     const streamArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() !== "ROUTING");
     const tasks = j.tasks || [];
