@@ -1937,6 +1937,14 @@ class Handler(BaseHTTPRequestHandler):
                 g_val = _parse_bool(body["autoCommandGuard"])
                 _pilot._auto_command_guard = g_val
                 os.environ["HARNESS_AUTO_COMMAND_GUARD"] = "true" if g_val else "off"
+            if "autoVerify" in body:
+                av_val = _parse_bool(body["autoVerify"])
+                _cfg.auto_verify = av_val
+                os.environ["HARNESS_AUTO_VERIFY"] = "true" if av_val else "false"
+            if "verifyCommand" in body:
+                vc_val = str(body["verifyCommand"]).strip()
+                _cfg.verify_command = vc_val
+                os.environ["HARNESS_VERIFY_COMMAND"] = vc_val
             if "commandTimeout" in body:
                 # seconds; "0"/"off"/"none" = unbounded. Validate before storing.
                 raw = str(body["commandTimeout"]).strip().lower()
@@ -3844,6 +3852,8 @@ def _get_settings_dict():
         "auto_distill": getattr(_pilot, "_auto_distill", False),
         "reviewEditsBeforeApply": getattr(_pilot, "_review_edits_before_apply", False),
         "wiki_auto": getattr(_cfg, "wiki_auto", False),
+        "autoVerify": getattr(_cfg, "auto_verify", True),
+        "verifyCommand": getattr(_cfg, "verify_command", ""),
         "autoCommandGuard": getattr(_pilot, "_auto_command_guard", True),
         "commandTimeout": (os.environ.get("HARNESS_COMMAND_TIMEOUT", "").strip() or "120"),
         "maxPilotSteps": (os.environ.get("HARNESS_MAX_PILOT_STEPS", "").strip() or "40"),

@@ -527,6 +527,33 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("general", "auto-verify edits typecheck syntax check self-correct diagnostics") && (<>
+        {/* Auto-Verify Edits Toggle */}
+        <div className="space-y-1.5">
+          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+            Auto-Verify Edits
+          </label>
+          <button
+            onClick={() => update({ autoVerify: !(settings.autoVerify ?? true) })}
+            disabled={saving}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
+              (settings.autoVerify ?? true)
+                ? "bg-accent/10 border-accent/30 text-accent"
+                : "bg-panel2 border-edge text-muted"
+            } disabled:opacity-50`}
+          >
+            <span className="font-medium text-[11px]">Check edits and self-correct</span>
+            <span className="text-[10px] uppercase font-bold tracking-wider">
+              {(settings.autoVerify ?? true) ? "on" : "off"}
+            </span>
+          </button>
+          <p className="text-[10px] text-muted">
+            After the agent edits files, run a fast project check (typecheck / syntax on the
+            changed files) and let it self-correct in the same turn before handing back.
+          </p>
+        </div>
+
+        </>)}
         {gate("safety", "full-auto safety command guard timeout max investigation steps") && (<>
         {/* Full-Auto Safety: command guard + timeout */}
         <div className="space-y-1.5">

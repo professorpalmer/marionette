@@ -21,6 +21,12 @@ class HarnessConfig:
     max_context_tokens: int = 96000
     no_delegation: bool = False
     verify_cmd: str = ""
+    # AUTO-VERIFY LOOP (interactive pilot): after the agent edits files, run a
+    # fast project check (typecheck/syntax of the CHANGED files) and let it
+    # self-correct before handing back. verify_command overrides the detected
+    # check when set.
+    auto_verify: bool = True
+    verify_command: str = ""
 
     @classmethod
     def from_env(cls) -> "HarnessConfig":
@@ -98,4 +104,6 @@ class HarnessConfig:
             max_context_tokens=max_ctx,
             no_delegation=str(pick("HARNESS_NO_DELEGATION", "no_delegation", "")).strip() in ("1","true","yes","True"),
             verify_cmd=pick("HARNESS_VERIFY_CMD", "verify_cmd", ""),
+            auto_verify=str(pick("HARNESS_AUTO_VERIFY", "auto_verify", "true")).strip() in ("1","true","yes","True"),
+            verify_command=pick("HARNESS_VERIFY_COMMAND", "verify_command", ""),
         )

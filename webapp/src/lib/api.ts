@@ -16,6 +16,7 @@ export type Settings = {
   models: string[];
   auto_distill: boolean;
   reviewEditsBeforeApply?: boolean;
+  autoVerify?: boolean;
   autoCommandGuard?: boolean;
   commandTimeout?: string;
   maxPilotSteps?: string;

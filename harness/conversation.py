@@ -2001,6 +2001,15 @@ class ConversationalSession:
         turn_prose: list = []      # accumulate pilot prose for the digest
 
         consecutive_non_productive = 0
+        # AUTO-VERIFY LOOP: after a turn that edited files, run a fast, scoped
+        # project check and feed a FAILURE back as a tool observation IN THE SAME
+        # user message so the pilot can self-correct. Bounded per user message so
+        # it cannot loop forever.
+        auto_verify_iters = 0
+        try:
+            _auto_verify_cap = int(os.environ.get("HARNESS_AUTO_VERIFY_MAX", "2"))
+        except ValueError:
+            _auto_verify_cap = 2
         # Step ceiling per user message, read LIVE from the env each turn so a
         # Settings change applies without a restart. 0 (or negative) means
         # UNLIMITED -- true autopilot: loop until the pilot is done, the budget
@@ -2418,6 +2427,8 @@ class ConversationalSession:
                         prefetch[idx] = res
 
             history_len_before_actions = len(self._history)
+            # Track files edited THIS turn (for the auto-verify loop below).
+            turn_changed_files: list[str] = []
             for idx, act in enumerate(turn.actions):
                 if idx > 0:
                     yield from self._check_and_inject_steer()
@@ -2615,6 +2626,7 @@ class ConversationalSession:
                             "artifacts": [{"type": "file", "headline": f"Wrote {bytes_written} bytes to {act.path}"}],
                         })
                         self._append_action_result(act, aid, f"(write_file {act.path} successfully wrote {bytes_written} bytes)", is_native)
+                        turn_changed_files.append(target_path)
                     except Exception as e:
                         yield ConvEvent("action_result", {"id": aid, "error": str(e)})
                         self._append_action_result(act, aid, f"(write_file {act.path} failed: {e})", is_native)
@@ -2702,6 +2714,7 @@ class ConversationalSession:
                             "artifacts": [{"type": "file", "headline": headline}],
                         })
                         self._append_action_result(act, aid, f"(edit_file {act.path} successfully edited: {headline})", is_native)
+                        turn_changed_files.append(target_path)
                     except Exception as e:
                         yield ConvEvent("action_result", {"id": aid, "error": str(e)})
                         self._append_action_result(act, aid, f"(edit_file {act.path} failed: {e})", is_native)
@@ -3636,6 +3649,57 @@ class ConversationalSession:
                 config=self.context_budget_config,
             )
             self._history[history_len_before_actions:] = new_messages
+
+            # ---- AUTO-VERIFY LOOP ----------------------------------------
+            # After this batch of actions, IF the pilot edited any files AND
+            # auto-verify is enabled, run a FAST, scoped project check and, on
+            # FAILURE, inject the output as a tool observation into history and
+            # re-ask the model IN THE SAME user message so it self-corrects
+            # without the user pointing out the mistake. Bounded by
+            # _auto_verify_cap so it cannot loop forever. Silent on pass.
+            if (turn_changed_files
+                    and getattr(self.config, "auto_verify", True)
+                    and auto_verify_iters < _auto_verify_cap
+                    and not self._cancel.is_set()
+                    and not plan):
+                from harness import verify as _verify
+                override = (getattr(self.config, "verify_command", "") or "").strip()
+                _uniq_changed = list(dict.fromkeys(turn_changed_files))
+                if override:
+                    verify_cmd = override
+                else:
+                    try:
+                        verify_cmd = _verify.detect_verify_command(
+                            self.config.repo, _uniq_changed)
+                    except Exception:
+                        verify_cmd = None
+                if verify_cmd:
+                    yield ConvEvent("verifying", {"cmd": verify_cmd, "auto": True})
+                    try:
+                        _timeout = int(os.environ.get("HARNESS_AUTO_VERIFY_TIMEOUT", "30"))
+                    except ValueError:
+                        _timeout = 30
+                    try:
+                        passed, output = _verify.run_verify(
+                            self.config.repo, verify_cmd, _uniq_changed,
+                            timeout=_timeout, cancel_event=self._cancel)
+                    except Exception as _ve:  # never break the turn on verify
+                        passed, output = True, f"[auto-verify skipped: {_ve}]"
+                    excerpt = output[-1500:] if output else ""
+                    yield ConvEvent("auto_verify", {
+                        "passed": passed,
+                        "command": verify_cmd,
+                        "output_excerpt": excerpt,
+                    })
+                    if not passed and not self._cancel.is_set():
+                        auto_verify_iters += 1
+                        feedback = (
+                            "[auto-verify] The project check failed after your edits:\n"
+                            f"$ {verify_cmd}\n{output}\n"
+                            "Fix the issue, then continue."
+                        )
+                        self._history.append({"role": "user", "content": feedback})
+                        continue
 
         # Hit the step cap -- close the turn gracefully.
         self._maybe_ingest(user_message, turn_prose, turn_findings)
