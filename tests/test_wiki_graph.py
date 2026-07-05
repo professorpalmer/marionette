@@ -141,5 +141,10 @@ def test_wiki_client_graph_live_mocked(monkeypatch):
     assert len(res["nodes"]) == 2
     ids = {n["id"] for n in res["nodes"]}
     assert ids == {"a", "b"}
-    # a<->b edge is collected once (undirected dedupe across both slugs' neighborhoods)
-    assert res["edges"] == [{"source": "a", "target": "b"}]
+    # a<->b edge is collected once (undirected dedupe across both slugs'
+    # neighborhoods). The collection order of the single edge is not
+    # deterministic (dict/set iteration), so compare it order-independently by
+    # its unordered endpoint pair -- otherwise this test flakes red at random.
+    assert len(res["edges"]) == 1
+    edge = res["edges"][0]
+    assert {edge["source"], edge["target"]} == {"a", "b"}
