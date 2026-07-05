@@ -365,6 +365,10 @@ export const api = {
     }
     return saved[0];
   },
+  // Durable src for an uploaded image: the composer's blob: preview URL is
+  // revoked right after send, so sent-message thumbnails (and reloaded
+  // transcripts) must load the saved file from disk via this tokened GET.
+  imageUrl: (path: string): string => withToken("/api/image?path=" + encodeURIComponent(path)),
   chat: (message: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void, plan: boolean = false, images?: string[]) => {
     // The chat stream is an SSE GET (EventSource is GET-only), so the message
     // normally rides in the URL query string. A large paste (e.g. a huge

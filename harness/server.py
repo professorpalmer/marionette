@@ -2470,6 +2470,44 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, json.dumps({"error": f"Failed to read file: {e}"}))
 
+        if u.path == "/api/image":
+            # Serve an uploaded image back to the browser so SENT message
+            # thumbnails have a durable src (the composer's blob: preview URL
+            # is revoked right after send and never survives a reload). Only
+            # ever serve files that live under _UPLOAD_DIR -- this must NOT
+            # become an arbitrary-file-read endpoint.
+            req_path = parse_qs(u.query).get("path", [""])[0]
+            if not req_path:
+                return self._send(400, json.dumps({"error": "Missing path parameter"}))
+            upload_real = os.path.realpath(_UPLOAD_DIR)
+            file_real = os.path.realpath(req_path)
+            try:
+                is_under_upload_dir = os.path.commonpath([upload_real, file_real]) == upload_real
+            except ValueError:
+                # commonpath raises on e.g. mixed drives on Windows -- treat as unsafe.
+                is_under_upload_dir = False
+            if not is_under_upload_dir:
+                return self._send(403, json.dumps({"error": "Access denied: path outside upload directory"}))
+            ext = os.path.splitext(file_real)[1].lower()
+            _IMAGE_CTYPES = {
+                ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp", ".gif": "image/gif",
+            }
+            if ext not in _IMAGE_CTYPES:
+                return self._send(403, json.dumps({"error": "Access denied: not an image file"}))
+            if not os.path.isfile(file_real):
+                return self._send(404, json.dumps({"error": "File not found"}))
+            try:
+                size = os.path.getsize(file_real)
+                max_bytes = int(os.environ.get("HARNESS_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
+                if size > max_bytes:
+                    return self._send(413, json.dumps({"error": "Image too large"}))
+                with open(file_real, "rb") as f:
+                    data = f.read()
+            except Exception as e:
+                return self._send(500, json.dumps({"error": f"Failed to read image: {e}"}))
+            return self._send(200, data, _IMAGE_CTYPES[ext])
+
         if u.path == "/api/workspace/files":
             if self._guard():
                 return

@@ -3456,16 +3456,23 @@ function Bubble({
             )}
             {msg.images && msg.images.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-2">
-                {msg.images.map((img, idx) => (
-                  <div key={idx} className="relative w-11 h-11 rounded overflow-hidden border border-edge bg-panel flex-shrink-0">
-                    <img
-                      src={img.previewUrl}
-                      alt={img.name}
-                      onClick={() => onImageClick?.(img.previewUrl)}
-                      className="w-full h-full object-cover rounded cursor-pointer hover:opacity-85 transition-opacity"
-                    />
-                  </div>
-                ))}
+                {msg.images.map((img, idx) => {
+                  // The composer's blob: previewUrl is revoked right after send
+                  // (and never exists at all for a reloaded transcript), so a
+                  // SENT message must load its thumbnail from the durable saved
+                  // file via api.imageUrl(img.path), not the transient blob URL.
+                  const durableSrc = img.path ? api.imageUrl(img.path) : img.previewUrl;
+                  return (
+                    <div key={idx} className="relative w-11 h-11 rounded overflow-hidden border border-edge bg-panel flex-shrink-0">
+                      <img
+                        src={durableSrc}
+                        alt={img.name}
+                        onClick={() => onImageClick?.(durableSrc)}
+                        className="w-full h-full object-cover rounded cursor-pointer hover:opacity-85 transition-opacity"
+                      />
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
