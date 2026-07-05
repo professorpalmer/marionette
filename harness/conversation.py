@@ -1132,6 +1132,107 @@ class ConversationalSession:
             i += 1
         self._history = out
 
+    def _grounded_wiki_answer(self, question: str, raw: str) -> str:
+        """Grounded synthesis over a raw wiki query result.
+
+        Wraps harness.nl_memory.answer_from_memory: builds a small candidate
+        entry list from the wiki blob (parsing the "Wiki search results:" list
+        format when present, else a single-entry fallback around the whole
+        blob), then asks the current pilot to produce a cited, concise answer.
+
+        Returns the grounded answer text (including a compact citations line)
+        when synthesis succeeds and is not the not-found sentinel; returns an
+        empty string in ALL guard cases so the caller falls back to the raw
+        result. This method never raises: any exception -> "" .
+        """
+        try:
+            question = (question or "").strip()
+            raw_text = (raw or "").strip()
+            if not question or not raw_text:
+                return ""
+            # Skip synthesis for degenerate/error blobs the wiki returns as
+            # prose -- grounding on a "not configured" message is noise.
+            low = raw_text.lower()
+            if low.startswith("wiki not configured") or low.startswith("wiki query failed"):
+                return ""
+
+            entries: list[dict] = []
+            # Best-effort parse of the /wiki/search fallback format the client
+            # renders as "Wiki search results:\n- title (slug): snippet". Each
+            # bulleted line becomes a candidate entry.
+            if raw_text.startswith("Wiki search results:"):
+                for line in raw_text.splitlines()[1:]:
+                    s = line.strip()
+                    if not s.startswith("- "):
+                        continue
+                    s = s[2:].strip()
+                    # Split "title (slug): snippet"
+                    title = s
+                    slug = ""
+                    body = ""
+                    if ":" in s:
+                        head, _, rest = s.partition(":")
+                        head = head.strip()
+                        body = rest.strip()
+                        if head.endswith(")") and "(" in head:
+                            open_i = head.rfind("(")
+                            title = head[:open_i].strip() or head
+                            slug = head[open_i + 1:-1].strip()
+                        else:
+                            title = head
+                    src = f"wiki/{slug}" if slug else "wiki"
+                    if title or body:
+                        entries.append({"title": title or "wiki", "body": body or title, "source": src})
+            if not entries:
+                # Fallback: wrap the whole blob as a single entry so nl_memory
+                # still has something to ground on.
+                entries.append({"title": question or "wiki", "body": raw_text, "source": "wiki"})
+
+            # Build a small `complete(prompt)->str` closure over the existing
+            # pilot's chat/complete surface. No streaming, no tools, single call.
+            def _complete(prompt: str) -> str:
+                pilot = getattr(self, "pilot", None)
+                if pilot is None:
+                    raise RuntimeError("no pilot available for grounded synthesis")
+                sysmsg = (
+                    "You are answering ONLY from the provided context entries. "
+                    "Be concise. Cite entries by number as [n]."
+                )
+                if hasattr(pilot, "chat"):
+                    resp = pilot.chat([{"role": "user", "content": prompt}], system=sysmsg)
+                else:
+                    resp = pilot.complete(prompt, system=sysmsg)
+                if resp is None:
+                    raise RuntimeError("empty pilot response")
+                if getattr(resp, "error", None):
+                    raise RuntimeError(f"pilot error: {resp.error}")
+                text = getattr(resp, "text", None)
+                return text or ""
+
+            from .nl_memory import answer_from_memory, NOT_FOUND
+            try:
+                out = answer_from_memory(question, entries, complete=_complete)
+            except Exception:
+                return ""
+            if not isinstance(out, dict):
+                return ""
+            ans = (out.get("answer") or "").strip()
+            if not ans or ans == NOT_FOUND:
+                return ""
+            citations = out.get("citations") or []
+            used = out.get("used_entry_ids") or []
+            if citations:
+                # Compact "[1] Title, [2] Title" citation trailer -- keeps the
+                # cited entry titles visible without dumping full bodies.
+                pairs = []
+                for i, n in enumerate(citations):
+                    label = used[i] if i < len(used) else f"entry-{n}"
+                    pairs.append(f"[{n}] {label}")
+                return f"{ans}\nCitations: " + ", ".join(pairs)
+            return ans
+        except Exception:
+            return ""
+
     def _append_action_result(self, act: Any, aid: str, content: str, is_native: bool) -> None:
         tc_id = getattr(act, "tool_call_id", None) or aid
         from harness.context_budget import maybe_persist_result
@@ -3151,11 +3252,28 @@ class ConversationalSession:
                     
                     try:
                         res = self._wiki.query(question)
+                        # Grounded synthesis: fold the raw wiki result through
+                        # harness.nl_memory.answer_from_memory so the surfaced
+                        # text is a concise, cited answer instead of a raw dump.
+                        # Everything here is best-effort: on ANY failure we fall
+                        # straight back to the exact prior behavior (raw res).
+                        surfaced = f"(query_wiki '{question}' returned)\n{res}"
+                        try:
+                            grounded = self._grounded_wiki_answer(question, res)
+                            if grounded:
+                                surfaced = (
+                                    f"(query_wiki '{question}' returned)\n"
+                                    f"{grounded}\n\n"
+                                    f"--- raw wiki result ---\n{res}"
+                                )
+                        except Exception:
+                            # Never regress the raw-dump path.
+                            surfaced = f"(query_wiki '{question}' returned)\n{res}"
                         yield ConvEvent("action_result", {
                             "id": aid, "num": 1, "types": ["query_wiki"], "adapter": "local", "mode": "tool",
                             "artifacts": [{"type": "query_wiki", "headline": f"Wiki: {question}"}],
                         })
-                        self._append_action_result(act, aid, f"(query_wiki '{question}' returned)\n{res}", is_native)
+                        self._append_action_result(act, aid, surfaced, is_native)
                     except Exception as e:
                         yield ConvEvent("action_result", {"id": aid, "error": str(e)})
                         self._append_action_result(act, aid, f"(query_wiki '{question}' failed: {e})", is_native)
