@@ -3500,10 +3500,20 @@ class Handler(BaseHTTPRequestHandler):
         budget = AutoBudget.from_env()
         gen = _pilot.run_auto(objective, budget)
         try:
+            last_ckpt = time.monotonic()
             for ev in gen:
                 payload = json.dumps({"kind": ev.kind, "data": ev.data})
                 self.wfile.write(f"data: {payload}\n\n".encode())
                 self.wfile.flush()
+                # Incremental checkpoint: flush immediately after an appended action
+                # result, else on a 2s throttle, so a crash mid governor-loop can't
+                # lose the last chunk of transcript before _finalize_turn runs.
+                if ev.kind in _CHECKPOINT_KINDS:
+                    _checkpoint_transcript()
+                    last_ckpt = time.monotonic()
+                elif time.monotonic() - last_ckpt >= 2.0:
+                    _checkpoint_transcript()
+                    last_ckpt = time.monotonic()
             self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -3740,16 +3750,32 @@ class Handler(BaseHTTPRequestHandler):
         # the fix.
         gen = _pilot.send(message, images=images or None, plan=plan, resume=resume)
         try:
+            last_ckpt = time.monotonic()
             for ev in gen:
                 payload = json.dumps({"kind": ev.kind, "data": ev.data})
                 self.wfile.write(f"data: {payload}\n\n".encode())
                 self.wfile.flush()
+                # Incremental checkpoint: flush the transcript immediately when an
+                # action result was just appended to history, else on a 2s throttle
+                # so a mid-turn crash can't lose the last chunk of transcript.
+                if ev.kind in _CHECKPOINT_KINDS:
+                    _checkpoint_transcript()
+                    last_ckpt = time.monotonic()
+                elif time.monotonic() - last_ckpt >= 2.0:
+                    _checkpoint_transcript()
+                    last_ckpt = time.monotonic()
             
             # After a chat turn streams its events, also drain ready swarm results:
             for ev in _pilot.drain_swarm_results():
                 payload = json.dumps({"kind": ev.kind, "data": ev.data})
                 self.wfile.write(f"data: {payload}\n\n".encode())
                 self.wfile.flush()
+                if ev.kind in _CHECKPOINT_KINDS:
+                    _checkpoint_transcript()
+                    last_ckpt = time.monotonic()
+                elif time.monotonic() - last_ckpt >= 2.0:
+                    _checkpoint_transcript()
+                    last_ckpt = time.monotonic()
 
             self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
             self.wfile.flush()
@@ -3764,6 +3790,26 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             _finalize_turn(ctx)
+
+
+# Event kinds that mean a tool result / action completion has just been appended
+# to _history -- checkpoint immediately (ignoring throttle) when we see one so a
+# crash right after an action never loses that appended chunk of the transcript.
+_CHECKPOINT_KINDS = frozenset({"action_result", "swarm_result"})
+
+
+def _checkpoint_transcript() -> None:
+    """Persist the CURRENT transcript mid-stream so a hard crash before
+    _finalize_turn() doesn't lose the in-flight turn. Mirrors the transcript step
+    of _finalize_turn (no postRun hooks) and is fully exception-isolated: it must
+    never break the SSE stream or take the handler thread down."""
+    try:
+        if _sessions.active:
+            save_transcript(_cfg.state_dir or _tf.gettempdir(),
+                            _sessions.active, _pilot.export_transcript_data())
+    except Exception as e:
+        import sys
+        print(f"[transcript checkpoint error] {e!r}", file=sys.stderr)
 
 
 def _finalize_turn(ctx) -> None:
