@@ -12,6 +12,23 @@ checkout.
 
 > Status: v0.7.x, deliberately pre-1.0. Vetted privately before any wider release.
 
+## Documentation
+
+Start here, then follow the map:
+
+| Doc | What's in it |
+|---|---|
+| [README](README.md) (this file) | What Marionette is, capabilities, install, run, configure. |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | The three-pane app, the pilot loop, module map, data flow. |
+| [DISTILLER_ARCHITECTURE.md](DISTILLER_ARCHITECTURE.md) | How completed sessions distill into durable skills/rules and wiki pages. |
+| [docs/session_decisions_v0_7_x.md](docs/session_decisions_v0_7_x.md) | Durable record of v0.7.x decisions: token economics, security auth gate, swarm findings capture, persistence, composer UX, the distribution model. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, conventions, how self-updating works for contributors. |
+| [RELEASING.md](RELEASING.md) | The source-run release model (why there is no binary to ship). |
+| [AGENTS.md](AGENTS.md) | Rules for agents/contributors working in this repo. |
+| [DEMO.md](DEMO.md) | A guided walkthrough of the harness in action. |
+| [FINDINGS.md](FINDINGS.md) | Research-rig findings: which models can drive the harness. |
+| [NOTICE.md](NOTICE.md) | Third-party attributions. |
+
 ## What it is
 
 Marionette is a three-pane desktop app (Electron + a stdlib Python backend over
@@ -38,7 +55,8 @@ workers the router selects.
 | **CodeGraph-first retrieval** | Per-turn structural context is auto-injected (symbols, defs, call sites) before the model acts, so it leans on the graph instead of dumping whole files. Self-healing: the index detects edits, additions, and deletions and refreshes in the background. |
 | **Puppetmaster delegation** | run_swarm (read-only analysis), run_implement (edit-capable worktree worker), run_parallel (concurrent waves). Heavy/multi-file work runs as durable, auditable jobs. |
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
-| **Vision on any model** | Paste or drop a screenshot; a VLM sidecar (Gemini, OpenRouter fallback) transcribes it so even a non-vision driver "sees" the image. |
+| **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
+| **Honest token economics** | Prompt caching across Anthropic/OpenAI/Gemini with a stable + moving cache breakpoint, cost billed at the real cache-read discount, and the context meter driven by the driver's actual token usage -- so cost and context reflect reality and the status bar shows the dollars caching saved you. |
 | **Full-auto mode** | Unattended objective pursuit bounded by an AutoBudget governor (max swarms / tokens / seconds / idle), with a non-bypassable command safety guard. |
 | **Command safety guard** | In full-auto, irreversible/remote/escalating shell commands (recursive deletes, ssh/scp, curl-pipe-to-shell, force-push, sudo, disk writes, key exfil) are screened and blocked; interactive co-working is untouched. Configurable per-command timeout (default 120s; 0/off = unbounded for long sessions). |
 
@@ -123,24 +141,19 @@ marionette doctor     # re-check the environment
 marionette update     # git pull + rebuild
 ```
 
-### Download the desktop app
+### How distribution works (source-run, no binary to download)
 
-Prefer a click-to-install build? Grab a signed/notarized installer
-(`v0.7.6`, [all releases](https://github.com/professorpalmer/marionette/releases/latest)):
+There is no DMG, `.exe`, or notarized installer to grab -- and that is by design,
+not a gap. Marionette runs from a source checkout on every machine: the installer
+above clones the repo, builds a per-machine venv, and drops a `marionette`
+launcher on your PATH. A "release" is simply `main` moving forward.
 
-- macOS (universal, Intel + Apple Silicon): [Marionette-0.7.6-universal.dmg](https://github.com/professorpalmer/marionette/releases/download/v0.7.6/Marionette-0.7.6-universal.dmg)
-- Windows: [Marionette-0.7.6-Setup.exe](https://github.com/professorpalmer/marionette/releases/download/v0.7.6/Marionette-0.7.6-Setup.exe)
-- Linux: [Marionette-0.7.6.AppImage](https://github.com/professorpalmer/marionette/releases/download/v0.7.6/Marionette-0.7.6.AppImage)
-
-The packaged app is a thin shell: on first launch it bootstraps the same source
-checkout into `~/.marionette/marionette`, so it stays self-updating like the
-installer path.
-
-Updates are in-app: the status-bar `update` pill runs `git pull` + rebuild +
-relaunch. Merging to `main` reaches everyone on their next click. Because
-Marionette can edit its own source, the updater knows how to stash + reapply
-local self-edits and flags a diverged fork instead of failing silently. Cutting a
-version tag triggers signed/notarized release builds; see `RELEASING.md`.
+Updates are in-app and instant to ship: the status-bar `update` pill runs
+`git pull` + rebuild + relaunch, so merging to `main` reaches everyone on their
+next click -- no per-arch build, upload, or signing step. Because Marionette can
+edit its own source, the updater stashes + reapplies local self-edits and flags a
+diverged fork instead of failing silently. Version tags exist only so the app can
+show a human-readable version; see [RELEASING.md](RELEASING.md).
 
 ## Run it (contributor / dev)
 
@@ -175,8 +188,10 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | Env var | Purpose |
 |---|---|
 | `OPENROUTER_API_KEY` | Default reach: the whole field through one endpoint. |
-| `GEMINI_API_KEY` | Vision sidecar (image transcription); OpenRouter VLM fallback. |
+| `GEMINI_API_KEY` | Optional dedicated vision key. Not required -- vision also falls back to any provider key you already have that exposes a vision model. |
+| `HARNESS_VLM_REACH` / `HARNESS_VLM_MODEL` | Explicit vision-sidecar override (e.g. `openrouter` for an open VLM) and its model. |
 | `HARNESS_DRIVER` | Pilot model id. |
+| `HARNESS_STATE_DIR` | State home for sessions, transcripts, prompt queue, keys. Defaults to a stable `~/.pmharness/state` so history survives restarts. |
 | `HARNESS_COMMAND_TIMEOUT` | Per-command shell timeout in seconds; 0/off = unbounded. |
 | `HARNESS_AUTO_COMMAND_GUARD` | Full-auto danger guard; default on, off to disable. |
 | `HARNESS_WIKI_ORCHESTRATE` | Local wiki structuring: unset (off), 1/approve (prepare-and-approve), auto (silent ingest). |

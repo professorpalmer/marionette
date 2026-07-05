@@ -110,13 +110,24 @@ deepseek, qwen) then "sees" the image through the transcription. The image is
 processed once, never re-sent. Vision is a harness capability, like CodeGraph
 context injection -- the driver only ever reasons over text.
 
+The sidecar is resolved in tiers (`harness/vision.py` `default_sidecar`): an
+explicit `HARNESS_VLM_REACH` override (e.g. `openrouter` for an open VLM) ->
+a dedicated Gemini/OpenRouter vision key -> ANY already-configured provider that
+exposes a vision model (Anthropic/OpenAI/xAI via `provider_vision_sidecar`) ->
+`NullVisionSidecar`, which raises an actionable error rather than crashing. So no
+specific vision vendor is required: if you have configured any vision-capable
+provider, images work out of the box.
+
 ## 6. Durable state (`harness/state.py`)
 
 A read-only layer over Puppetmaster's `SwarmStore`: `list_jobs`,
 `job_artifacts`, and the live event stream. This is what the GUI's right pane
 renders. The Session writes (by driving the Orchestrator); DurableState reads.
 Because state lives in Puppetmaster's store, job history persists across harness
-restarts for free.
+restarts for free. Alongside it, the harness persists sessions, transcripts, and
+the prompt queue under a stable `HARNESS_STATE_DIR` (default `~/.pmharness/state`):
+`prompt_queue.json` plus `transcripts/{id}.json`, so an in-flight playlist of
+prompts and prior conversation survive a backend restart.
 
 ## 7. Surfaces
 
@@ -130,6 +141,31 @@ restarts for free.
   ladder), `harness doctor` (health check), `harness --version`. Run flags:
   --driver/--budget/--image/--json; exit codes 0 clean / 1 error / 2 forced.
   Same Session core; graceful missing-key handling (preflight) on every path.
+
+### 7a. HTTP surface security
+
+The GUI server (`harness/server.py`) is local-first but not trust-open. A
+per-process auth token (`_TOKEN`, `HARNESS_TOKEN` override) is written chmod-600
+and checked by a CENTRALIZED gate in `do_GET`: every path is rejected unless the
+request carries the token, with a single public allowlist -- `_PUBLIC_GET_PATHS =
+{"/", "/index.html", "/app.js", "/app.css"}` (the static shell that bootstraps
+the authenticated client). Host and Origin are also validated. The API is
+authenticated by default; there is no per-endpoint opt-in.
+
+### 7b. Token economics (prompt caching + real context meter)
+
+The cost thesis is enforced with real accounting, not estimates:
+
+- **Multi-provider prompt caching.** The Anthropic driver
+  (`pmharness/drivers/anthropic.py`) sets a stable plus a moving cache breakpoint
+  so the large, unchanging prefix is served from cache across turns.
+- **Cache-read billing.** `harness/server.py` prices cached prompt tokens at a
+  steep discount (`CACHE_READ_MULTIPLIER = 0.1`) inside `_session_cost` /
+  `_job_cost`, and surfaces the dollars saved via `_cache_savings` ->
+  `cache_savings_usd` in job/session payloads.
+- **Real-usage context meter.** `harness/conversation.py` tracks
+  `_last_prompt_tokens` from actual provider usage, so the context gauge reflects
+  measured prompt size rather than a heuristic.
 
 ## 8. The evaluation ladder (how the driver choice was justified)
 
@@ -148,7 +184,9 @@ layer empirically. Each stage answered one question and exposed the next:
 both eval batteries at 100% quality (the value `harness/config.py` actually
 sets). Swappable to any catalog model via config.
 
-Results live in `results/STAGE*_RESULTS.md`. Every score is from real execution
+Results live in `results/STAGE*_RESULTS.md` (Stages 1-3.5) and
+`results/STAGE4_FIELD_RESULTS.md` (the ranked open-weights field). Every score is
+from real execution
 against real Puppetmaster; an early false "30%" run (a masker-truncated API key)
 was caught by the eval's own token instrumentation and never reported.
 
