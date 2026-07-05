@@ -1575,6 +1575,14 @@ class Handler(BaseHTTPRequestHandler):
             
             return self._send(200, json.dumps(res))
         if path == "/api/sessions/switch":
+            # Guard against swapping history out from under a live turn: if a
+            # turn is in flight the in-flight generator would write into the
+            # newly-loaded session's history (the "messages continued in the
+            # other session" bleed), and we'd save a mid-spree transcript with a
+            # dangling tool_use. Reject fast if _pilot is busy.
+            if not _pilot._busy.acquire(blocking=False):
+                return self._send(409, json.dumps({"error": "pilot busy -- finish or stop the current turn before switching sessions"}))
+            _pilot._busy.release()
             if _sessions.active:
                 save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
             res = _sessions.switch(body.get("id",""))

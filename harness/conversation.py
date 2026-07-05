@@ -145,6 +145,39 @@ def _clamp_tool_result(text: str, max_chars: Optional[int] = None) -> str:
     return head + marker + tail
 
 
+def _hardwrap_long_tokens(text: str, width: int = 200) -> str:
+    """Soft-wrap any single unbroken run of non-whitespace longer than ``width``
+    by inserting a newline every ``width`` chars. A pasted key/sha/base64 blob
+    with no whitespace can overflow a single line; breaking it keeps a steer (or
+    any wrapped text) contained. Idempotent for runs already <= width."""
+    if not text:
+        return text
+    out = []
+    run = []
+
+    def _flush_run() -> None:
+        if not run:
+            return
+        token = "".join(run)
+        if len(token) > width:
+            for k in range(0, len(token), width):
+                out.append(token[k:k + width])
+                if k + width < len(token):
+                    out.append("\n")
+        else:
+            out.append(token)
+        run.clear()
+
+    for ch in text:
+        if ch.isspace():
+            _flush_run()
+            out.append(ch)
+        else:
+            run.append(ch)
+    _flush_run()
+    return "".join(out)
+
+
 def load_workspace_rules(repo: Optional[str]) -> str:
     if not repo or not os.path.isdir(repo):
         return ""
@@ -636,6 +669,10 @@ class ConversationalSession:
         return bool(len(self._history) > 1 and self._history[-1].get("role") == "user")
 
     def export_transcript_data(self) -> dict:
+        # Heal any dangling tool_use BEFORE serializing so a corrupted (e.g.
+        # mid-spree) transcript is never persisted. export_history() slices
+        # self._history[1:], so sanitize self._history first.
+        self._sanitize_tool_pairs()
         return {
             "history": self.export_history(),
             "display": self.export_display_transcript(),
@@ -658,6 +695,9 @@ class ConversationalSession:
         system_prompt = self._history[0]
         cleaned = [m for m in history_list if m.get("role") != "system"]
         self._history = [system_prompt] + cleaned
+        # Heal a previously-corrupted transcript (dangling or non-adjacent
+        # tool_use) on load so we never send an invalid history to the model.
+        self._sanitize_tool_pairs()
 
     def _render_history(self) -> str:
         """Flatten transcript into a single prompt for completion-style drivers."""
@@ -798,7 +838,7 @@ class ConversationalSession:
         # Tool definitions section
         from .pilot import build_tools_schema
         mcp_tools = self._mcp.discovered_tools() if self._mcp else None
-        tools_schema = build_tools_schema(mcp_tools, no_delegation=getattr(self.config, "no_delegation", False))
+        tools_schema = build_tools_schema(mcp_tools, no_delegation=getattr(self.config, "no_delegation", False), browser_enabled=getattr(self.config, "browser_enabled", True))
         serialized_tools = json.dumps(tools_schema)
         tool_definitions_tokens = len(serialized_tools) // 4
         
@@ -992,38 +1032,49 @@ class ConversationalSession:
         is cut short mid-spree (cancel, steer, a worker hitting its step ceiling,
         an exception). For any dangling tool_call id, synthesize a stub tool
         result so history stays valid. Idempotent and cheap; safe to call before
-        every request."""
+        every request.
+
+        Adjacency (not mere presence) is enforced: Anthropic requires each
+        assistant tool_use to be answered by tool_result block(s) IMMEDIATELY
+        after that assistant message. A steer or any other message wedged
+        between the assistant tool_use and its tool result breaks the
+        "immediately after" rule even if the result appears later in history.
+        So for each assistant message with tool_calls we consume ONLY the
+        contiguous run of tool-role messages that directly follow it; any
+        tool_call id not present in that adjacent run gets a stub tool result
+        inserted right after the run."""
         history = self._history
-        # Collect tool_call ids that already have a matching tool result.
-        answered = set()
-        for m in history:
-            if m.get("role") == "tool":
-                tcid = m.get("tool_call_id")
-                if tcid:
-                    answered.add(tcid)
-        # Walk assistant messages; for each tool_call without an answer, insert a
-        # stub tool result IMMEDIATELY after that assistant message.
-        i = 0
         out = []
-        for m in history:
+        i = 0
+        n = len(history)
+        while i < n:
+            m = history[i]
             out.append(m)
             if m.get("role") == "assistant" and m.get("tool_calls"):
-                # Find which of this message's tool_calls are unanswered.
-                needed = []
+                # Consume the contiguous run of tool-role messages right after
+                # this assistant message; collect their tool_call_ids.
+                j = i + 1
+                run_ids = set()
+                while j < n and history[j].get("role") == "tool":
+                    out.append(history[j])
+                    tcid = history[j].get("tool_call_id")
+                    if tcid:
+                        run_ids.add(tcid)
+                    j += 1
+                # For any tool_call id NOT answered in that adjacent run, insert
+                # a stub tool result immediately after the run.
                 for tc in m.get("tool_calls") or []:
                     tcid = tc.get("id")
-                    if tcid and tcid not in answered:
-                        needed.append(tcid)
-                if needed:
-                    # Only insert stubs if the NEXT message isn't already the
-                    # matching tool result(s) for them (avoid duplicate inserts).
-                    for tcid in needed:
+                    if tcid and tcid not in run_ids:
                         out.append({
                             "role": "tool",
                             "tool_call_id": tcid,
                             "content": "(no result: the previous action was interrupted before it completed)",
                         })
-                        answered.add(tcid)
+                        run_ids.add(tcid)
+                i = j
+                continue
+            i += 1
         self._history = out
 
     def _append_action_result(self, act: Any, aid: str, content: str, is_native: bool) -> None:
@@ -1671,7 +1722,14 @@ class ConversationalSession:
         """Single definition of the OUT-OF-BAND USER MESSAGE marker wrapping a
         steer. Shared by both delivery points (mid-spree piggyback in
         _check_and_inject_steer, and finalization-time user-message append in
-        the step loop) so the literal is never duplicated."""
+        the step loop) so the literal is never duplicated.
+
+        The incoming text is clamped (bounded length) and any single unbroken
+        run of >200 non-whitespace chars (e.g. a pasted key/sha) is hard-wrapped
+        so it cannot overflow. This covers BOTH delivery points because both
+        route through this one helper."""
+        text = _clamp_tool_result(text)
+        text = _hardwrap_long_tokens(text, width=200)
         return (
             "\n\n[OUT-OF-BAND USER MESSAGE - a direct message from the user, "
             "delivered mid-turn; not tool output. Stop your current line of work, "
@@ -1703,11 +1761,31 @@ class ConversationalSession:
             yield ConvEvent("steer", {"text": steer})
             # Inject into the last result-bearing message (tool role for native
             # tool-calling, or the user-role result the JSON-envelope path appends).
+            #
+            # Adjacency safety: a tool-role result may only be piggybacked on
+            # when it belongs to the CONTIGUOUS run of tool results IMMEDIATELY
+            # following the last assistant tool_use. Injecting into a tool
+            # message that already has a non-tool message after it (before the
+            # next assistant) would leave that assistant tool_use no longer
+            # directly followed by its tool_result -- the steer itself would
+            # create the non-adjacent tool_use/tool_result Anthropic rejects. In
+            # that case defer the steer (put it back pending), exactly like the
+            # no-target case.
             injected = False
             for i in range(len(self._history) - 1, -1, -1):
                 m = self._history[i]
                 role = m.get("role")
-                if role == "tool" or (role == "user" and i > 0):
+                if role == "tool":
+                    # Only safe if this tool message traces back through a
+                    # contiguous tool-result run to an assistant tool_use with no
+                    # non-tool gap. Since we scan from the end, a non-tool
+                    # message after it would have been hit first, so reaching a
+                    # tool message here means nothing non-tool follows it.
+                    if self._tool_result_is_adjacent(i):
+                        m["content"] = (m.get("content") or "") + marker_text
+                        injected = True
+                    break
+                if role == "user" and i > 0:
                     m["content"] = (m.get("content") or "") + marker_text
                     injected = True
                     break
@@ -1723,6 +1801,21 @@ class ConversationalSession:
                 # synthetic user turn.
                 with self._steer_lock:
                     self._steer_queue.appendleft(steer)
+
+    def _tool_result_is_adjacent(self, i: int) -> bool:
+        """True when the tool-role message at history index ``i`` is part of the
+        contiguous run of tool results IMMEDIATELY following an assistant
+        tool_use, with no non-tool message wedged between that assistant and
+        ``i``. Piggybacking a steer onto such a message keeps the tool_use ->
+        tool_result adjacency Anthropic requires."""
+        history = self._history
+        if not (0 <= i < len(history)) or history[i].get("role") != "tool":
+            return False
+        j = i - 1
+        while j >= 0 and history[j].get("role") == "tool":
+            j -= 1
+        # history[j] must be the assistant tool_use that opened this run.
+        return j >= 0 and history[j].get("role") == "assistant" and bool(history[j].get("tool_calls"))
 
     def _is_correction(self, text: str) -> bool:
         t = text.lower()
@@ -2115,7 +2208,7 @@ class ConversationalSession:
                     if hasattr(self.pilot, "chat"):
                         from .pilot import build_tools_schema
                         mcp_tools = self._mcp.discovered_tools() if self._mcp else None
-                        tools_schema = build_tools_schema(mcp_tools, no_delegation=getattr(self.config, "no_delegation", False))
+                        tools_schema = build_tools_schema(mcp_tools, no_delegation=getattr(self.config, "no_delegation", False), browser_enabled=getattr(self.config, "browser_enabled", True))
                         
                         is_interactive = not getattr(self.config, "no_delegation", False)
                         # Gate on an EXPLICIT capability flag (is True) + a callable chat_stream.
@@ -2471,6 +2564,9 @@ class ConversationalSession:
                     act_goal = act.query
                 elif act.kind == "query_wiki":
                     act_goal = act.arguments.get("question") or ""
+                elif act.kind.startswith("browser_"):
+                    _b = act.arguments or {}
+                    act_goal = _b.get("url") or _b.get("ref") or _b.get("direction") or act.kind
 
                 yield ConvEvent("action_start", {
                     "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
@@ -2906,6 +3002,37 @@ class ConversationalSession:
                         else:  # status == "exception" or "invalid_arguments"
                             yield ConvEvent("action_result", {"id": aid, "error": val})
                             self._append_action_result(act, aid, f"(search_files '{act.query}' failed: {val})", is_native)
+                    continue
+                # ---- native browser / computer-use tools ----------------------
+                if act.kind in ("browser_navigate", "browser_snapshot", "browser_click",
+                                "browser_type", "browser_scroll", "browser_back",
+                                "browser_get_text", "browser_screenshot"):
+                    try:
+                        from . import browser as _browser
+                        bargs = act.arguments or {}
+                        if act.kind == "browser_navigate":
+                            res = _browser.browser_navigate(bargs.get("url") or act.url or "")
+                        elif act.kind == "browser_snapshot":
+                            res = _browser.browser_snapshot()
+                        elif act.kind == "browser_click":
+                            res = _browser.browser_click(bargs.get("ref") or "")
+                        elif act.kind == "browser_type":
+                            res = _browser.browser_type(bargs.get("ref") or "", bargs.get("text") or "")
+                        elif act.kind == "browser_scroll":
+                            res = _browser.browser_scroll(bargs.get("direction") or "down")
+                        elif act.kind == "browser_back":
+                            res = _browser.browser_back()
+                        elif act.kind == "browser_get_text":
+                            res = _browser.browser_get_text()
+                        else:  # browser_screenshot
+                            res = _browser.browser_screenshot()
+                    except Exception as e:
+                        res = f"Error: {e}"
+                    yield ConvEvent("action_result", {
+                        "id": aid, "num": 1, "types": [act.kind], "adapter": "local", "mode": "tool",
+                        "artifacts": [{"type": act.kind, "headline": act.kind}],
+                    })
+                    self._append_action_result(act, aid, f"({act.kind} returned)\n{res}", is_native)
                     continue
                 # ---- query_wiki branch ----------------------------------------
                 if act.kind == "query_wiki":
