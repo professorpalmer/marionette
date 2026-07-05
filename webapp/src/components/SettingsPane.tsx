@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { ChevronRight, ChevronDown, Plus, Trash2, ExternalLink, Search, X } from "lucide-react";
 import { api, type Settings, type UsageData, type PlatformAdapter, type GitStatus, type ProviderInfo } from "../lib/api";
 import SkillsPane from "./SkillsPane";
@@ -26,14 +26,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     if (ok) anyShown = true;
     return ok;
   };
-  // Setting wrapper is available for future per-item wrapping; keeps parity with
-  // the gate() helper used on section blocks below.
-  const Setting = ({ keywords, children }: { keywords: string; children: ReactNode }) => {
-    if (!matches(keywords)) return null;
-    anyShown = true;
-    return <>{children}</>;
-  };
-  void Setting;
+  // Note: search granularity is PER-SETTING already -- every gate() call below
+  // carries its own keyword string (label + synonyms) for one logical setting,
+  // so typing e.g. "timeout" or "distill" filters to just that control across
+  // all sections. No separate per-item wrapper is needed.
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
@@ -381,9 +377,12 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       )}
 
       {/* Settings search: sticky at the top so it stays reachable while the
-          dense settings list scrolls. Filters visible settings by label + help
-          text and, when active, searches across all sections. */}
-      <div className="sticky top-0 z-10 -mx-4 px-4 py-2 mb-2 bg-panel2/95 backdrop-blur border-b border-edge">
+          dense settings list scrolls. Uses a FULLY OPAQUE background (bg-panel)
+          and a high z-index so scrolled settings pass BEHIND it instead of
+          bleeding through the bar. -mx-8 pt-6 -mt-6 offsets the shell's px-8/py-6
+          scroll-container padding so the bar spans edge-to-edge and covers the
+          gap above it (no sliver of content shows over the top). */}
+      <div className="sticky -top-6 z-30 -mx-8 px-8 pt-6 pb-2 mb-2 bg-panel border-b border-edge">
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-faint" size={13} />
           <input
