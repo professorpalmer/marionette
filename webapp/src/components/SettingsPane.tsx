@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ChevronRight, ChevronDown, Plus, Trash2, ExternalLink } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { ChevronRight, ChevronDown, Plus, Trash2, ExternalLink, Search, X } from "lucide-react";
 import { api, type Settings, type UsageData, type PlatformAdapter, type GitStatus, type ProviderInfo } from "../lib/api";
 import SkillsPane from "./SkillsPane";
 import MemoryPane from "./MemoryPane";
@@ -8,6 +8,32 @@ export type SettingsSection = "general" | "safety" | "providers" | "notification
 
 export default function SettingsPane({ onOpenWizard, section = "general" }: { onOpenWizard: () => void; section?: SettingsSection }) {
   const show = (s: SettingsSection) => section === s;
+  // Settings search/filter: when a query is active we search ACROSS all sections
+  // (ignore the current-section gate) and hide individual settings whose label +
+  // help text do not contain the query. Empty query = today's behavior exactly.
+  const [filter, setFilter] = useState("");
+  const q = filter.trim().toLowerCase();
+  const matches = (text: string) => !q || text.toLowerCase().includes(q);
+  // Section gate: normally only the active section shows; while searching, all
+  // sections are eligible so cross-section matches surface.
+  const active = (s: SettingsSection) => (q ? true : show(s));
+  // Track whether any setting rendered, to show a "no matches" hint.
+  let anyShown = false;
+  // gate() combines the section visibility with the keyword filter and records
+  // whether anything survived so we can render a "no matches" line.
+  const gate = (s: SettingsSection, keywords: string) => {
+    const ok = active(s) && matches(keywords);
+    if (ok) anyShown = true;
+    return ok;
+  };
+  // Setting wrapper is available for future per-item wrapping; keeps parity with
+  // the gate() helper used on section blocks below.
+  const Setting = ({ keywords, children }: { keywords: string; children: ReactNode }) => {
+    if (!matches(keywords)) return null;
+    anyShown = true;
+    return <>{children}</>;
+  };
+  void Setting;
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
@@ -354,8 +380,35 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
       )}
 
+      {/* Settings search: sticky at the top so it stays reachable while the
+          dense settings list scrolls. Filters visible settings by label + help
+          text and, when active, searches across all sections. */}
+      <div className="sticky top-0 z-10 -mx-4 px-4 py-2 mb-2 bg-panel2/95 backdrop-blur border-b border-edge">
+        <div className="relative">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-faint" size={13} />
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Search settings..."
+            className="w-full bg-panel border border-edge rounded text-[11px] text-txt
+                       pl-7 pr-7 py-1.5 outline-none focus:border-accent placeholder:text-faint"
+          />
+          {filter && (
+            <button
+              type="button"
+              onClick={() => setFilter("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-txt"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="space-y-4">
-        {show("general") && (<>
+        {gate("general", "provider model setup wizard api keys routing") && (<>
         {/* Wizard Button */}
         <div className="space-y-1.5 border-b border-edge/65 pb-3">
           <button
@@ -370,7 +423,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("general") && (<>
+        {gate("general", "driver model select") && (<>
         {/* Driver Select */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -394,7 +447,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("general") && (<>
+        {gate("general", "budget steps per run") && (<>
         {/* Budget Stepper / Number */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -423,7 +476,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("general") && (<>
+        {gate("general", "auto-distill distillation toggle") && (<>
         {/* Auto Distill Toggle */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -449,7 +502,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("general") && (<>
+        {gate("general", "review edits diff review toggle") && (<>
         {/* Diff Review Toggle */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -475,7 +528,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("safety") && (<>
+        {gate("safety", "full-auto safety command guard timeout max investigation steps") && (<>
         {/* Full-Auto Safety: command guard + timeout */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -540,7 +593,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("providers") && (<>
+        {gate("providers", "providers api keys connect disconnect per-provider key management") && (<>
         {/* Per-provider key management: connect/disconnect each provider independently */}
         <div className="space-y-2">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -632,7 +685,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("providers") && (<>
+        {gate("providers", "platform adapters control cli claude codex openai cursor") && (<>
         {/* Platform Adapters Control (ADVANCED -- optional) */}
         <div className="space-y-3 border-t border-edge pt-3">
           <button
@@ -700,7 +753,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("notifications") && (<>
+        {gate("notifications", "observability queue notifications sound desktop messages") && (<>
         {/* Observability & Queue Prefs */}
         <div className="space-y-3 border-t border-edge pt-3">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -756,7 +809,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("advanced") && _selfDevIpc && (<>
+        {gate("advanced", "live ui vite hmr hot reload self dev restart") && _selfDevIpc && (<>
         {/* Live UI Section (Vite HMR). The backend always runs from source. */}
         <div className="border-t border-edge pt-3 space-y-2">
           <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
@@ -797,7 +850,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           </button>
         </div>
         </>)}
-        {show("advanced") && (<>
+        {gate("advanced", "lifecycle hooks events command") && (<>
         {/* Lifecycle Hooks Section */}
         <div className="border-t border-edge pt-3 space-y-2">
           <button
@@ -929,7 +982,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("advanced") && (<>
+        {gate("advanced", "agent memory durable facts preferences") && (<>
         {/* Agent Memory Section */}
         <div className="border-t border-edge pt-3 space-y-2">
           <button
@@ -952,7 +1005,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("advanced") && (<>
+        {gate("advanced", "skills rules learned") && (<>
         {/* Skills & Rules Section */}
         <div className="border-t border-edge pt-3 space-y-2">
           <button
@@ -975,7 +1028,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("general") && (<>
+        {gate("general", "usage cost token dashboard spend statistics") && (<>
         {/* Usage / Cost Dashboard Section */}
         <div className="border-t border-edge pt-3 space-y-2.5">
           <div className="flex items-center justify-between">
@@ -1041,7 +1094,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("general") && (<>
+        {gate("general", "system info version read-only") && (<>
         {/* Read-Only Info */}
         <div className="border-t border-edge pt-3 space-y-2.5">
           <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -1080,7 +1133,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("providers") && (<>
+        {gate("providers", "github wiki repo provisioning git connect device flow") && (<>
         {/* GitHub & Wiki Repo Provisioning */}
         <div className="border-t border-edge pt-3 space-y-2">
           <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -1200,7 +1253,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {show("advanced") && (<>
+        {gate("advanced", "wiki graph portable-llm-wiki api base token") && (<>
         {/* WIKI GRAPH (portable-llm-wiki gated owner surface) */}
         <div className="border-t border-edge pt-3 space-y-2">
           <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -1253,6 +1306,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           </a>
         </div>
         </>)}
+        {q && !anyShown && (
+          <p className="text-[11px] text-muted">No settings match "{filter.trim()}".</p>
+        )}
       </div>
     </div>
   );
