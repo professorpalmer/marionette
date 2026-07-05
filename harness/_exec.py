@@ -56,26 +56,71 @@ def _node_candidate_dirs() -> list[str]:
     return dirs
 
 
-def _ensure_node_on_path() -> None:
-    """Make `node` discoverable for CodeGraph even when the backend was spawned
-    with a stripped PATH.
+def _is_app_bundle_path(p: str) -> bool:
+    """True when `p` lives inside a macOS `.app/Contents/` bundle.
 
-    The Electron host launches the Python backend with PATH=/usr/bin:/bin:...
-    (no user shell profile), so a Node installed under ~/.local/bin, Homebrew,
-    or a version manager is invisible -- and CodeGraph (a Node CLI using
-    node:sqlite) reports "unavailable"/"unsupported" even though Node is on the
-    machine. Prepend the first candidate dir that actually contains a `node`
-    binary. Idempotent, best-effort, no-op once Node resolves."""
+    Used to reject a `node` binary that belongs to another application (most
+    notably `/Applications/Cursor.app/Contents/Resources/app/resources/helpers/node`),
+    since spawning it from our backend is a cross-app binary launch that macOS
+    TCC flags with the recurring "wants to access data from other apps"
+    prompt. The check is a pure string scan (case-insensitive) so it is safe
+    to evaluate on any platform; on non-macOS it simply never matches real
+    paths."""
+    if not p:
+        return False
+    try:
+        norm = p.replace("\\", "/").lower()
+    except Exception:
+        return False
+    # Match a `.app/Contents/` (or trailing `.app/Contents`) segment anywhere
+    # in the path. Guard against a bare ".app" filename that isn't a bundle.
+    return ".app/contents/" in norm or norm.endswith(".app/contents")
+
+
+def _ensure_node_on_path() -> None:
+    """Make a CLEAN `node` discoverable for CodeGraph even when the backend was
+    spawned with a stripped or cross-app-polluted PATH.
+
+    Two failure modes we defend against:
+
+    1. Stripped PATH (Electron host launches the Python backend with
+       PATH=/usr/bin:/bin:...) -- a Node installed under ~/.local/bin,
+       Homebrew, or a version manager is invisible and CodeGraph (a Node CLI
+       using node:sqlite) reports "unavailable"/"unsupported".
+    2. Cross-app node on PATH -- the Electron host (e.g. Cursor) exposes its
+       BUNDLED node at `/Applications/Cursor.app/Contents/.../helpers/node`.
+       `shutil.which("node")` happily returns it, but spawning that binary
+       from our process is a cross-app launch that macOS TCC flags with the
+       recurring "wants to access data from other apps" prompt.
+
+    So: only accept a `node` on PATH if it is NOT inside a `.app/Contents/`
+    bundle. Otherwise, prepend the first `_node_candidate_dirs()` entry that
+    (a) contains a real `node` binary and (b) is itself not inside an .app
+    bundle -- preferring /opt/homebrew/bin and the other clean prefixes over
+    anything Cursor.app injected. Idempotent, best-effort, never raises."""
     global _NODE_PATH_ENSURED
     if _NODE_PATH_ENSURED:
         return
-    if shutil.which("node"):
+    try:
+        resolved = shutil.which("node")
+    except Exception:
+        resolved = None
+    if resolved and not _is_app_bundle_path(resolved):
+        # Already good: a real, non-cross-app node is on PATH. Leave PATH alone.
         _NODE_PATH_ENSURED = True
         return
+
     exe = "node.exe" if os.name == "nt" else "node"
-    for d in _node_candidate_dirs():
+    try:
+        candidates = _node_candidate_dirs()
+    except Exception:
+        candidates = []
+    for d in candidates:
         try:
-            if d and os.path.isfile(os.path.join(d, exe)):
+            if not d or _is_app_bundle_path(d):
+                continue
+            node_path = os.path.join(d, exe)
+            if os.path.isfile(node_path) and not _is_app_bundle_path(node_path):
                 os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
                 break
         except Exception:
