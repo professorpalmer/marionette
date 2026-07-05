@@ -47,6 +47,25 @@ local model (e.g. qwen3-coder-30b via OpenRouter, cents per session) handles
 inline work; heavier reasoning and multi-file changes delegate to Puppetmaster
 workers the router selects.
 
+### Aligned incentives (why a kernel, not a model vendor)
+
+A first-party coding tool from a model lab sells you tokens -- every optimization
+that cuts your token bill cuts their revenue. They build prompt caching because
+competitive pressure forces it, then stop exactly where "competitive" ends: cached
+reads are billed at ~10% of input, not free, and the savings are rarely shown to
+you at all. Marionette makes nothing from your token count, so its incentives point
+one way -- minimize your spend and prove it:
+
+- **Send less.** CodeGraph-first retrieval injects targeted symbols instead of
+  dumping whole files, so prompts start small.
+- **Re-send cheap.** Multi-provider prompt caching (stable + moving breakpoints)
+  serves the large, unchanging prefix from cache every turn.
+- **Bill honestly.** Cached tokens are priced at the real cache-read discount and
+  the dollars saved are shown live in the status bar -- not hidden.
+- **Route to the cheapest sufficient model**, including a competitor's open-weights
+  model. A model vendor will never route you off its own tokens; an independent
+  kernel will. That is an alignment a first-party tool structurally cannot match.
+
 ## Core capabilities
 
 | Capability | What it does |
