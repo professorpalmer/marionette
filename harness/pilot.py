@@ -69,6 +69,11 @@ class PilotAction:
     ref: str = ""
     text: str = ""
     direction: str = ""
+    # run_implement / run_parallel: optional absolute path to a DIFFERENT git
+    # repository to run the dispatch in (defaults to the open workspace when
+    # empty). Threaded to the worker via a per-dispatch HarnessConfig copy so
+    # the existing edit engines transparently target it.
+    repo: str = ""
     start_line: Optional[int] = None
     limit: Optional[int] = None
 
@@ -451,7 +456,8 @@ def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = F
                     "type": "object",
                     "properties": {
                         "goal": {"type": "string", "description": "The coding objective / task description to implement"},
-                        "adapter": {"type": "string", "description": "Optional edit engine. Default is 'agentic' -- Puppetmaster's standalone keys-only worker (routes directly through your provider API, no external CLI). 'native' forces Marionette's own richer pilot loop. 'cursor'/'codex'/'claude-code' use those external agent CLIs when installed."}
+                        "adapter": {"type": "string", "description": "Optional edit engine. Default is 'agentic' -- Puppetmaster's standalone keys-only worker (routes directly through your provider API, no external CLI). 'native' forces Marionette's own richer pilot loop. 'cursor'/'codex'/'claude-code' use those external agent CLIs when installed."},
+                        "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one."}
                     },
                     "required": ["goal"]
                 }
@@ -474,7 +480,8 @@ def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = F
                             "description": "Array of goals/objectives to run in parallel"
                         },
                         "adapter": {"type": "string", "description": "Optional edit engine (default 'agentic' -- standalone keys-only; 'native' for the richer pilot; 'cursor'/'codex'/'claude-code' for external CLIs when installed)"},
-                        "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"}
+                        "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"},
+                        "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one."}
                     },
                     "required": ["goals"]
                 }
@@ -695,6 +702,12 @@ def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> Pilot
             except ValueError:
                 pass
 
+        # Optional target-repo for run_implement / run_parallel dispatches --
+        # points the worker at a DIFFERENT git repo than the open workspace.
+        repo_arg = ""
+        if kind in ("run_implement", "run_parallel"):
+            repo_arg = (args.get("repo") or args.get("target_dir") or "").strip()
+
         return PilotAction(
             kind=kind,
             path=path,
@@ -720,6 +733,7 @@ def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> Pilot
             ref=(args.get("ref") or "").strip(),
             text=(args.get("text") or args.get("value") or "").strip() if kind == "browser_type" else "",
             direction=(args.get("direction") or "").strip(),
+            repo=repo_arg,
             arguments=args,
             tool_call_id=tool_call_id
         ).validate()

@@ -185,7 +185,11 @@ def test_worker_empty_change(monkeypatch):
         assert res.ok is False
         assert res.patch == ""
         assert res.files_changed == []
-        assert res.summary == "no changes produced"
+        # Summary was made truthful in the empty-diff branch: it now names
+        # the worktree it inspected instead of lying with "no changes produced".
+        # See harness.worker._detect_escaped_writes and the finalize block.
+        assert res.summary.startswith('no changes captured in the worktree diff')
+        assert res.worktree in res.summary
         
         # Worktree should still be cleaned up because success of the run itself is False but keep_worktree_on_failure only retains on execution failure (exceptions), not on empty diff.
         # Wait, if patch is empty, is it a success or a failure of the execution?

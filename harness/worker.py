@@ -48,6 +48,118 @@ class WorkerResult:
     # undercounted every implement worker's prompt cost (audit finding #5).
     tokens_out: int = 0
     tokens_in: int = 0
+    # Absolute paths the worker wrote to via run_command that fall OUTSIDE its
+    # worktree. Populated best-effort by _detect_escaped_writes so callers can
+    # tell "no diff" apart from "the agent shelled out to another repo".
+    # Optional with a default: adding it here is not a breaking change for
+    # callers that construct WorkerResult positionally.
+    escaped_paths: list[str] = field(default_factory=list)
+
+
+# --- Escaped-write detection ------------------------------------------------
+# The worker runs inside a git worktree and captures its patch via `git diff`
+# on that worktree. A run_command action that shells out with an absolute-path
+# redirection (`cat > /some/other/repo/file`) writes real bytes to disk that
+# the worktree diff CANNOT see, so the worker would silently report "no
+# changes" while having edited another repo. These regexes flag the obvious
+# forms so the finalizer can surface them loudly. Best-effort only: shell is
+# not fully parseable, and false negatives are acceptable -- what matters is
+# that the common escape patterns do not slip through unnoticed.
+_ABS_PATH = r"(/[^\s'\";|&<>()`$]+)"
+
+# Redirection to an absolute path: `> /abs`, `>> /abs`, `2> /abs`, `&> /abs`,
+# and idioms like `cat > /abs` all match on the operator itself so we do not
+# need to enumerate every left-hand command.
+_RE_REDIRECT = re.compile(r"(?:^|[\s;|&`])\d?>{1,2}\s*" + _ABS_PATH)
+
+# `tee /abs` and `tee -a /abs` (any flag cluster between).
+_RE_TEE = re.compile(r"\btee\b(?:\s+-[A-Za-z]+)*\s+" + _ABS_PATH)
+
+# `mkdir -p /abs` or `mkdir /abs`.
+_RE_MKDIR = re.compile(r"\bmkdir\b(?:\s+-[A-Za-z]+)*\s+" + _ABS_PATH)
+
+# `python -c "... open('/abs','w') ..."` (also 'a', 'wb', 'w+', etc.). The
+# character class requires at least one write-mode letter.
+_RE_PY_OPEN = re.compile(
+    r"open\(\s*['\"](/[^'\"]+)['\"]\s*,\s*['\"][rwab+xt]*[wa][rwab+xt]*['\"]"
+)
+
+# `cp SRC /abs`, `mv SRC /abs`, `install SRC /abs`, `rsync SRC /abs`. We match
+# the command through the end of its shell segment and then pick the LAST
+# absolute path token as the destination (POSIX convention for these tools).
+_RE_CP_MV = re.compile(r"\b(?:cp|mv|install|rsync)\b[^;|&`\n]*")
+
+
+def _detect_escaped_writes(events, wt_path: str) -> list[str]:
+    """Scan run_command events for shell writes to absolute paths that fall
+    OUTSIDE ``wt_path``. Returns a de-duplicated, sorted list of the escaped
+    destinations.
+
+    Never raises: malformed events, missing attributes, and non-string payloads
+    are all tolerated and skipped. The goal is to flag the obvious "I shelled
+    out and wrote to another repo" pattern that the worktree `git diff` cannot
+    see, not to be a full shell parser.
+    """
+    if not events or not wt_path:
+        return []
+    try:
+        wt_norm = os.path.abspath(wt_path)
+    except Exception:
+        return []
+    # Directory-boundary-aware prefix so "/tmp/wt" is not treated as containing
+    # "/tmp/wtx/y".
+    wt_prefix = wt_norm.rstrip(os.sep) + os.sep
+
+    found: set[str] = set()
+
+    for ev in events:
+        # Support both ConvEvent objects and plain dicts so this helper is
+        # trivially unit-testable without importing the conversation module.
+        kind = getattr(ev, "kind", None)
+        data = getattr(ev, "data", None)
+        if kind is None and isinstance(ev, dict):
+            kind = ev.get("kind")
+            data = ev.get("data")
+        if kind != "action_start" or not isinstance(data, dict):
+            continue
+        if data.get("kind") != "run_command":
+            continue
+        cmd = data.get("goal") or data.get("command") or ""
+        if not isinstance(cmd, str) or not cmd:
+            continue
+
+        candidates: list[str] = []
+        try:
+            for m in _RE_REDIRECT.finditer(cmd):
+                candidates.append(m.group(1))
+            for m in _RE_TEE.finditer(cmd):
+                candidates.append(m.group(1))
+            for m in _RE_MKDIR.finditer(cmd):
+                candidates.append(m.group(1))
+            for m in _RE_PY_OPEN.finditer(cmd):
+                candidates.append(m.group(1))
+            # cp/mv/install/rsync: destination is the last absolute path in the
+            # segment. Segment-scoped so we do not wander across ; | & or a
+            # backtick into an unrelated command.
+            for seg in _RE_CP_MV.findall(cmd):
+                abs_paths = re.findall(_ABS_PATH, seg)
+                if abs_paths:
+                    candidates.append(abs_paths[-1])
+        except Exception:
+            # Regex on adversarial input should not throw, but if it does we
+            # would rather skip this event than crash the finalizer.
+            continue
+
+        for path in candidates:
+            try:
+                norm = os.path.abspath(path.rstrip("/") or "/")
+            except Exception:
+                continue
+            if norm == wt_norm or norm.startswith(wt_prefix):
+                continue
+            found.add(norm)
+
+    return sorted(found)
 
 
 def is_obviously_destructive(cmd: str) -> bool:
@@ -291,6 +403,13 @@ class ProviderWorker:
                     worktree=wt_path
                 )
 
+            # Detect run_command writes that escaped the worktree BEFORE
+            # deciding how to report an empty diff. The worktree `git diff`
+            # cannot see writes to absolute paths outside wt_path, so without
+            # this check the worker would report "no changes produced" while
+            # having actually edited another repo on disk.
+            escaped = _detect_escaped_writes(events, wt_path)
+
             if not patch.strip():
                 # Empty diff is a benign no-op, not an execution failure. `ok`
                 # is False (no usable patch) but `success` is True so the finally
@@ -299,11 +418,31 @@ class ProviderWorker:
                 # inspect. (See test_worker_empty_change; the ok/success split is
                 # intentional, not an inconsistency.)
                 success = True
+                if escaped:
+                    # Loud, worktree-scoped summary: the user needs to know the
+                    # worker DID write files, just not where the patch could
+                    # capture them. Suggesting re-dispatch with the right `repo`
+                    # parameter is the actionable fix.
+                    joined = ", ".join(escaped)
+                    summary = (
+                        f"no changes captured in the worktree diff, but this "
+                        f"worker wrote to {len(escaped)} path(s) OUTSIDE its "
+                        f"worktree (NOT captured in the patch): {joined}. "
+                        f"If you meant to edit another repo, re-dispatch "
+                        f"run_implement with the repo parameter set to that repo."
+                    )
+                    return WorkerResult(
+                        ok=False,
+                        summary=summary,
+                        events=events,
+                        worktree=wt_path,
+                        escaped_paths=escaped,
+                    )
                 return WorkerResult(
                     ok=False,
-                    summary="no changes produced",
+                    summary=f"no changes captured in the worktree diff (worktree={wt_path})",
                     events=events,
-                    worktree=wt_path
+                    worktree=wt_path,
                 )
                 
             # 5. Optional self-test execution
@@ -353,6 +492,20 @@ class ProviderWorker:
                 first_500 = test_output[:500]
                 error_msg = f"worker tests failed: {first_500}"
 
+            # Non-empty patch path: still warn if the agent ALSO wrote to paths
+            # outside the worktree. Those writes are real but absent from the
+            # captured patch, so downstream apply steps would silently drop
+            # them. We do not fail the case (a useful patch was produced) --
+            # just fold a warning line into the summary and expose the paths.
+            if escaped:
+                joined = ", ".join(escaped)
+                warn = (
+                    f"WARNING: worker also wrote to {len(escaped)} path(s) "
+                    f"OUTSIDE its worktree, which are NOT included in the patch: "
+                    f"{joined}"
+                )
+                summary = f"{summary}\n{warn}" if summary else warn
+
             return WorkerResult(
                 ok=bool(patch) if not self.run_tests else (bool(patch) and test_passed),
                 patch=patch,
@@ -362,7 +515,8 @@ class ProviderWorker:
                 test_output=test_output,
                 error=error_msg,
                 events=events,
-                test_passed=test_passed
+                test_passed=test_passed,
+                escaped_paths=escaped,
             )
             
         except Exception as e:

@@ -32,7 +32,7 @@ import threading
 import time
 import subprocess
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from typing import Iterator, Optional, Any
 
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd
@@ -3186,7 +3186,21 @@ class ConversationalSession:
 
                 # ---- run_implement branch ------------------------------------
                 if act.kind == "run_implement":
-                    if not self.config.repo:
+                    # Optional per-dispatch target repo -- lets the pilot point a
+                    # single run_implement at a DIFFERENT git repo than the open
+                    # workspace. Validated up front; an invalid path surfaces as
+                    # an explicit error (no silent fallback to self.config.repo).
+                    _target_repo_override = ""
+                    if (getattr(act, "repo", "") or "").strip():
+                        _abs, _err = self._validate_target_repo(act.repo)
+                        if _err:
+                            error_msg = f"run_implement: target repo {act.repo} is not a valid git repository"
+                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                            self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
+                            continue
+                        _target_repo_override = _abs
+                    effective_repo = _target_repo_override or self.config.repo
+                    if not effective_repo:
                         error_msg = "No workspace directory (config.repo) is open."
                         yield ConvEvent("action_result", {"id": aid, "error": error_msg})
                         self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
@@ -3220,18 +3234,18 @@ class ConversationalSession:
                             "id": aid,
                             "kind": "run_implement",
                             "goal": act.goal,
-                            "cwd": self.config.repo,
+                            "cwd": effective_repo,
                         })
 
                         try:
                             import json
-                            cmd = _puppetmaster_cmd(adapter, act.goal, "--cwd", self.config.repo, "--mode", "implement", "--allow-dirty", "--allow-non-worktree")
+                            cmd = _puppetmaster_cmd(adapter, act.goal, "--cwd", effective_repo, "--mode", "implement", "--allow-dirty", "--allow-non-worktree")
                             p = subprocess.Popen(
                                 cmd,
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT,
                                 text=True,
-                                cwd=self.config.repo
+                                cwd=effective_repo
                             )
                             
                             job_id = None
@@ -3298,7 +3312,7 @@ class ConversationalSession:
                             "id": aid,
                             "kind": "run_implement",
                             "goal": act.goal,
-                            "cwd": self.config.repo,
+                            "cwd": effective_repo,
                             "mode": engine,
                         })
                         
@@ -3329,7 +3343,7 @@ class ConversationalSession:
                             # thread races the PyInstaller PYZ reader (see fn docs).
                             _prewarm_worker_imports()
                             # Submit the selected edit engine to the thread pool
-                            future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, act.goal, act.adapter or "")
+                            future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, act.goal, act.adapter or "", _target_repo_override)
                             dispatched = True  # worker owns the objective release from here
                             with self._swarm_futures_lock:
                                 self._swarm_futures.add(future)
@@ -3370,7 +3384,19 @@ class ConversationalSession:
 
                 # ---- run_parallel branch -------------------------------------
                 if act.kind == "run_parallel":
-                    if not self.config.repo:
+                    # Optional per-dispatch target repo (same semantics as
+                    # run_implement): validate up front, no silent fallback.
+                    _target_repo_override = ""
+                    if (getattr(act, "repo", "") or "").strip():
+                        _abs, _err = self._validate_target_repo(act.repo)
+                        if _err:
+                            error_msg = f"run_parallel: target repo {act.repo} is not a valid git repository"
+                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                            self._append_action_result(act, aid, f"(run_parallel {aid} failed: {error_msg})", is_native)
+                            continue
+                        _target_repo_override = _abs
+                    effective_repo = _target_repo_override or self.config.repo
+                    if not effective_repo:
                         error_msg = "No workspace directory (config.repo) is open."
                         yield ConvEvent("action_result", {"id": aid, "error": error_msg})
                         self._append_action_result(act, aid, f"(run_parallel {aid} failed: {error_msg})", is_native)
@@ -3418,7 +3444,7 @@ class ConversationalSession:
                                 "id": sub_aid,
                                 "kind": f"run_{mode}",
                                 "goal": sub_goal,
-                                "cwd": self.config.repo
+                                "cwd": effective_repo
                             })
 
                         import json
@@ -3449,7 +3475,7 @@ class ConversationalSession:
 
                             cmd = _puppetmaster_cmd(
                                 "--state-dir", state_dir, adapter, sub_goal,
-                                "--cwd", self.config.repo, "--mode", mode,
+                                "--cwd", effective_repo, "--mode", mode,
                                 "--allow-dirty", "--allow-non-worktree"
                             )
                             try:
@@ -3458,7 +3484,7 @@ class ConversationalSession:
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT,
                                     text=True,
-                                    cwd=self.config.repo
+                                    cwd=effective_repo
                                 )
                                 p_info = {
                                     "proc": proc,
@@ -3589,7 +3615,7 @@ class ConversationalSession:
                             "id": aid,
                             "kind": "run_parallel",
                             "goals": goals,
-                            "cwd": self.config.repo,
+                            "cwd": effective_repo,
                             "mode": engine,
                         })
                         
@@ -3613,7 +3639,7 @@ class ConversationalSession:
                                 try:
                                     self._register_local_job(job_id, sub_goal, role="implement")
                                     # Submit the selected edit engine to the thread pool
-                                    future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, sub_goal, act.adapter or "")
+                                    future = self._swarm_pool.submit(self._run_provider_worker_background, job_id, sub_goal, act.adapter or "", _target_repo_override)
                                 except Exception:
                                     # Never dispatched -> release so it is not leaked.
                                     self._release_objective(sub_goal)
@@ -4104,6 +4130,41 @@ class ConversationalSession:
         # Unknown adapter name: let the external path try (it will report its own error).
         return True
 
+    def _validate_target_repo(self, repo: str):
+        """Validate an optional per-dispatch target repo for run_implement /
+        run_parallel. Returns (abs_path, err) where err is a human string on
+        failure. The path must be an existing directory that is a git repo
+        (either a .git directory, a gitfile, or `git rev-parse` succeeds -- the
+        last check accepts secondary worktrees). No fallback: an invalid path
+        surfaces as an error so the caller never silently runs against the
+        wrong repo.
+        """
+        raw = (repo or "").strip()
+        if not raw:
+            return "", ""
+        try:
+            abs_path = os.path.abspath(raw)
+        except Exception as e:
+            return "", f"could not resolve target repo path {raw!r}: {e}"
+        if not os.path.isdir(abs_path):
+            return "", f"target repo {abs_path} is not an existing directory"
+        # Fast local check: a .git directory OR a .git file (worktree pointer).
+        git_marker = os.path.join(abs_path, ".git")
+        if os.path.isdir(git_marker) or os.path.isfile(git_marker):
+            return abs_path, ""
+        # Fall back to `git -C <repo> rev-parse` so we also accept unusual
+        # layouts (e.g. GIT_DIR override). Bounded and quiet.
+        try:
+            r = subprocess.run(
+                ["git", "-C", abs_path, "rev-parse", "--is-inside-work-tree"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5,
+            )
+            if r.returncode == 0 and (r.stdout or "").strip() == "true":
+                return abs_path, ""
+        except Exception:
+            pass
+        return "", f"target repo {abs_path} is not a valid git repository"
+
     def _detect_default_implement_adapter(self) -> str:
         if not _puppetmaster_available():
             return "hermes"
@@ -4525,13 +4586,16 @@ class ConversationalSession:
         with self._local_jobs_lock:
             return [dict(job) for job in self._local_jobs.values()]
 
-    def _run_provider_worker_background(self, job_id: str, objective: str, requested_adapter: str = "") -> None:
+    def _run_provider_worker_background(self, job_id: str, objective: str, requested_adapter: str = "", target_repo: str = "") -> None:
         try:
             from harness.worker import WorkerResult
 
             # Bounded run so a wedged worker frees its _swarm_pool slot on the
             # hard deadline instead of occupying it forever (audit finding #4).
-            res = self._run_edit_worker_bounded(objective, requested_adapter, job_id=job_id)
+            # target_repo (optional): abs path to a DIFFERENT git repo than the
+            # open workspace; swaps self.config for a shallow-copied per-dispatch
+            # HarnessConfig so the engines transparently target that repo.
+            res = self._run_edit_worker_bounded(objective, requested_adapter, job_id=job_id, target_repo=target_repo)
             if self._local_job_cancelled(job_id):
                 # A cancel landed while the worker was running. The job was already
                 # flipped to 'cancelled' by cancel_local_job(); drop the result so
@@ -4878,7 +4942,7 @@ class ConversationalSession:
         return v if v > 0 else 0.0
 
     def _run_edit_worker_bounded(self, objective: str, requested_adapter: str,
-                                 job_id: str = ""):
+                                 job_id: str = "", target_repo: str = ""):
         """Run the edit worker under a hard wall-clock deadline. The work runs in
         a daemon thread; if it blows the deadline we return None so the caller can
         free its _swarm_pool slot immediately. The orphaned worker thread is a
@@ -4898,9 +4962,20 @@ class ConversationalSession:
         box: dict = {}
         done = threading.Event()
 
+        # Per-dispatch target repo (optional): build a shallow-copied
+        # HarnessConfig with .repo overridden so the engines and the worktree
+        # finalizer transparently target the requested repo. When empty, the
+        # original self.config is used unchanged (existing behavior).
+        _effective_config = self.config
+        if target_repo:
+            try:
+                _effective_config = _dc_replace(self.config, repo=target_repo)
+            except Exception:
+                _effective_config = self.config
+
         def _run():
             try:
-                box["res"] = run_edit_worker(self.config, objective, requested_adapter=requested_adapter)
+                box["res"] = run_edit_worker(_effective_config, objective, requested_adapter=requested_adapter)
             except Exception as exc:  # surfaced to the caller after join
                 box["exc"] = exc
             finally:
