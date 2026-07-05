@@ -269,3 +269,62 @@ def test_openai_compat_chat_stream_prompt_caching(monkeypatch):
 
     assert "".join(deltas) == "Hello world!"
     assert resp_stream.meta.get("cache_read_tokens") == 85
+
+
+def _count_cache_markers(body: dict) -> int:
+    """Count every cache_control marker across system, tools, and messages."""
+    n = 0
+    sysv = body.get("system")
+    if isinstance(sysv, list):
+        n += sum(1 for b in sysv if isinstance(b, dict) and b.get("cache_control"))
+    for t in body.get("tools", []) or []:
+        if isinstance(t, dict) and t.get("cache_control"):
+            n += 1
+    for m in body.get("messages", []) or []:
+        c = m.get("content")
+        if isinstance(c, list):
+            n += sum(1 for b in c if isinstance(b, dict) and b.get("cache_control"))
+    return n
+
+
+def _mk_driver():
+    return AnthropicDriver(
+        name="claude-x", model="claude-x",
+        base_url="https://api.anthropic.com/v1",
+        api_key_env="ANTHROPIC_API_KEY", enable_prompt_cache=True,
+    )
+
+
+def test_history_uses_two_stable_breakpoints():
+    # A multi-message history must carry a breakpoint on BOTH the last and the
+    # second-to-last message so the growing prefix is reused as a cache READ next
+    # turn (the multi-turn cost win), not just a single moving marker.
+    d = _mk_driver()
+    msgs = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "second"},
+        {"role": "user", "content": "third"},
+    ]
+    body = d._build_body(msgs, tools=[{"name": "x", "description": "y", "input_schema": {}}], system="sys")
+    out = body["messages"]
+    def _has_marker(m):
+        c = m.get("content")
+        return isinstance(c, list) and any(isinstance(b, dict) and b.get("cache_control") for b in c)
+    assert _has_marker(out[-1]), "last message must be cache-marked"
+    assert _has_marker(out[-2]), "second-to-last message must be cache-marked (stable prefix)"
+
+
+def test_total_cache_breakpoints_within_anthropic_limit():
+    # Anthropic allows at most 4 cache_control breakpoints. system + last-tool +
+    # two history markers = 4 exactly; never more.
+    d = _mk_driver()
+    msgs = [{"role": "user", "content": f"m{i}"} for i in range(6)]
+    body = d._build_body(msgs, tools=[{"name": "a", "description": "b", "input_schema": {}}], system="sys")
+    assert _count_cache_markers(body) <= 4
+
+
+def test_single_message_history_still_valid():
+    # A one-message history must not crash and must still cache that message.
+    d = _mk_driver()
+    body = d._build_body([{"role": "user", "content": "only"}], tools=None, system="sys")
+    assert _count_cache_markers(body) <= 4

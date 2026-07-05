@@ -212,20 +212,39 @@ class AnthropicDriver:
             body["tools"] = anthropic_tools
             body["tool_choice"] = {"type": "auto"}
 
-        # Cache the stable conversation-history PREFIX: put a breakpoint on the
-        # last message so each turn only pays full input price for the new
-        # suffix, not the entire growing transcript. Anthropic allows up to 4
-        # cache breakpoints; system + tools + history prefix stays within that.
+        # Cache the stable conversation-history PREFIX. Anthropic caches the
+        # prefix up to each cache_control marker and allows up to 4 markers; we
+        # use system + last-tool, leaving room for TWO history breakpoints.
+        #
+        # Why two, not one: a single marker on the LAST message moves to a new
+        # position every turn, so the marker never sits at a point that is stable
+        # across turns -- each turn writes a fresh cache entry (a 25% write
+        # surcharge) and the longest reusable prefix from the PREVIOUS turn ended
+        # one message earlier, which this turn's single moving marker does not
+        # reuse. Placing a SECOND marker on the second-to-last message pins a
+        # breakpoint that WAS the last message last turn (already cached) so the
+        # bulk of the growing transcript is served as a cache READ (~10%) this
+        # turn, while the moving last-message marker extends the cache to include
+        # the newest suffix for next turn. This is the multi-turn cache pattern
+        # top agents (Cursor/Claude Code) rely on to keep input cost near-flat as
+        # the conversation grows.
         if self.enable_prompt_cache and anthropic_msgs:
-            last = anthropic_msgs[-1]
-            content = last.get("content")
-            if isinstance(content, list) and content:
-                # structured content blocks -> mark the final block
-                if isinstance(content[-1], dict):
-                    content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
-            elif isinstance(content, str):
-                last["content"] = [{"type": "text", "text": content,
-                                    "cache_control": {"type": "ephemeral"}}]
+            def _mark(msg: dict) -> None:
+                content = msg.get("content")
+                if isinstance(content, list) and content:
+                    if isinstance(content[-1], dict):
+                        content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+                elif isinstance(content, str):
+                    msg["content"] = [{"type": "text", "text": content,
+                                       "cache_control": {"type": "ephemeral"}}]
+            # Stable prefix breakpoint (second-to-last message): this position was
+            # the moving marker last turn, so its prefix is already cached and
+            # reused as a READ this turn.
+            if len(anthropic_msgs) >= 2:
+                _mark(anthropic_msgs[-2])
+            # Moving breakpoint (last message): extends the cached prefix to cover
+            # the newest turn so NEXT turn's stable marker can reuse it.
+            _mark(anthropic_msgs[-1])
 
         return body
 
