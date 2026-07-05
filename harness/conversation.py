@@ -127,6 +127,14 @@ def _prewarm_worker_imports() -> None:
                 pass
 
 
+def _is_stub_tool_result(msg: dict) -> bool:
+    """True for the synthesized "(no result: ...)" placeholder that
+    _sanitize_tool_pairs inserts for interrupted actions. Used to prefer a
+    real, later-arriving result over the stub when both exist for one id."""
+    content = msg.get("content")
+    return isinstance(content, str) and content.startswith("(no result:")
+
+
 def _clamp_tool_result(text: str, max_chars: Optional[int] = None) -> str:
     if max_chars is None:
         try:
@@ -1024,6 +1032,14 @@ class ConversationalSession:
         import tempfile
         return getattr(self, "state_dir", None) or tempfile.gettempdir()
 
+    @staticmethod
+    def _interruption_stub(tool_call_id: str) -> dict:
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": "(no result: the previous action was interrupted before it completed)",
+        }
+
     def _sanitize_tool_pairs(self) -> None:
         """Guarantee every assistant tool_call has a matching tool result before
         the next model request. Anthropic 400s ("tool_use ids were found without
@@ -1042,35 +1058,67 @@ class ConversationalSession:
         So for each assistant message with tool_calls we consume ONLY the
         contiguous run of tool-role messages that directly follow it; any
         tool_call id not present in that adjacent run gets a stub tool result
-        inserted right after the run."""
+        inserted right after the run.
+
+        Uniqueness is enforced too: Anthropic also 400s ("each tool_use must
+        have a single result. Found multiple tool_result blocks with id: ...")
+        when one tool_use id is answered more than once -- which happens when an
+        interrupted turn synthesized a stub result and the real result was later
+        appended anyway (crash-resume, steer races). Within each adjacent run we
+        keep only the FIRST result per id and drop the rest. Results whose id
+        matches no tool_call on the preceding assistant message are orphans
+        (equally rejected by the API) and are dropped as well."""
         history = self._history
         out = []
         i = 0
         n = len(history)
         while i < n:
             m = history[i]
+            if m.get("role") == "tool":
+                # A tool result with no adjacent assistant tool_use (the run
+                # consumer below eats all valid ones). Anthropic rejects it in
+                # any position, so recast it as plain user content instead of
+                # dropping what may be real output.
+                out.append({
+                    "role": "user",
+                    "content": "(recovered tool output)\n" + str(m.get("content") or ""),
+                })
+                i += 1
+                continue
             out.append(m)
             if m.get("role") == "assistant" and m.get("tool_calls"):
                 # Consume the contiguous run of tool-role messages right after
-                # this assistant message; collect their tool_call_ids.
+                # this assistant message. Keep one result per expected id (the
+                # first); drop duplicates and orphans -- both are API-rejected.
+                expected_ids = {tc.get("id") for tc in (m.get("tool_calls") or []) if tc.get("id")}
                 j = i + 1
-                run_ids = set()
+                kept_at: dict = {}  # tool_call_id -> index in `out` of the kept result
                 while j < n and history[j].get("role") == "tool":
-                    out.append(history[j])
-                    tcid = history[j].get("tool_call_id")
-                    if tcid:
-                        run_ids.add(tcid)
+                    tmsg = history[j]
+                    tcid = tmsg.get("tool_call_id")
+                    if not tcid:
+                        # No id to pair on -- leave it rather than lose content.
+                        out.append(tmsg)
+                    elif tcid in expected_ids:
+                        if tcid not in kept_at:
+                            kept_at[tcid] = len(out)
+                            out.append(tmsg)
+                        elif _is_stub_tool_result(out[kept_at[tcid]]) and not _is_stub_tool_result(tmsg):
+                            # The kept copy is an interruption stub and a real
+                            # result arrived later (crash-resume race): the real
+                            # one wins.
+                            out[kept_at[tcid]] = tmsg
+                        # else: genuine duplicate -- drop it.
+                    # else: orphan result for an id this assistant message never
+                    # issued -- equally API-rejected, drop it.
                     j += 1
+                run_ids = set(kept_at)
                 # For any tool_call id NOT answered in that adjacent run, insert
                 # a stub tool result immediately after the run.
                 for tc in m.get("tool_calls") or []:
                     tcid = tc.get("id")
                     if tcid and tcid not in run_ids:
-                        out.append({
-                            "role": "tool",
-                            "tool_call_id": tcid,
-                            "content": "(no result: the previous action was interrupted before it completed)",
-                        })
+                        out.append(self._interruption_stub(tcid))
                         run_ids.add(tcid)
                 i = j
                 continue

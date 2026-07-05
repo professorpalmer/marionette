@@ -84,6 +84,71 @@ def test_sanitize_inserts_stub_when_steer_wedged_between_tool_use_and_result():
     assert "interrupted" in nxt.get("content", "")
 
 
+def test_sanitize_drops_duplicate_tool_results():
+    # Anthropic 400s "each tool_use must have a single result" when one id is
+    # answered twice (stub inserted on interrupt + real result appended on
+    # resume). Only one result per id may survive.
+    s = _session()
+    s._history = [
+        {"role": "assistant", "content": "acting", "tool_calls": [
+            {"id": "toolu_A", "type": "function", "function": {"name": "run_command", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "toolu_A", "content": "first"},
+        {"role": "tool", "tool_call_id": "toolu_A", "content": "second (duplicate)"},
+    ]
+    s._sanitize_tool_pairs()
+    results = [m for m in s._history if m.get("role") == "tool" and m.get("tool_call_id") == "toolu_A"]
+    assert len(results) == 1
+    assert results[0]["content"] == "first"
+
+
+def test_sanitize_prefers_real_result_over_stub_duplicate():
+    s = _session()
+    s._history = [
+        {"role": "assistant", "content": "acting", "tool_calls": [
+            {"id": "toolu_A", "type": "function", "function": {"name": "run_command", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "toolu_A",
+         "content": "(no result: the previous action was interrupted before it completed)"},
+        {"role": "tool", "tool_call_id": "toolu_A", "content": "real output"},
+    ]
+    s._sanitize_tool_pairs()
+    results = [m for m in s._history if m.get("role") == "tool" and m.get("tool_call_id") == "toolu_A"]
+    assert len(results) == 1
+    assert results[0]["content"] == "real output"
+
+
+def test_sanitize_drops_orphan_result_in_run_but_keeps_content_free_form():
+    # A result for an id the assistant never issued is API-rejected; it must not
+    # survive as a tool-role message.
+    s = _session()
+    s._history = [
+        {"role": "assistant", "content": "acting", "tool_calls": [
+            {"id": "toolu_A", "type": "function", "function": {"name": "run_command", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "toolu_A", "content": "ok"},
+        {"role": "tool", "tool_call_id": "toolu_GHOST", "content": "orphan"},
+    ]
+    s._sanitize_tool_pairs()
+    ids = [m.get("tool_call_id") for m in s._history if m.get("role") == "tool"]
+    assert ids == ["toolu_A"]
+
+
+def test_sanitize_recasts_leading_orphan_tool_message_as_user():
+    # A tool message with no preceding assistant tool_use at all (history was
+    # truncated/compacted mid-run) is invalid in any position; it is recast as
+    # user content so the output survives without tripping the API.
+    s = _session()
+    s._history = [
+        {"role": "tool", "tool_call_id": "toolu_LOST", "content": "stranded output"},
+        {"role": "user", "content": "continue"},
+    ]
+    s._sanitize_tool_pairs()
+    assert all(m.get("role") != "tool" for m in s._history)
+    assert any(m.get("role") == "user" and "stranded output" in str(m.get("content"))
+               for m in s._history)
+
+
 def test_export_transcript_data_has_no_dangling_tool_use():
     s = _session()
     s._history = [
