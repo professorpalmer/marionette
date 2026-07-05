@@ -340,10 +340,17 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   return (
     <div className="text-[12px] max-w-3xl">
+      {/* Floating save/error toast: fixed to the bottom-right so it overlays
+          instead of inserting a block at the top that shoves every setting down
+          (the reflow was the annoyance). Auto-dismiss handled by the callers
+          that setStatus(""). pointer-events-none so it never blocks controls. */}
       {(status || error) && (
-        <div className="flex items-center gap-2 mb-3">
-          {status && <span className="text-good text-[10px] font-medium">{status}</span>}
-          {error && <span className="text-risk text-[10px] font-medium">{error}</span>}
+        <div className="fixed bottom-4 right-4 z-50 pointer-events-none flex items-center gap-2
+                        px-3 py-1.5 rounded-lg border shadow-lg bg-panel2/95 backdrop-blur
+                        animate-in fade-in slide-in-from-bottom-2 duration-150
+                        border-edge">
+          {status && <span className="text-good text-[11px] font-medium">{status}</span>}
+          {error && <span className="text-risk text-[11px] font-medium">{error}</span>}
         </div>
       )}
 
