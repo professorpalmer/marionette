@@ -32,7 +32,38 @@ def test_auth_error_is_explained():
     assert "Settings" in out
 
 
-def test_generic_error_passes_through():
+def test_rate_limit_is_explained():
     s = _s()
-    out = s._humanize_pilot_error("HTTP 500: internal server error")
-    assert out == "pilot: HTTP 500: internal server error"
+    out = s._humanize_pilot_error("HTTP 429: rate limit exceeded")
+    assert "rate-limiting" in out.lower()
+
+
+def test_context_overflow_is_explained():
+    s = _s()
+    out = s._humanize_pilot_error(
+        'HTTP 400: {"error":{"message":"prompt is too long: 250000 tokens > 200000 maximum"}}')
+    assert "context window" in out.lower()
+
+
+def test_server_error_is_retryable_guidance():
+    s = _s()
+    out = s._humanize_pilot_error("HTTP 503: service unavailable")
+    assert "transient" in out.lower() and "retry" in out.lower()
+
+
+def test_quota_exhaustion_is_explained():
+    s = _s()
+    out = s._humanize_pilot_error('HTTP 400: {"error":{"message":"insufficient quota / billing"}}')
+    assert "credit" in out.lower() or "quota" in out.lower()
+
+
+def test_empty_error_has_message():
+    s = _s()
+    out = s._humanize_pilot_error("")
+    assert out and "pilot:" in out
+
+
+def test_truly_generic_error_passes_through():
+    s = _s()
+    out = s._humanize_pilot_error("something weird happened xyz")
+    assert out == "pilot: something weird happened xyz"

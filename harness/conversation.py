@@ -1415,30 +1415,66 @@ class ConversationalSession:
     def _humanize_pilot_error(self, raw: str) -> str:
         """Turn a raw provider error into a clear, actionable one-liner.
 
-        The most common confusing case: the selected model is not on the user's
-        key/plan (e.g. a new model an enterprise key hasn't been granted). The
-        provider returns a terse 400/404 that reads as "something broke." Detect
-        that shape and name the real cause + the fix (switch model or use a key
-        that includes it), so a less-technical user isn't lost.
+        Users should NEVER see raw provider JSON. We classify the error (via the
+        shared error_classifier) and map each class to plain guidance + the fix,
+        keeping a short '[provider said: ...]' tail for the technically curious.
+        The model-not-available case is detected specifically because it is the
+        most common confusing one (a model the user's key/plan doesn't include).
         """
-        s = str(raw or "")
+        s = str(raw or "").strip()
+        if not s:
+            return "pilot: the request failed with no detail. Try again."
         low = s.lower()
         model = getattr(self, "config", None) and getattr(self.config, "driver", "") or ""
-        # Model not available / not authorized for this key or plan.
-        if (("not_found" in low or "404" in low or "does not exist" in low
-             or "model" in low and ("not found" in low or "no access" in low
-                                    or "not authorized" in low or "unavailable" in low
-                                    or "not permitted" in low or "invalid model" in low
-                                    or "does not have access" in low))):
-            m = f" '{model}'" if model else ""
-            return (f"pilot: the selected model{m} isn't available on your current "
+        tail = f" [provider said: {s[:200]}]"
+
+        # Pull an HTTP status out of the string when present ("HTTP 429: ...").
+        import re as _re
+        m = _re.search(r"\b(4\d\d|5\d\d)\b", s)
+        status = int(m.group(1)) if m else None
+        try:
+            from pmharness.drivers import error_classifier as _ec
+            cls = _ec.classify(status, s)
+        except Exception:
+            cls = None
+
+        # Model not available / not authorized for this key or plan -- checked
+        # first because the classifier lumps it under FATAL/404 but it deserves
+        # its own specific, common-case fix.
+        model_signals = ("does not exist", "no access", "not authorized",
+                         "not permitted", "invalid model", "does not have access",
+                         "model not found", "unknown model", "unavailable")
+        if ("model" in low and any(sig in low for sig in model_signals)) or \
+           (status == 404 and "model" in low):
+            mtxt = f" '{model}'" if model else ""
+            return (f"pilot: the selected model{mtxt} isn't available on your current "
                     f"API key or plan. Switch to a model your key includes (model "
-                    f"picker, bottom bar), or use a key that grants access to it. "
-                    f"[provider said: {s[:200]}]")
-        # Auth/credential problems.
-        if "401" in low or "invalid_api_key" in low or "authentication" in low or "unauthorized" in low:
-            return (f"pilot: your API key was rejected (authentication failed). "
-                    f"Check the key for this provider in Settings. [provider said: {s[:200]}]")
+                    f"picker in the bottom bar), or add a key that grants access." + tail)
+
+        if cls is not None:
+            EC = _ec.ErrorClass
+            if cls == EC.AUTH:
+                return ("pilot: your API key was rejected (authentication failed). "
+                        "Check the key for this provider in Settings > Providers." + tail)
+            if cls == EC.RATE_LIMIT:
+                return ("pilot: the provider is rate-limiting your key (too many "
+                        "requests, or you hit a quota). Wait a moment and retry, or "
+                        "switch to another provider/model in the bottom bar." + tail)
+            if cls == EC.CONTEXT_OVERFLOW:
+                return ("pilot: this turn exceeded the model's context window. Try "
+                        "/compact to shrink history, start a fresh session, or pick a "
+                        "longer-context model." + tail)
+            if cls == EC.RETRYABLE:
+                return ("pilot: the provider had a transient error (server/network). "
+                        "It usually clears on a retry -- send again in a moment." + tail)
+
+        # Credit/quota exhaustion is a frequent, confusing FATAL case.
+        if any(k in low for k in ("insufficient", "quota", "billing", "credit",
+                                  "payment", "exceeded your current")):
+            return ("pilot: the provider reports insufficient credit/quota on this "
+                    "key. Top up or switch to a provider/model with available "
+                    "budget." + tail)
+
         return f"pilot: {s}"
 
     def enqueue_steer(self, text: str) -> None:
