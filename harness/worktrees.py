@@ -131,12 +131,104 @@ def add_worktree(repo: str, branch: str, base: str = "HEAD", path: Optional[str]
         
     return {"path": path, "branch": branch}
 
+def _cwd_under(cwd: str, worktree: str) -> bool:
+    """True only when `cwd` is genuinely inside `worktree`.
+
+    Uses realpath normalization and a trailing-separator prefix check so a
+    sibling dir (pmedit-89 vs pmedit-8941d0fa) never matches. Best-effort:
+    returns False on any error rather than raising.
+    """
+    try:
+        if not cwd or not worktree:
+            return False
+        wt = os.path.realpath(worktree)
+        cw = os.path.realpath(cwd)
+        if cw == wt:
+            return True
+        return cw.startswith(wt + os.sep)
+    except Exception:
+        return False
+
+
+def _worktree_pid_cwds() -> list[tuple[int, str]]:
+    """Best-effort enumeration of (pid, cwd) via lsof. Returns [] on any error."""
+    out_pairs: list[tuple[int, str]] = []
+    try:
+        # -Fn emits n<cwd>, -Fp emits p<pid>; -d cwd restricts to the cwd fd.
+        p = subprocess.run(
+            ["lsof", "-a", "-d", "cwd", "-Fpn"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return out_pairs
+    cur_pid: Optional[int] = None
+    for line in (p.stdout or "").splitlines():
+        if not line:
+            continue
+        tag, val = line[0], line[1:]
+        if tag == "p":
+            try:
+                cur_pid = int(val)
+            except Exception:
+                cur_pid = None
+        elif tag == "n" and cur_pid is not None:
+            out_pairs.append((cur_pid, val))
+    return out_pairs
+
+
+def reap_worktree_processes(path: str) -> int:
+    """Terminate any still-running process whose cwd is inside worktree `path`.
+
+    Orphaned `codegraph index` (+ node) subprocesses can outlive their worker
+    worktree, reparent to init, and keep walking the now-deleted dir -- a real
+    resource leak. Reap them (SIGTERM, then SIGKILL) BEFORE the dir is removed
+    so their cwd still resolves. Best-effort: never raises; returns the count
+    signaled. Never signals pid<=1, this process, or its parent.
+    """
+    signaled = 0
+    try:
+        import signal as _signal
+        import time as _time
+        me = os.getpid()
+        parent = os.getppid()
+        targets = [
+            pid for pid, cwd in _worktree_pid_cwds()
+            if pid > 1 and pid != me and pid != parent and _cwd_under(cwd, path)
+        ]
+        for pid in targets:
+            try:
+                os.kill(pid, _signal.SIGTERM)
+                signaled += 1
+            except Exception:
+                continue
+        if targets:
+            _time.sleep(0.6)
+            for pid in targets:
+                try:
+                    os.kill(pid, 0)          # still alive?
+                    os.kill(pid, _signal.SIGKILL)
+                except Exception:
+                    continue
+    except Exception:
+        return signaled
+    return signaled
+
+
 def remove_worktree(repo: str, path: str, force: bool = False) -> None:
     managed_dir = _get_managed_dir(repo)
     path = os.path.abspath(path)
     if not _is_confined(path, managed_dir):
         raise ValueError("Path traversal detected or path outside managed directory")
-        
+
+    # Reap orphaned subprocesses (e.g. codegraph indexers) whose cwd is inside
+    # this worktree BEFORE git yanks the directory out from under them, so they
+    # do not survive as init-reparented zombies. Never let a reap failure block
+    # the actual worktree removal.
+    try:
+        reap_worktree_processes(path)
+    except Exception as exc:
+        logger.warning("worktree reaper failed for %s: %s", path, exc)
+
     args = ["worktree", "remove"]
     if force:
         args.append("--force")
