@@ -2,7 +2,9 @@ import os
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from typing import Tuple, List, Dict, Optional, Any
+from typing import Tuple, List, Dict, Optional, Any, Callable
+
+CompactionCallback = Callable[[int, int, str], None]
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +169,20 @@ def build_persisted_message(
     return msg
 
 
+def _notify_compaction(
+    on_compaction: Optional[CompactionCallback],
+    original_chars: int,
+    compact_chars: int,
+    reason: str,
+) -> None:
+    if on_compaction is None or compact_chars >= original_chars:
+        return
+    try:
+        on_compaction(original_chars, compact_chars, reason)
+    except Exception:
+        pass
+
+
 def maybe_persist_result(
     content: str,
     result_id: str,
@@ -175,6 +191,7 @@ def maybe_persist_result(
     threshold: Optional[int] = None,
     head_tail: Optional[bool] = None,
     dedupe: bool = False,
+    on_compaction: Optional[CompactionCallback] = None,
 ) -> str:
     """Layer 2: persist oversized result, return preview + path. Falls back to inline truncation if write fails.
 
@@ -196,16 +213,20 @@ def maybe_persist_result(
         content, max_chars=config.preview_chars, head_tail=head_tail
     )
 
+    original_len = len(content)
     try:
         file_path = spill_to_disk(content, result_id, state_dir, dedupe=dedupe)
-        return build_persisted_message(preview, has_more, len(content), file_path)
+        result = build_persisted_message(preview, has_more, original_len, file_path)
+        _notify_compaction(on_compaction, original_len, len(result), "persist")
+        return result
     except Exception as e:
         logger.warning("Spill to disk failed for %s: %s", result_id, e)
         fallback_msg = (
             f"{preview}\n\n"
-            f"[Truncated: tool response was {len(content):,} chars. "
+            f"[Truncated: tool response was {original_len:,} chars. "
             f"Full output could not be saved: {e}]"
         )
+        _notify_compaction(on_compaction, original_len, len(fallback_msg), "truncate_fallback")
         return fallback_msg
 
 
@@ -213,6 +234,9 @@ def enforce_turn_budget(
     tool_messages: List[Dict[str, Any]],
     state_dir: str,
     config: BudgetConfig,
+    on_compaction: Optional[CompactionCallback] = None,
+    *,
+    savings_session_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Layer 3: enforce aggregate budget across all tool results in a turn."""
     candidates = []
@@ -241,12 +265,26 @@ def enforce_turn_budget(
         
         tc_id = msg.get("tool_call_id") or f"turn_budget_{idx}"
 
+        per_msg_compaction = on_compaction
+        if savings_session_id is not None:
+            try:
+                from harness.tool_output_savings import make_compaction_callback
+
+                per_msg_compaction = make_compaction_callback(
+                    state_dir=state_dir,
+                    session_id=savings_session_id,
+                    tool_call_id=tc_id,
+                )
+            except Exception:
+                pass
+
         replacement = maybe_persist_result(
             content=content,
             result_id=tc_id,
             state_dir=state_dir,
             config=config,
             threshold=0,
+            on_compaction=per_msg_compaction,
         )
         if replacement != content:
             total_size -= size

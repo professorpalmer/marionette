@@ -22,6 +22,7 @@ import subprocess
 from typing import Any
 
 from ._exec import _puppetmaster_cmd
+from .internal_uri import InternalUriContext, InternalUriError, is_internal_uri, resolve_internal_uri
 from .paths import path_within
 
 
@@ -48,7 +49,32 @@ class ToolDispatchMixin:
     etc.). This mixin defines no __init__ and no instance state of its own.
     """
 
+    def _internal_uri_context(self) -> InternalUriContext:
+        return InternalUriContext(
+            state_dir=getattr(self, "state_dir", None) or self.config.state_dir or "",
+            repo=self.config.repo or None,
+        )
+
     def _do_read_file(self, act: Any) -> tuple[bool, str, str]:
+        if is_internal_uri(act.path):
+            try:
+                resource = resolve_internal_uri(
+                    act.path,
+                    self._internal_uri_context(),
+                    start_line=getattr(act, "start_line", None),
+                    limit=getattr(act, "limit", None),
+                )
+            except InternalUriError as exc:
+                return False, "internal_uri_error", str(exc)
+            if resource.is_directory:
+                return False, "is_directory", (
+                    f"Path is a directory: {act.path}. Use list_dir for internal URI directories."
+                )
+            content = resource.content
+            if len(content) > 200 * 1024:
+                content = content[:200 * 1024] + "\n\n... (internal URI content truncated to 200KB) ..."
+            return True, "success", content
+
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
         target_path = act.path
@@ -105,6 +131,25 @@ class ToolDispatchMixin:
 
             if len(content) > 200 * 1024:
                 content = content[:200 * 1024] + "\n\n... (file truncated to 200KB) ..."
+
+            from .hash_edit import annotate_read_content
+            slice_start = None
+            slice_end = None
+            if start_line is not None or limit is not None:
+                s_line = start_line if start_line is not None else 1
+                s_idx = max(0, s_line - 1)
+                if limit is not None:
+                    e_idx = min(total_lines, s_idx + limit)
+                else:
+                    e_idx = total_lines
+                slice_start = s_idx + 1
+                slice_end = e_idx
+            content = annotate_read_content(
+                content,
+                total_lines=total_lines,
+                start_line=slice_start,
+                end_line=slice_end,
+            )
                 
             return True, "success", content
         except Exception as e:
@@ -140,6 +185,16 @@ class ToolDispatchMixin:
             return False, "exception", str(e)
 
     def _do_list_dir(self, act: Any) -> tuple[bool, str, Any]:
+        uri_path = (act.path or "").strip()
+        if is_internal_uri(uri_path):
+            try:
+                resource = resolve_internal_uri(uri_path, self._internal_uri_context())
+            except InternalUriError as exc:
+                return False, "internal_uri_error", str(exc)
+            if not resource.is_directory:
+                return False, "not_a_directory", f"Not a directory: {uri_path}"
+            return True, "success", resource.content
+
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
         target_path = act.path
@@ -359,3 +414,99 @@ class ToolDispatchMixin:
         if truncated:
             result_text += f"\n\n... (results truncated to {max_results} matches) ..."
         return True, "success", result_text
+
+    def _do_lsp(self, act: Any) -> tuple[bool, str, str]:
+        if not self.config.repo:
+            return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        args = act.arguments or {}
+        language = args.get("language") or "auto"
+        mode = args.get("mode") or "diagnostics"
+        timeout_ms = args.get("timeout_ms")
+        root_arg = args.get("root") or ""
+        root_path = root_arg
+        if not root_path:
+            root_path = self.config.repo
+        if not os.path.isabs(root_path):
+            root_path = os.path.join(self.config.repo, root_path)
+        if not is_safe_path(root_path, self.config.repo):
+            return False, "path_traversal", f"Path traversal attempt rejected: {root_arg}"
+
+        try:
+            from .lsp_code_intelligence import discover_lsp_tools, get_lsp_report
+
+            tools = discover_lsp_tools()
+            text = get_lsp_report(
+                language=language,
+                mode=mode,
+                root=root_path,
+                timeout_ms=timeout_ms,
+                tools=tools,
+            )
+            return True, "success", text
+        except Exception as e:
+            return False, "exception", str(e)
+
+    def _do_search_tools(self, act: Any) -> tuple[bool, str, str]:
+        from .tool_discovery import ToolCatalog
+
+        catalog: ToolCatalog = getattr(self, "_tool_catalog", None) or ToolCatalog()
+        mcp = getattr(self, "_mcp", None)
+        mcp_tools = mcp.discovered_tools() if mcp else None
+        catalog.refresh(
+            mcp_tools=mcp_tools,
+            no_delegation=getattr(self.config, "no_delegation", False),
+            browser_enabled=getattr(self.config, "browser_enabled", True),
+        )
+        args = act.arguments or {}
+        query = (act.query or args.get("query") or "").strip()
+        limit = args.get("limit", 10)
+        activate = args.get("activate") or []
+        if isinstance(activate, str):
+            activate = [activate]
+        try:
+            text = catalog.format_search_response(query, limit=limit, activate=activate)
+            self._tool_catalog = catalog
+            return True, "success", text
+        except Exception as e:
+            return False, "exception", str(e)
+
+    def _do_hash_edit(self, act: Any, *, write: bool = True) -> tuple[bool, str, str]:
+        """Validate (and optionally apply) hash-anchored edits from act.arguments['ops']."""
+        from .hash_edit import HashEditOp, apply_hash_edits, atomic_write_text, hash_edit_enabled
+
+        if not hash_edit_enabled():
+            return False, "disabled", "hash_edit is disabled (set HARNESS_HASH_EDIT=1 to enable)"
+        if not self.config.repo:
+            return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        target_path = act.path
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(self.config.repo, target_path)
+        if not is_safe_path(target_path, self.config.repo):
+            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+
+        if not os.path.exists(target_path):
+            return False, "not_found", f"hash_edit: file not found: {act.path}"
+        if os.path.isdir(target_path):
+            return False, "is_directory", f"hash_edit: path is a directory: {act.path}"
+
+        raw_ops = act.arguments.get("ops") if act.arguments else None
+        if not isinstance(raw_ops, list) or not raw_ops:
+            return False, "invalid_arguments", "hash_edit requires a non-empty 'ops' list"
+
+        try:
+            ops = [HashEditOp.from_dict(o) for o in raw_ops]
+        except (ValueError, TypeError) as e:
+            return False, "invalid_arguments", f"hash_edit: invalid op: {e}"
+
+        try:
+            with open(target_path, "r", encoding="utf-8", errors="replace", newline="") as f:
+                original = f.read()
+            new_text, result = apply_hash_edits(original, ops)
+            if not result.ok:
+                status = "stale_anchor" if result.stale_anchors else "validation_error"
+                return False, status, f"hash_edit failed: {result.message}"
+            if write:
+                atomic_write_text(target_path, new_text)
+            return True, "success", result.message
+        except Exception as e:
+            return False, "exception", str(e)

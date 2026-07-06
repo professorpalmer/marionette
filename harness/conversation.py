@@ -252,8 +252,25 @@ def _mcp_result_text(out: dict) -> str:
     return "\n".join(parts) if parts else str(out)
 
 
-def _format_mcp_tools_section(mcp_manager) -> str:
+def _format_mcp_tools_section(mcp_manager, tool_catalog=None, *, no_delegation: bool = False, browser_enabled: bool = True) -> str:
     """Format connected MCP tools for the system prompt."""
+    if tool_catalog is not None:
+        from .tool_discovery import discovery_enabled
+
+        if discovery_enabled():
+            if not mcp_manager:
+                return ""
+            try:
+                mcp_tools = mcp_manager.discovered_tools()
+            except Exception:
+                return ""
+            tool_catalog.refresh(
+                mcp_tools=mcp_tools,
+                no_delegation=no_delegation,
+                browser_enabled=browser_enabled,
+            )
+            return tool_catalog.mcp_prompt_summary()
+
     if not mcp_manager:
         return ""
     try:
@@ -306,6 +323,8 @@ class ConversationalSession(ToolDispatchMixin):
         from harness.context_budget import BudgetConfig
         self.context_budget_config = BudgetConfig()
         self.state_dir = config.state_dir or tempfile.mkdtemp(prefix="pilot-")
+        # Harness session id (from SessionStore) for savings-ledger dedupe scope.
+        self.harness_session_id: str = ""
         # Provider-aware pilot: 'provider:model' spans any provider whose key is
         # set; a bare model resolves against available providers, else OpenRouter.
         try:
@@ -371,6 +390,8 @@ class ConversationalSession(ToolDispatchMixin):
         self._wiki_prepared_hwm = 0  # findings count at last prepare, dedupe re-runs
         # optional MCP integration -- set by the server so the pilot can call MCP tools
         self._mcp = None
+        from .tool_discovery import ToolCatalog
+        self._tool_catalog = ToolCatalog()
         self._checkpoints = CheckpointStore(config.repo)
         import collections
         self._steer_queue = collections.deque()
@@ -904,6 +925,14 @@ class ConversationalSession(ToolDispatchMixin):
             
         return split_idx
 
+    def _build_visible_tools_schema(self) -> list:
+        mcp_tools = self._mcp.discovered_tools() if self._mcp else None
+        return self._tool_catalog.visible_schema(
+            mcp_tools=mcp_tools,
+            no_delegation=getattr(self.config, "no_delegation", False),
+            browser_enabled=getattr(self.config, "browser_enabled", True),
+        )
+
     def get_context_usage(self) -> dict:
         import json
         budget = getattr(self.config, "max_context_tokens", 96000)
@@ -947,14 +976,17 @@ class ConversationalSession(ToolDispatchMixin):
         
         # MCP section
         mcp_tokens = 0
-        mcp_section = _format_mcp_tools_section(self._mcp)
+        mcp_section = _format_mcp_tools_section(
+            self._mcp,
+            self._tool_catalog,
+            no_delegation=getattr(self.config, "no_delegation", False),
+            browser_enabled=getattr(self.config, "browser_enabled", True),
+        )
         if mcp_section:
             mcp_tokens = len("\n\n" + mcp_section) // 4
             
         # Tool definitions section
-        from .pilot import build_tools_schema
-        mcp_tools = self._mcp.discovered_tools() if self._mcp else None
-        tools_schema = build_tools_schema(mcp_tools, no_delegation=getattr(self.config, "no_delegation", False), browser_enabled=getattr(self.config, "browser_enabled", True))
+        tools_schema = self._build_visible_tools_schema()
         serialized_tools = json.dumps(tools_schema)
         tool_definitions_tokens = len(serialized_tools) // 4
         
@@ -998,8 +1030,40 @@ class ConversationalSession(ToolDispatchMixin):
         return {
             "total": total_tokens,
             "limit": budget,
-            "categories": categories
+            "categories": categories,
+            **self._tool_output_savings_fields(),
         }
+
+    def _tool_output_savings_fields(self) -> dict:
+        """Compact tool-output savings for context/usage APIs."""
+        try:
+            from harness.tool_output_savings import get_ledger, savings_usd
+            from pmharness.registry import resolve_price
+
+            summary = get_ledger(self.state_dir).summarize(
+                session_id=self.harness_session_id or None
+            )
+            price_in, _ = resolve_price(self.config.driver)
+        except Exception:
+            return {
+                "tool_output_tokens_saved": 0,
+                "tool_output_savings_usd": 0.0,
+                "tool_output_compactions": 0,
+            }
+        return {
+            "tool_output_tokens_saved": summary.tokens_saved,
+            "tool_output_savings_usd": round(savings_usd(summary.tokens_saved, price_in), 6),
+            "tool_output_compactions": summary.record_count,
+        }
+
+    def _tool_output_compaction_callback(self, tool_call_id: str):
+        from harness.tool_output_savings import make_compaction_callback
+
+        return make_compaction_callback(
+            state_dir=self._state_dir_or_tempdir,
+            session_id=self.harness_session_id or "default",
+            tool_call_id=tool_call_id,
+        )
 
     def _format_block_for_summary(self, messages: list[dict]) -> str:
         lines = []
@@ -1350,6 +1414,7 @@ class ConversationalSession(ToolDispatchMixin):
             result_id=tc_id,
             state_dir=self._state_dir_or_tempdir,
             config=self.context_budget_config,
+            on_compaction=self._tool_output_compaction_callback(tc_id),
         )
         # Tag full-file reads with their path so the pre-send pass can elide an
         # EARLIER read of the same file once a newer read supersedes it (the
@@ -2203,7 +2268,12 @@ class ConversationalSession(ToolDispatchMixin):
                 sys_prompt = base_sys
                 if cg_section:
                     sys_prompt += "\n\n" + cg_section
-                mcp_section = _format_mcp_tools_section(self._mcp)
+                mcp_section = _format_mcp_tools_section(
+                    self._mcp,
+                    self._tool_catalog,
+                    no_delegation=getattr(self.config, "no_delegation", False),
+                    browser_enabled=getattr(self.config, "browser_enabled", True),
+                )
                 if mcp_section:
                     sys_prompt += "\n\n" + mcp_section
 
@@ -2216,10 +2286,8 @@ class ConversationalSession(ToolDispatchMixin):
                 self._sanitize_tool_pairs()
                 try:
                     if hasattr(self.pilot, "chat"):
-                        from .pilot import build_tools_schema
-                        mcp_tools = self._mcp.discovered_tools() if self._mcp else None
-                        tools_schema = build_tools_schema(mcp_tools, no_delegation=getattr(self.config, "no_delegation", False), browser_enabled=getattr(self.config, "browser_enabled", True))
-                        
+                        tools_schema = self._build_visible_tools_schema()
+
                         is_interactive = not getattr(self.config, "no_delegation", False)
                         # Gate on an EXPLICIT capability flag (is True) + a callable chat_stream.
                         # Using `is True` avoids MagicMock test pilots (which fabricate any attr as a
@@ -2490,7 +2558,7 @@ class ConversationalSession(ToolDispatchMixin):
                 return
 
             # 4. Execute each action as a collapsible tool-call.
-            READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "search_files", "web_search", "web_fetch", "read_pdf", "view_image"}
+            READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "search_files", "web_search", "web_fetch", "read_pdf", "view_image", "lsp"}
             prefetch = {}
             read_actions_with_idx = []
             for idx, act in enumerate(turn.actions):
@@ -2556,10 +2624,13 @@ class ConversationalSession(ToolDispatchMixin):
                     turn_had_invalid = True
                     continue
                 act_goal = act.goal
-                if act.kind in ("read_file", "write_file", "edit_file", "list_dir", "view_image", "open_project"):
+                if act.kind in ("read_file", "write_file", "edit_file", "hash_edit", "list_dir", "view_image", "open_project"):
                     act_goal = act.path or "(workspace root)"
                 elif act.kind == "run_command":
                     act_goal = act.command
+                elif act.kind == "lsp":
+                    _a = act.arguments or {}
+                    act_goal = _a.get("mode") or "lsp"
                 elif act.kind == "call_mcp":
                     act_goal = act.tool
                 elif act.kind == "web_search":
@@ -2572,6 +2643,8 @@ class ConversationalSession(ToolDispatchMixin):
                     act_goal = act.query
                 elif act.kind == "search_files":
                     act_goal = act.query
+                elif act.kind == "search_tools":
+                    act_goal = act.query or ",".join(act.arguments.get("activate") or [])
                 elif act.kind == "query_wiki":
                     act_goal = act.arguments.get("question") or ""
                 elif act.kind.startswith("browser_"):
@@ -2584,7 +2657,7 @@ class ConversationalSession(ToolDispatchMixin):
                     "adapter": self.config.swarm_adapter,
                 })
 
-                if plan and act.kind in ("run_implement", "run_parallel", "write_file", "edit_file", "run_command"):
+                if plan and act.kind in ("run_implement", "run_parallel", "write_file", "edit_file", "hash_edit", "run_command"):
                     yield ConvEvent("action_result", {
                         "id": aid,
                         "error": f"(plan mode: skipped {act.kind})"
@@ -2593,7 +2666,7 @@ class ConversationalSession(ToolDispatchMixin):
                     continue
 
                 if getattr(self.config, "no_delegation", False) and act.kind in ("run_implement", "run_parallel", "run_swarm"):
-                    err_msg = "delegation is disabled for workers; edit the files directly with write_file or edit_file"
+                    err_msg = "delegation is disabled for workers; edit the files directly with write_file, edit_file, or hash_edit"
                     yield ConvEvent("action_result", {
                         "id": aid,
                         "error": err_msg
@@ -2825,6 +2898,60 @@ class ConversationalSession(ToolDispatchMixin):
                         yield ConvEvent("action_result", {"id": aid, "error": str(e)})
                         self._append_action_result(act, aid, f"(edit_file {act.path} failed: {e})", is_native)
                     continue
+                # ---- hash_edit branch -----------------------------------------
+                if act.kind == "hash_edit":
+                    if not self.config.repo:
+                        error_msg = "No workspace directory (config.repo) is open."
+                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                        self._append_action_result(act, aid, f"(hash_edit {aid} failed: {error_msg})", is_native)
+                        continue
+                    target_path = act.path
+                    if not os.path.isabs(target_path):
+                        target_path = os.path.join(self.config.repo, target_path)
+                    if not is_safe_path(target_path, self.config.repo):
+                        error_msg = f"Path traversal attempt rejected: {act.path}"
+                        yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+                        self._append_action_result(act, aid, f"(hash_edit {aid} failed: {error_msg})", is_native)
+                        continue
+                    try:
+                        ok, status, msg = self._do_hash_edit(act, write=False)
+                        if not ok:
+                            yield ConvEvent("action_result", {"id": aid, "error": msg})
+                            self._append_action_result(act, aid, f"(hash_edit {act.path} failed: {msg})", is_native)
+                            continue
+
+                        try:
+                            cp_id = self._checkpoints.snapshot(
+                                label=f"Before hash_edit {act.path}",
+                                trigger="hash_edit"
+                            )
+                            if cp_id:
+                                yield ConvEvent("checkpoint", {
+                                    "id": cp_id,
+                                    "trigger": "hash_edit",
+                                    "label": f"Before hash_edit {act.path}"
+                                })
+                        except Exception as cp_err:
+                            import sys
+                            print(f"Checkpoint error before hash_edit: {cp_err}", file=sys.stderr)
+
+                        ok, status, msg = self._do_hash_edit(act, write=True)
+                        if not ok:
+                            yield ConvEvent("action_result", {"id": aid, "error": msg})
+                            self._append_action_result(act, aid, f"(hash_edit {act.path} failed: {msg})", is_native)
+                            continue
+
+                        headline = f"hash_edit {act.path}: {msg}"
+                        yield ConvEvent("action_result", {
+                            "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
+                            "artifacts": [{"type": "file", "headline": headline}],
+                        })
+                        self._append_action_result(act, aid, f"(hash_edit {act.path} successfully applied: {headline})", is_native)
+                        turn_changed_files.append(target_path)
+                    except Exception as e:
+                        yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+                        self._append_action_result(act, aid, f"(hash_edit {act.path} failed: {e})", is_native)
+                    continue
                 # ---- run_command branch ---------------------------------------
                 if act.kind == "run_command":
                     if not self.config.repo:
@@ -3013,6 +3140,42 @@ class ConversationalSession(ToolDispatchMixin):
                             yield ConvEvent("action_result", {"id": aid, "error": val})
                             self._append_action_result(act, aid, f"(search_files '{act.query}' failed: {val})", is_native)
                     continue
+                # ---- search_tools branch ---------------------------------------
+                if act.kind == "search_tools":
+                    try:
+                        ok, status, val = self._do_search_tools(act)
+                    except Exception as exc:
+                        ok, status, val = False, "exception", str(exc)
+
+                    if ok:
+                        yield ConvEvent("action_result", {
+                            "id": aid, "num": 1, "types": ["search_tools"], "adapter": "local", "mode": "tool",
+                            "artifacts": [{"type": "search_tools", "headline": f"Tool search: {act.query or 'activate'}"}],
+                        })
+                        self._append_action_result(act, aid, f"(search_tools returned)\n{val}", is_native)
+                    else:
+                        yield ConvEvent("action_result", {"id": aid, "error": val})
+                        self._append_action_result(act, aid, f"(search_tools failed: {val})", is_native)
+                    continue
+                # ---- lsp branch ----------------------------------------------
+                if act.kind == "lsp":
+                    if idx in prefetch:
+                        ok, status, val = prefetch[idx]
+                    else:
+                        ok, status, val = self._do_lsp(act)
+
+                    if ok:
+                        lang = (act.arguments or {}).get("language") or "auto"
+                        mode = (act.arguments or {}).get("mode") or "diagnostics"
+                        yield ConvEvent("action_result", {
+                            "id": aid, "num": 1, "types": ["lsp"], "adapter": "local", "mode": "tool",
+                            "artifacts": [{"type": "lsp", "headline": f"LSP {lang}/{mode}"}],
+                        })
+                        self._append_action_result(act, aid, f"(lsp returned)\n{val}", is_native)
+                    else:
+                        yield ConvEvent("action_result", {"id": aid, "error": val})
+                        self._append_action_result(act, aid, f"(lsp failed: {val})", is_native)
+                    continue
                 # ---- native browser / computer-use tools ----------------------
                 if act.kind in ("browser_navigate", "browser_snapshot", "browser_click",
                                 "browser_type", "browser_scroll", "browser_back",
@@ -3091,6 +3254,8 @@ class ConversationalSession(ToolDispatchMixin):
                         self._append_action_result(act, aid, f"(mcp {aid} unavailable)", is_native)
                         continue
                     try:
+                        if act.tool:
+                            self._tool_catalog.activate([act.tool])
                         out = self._mcp.call(act.tool, act.arguments)
                         text = _mcp_result_text(out)
                     except Exception as e:
@@ -3850,6 +4015,7 @@ class ConversationalSession(ToolDispatchMixin):
                 tool_messages=new_messages,
                 state_dir=self._state_dir_or_tempdir,
                 config=self.context_budget_config,
+                savings_session_id=self.harness_session_id or "default",
             )
             self._history[history_len_before_actions:] = new_messages
 

@@ -143,7 +143,7 @@ class SkillStore:
 
     def get(self, slug: str) -> Optional[Skill]:
         p = self._find(slug)
-        return _parse(p.read_text()) if p else None
+        return _parse(p.read_text(encoding="utf-8", errors="replace")) if p else None
 
     def list(self, state: Optional[str] = None) -> List[Skill]:
         out = []
@@ -153,7 +153,7 @@ class SkillStore:
             if not d.exists():
                 continue
             for f in sorted(d.glob("*.md")):
-                out.append(_parse(f.read_text()))
+                out.append(_parse(f.read_text(encoding="utf-8", errors="replace")))
         return out
 
     def set_state(self, slug: str, state: str) -> Optional[Skill]:

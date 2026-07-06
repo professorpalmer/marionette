@@ -12,7 +12,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
   onToggleLeft: () => void; onToggleRight: () => void;
 }) {
   const [branch, setBranch] = useState("");
-  const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number; tokens_cached?: number; cache_savings_usd?: number; price_in?: number; price_out?: number } | null>(null);
+  const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number; tokens_cached?: number; cache_savings_usd?: number; tool_output_tokens_saved?: number; tool_output_savings_usd?: number; price_in?: number; price_out?: number } | null>(null);
   const [costOpen, setCostOpen] = useState(false);
   const costRef = useRef<HTMLDivElement | null>(null);
   const [update, setUpdate] = useState<{ behind: number; branch: string; version: string } | null>(null);
@@ -101,6 +101,8 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
             est_cost_usd: data.session.est_cost_usd,
             tokens_cached: (data.session as { tokens_cached?: number }).tokens_cached,
             cache_savings_usd: (data.session as { cache_savings_usd?: number }).cache_savings_usd,
+            tool_output_tokens_saved: (data.session as { tool_output_tokens_saved?: number }).tool_output_tokens_saved,
+            tool_output_savings_usd: (data.session as { tool_output_savings_usd?: number }).tool_output_savings_usd,
             price_in: (data.session as { price_in?: number }).price_in,
             price_out: (data.session as { price_out?: number }).price_out,
           });
@@ -193,6 +195,18 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
                   : ""}
               </span>
             ) : null}
+            {usage.tool_output_tokens_saved && usage.tool_output_tokens_saved > 0 ? (
+              <span
+                className="text-accent/70"
+                title={`Context tokens avoided by compacting oversized tool outputs${
+                  usage.tool_output_savings_usd && usage.tool_output_savings_usd > 0
+                    ? ` (~${formatCost(usage.tool_output_savings_usd)} at input price)`
+                    : ""
+                }`}
+              >
+                {formatTokens(usage.tool_output_tokens_saved)} compacted
+              </span>
+            ) : null}
             {/* The estimated cost is now a click/hover trigger for a compact
                 routing-value breakdown (why this model / what it saved). It
                 stays a plain figure when there is nothing meaningful to expand. */}
@@ -213,6 +227,8 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
                       est_cost_usd: usage.est_cost_usd,
                       tokens_cached: usage.tokens_cached,
                       cache_savings_usd: usage.cache_savings_usd,
+                      tool_output_tokens_saved: usage.tool_output_tokens_saved,
+                      tool_output_savings_usd: usage.tool_output_savings_usd,
                       price_in: usage.price_in,
                       price_out: usage.price_out,
                     }}

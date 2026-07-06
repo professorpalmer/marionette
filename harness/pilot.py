@@ -37,7 +37,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project",
+VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "hash_edit", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "search_tools", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project",
+                      "lsp",
                       "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
                       "browser_scroll", "browser_back", "browser_get_text", "browser_screenshot"}
 
@@ -80,6 +81,27 @@ class PilotAction:
     def validate(self) -> "PilotAction":
         if self.kind not in VALID_ACTION_KINDS:
             raise PilotError(f"unknown action kind: {self.kind!r}")
+        if self.kind == "lsp":
+            args = self.arguments or {}
+            if not isinstance(args, dict):
+                raise PilotError("lsp action arguments must be an object")
+            language = args.get("language") or "auto"
+            if language not in ("auto", "python", "typescript"):
+                raise PilotError(f"lsp action language must be 'auto', 'python', or 'typescript' (got {language!r})")
+            mode = args.get("mode") or "diagnostics"
+            if mode not in ("status", "diagnostics"):
+                raise PilotError("lsp action mode must be 'status' or 'diagnostics'")
+            root = args.get("root")
+            if root is not None and not str(root).strip():
+                raise PilotError("lsp action root must be a non-empty string when provided")
+            timeout_ms = args.get("timeout_ms")
+            if timeout_ms is not None:
+                try:
+                    timeout_ms_int = int(timeout_ms)
+                except (ValueError, TypeError):
+                    raise PilotError("lsp action timeout_ms must be an integer (milliseconds)")
+                if timeout_ms_int <= 0:
+                    raise PilotError("lsp action timeout_ms must be > 0")
         if self.kind == "memory":
             if not self.memory_action:
                 raise PilotError("memory action requires an 'action'")
@@ -105,6 +127,12 @@ class PilotAction:
             raise PilotError("edit_file action requires a 'path'")
         if self.kind == "edit_file" and not self.old_str:
             raise PilotError("edit_file action requires 'old_str'")
+        if self.kind == "hash_edit":
+            if not (self.path or "").strip():
+                raise PilotError("hash_edit action requires a 'path'")
+            ops = self.arguments.get("ops")
+            if not isinstance(ops, list) or not ops:
+                raise PilotError("hash_edit action requires a non-empty 'ops' list")
         if self.kind == "run_command" and not (self.command or "").strip():
             raise PilotError("run_command action requires a 'command'")
         if self.kind == "web_search" and not (self.query or "").strip():
@@ -117,6 +145,8 @@ class PilotAction:
             raise PilotError("search_codegraph action requires a 'query'")
         if self.kind == "search_files" and not (self.query or "").strip():
             raise PilotError("search_files action requires a 'query'")
+        if self.kind == "search_tools" and not (self.query or "").strip() and not self.arguments.get("activate"):
+            raise PilotError("search_tools action requires a 'query' and/or 'activate' list")
         if self.kind == "query_wiki" and not (self.arguments.get("question") or "").strip():
             raise PilotError("query_wiki action requires a 'question'")
         if self.roles and not isinstance(self.roles, list):
@@ -182,8 +212,46 @@ def _coerce_actions(raw_actions) -> list:
     return actions
 
 
-def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = False, browser_enabled: bool = True) -> list:
+def build_tools_schema(
+    mcp_tools: Optional[list] = None,
+    no_delegation: bool = False,
+    browser_enabled: bool = True,
+    *,
+    include_search_tools: bool = False,
+    visible_names: Optional[set] = None,
+) -> list:
     schema = []
+
+    if include_search_tools:
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "search_tools",
+                "description": (
+                    "Search the catalog of available pilot and MCP tools by keyword. "
+                    "Returns matching tool names/descriptions and whether each tool is hidden. "
+                    "Pass activate with tool names or qualified MCP ids to enable hidden tools for later turns."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Keyword query over tool names and descriptions (optional when activating by name).",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max results to return (default 10, max 25).",
+                        },
+                        "activate": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Tool names or MCP qualified ids to activate for subsequent turns.",
+                        },
+                    },
+                },
+            },
+        })
 
     # open_project
     schema.append({
@@ -202,11 +270,21 @@ def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = F
     })
 
     # 1. read_file
+    from .hash_edit import hash_edit_enabled as _hash_edit_on
+    read_desc = (
+        "Read a file's contents. For large files, use start_line and limit. "
+        "Prefer search_codegraph/search_files to explore code structure."
+    )
+    if _hash_edit_on():
+        read_desc += (
+            " When hash_edit is enabled, output includes [@anchor ...] tags with "
+            "stable content hashes for the file or range; use those anchors with hash_edit."
+        )
     schema.append({
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a file's contents. For large files, use start_line and limit. Prefer search_codegraph/search_files to explore code structure.",
+            "description": read_desc,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -253,6 +331,50 @@ def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = F
             }
         }
     })
+
+    if _hash_edit_on():
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "hash_edit",
+                "description": (
+                    "Apply hash-anchored replace/insert/delete ops to an existing file. "
+                    "Each op references anchor hashes from read_file [@anchor ...] tags; "
+                    "stale anchors are rejected with no partial writes. Prefer over edit_file "
+                    "when anchors are available."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File to edit"},
+                        "ops": {
+                            "type": "array",
+                            "description": "Ordered list of replace/insert/delete operations",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "op": {
+                                        "type": "string",
+                                        "enum": ["replace", "insert", "delete"],
+                                        "description": "Operation kind",
+                                    },
+                                    "anchor": {
+                                        "type": "string",
+                                        "description": "Content hash from read_file anchor tag",
+                                    },
+                                    "start_line": {"type": "integer", "description": "1-based start line (replace/delete)"},
+                                    "end_line": {"type": "integer", "description": "1-based end line inclusive (replace/delete)"},
+                                    "after_line": {"type": "integer", "description": "Insert after this line (0 = before first line)"},
+                                    "text": {"type": "string", "description": "New text for replace/insert"},
+                                },
+                                "required": ["op"],
+                            },
+                        },
+                    },
+                    "required": ["path", "ops"],
+                },
+            },
+        })
 
     # 3. run_command
     schema.append({
@@ -424,6 +546,43 @@ def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = F
                         "max_results": {"type": "integer", "description": "Optional max results to return, default 50"}
                     },
                     "required": ["query"]
+                }
+            }
+        })
+
+    # lsp (status + diagnostics via local tools; small first-pass)
+    if not no_delegation:
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "lsp",
+                "description": (
+                    "Fetch IDE-style status/diagnostics for Python/TypeScript by invoking locally "
+                    "available tools (pyright for Python; tsc/tsserver/TS language servers for TS). "
+                    "Should gracefully report 'no tools found' when the toolchain is absent."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "language": {
+                            "type": "string",
+                            "enum": ["auto", "python", "typescript"],
+                            "description": "Target language/toolchain. Default: auto."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["status", "diagnostics"],
+                            "description": "What to fetch. Default: diagnostics."
+                        },
+                        "root": {
+                            "type": "string",
+                            "description": "Project root to run tools from. Default: workspace root."
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Timeout for the underlying command (milliseconds)."
+                        }
+                    }
                 }
             }
         })
@@ -637,6 +796,12 @@ def build_tools_schema(mcp_tools: Optional[list] = None, no_delegation: bool = F
                     "parameters": tool.input_schema or {"type": "object", "properties": {}, "required": []}
                 }
             })
+
+    if visible_names is not None:
+        schema = [
+            item for item in schema
+            if (item.get("function") or {}).get("name") in visible_names
+        ]
 
     return schema
 
@@ -1106,6 +1271,8 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `read_pdf`: extract plain text from a local PDF file or PDF URL. Requires `path` or `url`.
 - `search_codegraph`: search the CodeGraph index for symbol usages, definitions, or context. Requires `query` and optional `kind`.
 - `search_files`: plain-text/regex content search over the repository, complementary to symbol search. Requires `query`, optional `path`, and `max_results`.
+- `lsp`: fetch IDE-style status/diagnostics for Python/TypeScript by invoking locally available tools (pyright/tsc/tsserver). Requires optional `language` ('python'/'typescript'/'auto') and `mode` ('status'/'diagnostics').
+- `search_tools`: search the catalog of available pilot and MCP tools; use `activate` to enable hidden tools for later turns.
 - `query_wiki`: query the durable cross-session architecture and knowledge wiki. Requires `question`.
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
 

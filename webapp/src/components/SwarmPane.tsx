@@ -847,6 +847,11 @@ export default function SwarmPane() {
           </div>
           <div className="flex items-center gap-3 shrink-0">
             <span>Tokens: <strong className="text-txt font-mono font-semibold">{data.session.tokens_used.toLocaleString()}</strong></span>
+            {(data.session.tool_output_tokens_saved ?? 0) > 0 ? (
+              <span className="text-accent/80" title="Context tokens avoided by compact tool outputs">
+                Compact: <strong className="font-mono font-semibold">{data.session.tool_output_tokens_saved!.toLocaleString()}</strong>
+              </span>
+            ) : null}
             <span>Cost: <strong className="text-good font-mono font-semibold">{formatCost(sessionCost)}</strong></span>
           </div>
         </div>

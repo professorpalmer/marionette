@@ -11,6 +11,8 @@ export type CostBreakdownData = {
   est_cost_usd: number;
   tokens_cached?: number;
   cache_savings_usd?: number;
+  tool_output_tokens_saved?: number;
+  tool_output_savings_usd?: number;
   price_in?: number;
   price_out?: number;
 };
@@ -37,6 +39,14 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   const cacheSavings =
     typeof data.cache_savings_usd === "number" && isFinite(data.cache_savings_usd) && data.cache_savings_usd > 0
       ? data.cache_savings_usd
+      : 0;
+  const compactSavings =
+    typeof data.tool_output_savings_usd === "number" && isFinite(data.tool_output_savings_usd) && data.tool_output_savings_usd > 0
+      ? data.tool_output_savings_usd
+      : 0;
+  const compactTokens =
+    typeof data.tool_output_tokens_saved === "number" && isFinite(data.tool_output_tokens_saved) && data.tool_output_tokens_saved > 0
+      ? data.tool_output_tokens_saved
       : 0;
   const cached =
     typeof data.tokens_cached === "number" && isFinite(data.tokens_cached) && data.tokens_cached > 0
@@ -70,15 +80,35 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         </div>
       ) : null}
 
+      {compactSavings > 0 ? (
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-muted">Compact tool outputs saved</span>
+          <span className="text-accent font-medium tabular-nums">~{fmtCost(compactSavings)}</span>
+        </div>
+      ) : null}
+
+      {compactTokens > 0 ? (
+        <div className="flex items-center justify-between mb-1 text-faint">
+          <span>Tool-output tokens avoided</span>
+          <span className="tabular-nums">{fmtTokens(compactTokens)}</span>
+        </div>
+      ) : null}
+
       {/* (c) The routing value proposition. Cache savings are concrete dollars
           the router-plus-cache path already banked; the framing line explains
           the mechanism that keeps spend low even absent a flat-frontier
           baseline. Kept to one short line. */}
       <div className="mt-2 pt-2 border-t border-edge/60 text-[10px] leading-snug text-muted/90">
-        {cacheSavings > 0 ? (
+        {cacheSavings > 0 || compactSavings > 0 ? (
           <span>
-            Routed per-step to the cheapest capable model, with{" "}
-            <span className="text-accent">~{fmtCost(cacheSavings)}</span> already saved via prompt caching.
+            Routed per-step to the cheapest capable model
+            {cacheSavings > 0 ? (
+              <>, with <span className="text-accent">~{fmtCost(cacheSavings)}</span> saved via prompt caching</>
+            ) : null}
+            {compactSavings > 0 ? (
+              <>, and <span className="text-accent">~{fmtCost(compactSavings)}</span> avoided by compact tool outputs</>
+            ) : null}
+            .
           </span>
         ) : (
           <span>Each task step is routed to the cheapest capable model instead of a single flat-frontier model.</span>

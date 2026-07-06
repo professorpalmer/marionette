@@ -93,6 +93,32 @@ def _cache_savings(cached: float, price_in: float) -> float:
     return (float(cached) / 1.0e6) * price_in * (1.0 - CACHE_READ_MULTIPLIER)
 
 
+def _sync_pilot_session_id() -> None:
+    """Keep the pilot's savings-ledger session scope aligned with SessionStore."""
+    try:
+        _pilot.harness_session_id = _sessions.active or ""
+    except Exception:
+        pass
+
+
+def _tool_output_savings_fields(price_in: float) -> dict:
+    """Compact tool-output savings for session payloads."""
+    try:
+        from .tool_output_savings import session_savings_payload
+
+        return session_savings_payload(
+            _pilot.state_dir,
+            getattr(_pilot, "harness_session_id", "") or "",
+            price_in,
+        )
+    except Exception:
+        return {
+            "tool_output_tokens_saved": 0,
+            "tool_output_savings_usd": 0.0,
+            "tool_output_compactions": 0,
+        }
+
+
 def _job_cost(tokens_in: float, tokens_out: float, tokens_total: float,
               price_in: float, price_out: float) -> float:
     """Deterministic per-job cost. Uses the real in/out split when the job
@@ -729,12 +755,14 @@ def _rebuild_pilot_and_session():
         _pilot._history = old_history
         _pilot._auto_distill = old_auto_distill
         _pilot._mcp = _mcp
+        _sync_pilot_session_id()
 
 # Startup: Restore the active/most-recent session's transcript into _pilot
 if _sessions.active:
     _startup_history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
     if _startup_history:
         _pilot.load_history(_startup_history)
+_sync_pilot_session_id()
 
 _skills = SkillStore()
 _rules = RuleStore()
@@ -1560,6 +1588,7 @@ class Handler(BaseHTTPRequestHandler):
                 _sessions.create(title=basename, repo=target_repo, branch=branch)
 
             _rebuild_pilot_and_session()
+            _sync_pilot_session_id()
 
             # Explicitly load target session's transcript to replace the preserved history
             if _sessions.active:
@@ -1750,6 +1779,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
                     _pilot.load_history(history)
+
+                _sync_pilot_session_id()
                     
                 res["repo"] = _cfg.repo
                 res["codegraph"] = _get_codegraph_status(_cfg.repo) if _cfg.repo else "unsupported"
@@ -3210,6 +3241,7 @@ class Handler(BaseHTTPRequestHandler):
                     # the USD that discount saved vs full input price.
                     "tokens_cached": _t_cached,
                     "cache_savings_usd": round(_cache_savings_usd, 6),
+                    **_tool_output_savings_fields(price_in),
                 },
                 "jobs": jobs_list
             }
@@ -3359,6 +3391,7 @@ class Handler(BaseHTTPRequestHandler):
                     # harness is not token-hungry -- plus the USD it saved.
                     "tokens_cached": _t_cached,
                     "cache_savings_usd": round(_cache_savings_usd, 6),
+                    **_tool_output_savings_fields(price_in),
                 },
                 "jobs": res_jobs
             }

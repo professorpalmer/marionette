@@ -98,6 +98,9 @@ export type SwarmLive = {
     tokens_used: number;
     est_cost_usd: number;
     driver?: string;
+    tool_output_tokens_saved?: number;
+    tool_output_savings_usd?: number;
+    tool_output_compactions?: number;
   };
   jobs: Job[];
 };
@@ -243,6 +246,11 @@ export type UsageData = {
     driver: string;
     price_in: number;
     price_out: number;
+    tokens_cached?: number;
+    cache_savings_usd?: number;
+    tool_output_tokens_saved?: number;
+    tool_output_savings_usd?: number;
+    tool_output_compactions?: number;
   };
   jobs: {
     job_id: string;
@@ -317,6 +325,9 @@ export type ContextUsageResponse = {
   total: number;
   limit: number;
   categories: ContextCategory[];
+  tool_output_tokens_saved?: number;
+  tool_output_savings_usd?: number;
+  tool_output_compactions?: number;
 };
 
 // Above this many characters, a chat message / autopilot objective is routed

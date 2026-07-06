@@ -13,11 +13,14 @@ MOVED_METHODS = (
     "_do_read_file",
     "_do_view_image",
     "_do_list_dir",
+    "_do_lsp",
     "_do_web_search",
     "_do_web_fetch",
     "_do_read_pdf",
     "_do_search_codegraph",
     "_do_search_files",
+    "_do_search_tools",
+    "_do_hash_edit",
 )
 
 
