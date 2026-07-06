@@ -26,6 +26,27 @@ reinjectPortableTools();
 const isDev = !!process.env.PMHARNESS_DEV_SERVER;
 const isPackaged = app.isPackaged;
 
+function pmharnessHome() {
+  return path.join(os.homedir(), ".pmharness");
+}
+
+// server.py anchors HARNESS_STATE_DIR to ~/.pmharness/state when unset and writes
+// token, backend.json, workspace.json, etc. there. Older installs used flat
+// ~/.pmharness/*. Prefer state/ on read (state first, then legacy) so a second
+// window reusing a live backend adopts the same files the server wrote.
+function pmharnessStateDir() {
+  return path.join(pmharnessHome(), "state");
+}
+
+function readPmHarnessStateFile(name) {
+  for (const dir of [pmharnessStateDir(), pmharnessHome()]) {
+    try {
+      return fs.readFileSync(path.join(dir, name), "utf8");
+    } catch {}
+  }
+  return null;
+}
+
 // Persistent main-process log, shared with the backend [out]/[err] lines under
 // ~/.pmharness/electron.log so a death is always diagnosable after the fact.
 function logMain(msg) {
@@ -343,9 +364,15 @@ function waitForBackend(port, timeoutMs = 20000) {
 // state (which causes "database is locked"). The marker is validated by a health
 // probe before reuse; stale markers are ignored.
 function markerPath() {
-  const dir = path.join(os.homedir(), ".pmharness");
+  const dir = pmharnessStateDir();
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
   return path.join(dir, "backend.json");
+}
+
+function unlinkMarker() {
+  for (const p of [markerPath(), path.join(pmharnessHome(), "backend.json")]) {
+    try { fs.unlinkSync(p); } catch {}
+  }
 }
 
 function startBackend() {
@@ -359,7 +386,8 @@ function startBackend() {
 async function _startBackendOnce() {
   // 1. Try to reuse an existing healthy backend.
   try {
-    const m = JSON.parse(fs.readFileSync(markerPath(), "utf8"));
+    const raw = readPmHarnessStateFile("backend.json");
+    const m = raw ? JSON.parse(raw) : null;
     if (m && m.port) {
       await waitForBackend(m.port, 2000);
       backendPort = m.port;
@@ -367,10 +395,8 @@ async function _startBackendOnce() {
       // Adopt the running backend's token (minted by whichever main spawned it)
       // so our renderer/IPC authenticate against IT rather than our own unused
       // freshly-minted token.
-      try {
-        const t = fs.readFileSync(path.join(os.homedir(), ".pmharness", "token"), "utf8").trim();
-        if (t) harnessToken = t;
-      } catch {}
+      const t = readPmHarnessStateFile("token");
+      if (t && t.trim()) harnessToken = t.trim();
       console.log(`[backend] reusing existing backend on ${backendPort}`);
       return;
     }
@@ -439,7 +465,7 @@ async function _startBackendOnce() {
     backend = null;
     if (!wasOurs || quitting) return;
     _dbg(`[backend EXITED unexpectedly] code=${code} signal=${signal} -- respawning`);
-    try { fs.unlinkSync(markerPath()); } catch {}
+    unlinkMarker();
     // Crash-loop guard: if it keeps dying, stop auto-respawning and wait for the
     // next window activate so we don't spin the CPU fighting a hard failure.
     const now = Date.now();
@@ -1029,7 +1055,7 @@ function cleanupBackend() {
   //      code). No marker => reopen can only spawn fresh.
   //   2. SIGTERM, then SIGKILL after a short grace, so a backend that is slow to
   //      exit (mid tool call / draining) can never survive into the next session.
-  try { fs.unlinkSync(markerPath()); } catch {}
+  unlinkMarker();
   if (backend) {
     const b = backend;
     backend = null;

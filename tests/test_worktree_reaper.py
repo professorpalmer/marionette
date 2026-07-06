@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 
 import harness.worktrees as wt
 
@@ -35,7 +36,8 @@ def test_reap_no_matches_returns_zero(tmp_path, monkeypatch):
     assert wt.reap_worktree_processes(str(tmp_path)) == 0
 
 
-def test_reap_signals_only_safe_matched_pids(tmp_path, monkeypatch):
+def test_reap_posix_signals_only_safe_matched_pids(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
     wtpath = os.path.realpath(str(tmp_path))
     me = os.getpid()
     parent = os.getppid()
@@ -67,3 +69,75 @@ def test_reap_signals_only_safe_matched_pids(tmp_path, monkeypatch):
     assert sigterms == [fake_target]
     for pid, _sig in killed:
         assert pid not in (1, me, parent)
+
+
+def test_reap_windows_taskkills_only_safe_matched_pids(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "name", "nt")
+    wtpath = os.path.realpath(str(tmp_path))
+    me = os.getpid()
+    parent = os.getppid()
+    fake_target = 424242
+
+    monkeypatch.setattr(wt, "_worktree_pid_cwds", lambda: [
+        (fake_target, os.path.join(wtpath, "sub")),
+        (1, wtpath),
+        (me, wtpath),
+        (parent, wtpath),
+        (999999, "/somewhere/else"),
+    ])
+
+    taskkills: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "taskkill":
+            taskkills.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(wt.subprocess, "run", fake_run)
+
+    n = wt.reap_worktree_processes(str(tmp_path))
+
+    assert n == 1
+    assert len(taskkills) == 1
+    assert taskkills[0] == ["taskkill", "/PID", str(fake_target), "/T", "/F"]
+    for cmd in taskkills:
+        pid = int(cmd[2])
+        assert pid not in (1, me, parent)
+
+
+def test_worktree_pid_cwds_routes_to_windows_branch(monkeypatch):
+    monkeypatch.setattr(os, "name", "nt")
+    calls: list[str] = []
+
+    def fake_windows():
+        calls.append("windows")
+        return []
+
+    def fake_posix():
+        calls.append("posix")
+        return []
+
+    monkeypatch.setattr(wt, "_worktree_pid_cwds_windows", fake_windows)
+    monkeypatch.setattr(wt, "_worktree_pid_cwds_posix", fake_posix)
+
+    assert wt._worktree_pid_cwds() == []
+    assert calls == ["windows"]
+
+
+def test_worktree_pid_cwds_routes_to_posix_branch(monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    calls: list[str] = []
+
+    def fake_windows():
+        calls.append("windows")
+        return []
+
+    def fake_posix():
+        calls.append("posix")
+        return []
+
+    monkeypatch.setattr(wt, "_worktree_pid_cwds_windows", fake_windows)
+    monkeypatch.setattr(wt, "_worktree_pid_cwds_posix", fake_posix)
+
+    assert wt._worktree_pid_cwds() == []
+    assert calls == ["posix"]

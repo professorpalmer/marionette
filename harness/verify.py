@@ -125,6 +125,17 @@ def _changed_of(changed_files: list[str], *exts: str) -> list[str]:
     return [p for p in changed_files if p.endswith(exts)]
 
 
+def _shell_join(*args: str) -> str:
+    """Join argv tokens into a shell command string.
+
+    POSIX shells (sh/bash) expect shlex.quote per token. cmd.exe (Windows,
+    shell=True) expects subprocess.list2cmdline semantics (double quotes).
+    """
+    if os.name == "nt":
+        return subprocess.list2cmdline(list(args))
+    return " ".join(shlex.quote(a) for a in args)
+
+
 def build_scoped_command(repo: str, changed_files: list[str]) -> str | None:
     """Given the changed files, build a FAST per-file syntax/type check scoped to
     just those files, or None when scoping is not possible.
@@ -147,17 +158,17 @@ def build_scoped_command(repo: str, changed_files: list[str]) -> str | None:
     if ts:
         tsconfig = _find_tsconfig(repo, changed_files)
         if tsconfig:
-            return f"npx tsc --noEmit -p {shlex.quote(tsconfig)}"
+            return _shell_join("npx", "tsc", "--noEmit", "-p", tsconfig)
         # No tsconfig: fall back to a loose per-file tsc syntax check.
-        files = " ".join(shlex.quote(_rel(repo, p)) for p in ts)
-        return f"npx tsc --noEmit {files}"
+        rel_ts = [_rel(repo, p) for p in ts]
+        return _shell_join("npx", "tsc", "--noEmit", *rel_ts)
 
     if py:
         import sys
 
         py_exe = sys.executable or "python"
-        files = " ".join(shlex.quote(_rel(repo, p)) for p in py)
-        return f"{shlex.quote(py_exe)} -m py_compile {files}"
+        rel_py = [_rel(repo, p) for p in py]
+        return _shell_join(py_exe, "-m", "py_compile", *rel_py)
 
     return None
 
@@ -211,7 +222,7 @@ def detect_verify_command(repo: str, changed_files: list[str] | None = None) -> 
     if is_web and web_has_check:
         tsconfig = _find_tsconfig(repo, changed_files)
         if tsconfig:
-            return f"npx tsc --noEmit -p {shlex.quote(tsconfig)}"
+            return _shell_join("npx", "tsc", "--noEmit", "-p", tsconfig)
         return "npx tsc --noEmit"
 
     # 2. Python project with tests but nothing python edited this turn: a full

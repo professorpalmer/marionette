@@ -103,7 +103,15 @@ class WorkerResult:
 # forms so the finalizer can surface them loudly. Best-effort only: shell is
 # not fully parseable, and false negatives are acceptable -- what matters is
 # that the common escape patterns do not slip through unnoticed.
-_ABS_PATH = r"(/[^\s'\";|&<>()`$]+)"
+# POSIX absolute (/...) or Windows drive-letter (C:\..., D:/...). Capturing
+# group is required: redirect/tee/mkdir handlers read m.group(1).
+_ABS_PATH = (
+    r"(?:"
+    r"(/[^\s'\";|&<>()`$]+)"
+    r"|"
+    r"([A-Za-z]:[\\/][^\s'\";|&<>()`$]*)"
+    r")"
+)
 
 # Redirection to an absolute path: `> /abs`, `>> /abs`, `2> /abs`, `&> /abs`,
 # and idioms like `cat > /abs` all match on the operator itself so we do not
@@ -118,8 +126,9 @@ _RE_MKDIR = re.compile(r"\bmkdir\b(?:\s+-[A-Za-z]+)*\s+" + _ABS_PATH)
 
 # `python -c "... open('/abs','w') ..."` (also 'a', 'wb', 'w+', etc.). The
 # character class requires at least one write-mode letter.
+_PY_OPEN_PATH = r"(?:/[^'\"]+|[A-Za-z]:[\\/][^'\"]*)"
 _RE_PY_OPEN = re.compile(
-    r"open\(\s*['\"](/[^'\"]+)['\"]\s*,\s*['\"][rwab+xt]*[wa][rwab+xt]*['\"]"
+    rf"open\(\s*['\"]({_PY_OPEN_PATH})['\"]\s*,\s*['\"][rwab+xt]*[wa][rwab+xt]*['\"]"
 )
 
 # `cp SRC /abs`, `mv SRC /abs`, `install SRC /abs`, `rsync SRC /abs`. We match
@@ -169,11 +178,11 @@ def _detect_escaped_writes(events, wt_path: str) -> list[str]:
         candidates: list[str] = []
         try:
             for m in _RE_REDIRECT.finditer(cmd):
-                candidates.append(m.group(1))
+                candidates.append(m.group(1) or m.group(2))
             for m in _RE_TEE.finditer(cmd):
-                candidates.append(m.group(1))
+                candidates.append(m.group(1) or m.group(2))
             for m in _RE_MKDIR.finditer(cmd):
-                candidates.append(m.group(1))
+                candidates.append(m.group(1) or m.group(2))
             for m in _RE_PY_OPEN.finditer(cmd):
                 candidates.append(m.group(1))
             # cp/mv/install/rsync: destination is the last absolute path in the
@@ -182,7 +191,8 @@ def _detect_escaped_writes(events, wt_path: str) -> list[str]:
             for seg in _RE_CP_MV.findall(cmd):
                 abs_paths = re.findall(_ABS_PATH, seg)
                 if abs_paths:
-                    candidates.append(abs_paths[-1])
+                    last = abs_paths[-1]
+                    candidates.append(last[0] or last[1])
         except Exception:
             # Regex on adversarial input should not throw, but if it does we
             # would rather skip this event than crash the finalizer.
@@ -190,7 +200,13 @@ def _detect_escaped_writes(events, wt_path: str) -> list[str]:
 
         for path in candidates:
             try:
-                norm = os.path.abspath(path.rstrip("/") or "/")
+                stripped = path.rstrip("/\\")
+                if not stripped:
+                    if len(path) >= 2 and path[1] == ":":
+                        stripped = path[:2] + "\\"
+                    else:
+                        stripped = "/"
+                norm = os.path.abspath(stripped)
             except Exception:
                 continue
             if norm == wt_norm or norm.startswith(wt_prefix):

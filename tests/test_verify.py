@@ -12,6 +12,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from harness import verify
 
 
@@ -147,6 +149,43 @@ def test_build_scoped_command_none_for_unsupported(tmp_path):
     root = str(tmp_path)
     assert verify.build_scoped_command(root, ["notes.md", "data.json"]) is None
     assert verify.build_scoped_command(root, []) is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
+def test_build_scoped_command_windows_uses_cmdline_quoting(tmp_path):
+    """POSIX shlex.quote single quotes break cmd.exe when run_verify uses shell=True."""
+    root = str(tmp_path)
+    spaced = _write(root, "a spaced/b.py", "x = 1\n")
+    cmd = verify.build_scoped_command(root, [spaced])
+    assert cmd is not None
+    assert "py_compile" in cmd
+    assert sys.executable in cmd
+    assert "'" not in cmd
+    expected = subprocess.list2cmdline(
+        [sys.executable, "-m", "py_compile", os.path.join("a spaced", "b.py")]
+    )
+    assert cmd == expected
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe quoting")
+def test_build_scoped_command_windows_tsconfig_quoting(tmp_path):
+    root = str(tmp_path)
+    _write(root, "tsconfig.json", "{}")
+    cmd = verify.build_scoped_command(root, ["src/x.ts"])
+    assert cmd is not None
+    assert "'" not in cmd
+    assert subprocess.list2cmdline(["npx", "tsc", "--noEmit", "-p", "tsconfig.json"]) in cmd
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shlex.quote")
+def test_build_scoped_command_posix_uses_shlex_quote(tmp_path):
+    import shlex
+
+    root = str(tmp_path)
+    _write(root, "tsconfig.json", "{}")
+    cmd = verify.build_scoped_command(root, ["src/x.ts"])
+    assert cmd is not None
+    assert shlex.quote("tsconfig.json") in cmd
 
 
 # ---------------------------------------------------------------------------

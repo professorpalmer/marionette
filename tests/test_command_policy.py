@@ -63,6 +63,12 @@ def test_timeout_empty_string_is_default():
     ("chown -R root:root /", "ownership-perms"),
     ("cat ~/.ssh/id_rsa", "secret-exfil"),
     ("cp .env /tmp/leak", "secret-exfil"),
+    ("rd /s /q C:\\", "destructive-recursive-delete"),
+    ("rmdir /s /q D:\\Windows", "destructive-recursive-delete"),
+    ("del /f /s /q C:\\Users", "destructive-recursive-delete"),
+    ("format C:", "destructive-recursive-delete"),
+    ("Remove-Item -Recurse -Force C:\\Windows", "destructive-recursive-delete"),
+    ("remove-item -force -recurse D:\\*", "destructive-recursive-delete"),
 ])
 def test_dangerous_commands_flagged(cmd, category):
     v = classify_command(cmd)
@@ -95,6 +101,9 @@ def test_force_push_with_lease_is_allowed():
     "docker ps",
     "cd ~/project && make",
     "ssh-keygen -t ed25519",          # 'ssh-keygen' is not 'ssh <host>'
+    "rd build",                       # non-recursive Windows rd
+    "del stale.log",                  # single-file delete, not /f /s /q on a root
+    "Remove-Item -Recurse -Force .\\build",  # project-local cleanup
 ])
 def test_benign_commands_not_flagged(cmd):
     v = classify_command(cmd)

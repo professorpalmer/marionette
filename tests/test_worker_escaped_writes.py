@@ -14,6 +14,8 @@ independent of the ConvEvent import graph (the helper accepts both).
 import os
 import tempfile
 
+import pytest
+
 from harness.worker import _detect_escaped_writes, WorkerResult
 
 
@@ -154,3 +156,35 @@ def test_worker_result_has_escaped_paths_field():
     assert r.escaped_paths == []
     r2 = WorkerResult(ok=False, escaped_paths=["/tmp/x"])
     assert r2.escaped_paths == ["/tmp/x"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows absolute paths")
+def test_detects_windows_drive_letter_redirect_outside_worktree():
+    with tempfile.TemporaryDirectory() as wt:
+        outside = r"C:\other\repo\file.txt"
+        events = [_run_cmd(f"cat > {outside}")]
+        found = _detect_escaped_writes(events, wt)
+        assert _norm(outside) in found, found
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows absolute paths")
+def test_detects_windows_various_write_forms():
+    with tempfile.TemporaryDirectory() as wt:
+        events = [
+            _run_cmd(r"echo hi >> D:\temp\pm_esc_a"),
+            _run_cmd(r"tee -a C:\temp\pm_esc_b < input"),
+            _run_cmd(r"cp file.txt C:\temp\pm_esc_c"),
+            _run_cmd(r"mv old C:\temp\pm_esc_d"),
+            _run_cmd(r"mkdir C:\temp\pm_esc_e"),
+            _run_cmd("python -c \"open('C:\\\\temp\\\\pm_esc_f','w').write('x')\""),
+        ]
+        found = _detect_escaped_writes(events, wt)
+        for expected in (
+            r"D:\temp\pm_esc_a",
+            r"C:\temp\pm_esc_b",
+            r"C:\temp\pm_esc_c",
+            r"C:\temp\pm_esc_d",
+            r"C:\temp\pm_esc_e",
+            r"C:\temp\pm_esc_f",
+        ):
+            assert _norm(expected) in found, (expected, found)

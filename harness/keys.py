@@ -8,7 +8,13 @@ _KEYS_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "keys.json")
 def get_keys_file_path() -> str:
     state_dir = os.environ.get("HARNESS_STATE_DIR")
     if state_dir:
-        return os.path.join(state_dir, "keys.json")
+        p = os.path.join(state_dir, "keys.json")
+        # MIGRATION: earlier builds wrote keys.json to ~/.pmharness/keys.json.
+        # Once HARNESS_STATE_DIR anchored to ~/.pmharness/state, upgraded installs
+        # with keys only in the parent directory appeared keyless until re-entered.
+        if not os.path.exists(p) and os.path.exists(_KEYS_FILE):
+            return _KEYS_FILE
+        return p
     return _KEYS_FILE
 
 def get_env_var_for_reach(reach: str) -> str:
@@ -54,7 +60,10 @@ _DISCONNECTED_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "disconnec
 def _disconnected_file_path() -> str:
     state_dir = os.environ.get("HARNESS_STATE_DIR")
     if state_dir:
-        return os.path.join(state_dir, "disconnected.json")
+        p = os.path.join(state_dir, "disconnected.json")
+        if not os.path.exists(p) and os.path.exists(_DISCONNECTED_FILE):
+            return _DISCONNECTED_FILE
+        return p
     return _DISCONNECTED_FILE
 
 

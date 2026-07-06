@@ -60,12 +60,41 @@ class CommandVerdict:
     matched: str    # the pattern fragment that tripped it (for the UI)
 
 
+# Windows catastrophic delete targets: drive root, root glob, or a top-level
+# system directory (mirrors the POSIX rm -rf /etc-style boundary logic).
+_WIN_SYSTEM_DIRS = (
+    r"windows|program\s+files(?:\s+\(x86\))?|users|perflogs|programdata|"
+    r"system32|syswow64|recovery|boot"
+)
+_WIN_CATASTROPHIC_TARGET = (
+    r"[a-zA-Z]:(?:"
+    r"\\\*"  # C:\*
+    r"|\\?(?:\\(?:" + _WIN_SYSTEM_DIRS + r")(?:\\.*)?)?"  # C:\Windows, C:\, ...
+    r")"
+)
+
 # Each rule: (category, human reason, compiled regex). Ordered most-severe first.
 # Patterns are matched case-insensitively against the raw command string.
 _RULES = [
     ("destructive-recursive-delete",
      "recursive force delete",
      r"\brm\s+(-[a-z]*\s+)*-[a-z]*r[a-z]*f|\brm\s+(-[a-z]*\s+)*-[a-z]*f[a-z]*r|\brm\s+-[rf]{2}\b"),
+    ("destructive-recursive-delete",
+     "recursive force delete (Windows cmd)",
+     r"\brd(?:\s+/[a-z]+)+\s+" + _WIN_CATASTROPHIC_TARGET),
+    ("destructive-recursive-delete",
+     "recursive force delete (Windows cmd)",
+     r"\brmdir(?:\s+/[a-z]+)+\s+" + _WIN_CATASTROPHIC_TARGET),
+    ("destructive-recursive-delete",
+     "recursive force delete (Windows cmd)",
+     r"\bdel(?:\s+/[a-z]+)+\s+" + _WIN_CATASTROPHIC_TARGET),
+    ("destructive-recursive-delete",
+     "disk format (Windows)",
+     r"\bformat\s+[a-zA-Z]:(?:\s|$)"),
+    ("destructive-recursive-delete",
+     "recursive force delete (PowerShell)",
+     r"remove-item\b[^\n;|&`]*-(?:recurse|force)\b[^\n;|&`]*-(?:recurse|force)\b[^\n;|&`]*"
+     + _WIN_CATASTROPHIC_TARGET),
     ("disk-write",
      "raw disk / filesystem write",
      r"\b(dd|mkfs|fdisk|parted|wipefs)\b|>\s*/dev/(sd|nvme|disk|rdisk)"),

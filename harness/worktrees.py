@@ -150,7 +150,7 @@ def _cwd_under(cwd: str, worktree: str) -> bool:
         return False
 
 
-def _worktree_pid_cwds() -> list[tuple[int, str]]:
+def _worktree_pid_cwds_posix() -> list[tuple[int, str]]:
     """Best-effort enumeration of (pid, cwd) via lsof. Returns [] on any error."""
     out_pairs: list[tuple[int, str]] = []
     try:
@@ -176,14 +176,164 @@ def _worktree_pid_cwds() -> list[tuple[int, str]]:
     return out_pairs
 
 
+def _worktree_pid_cwds_windows() -> list[tuple[int, str]]:
+    """Best-effort enumeration of (pid, cwd) on Windows. Returns [] on any error."""
+    out_pairs: list[tuple[int, str]] = []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_INFORMATION = 0x0400
+        PROCESS_VM_READ = 0x0010
+        ProcessBasicInformation = 0
+        TH32CS_SNAPPROCESS = 0x00000002
+
+        class PROCESS_BASIC_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("Reserved1", wintypes.LPVOID),
+                ("PebBaseAddress", wintypes.LPVOID),
+                ("Reserved2_0", wintypes.LPVOID),
+                ("Reserved2_1", wintypes.LPVOID),
+                ("UniqueProcessId", wintypes.LPVOID),
+                ("Reserved3", wintypes.LPVOID),
+            ]
+
+        class UNICODE_STRING(ctypes.Structure):
+            _fields_ = [
+                ("Length", wintypes.USHORT),
+                ("MaximumLength", wintypes.USHORT),
+                ("Buffer", wintypes.LPVOID),
+            ]
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        ntdll = ctypes.windll.ntdll
+        ptr_size = ctypes.sizeof(ctypes.c_void_p)
+        params_offset = 0x20 if ptr_size == 8 else 0x10
+        cwd_offset = 0x38 if ptr_size == 8 else 0x24
+        ptr_fmt = "<Q" if ptr_size == 8 else "<I"
+        import struct as _struct
+
+        def _ptr_value(raw) -> int:
+            if isinstance(raw, int):
+                return raw
+            return ctypes.cast(raw, ctypes.c_void_p).value or 0
+
+        def _read_ptr(h, addr: int) -> Optional[int]:
+            buf = ctypes.create_string_buffer(ptr_size)
+            read = ctypes.c_size_t()
+            if not kernel32.ReadProcessMemory(
+                h, ctypes.c_void_p(addr), buf, ptr_size, ctypes.byref(read)
+            ):
+                return None
+            return _struct.unpack(ptr_fmt, buf.raw)[0]
+
+        def _process_cwd(pid: int) -> Optional[str]:
+            h = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+            if not h:
+                return None
+            try:
+                pbi = PROCESS_BASIC_INFORMATION()
+                ret_len = wintypes.ULONG()
+                status = ntdll.NtQueryInformationProcess(
+                    h,
+                    ProcessBasicInformation,
+                    ctypes.byref(pbi),
+                    ctypes.sizeof(pbi),
+                    ctypes.byref(ret_len),
+                )
+                peb_addr = _ptr_value(pbi.PebBaseAddress)
+                if status != 0 or not peb_addr:
+                    return None
+                proc_params = _read_ptr(h, peb_addr + params_offset)
+                if proc_params is None:
+                    return None
+                us = UNICODE_STRING()
+                read = ctypes.c_size_t()
+                if not kernel32.ReadProcessMemory(
+                    h,
+                    ctypes.c_void_p(proc_params + cwd_offset),
+                    ctypes.byref(us),
+                    ctypes.sizeof(us),
+                    ctypes.byref(read),
+                ):
+                    return None
+                buf_addr = _ptr_value(us.Buffer)
+                if not buf_addr or us.Length == 0:
+                    return None
+                path_buf = ctypes.create_string_buffer(us.Length)
+                if not kernel32.ReadProcessMemory(
+                    h, ctypes.c_void_p(buf_addr), path_buf, us.Length, ctypes.byref(read)
+                ):
+                    return None
+                return path_buf.raw.decode("utf-16-le", errors="replace")
+            finally:
+                kernel32.CloseHandle(h)
+
+        snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snap in (-1, 0xFFFFFFFF):
+            return out_pairs
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if not kernel32.Process32FirstW(snap, ctypes.byref(entry)):
+                return out_pairs
+            while True:
+                pid = int(entry.th32ProcessID)
+                if pid > 1:
+                    cwd = _process_cwd(pid)
+                    if cwd:
+                        out_pairs.append((pid, cwd))
+                if not kernel32.Process32NextW(snap, ctypes.byref(entry)):
+                    break
+        finally:
+            kernel32.CloseHandle(snap)
+    except Exception:
+        return out_pairs
+    return out_pairs
+
+
+def _worktree_pid_cwds() -> list[tuple[int, str]]:
+    """Best-effort enumeration of (pid, cwd). Returns [] on any error."""
+    if os.name == "nt":
+        return _worktree_pid_cwds_windows()
+    return _worktree_pid_cwds_posix()
+
+
+def _taskkill_tree(pid: int) -> None:
+    """Force-kill a process tree on Windows. Best-effort; never raises."""
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
 def reap_worktree_processes(path: str) -> int:
     """Terminate any still-running process whose cwd is inside worktree `path`.
 
     Orphaned `codegraph index` (+ node) subprocesses can outlive their worker
     worktree, reparent to init, and keep walking the now-deleted dir -- a real
-    resource leak. Reap them (SIGTERM, then SIGKILL) BEFORE the dir is removed
-    so their cwd still resolves. Best-effort: never raises; returns the count
-    signaled. Never signals pid<=1, this process, or its parent.
+    resource leak. Reap them BEFORE the dir is removed so their cwd still
+    resolves: POSIX uses SIGTERM then SIGKILL; Windows uses taskkill /T /F.
+    Best-effort: never raises; returns the count signaled. Never signals
+    pid<=1, this process, or its parent.
     """
     signaled = 0
     try:
@@ -195,6 +345,14 @@ def reap_worktree_processes(path: str) -> int:
             pid for pid, cwd in _worktree_pid_cwds()
             if pid > 1 and pid != me and pid != parent and _cwd_under(cwd, path)
         ]
+        if os.name != "posix":
+            for pid in targets:
+                try:
+                    _taskkill_tree(pid)
+                    signaled += 1
+                except Exception:
+                    continue
+            return signaled
         for pid in targets:
             try:
                 os.kill(pid, _signal.SIGTERM)

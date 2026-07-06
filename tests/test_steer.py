@@ -175,3 +175,62 @@ def test_api_session_steer_auth(tmp_path):
         
     finally:
         httpd.shutdown()
+
+
+def test_api_session_steer_image_path_traversal_blocked(tmp_path):
+    """Steer image attachments must be validated like queue/chat/run."""
+    import harness.server as srv
+    import tempfile
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+
+    srv._cfg.state_dir = str(tmp_path)
+    srv._sessions.path = str(tmp_path / "harness_sessions.json")
+    srv._sessions._sessions = []
+
+    try:
+        bad_path = os.path.join(tempfile.gettempdir(), "steer_bad_outside.png")
+        with open(bad_path, "wb") as f:
+            f.write(b"fake png")
+
+        req_bad = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/session/steer",
+            data=json.dumps({"text": "look at this", "images": [bad_path]}).encode(),
+            headers={"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req_bad, timeout=5)
+            assert False, "should have been rejected with 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            data = json.loads(e.read().decode())
+            assert "Invalid image path" in data["error"]
+
+        good_path = os.path.join(srv._UPLOAD_DIR, "steer_valid.png")
+        os.makedirs(srv._UPLOAD_DIR, exist_ok=True)
+        with open(good_path, "wb") as f:
+            f.write(b"fake png")
+
+        req_good = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/session/steer",
+            data=json.dumps({"text": "adjust left", "images": [good_path]}).encode(),
+            headers={"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+            method="POST",
+        )
+        resp = urllib.request.urlopen(req_good, timeout=5)
+        assert resp.status == 200
+        assert json.loads(resp.read().decode())["ok"] is True
+    finally:
+        try:
+            os.remove(bad_path)
+        except OSError:
+            pass
+        try:
+            os.remove(good_path)
+        except OSError:
+            pass
+        httpd.shutdown()

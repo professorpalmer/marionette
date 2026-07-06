@@ -132,3 +132,58 @@ def test_api_settings_endpoints_with_key():
         
     finally:
         httpd.shutdown()
+
+
+def test_legacy_keys_fallback_when_state_dir_empty(monkeypatch, tmp_path):
+    """Upgraded installs with keys only in ~/.pmharness/keys.json stay readable."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    legacy_file = tmp_path / "keys.json"
+    legacy_file.write_text(json.dumps({"openrouter": "sk-or-legacy-1234"}))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
+
+    import importlib
+    from harness import keys as K
+    importlib.reload(K)
+    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
+
+    assert K.get_keys_file_path() == str(legacy_file)
+    status = K.get_api_key_status("openrouter")
+    assert status["has_key"] is True
+    assert status["masked"] == "....1234"
+
+
+def test_state_dir_keys_preferred_over_legacy(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state_file = state_dir / "keys.json"
+    state_file.write_text(json.dumps({"openrouter": "sk-or-state-key"}))
+    legacy_file = tmp_path / "keys.json"
+    legacy_file.write_text(json.dumps({"openrouter": "sk-or-legacy-key"}))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
+
+    import importlib
+    from harness import keys as K
+    importlib.reload(K)
+    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
+
+    assert K.get_keys_file_path() == str(state_file)
+    status = K.get_api_key_status("openrouter")
+    assert status["has_key"] is True
+    assert status["masked"] == "....-key"
+
+
+def test_legacy_disconnected_fallback(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    legacy_file = tmp_path / "disconnected.json"
+    legacy_file.write_text(json.dumps(["openrouter"]))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
+
+    import importlib
+    from harness import keys as K
+    importlib.reload(K)
+    monkeypatch.setattr(K, "_DISCONNECTED_FILE", str(legacy_file))
+
+    assert K._disconnected_file_path() == str(legacy_file)
+    assert "openrouter" in K.get_disconnected()

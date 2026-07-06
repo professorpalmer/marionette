@@ -1827,11 +1827,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "missing text"}))
             if not _pilot:
                 return self._send(404, json.dumps({"error": "no active session"}))
+            # Validate every image path lives inside the upload dir (mirror
+            # /api/session/queue, /api/run, and /api/chat validation).
+            valid_imgs = []
+            upload_dir_real = os.path.realpath(_UPLOAD_DIR)
+            for p in images:
+                if not p:
+                    continue
+                real_p = os.path.realpath(p)
+                try:
+                    if os.path.commonpath([upload_dir_real, real_p]) == upload_dir_real:
+                        valid_imgs.append(p)
+                    else:
+                        return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
+                except ValueError:
+                    return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
             # Route through steer_with_images so an attached screenshot is
             # transcribed into the steer text (a steer is a text injection and
             # cannot carry raw image blocks mid-turn).
-            if images and hasattr(_pilot, "steer_with_images"):
-                _pilot.steer_with_images(text, images)
+            if valid_imgs and hasattr(_pilot, "steer_with_images"):
+                _pilot.steer_with_images(text, valid_imgs)
             else:
                 _pilot.enqueue_steer(text)
             return self._send(200, json.dumps({"ok": True}))
@@ -3206,7 +3221,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/artifacts":
             q = parse_qs(u.query)
             jid = q.get("job_id", [""])[0]
-            return self._send(200, json.dumps(_session.state().job_artifacts(jid)))
+            try:
+                artifacts = _retry_on_locked(
+                    lambda: _session.state().job_artifacts(jid))
+            except Exception:
+                artifacts = []
+            return self._send(200, json.dumps(artifacts))
         if u.path == "/api/swarm/live":
             if self._guard():
                 return
