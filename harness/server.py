@@ -63,6 +63,29 @@ def _session_cost(t_in: float, t_out: float, cached: float,
     return (total / 1.0e6) * price_out
 
 
+def _session_cost_split(pilot: Any, price_in: float, price_out: float) -> float:
+    """Session cost that prices PILOT tokens at the pilot rate and ADDS
+    delegated-worker dollars (already priced at each worker's own model rate).
+
+    Worker tokens are folded into the pilot's _tokens_* meters for display, but
+    pricing them at the pilot rate under-reports cost when a worker ran on a
+    pricier model (e.g. opus at $5/$25 vs a cheap pilot). So we subtract the
+    worker token split from the pilot-priced portion and add _worker_cost_usd.
+    getattr defaults keep OLD sessions (no worker split) identical to before."""
+    t_in = int(getattr(pilot, "_tokens_in", 0) or 0)
+    t_out = int(getattr(pilot, "_tokens_out", 0) or 0)
+    t_cached = int(getattr(pilot, "_tokens_cached", 0) or 0)
+    w_in = int(getattr(pilot, "_worker_tokens_in", 0) or 0)
+    w_out = int(getattr(pilot, "_worker_tokens_out", 0) or 0)
+    w_cost = float(getattr(pilot, "_worker_cost_usd", 0.0) or 0.0)
+    pilot_in = max(0, t_in - w_in)
+    pilot_out = max(0, t_out - w_out)
+    # Cached tokens are a subset of pilot input; clamp so cache discount never
+    # exceeds the pilot input we are actually pricing here.
+    pilot_cached = max(0, min(t_cached, pilot_in))
+    return _session_cost(pilot_in, pilot_out, pilot_cached, price_in, price_out) + w_cost
+
+
 def _cache_savings(cached: float, price_in: float) -> float:
     """USD saved by billing ``cached`` prompt tokens at the cache-read discount
     instead of the full input price."""
@@ -2973,7 +2996,10 @@ class Handler(BaseHTTPRequestHandler):
             _t_in = getattr(_pilot, "_tokens_in", 0)
             _t_out = getattr(_pilot, "_tokens_out", 0)
             _t_cached = int(getattr(_pilot, "_tokens_cached", 0) or 0)
-            est_session_cost = _session_cost(_t_in, _t_out, _t_cached, price_in, price_out)
+            # Price pilot tokens at the pilot rate and ADD worker dollars (priced
+            # at each worker's own model rate) so a worker on a pricier model is
+            # not under-reported by repricing its tokens at the cheap pilot rate.
+            est_session_cost = _session_cost_split(_pilot, price_in, price_out)
             _cache_savings_usd = _cache_savings(_t_cached, price_in)
             jobs_list = []
             try:
@@ -3166,7 +3192,7 @@ class Handler(BaseHTTPRequestHandler):
             _t_in = getattr(_pilot, "_tokens_in", 0)
             _t_out = getattr(_pilot, "_tokens_out", 0)
             _t_cached = int(getattr(_pilot, "_tokens_cached", 0) or 0)
-            est_session_cost = _session_cost(_t_in, _t_out, _t_cached, price_in, price_out)
+            est_session_cost = _session_cost_split(_pilot, price_in, price_out)
             _cache_savings_usd = _cache_savings(_t_cached, price_in)
             
             response_data = {

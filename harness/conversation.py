@@ -394,6 +394,16 @@ class ConversationalSession:
         self._tokens_in: int = 0   # cumulative prompt tokens (for accurate cost)
         self._tokens_out: int = 0  # cumulative completion tokens
         self._tokens_cached: int = 0  # cumulative prompt tokens served from cache
+        # Delegated-worker cost tracked as DOLLARS at each worker's OWN model
+        # rate, plus a parallel token split, so the session cost is not computed
+        # by repricing worker tokens at the (possibly much cheaper) pilot rate.
+        # server.py prices (pilot tokens = _tokens_* - _worker_tokens_*) at the
+        # pilot rate and ADDS _worker_cost_usd for the worker portion. Without
+        # this, a worker on opus ($5/$25) whose tokens were merged into the pool
+        # and repriced at a cheap pilot rate under-reported the session total.
+        self._worker_cost_usd: float = 0.0
+        self._worker_tokens_in: int = 0
+        self._worker_tokens_out: int = 0
         # The governing AutoBudget for the CURRENT fully-auto run, if any. Set
         # by run_auto for the duration of the run and cleared afterward. When
         # present it is threaded (as a child()) into every worker/swarm spawned
@@ -4166,6 +4176,42 @@ class ConversationalSession:
         self._display_transcript.append({"type": "message", "role": "assistant", "text": limit_msg})
         yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
 
+    def _attribute_worker_cost(self, tokens_in: int, tokens_out: int,
+                               real_cost_usd: float = 0.0,
+                               model_spec: str = "") -> None:
+        """Record a delegated worker's spend as DOLLARS at the worker's OWN model
+        rate (plus a parallel token split), so the session cost is correct even
+        when the worker ran on a pricier/cheaper model than the pilot.
+
+        If the worker already reported a real cost (from a routing artifact /
+        job est_cost_usd), use it verbatim. Otherwise derive it from the
+        worker's own model rate via resolve_price(model_spec), falling back to
+        the pilot's driver rate if that model is unknown. Never raises. Always
+        records the token split so server.py can subtract worker tokens from the
+        pilot-priced portion (no double counting)."""
+        try:
+            ti = int(tokens_in or 0)
+            to = int(tokens_out or 0)
+            self._worker_tokens_in += ti
+            self._worker_tokens_out += to
+            cost = float(real_cost_usd or 0.0)
+            if cost <= 0.0:
+                spec = model_spec or getattr(self.config, "swarm_adapter", "") \
+                    or getattr(self.config, "driver", "")
+                try:
+                    from pmharness.registry import resolve_price
+                    price_in, price_out = resolve_price(spec)
+                except Exception:
+                    try:
+                        from pmharness.registry import resolve_price
+                        price_in, price_out = resolve_price(getattr(self.config, "driver", ""))
+                    except Exception:
+                        price_in, price_out = 0.0, 0.0
+                cost = (ti * float(price_in) + to * float(price_out)) / 1_000_000.0
+            self._worker_cost_usd += max(0.0, cost)
+        except Exception:
+            pass
+
     def _add_worker_tokens_from_artifacts(self, artifacts_json: Any) -> tuple[int, int, int]:
         """Extracts token counts from worker job artifacts defensively, summing
         tokens_in/out (and tokens_cached) while deduping across the same
@@ -4260,6 +4306,9 @@ class ConversationalSession:
         # tokens_cached is a subset of tokens_in already counted above; only
         # feed the cache-savings meter, do NOT add to _tokens_used.
         self._tokens_cached += sum_cached
+        # Attribute these worker tokens as dollars at the worker's OWN model rate
+        # so server.py does not reprice them at the (cheaper) pilot rate.
+        self._attribute_worker_cost(sum_in, sum_out)
         return (sum_in, sum_out, sum_cached)
 
     def _apply_worker_patch(self, artifacts: list, job_id: str = "") -> tuple[bool, list[str], str]:
@@ -4958,6 +5007,10 @@ class ConversationalSession:
                         # counted above; do NOT re-add to _tokens_used, only
                         # feed the cache-savings meter.
                         self._tokens_cached += _nc_t_cached
+                        # Worker dollars at the worker's own model rate.
+                        self._attribute_worker_cost(
+                            _nc_t_in, _nc_t_out,
+                            real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0))
                 res_dict = {
                     "job_id": job_id,
                     "applied": False,
@@ -5001,6 +5054,11 @@ class ConversationalSession:
                     # feed the parent's cache-savings meter without inflating
                     # _tokens_used (avoids double-counting).
                     self._tokens_cached += tokens_cached
+                    # Worker dollars at the worker's own model rate (prefer the
+                    # result's real cost when present, else derive from rate).
+                    self._attribute_worker_cost(
+                        tokens_in, tokens_out,
+                        real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0))
                 
                 patch_summary = ""
                 if res.files_changed:
