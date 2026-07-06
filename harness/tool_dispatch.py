@@ -421,6 +421,7 @@ class ToolDispatchMixin:
         args = act.arguments or {}
         language = args.get("language") or "auto"
         mode = args.get("mode") or "diagnostics"
+        symbol = (args.get("symbol") or "").strip()
         timeout_ms = args.get("timeout_ms")
         root_arg = args.get("root") or ""
         root_path = root_arg
@@ -430,6 +431,9 @@ class ToolDispatchMixin:
             root_path = os.path.join(self.config.repo, root_path)
         if not is_safe_path(root_path, self.config.repo):
             return False, "path_traversal", f"Path traversal attempt rejected: {root_arg}"
+
+        if mode == "references" and not symbol:
+            return False, "invalid_arguments", "lsp references mode requires a 'symbol'"
 
         try:
             from .lsp_code_intelligence import discover_lsp_tools, get_lsp_report
@@ -441,6 +445,7 @@ class ToolDispatchMixin:
                 root=root_path,
                 timeout_ms=timeout_ms,
                 tools=tools,
+                symbol=symbol or None,
             )
             return True, "success", text
         except Exception as e:

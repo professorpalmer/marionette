@@ -218,6 +218,114 @@ def _format_diagnostics(diags: list[LspDiagnostic], *, max_items: int = 80) -> s
     return "\n".join(lines)
 
 
+def _word_boundary_pattern(symbol: str) -> re.Pattern:
+    escaped = re.escape(symbol.strip())
+    return re.compile(r"\b" + escaped + r"\b")
+
+
+def _text_scan_references(
+    symbol: str,
+    root: str,
+    *,
+    max_results: int = 50,
+) -> list[str]:
+    """Fallback reference search: word-boundary scan over text files."""
+    if not symbol.strip():
+        return []
+    pattern = _word_boundary_pattern(symbol)
+    skip_dirs = {".git", "node_modules", "results", "build", "dist", "__pycache__", ".venv"}
+    matches: list[str] = []
+    for dir_root, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for filename in files:
+            file_path = os.path.join(dir_root, filename)
+            try:
+                with open(file_path, "rb") as fh:
+                    chunk = fh.read(8000)
+                    if b"\x00" in chunk:
+                        continue
+            except OSError:
+                continue
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                    for line_num, line in enumerate(fh, 1):
+                        if pattern.search(line):
+                            rel_path = os.path.relpath(file_path, root).replace(os.sep, "/")
+                            matches.append(f"{rel_path}:{line_num}: {line.rstrip()}")
+                            if len(matches) >= max_results:
+                                return matches
+            except OSError:
+                continue
+    return matches
+
+
+def _codegraph_references(symbol: str, root: str, *, timeout_s: float) -> tuple[bool, str]:
+    """Query CodeGraph for symbol usages; returns (ok, output)."""
+    from ._exec import _puppetmaster_cmd
+
+    cmd = _puppetmaster_cmd("codegraph", "query", symbol)
+    try:
+        p = subprocess.run(
+            cmd,
+            cwd=root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout_s,
+        )
+        output = (p.stdout or "").strip()
+        if p.returncode != 0:
+            if "no module named" in output.lower() or p.returncode == 127:
+                return False, "CodeGraph unavailable"
+            return False, output[:2000] or f"CodeGraph exit {p.returncode}"
+        if not output:
+            return False, "CodeGraph returned no matches"
+        return True, output[:6000]
+    except FileNotFoundError:
+        return False, "CodeGraph unavailable"
+    except subprocess.TimeoutExpired:
+        return False, "CodeGraph timed out"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_symbol_references(
+    symbol: str,
+    root: str,
+    *,
+    timeout_ms: Optional[int] = None,
+    max_results: int = 50,
+) -> str:
+    """Locate usages of ``symbol`` via CodeGraph when present, else text scan."""
+    symbol = (symbol or "").strip()
+    if not symbol:
+        return "references: empty symbol"
+    timeout_ms = timeout_ms if timeout_ms is not None else 8000
+    try:
+        timeout_ms_int = int(timeout_ms)
+    except Exception:
+        timeout_ms_int = 8000
+    timeout_s = max(0.1, timeout_ms_int / 1000.0)
+
+    chunks: list[str] = [f"References for `{symbol}`:"]
+    cg_ok, cg_out = _codegraph_references(symbol, root, timeout_s=timeout_s)
+    if cg_ok:
+        chunks.append("CodeGraph:")
+        chunks.append(cg_out)
+        return "\n".join(chunks)
+
+    chunks.append(f"CodeGraph: {cg_out}")
+    matches = _text_scan_references(symbol, root, max_results=max_results)
+    if matches:
+        chunks.append("Text scan:")
+        chunks.append("\n".join(matches))
+        if len(matches) >= max_results:
+            chunks.append(f"... (truncated to {max_results} matches) ...")
+    else:
+        chunks.append("Text scan: no matches found.")
+    return "\n".join(chunks)
+
+
 def _language_to_probe(language: str) -> tuple[bool, bool]:
     lang = (language or "auto").lower().strip()
     if lang == "python":
@@ -263,6 +371,7 @@ def get_lsp_report(
     root: str,
     timeout_ms: Optional[int] = None,
     tools: Optional[LspToolAvailability] = None,
+    symbol: Optional[str] = None,
 ) -> str:
     language = (language or "auto").lower().strip()
     mode = (mode or "diagnostics").lower().strip()
@@ -279,6 +388,11 @@ def get_lsp_report(
 
     if mode == "status":
         return get_lsp_status(language=language, root=root, tools=tools)
+
+    if mode == "references":
+        if not (symbol or "").strip():
+            return "references mode requires a non-empty symbol."
+        return get_symbol_references(symbol or "", root, timeout_ms=timeout_ms_int)
 
     # diagnostics
     chunks: list[str] = []

@@ -128,3 +128,33 @@ def test_windows_safe_command_handling_uses_args_list(monkeypatch, tmp_path):
     assert called["shell"] is False
     assert called["cmd"][0].endswith("tsc")
 
+
+def test_references_text_scan_finds_symbol(tmp_path):
+    src = tmp_path / "module.py"
+    src.write_text("def unique_ref_target():\n    return unique_ref_target()\n", encoding="utf-8")
+
+    report = lsp.get_symbol_references("unique_ref_target", str(tmp_path))
+
+    assert "References for `unique_ref_target`" in report
+    assert "module.py" in report
+    assert "Text scan:" in report
+
+
+def test_references_graceful_when_no_matches(monkeypatch, tmp_path):
+    monkeypatch.setattr(lsp, "_codegraph_references", lambda *a, **k: (False, "CodeGraph unavailable"))
+
+    report = lsp.get_symbol_references("no_such_symbol_xyz", str(tmp_path))
+
+    assert "References for `no_such_symbol_xyz`" in report
+    assert "Text scan: no matches found." in report
+
+
+def test_lsp_schema_includes_references_and_symbol():
+    from harness.pilot import build_tools_schema
+
+    schema = build_tools_schema()
+    lsp_entry = next(t for t in schema if t["function"]["name"] == "lsp")
+    props = lsp_entry["function"]["parameters"]["properties"]
+    assert "references" in props["mode"]["enum"]
+    assert "symbol" in props
+

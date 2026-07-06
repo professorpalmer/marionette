@@ -600,8 +600,12 @@ def build_tools_schema(
                         },
                         "mode": {
                             "type": "string",
-                            "enum": ["status", "diagnostics"],
+                            "enum": ["status", "diagnostics", "references"],
                             "description": "What to fetch. Default: diagnostics."
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "description": "Symbol name to locate usages of (required when mode is references).",
                         },
                         "root": {
                             "type": "string",
