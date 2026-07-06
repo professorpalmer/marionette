@@ -92,6 +92,8 @@ class WorkerResult:
     # Optional with a default: adding it here is not a breaking change for
     # callers that construct WorkerResult positionally.
     escaped_paths: list[str] = field(default_factory=list)
+    # Declarative pre/post check results (harness/declarative_checks.py).
+    declarative_checks: list[dict] = field(default_factory=list)
 
 
 # --- Escaped-write detection ------------------------------------------------
@@ -422,6 +424,35 @@ class ProviderWorker:
             if not _is_confined(wt_path, managed_dir):
                 raise ValueError("Confinement violation: worktree path lies outside the managed directory")
 
+            check_results: list = []
+            from harness.declarative_checks import declarative_checks_enabled
+
+            if declarative_checks_enabled(self.repo):
+                from harness.declarative_checks import (
+                    discover_check_parse_warnings,
+                    find_check_specs,
+                    format_check_failure,
+                    run_checks,
+                    results_to_dicts,
+                )
+
+                specs = find_check_specs(self.repo)
+                check_results.extend(discover_check_parse_warnings(self.repo))
+                pre_results = run_checks(specs, repo=wt_path, phase="pre")
+                check_results.extend(pre_results)
+                blocked = [
+                    r for r in pre_results
+                    if not r.passed and r.on_fail == "blocked"
+                ]
+                if blocked:
+                    return WorkerResult(
+                        ok=False,
+                        error="declarative pre-check blocked worker: "
+                        + format_check_failure(blocked),
+                        declarative_checks=results_to_dicts(check_results),
+                        worktree=wt_path,
+                    )
+
             # 2. Build worker HarnessConfig
             base_cfg = HarnessConfig.from_env()
             worker_cfg = HarnessConfig(
@@ -463,6 +494,24 @@ class ProviderWorker:
                 ):
                     events.append(ev)
 
+            post_failed = False
+            if declarative_checks_enabled(self.repo):
+                from harness.declarative_checks import find_check_specs, run_checks
+
+                post_results = run_checks(
+                    find_check_specs(self.repo),
+                    repo=wt_path,
+                    phase="post",
+                )
+                check_results.extend(post_results)
+                post_failed = any(
+                    not r.passed and r.on_fail == "failed" for r in post_results
+                )
+
+            from harness.declarative_checks import results_to_dicts as _checks_to_dicts
+
+            check_payload = _checks_to_dicts(check_results) if check_results else []
+
             # Capture the inner session's real token split (in vs. total) so run()
             # can report accurate prompt/completion spend instead of dropping
             # prompt tokens.
@@ -485,7 +534,8 @@ class ProviderWorker:
                     ok=False,
                     error=str(e),
                     events=events,
-                    worktree=wt_path
+                    worktree=wt_path,
+                    declarative_checks=check_payload,
                 )
 
             # Detect run_command writes that escaped the worktree BEFORE
@@ -522,12 +572,14 @@ class ProviderWorker:
                         events=events,
                         worktree=wt_path,
                         escaped_paths=escaped,
+                        declarative_checks=check_payload,
                     )
                 return WorkerResult(
                     ok=False,
                     summary=f"no changes captured in the worktree diff (worktree={wt_path})",
                     events=events,
                     worktree=wt_path,
+                    declarative_checks=check_payload,
                 )
                 
             # 5. Optional self-test execution
@@ -588,6 +640,17 @@ class ProviderWorker:
             if self.run_tests and not test_passed:
                 first_500 = test_output[:500]
                 error_msg = f"worker tests failed: {first_500}"
+            if post_failed:
+                from harness.declarative_checks import format_check_failure
+
+                failed_post = [
+                    r for r in check_results
+                    if getattr(r, "phase", "") == "post"
+                    and not getattr(r, "passed", True)
+                    and getattr(r, "on_fail", "") == "failed"
+                ]
+                post_err = "declarative post-check failed: " + format_check_failure(failed_post)
+                error_msg = f"{error_msg}\n{post_err}".strip() if error_msg else post_err
 
             # Non-empty patch path: still warn if the agent ALSO wrote to paths
             # outside the worktree. Those writes are real but absent from the
@@ -604,7 +667,7 @@ class ProviderWorker:
                 summary = f"{summary}\n{warn}" if summary else warn
 
             return WorkerResult(
-                ok=bool(patch) if not self.run_tests else (bool(patch) and test_passed),
+                ok=(bool(patch) if not self.run_tests else (bool(patch) and test_passed)) and not post_failed,
                 patch=patch,
                 files_changed=files_changed,
                 summary=summary,
@@ -614,6 +677,7 @@ class ProviderWorker:
                 events=events,
                 test_passed=test_passed,
                 escaped_paths=escaped,
+                declarative_checks=check_payload,
             )
             
         except Exception as e:
