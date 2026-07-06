@@ -15,6 +15,8 @@ export type CostBreakdownData = {
   tool_output_savings_usd?: number;
   history_compactions?: number;
   history_tokens_saved?: number;
+  spill_count?: number;
+  spill_chars?: number;
   price_in?: number;
   price_out?: number;
 };
@@ -57,6 +59,14 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   const historyTokensSaved =
     typeof data.history_tokens_saved === "number" && isFinite(data.history_tokens_saved) && data.history_tokens_saved > 0
       ? data.history_tokens_saved
+      : 0;
+  const spillCount =
+    typeof data.spill_count === "number" && isFinite(data.spill_count) && data.spill_count > 0
+      ? data.spill_count
+      : 0;
+  const spillChars =
+    typeof data.spill_chars === "number" && isFinite(data.spill_chars) && data.spill_chars > 0
+      ? data.spill_chars
       : 0;
   const cached =
     typeof data.tokens_cached === "number" && isFinite(data.tokens_cached) && data.tokens_cached > 0
@@ -108,6 +118,13 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         <div className="flex items-center justify-between mb-1 text-faint">
           <span>History compaction</span>
           <span className="tabular-nums">{fmtTokens(historyTokensSaved)} saved ({historyCompactions} event{historyCompactions === 1 ? "" : "s"})</span>
+        </div>
+      ) : null}
+
+      {spillCount > 0 ? (
+        <div className="flex items-center justify-between mb-1 text-faint">
+          <span>Offloaded outputs</span>
+          <span className="tabular-nums">{fmtTokens(spillChars)} chars ({spillCount} spill{spillCount === 1 ? "" : "s"})</span>
         </div>
       ) : null}
 

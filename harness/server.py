@@ -129,6 +129,18 @@ def _tool_output_savings_fields(price_in: float) -> dict:
     except Exception:
         payload.setdefault("history_compactions", 0)
         payload.setdefault("history_tokens_saved", 0)
+    try:
+        from .spill_registry import spill_usage_payload
+
+        payload.update(
+            spill_usage_payload(
+                _pilot.state_dir,
+                getattr(_pilot, "harness_session_id", "") or "default",
+            )
+        )
+    except Exception:
+        payload.setdefault("spill_count", 0)
+        payload.setdefault("spill_chars", 0)
     return payload
 
 

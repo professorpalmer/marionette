@@ -323,6 +323,16 @@ class ConversationalSession(ToolDispatchMixin):
         from harness.context_budget import BudgetConfig
         self.context_budget_config = BudgetConfig()
         self.state_dir = config.state_dir or tempfile.mkdtemp(prefix="pilot-")
+        try:
+            from harness.spill_registry import sweep_expired_spills
+
+            raw_retention = os.environ.get("HARNESS_SPILL_RETENTION_DAYS", "").strip().lower()
+            if raw_retention and raw_retention not in ("0", "off", "none", "forever"):
+                retention_days = int(raw_retention)
+                if retention_days > 0:
+                    sweep_expired_spills(self.state_dir, retention_days)
+        except Exception:
+            pass
         # Harness session id (from SessionStore) for savings-ledger dedupe scope.
         self.harness_session_id: str = ""
         # Swarm job id for per-job tool-output savings attribution (worker sessions).
@@ -1035,7 +1045,19 @@ class ConversationalSession(ToolDispatchMixin):
             "categories": categories,
             **self._tool_output_savings_fields(),
             **self._history_compaction_fields(),
+            **self._spill_usage_fields(),
         }
+
+    def _spill_usage_fields(self) -> dict:
+        try:
+            from harness.spill_registry import spill_usage_payload
+
+            return spill_usage_payload(
+                self.state_dir,
+                self.harness_session_id or "default",
+            )
+        except Exception:
+            return {"spill_count": 0, "spill_chars": 0}
 
     def _history_compaction_fields(self) -> dict:
         try:

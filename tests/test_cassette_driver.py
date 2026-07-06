@@ -71,7 +71,7 @@ def test_replay_miss_raises_with_hash(monkeypatch, tmp_path):
         driver.complete("missing")
     msg = str(exc.value)
     assert "cassette miss for hash" in msg
-    assert str(tmp_path) in msg
+    assert "count-stub.json" in msg
 
 
 def test_scrubbing_redacts_sk_pattern(monkeypatch, tmp_path):

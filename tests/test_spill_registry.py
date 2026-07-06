@@ -15,6 +15,7 @@ from harness.spill_registry import (
     register_spill,
     resolve_spill,
     spill_uri,
+    sweep_expired_spills,
 )
 
 import pytest
@@ -147,3 +148,94 @@ def test_search_state_finds_spills_without_store():
 
         miss = search_internal_uris("no-such-spill", ctx, scheme="spill")
         assert "no internal URI matches" in miss
+
+
+def test_sweep_removes_old_rows_and_files():
+    import sqlite3
+    import time as time_mod
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        results_dir = os.path.join(tmpdir, "pmharness-results")
+        os.makedirs(results_dir, exist_ok=True)
+        old_path = os.path.join(results_dir, "old.txt")
+        with open(old_path, "w", encoding="utf-8") as f:
+            f.write("old content")
+        register_spill(tmpdir, "sess1", "old_call", old_path, 100)
+
+        conn = sqlite3.connect(os.path.join(tmpdir, "spill_index.sqlite"))
+        try:
+            conn.execute(
+                "UPDATE spills SET ts = ? WHERE tool_call_id = ?",
+                (time_mod.time() - (86400 * 30), "old_call"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        new_path = os.path.join(results_dir, "new.txt")
+        with open(new_path, "w", encoding="utf-8") as f:
+            f.write("new content")
+        register_spill(tmpdir, "sess1", "new_call", new_path, 50)
+
+        removed = sweep_expired_spills(tmpdir, 7)
+        assert removed == 1
+        assert not os.path.isfile(old_path)
+        assert os.path.isfile(new_path)
+        assert resolve_spill(tmpdir, "sess1", "old_call") is None
+        assert resolve_spill(tmpdir, "sess1", "new_call") is not None
+
+
+def test_sweep_retention_zero_keeps_all():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "pmharness-results", "keep.txt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("keep")
+        register_spill(tmpdir, "sess1", "keep_call", path, 10)
+        assert sweep_expired_spills(tmpdir, 0) == 0
+        assert resolve_spill(tmpdir, "sess1", "keep_call") is not None
+
+
+def test_usage_api_includes_spill_fields():
+    import json
+    import shutil
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    from harness.context_budget import BudgetConfig, maybe_persist_result
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        import harness.server as srv
+
+        srv._session.state_dir = tmp_dir
+        srv._pilot.state_dir = tmp_dir
+        srv._pilot.harness_session_id = "usage-spill-session"
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
+        port = httpd.server_address[1]
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        t.start()
+        try:
+            config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
+            maybe_persist_result(
+                "x" * 500,
+                "spill_usage_call",
+                tmp_dir,
+                config,
+                spill_session_id="usage-spill-session",
+            )
+            headers = {"X-Harness-Token": srv._TOKEN}
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/usage",
+                headers=headers,
+                method="GET",
+            )
+            usage = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+            session = usage["session"]
+            assert session["spill_count"] >= 1
+            assert session["spill_chars"] >= 500
+        finally:
+            httpd.shutdown()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

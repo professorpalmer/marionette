@@ -141,3 +141,49 @@ def _row_to_dict(row) -> dict[str, Any]:
         "content_hash": row[4],
         "ts": row[5],
     }
+
+
+def summarize_spills(state_dir: str, session_id: Optional[str] = None) -> tuple[int, int]:
+    """Return (count, total_chars) for indexed spills."""
+    rows = list_spills(state_dir, session_id=session_id)
+    return len(rows), sum(int(r.get("chars") or 0) for r in rows)
+
+
+def spill_usage_payload(state_dir: str, session_id: str) -> dict[str, int]:
+    """Usage API fields for the current session's spills."""
+    try:
+        count, chars = summarize_spills(state_dir, session_id or None)
+    except Exception:
+        return {"spill_count": 0, "spill_chars": 0}
+    return {"spill_count": count, "spill_chars": chars}
+
+
+def sweep_expired_spills(state_dir: str, retention_days: int) -> int:
+    """Delete spill rows and files older than retention_days. Never raises."""
+    if not state_dir or retention_days <= 0:
+        return 0
+    if not os.path.exists(_db_path(state_dir)):
+        return 0
+    cutoff = time.time() - (retention_days * 86400)
+    removed = 0
+    try:
+        conn = _connect(state_dir)
+        try:
+            rows = conn.execute(
+                "SELECT session_id, tool_call_id, path, ts FROM spills WHERE ts < ?",
+                (cutoff,),
+            ).fetchall()
+            for _sid, _tc, path, _ts in rows:
+                try:
+                    if path and os.path.isfile(path):
+                        os.remove(path)
+                except Exception:
+                    pass
+            cur = conn.execute("DELETE FROM spills WHERE ts < ?", (cutoff,))
+            conn.commit()
+            removed = int(cur.rowcount or 0)
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+    return removed
