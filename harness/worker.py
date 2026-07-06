@@ -515,6 +515,21 @@ class ProviderWorker:
 
             check_payload = _checks_to_dicts(check_results) if check_results else []
 
+            # Persistent eval history (round 6): make check outcomes durable
+            # so pass rates are visible across runs. Best-effort only.
+            if check_payload:
+                try:
+                    from harness.eval_history import record_eval_results
+
+                    record_eval_results(
+                        base_cfg.state_dir,
+                        self.job_id or "default",
+                        "declarative_check",
+                        check_payload,
+                    )
+                except Exception:
+                    pass
+
             # Capture the inner session's real token split (in vs. total) so run()
             # can report accurate prompt/completion spend instead of dropping
             # prompt tokens.

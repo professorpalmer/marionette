@@ -17,6 +17,8 @@ export type CostBreakdownData = {
   history_tokens_saved?: number;
   spill_count?: number;
   spill_chars?: number;
+  evals_recorded?: number;
+  evals_failed?: number;
   price_in?: number;
   price_out?: number;
 };
@@ -63,6 +65,14 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   const spillCount =
     typeof data.spill_count === "number" && isFinite(data.spill_count) && data.spill_count > 0
       ? data.spill_count
+      : 0;
+  const evalsRecorded =
+    typeof data.evals_recorded === "number" && isFinite(data.evals_recorded) && data.evals_recorded > 0
+      ? data.evals_recorded
+      : 0;
+  const evalsFailed =
+    typeof data.evals_failed === "number" && isFinite(data.evals_failed) && data.evals_failed > 0
+      ? data.evals_failed
       : 0;
   const spillChars =
     typeof data.spill_chars === "number" && isFinite(data.spill_chars) && data.spill_chars > 0
@@ -125,6 +135,13 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         <div className="flex items-center justify-between mb-1 text-faint">
           <span>Offloaded outputs</span>
           <span className="tabular-nums">{fmtTokens(spillChars)} chars ({spillCount} spill{spillCount === 1 ? "" : "s"})</span>
+        </div>
+      ) : null}
+
+      {evalsRecorded > 0 ? (
+        <div className="flex items-center justify-between mb-1 text-faint">
+          <span>Checks recorded</span>
+          <span className="tabular-nums">{evalsRecorded} ({evalsFailed} failed)</span>
         </div>
       ) : null}
 

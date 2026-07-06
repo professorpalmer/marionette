@@ -141,6 +141,15 @@ def _tool_output_savings_fields(price_in: float) -> dict:
     except Exception:
         payload.setdefault("spill_count", 0)
         payload.setdefault("spill_chars", 0)
+    try:
+        from .eval_history import eval_history_payload
+
+        # State-dir wide on purpose: worker runs record under job ids, not
+        # the harness session id, so a session filter would hide them.
+        payload.update(eval_history_payload(_pilot.state_dir))
+    except Exception:
+        payload.setdefault("evals_recorded", 0)
+        payload.setdefault("evals_failed", 0)
     return payload
 
 
