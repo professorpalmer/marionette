@@ -168,6 +168,22 @@ function dedupeFindings(arts: Artifact[]): FindingRow[] {
   return [...rows.values()].sort((a, b) => rank(a.art.type) - rank(b.art.type));
 }
 
+function jobCost(j: Job): number {
+  const explicit = Number(j.est_cost_usd || 0);
+  if (explicit > 0) return explicit;
+  return jobArtifactList(j)
+    .filter((a) => (a.type || "").toUpperCase() === "ROUTING")
+    .reduce((sum, a) => sum + Number(a.est_cost_usd || 0), 0);
+}
+
+function jobTokens(j: Job): number {
+  return Number(j.tokens || 0);
+}
+
+function formatCost(cost: number): string {
+  return cost > 0 ? `$${cost.toFixed(4)}` : "$0";
+}
+
 // The four visible phases of a swarm's life. A job advances left-to-right; the
 // strip fills behind the active phase so a running swarm reads as *moving*
 // instead of a static spinner. "failed" paints the reached phase red.
@@ -356,6 +372,9 @@ export default function SwarmPane() {
   const failedCount = finished.filter((j) => jobStatus(j) === "cancelled").length;
   const runningCount = running.filter((j) => jobStatus(j) === "in_progress").length;
   const anyRunning = runningCount > 0;
+  const finishedCost = finished.reduce((sum, j) => sum + jobCost(j), 0);
+  const finishedTokens = finished.reduce((sum, j) => sum + jobTokens(j), 0);
+  const sessionCost = Number(data?.session?.est_cost_usd || 0);
 
   const dismissJob = (id: string) =>
     setDismissed((prev) => new Set(prev).add(id));
@@ -428,11 +447,11 @@ export default function SwarmPane() {
               </Tooltip>
             </div>
             <div className="flex items-center gap-3 shrink-0 text-[10px] pl-2">
-              {/* Per-job cost is intentionally NOT shown here: the session's
-                  total cost lives in the bottom status bar, so a per-row copy is
-                  redundant noise. Tokens stay as a lightweight progress signal. */}
-              {j.tokens !== undefined && j.tokens > 0 && (
-                <span className="text-muted font-mono">{j.tokens.toLocaleString()}t</span>
+              {(jobCost(j) > 0 || jobTokens(j) > 0) && (
+                <span className="text-muted font-mono flex items-center gap-1.5">
+                  {jobTokens(j) > 0 && <span>{jobTokens(j).toLocaleString()}t</span>}
+                  {jobCost(j) > 0 && <span className="text-good/90">{formatCost(jobCost(j))}</span>}
+                </span>
               )}
               {/* Kill: running jobs only. Best-effort cooperative cancel on the
                   backend. Shows 'cancelling...' until the next poll flips the job
@@ -789,6 +808,11 @@ export default function SwarmPane() {
                     {failedCount > 0 && (
                       <span className="text-risk/70 normal-case tracking-normal">{"\u00b7"} {failedCount} failed</span>
                     )}
+                    {(finishedCost > 0 || finishedTokens > 0) && (
+                      <span className="text-good/70 normal-case tracking-normal">
+                        {"\u00b7"} {finishedTokens > 0 ? `${finishedTokens.toLocaleString()}t ` : ""}{formatCost(finishedCost)}
+                      </span>
+                    )}
                   </button>
                   <button
                     onClick={clearFinished}
@@ -822,9 +846,8 @@ export default function SwarmPane() {
             )}
           </div>
           <div className="flex items-center gap-3 shrink-0">
-            {/* Session cost lives once in the bottom IDE StatusBar; the tracker
-                shows only the token count so it isn't a redundant cost readout. */}
             <span>Tokens: <strong className="text-txt font-mono font-semibold">{data.session.tokens_used.toLocaleString()}</strong></span>
+            <span>Cost: <strong className="text-good font-mono font-semibold">{formatCost(sessionCost)}</strong></span>
           </div>
         </div>
       )}

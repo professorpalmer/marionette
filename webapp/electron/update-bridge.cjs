@@ -93,6 +93,32 @@ function isTrackedSelfEditLine(line) {
   );
 }
 
+function isUnmergedStatusLine(line) {
+  const xy = line.slice(0, 2);
+  return ["DD", "AU", "UD", "UA", "DU", "AA", "UU"].includes(xy);
+}
+
+function mergeFailureLooksLikeStaleIndex(text) {
+  return /could not write index|needs merge|unmerged files|you have not concluded your merge|merge_head/i.test(text || "");
+}
+
+async function recoverInterruptedMerge(repoRoot) {
+  const status = await gitCapture(repoRoot, ["status", "--porcelain"]);
+  const hasUnmerged = status.ok && status.out.split("\n").some(isUnmergedStatusLine);
+  const mergeHead = await gitCapture(repoRoot, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+  if (!hasUnmerged && !mergeHead.ok) return { recovered: false, ok: true };
+
+  const aborted = await gitCapture(repoRoot, ["merge", "--abort"]);
+  if (aborted.ok) return { recovered: true, ok: true };
+
+  // Some failed self-updates leave unmerged index entries but no abortable merge
+  // metadata. `reset --merge` restores the index/working tree to HEAD without
+  // moving local commits, which is exactly the stale updater state we need to
+  // clear before retrying the fast-forward.
+  const reset = await gitCapture(repoRoot, ["reset", "--merge"]);
+  return { recovered: reset.ok, ok: reset.ok, error: reset.err || aborted.err };
+}
+
 // Inspect the working tree so the updater can tell a clean checkout apart from
 // one the user (or Marionette editing itself) has modified. `dirty` = tracked
 // changes exist besides results/ (which is gitignored churn). `ahead` = local
@@ -245,6 +271,15 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
       (l) => progress("fetch", l, 0.5));
     if (fetched.code !== 0) return { ok: false, error: fetched.tail || "git fetch failed" };
 
+    const recovered = await recoverInterruptedMerge(repoRoot);
+    if (!recovered.ok) {
+      return {
+        ok: false,
+        code: "conflict",
+        error: recovered.error || "A previous update left the checkout mid-merge. Resolve git status in the Marionette checkout, then update again.",
+      };
+    }
+
     // Diverged/dirty preflight: decide whether we can fast-forward at all.
     const { dirty, dirtyFiles, ahead } = await inspectTree(repoRoot, branch);
     if (ahead > 0) {
@@ -276,8 +311,16 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
 
     // pull (fast-forward only -- never rewrite the user's local work silently)
     progress("pull", "Updating source", 0.3);
-    const pulled = await runStreamed("git", ["-C", repoRoot, "merge", "--ff-only", "FETCH_HEAD"], { env: childEnv },
+    let pulled = await runStreamed("git", ["-C", repoRoot, "merge", "--ff-only", "FETCH_HEAD"], { env: childEnv },
       (l) => progress("pull", l, 0.5));
+    if (pulled.code !== 0 && mergeFailureLooksLikeStaleIndex(pulled.tail)) {
+      progress("pull", "Repairing stale update state", 0.55);
+      const repaired = await recoverInterruptedMerge(repoRoot);
+      if (repaired.ok) {
+        pulled = await runStreamed("git", ["-C", repoRoot, "merge", "--ff-only", "FETCH_HEAD"], { env: childEnv },
+          (l) => progress("pull", l, 0.65));
+      }
+    }
     if (pulled.code !== 0) {
       // Restore stashed edits before surfacing the failure so we never strand
       // the user's work in the stash on a failed update.
@@ -437,4 +480,12 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   });
 }
 
-module.exports = { registerUpdateBridge, checkForUpdate, applyUpdate, isTrackedSelfEditLine, statusPath };
+module.exports = {
+  registerUpdateBridge,
+  checkForUpdate,
+  applyUpdate,
+  isTrackedSelfEditLine,
+  statusPath,
+  isUnmergedStatusLine,
+  mergeFailureLooksLikeStaleIndex,
+};

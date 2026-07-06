@@ -152,6 +152,19 @@ test("statusPath: normalizes renamed and Windows-style paths", () => {
   assert.equal(bridge.statusPath("R  old.js -> webapp\\electron\\main.cjs"), "webapp/electron/main.cjs");
 });
 
+test("isUnmergedStatusLine: detects unresolved merge index states", () => {
+  assert.equal(bridge.isUnmergedStatusLine("UU tests/test_verify.py"), true);
+  assert.equal(bridge.isUnmergedStatusLine("AA harness/server.py"), true);
+  assert.equal(bridge.isUnmergedStatusLine(" M harness/server.py"), false);
+  assert.equal(bridge.isUnmergedStatusLine("?? scratch.py"), false);
+});
+
+test("mergeFailureLooksLikeStaleIndex: detects recoverable updater merge failures", () => {
+  assert.equal(bridge.mergeFailureLooksLikeStaleIndex("error: could not write index"), true);
+  assert.equal(bridge.mergeFailureLooksLikeStaleIndex("fatal: You have not concluded your merge (MERGE_HEAD exists)."), true);
+  assert.equal(bridge.mergeFailureLooksLikeStaleIndex("fatal: Not possible to fast-forward, aborting."), false);
+});
+
 test("readLiveUpdateMarker: live pid within age ceiling is reported", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "pmh-marker-"));
   marker.writeMarker(home, 4242, () => 1000_000);

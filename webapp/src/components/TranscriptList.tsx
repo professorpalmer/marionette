@@ -54,7 +54,15 @@ export type GroupedItem =
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
   | { kind: "auth_failure"; message: string; id?: string }
   | { kind: "steer"; text: string }
-  | { kind: "activity_group"; items: ( { kind: "card"; card: Card } | { kind: "thinking"; text: string } | { kind: "codegraph_context"; symbols: number; query: string } | { kind: "msg"; msg: Msg } )[] };
+  | { kind: "activity_group"; items: ActivityItem[] };
+
+type ActivityItem =
+  | { kind: "card"; card: Card }
+  | { kind: "thinking"; text: string }
+  | { kind: "codegraph_context"; symbols: number; query: string }
+  | { kind: "checkpoint"; id: string; label: string; trigger: string }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
+  | { kind: "msg"; msg: Msg };
 
 
 function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
@@ -69,7 +77,7 @@ function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): Groupe
   // chatter and belongs in the box. The last assistant msg with no card after it
   // is the real answer.
   const grouped: GroupedItem[] = [];
-  let currentGroup: ( { kind: "card"; card: Card } | { kind: "thinking"; text: string } | { kind: "codegraph_context"; symbols: number; query: string } | { kind: "msg"; msg: Msg } )[] = [];
+  let currentGroup: ActivityItem[] = [];
 
   const flush = () => {
     if (currentGroup.length > 0) {
@@ -94,7 +102,12 @@ function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): Groupe
         flush();
         grouped.push(item);
       }
-    } else if (item.kind === "swarm_pending" || item.kind === "swarm_result" || item.kind === "checkpoint" || item.kind === "compaction" || item.kind === "command_blocked" || item.kind === "auth_failure" || item.kind === "steer") {
+    } else if (item.kind === "swarm_result" || item.kind === "checkpoint") {
+      // These are emitted by tool execution, so they belong inside the same
+      // collapsed investigation as the action card that produced them. Rendering
+      // them as standalone chips made the transcript vertically noisy.
+      currentGroup.push(item);
+    } else if (item.kind === "swarm_pending" || item.kind === "compaction" || item.kind === "command_blocked" || item.kind === "auth_failure" || item.kind === "steer") {
       flush();
       grouped.push(item);
     } else if (item.kind === "card" || item.kind === "thinking" || item.kind === "codegraph_context") {
@@ -515,7 +528,7 @@ function ActivityGroup({
   items,
   onToggleCard,
 }: {
-  items: ( { kind: "card"; card: Card } | { kind: "thinking"; text: string } | { kind: "codegraph_context"; symbols: number; query: string } | { kind: "msg"; msg: Msg } )[];
+  items: ActivityItem[];
   onToggleCard: (card: Card) => void;
 }) {
   // Compact-by-default: a whole investigation collapses to one summary line
@@ -524,6 +537,8 @@ function ActivityGroup({
 
   const cards = items.filter((it) => it.kind === "card") as { kind: "card"; card: Card }[];
   const cgItems = items.filter((it) => it.kind === "codegraph_context") as { kind: "codegraph_context"; symbols: number; query: string }[];
+  const checkpointItems = items.filter((it) => it.kind === "checkpoint") as { kind: "checkpoint"; id: string; label: string; trigger: string }[];
+  const swarmResults = items.filter((it) => it.kind === "swarm_result") as { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }[];
   const actionCount = cards.length;
   const anyRunning = cards.some((c) => c.card.running);
   const narrationMsgs = items.filter(
@@ -538,7 +553,7 @@ function ActivityGroup({
   // "0 steps" box -- suppress it. But folded intermediate narration OR a reasoning
   // trace must still show (collapsed), so reasoning never silently vanishes from
   // the step list the way it used to.
-  if (actionCount === 0 && narrationMsgs.length === 0 && thinkingItems.length === 0) {
+  if (actionCount === 0 && narrationMsgs.length === 0 && thinkingItems.length === 0 && checkpointItems.length === 0 && swarmResults.length === 0) {
     return null;
   }
 
@@ -584,13 +599,33 @@ function ActivityGroup({
         </div>
       );
     }
+    if (it.kind === "checkpoint") {
+      return (
+        <div key={idx} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none">
+          <History size={10} className="text-faint/70" />
+          <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
+        </div>
+      );
+    }
+    if (it.kind === "swarm_result") {
+      return (
+        <SwarmResultCard
+          key={idx}
+          applied={it.applied}
+          files={it.files}
+          summary={it.summary}
+          error={it.error}
+          objective={it.objective}
+        />
+      );
+    }
     return null;
   };
 
   // Tiny groups (1-2 actions, no codegraph noise, no narration) render inline --
   // collapsing them would add a click for no benefit.
   const hasMsg = items.some((it) => it.kind === "msg" && (it as { kind: "msg"; msg: Msg }).msg.text.trim());
-  if (actionCount <= 2 && cgItems.length === 0 && !hasMsg) {
+  if (actionCount <= 2 && cgItems.length === 0 && !hasMsg && checkpointItems.length === 0 && swarmResults.length === 0) {
     return (
       <div className="flex flex-col gap-0.5 pl-3 border-l-2 border-edge/40 my-1 w-full">
         {items.map(renderInner)}
@@ -607,15 +642,25 @@ function ActivityGroup({
         {open ? <ChevronDown size={11} className="text-faint/70" /> : <ChevronRight size={11} className="text-faint/70" />}
         {anyRunning ? <Loader2 size={11} className="animate-spin text-faint" /> : <Share2 size={10} className="text-faint/70" />}
         <span className="text-txt/70 font-medium tracking-tight">
-          {actionCount > 0 ? (anyRunning ? "Investigating" : "Investigated") : "Thought"}
+          {swarmResults.length > 0 && actionCount === 0
+            ? "Swarm"
+            : actionCount > 0 ? (anyRunning ? "Investigating" : "Investigated") : "Thought"}
         </span>
         <span className="text-faint truncate max-w-[46ch] normal-case">
-          {actionCount > 0
+          {swarmResults.length > 0 && actionCount === 0
+            ? `${swarmResults.length} result${swarmResults.length === 1 ? "" : "s"}`
+            : actionCount > 0
             ? `${actionCount} step${actionCount === 1 ? "" : "s"}${kindSummary ? ` -- ${kindSummary}` : ""}`
             : narrationPreview}
         </span>
         {cgItems.length > 0 && (
           <span className="ml-0.5 text-faint/70">+ CodeGraph</span>
+        )}
+        {checkpointItems.length > 0 && (
+          <span className="ml-0.5 text-faint/70">+ {checkpointItems.length} restore point{checkpointItems.length === 1 ? "" : "s"}</span>
+        )}
+        {swarmResults.length > 0 && (
+          <span className="ml-0.5 text-good/75">+ swarm done</span>
         )}
       </button>
       {open && (
