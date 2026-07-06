@@ -132,7 +132,11 @@ export default function RightPane({ artifacts, onOpenWizard }: {
       try {
         const parsed = JSON.parse(saved);
         const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "checkpoints", "review", "swarm"];
-        const primaryTab = validTabs.includes(parsed.primaryTab) ? parsed.primaryTab : "state";
+        // Settings is a destination you visit, not a home tab: restoring it as
+        // the startup tab made every launch open on the settings page whenever
+        // the previous session ended there.
+        let primaryTab = validTabs.includes(parsed.primaryTab) ? parsed.primaryTab : "state";
+        if (primaryTab === "settings") primaryTab = "state";
         const secondaryTab = validTabs.includes(parsed.secondaryTab) ? parsed.secondaryTab : "terminal";
         return {
           isSplit: !!parsed.isSplit,

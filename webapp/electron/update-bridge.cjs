@@ -82,8 +82,12 @@ function detectUv(env) {
 // user to rebase or reset -- we never rewrite their commits silently.
 async function inspectTree(repoRoot, branch) {
   const status = await gitCapture(repoRoot, ["status", "--porcelain"]);
+  // Only TRACKED modifications count as dirty. Untracked files ("?? ") cannot
+  // block a fast-forward merge, and the pilot routinely drops scratch files
+  // (analysis scripts, result dumps) into the checkout -- counting those made
+  // every update nag "you have local self-edits" forever.
   const dirty = status.ok &&
-    status.out.split("\n").some((l) => l.trim() && !/\bresults\//.test(l));
+    status.out.split("\n").some((l) => l.trim() && !l.startsWith("??") && !/\bresults\//.test(l));
   // Commits on HEAD that FETCH_HEAD (the fetched branch tip) doesn't contain.
   const aheadRes = await gitCapture(repoRoot, ["rev-list", "--count", "FETCH_HEAD..HEAD"]);
   const ahead = aheadRes.ok ? (parseInt(aheadRes.out, 10) || 0) : 0;
