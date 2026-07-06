@@ -77,7 +77,11 @@ def test_detect_scopes_tsc_to_webapp_subdir_tsconfig(tmp_path):
     cmd = verify.detect_verify_command(root, ["webapp/src/app.tsx"])
     assert cmd is not None
     assert "tsc --noEmit" in cmd
-    assert os.path.join("webapp", "tsconfig.json") in cmd
+    # Runs from the subproject dir so npx resolves the LOCAL tsc install
+    # (webapp/node_modules/.bin), which is invisible from the repo root.
+    assert cmd.startswith("cd webapp && ")
+    assert "-p tsconfig.json" in cmd
+    assert os.path.join("webapp", "tsconfig.json") not in cmd
 
 
 def test_detect_picks_python_syntax_check_for_pyproject_repo(tmp_path):

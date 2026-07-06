@@ -3,6 +3,8 @@ import os
 import json
 import tempfile
 
+from .secure_files import restrict_to_owner
+
 _KEYS_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "keys.json")
 
 def get_keys_file_path() -> str:
@@ -31,11 +33,10 @@ def _write_keys(keys: dict):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix="keys_")
     try:
-        with os.fdopen(tmp_fd, 'w') as f:
+        with os.fdopen(tmp_fd, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(keys, f)
-        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, path)
-        os.chmod(path, 0o600)
+        restrict_to_owner(path)
     except Exception:
         if os.path.exists(tmp_path):
             try:

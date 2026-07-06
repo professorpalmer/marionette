@@ -33,6 +33,7 @@ from .sessions import SessionStore, save_transcript, load_transcript
 from .autobudget import AutoBudget
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd, _ensure_node_on_path
 from .diag import note as _diag
+from .secure_files import restrict_to_owner
 
 
 # Prompt-cache reads are billed at a steep discount vs fresh input tokens:
@@ -423,7 +424,7 @@ def _record_recent_workspace(target_repo: str) -> list:
         target_dir = os.path.dirname(ws_json_path)
         fd, temp_path = _tf.mkstemp(dir=target_dir, prefix=".tmp-")
         try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as f:
                 json.dump({"repo": target_repo, "recents": recents}, f)
             os.replace(temp_path, ws_json_path)
         except Exception as e:
@@ -434,10 +435,7 @@ def _record_recent_workspace(target_repo: str) -> list:
                     pass
             raise e
 
-        try:
-            os.chmod(ws_json_path, 0o600)
-        except Exception:
-            pass
+        restrict_to_owner(ws_json_path)
         return recents
     except Exception:
         # Fallback to get recents if possible
@@ -486,7 +484,7 @@ def _forget_recent_workspace(forget_path: str) -> list:
         target_dir = os.path.dirname(ws_json_path)
         fd, temp_path = _tf.mkstemp(dir=target_dir, prefix=".tmp-")
         try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as f:
                 json.dump({"repo": repo, "recents": recents}, f)
             os.replace(temp_path, ws_json_path)
         except Exception as e:
@@ -497,10 +495,7 @@ def _forget_recent_workspace(forget_path: str) -> list:
                     pass
             raise e
 
-        try:
-            os.chmod(ws_json_path, 0o600)
-        except Exception:
-            pass
+        restrict_to_owner(ws_json_path)
         return recents
     except Exception:
         # Fallback to get recents if possible
@@ -774,16 +769,17 @@ def _stash_pop(mid: str):
     """Returns the stashed {'message', 'images'} dict, or None if unknown/expired."""
     return _CHAT_STASH.pop(mid, None)
 
-# Per-process auth token (defense-in-depth). Written chmod-600 so the local
-# client (Electron main / served page) can read it; required on mutating
-# endpoints. Origin/Host validation below is the primary anti-RCE guard.
+# Per-process auth token (defense-in-depth). Written owner-only (chmod 600 on
+# POSIX, NTFS ACL on Windows) so the local client (Electron main / served page)
+# can read it; required on mutating endpoints. Origin/Host validation below is
+# the primary anti-RCE guard.
 _TOKEN = os.environ.get("HARNESS_TOKEN") or _secrets.token_hex(16)
 _TOKEN_FILE = os.path.join(_state_home(), "token")
 try:
     os.makedirs(os.path.dirname(_TOKEN_FILE), exist_ok=True)
     with open(_TOKEN_FILE, "w") as _tf2:
         _tf2.write(_TOKEN)
-    os.chmod(_TOKEN_FILE, 0o600)
+    restrict_to_owner(_TOKEN_FILE)
 except OSError:
     pass
 
@@ -1491,7 +1487,7 @@ class Handler(BaseHTTPRequestHandler):
                 import tempfile
                 fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-")
                 try:
-                    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as f:
                         f.write(content)
                     os.replace(temp_path, target_path)
                 except Exception as e:

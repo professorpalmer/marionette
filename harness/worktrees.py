@@ -9,6 +9,7 @@ import tempfile
 from typing import Optional
 
 from .paths import path_within
+from .secure_files import restrict_to_owner
 
 logger = logging.getLogger("pmharness.worktrees")
 
@@ -417,10 +418,10 @@ def set_max_worktrees(max_count: int) -> None:
     os.makedirs(os.path.dirname(_WORKTREES_JSON), exist_ok=True)
     try:
         temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(_WORKTREES_JSON))
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+        with os.fdopen(temp_fd, "w", encoding="utf-8", newline="\n") as f:
             json.dump({"max_worktrees": max_count}, f)
-        os.chmod(temp_path, 0o600)
         os.replace(temp_path, _WORKTREES_JSON)
+        restrict_to_owner(_WORKTREES_JSON)
     except Exception as exc:
         logger.warning("failed to persist max_worktrees to %s: %s", _WORKTREES_JSON, exc)
 

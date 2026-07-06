@@ -8,6 +8,8 @@ WikiClient (which reads those env vars) picks them up.
 import json
 import os
 
+from .secure_files import restrict_to_owner
+
 _WIKI_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "wiki.json")
 
 
@@ -60,10 +62,10 @@ def set_wiki_config(api_base: str = None, owner_token: str = None) -> dict:
     try:
         os.makedirs(os.path.dirname(p), exist_ok=True)
         tmp = p + ".tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             json.dump(cur, f)
         os.replace(tmp, p)
-        os.chmod(p, 0o600)
+        restrict_to_owner(p)
     except Exception:
         pass
     _apply_to_env(cur)

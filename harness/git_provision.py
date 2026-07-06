@@ -10,6 +10,8 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
+from .secure_files import restrict_to_owner
+
 class GitProvisioner:
     def detect_gh(self) -> dict:
         if not shutil.which("gh"):
@@ -242,10 +244,7 @@ def save_device_token(token: str) -> None:
     except Exception:
         with open(path, "w", encoding="utf-8") as f:
             f.write(token)
-        try:
-            os.chmod(path, 0o600)
-        except Exception:
-            pass
+    restrict_to_owner(path)
 
 
 def load_connection() -> dict | None:

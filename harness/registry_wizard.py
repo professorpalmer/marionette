@@ -9,6 +9,7 @@ from typing import Optional
 
 from .providers import Provider, PROVIDERS, get_provider
 from .keys import _read_keys
+from .secure_files import restrict_to_owner
 
 # Define paths
 def get_routing_file_path() -> str:
@@ -47,16 +48,12 @@ def write_json_atomic(path: str, data: dict, chmod_mode: Optional[int] = None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix="atomic_")
     try:
-        with os.fdopen(tmp_fd, 'w') as f:
+        with os.fdopen(tmp_fd, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(data, f, indent=2)
-        if chmod_mode is not None:
-            os.chmod(tmp_path, chmod_mode)
         os.replace(tmp_path, path)
         if chmod_mode is not None:
-            try:
-                os.chmod(path, chmod_mode)
-            except OSError:
-                pass
+            # Owner-only ACL on Windows too; plain os.chmod is a no-op there.
+            restrict_to_owner(path)
     except Exception:
         if os.path.exists(tmp_path):
             try:

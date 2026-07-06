@@ -7,6 +7,8 @@ import tempfile
 import subprocess
 import logging
 
+from .secure_files import restrict_to_owner
+
 logger = logging.getLogger("harness.hooks")
 
 ALLOWED_EVENTS = ["sessionStart", "sessionEnd", "preRun", "postRun"]
@@ -26,10 +28,10 @@ def save_hooks(hooks: list[dict]) -> None:
     os.makedirs(os.path.dirname(_HOOKS_JSON), exist_ok=True)
     try:
         temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(_HOOKS_JSON))
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+        with os.fdopen(temp_fd, "w", encoding="utf-8", newline="\n") as f:
             json.dump({"hooks": hooks}, f)
-        os.chmod(temp_path, 0o600)
         os.replace(temp_path, _HOOKS_JSON)
+        restrict_to_owner(_HOOKS_JSON)
     except Exception as e:
         logger.error(f"Failed to save hooks: {e}")
 

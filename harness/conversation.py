@@ -4088,11 +4088,12 @@ class ConversationalSession(ToolDispatchMixin):
 
         files = payload.get("files") or []
 
-        # Write diff to a temporary file
+        # Write diff to a temporary file. Binary mode: Windows text mode would
+        # rewrite \n as \r\n, corrupting the unified diff before git apply sees it.
         fd, temp_path = tempfile.mkstemp(suffix=".patch")
         try:
-            with os.fdopen(fd, "w") as f:
-                f.write(diff_text)
+            with os.fdopen(fd, "wb") as f:
+                f.write(diff_text.encode("utf-8"))
             
             # a. First check if already applied (idempotent): git apply --reverse --check on the diff
             rev_p = subprocess.run(

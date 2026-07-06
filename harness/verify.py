@@ -125,6 +125,20 @@ def _changed_of(changed_files: list[str], *exts: str) -> list[str]:
     return [p for p in changed_files if p.endswith(exts)]
 
 
+def _tsc_command(tsconfig: str) -> str:
+    """Build the `npx tsc --noEmit` invocation for a repo-relative tsconfig.
+
+    When the tsconfig sits in a subproject (e.g. webapp/tsconfig.json), run
+    from that directory: npx resolves tsc from the nearest node_modules/.bin,
+    which lives beside the subproject's package.json, not the repo root.
+    """
+    project_dir = os.path.dirname(tsconfig)
+    if project_dir:
+        tsc = _shell_join("npx", "tsc", "--noEmit", "-p", os.path.basename(tsconfig))
+        return f"cd {_shell_join(project_dir)} && {tsc}"
+    return _shell_join("npx", "tsc", "--noEmit", "-p", tsconfig)
+
+
 def _shell_join(*args: str) -> str:
     """Join argv tokens into a shell command string.
 
@@ -158,7 +172,7 @@ def build_scoped_command(repo: str, changed_files: list[str]) -> str | None:
     if ts:
         tsconfig = _find_tsconfig(repo, changed_files)
         if tsconfig:
-            return _shell_join("npx", "tsc", "--noEmit", "-p", tsconfig)
+            return _tsc_command(tsconfig)
         # No tsconfig: fall back to a loose per-file tsc syntax check.
         rel_ts = [_rel(repo, p) for p in ts]
         return _shell_join("npx", "tsc", "--noEmit", *rel_ts)
@@ -222,7 +236,7 @@ def detect_verify_command(repo: str, changed_files: list[str] | None = None) -> 
     if is_web and web_has_check:
         tsconfig = _find_tsconfig(repo, changed_files)
         if tsconfig:
-            return _shell_join("npx", "tsc", "--noEmit", "-p", tsconfig)
+            return _tsc_command(tsconfig)
         return "npx tsc --noEmit"
 
     # 2. Python project with tests but nothing python edited this turn: a full
