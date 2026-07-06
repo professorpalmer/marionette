@@ -165,6 +165,42 @@ def test_usage_api_includes_memory_layers():
             layers = usage["session"].get("memory_layers")
             assert isinstance(layers, dict)
             assert layers.get("L0", {}).get("bytes", 0) >= 0
+            advice = usage["session"].get("compaction_advice")
+            assert isinstance(advice, dict)
+            assert advice.get("level") in ("none", "soon", "now")
+        finally:
+            httpd.shutdown()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_usage_api_compaction_advice_absent_when_disabled(monkeypatch):
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        import harness.server as srv
+
+        monkeypatch.setenv("HARNESS_COMPACTION_ADVISOR", "off")
+        srv._session.state_dir = tmp_dir
+        srv._pilot.state_dir = tmp_dir
+        srv._pilot.harness_session_id = "advice-off-session"
+        snap = snapshot_memory_layers(srv._pilot, tmp_dir, "advice-off-session")
+        record_memory_layer_snapshot(tmp_dir, "advice-off-session", 1, snap)
+
+        from http.server import ThreadingHTTPServer
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
+        port = httpd.server_address[1]
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        t.start()
+        try:
+            headers = {"X-Harness-Token": srv._TOKEN}
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/usage",
+                headers=headers,
+                method="GET",
+            )
+            usage = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+            assert "compaction_advice" not in usage["session"]
         finally:
             httpd.shutdown()
     finally:

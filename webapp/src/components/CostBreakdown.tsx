@@ -20,6 +20,13 @@ export type CostBreakdownData = {
   evals_recorded?: number;
   evals_failed?: number;
   memory_layers?: Record<string, { bytes?: number; entries?: number }>;
+  compaction_advice?: {
+    level?: string;
+    hot_ratio?: number;
+    l1_bytes?: number;
+    l3_reclaimed_bytes?: number;
+    reasons?: string[];
+  };
   price_in?: number;
   price_out?: number;
 };
@@ -94,6 +101,13 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
     typeof data.memory_layers?.L1?.bytes === "number" && isFinite(data.memory_layers.L1.bytes)
       ? data.memory_layers.L1.bytes
       : 0;
+  const compactionAdviceLevel = data.compaction_advice?.level;
+  const showCompactionAdvice =
+    compactionAdviceLevel === "soon" || compactionAdviceLevel === "now";
+  const compactionAdviceReason =
+    showCompactionAdvice && Array.isArray(data.compaction_advice?.reasons) && data.compaction_advice.reasons.length > 0
+      ? data.compaction_advice.reasons[0]
+      : "";
 
   const layerLabel = (id: string) => {
     const layer = data.memory_layers?.[id];
@@ -168,6 +182,16 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           <span>Memory layers</span>
           <span className="tabular-nums text-right">
             {layerLabel("L0")} | {layerLabel("L1")} | {layerLabel("L2")} | {layerLabel("L3")}
+          </span>
+        </div>
+      ) : null}
+
+      {showCompactionAdvice ? (
+        <div className="flex items-center justify-between mb-1 text-faint">
+          <span>Compaction advice</span>
+          <span className="tabular-nums text-right">
+            {compactionAdviceLevel}
+            {compactionAdviceReason ? ` — ${compactionAdviceReason}` : ""}
           </span>
         </div>
       ) : null}

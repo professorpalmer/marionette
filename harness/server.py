@@ -159,6 +159,19 @@ def _tool_output_savings_fields(price_in: float) -> dict:
         )
     except Exception:
         payload.setdefault("memory_layers", {})
+    try:
+        from .compaction_advisor import advice_payload
+
+        budget = getattr(getattr(_pilot, "config", None), "max_context_tokens", 96000)
+        payload.update(
+            advice_payload(
+                _pilot.state_dir,
+                getattr(_pilot, "harness_session_id", "") or "default",
+                budget,
+            )
+        )
+    except Exception:
+        pass
     return payload
 
 

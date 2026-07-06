@@ -261,6 +261,13 @@ export type UsageData = {
     evals_recorded?: number;
     evals_failed?: number;
     memory_layers?: Record<string, { bytes?: number; entries?: number; components?: Record<string, number> }>;
+    compaction_advice?: {
+      level?: string;
+      hot_ratio?: number;
+      l1_bytes?: number;
+      l3_reclaimed_bytes?: number;
+      reasons?: string[];
+    };
   };
   jobs: {
     job_id: string;

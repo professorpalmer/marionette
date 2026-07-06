@@ -227,6 +227,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
                       evals_recorded: usage.evals_recorded,
                       evals_failed: usage.evals_failed,
                       memory_layers: usage.memory_layers,
+                      compaction_advice: usage.compaction_advice,
                       price_in: usage.price_in,
                       price_out: usage.price_out,
                     }}
