@@ -254,6 +254,13 @@ export type UsageData = {
     tool_output_tokens_saved?: number;
     tool_output_savings_usd?: number;
     tool_output_compactions?: number;
+    history_compactions?: number;
+    history_tokens_saved?: number;
+    spill_count?: number;
+    spill_chars?: number;
+    evals_recorded?: number;
+    evals_failed?: number;
+    memory_layers?: Record<string, { bytes?: number; entries?: number; components?: Record<string, number> }>;
   };
   jobs: {
     job_id: string;

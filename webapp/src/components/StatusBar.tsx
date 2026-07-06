@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Circle, GitBranch, Boxes, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle, RefreshCw, Zap } from "lucide-react";
-import { api, type Config } from "../lib/api";
+import { api, type Config, type UsageData } from "../lib/api";
 import { isDesktop } from "../lib/transport";
 import CostBreakdown from "./CostBreakdown";
 
@@ -12,7 +12,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
   onToggleLeft: () => void; onToggleRight: () => void;
 }) {
   const [branch, setBranch] = useState("");
-  const [usage, setUsage] = useState<{ tokens_used: number; est_cost_usd: number; tokens_cached?: number; cache_savings_usd?: number; tool_output_tokens_saved?: number; tool_output_savings_usd?: number; price_in?: number; price_out?: number } | null>(null);
+  const [usage, setUsage] = useState<UsageData["session"] | null>(null);
   const [costOpen, setCostOpen] = useState(false);
   const costRef = useRef<HTMLDivElement | null>(null);
   const [update, setUpdate] = useState<{ behind: number; branch: string; version: string } | null>(null);
@@ -96,16 +96,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
     api.getUsage()
       .then((data) => {
         if (data && data.session) {
-          setUsage({
-            tokens_used: data.session.tokens_used,
-            est_cost_usd: data.session.est_cost_usd,
-            tokens_cached: (data.session as { tokens_cached?: number }).tokens_cached,
-            cache_savings_usd: (data.session as { cache_savings_usd?: number }).cache_savings_usd,
-            tool_output_tokens_saved: (data.session as { tool_output_tokens_saved?: number }).tool_output_tokens_saved,
-            tool_output_savings_usd: (data.session as { tool_output_savings_usd?: number }).tool_output_savings_usd,
-            price_in: (data.session as { price_in?: number }).price_in,
-            price_out: (data.session as { price_out?: number }).price_out,
-          });
+          setUsage(data.session);
         }
       })
       .catch((err) => console.error("Failed to load usage in StatusBar", err))
@@ -229,6 +220,13 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
                       cache_savings_usd: usage.cache_savings_usd,
                       tool_output_tokens_saved: usage.tool_output_tokens_saved,
                       tool_output_savings_usd: usage.tool_output_savings_usd,
+                      history_compactions: usage.history_compactions,
+                      history_tokens_saved: usage.history_tokens_saved,
+                      spill_count: usage.spill_count,
+                      spill_chars: usage.spill_chars,
+                      evals_recorded: usage.evals_recorded,
+                      evals_failed: usage.evals_failed,
+                      memory_layers: usage.memory_layers,
                       price_in: usage.price_in,
                       price_out: usage.price_out,
                     }}

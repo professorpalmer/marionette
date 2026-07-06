@@ -19,6 +19,7 @@ export type CostBreakdownData = {
   spill_chars?: number;
   evals_recorded?: number;
   evals_failed?: number;
+  memory_layers?: Record<string, { bytes?: number; entries?: number }>;
   price_in?: number;
   price_out?: number;
 };
@@ -38,6 +39,13 @@ function fmtTokens(num: number): string {
   if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
   if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, "") + "k";
   return String(num);
+}
+
+function fmtBytes(num: number): string {
+  if (!isFinite(num) || num <= 0) return "0 B";
+  if (num >= 1024 * 1024) return (num / (1024 * 1024)).toFixed(1).replace(/\.0$/, "") + " MB";
+  if (num >= 1024) return (num / 1024).toFixed(1).replace(/\.0$/, "") + " KB";
+  return `${num} B`;
 }
 
 export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
@@ -82,6 +90,16 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
     typeof data.tokens_cached === "number" && isFinite(data.tokens_cached) && data.tokens_cached > 0
       ? data.tokens_cached
       : 0;
+  const l1Bytes =
+    typeof data.memory_layers?.L1?.bytes === "number" && isFinite(data.memory_layers.L1.bytes)
+      ? data.memory_layers.L1.bytes
+      : 0;
+
+  const layerLabel = (id: string) => {
+    const layer = data.memory_layers?.[id];
+    const bytes = typeof layer?.bytes === "number" && isFinite(layer.bytes) ? layer.bytes : 0;
+    return `${id} ${fmtBytes(bytes)}`;
+  };
 
   return (
     <div className="w-[260px] rounded-md border border-edge bg-panel shadow-lg p-3 text-[11px] text-txt">
@@ -142,6 +160,15 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         <div className="flex items-center justify-between mb-1 text-faint">
           <span>Checks recorded</span>
           <span className="tabular-nums">{evalsRecorded} ({evalsFailed} failed)</span>
+        </div>
+      ) : null}
+
+      {l1Bytes > 0 ? (
+        <div className="flex items-center justify-between mb-1 text-faint">
+          <span>Memory layers</span>
+          <span className="tabular-nums text-right">
+            {layerLabel("L0")} | {layerLabel("L1")} | {layerLabel("L2")} | {layerLabel("L3")}
+          </span>
         </div>
       ) : null}
 
