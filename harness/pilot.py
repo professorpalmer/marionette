@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "hash_edit", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "search_tools", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project",
+VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "hash_edit", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "search_state", "search_tools", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project",
                       "lsp",
                       "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
                       "browser_scroll", "browser_back", "browser_get_text", "browser_screenshot"}
@@ -145,6 +145,8 @@ class PilotAction:
             raise PilotError("search_codegraph action requires a 'query'")
         if self.kind == "search_files" and not (self.query or "").strip():
             raise PilotError("search_files action requires a 'query'")
+        if self.kind == "search_state" and not (self.query or "").strip():
+            raise PilotError("search_state action requires a 'query'")
         if self.kind == "search_tools" and not (self.query or "").strip() and not self.arguments.get("activate"):
             raise PilotError("search_tools action requires a 'query' and/or 'activate' list")
         if self.kind == "query_wiki" and not (self.arguments.get("question") or "").strip():
@@ -548,6 +550,33 @@ def build_tools_schema(
                     "required": ["query"]
                 }
             }
+        })
+
+    # search_state
+    if not no_delegation:
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "search_state",
+                "description": (
+                    "Search durable state (past jobs, artifacts, agent transcripts, merge conflicts) "
+                    "by keyword. Returns matching internal URIs (job://, artifact://, agent://, "
+                    "conflict://) that can be opened with read_file or list_dir."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Keyword to search durable state indexes"},
+                        "scheme": {
+                            "type": "string",
+                            "enum": ["job", "artifact", "agent", "conflict"],
+                            "description": "Optional URI scheme to restrict the search",
+                        },
+                        "max_results": {"type": "integer", "description": "Optional max results, default 50"},
+                    },
+                    "required": ["query"],
+                },
+            },
         })
 
     # lsp (status + diagnostics via local tools; small first-pass)

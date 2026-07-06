@@ -19,6 +19,7 @@ MOVED_METHODS = (
     "_do_read_pdf",
     "_do_search_codegraph",
     "_do_search_files",
+    "_do_search_state",
     "_do_search_tools",
     "_do_hash_edit",
 )

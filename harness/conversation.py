@@ -2643,6 +2643,8 @@ class ConversationalSession(ToolDispatchMixin):
                     act_goal = act.query
                 elif act.kind == "search_files":
                     act_goal = act.query
+                elif act.kind == "search_state":
+                    act_goal = act.query
                 elif act.kind == "search_tools":
                     act_goal = act.query or ",".join(act.arguments.get("activate") or [])
                 elif act.kind == "query_wiki":
@@ -3156,6 +3158,23 @@ class ConversationalSession(ToolDispatchMixin):
                     else:
                         yield ConvEvent("action_result", {"id": aid, "error": val})
                         self._append_action_result(act, aid, f"(search_tools failed: {val})", is_native)
+                    continue
+                # ---- search_state branch ---------------------------------------
+                if act.kind == "search_state":
+                    try:
+                        ok, status, val = self._do_search_state(act)
+                    except Exception as exc:
+                        ok, status, val = False, "exception", str(exc)
+
+                    if ok:
+                        yield ConvEvent("action_result", {
+                            "id": aid, "num": 1, "types": ["search_state"], "adapter": "local", "mode": "tool",
+                            "artifacts": [{"type": "search_state", "headline": f"State search: {act.query}"}],
+                        })
+                        self._append_action_result(act, aid, f"(search_state returned)\n{val}", is_native)
+                    else:
+                        yield ConvEvent("action_result", {"id": aid, "error": val})
+                        self._append_action_result(act, aid, f"(search_state failed: {val})", is_native)
                     continue
                 # ---- lsp branch ----------------------------------------------
                 if act.kind == "lsp":

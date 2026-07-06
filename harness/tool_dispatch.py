@@ -446,6 +446,26 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
+    def _do_search_state(self, act: Any) -> tuple[bool, str, str]:
+        from .internal_uri import search_internal_uris
+
+        args = act.arguments or {}
+        query = (act.query or args.get("query") or "").strip()
+        if not query:
+            return False, "invalid_arguments", "search_state requires a 'query'"
+        scheme = args.get("scheme") or None
+        max_results = args.get("max_results", 50)
+        try:
+            text = search_internal_uris(
+                query,
+                self._internal_uri_context(),
+                scheme=scheme,
+                max_results=max_results,
+            )
+            return True, "success", text
+        except Exception as e:
+            return False, "exception", str(e)
+
     def _do_search_tools(self, act: Any) -> tuple[bool, str, str]:
         from .tool_discovery import ToolCatalog
 

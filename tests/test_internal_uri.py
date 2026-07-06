@@ -273,3 +273,16 @@ class TestToolDispatchIntegration:
             ok, status, _ = session._do_read_file(act)
             assert not ok
             assert status == "path_traversal"
+
+    def test_search_state_dispatch_returns_job_hit(self):
+        state_dir = tempfile.mkdtemp(prefix="internal-uri-tool-")
+        _seed_store(state_dir)
+        cfg = HarnessConfig(state_dir=state_dir, repo="")
+        session = ConversationalSession(cfg)
+
+        act = PilotAction(kind="search_state", query="routing regressions")
+        ok, status, val = session._do_search_state(act)
+        assert ok
+        assert status == "success"
+        assert "job://" in val
+        assert "routing regressions" in val.lower()

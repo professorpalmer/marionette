@@ -267,3 +267,16 @@ def test_visible_schema_parity_when_discovery_disabled(monkeypatch):
     visible_names = sorted(t["function"]["name"] for t in visible)
     full_names = sorted(t["function"]["name"] for t in full)
     assert visible_names == full_names
+
+
+def test_search_state_hidden_until_activated():
+    catalog = ToolCatalog()
+    catalog.refresh()
+    schema_before = catalog.visible_schema()
+    names_before = {t["function"]["name"] for t in schema_before}
+    assert "search_state" not in names_before
+
+    catalog.activate(["search_state"])
+    schema_after = catalog.visible_schema()
+    names_after = {t["function"]["name"] for t in schema_after}
+    assert "search_state" in names_after
