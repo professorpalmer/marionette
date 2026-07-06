@@ -2,7 +2,7 @@
 
 A desktop AI coding harness where the LLM is a **component inside** the kernel,
 not the platform. Marionette drives any model -- frontier or cheap open-weights --
-through a structured pilot loop over [Puppetmaster](https://github.com/professorpalmer/puppetmaster)
+through a structured pilot loop over [Puppetmaster](https://github.com/professorpalmer/Puppetmaster)
 durable state, with CodeGraph-aware retrieval, a portable cross-session knowledge
 wiki, and multi-worker delegation.
 
@@ -10,7 +10,9 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.7.x, deliberately pre-1.0. Vetted privately before any wider release.
+> Status: v0.7.32, deliberately pre-1.0. Vetted privately before any wider release.
+
+Community: join the Discord at https://discord.gg/VQmkmGtQnA
 
 ## Documentation
 
@@ -66,6 +68,23 @@ one way -- minimize your spend and prove it:
   model. A model vendor will never route you off its own tokens; an independent
   kernel will. That is an alignment a first-party tool structurally cannot match.
 
+### Benchmarks and evidence
+
+The cost thesis is measured, not asserted:
+
+- **SWE-bench Lite (cost/quality).** A controlled 3-arm study holding the model
+  ceiling constant and varying only the orchestration machinery: the
+  CodeGraph-context + router configuration is about **47 percent cheaper** than
+  the frontier baseline at equal quality. Frozen predictions re-grade
+  deterministically with just Docker (no API keys):
+  [swebench-pm](https://github.com/professorpalmer/swebench-pm).
+- **NL2Repo-Bench (build a library from a spec).** Durable-state orchestration
+  reaches a **91.1 percent mean test-pass rate, about 2.28x the ~40 percent
+  published state of the art**, and solves 53 percent of libraries to a fully
+  green upstream suite. Full method and caveats in the paper:
+  [durable-state-vs-context](https://professorpalmer.github.io/durable-state-vs-context/)
+  ([DOI](https://doi.org/10.5281/zenodo.20709565)).
+
 ## Core capabilities
 
 | Capability | What it does |
@@ -76,6 +95,7 @@ one way -- minimize your spend and prove it:
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
 | **Honest token economics** | Prompt caching across Anthropic/OpenAI/Gemini with a stable + moving cache breakpoint, cost billed at the real cache-read discount, and the context meter driven by the driver's actual token usage -- so cost and context reflect reality and the status bar shows the dollars caching saved you. |
+| **Cost transparency** | The status bar expands to a per-session breakdown: session spend, prompt-cache dollars saved, and the framing that each task step is routed to the cheapest capable model. Delegated worker/swarm spend is priced at each worker's own model rate and counted toward the session total, so the number reflects real cost end to end. |
 | **Full-auto mode** | Unattended objective pursuit bounded by an AutoBudget governor (max swarms / tokens / seconds / idle), with a non-bypassable command safety guard. |
 | **Command safety guard** | In full-auto, irreversible/remote/escalating shell commands (recursive deletes, ssh/scp, curl-pipe-to-shell, force-push, sudo, disk writes, key exfil) are screened and blocked; interactive co-working is untouched. Configurable per-command timeout (default 120s; 0/off = unbounded for long sessions). |
 
