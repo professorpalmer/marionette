@@ -290,15 +290,21 @@ def _workspace_drivers_path() -> str:
     return os.path.join(_state_home(), "workspace_drivers.json")
 
 
+# Global fallback key in workspace_drivers.json: the last driver the user chose
+# anywhere. Restored on boot when the active workspace has no saved entry (or no
+# workspace is open at all), so a settings-page model choice always sticks.
+_LAST_DRIVER_KEY = "__last__"
+
+
 def _save_workspace_driver(repo: str, driver: str) -> None:
     """Remember which model the user last used in a given workspace, so opening
     that dir later restores it (use opus-4-8 in repo A, gpt-5.5 in repo B, and
     each comes back correctly on switch)."""
-    if not repo or not driver:
+    if not driver:
         return
     import tempfile as _tf
     # Never persist ephemeral temp dirs (test state leaks otherwise).
-    if os.path.realpath(repo).startswith(os.path.realpath(_tf.gettempdir())):
+    if repo and os.path.realpath(repo).startswith(os.path.realpath(_tf.gettempdir())):
         return
     path = _workspace_drivers_path()
     try:
@@ -312,7 +318,9 @@ def _save_workspace_driver(repo: str, driver: str) -> None:
                 data = {}
         if not isinstance(data, dict):
             data = {}
-        data[os.path.realpath(repo)] = driver
+        if repo:
+            data[os.path.realpath(repo)] = driver
+        data[_LAST_DRIVER_KEY] = driver
         from .registry_wizard import write_json_atomic
         write_json_atomic(path, data)
     except Exception as e:
@@ -320,16 +328,20 @@ def _save_workspace_driver(repo: str, driver: str) -> None:
 
 
 def _get_workspace_driver(repo: str):
-    """The model last used in this workspace, or None if never set."""
-    if not repo:
-        return None
+    """The model last used in this workspace, falling back to the last driver
+    chosen anywhere (so a fresh/unknown workspace still boots on the user's
+    pick, not the compiled-in default). None if nothing was ever saved."""
     path = _workspace_drivers_path()
     if not os.path.exists(path):
         return None
     try:
         with open(path) as f:
             data = json.load(f)
-        return data.get(os.path.realpath(repo))
+        if repo:
+            saved = data.get(os.path.realpath(repo))
+            if saved:
+                return saved
+        return data.get(_LAST_DRIVER_KEY)
     except Exception:
         return None
 
@@ -467,6 +479,24 @@ if not os.environ.get("HARNESS_REPO") and os.path.exists(_ws_boot_path):
                 os.environ["HARNESS_REPO"] = _ws_data["repo"]
     except Exception as e:
         _diag("server.workspace_boot_load", e)
+
+# Restore the model last used in the adopted workspace (parity with
+# /api/workspace/open). Without this, the saved driver was only read on an
+# explicit workspace switch, so every app relaunch silently reset the pilot
+# to the compiled-in default even though the picker said the choice was saved.
+if "HARNESS_DRIVER" not in os.environ:
+    try:
+        _boot_saved_driver = _get_workspace_driver(_cfg.repo)
+        if _boot_saved_driver and _boot_saved_driver != _cfg.driver:
+            _cfg.driver = _boot_saved_driver
+            if "HARNESS_MAX_CONTEXT_TOKENS" not in os.environ:
+                try:
+                    from pmharness.registry import context_window as _boot_ctx_window
+                    _cfg.max_context_tokens = _boot_ctx_window(_cfg.driver, default=200000)
+                except Exception as e:
+                    _diag("server.boot_driver_context_window", e)
+    except Exception as e:
+        _diag("server.boot_restore_workspace_driver", e)
 
 if _state_dir:
     _cfg.state_dir = _state_dir
@@ -1948,6 +1978,10 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         _cfg.driver = driver
                         _rebuild_pilot_and_session()
+                        # Persist like /api/pilot/swap does -- a settings-page
+                        # change that only lived in _cfg silently reverted to
+                        # the compiled-in default on the next backend start.
+                        _save_workspace_driver(_cfg.repo, driver)
                     except Exception as e:
                         return self._send(500, json.dumps({"error": f"Failed to swap driver: {str(e)}"}))
             budget = body.get("budget")
