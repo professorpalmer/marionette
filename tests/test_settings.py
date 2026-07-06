@@ -100,5 +100,14 @@ def test_settings_post_updates_settings_successfully():
         assert get_data2["budget"] == target_budget
         assert get_data2["auto_distill"] is target_auto_distill
         assert get_data2["hash_edit_enabled"] is target_hash_edit
+
+        # Restore hash_edit so later tests in this process see default-off behavior.
+        restore_resp = _post(
+            port,
+            "/api/settings",
+            {"hash_edit_enabled": initial_hash_edit},
+            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        )
+        assert restore_resp.status == 200
     finally:
         httpd.shutdown()
