@@ -64,6 +64,17 @@ function run(cmd, args, opts = {}) {
   return res;
 }
 
+// On Windows, npm is a .cmd batch shim, not an executable. Node (post
+// CVE-2024-27980) refuses to spawn .cmd files without shell:true, and the
+// failed spawn surfaces as status:null -- the "npm ci failed (code null)"
+// first-run error. Route npm through a shell on win32 only.
+function runNpm(args, opts = {}) {
+  if (process.platform === "win32") {
+    return run("npm.cmd", args, { ...opts, shell: true });
+  }
+  return run("npm", args, opts);
+}
+
 function commandExists(name) {
   const check = process.platform === "win32" ? "where" : "which";
   const res = spawnSync(check, [name], { encoding: "utf8" });
@@ -269,8 +280,8 @@ function provisionPython(dest, onProgress) {
 
 function buildRenderer(dest, onProgress) {
   onProgress("Installing node deps + building renderer...", 70);
-  run("npm", ["ci"], { cwd: path.join(dest, "webapp"), inherit: true });
-  run("npm", ["run", "build"], { cwd: path.join(dest, "webapp"), inherit: true });
+  runNpm(["ci"], { cwd: path.join(dest, "webapp"), inherit: true });
+  runNpm(["run", "build"], { cwd: path.join(dest, "webapp"), inherit: true });
 }
 
 async function runBootstrap(targetDir, onProgress = () => {}) {

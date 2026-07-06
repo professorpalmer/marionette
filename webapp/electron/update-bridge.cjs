@@ -92,6 +92,15 @@ async function inspectTree(repoRoot, branch) {
 
 // Stream a child process, forwarding trimmed output lines to onLine, resolving
 // { code, tail } where tail is the last non-empty line (useful for errors).
+// npm on Windows is a .cmd shim that Node will not spawn without shell:true
+// (spawn errors out and close reports code null). Stream npm through a shell
+// on win32; everywhere else spawn it directly.
+function runNpmStreamed(args, opts, onLine) {
+  return process.platform === "win32"
+    ? runStreamed("npm.cmd", args, { ...opts, shell: true }, onLine)
+    : runStreamed("npm", args, opts, onLine);
+}
+
 function runStreamed(cmd, args, opts, onLine) {
   return new Promise((resolve) => {
     let tail = "";
@@ -273,7 +282,9 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     const pyChanged = changed.some((f) => /(^|\/)(pyproject\.toml|setup\.cfg|setup\.py|requirements[^/]*\.txt)$/.test(f));
     const nodeChanged = changed.some((f) => f === "webapp/package-lock.json" || f === "webapp/package.json");
 
-    const py = process.env.PMHARNESS_PYTHON || path.join(repoRoot, ".venv", "bin", "python");
+    const py = process.env.PMHARNESS_PYTHON || (process.platform === "win32"
+      ? path.join(repoRoot, ".venv", "Scripts", "python.exe")
+      : path.join(repoRoot, ".venv", "bin", "python"));
     // Marionette venvs are created by `uv venv`, which does NOT install pip, so
     // prefer `uv pip ...`. Fall back to `python -m pip` for an older pip-bearing
     // venv. Detected once and reused for both the app and the Puppetmaster step.
@@ -290,7 +301,7 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     }
     if (nodeChanged) {
       progress("deps", "Updating node dependencies", 0.7);
-      const npmci = await runStreamed("npm", ["ci"], { cwd: path.join(repoRoot, "webapp"), env: childEnv },
+      const npmci = await runNpmStreamed(["ci"], { cwd: path.join(repoRoot, "webapp"), env: childEnv },
         (l) => progress("deps", l, 0.8));
       if (npmci.code !== 0) return { ok: false, error: npmci.tail || "npm ci failed" };
     }
@@ -326,7 +337,7 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     // trip on a still-settling tree; the second is a near-no-op if the first won.
     const rebuild = async (attempt) => {
       progress("build", attempt === 0 ? "Rebuilding app" : "Rebuilding app (retry)", 0.1);
-      return runStreamed("npm", ["run", "build"], { cwd: path.join(repoRoot, "webapp"), env: childEnv },
+      return runNpmStreamed(["run", "build"], { cwd: path.join(repoRoot, "webapp"), env: childEnv },
         (l) => progress("build", l, 0.5));
     };
     const built = await runRebuildWithRetry(rebuild);

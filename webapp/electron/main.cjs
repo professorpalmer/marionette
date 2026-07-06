@@ -205,7 +205,8 @@ async function ensureViteDevServer(repoRoot) {
   if (viteUrl && viteProc && viteProc.exitCode === null) return viteUrl;
   if (!viteDevViable(repoRoot)) return null;
   const webappDir = path.join(repoRoot, "webapp");
-  const viteBin = path.join(webappDir, "node_modules", ".bin", "vite");
+  const viteBin = path.join(webappDir, "node_modules", ".bin",
+    process.platform === "win32" ? "vite.cmd" : "vite");
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
   try {
@@ -213,6 +214,8 @@ async function ensureViteDevServer(repoRoot) {
       cwd: webappDir,
       env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],
+      // .cmd shims on Windows only spawn through a shell (Node CVE-2024-27980 guard)
+      shell: process.platform === "win32",
     });
     viteProc.stdout.on("data", (d) => _dbg2(`[vite] ${d}`));
     viteProc.stderr.on("data", (d) => _dbg2(`[vite:err] ${d}`));
