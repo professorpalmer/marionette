@@ -75,7 +75,7 @@ def _run_command_capture(
         cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         timeout=timeout_s,
         shell=False,
         check=False,
@@ -270,7 +270,7 @@ def _codegraph_references(symbol: str, root: str, *, timeout_s: float) -> tuple[
             cwd=root,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=timeout_s,
         )
         output = (p.stdout or "").strip()

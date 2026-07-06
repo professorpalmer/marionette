@@ -296,7 +296,7 @@ def sync_agentic_registry(force: bool = False) -> dict:
         existing_models = {"models": []}
         if os.path.exists(models_path):
             try:
-                with open(models_path, 'r') as f:
+                with open(models_path, 'r', encoding="utf-8", errors="replace") as f:
                     existing_models = json.load(f)
             except Exception as e:
                 _diag("auto_registry.read_existing", e)

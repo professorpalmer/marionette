@@ -655,7 +655,7 @@ def _git_unmerged_files(repo: Optional[str]) -> list[str]:
         proc = subprocess.run(
             ["git", "-C", repo, "diff", "--name-only", "--diff-filter=U"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired):

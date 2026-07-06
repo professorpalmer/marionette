@@ -16,7 +16,7 @@ logger = logging.getLogger("pmharness.worktrees")
 def _git(repo: str, *args: str, timeout: int = 15) -> tuple[int, str, str]:
     if not repo:
         return 1, "", "No repository configured"
-    p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
 def _is_repo(repo: str) -> bool:
@@ -158,7 +158,7 @@ def _worktree_pid_cwds_posix() -> list[tuple[int, str]]:
         # -Fn emits n<cwd>, -Fp emits p<pid>; -d cwd restricts to the cwd fd.
         p = subprocess.run(
             ["lsof", "-a", "-d", "cwd", "-Fpn"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
     except Exception:
         return out_pairs
@@ -450,5 +450,5 @@ def delete_branch(repo: str, branch: str) -> None:
         return
     if not repo or not _is_repo(repo):
         return
-    subprocess.run(["git", "-C", repo, "branch", "-D", branch], capture_output=True, text=True, timeout=15)
+    subprocess.run(["git", "-C", repo, "branch", "-D", branch], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
 

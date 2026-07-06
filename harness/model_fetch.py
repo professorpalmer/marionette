@@ -46,7 +46,7 @@ def _cache_path() -> str:
 
 def _read_cache() -> dict:
     try:
-        with open(_cache_path()) as f:
+        with open(_cache_path(), encoding="utf-8", errors="replace") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -56,7 +56,7 @@ def _write_cache(data: dict) -> None:
     try:
         path = _cache_path()
         tmp = path + ".tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
         os.replace(tmp, path)
     except Exception as e:

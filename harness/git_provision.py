@@ -18,9 +18,9 @@ class GitProvisioner:
             return {"available": False, "user": None}
         try:
             # Run gh auth status
-            subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, timeout=5)
+            subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
             # Run gh api user --jq .login
-            res_user = subprocess.run(["gh", "api", "user", "--jq", ".login"], capture_output=True, text=True, timeout=5)
+            res_user = subprocess.run(["gh", "api", "user", "--jq", ".login"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
             if res_user.returncode == 0:
                 login = res_user.stdout.strip()
                 if login:
@@ -33,7 +33,7 @@ class GitProvisioner:
         if not shutil.which("gh"):
             return None
         try:
-            res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=5)
+            res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
             if res.returncode == 0:
                 tok = res.stdout.strip()
                 if tok:

@@ -2188,7 +2188,7 @@ class ConversationalSession(ToolDispatchMixin):
                 cwd=repo,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=15,
             )
             if p.returncode != 0:
@@ -3604,7 +3604,7 @@ class ConversationalSession(ToolDispatchMixin):
                                 stderr=subprocess.STDOUT,
                                 text=True,
                                 cwd=effective_repo
-                            )
+                            , encoding="utf-8", errors="replace")
                             
                             job_id = None
                             all_output_lines = []
@@ -3851,7 +3851,7 @@ class ConversationalSession(ToolDispatchMixin):
                                     stderr=subprocess.STDOUT,
                                     text=True,
                                     cwd=effective_repo
-                                )
+                                , encoding="utf-8", errors="replace")
                                 p_info = {
                                     "proc": proc,
                                     "goal": sub_goal,
@@ -3894,7 +3894,7 @@ class ConversationalSession(ToolDispatchMixin):
                                 if not job_id and state_dir:
                                     try:
                                         last_cmd = _puppetmaster_cmd("--state-dir", state_dir, "last")
-                                        last_p = subprocess.run(last_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+                                        last_p = subprocess.run(last_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", timeout=10)
                                         if last_p.returncode == 0:
                                             last_out = last_p.stdout or ""
                                             m = re.search(r"\b(job_[a-fA-F0-9]{12})\b", last_out)
@@ -4091,7 +4091,7 @@ class ConversationalSession(ToolDispatchMixin):
                             cmd,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,
-                            text=True,
+                            text=True, encoding="utf-8", errors="replace",
                             timeout=60
                         )
                         output = p.stdout or ""
@@ -4605,7 +4605,7 @@ class ConversationalSession(ToolDispatchMixin):
         try:
             r = subprocess.run(
                 ["git", "-C", abs_path, "rev-parse", "--is-inside-work-tree"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
             if r.returncode == 0 and (r.stdout or "").strip() == "true":
                 return abs_path, ""
@@ -4621,7 +4621,7 @@ class ConversationalSession(ToolDispatchMixin):
                 _puppetmaster_cmd("platform", "status"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=10
             )
             output = p.stdout or ""
@@ -4654,7 +4654,7 @@ class ConversationalSession(ToolDispatchMixin):
             art_cmd = _puppetmaster_cmd("--state-dir", state_dir, "artifacts", job_id, "--cwd", self.config.repo)
         else:
             art_cmd = _puppetmaster_cmd("artifacts", job_id, "--cwd", self.config.repo)
-        art_p = subprocess.run(art_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+        art_p = subprocess.run(art_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", timeout=60)
         art_out = art_p.stdout or ""
         try:
             artifacts = json.loads(art_out)
@@ -5769,7 +5769,7 @@ class ConversationalSession(ToolDispatchMixin):
                     cwd=cwd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                     timeout=timeout
                 )
             else:
@@ -5780,7 +5780,7 @@ class ConversationalSession(ToolDispatchMixin):
                     cwd=cwd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                     timeout=timeout
                 )
             passed = (res.returncode == 0)

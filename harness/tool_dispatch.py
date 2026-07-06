@@ -291,7 +291,7 @@ class ToolDispatchMixin:
                 cwd=self.config.repo,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=60,
             )
             output = _strip_ansi((p.stdout or "").strip())
@@ -345,7 +345,7 @@ class ToolDispatchMixin:
                     cwd=self.config.repo,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                     timeout=20
                 )
                 output = p.stdout or ""

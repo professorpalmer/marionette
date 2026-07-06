@@ -106,7 +106,7 @@ def finalize_worktree_patch(wt_path: str) -> tuple[str, list[str]]:
 
     p_diff = subprocess.run(
         ["git", "-C", wt_path, "diff", "--cached", "--no-color"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
     )
     if p_diff.returncode != 0:
         raise RuntimeError(f"git diff failed: {p_diff.stderr or p_diff.stdout}")
@@ -114,7 +114,7 @@ def finalize_worktree_patch(wt_path: str) -> tuple[str, list[str]]:
 
     p_files = subprocess.run(
         ["git", "-C", wt_path, "diff", "--cached", "--name-only"],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
     )
     files_changed = [ln.strip() for ln in p_files.stdout.splitlines() if ln.strip()]
     return patch, files_changed

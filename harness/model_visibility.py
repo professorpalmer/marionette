@@ -27,7 +27,7 @@ def _store_path() -> str:
 
 def _load() -> dict:
     try:
-        with open(_store_path()) as f:
+        with open(_store_path(), encoding="utf-8", errors="replace") as f:
             data = json.load(f)
         if isinstance(data, dict):
             return data
@@ -38,7 +38,7 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     tmp = _store_path() + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, _store_path())
 

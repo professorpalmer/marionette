@@ -24,7 +24,7 @@ class Workspace:
 
 
 def _git(repo: str, *args: str, timeout: int = 15) -> tuple[int, str, str]:
-    p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
 

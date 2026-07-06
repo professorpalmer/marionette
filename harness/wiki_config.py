@@ -35,7 +35,7 @@ def get_wiki_config() -> dict:
     if not os.path.exists(p):
         return {"api_base": "", "has_token": False}
     try:
-        with open(p) as f:
+        with open(p, encoding="utf-8", errors="replace") as f:
             d = json.load(f)
         return {"api_base": d.get("api_base", ""), "has_token": bool(d.get("owner_token"))}
     except Exception:
@@ -47,7 +47,7 @@ def set_wiki_config(api_base: str = None, owner_token: str = None) -> dict:
     cur = {}
     if os.path.exists(p):
         try:
-            with open(p) as f:
+            with open(p, encoding="utf-8", errors="replace") as f:
                 cur = json.load(f)
         except Exception:
             cur = {}
@@ -84,7 +84,7 @@ def load_wiki_config_on_startup():
     if not os.path.exists(p):
         return
     try:
-        with open(p) as f:
+        with open(p, encoding="utf-8", errors="replace") as f:
             cfg = json.load(f)
         _apply_to_env(cfg)
     except Exception:

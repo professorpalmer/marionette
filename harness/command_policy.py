@@ -222,7 +222,8 @@ def run_cancellable(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            errors="backslashreplace",
+            encoding="utf-8",
+            errors="replace",
             **group_kwargs,
         )
     except Exception as e:

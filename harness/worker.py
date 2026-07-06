@@ -623,7 +623,7 @@ class ProviderWorker:
                         cwd=wt_path,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
-                        text=True,
+                        text=True, encoding="utf-8", errors="replace",
                         timeout=test_timeout,
                         env=_test_env,
                     )

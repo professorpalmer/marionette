@@ -104,7 +104,7 @@ def test_windows_safe_command_handling_uses_args_list(monkeypatch, tmp_path):
 
     called = {}
 
-    def fake_run(cmd, *, cwd, stdout, stderr, text, timeout, shell, check):
+    def fake_run(cmd, *, cwd, stdout, stderr, text, timeout, shell, check, **kwargs):
         called["cmd_type"] = type(cmd)
         called["cmd"] = cmd
         called["shell"] = shell

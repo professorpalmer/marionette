@@ -122,7 +122,7 @@ class StdioMcpClient:
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, env=full_env, cwd=self.cwd,
                 text=True, bufsize=1,
-            )
+             encoding="utf-8", errors="replace")
         except FileNotFoundError as e:
             raise McpError(f"MCP server '{self.name}': command not found: {self.command} ({e})")
         # Drain stderr on a background thread so a chatty server cannot fill the OS

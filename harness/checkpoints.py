@@ -42,7 +42,7 @@ class CheckpointStore:
                     ["git", "rev-parse", "--is-inside-work-tree"],
                     cwd=self.repo,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                     timeout=CHECKPOINT_GIT_TIMEOUT,
                 )
                 if res.returncode == 0 and res.stdout.strip() == "true":
@@ -73,7 +73,7 @@ class CheckpointStore:
                 ["git", "rev-parse", "--git-dir"],
                 cwd=self.repo,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 check=True,
                 timeout=CHECKPOINT_GIT_TIMEOUT,
             )
@@ -84,7 +84,7 @@ class CheckpointStore:
                 ["git", "rev-parse", "--verify", "HEAD"],
                 cwd=self.repo,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             head_sha = head_res.stdout.strip() if head_res.returncode == 0 else None
@@ -111,7 +111,7 @@ class CheckpointStore:
                 ["git", "write-tree"],
                 cwd=self.repo,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 env=env,
                 check=True,
                 timeout=CHECKPOINT_GIT_TIMEOUT,
@@ -133,7 +133,7 @@ class CheckpointStore:
                 cmd,
                 cwd=self.repo,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 check=True,
                 timeout=CHECKPOINT_GIT_TIMEOUT,
             )
@@ -214,7 +214,7 @@ class CheckpointStore:
                 ["git", "checkout", checkpoint_id, "--", "."],
                 cwd=self.repo,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             if checkout_res.returncode != 0:
@@ -281,7 +281,7 @@ class CheckpointStore:
                 ["git", "diff", "--name-only", checkpoint_id, "--", "."],
                 cwd=self.repo,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             modified_candidates = set()
@@ -308,7 +308,7 @@ class CheckpointStore:
                 ["git", "diff", checkpoint_id, "--", "."],
                 cwd=self.repo,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=CHECKPOINT_GIT_TIMEOUT,
             )
             
@@ -340,7 +340,7 @@ class CheckpointStore:
             valid = self._filter_existing_commits(raw)
             valid = valid[-50:]
             temp_file = str(self._meta_file) + ".tmp"
-            with open(temp_file, "w") as f:
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(valid, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
@@ -362,7 +362,7 @@ class CheckpointStore:
                 cwd=self.repo,
                 input="\n".join(f"{i}^{{commit}}" for i in ids),
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=CHECKPOINT_GIT_TIMEOUT,
             )
         except Exception:
@@ -380,7 +380,7 @@ class CheckpointStore:
         if not self._meta_file or not self._meta_file.exists():
             return []
         try:
-            with open(self._meta_file, "r") as f:
+            with open(self._meta_file, "r", encoding="utf-8", errors="replace") as f:
                 data = json.load(f)
                 if isinstance(data, list):
                     return data
@@ -410,7 +410,7 @@ class CheckpointStore:
                 checkpoints = checkpoints[-50:]
 
             temp_file = str(self._meta_file) + ".tmp"
-            with open(temp_file, "w") as f:
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(checkpoints, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
@@ -425,7 +425,7 @@ class CheckpointStore:
                 ["git", "ls-tree", "-r", "--name-only", commit_sha],
                 cwd=self.repo,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 check=True,
                 timeout=CHECKPOINT_GIT_TIMEOUT,
             )
@@ -439,7 +439,7 @@ class CheckpointStore:
                 ["git", "ls-files", "-c", "-o", "--exclude-standard"],
                 cwd=self.repo,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 check=True,
                 timeout=CHECKPOINT_GIT_TIMEOUT,
             )

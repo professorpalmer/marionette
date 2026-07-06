@@ -394,7 +394,7 @@ def _persist_env_setting(env_var: str, value: str) -> None:
         data = {}
         if os.path.exists(path):
             try:
-                with open(path) as f:
+                with open(path, encoding="utf-8", errors="replace") as f:
                     data = json.load(f)
             except Exception:
                 data = {}
@@ -412,7 +412,7 @@ def _load_env_settings() -> None:
     if not os.path.exists(path):
         return
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             data = json.load(f)
         if isinstance(data, dict):
             for k, v in data.items():
@@ -452,7 +452,7 @@ def _save_workspace_driver(repo: str, driver: str) -> None:
         data = {}
         if os.path.exists(path):
             try:
-                with open(path) as f:
+                with open(path, encoding="utf-8", errors="replace") as f:
                     data = json.load(f)
             except Exception:
                 data = {}
@@ -475,7 +475,7 @@ def _get_workspace_driver(repo: str):
     if not os.path.exists(path):
         return None
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             data = json.load(f)
         if repo:
             saved = data.get(os.path.realpath(repo))
@@ -495,7 +495,7 @@ def _record_recent_workspace(target_repo: str) -> list:
         recents = []
         if os.path.exists(ws_json_path):
             try:
-                with open(ws_json_path) as f:
+                with open(ws_json_path, encoding="utf-8", errors="replace") as f:
                     recents = json.load(f).get("recents", []) or []
             except Exception:
                 recents = []
@@ -535,7 +535,7 @@ def _record_recent_workspace(target_repo: str) -> list:
         # Fallback to get recents if possible
         try:
             if os.path.exists(ws_json_path):
-                with open(ws_json_path) as f:
+                with open(ws_json_path, encoding="utf-8", errors="replace") as f:
                     return json.load(f).get("recents", []) or []
         except Exception:
             pass
@@ -552,7 +552,7 @@ def _forget_recent_workspace(forget_path: str) -> list:
         repo = ""
         if os.path.exists(ws_json_path):
             try:
-                with open(ws_json_path) as f:
+                with open(ws_json_path, encoding="utf-8", errors="replace") as f:
                     data = json.load(f)
                     recents = data.get("recents", []) or []
                     repo = data.get("repo", "")
@@ -595,7 +595,7 @@ def _forget_recent_workspace(forget_path: str) -> list:
         # Fallback to get recents if possible
         try:
             if os.path.exists(ws_json_path):
-                with open(ws_json_path) as f:
+                with open(ws_json_path, encoding="utf-8", errors="replace") as f:
                     return json.load(f).get("recents", []) or []
         except Exception:
             pass
@@ -604,7 +604,7 @@ def _forget_recent_workspace(forget_path: str) -> list:
 _ws_boot_path = _workspace_json_path()
 if not os.environ.get("HARNESS_REPO") and os.path.exists(_ws_boot_path):
     try:
-        with open(_ws_boot_path, "r") as _ws_f:
+        with open(_ws_boot_path, "r", encoding="utf-8", errors="replace") as _ws_f:
             _ws_data = json.load(_ws_f)
             # Only adopt a persisted repo that still exists on disk. A stale or
             # corrupted workspace.json (e.g. a vanished dir) must not wedge boot.
@@ -873,7 +873,7 @@ _TOKEN = os.environ.get("HARNESS_TOKEN") or _secrets.token_hex(16)
 _TOKEN_FILE = os.path.join(_state_home(), "token")
 try:
     os.makedirs(os.path.dirname(_TOKEN_FILE), exist_ok=True)
-    with open(_TOKEN_FILE, "w") as _tf2:
+    with open(_TOKEN_FILE, "w", encoding="utf-8") as _tf2:
         _tf2.write(_TOKEN)
     restrict_to_owner(_TOKEN_FILE)
 except OSError:
@@ -1429,7 +1429,10 @@ class Handler(BaseHTTPRequestHandler):
                 import signal as _signal
                 _t.sleep(0.4)  # let the 200 flush before we exit
                 try:
-                    os.kill(os.getpid(), _signal.SIGTERM)
+                    if os.name == "nt":
+                        os._exit(0)
+                    else:
+                        os.kill(os.getpid(), _signal.SIGTERM)
                 except Exception:
                     os._exit(0)
             threading.Thread(target=_delayed_self_terminate, daemon=True).start()
@@ -2395,7 +2398,7 @@ class Handler(BaseHTTPRequestHandler):
             current_data = {}
             if os.path.exists(dest_path):
                 try:
-                    with open(dest_path) as f:
+                    with open(dest_path, encoding="utf-8", errors="replace") as f:
                         current_data = json.load(f)
                 except Exception as e:
                     _diag("server.routing_overrides_load", e)
@@ -2924,7 +2927,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 _ws_path = _workspace_json_path()
                 if os.path.exists(_ws_path):
-                    with open(_ws_path) as f:
+                    with open(_ws_path, encoding="utf-8", errors="replace") as f:
                         recents = json.load(f).get("recents", []) or []
             except Exception:
                 recents = []
@@ -3523,7 +3526,7 @@ class Handler(BaseHTTPRequestHandler):
             path = get_models_file_path()
             if os.path.exists(path):
                 try:
-                    with open(path) as f:
+                    with open(path, encoding="utf-8", errors="replace") as f:
                         return self._send(200, f.read())
                 except Exception as e:
                     return self._send(500, json.dumps({"error": f"Failed to read registry: {str(e)}"}))
@@ -3536,7 +3539,7 @@ class Handler(BaseHTTPRequestHandler):
             policy = "balanced"
             if os.path.exists(path):
                 try:
-                    with open(path) as f:
+                    with open(path, encoding="utf-8", errors="replace") as f:
                         data = json.load(f)
                         overrides = data.get("overrides", {})
                         policy = data.get("routing_policy", "balanced")

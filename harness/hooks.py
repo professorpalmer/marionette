@@ -69,7 +69,7 @@ def run_hooks(event: str, context: dict) -> None:
                 shell_wrapper,
                 input=context_json,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=15,
                 env=env
             )

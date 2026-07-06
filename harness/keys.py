@@ -50,7 +50,7 @@ def _read_keys() -> dict:
     if not os.path.exists(path):
         return {}
     try:
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding="utf-8", errors="replace") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -78,7 +78,7 @@ def get_disconnected() -> set:
     if not os.path.exists(path):
         return set()
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             data = json.load(f)
         return set(data) if isinstance(data, list) else set()
     except Exception:
@@ -90,7 +90,7 @@ def _write_disconnected(names: set) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix="disc_")
     try:
-        with os.fdopen(tmp_fd, "w") as f:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(sorted(names), f)
         os.replace(tmp_path, path)
     except Exception:
@@ -245,7 +245,7 @@ def load_api_keys_on_startup(reach: str):
         _envvar = get_env_var_for_reach(reach)
         if _envvar:
             try:
-                with open(_keyfile) as _kf:
+                with open(_keyfile, encoding="utf-8", errors="replace") as _kf:
                     os.environ[_envvar] = _kf.read().strip()
             except Exception:
                 pass
