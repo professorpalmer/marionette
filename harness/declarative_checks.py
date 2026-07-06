@@ -2,8 +2,9 @@ from __future__ import annotations
 
 """Declarative pre/post checks for harness worker tasks (Shepherd-style v1).
 
-Specs live as JSON files under ``{repo}/.marionette/checks/``. v1 supports
-``shell`` and ``file`` kinds only; ``artifact`` checks are deferred.
+Specs live as JSON files under ``{repo}/.marionette/checks/`` and optionally
+``{state_dir}/checks/``. v1 supports ``shell``, ``file``, and post-only
+``artifact`` kinds.
 """
 import json
 import os
@@ -14,7 +15,7 @@ from typing import Any, List, Optional, Union
 
 MAX_OUTPUT = 4000
 
-_VALID_KINDS = frozenset({"shell", "file"})
+_VALID_KINDS = frozenset({"shell", "file", "artifact"})
 _VALID_PHASES = frozenset({"pre", "post"})
 _VALID_ON_FAIL = frozenset({"blocked", "failed", "warn"})
 
@@ -31,6 +32,8 @@ class CheckSpec:
     exists: Optional[bool] = None
     contains: str = ""
     not_contains: str = ""
+    artifact_type: str = ""
+    min_count: int = 1
 
 
 @dataclass
@@ -89,6 +92,28 @@ def _parse_check_item(raw: dict, phase: str) -> CheckSpec:
             on_fail=on_fail,
             cmd=cmd,
             timeout_s=timeout_s,
+        )
+
+    if kind == "artifact":
+        if phase == "pre":
+            raise ValueError(
+                f"check {check_id!r}: artifact checks are post-only"
+            )
+        expect = raw.get("expect")
+        if not isinstance(expect, dict):
+            raise ValueError(f"check {check_id!r}: artifact check requires expect")
+        artifact_type = str(expect.get("type") or "").strip()
+        if not artifact_type:
+            raise ValueError(f"check {check_id!r}: artifact check requires expect.type")
+        min_count_raw = expect.get("min_count", 1)
+        min_count = int(min_count_raw) if min_count_raw is not None else 1
+        return CheckSpec(
+            id=check_id,
+            kind=kind,
+            phase=phase,
+            on_fail=on_fail,
+            artifact_type=artifact_type,
+            min_count=max(1, min_count),
         )
 
     rel_path = str(raw.get("path") or "").strip()
@@ -201,6 +226,8 @@ def run_checks(
     phase: str,
     timeout_default: int = 30,
     cancel_event=None,
+    state_dir: str = "",
+    job_id: str = "",
 ) -> List[CheckResult]:
     """Run checks for one phase. Never raises."""
     results: List[CheckResult] = []
@@ -221,6 +248,8 @@ def run_checks(
             continue
         if spec.kind == "shell":
             results.append(_run_shell_check(spec, repo, timeout_default))
+        elif spec.kind == "artifact":
+            results.append(_run_artifact_check(spec, state_dir, job_id))
         else:
             results.append(_run_file_check(spec, repo))
     return results
@@ -257,6 +286,52 @@ def _run_shell_check(spec: CheckSpec, repo: str, timeout_default: int) -> CheckR
             out = out.decode("utf-8", errors="replace")
         passed = False
         output = f"{out}\n[check timed out after {timeout} seconds]"
+    except Exception as exc:
+        passed = False
+        output = str(exc)
+    duration_ms = int((time.time() - t0) * 1000)
+    return CheckResult(
+        id=spec.id,
+        phase=spec.phase,
+        passed=passed,
+        output=_truncate(output),
+        duration_ms=duration_ms,
+        on_fail=spec.on_fail,
+    )
+
+
+def _run_artifact_check(spec: CheckSpec, state_dir: str, job_id: str) -> CheckResult:
+    t0 = time.time()
+    if not state_dir or not job_id:
+        duration_ms = int((time.time() - t0) * 1000)
+        return CheckResult(
+            id=spec.id,
+            phase=spec.phase,
+            passed=False,
+            output="artifact check requires a job context",
+            duration_ms=duration_ms,
+            on_fail=spec.on_fail,
+        )
+    try:
+        from puppetmaster.store_factory import create_store
+
+        store = create_store("sqlite", state_dir)
+        store.init()
+        artifacts = store.list_artifacts(job_id)
+        expected = spec.artifact_type.casefold()
+        count = 0
+        for art in artifacts:
+            type_name = getattr(art.type, "name", str(art.type))
+            if str(type_name).casefold() == expected:
+                count += 1
+        passed = count >= spec.min_count
+        if passed:
+            output = f"found {count} artifact(s) of type {spec.artifact_type!r}"
+        else:
+            output = (
+                f"expected at least {spec.min_count} artifact(s) of type "
+                f"{spec.artifact_type!r}, found {count}"
+            )
     except Exception as exc:
         passed = False
         output = str(exc)
@@ -308,6 +383,18 @@ def _run_file_check(spec: CheckSpec, repo: str) -> CheckResult:
         duration_ms=duration_ms,
         on_fail=spec.on_fail,
     )
+
+
+def failed_checks_summary_line_from_dicts(checks: list) -> str:
+    """Compact one-liner for failed checks (session/UI surfacing)."""
+    failed_ids = [
+        str(c.get("id", ""))
+        for c in (checks or [])
+        if c.get("id") and not c.get("passed", True)
+    ]
+    if not failed_ids:
+        return ""
+    return f"Declarative checks: {len(failed_ids)} failed ({', '.join(failed_ids)})"
 
 
 def format_check_failure(results: List[CheckResult]) -> str:

@@ -2,9 +2,8 @@
 
 ## Scope
 
-Shepherd-style declarative checks for harness worker tasks. v1 covers ``shell``
-and ``file`` kinds only; ``artifact`` checks are deferred (Puppetmaster store
-integration is a later tranche).
+Shepherd-style declarative checks for harness worker tasks. v1 covers ``shell``,
+``file``, and post-only ``artifact`` kinds (Puppetmaster store queries by job id).
 
 ## Behavior
 
@@ -14,8 +13,9 @@ integration is a later tranche).
   ``find_check_specs``, ``run_checks`` (never raises; 4000-char output cap).
 - **Enforcement:** ``ProviderWorker`` in ``harness/worker.py`` runs ``pre``
   checks on the worktree before ``run_auto``; ``on_fail=blocked`` aborts the
-  worker. ``post`` checks run after the turn; ``on_fail=failed`` marks the
-  worker result failed. Results attach to ``WorkerResult.declarative_checks``.
+  worker. ``post`` checks run after the turn (including ``artifact`` checks that
+  query the Puppetmaster store for the worker's ``job_id``); ``on_fail=failed``
+  marks the worker result failed. Results attach to ``WorkerResult.declarative_checks``.
 - **Parse errors:** malformed spec files produce ``warn`` results via
   ``discover_check_parse_warnings``; they never crash the worker.
 
@@ -27,6 +27,6 @@ python -m pytest tests/test_declarative_checks.py -q
 
 ## Non-goals honored
 
-- No ``artifact`` check kind, YAML support, or Puppetmaster-side enforcement.
+- No YAML support or Puppetmaster-side enforcement beyond artifact store reads.
 - Interactive pilot ``harness/verify.py`` auto-verify unchanged.
 - No UI spec editor.

@@ -502,6 +502,8 @@ class ProviderWorker:
                     find_check_specs(self.repo),
                     repo=wt_path,
                     phase="post",
+                    state_dir=base_cfg.state_dir,
+                    job_id=self.job_id,
                 )
                 check_results.extend(post_results)
                 post_failed = any(

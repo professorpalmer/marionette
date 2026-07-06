@@ -72,6 +72,6 @@ session-level overrides in `{state_dir}/checks/` for harness-only runs.
 - Mutating checks (deploy, push, apply patch) — read-only assertions only.
 - UI spec editor; file-based specs only at first ship.
 - Cross-repo check inheritance or a global check marketplace.
-- **`artifact` check kind** — deferred in v1 (`harness/declarative_checks.py` ships
-  `shell` and `file` only; Puppetmaster store queries land in a follow-on tranche).
+- **`artifact` check kind in pre phase** — artifact checks are post-only (job
+  artifacts do not exist before the worker runs).
 - **YAML spec format** — v1 uses JSON only (no new rig dependencies).

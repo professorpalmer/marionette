@@ -16,6 +16,8 @@ from harness.declarative_checks import (
 )
 from harness.conversation import ConversationalSession
 from harness.worker import ProviderWorker
+from puppetmaster.models import Artifact, ArtifactType
+from puppetmaster.store_factory import create_store
 
 
 def _git_repo():
@@ -61,7 +63,7 @@ def test_load_valid_spec_round_trip(tmp_path):
 
 def test_load_unknown_kind_rejected():
     with pytest.raises(ValueError, match="unknown kind"):
-        load_checks({"pre": [{"id": "x", "kind": "artifact", "on_fail": "warn"}]})
+        load_checks({"pre": [{"id": "x", "kind": "yaml", "on_fail": "warn"}]})
 
 
 def test_load_traversal_path_rejected():
@@ -182,6 +184,117 @@ def test_find_check_specs_sorted(tmp_path):
     )
     specs = find_check_specs(str(tmp_path))
     assert [s.id for s in specs] == ["a", "b"]
+
+
+def test_load_artifact_expect_round_trip():
+    spec = {
+        "post": [
+            {
+                "id": "patch-present",
+                "kind": "artifact",
+                "on_fail": "failed",
+                "expect": {"type": "PATCH", "min_count": 1},
+            }
+        ]
+    }
+    loaded = load_checks(spec)
+    assert len(loaded) == 1
+    assert loaded[0].kind == "artifact"
+    assert loaded[0].artifact_type == "PATCH"
+    assert loaded[0].min_count == 1
+    assert loaded[0].phase == "post"
+
+
+def test_load_artifact_missing_expect_type_rejected():
+    with pytest.raises(ValueError, match="expect.type"):
+        load_checks(
+            {
+                "post": [
+                    {
+                        "id": "bad",
+                        "kind": "artifact",
+                        "on_fail": "failed",
+                        "expect": {"min_count": 1},
+                    }
+                ]
+            }
+        )
+
+
+def test_load_artifact_pre_phase_rejected():
+    with pytest.raises(ValueError, match="post-only"):
+        load_checks(
+            {
+                "pre": [
+                    {
+                        "id": "bad",
+                        "kind": "artifact",
+                        "on_fail": "warn",
+                        "expect": {"type": "PATCH"},
+                    }
+                ]
+            }
+        )
+
+
+def test_run_artifact_without_job_context():
+    spec = CheckSpec(
+        id="patch-present",
+        kind="artifact",
+        phase="post",
+        on_fail="failed",
+        artifact_type="PATCH",
+        min_count=1,
+    )
+    results = run_checks([spec], repo="", phase="post")
+    assert len(results) == 1
+    assert results[0].passed is False
+    assert "job context" in results[0].output
+
+
+def test_run_artifact_with_store(tmp_path):
+    state_dir = str(tmp_path / "state")
+    os.makedirs(state_dir, exist_ok=True)
+    store = create_store("sqlite", state_dir)
+    store.init()
+    job = store.create_job("artifact check job")
+    artifact = Artifact(
+        job_id=job.id,
+        task_id="task_1",
+        type=ArtifactType.FINDING,
+        created_by="worker-alpha",
+        payload={"claim": "ok"},
+        confidence=0.9,
+        evidence=["tests/test_foo.py"],
+    )
+    store.save_artifact(artifact)
+
+    pass_spec = CheckSpec(
+        id="finding-present",
+        kind="artifact",
+        phase="post",
+        on_fail="failed",
+        artifact_type="FINDING",
+        min_count=1,
+    )
+    fail_spec = CheckSpec(
+        id="patch-missing",
+        kind="artifact",
+        phase="post",
+        on_fail="failed",
+        artifact_type="PATCH",
+        min_count=1,
+    )
+    results = run_checks(
+        [pass_spec, fail_spec],
+        repo="",
+        phase="post",
+        state_dir=state_dir,
+        job_id=job.id,
+    )
+    by_id = {r.id: r for r in results}
+    assert by_id["finding-present"].passed is True
+    assert by_id["patch-missing"].passed is False
 
 
 def test_blocked_pre_check_prevents_worker_turn(monkeypatch):
