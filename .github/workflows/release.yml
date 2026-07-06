@@ -13,7 +13,34 @@ permissions:
   contents: write
 
 jobs:
+  # Hard gate: a tag build must prove the suite green before any installer is
+  # built or uploaded. Releases can never ship from a red tree.
+  test-gate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        # Floor (3.9, the requires-python minimum) + the dev interpreter (3.11).
+        python-version: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install (rig + dev extras + Puppetmaster from PyPI)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" puppetmaster-ai
+
+      - name: Run the offline test suite
+        run: python -m pytest -q -p no:cacheprovider
+
   build:
+    needs: test-gate
     strategy:
       fail-fast: false
       matrix:

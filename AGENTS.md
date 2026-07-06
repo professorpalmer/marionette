@@ -14,6 +14,11 @@ Internal-first research rig. Conventions:
   Puppetmaster's free local adapter for deterministic ground truth.
 - Tests before claiming done: `.venv/bin/python -m pytest -q`. The offline E2E
   test drives real Puppetmaster and must stay green with zero API keys.
+- Releases only from green CI: never push a release tag until the `tests`
+  workflow is green on the target commit (both the 3.9 floor and 3.11 legs).
+  The release workflow re-runs the suite as a hard gate before building
+  installers, but do not rely on it -- check first, tag second. Local tests
+  pass on the dev interpreter only; CI is what proves the 3.9 floor.
 - Never commit keys or `results/*.sqlite`.
 
 <!-- puppetmaster:rules:begin -->

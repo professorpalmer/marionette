@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import tempfile
 import urllib.request
 import urllib.error
@@ -45,10 +46,13 @@ def test_ergonomics_workspace_files():
         }
 
         # 2. Open a temporary workspace and write some files.
-        # ignore_cleanup_errors: opening the workspace kicks off async probes
-        # (codegraph status) that can briefly hold the dir open on Windows,
-        # where an in-use file turns rmtree into a PermissionError.
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        # Manual mkdtemp + best-effort rmtree instead of TemporaryDirectory:
+        # opening the workspace kicks off async probes (codegraph status) that
+        # can briefly hold the dir open on Windows, where an in-use file turns
+        # cleanup into a PermissionError. (TemporaryDirectory's
+        # ignore_cleanup_errors needs 3.10; CI still runs 3.9.)
+        tmpdir = tempfile.mkdtemp()
+        try:
             real_tmp = os.path.realpath(tmpdir)
             # init git repo
             subprocess.run(["git", "init", "-b", "main", real_tmp], capture_output=True, check=True)
@@ -82,6 +86,8 @@ def test_ergonomics_workspace_files():
             # node_modules and .git files must be skipped
             assert not any(f.startswith("node_modules") for f in files)
             assert not any(f.startswith(".git") for f in files)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     finally:
         httpd.shutdown()

@@ -1,3 +1,6 @@
+# PEP 604 unions (str | None) in signatures must stay lazy on Python 3.9.
+from __future__ import annotations
+
 import os
 import re
 import sys

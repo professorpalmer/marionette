@@ -1,6 +1,7 @@
 """Tests for the open-workspace runtime flow and its REST endpoints."""
 import json
 import os
+import shutil
 import tempfile
 import threading
 import urllib.request
@@ -55,10 +56,13 @@ def test_open_workspace_endpoints():
             assert "existing directory" in resp_body["error"]
 
         # 3. Create a temp directory with a git repository.
-        # ignore_cleanup_errors: opening the workspace kicks off async probes
-        # (codegraph status) that can briefly hold the dir on Windows, where an
-        # in-use file makes rmtree raise instead of succeeding as on POSIX.
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        # Manual mkdtemp + best-effort rmtree instead of TemporaryDirectory:
+        # opening the workspace kicks off async probes (codegraph status) that
+        # can briefly hold the dir on Windows, where an in-use file makes
+        # cleanup raise. (TemporaryDirectory's ignore_cleanup_errors needs 3.10;
+        # CI still runs 3.9.)
+        tmpdir = tempfile.mkdtemp()
+        try:
             real_tmp = os.path.realpath(tmpdir)
             # init git repo
             subprocess.run(["git", "init", "-b", "main", real_tmp], capture_output=True, check=True)
@@ -89,6 +93,8 @@ def test_open_workspace_endpoints():
             assert data_get["is_git"] is True
             assert data_get["branch"] == "main"
             assert "codegraph_status" in data_get
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     finally:
         httpd.shutdown()
