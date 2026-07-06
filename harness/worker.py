@@ -427,7 +427,9 @@ class ProviderWorker:
             check_results: list = []
             from harness.declarative_checks import declarative_checks_enabled
 
-            if declarative_checks_enabled(self.repo):
+            base_cfg = HarnessConfig.from_env()
+
+            if declarative_checks_enabled(self.repo, base_cfg.state_dir):
                 from harness.declarative_checks import (
                     discover_check_parse_warnings,
                     find_check_specs,
@@ -436,7 +438,7 @@ class ProviderWorker:
                     results_to_dicts,
                 )
 
-                specs = find_check_specs(self.repo)
+                specs = find_check_specs(self.repo, base_cfg.state_dir)
                 check_results.extend(discover_check_parse_warnings(self.repo))
                 pre_results = run_checks(specs, repo=wt_path, phase="pre")
                 check_results.extend(pre_results)
@@ -454,7 +456,6 @@ class ProviderWorker:
                     )
 
             # 2. Build worker HarnessConfig
-            base_cfg = HarnessConfig.from_env()
             worker_cfg = HarnessConfig(
                 driver=self.driver or base_cfg.driver,
                 reach=self.reach or base_cfg.reach,
@@ -495,11 +496,11 @@ class ProviderWorker:
                     events.append(ev)
 
             post_failed = False
-            if declarative_checks_enabled(self.repo):
+            if declarative_checks_enabled(self.repo, base_cfg.state_dir):
                 from harness.declarative_checks import find_check_specs, run_checks
 
                 post_results = run_checks(
-                    find_check_specs(self.repo),
+                    find_check_specs(self.repo, base_cfg.state_dir),
                     repo=wt_path,
                     phase="post",
                     state_dir=base_cfg.state_dir,

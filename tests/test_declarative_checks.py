@@ -9,6 +9,7 @@ import pytest
 
 from harness.declarative_checks import (
     CheckSpec,
+    declarative_checks_enabled,
     discover_check_parse_warnings,
     find_check_specs,
     load_checks,
@@ -378,46 +379,86 @@ def test_failed_post_check_surfaces_in_session_summary(monkeypatch):
         shutil.rmtree(repo_dir, ignore_errors=True)
 
 
-def test_failed_post_check_surfaces_in_session_summary(monkeypatch):
-    repo_dir = _git_repo()
-    try:
-        checks_dir = os.path.join(repo_dir, ".marionette", "checks")
-        os.makedirs(checks_dir, exist_ok=True)
-        spec = {
-            "post": [
-                {
-                    "id": "must-have-readme",
-                    "kind": "file",
-                    "path": "README.md",
-                    "exists": True,
-                    "on_fail": "failed",
-                }
-            ]
-        }
-        with open(os.path.join(checks_dir, "post.json"), "w", encoding="utf-8") as f:
-            json.dump(spec, f)
+def test_session_level_check_specs_only(tmp_path):
+    state_dir = tmp_path / "state"
+    checks_dir = state_dir / "checks"
+    checks_dir.mkdir(parents=True)
+    (checks_dir / "session.json").write_text(
+        json.dumps(
+            {
+                "pre": [
+                    {
+                        "id": "session-only",
+                        "kind": "shell",
+                        "cmd": "python -c \"import sys; sys.exit(0)\"",
+                        "on_fail": "warn",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert declarative_checks_enabled(str(repo), str(state_dir)) is True
+    specs = find_check_specs(str(repo), str(state_dir))
+    assert [s.id for s in specs] == ["session-only"]
+    results = run_checks(specs, repo=str(repo), phase="pre")
+    assert len(results) == 1
+    assert results[0].passed is True
 
-        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
-            yield from ()
 
-        def mock_finalize(_wt_path):
-            return "--- a/hello.txt\n+++ b/hello.txt\n", ["hello.txt"]
+def test_repo_and_session_check_specs_both_run(tmp_path):
+    repo = tmp_path / "repo"
+    repo_checks = repo / ".marionette" / "checks"
+    repo_checks.mkdir(parents=True)
+    (repo_checks / "repo.json").write_text(
+        json.dumps(
+            {
+                "pre": [
+                    {
+                        "id": "repo-check",
+                        "kind": "shell",
+                        "cmd": "python -c \"import sys; sys.exit(0)\"",
+                        "on_fail": "warn",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    state_dir = tmp_path / "state"
+    session_checks = state_dir / "checks"
+    session_checks.mkdir(parents=True)
+    (session_checks / "session.json").write_text(
+        json.dumps(
+            {
+                "pre": [
+                    {
+                        "id": "session-check",
+                        "kind": "shell",
+                        "cmd": "python -c \"import sys; sys.exit(0)\"",
+                        "on_fail": "warn",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    specs = find_check_specs(str(repo), str(state_dir))
+    assert [s.id for s in specs] == ["repo-check", "session-check"]
+    results = run_checks(specs, repo=str(repo), phase="pre")
+    assert {r.id for r in results} == {"repo-check", "session-check"}
 
-        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto)
-        monkeypatch.setattr(
-            "harness.edit_engines.finalize_worktree_patch",
-            mock_finalize,
-        )
 
-        worker = ProviderWorker(repo=repo_dir, goal="touch readme")
-        res = worker.run()
-        assert res.ok is False
-        assert any(c.get("id") == "must-have-readme" for c in res.declarative_checks)
-
-        summary = append_failed_declarative_checks_summary(
-            res.summary or res.error or "",
-            res.declarative_checks,
-        )
-        assert "Declarative checks: 1 failed (must-have-readme)" in summary
-    finally:
-        shutil.rmtree(repo_dir, ignore_errors=True)
+def test_kill_switch_disables_repo_and_session_specs(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo_checks = repo / ".marionette" / "checks"
+    repo_checks.mkdir(parents=True)
+    (repo_checks / "repo.json").write_text("{}", encoding="utf-8")
+    state_dir = tmp_path / "state"
+    session_checks = state_dir / "checks"
+    session_checks.mkdir(parents=True)
+    (session_checks / "session.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HARNESS_DECLARATIVE_CHECKS", "0")
+    assert declarative_checks_enabled(str(repo), str(state_dir)) is False

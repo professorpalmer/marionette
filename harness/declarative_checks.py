@@ -164,20 +164,30 @@ def load_checks(source: Union[str, dict]) -> List[CheckSpec]:
     return specs
 
 
-def find_check_specs(repo: str) -> List[CheckSpec]:
-    """Read every ``*.json`` in ``{repo}/.marionette/checks/`` (sorted)."""
-    checks_dir = os.path.join(repo, ".marionette", "checks")
-    if not os.path.isdir(checks_dir):
-        return []
+def find_check_specs(repo: str, state_dir: str = "") -> List[CheckSpec]:
+    """Read repo and optional session-level ``*.json`` check specs (sorted)."""
     specs: List[CheckSpec] = []
-    for name in sorted(os.listdir(checks_dir)):
-        if not name.endswith(".json"):
-            continue
-        path = os.path.join(checks_dir, name)
-        try:
-            specs.extend(load_checks(path))
-        except Exception:
-            continue
+    checks_dir = os.path.join(repo, ".marionette", "checks")
+    if os.path.isdir(checks_dir):
+        for name in sorted(os.listdir(checks_dir)):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(checks_dir, name)
+            try:
+                specs.extend(load_checks(path))
+            except Exception:
+                continue
+    if state_dir:
+        session_checks_dir = os.path.join(state_dir, "checks")
+        if os.path.isdir(session_checks_dir):
+            for name in sorted(os.listdir(session_checks_dir)):
+                if not name.endswith(".json"):
+                    continue
+                path = os.path.join(session_checks_dir, name)
+                try:
+                    specs.extend(load_checks(path))
+                except Exception:
+                    continue
     return specs
 
 
@@ -207,7 +217,7 @@ def discover_check_parse_warnings(repo: str) -> List[CheckResult]:
     return warnings
 
 
-def declarative_checks_enabled(repo: str) -> bool:
+def declarative_checks_enabled(repo: str, state_dir: str = "") -> bool:
     if os.environ.get("HARNESS_DECLARATIVE_CHECKS", "").strip().lower() in (
         "0",
         "false",
@@ -215,8 +225,14 @@ def declarative_checks_enabled(repo: str) -> bool:
         "no",
     ):
         return False
-    checks_dir = os.path.join(repo, ".marionette", "checks")
-    return os.path.isdir(checks_dir)
+    repo_checks_dir = os.path.join(repo, ".marionette", "checks")
+    if os.path.isdir(repo_checks_dir):
+        return True
+    if state_dir:
+        session_checks_dir = os.path.join(state_dir, "checks")
+        if os.path.isdir(session_checks_dir):
+            return True
+    return False
 
 
 def run_checks(
