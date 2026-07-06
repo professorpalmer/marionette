@@ -353,6 +353,14 @@ class ConversationalSession:
             system = system + ws_rules
         # the running transcript with the pilot (conversation memory)
         self._history: list[dict] = [{"role": "system", "content": system}]
+        # Per-turn context-token estimate cache. _estimate_context_tokens is
+        # called on the compaction hot path and elsewhere; walking the whole
+        # history on every call is O(n) work repeated many times per turn.
+        # The cache is keyed on len(self._history) so any append/replace that
+        # changes length auto-invalidates. For in-place same-length rebuilds
+        # (e.g. _sanitize_tool_pairs) we call _invalidate_ctx_cache() explicitly.
+        self._ctx_token_cache: Optional[int] = None
+        self._ctx_token_cache_len: int = -1
         # parallel clean transcript for rendering in UI
         self._display_transcript: list[dict] = []
         # tracking background swarm job IDs for the session
@@ -827,6 +835,19 @@ class ConversationalSession:
             
         return (total_chars // 4) + total_overhead
 
+    def _invalidate_ctx_cache(self) -> None:
+        """Invalidate the cached context-token estimate.
+
+        Called from mutation points that rebuild/replace history IN PLACE at
+        the same length (where the len-keyed cache would otherwise stale-read).
+        Guarded: never raises.
+        """
+        try:
+            self._ctx_token_cache = None
+            self._ctx_token_cache_len = -1
+        except Exception:
+            pass
+
     def _estimate_context_tokens(self) -> int:
         # Prefer the driver's REAL last prompt-token count when available; the
         # chars//4 heuristic (below) can UNDER-count code / tool-arg-heavy
@@ -838,7 +859,24 @@ class ConversationalSession:
         # heuristic can be the larger (fresher) number. Taking the greater of
         # the two biases toward safety -- we never under-estimate, only ever
         # compact slightly early with a small safety margin.
-        heuristic = self._estimate_context_tokens_for_list(self._history)
+        #
+        # HOT PATH: this method is called on every compaction check and on
+        # every context-usage query, and the heuristic walks the WHOLE history.
+        # Cache the heuristic value keyed on len(self._history); any length
+        # change invalidates. In-place same-length rebuilds call
+        # _invalidate_ctx_cache() explicitly. Wrapped in try/except so any
+        # inconsistency falls back to a fresh recompute -- never raises.
+        try:
+            cached = self._ctx_token_cache
+            cur_len = len(self._history)
+            if cached is not None and self._ctx_token_cache_len == cur_len:
+                heuristic = cached
+            else:
+                heuristic = self._estimate_context_tokens_for_list(self._history)
+                self._ctx_token_cache = heuristic
+                self._ctx_token_cache_len = cur_len
+        except Exception:
+            heuristic = self._estimate_context_tokens_for_list(self._history)
         real = int(getattr(self, "_last_prompt_tokens", 0) or 0)
         if real > 0:
             return max(real, heuristic)
@@ -1097,7 +1135,11 @@ class ConversationalSession:
         }
         
         self._history[:] = [self._history[0], summary_msg] + recent_block
-        
+        # Compaction replaces the middle with a summary; new length usually
+        # differs but not guaranteed (a tiny middle replaced by a summary_msg
+        # could land at the same length). Explicitly invalidate.
+        self._invalidate_ctx_cache()
+
         after_tokens = self._estimate_context_tokens()
         yield ConvEvent("compaction", {
             "before_tokens": before_tokens,
@@ -1202,6 +1244,10 @@ class ConversationalSession:
                 continue
             i += 1
         self._history = out
+        # In-place rebuild MAY leave len(self._history) unchanged (dropping
+        # zero orphans while inserting zero stubs) -- the len-keyed cache
+        # would then stale-read. Explicitly invalidate.
+        self._invalidate_ctx_cache()
 
     def _grounded_wiki_answer(self, question: str, raw: str) -> str:
         """Grounded synthesis over a raw wiki query result.
