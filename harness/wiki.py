@@ -190,8 +190,8 @@ class WikiClient:
 
     def graph(self) -> dict:
         """Fetch the wiki graph via the gated owner surface the portable-llm-wiki
-        MCP uses: GET /wiki/manifest.json for nodes, then GET /wiki/graph/<slug>?hops=1
-        per node to collect [[wikilink]] edges. Authenticated with the owner token.
+        MCP uses. Newer wiki backends expose GET /wiki/graph directly; older
+        builds need GET /wiki/manifest.json plus per-page neighborhoods.
         Returns: {"nodes": [...], "edges": [...], "error": Optional[str]}
         """
         if not self.base_url:
@@ -208,7 +208,20 @@ class WikiClient:
                     raise RuntimeError(f"{path} status {r.status}")
                 return json.loads(r.read().decode("utf-8", "replace"))
 
-        # 1. nodes from the manifest
+        # Preferred current portable-llm-wiki endpoint: one request returns the
+        # full owner-visible graph. This is faster and avoids looking
+        # "disconnected" when per-slug neighborhood routes differ by backend
+        # version.
+        try:
+            direct = _get("/wiki/graph")
+            parsed = parse_graph_from_response(direct)
+            if parsed.get("nodes") or parsed.get("edges"):
+                parsed["error"] = None
+                return parsed
+        except Exception:
+            pass
+
+        # Legacy fallback: nodes from the manifest.
         try:
             manifest = _get("/wiki/manifest.json")
         except Exception as e:

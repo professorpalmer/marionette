@@ -33,6 +33,10 @@ function pmharnessHome() {
   return path.join(os.homedir(), ".pmharness");
 }
 
+function hiddenProcessOptions(opts = {}) {
+  return { windowsHide: true, ...opts };
+}
+
 // One-shot git capture: resolve { ok, out, err } (never rejects). `env`, when
 // given, is the login-shell-augmented environment so a Finder-launched app can
 // still resolve git and reach an SSH remote.
@@ -41,7 +45,7 @@ function gitCapture(repoRoot, args, timeoutMs = 30000, env) {
     execFile(
       "git",
       ["-C", repoRoot, ...args],
-      { timeout: timeoutMs, maxBuffer: 10_000_000, encoding: "utf8", ...(env ? { env } : {}) },
+      hiddenProcessOptions({ timeout: timeoutMs, maxBuffer: 10_000_000, encoding: "utf8", ...(env ? { env } : {}) }),
       (err, stdout, stderr) => {
         if (err) return resolve({ ok: false, out: (stdout || "").trim(), err: (stderr || String(err)).trim() });
         resolve({ ok: true, out: (stdout || "").trim(), err: (stderr || "").trim() });
@@ -57,7 +61,7 @@ function execCapture(cmd, args, { timeoutMs = 30000, env } = {}) {
     execFile(
       cmd,
       args,
-      { timeout: timeoutMs, maxBuffer: 10_000_000, encoding: "utf8", ...(env ? { env } : {}) },
+      hiddenProcessOptions({ timeout: timeoutMs, maxBuffer: 10_000_000, encoding: "utf8", ...(env ? { env } : {}) }),
       (err, stdout, stderr) => {
         resolve({ ok: !err, out: (stdout || "").trim(), err: (stderr || String(err || "")).trim() });
       }
@@ -70,7 +74,7 @@ function execCapture(cmd, args, { timeoutMs = 30000, env } = {}) {
 // the augmented env so a Finder launch can find a Homebrew/curl-installed uv.
 function detectUv(env) {
   return new Promise((resolve) => {
-    execFile("uv", ["--version"], { timeout: 5000, ...(env ? { env } : {}) }, (err) => resolve(!err));
+    execFile("uv", ["--version"], hiddenProcessOptions({ timeout: 5000, ...(env ? { env } : {}) }), (err) => resolve(!err));
   });
 }
 
@@ -110,7 +114,7 @@ function runStreamed(cmd, args, opts, onLine) {
     let tail = "";
     let child;
     try {
-      child = spawn(cmd, args, { ...opts });
+      child = spawn(cmd, args, hiddenProcessOptions(opts));
     } catch (e) {
       onLine && onLine(String(e && e.message ? e.message : e));
       return resolve({ code: 1, tail: String(e) });

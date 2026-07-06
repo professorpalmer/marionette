@@ -239,6 +239,7 @@ async function ensureViteDevServer(repoRoot) {
       cwd: webappDir,
       env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
       // .cmd shims on Windows only spawn through a shell (Node CVE-2024-27980 guard)
       shell: process.platform === "win32",
     });
@@ -453,6 +454,7 @@ async function _startBackendOnce() {
     cwd: repoRoot,
     env: customEnv,
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   });
 
   backend.on("error", (e) => _dbg(`spawn error: ${e.message}`));

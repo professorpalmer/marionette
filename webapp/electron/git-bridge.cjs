@@ -9,7 +9,7 @@ const crypto = require("node:crypto");
 
 function git(repo, args) {
   return new Promise((resolve) => {
-    execFile("git", ["-C", repo, ...args], { maxBuffer: 10_000_000 }, (err, stdout, stderr) => {
+    execFile("git", ["-C", repo, ...args], { maxBuffer: 10_000_000, windowsHide: true }, (err, stdout, stderr) => {
       if (err) return resolve({ ok: false, error: stderr || String(err) });
       resolve({ ok: true, out: stdout });
     });

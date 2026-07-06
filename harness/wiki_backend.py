@@ -237,10 +237,12 @@ def _uvicorn_cmd(backend_dir: str, port: int) -> list[str] | None:
 def _spawn(cmd: list[str], cwd: str, log):
     kwargs = dict(cwd=cwd, stdout=log, stderr=log, stdin=subprocess.DEVNULL)
     if _IS_WINDOWS:
-        # Detach from Marionette's process group so it survives respawns.
+        # Detach from Marionette's process group so it survives respawns, without
+        # flashing a console window behind the app on every launch.
         kwargs["creationflags"] = (
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
     else:
         kwargs["start_new_session"] = True

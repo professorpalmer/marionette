@@ -102,9 +102,43 @@ def test_wiki_client_parse_manifest_pages():
     assert {"source": "page-two", "target": "non-existent-page"} in edges
 
 
+def test_wiki_client_graph_prefers_direct_graph_endpoint(monkeypatch):
+    # Current portable-llm-wiki exposes the full owner-visible graph at
+    # /wiki/graph. Marionette should use it before falling back to the older
+    # manifest + per-slug neighborhood flow.
+    class FakeResp:
+        def __init__(self, payload):
+            self._payload = payload
+            self.status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return json.dumps(self._payload).encode()
+
+    calls = []
+
+    def fake_urlopen(req, timeout=0):
+        calls.append(req.full_url)
+        assert req.headers.get("Authorization") == "Bearer mysecret"
+        if req.full_url.endswith("/wiki/graph"):
+            return FakeResp({
+                "nodes": [{"slug": "a", "title": "A"}],
+                "edges": [{"source": "a", "target": "b"}],
+            })
+        raise AssertionError("unexpected url " + req.full_url)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = WikiClient(base_url="http://mywiki", token="mysecret")
+    res = client.graph()
+    assert res["error"] is None
+    assert res["nodes"] == [{"id": "a", "title": "A", "section": None, "tags": None}]
+    assert res["edges"] == [{"source": "a", "target": "b"}]
+    assert calls == ["http://mywiki/wiki/graph"]
+
+
 def test_wiki_client_graph_live_mocked(monkeypatch):
-    # The graph() method uses the gated owner surface the portable-llm-wiki MCP uses:
-    # GET /wiki/manifest.json for nodes, then GET /wiki/graph/<slug>?hops=1 for edges.
+    # Legacy fallback: GET /wiki/manifest.json for nodes, then
+    # GET /wiki/graph/<slug>?hops=1 for edges.
     class FakeResp:
         def __init__(self, payload):
             self._payload = payload
@@ -126,6 +160,8 @@ def test_wiki_client_graph_live_mocked(monkeypatch):
     def fake_urlopen(req, timeout=0):
         url = req.full_url
         assert req.headers.get("Authorization") == "Bearer mysecret"
+        if url.endswith("/wiki/graph"):
+            raise urllib.error.HTTPError(url, 404, "not found", {}, None)
         if url.endswith("/wiki/manifest.json"):
             return FakeResp(manifest)
         if "/wiki/graph/a" in url:
