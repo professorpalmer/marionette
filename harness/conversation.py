@@ -2023,6 +2023,22 @@ class ConversationalSession(ToolDispatchMixin):
                 yield ConvEvent("error", {"error": "session busy: another request is in flight"})
                 return
         busy_gen = self._mark_busy_acquired()
+        # Time-travel journal (round 6): snapshot the active check specs and
+        # behavior toggles for this turn. Observability only; never raises.
+        try:
+            from .turn_context import record_turn_context
+
+            _turn_index = sum(
+                1 for m in self._history if m.get("role") == "user"
+            ) + (0 if resume else 1)
+            record_turn_context(
+                self.state_dir,
+                self.harness_session_id or "default",
+                _turn_index,
+                repo=self.config.repo or "",
+            )
+        except Exception:
+            pass
         if not resume and self._is_correction(user_message):
             self._corrections.append(user_message)
         original_sys = self._history[0]["content"]

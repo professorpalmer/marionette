@@ -2586,6 +2586,25 @@ class Handler(BaseHTTPRequestHandler):
                 "pending_swarms": _pilot.has_pending_swarms(),
                 "resume_pending": bool(_state == "idle" and _pilot.has_pending_user_turn()),
             }))
+        if u.path == "/api/session/context_at":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            try:
+                turn = int(parse_qs(u.query).get("turn", ["0"])[0])
+            except (TypeError, ValueError):
+                return self._send(400, json.dumps({"error": "turn must be an integer"}))
+            from .turn_context import context_at
+            record = context_at(
+                _pilot.state_dir,
+                getattr(_pilot, "harness_session_id", "") or "default",
+                turn,
+            )
+            if record is None:
+                return self._send(404, json.dumps({"error": f"no context recorded for turn {turn}"}))
+            return self._send(200, json.dumps(record))
         if u.path == "/api/session/swarm-results":
             if self._guard():
                 return
