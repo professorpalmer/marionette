@@ -14,7 +14,7 @@ from harness.declarative_checks import (
     load_checks,
     run_checks,
 )
-from harness.conversation import ConversationalSession
+from harness.conversation import ConversationalSession, append_failed_declarative_checks_summary
 from harness.worker import ProviderWorker
 from puppetmaster.models import Artifact, ArtifactType
 from puppetmaster.store_factory import create_store
@@ -329,5 +329,95 @@ def test_blocked_pre_check_prevents_worker_turn(monkeypatch):
         assert called["run_auto"] is False
         assert "declarative pre-check blocked" in res.error
         assert any(c.get("id") == "must-fail" for c in res.declarative_checks)
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_failed_post_check_surfaces_in_session_summary(monkeypatch):
+    repo_dir = _git_repo()
+    try:
+        checks_dir = os.path.join(repo_dir, ".marionette", "checks")
+        os.makedirs(checks_dir, exist_ok=True)
+        spec = {
+            "post": [
+                {
+                    "id": "must-have-readme",
+                    "kind": "file",
+                    "path": "README.md",
+                    "exists": True,
+                    "on_fail": "failed",
+                }
+            ]
+        }
+        with open(os.path.join(checks_dir, "post.json"), "w", encoding="utf-8") as f:
+            json.dump(spec, f)
+
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+            yield from ()
+
+        def mock_finalize(_wt_path):
+            return "--- a/hello.txt\n+++ b/hello.txt\n", ["hello.txt"]
+
+        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto)
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            mock_finalize,
+        )
+
+        worker = ProviderWorker(repo=repo_dir, goal="touch readme")
+        res = worker.run()
+        assert res.ok is False
+        assert any(c.get("id") == "must-have-readme" for c in res.declarative_checks)
+
+        summary = append_failed_declarative_checks_summary(
+            res.summary or res.error or "",
+            res.declarative_checks,
+        )
+        assert "Declarative checks: 1 failed (must-have-readme)" in summary
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_failed_post_check_surfaces_in_session_summary(monkeypatch):
+    repo_dir = _git_repo()
+    try:
+        checks_dir = os.path.join(repo_dir, ".marionette", "checks")
+        os.makedirs(checks_dir, exist_ok=True)
+        spec = {
+            "post": [
+                {
+                    "id": "must-have-readme",
+                    "kind": "file",
+                    "path": "README.md",
+                    "exists": True,
+                    "on_fail": "failed",
+                }
+            ]
+        }
+        with open(os.path.join(checks_dir, "post.json"), "w", encoding="utf-8") as f:
+            json.dump(spec, f)
+
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+            yield from ()
+
+        def mock_finalize(_wt_path):
+            return "--- a/hello.txt\n+++ b/hello.txt\n", ["hello.txt"]
+
+        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto)
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            mock_finalize,
+        )
+
+        worker = ProviderWorker(repo=repo_dir, goal="touch readme")
+        res = worker.run()
+        assert res.ok is False
+        assert any(c.get("id") == "must-have-readme" for c in res.declarative_checks)
+
+        summary = append_failed_declarative_checks_summary(
+            res.summary or res.error or "",
+            res.declarative_checks,
+        )
+        assert "Declarative checks: 1 failed (must-have-readme)" in summary
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)

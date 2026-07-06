@@ -310,6 +310,19 @@ from .state import DurableState
 HARD_PILOT_STEPS = int(os.environ.get("HARNESS_MAX_PILOT_STEPS", "40"))  # safety cap on pilot<->swarm round-trips per user message
 
 
+def append_failed_declarative_checks_summary(summary: str, declarative_checks) -> str:
+    """Append a compact failed-check line for session/transcript surfacing."""
+    try:
+        from harness.declarative_checks import failed_checks_summary_line_from_dicts
+
+        check_line = failed_checks_summary_line_from_dicts(declarative_checks)
+    except Exception:
+        return summary
+    if not check_line:
+        return summary
+    return f"{summary}\n{check_line}" if summary else check_line
+
+
 @dataclass
 class ConvEvent:
     kind: str
@@ -4998,7 +5011,10 @@ class ConversationalSession(ToolDispatchMixin):
                     "tokens_in": _nc_t_in,
                     "tokens_out": _nc_t_out,
                     "tokens_cached": _nc_t_cached,
-                    "summary": res.summary or res.error or "Worker failed to produce patch",
+                    "summary": append_failed_declarative_checks_summary(
+                        res.summary or res.error or "Worker failed to produce patch",
+                        getattr(res, "declarative_checks", None),
+                    ),
                     "error": res.error,
                     "artifacts": [],
                     "has_patch_art": False,
@@ -5102,6 +5118,11 @@ class ConversationalSession(ToolDispatchMixin):
                         
                 if apply_summary:
                     summary = f"{summary}\n{apply_summary}" if summary else apply_summary
+
+                summary = append_failed_declarative_checks_summary(
+                    summary,
+                    getattr(res, "declarative_checks", None),
+                )
                 
                 error = f"PATCH DID NOT APPLY: {apply_msg}" if (not applied and not held_for_review) else None
                 
