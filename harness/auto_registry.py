@@ -56,9 +56,23 @@ _AGENTIC_TEMPLATES = {
     },
 }
 
+# Benchmark-anchored per-model overrides (mid-2026 OpenRouter data). The tier
+# templates above are coarse; for models we know, stamp real capability,
+# marketplace pricing, and context so the router's cost math is honest.
+# Format: slug -> (capability_score, input_usd, output_usd, context_window, tags)
+_KNOWN_MODEL_SPECS = {
+    "deepseek/deepseek-v4-flash": (66, 0.09, 0.18, 1000000, ["cheap", "fast", "code", "reading", "long-context"]),
+    "deepseek/deepseek-v4-pro": (80, 0.435, 0.87, 1000000, ["balanced", "code", "reasoning", "long-context"]),
+    "minimax/minimax-m3": (79, 0.098, 1.21, 1000000, ["balanced", "code", "vision", "long-context"]),
+    "moonshotai/kimi-k2.6": (78, 0.66, 3.41, 262144, ["balanced", "code", "vision", "agent-loop"]),
+    "z-ai/glm-5.2": (86, 1.0, 3.5, 1000000, ["quality", "code", "reasoning", "long-context"]),
+    "anthropic/claude-opus-4.8": (99, 5.0, 25.0, 1000000, ["frontier", "reasoning", "code", "vision", "long-context"]),
+}
+
 # Per-provider model discovery: maps provider name to a list of model descriptors.
 # Each descriptor: (model_name, tier, slug_for_id)
-# We prefer live discovery via model_fetch, but these are the fallback curated sets.
+# We prefer the user's enabled picker models, then live discovery via
+# model_fetch; these are the last-resort curated sets.
 _CURATED_MODELS = {
     "anthropic": [
         ("claude-opus-4-8", "frontier", "claude-opus-4-8"),
@@ -76,9 +90,11 @@ _CURATED_MODELS = {
         ("gemini-pro-latest", "balanced", "gemini-pro-latest"),
     ],
     "openrouter": [
-        ("anthropic/claude-opus-4.8", "frontier", "anthropic/claude-opus-4.8"),
+        ("deepseek/deepseek-v4-flash", "cheap", "deepseek/deepseek-v4-flash"),
+        ("minimax/minimax-m3", "balanced", "minimax/minimax-m3"),
         ("deepseek/deepseek-v4-pro", "balanced", "deepseek/deepseek-v4-pro"),
-        ("qwen/qwen3-coder-30b-a3b-instruct", "cheap", "qwen/qwen3-coder-30b-a3b-instruct"),
+        ("moonshotai/kimi-k2.6", "balanced", "moonshotai/kimi-k2.6"),
+        ("z-ai/glm-5.2", "frontier", "z-ai/glm-5.2"),
     ],
     "deepseek": [
         ("deepseek-chat", "balanced", "deepseek-chat"),
@@ -95,11 +111,25 @@ _CURATED_MODELS = {
 }
 
 
+def _enabled_picker_models(provider_name: str) -> list[str]:
+    """The user's enabled picker models for one provider (model ids without the
+    'provider:' prefix). The Models UI is the user's curation surface -- when
+    they toggled a set there, the agentic registry must mirror it exactly, not
+    an arbitrary discovery sample."""
+    try:
+        from . import model_visibility as _mv
+        prefix = f"{provider_name}:"
+        return [s[len(prefix):] for s in _mv.get_enabled() if s.startswith(prefix)]
+    except Exception as e:
+        _diag("auto_registry.enabled_picker", e, msg=f"provider={provider_name}")
+        return []
+
+
 def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -> list[tuple[str, str, str]]:
-    """Fetch live models from provider discovery with caching.
-    
+    """Model set for a provider, in priority order: the user's enabled picker
+    models, then live discovery, then the curated fallback.
+
     Returns: list of (model_name, tier, slug) tuples.
-    Falls back to curated models on any failure.
     """
     try:
         from .providers import get_provider
@@ -108,7 +138,20 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
         provider = get_provider(provider_name)
         if not provider:
             return []
-        
+
+        def _tier_of_known(name: str) -> str:
+            spec = _KNOWN_MODEL_SPECS.get(name)
+            if spec and spec[0] >= 85:
+                return "frontier"
+            if spec and spec[0] < 70:
+                return "cheap"
+            return "balanced"
+
+        # The user's explicit picker curation wins outright.
+        enabled = _enabled_picker_models(provider_name)
+        if enabled:
+            return [(m, _tier_of_known(m), m) for m in enabled]
+
         # Try live discovery
         live_models = fetch_models(provider, provider_key, force=False)
         if not live_models:
@@ -160,14 +203,18 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
 
 
 def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: str) -> dict:
-    """Build a single agentic ModelSpec dict."""
-    templates = _AGENTIC_TEMPLATES.get(provider_name, {})
-    template = templates.get(tier)
-    if not template:
-        # Fallback to balanced if tier not found
-        template = templates.get("balanced", (75, 1.0, 3.0, 100000, ["balanced"]))
-    
-    capability_score, input_price, output_price, context_window, tags = template
+    """Build a single agentic ModelSpec dict. Known models get their real
+    benchmark-anchored numbers; unknown ones fall back to the tier template."""
+    known = _KNOWN_MODEL_SPECS.get(slug)
+    if known:
+        capability_score, input_price, output_price, context_window, tags = known
+    else:
+        templates = _AGENTIC_TEMPLATES.get(provider_name, {})
+        template = templates.get(tier)
+        if not template:
+            # Fallback to balanced if tier not found
+            template = templates.get("balanced", (75, 1.0, 3.0, 100000, ["balanced"]))
+        capability_score, input_price, output_price, context_window, tags = template
     
     return {
         "id": f"agentic/{slug}",
