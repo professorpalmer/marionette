@@ -72,7 +72,9 @@ function buildTree(paths: string[]): FileNode[] {
   const map: Record<string, FileNode> = {};
 
   for (const path of paths) {
-    const parts = path.split("/");
+    // Windows backends emit backslash-separated paths; without this the whole
+    // path collapses into a single flat node.
+    const parts = path.split(/[\\/]/);
     let currentPath = "";
     let parentChildren = root;
 

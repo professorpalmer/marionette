@@ -17,7 +17,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { readLiveUpdateMarker } = require("./update-marker.cjs");
-const { isInstallComplete, runBootstrap } = require("./bootstrap.cjs");
+const { isInstallComplete, runBootstrap, reinjectPortableTools } = require("./bootstrap.cjs");
+
+// Must run before any git/npm/uv child spawns: on Windows the portable tools
+// installed by first-run bootstrap are only on PATH in-memory, per process.
+reinjectPortableTools();
 
 const isDev = !!process.env.PMHARNESS_DEV_SERVER;
 const isPackaged = app.isPackaged;

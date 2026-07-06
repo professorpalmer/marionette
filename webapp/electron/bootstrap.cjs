@@ -307,4 +307,24 @@ async function runBootstrap(targetDir, onProgress = () => {}) {
   }
 }
 
-module.exports = { isInstallComplete, runBootstrap, venvPython, VERSIONS };
+// Windows: portable Node/MinGit live under %LOCALAPPDATA%\marionette\tools but
+// addToPath() only mutates the CURRENT process env. First launch bootstraps and
+// works; every later launch skips bootstrap (isInstallComplete), so git/npm
+// children got ENOENT unless the user had system-wide installs. Re-inject the
+// portable tool dirs on every startup.
+function reinjectPortableTools() {
+  if (process.platform !== "win32") return;
+  try {
+    const root = path.join(
+      process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"),
+      "marionette", "tools"
+    );
+    const nodeDir = path.join(root, "node");
+    if (fs.existsSync(path.join(nodeDir, "node.exe"))) addToPath(nodeDir);
+    const gitCmdDir = path.join(root, "git", "cmd");
+    if (fs.existsSync(path.join(gitCmdDir, "git.exe"))) addToPath(gitCmdDir);
+    addToPath(path.join(os.homedir(), ".local", "bin"));
+  } catch { /* best-effort */ }
+}
+
+module.exports = { isInstallComplete, runBootstrap, venvPython, reinjectPortableTools, VERSIONS };

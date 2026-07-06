@@ -1480,7 +1480,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           const qImgs: string[] = Array.isArray(d.images) ? d.images : [];
           const bubbleImgs = qImgs.map((p: string) => ({
             path: p,
-            name: (p.split("/").pop() || p),
+            name: (p.split(/[\\/]/).pop() || p),
             previewUrl: p,
           }));
           setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: d.text, images: bubbleImgs } }]);
@@ -1526,7 +1526,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       api.queueRemove(next.id).catch(() => {}).finally(() => refreshQueue());
       const nextImgs = (next.images || []).map((p: string) => ({
         path: p,
-        name: (p.split("/").pop() || p),
+        name: (p.split(/[\\/]/).pop() || p),
         previewUrl: p,
       }));
       executeSendRef.current(next.text, auto, plan, false, nextImgs);
@@ -2491,7 +2491,8 @@ function WorkspaceChip() {
     const picked = await pickFolder();
     if (picked) await openPath(picked);
   };
-  const base = (p: string) => p ? p.replace(/\/+$/, "").split("/").pop() || p : "";
+  // Split on both separators so Windows paths show the leaf dir, not C:\...\repo.
+  const base = (p: string) => p ? p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p : "";
   const name = ws?.repo ? base(ws.repo) : "No folder";
   const recents = (ws?.recents || []).filter((r) => r !== ws?.repo);
 

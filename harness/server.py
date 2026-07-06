@@ -282,6 +282,51 @@ def _state_home() -> str:
     return os.environ.get("HARNESS_STATE_DIR") or os.path.expanduser("~/.pmharness")
 
 
+def _env_settings_path() -> str:
+    return os.path.join(_state_home(), "env_settings.json")
+
+
+# Env-backed settings that must survive a backend restart. The Settings page
+# stores these in os.environ (cheap live-reload: readers check the env each
+# turn), but env vars die with the process -- so every relaunch silently reset
+# command guard / timeouts / step caps to defaults while the UI claimed they
+# were saved. Every write goes through _persist_env_setting and startup
+# replays the file with setdefault so an explicit shell/env override still wins.
+def _persist_env_setting(env_var: str, value: str) -> None:
+    path = _env_settings_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data = {}
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[env_var] = value
+        from .registry_wizard import write_json_atomic
+        write_json_atomic(path, data)
+    except Exception as e:
+        _diag("server.persist_env_setting", e)
+
+
+def _load_env_settings() -> None:
+    path = _env_settings_path()
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(k, str) and k.startswith("HARNESS_") and isinstance(v, str):
+                    os.environ.setdefault(k, v)
+    except Exception as e:
+        _diag("server.load_env_settings", e)
+
+
 def _workspace_json_path() -> str:
     return os.path.join(_state_home(), "workspace.json")
 
@@ -515,6 +560,11 @@ elif not _cfg.state_dir:
         os.environ.setdefault("HARNESS_STATE_DIR", _stable)
     except Exception as e:
         _diag("server.stable_state_dir", e)
+
+# Replay persisted Settings-page values into the environment BEFORE the pilot
+# is constructed (it snapshots several of these at build time). setdefault
+# semantics: an explicit env var set by the host/shell always wins.
+_load_env_settings()
 
 # Masker-safe live key: if HARNESS_KEY_FILE points at a file, load it into the
 # expected env var for the chosen reach before the Session builds its driver.
@@ -2027,36 +2077,52 @@ class Handler(BaseHTTPRequestHandler):
                     _cfg.budget = max(1, min(50, b_val))
                 except (ValueError, TypeError):
                     return self._send(400, json.dumps({"error": "Invalid budget value"}))
+            def _set_env_setting(env_var: str, value: str) -> None:
+                os.environ[env_var] = value
+                _persist_env_setting(env_var, value)
+
             if "auto_distill" in body:
                 ad_val = _parse_bool(body["auto_distill"])
                 _pilot._auto_distill = ad_val
-                os.environ["HARNESS_AUTO_DISTILL"] = "true" if ad_val else "false"
+                _set_env_setting("HARNESS_AUTO_DISTILL", "true" if ad_val else "false")
             if "reviewEditsBeforeApply" in body:
                 rev_val = _parse_bool(body["reviewEditsBeforeApply"])
                 _pilot._review_edits_before_apply = rev_val
-                os.environ["HARNESS_REVIEW_EDITS_BEFORE_APPLY"] = "true" if rev_val else "false"
+                _set_env_setting("HARNESS_REVIEW_EDITS_BEFORE_APPLY", "true" if rev_val else "false")
             if "autoCommandGuard" in body:
                 g_val = _parse_bool(body["autoCommandGuard"])
                 _pilot._auto_command_guard = g_val
-                os.environ["HARNESS_AUTO_COMMAND_GUARD"] = "true" if g_val else "off"
+                _set_env_setting("HARNESS_AUTO_COMMAND_GUARD", "true" if g_val else "off")
             if "autoVerify" in body:
                 av_val = _parse_bool(body["autoVerify"])
                 _cfg.auto_verify = av_val
-                os.environ["HARNESS_AUTO_VERIFY"] = "true" if av_val else "false"
+                _set_env_setting("HARNESS_AUTO_VERIFY", "true" if av_val else "false")
             if "verifyCommand" in body:
                 vc_val = str(body["verifyCommand"]).strip()
                 _cfg.verify_command = vc_val
-                os.environ["HARNESS_VERIFY_COMMAND"] = vc_val
+                _set_env_setting("HARNESS_VERIFY_COMMAND", vc_val)
             if "commandTimeout" in body:
                 # seconds; "0"/"off"/"none" = unbounded. Validate before storing.
                 raw = str(body["commandTimeout"]).strip().lower()
                 if raw in ("0", "off", "none", "unbounded"):
-                    os.environ["HARNESS_COMMAND_TIMEOUT"] = "0"
+                    _set_env_setting("HARNESS_COMMAND_TIMEOUT", "0")
                 else:
                     try:
-                        os.environ["HARNESS_COMMAND_TIMEOUT"] = str(max(1, int(raw)))
+                        _set_env_setting("HARNESS_COMMAND_TIMEOUT", str(max(1, int(raw))))
                     except (ValueError, TypeError):
                         return self._send(400, json.dumps({"error": "Invalid commandTimeout"}))
+            if "maxPilotSteps" in body:
+                # Per-message pilot step ceiling; "0"/"unlimited" = no cap. The
+                # Settings page always sent this, but the server silently
+                # ignored it -- the field looked saved and never took effect.
+                raw = str(body["maxPilotSteps"]).strip().lower()
+                if raw in ("0", "off", "none", "unlimited"):
+                    _set_env_setting("HARNESS_MAX_PILOT_STEPS", "0")
+                else:
+                    try:
+                        _set_env_setting("HARNESS_MAX_PILOT_STEPS", str(max(1, int(raw))))
+                    except (ValueError, TypeError):
+                        return self._send(400, json.dumps({"error": "Invalid maxPilotSteps"}))
 
             return self._send(200, json.dumps(_get_settings_dict()))
 
@@ -3077,14 +3143,14 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 from puppetmaster.models import ArtifactType
                 from puppetmaster.usage import aggregate_token_usage
-                jobs = _session.state().list_jobs()
+                jobs = _jobs_snapshot()
                 store = _session.state().store
                 jids = [j.get("id") for j in jobs if j.get("id")]
                 # Batch: one bulk artifact read regrouped by job_id, instead of
                 # one store.list_artifacts(jid) query PER job (the N+1).
                 arts_by_job: dict = {}
                 try:
-                    for a in store.list_artifacts_for_jobs(jids):
+                    for a in _retry_on_locked(lambda: store.list_artifacts_for_jobs(jids)):
                         arts_by_job.setdefault(getattr(a, "job_id", None), []).append(a)
                 except Exception:
                     arts_by_job = None  # fall back to per-job reads
@@ -3155,7 +3221,7 @@ class Handler(BaseHTTPRequestHandler):
                 price_in, price_out = 0.5, 2.0
             try:
                 state_obj = _session.state()
-                jobs = state_obj.list_jobs()
+                jobs = _jobs_snapshot()
                 store = state_obj.store
                 from puppetmaster.models import ArtifactType
                 from puppetmaster.usage import aggregate_token_usage
@@ -3167,12 +3233,12 @@ class Handler(BaseHTTPRequestHandler):
                 arts_by_job: dict = {}
                 tasks_by_job: dict = {}
                 try:
-                    for a in store.list_artifacts_for_jobs(jids):
+                    for a in _retry_on_locked(lambda: store.list_artifacts_for_jobs(jids)):
                         arts_by_job.setdefault(getattr(a, "job_id", None), []).append(a)
                 except Exception:
                     arts_by_job = None
                 try:
-                    for t in store.list_tasks_for_jobs(jids):
+                    for t in _retry_on_locked(lambda: store.list_tasks_for_jobs(jids)):
                         tasks_by_job.setdefault(getattr(t, "job_id", None), []).append(t)
                 except Exception:
                     tasks_by_job = None
@@ -3931,6 +3997,26 @@ def _finalize_turn(ctx) -> None:
     except Exception as e:
         import sys
         print(f"[transcript persist error] {e!r}", file=sys.stderr)
+
+
+def _retry_on_locked(read, attempts: int = 3, delay: float = 0.15):
+    """Run a store read, retrying briefly on SQLite 'database is locked'.
+
+    Windows raises these transient lock errors far more readily than macOS
+    (concurrent swarm workers + CodeGraph indexer + usage polling on one
+    SQLite file), so cost/token endpoints retry instead of erroring out.
+    """
+    import sqlite3
+    import time as _t
+    for attempt in range(attempts):
+        try:
+            return read()
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() and attempt < attempts - 1:
+                _t.sleep(delay)
+                continue
+            raise
+    return read()
 
 
 _last_jobs_snapshot: list = []

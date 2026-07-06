@@ -41,6 +41,23 @@ _SAFE_ENV_KEYS = {
     "TERM",
     "SHELL",
     "TMPDIR",
+    # Windows equivalents: without USERPROFILE/APPDATA npm-based servers can't
+    # find their caches, and without SystemRoot/COMSPEC many Win32 APIs and
+    # cmd shims fail outright.
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "TEMP",
+    "TMP",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "COMSPEC",
+    "PATHEXT",
+    "USERNAME",
+    "OS",
+    "NUMBER_OF_PROCESSORS",
 }
 
 
@@ -82,14 +99,26 @@ class StdioMcpClient:
     # ---- lifecycle ----------------------------------------------------------
     def start(self) -> None:
         # Filter parent environment to avoid leaking sensitive credentials/keys to child processes
+        # Compare uppercased: Windows env keys keep their original casing
+        # ("SystemRoot", "ComSpec") while the whitelist is uppercase.
         full_env = {
             k: v for k, v in os.environ.items()
-            if k in _SAFE_ENV_KEYS or k.startswith("XDG_")
+            if k.upper() in _SAFE_ENV_KEYS or k.upper().startswith("XDG_")
         }
         full_env.update({k: str(v) for k, v in self.env.items()})
+        command = self.command
+        if os.name == "nt":
+            # npx/uvx/node CLIs are .cmd/.exe shims on Windows; a bare name
+            # fails Popen without shell=True. Resolve to the real path instead
+            # of using a shell (avoids quoting bugs and CVE-2024-27980-style
+            # .cmd injection concerns).
+            import shutil as _shutil
+            resolved = _shutil.which(command, path=full_env.get("PATH") or os.environ.get("PATH"))
+            if resolved:
+                command = resolved
         try:
             self._proc = subprocess.Popen(
-                [self.command, *self.args],
+                [command, *self.args],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, env=full_env, cwd=self.cwd,
                 text=True, bufsize=1,
@@ -125,6 +154,16 @@ class StdioMcpClient:
                 self._proc.stdin.close()
             except Exception:
                 pass
+            if os.name == "nt":
+                # terminate() only hits the top-level shim; npx-spawned node
+                # children detach and linger. taskkill /T fells the whole tree.
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(self._proc.pid), "/T", "/F"],
+                        capture_output=True, timeout=10,
+                    )
+                except Exception:
+                    pass
             try:
                 self._proc.terminate()
                 self._proc.wait(timeout=3)
