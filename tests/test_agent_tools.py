@@ -30,7 +30,13 @@ def test_is_safe_path():
 
 
 def test_agent_tools_execution():
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # Manual mkdtemp + best-effort cleanup instead of TemporaryDirectory: on
+    # Windows under Python 3.9 a still-closing session subprocess handle makes
+    # the context manager's rmtree retry loop recurse to death (RecursionError
+    # in shutil). ignore_errors leaves the temp dir for the OS to reap instead
+    # of failing the test on teardown.
+    tmpdir = tempfile.mkdtemp()
+    try:
         real_tmp = os.path.realpath(tmpdir)
         cfg = HarnessConfig(repo=real_tmp, swarm_adapter="demo")
         session = ConversationalSession(cfg)
@@ -108,6 +114,10 @@ def test_agent_tools_execution():
         results = [e.data for e in trav_events if e.kind == "action_result"]
         assert len(results) > 0
         assert "rejected" in results[0].get("error", "").lower() or "traversal" in results[0].get("error", "").lower()
+    finally:
+        import shutil
+
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def test_run_command_survives_cancel_poisoned_after_action_start():
