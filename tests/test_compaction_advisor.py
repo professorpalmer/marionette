@@ -8,12 +8,27 @@ from harness.compaction_advisor import (
     advice_payload,
     assess_layer_pressure,
 )
+from harness.config import HarnessConfig
+from harness.conversation import ConversationalSession
 from harness.memory_layers import record_memory_layer_snapshot, snapshot_memory_layers
 
 
 class _FakeConversation:
     def __init__(self, history):
         self._history = history
+
+
+class _MockPilot:
+    name = "mock"
+
+    def __init__(self, return_text="summary"):
+        self.return_text = return_text
+
+    def chat(self, messages, tools=None, system=None):
+        return type("R", (), {"text": self.return_text, "error": "", "tokens_out": 1})()
+
+    def complete(self, prompt, system=None):
+        return type("R", (), {"text": self.return_text, "error": "", "tokens_out": 1})()
 
 
 def _snapshot(l0_bytes: int, l1_bytes: int = 0, l3_before: int = 0, l3_after: int = 0) -> dict:
@@ -125,3 +140,68 @@ def test_advice_payload_empty_when_no_journal(tmp_path):
 def test_assess_never_raises_on_bad_input():
     assess_layer_pressure(None, 1000)  # type: ignore[arg-type]
     assess_layer_pressure({"L0": {"bytes": "x"}}, 1000)
+
+
+def _session_in_advisor_trigger_window(tmp_path):
+    cfg = HarnessConfig(max_context_tokens=1000, state_dir=str(tmp_path))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "advisor-trigger"
+    session._history[0]["content"] = "system prompt"
+    session.pilot = _MockPilot()  # type: ignore[assignment]
+
+    for _ in range(30):
+        if session._estimate_context_tokens() >= 660:
+            break
+        session._history.append({"role": "user", "content": "u" * 140})
+        session._history.append({"role": "assistant", "content": "a" * 140})
+
+    while len(session._history) > 3 and session._estimate_context_tokens() > 740:
+        session._history.pop()
+        session._history.pop()
+
+    return session
+
+
+def _journal_now_snapshot(tmp_path, budget: int = 1000):
+    snap = _snapshot(int(budget * 4 * (_HOT_NOW_RATIO + 0.01)))
+    record_memory_layer_snapshot(str(tmp_path), "advisor-trigger", 1, snap)
+
+
+def test_advisor_compaction_env_off_leaves_default_trigger(monkeypatch, tmp_path):
+    session = _session_in_advisor_trigger_window(tmp_path)
+    tokens = session._estimate_context_tokens()
+    assert 650 <= tokens < 750
+    _journal_now_snapshot(tmp_path)
+
+    monkeypatch.delenv("HARNESS_ADVISOR_COMPACTION", raising=False)
+    events = list(session._maybe_compact_history())
+    assert events == []
+
+
+def test_advisor_compaction_fires_between_65_and_75_percent(monkeypatch, tmp_path):
+    session = _session_in_advisor_trigger_window(tmp_path)
+    tokens = session._estimate_context_tokens()
+    assert 650 <= tokens < 750
+    _journal_now_snapshot(tmp_path)
+
+    monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", "1")
+    events = list(session._maybe_compact_history())
+    assert len(events) >= 1
+    assert events[0].kind == "compacting"
+
+
+def test_advisor_compaction_error_keeps_default_trigger(monkeypatch, tmp_path):
+    session = _session_in_advisor_trigger_window(tmp_path)
+    tokens = session._estimate_context_tokens()
+    assert 650 <= tokens < 750
+    _journal_now_snapshot(tmp_path)
+
+    monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", "1")
+    import harness.compaction_advisor as compaction_advisor
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("advisor failed")
+
+    monkeypatch.setattr(compaction_advisor, "assess_layer_pressure", _raise)
+    events = list(session._maybe_compact_history())
+    assert events == []

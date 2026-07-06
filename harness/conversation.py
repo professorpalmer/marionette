@@ -55,6 +55,7 @@ from .tool_dispatch import (
 
 
 _WORKER_IMPORTS_WARMED = False
+_ADVISED_TRIGGER_RATIO = 0.65
 
 
 def _prewarm_worker_imports() -> None:
@@ -1153,7 +1154,24 @@ class ConversationalSession(ToolDispatchMixin):
     def _maybe_compact_history(self, force: bool = False) -> Iterator[ConvEvent]:
         budget = getattr(self.config, "max_context_tokens", 96000)
         trigger = int(budget * 0.75)
-        
+
+        if not force:
+            try:
+                from .compaction_advisor import advisor_compaction_enabled, assess_layer_pressure
+                from .memory_layers import latest_layer_snapshot
+
+                if advisor_compaction_enabled():
+                    snapshot = latest_layer_snapshot(
+                        self.state_dir,
+                        self.harness_session_id or "default",
+                    )
+                    if snapshot:
+                        advice = assess_layer_pressure(snapshot, budget)
+                        if advice.get("level") == "now":
+                            trigger = int(budget * _ADVISED_TRIGGER_RATIO)
+            except Exception:
+                pass
+
         before_tokens = self._estimate_context_tokens()
         if not force and before_tokens < trigger:
             return
