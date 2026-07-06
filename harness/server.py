@@ -552,16 +552,52 @@ def _driver_provider_available(spec: str) -> bool:
     return bool(p and p.available)
 
 
+def _driver_in_enabled_set(driver: str, enabled: list) -> bool:
+    """True if a driver spec matches any enabled picker spec. Handles the
+    spelling variants: an enabled spec is 'provider:model' while the driver may
+    be the same spec, the bare model id, or a bare catalog name whose provider
+    slug differs (e.g. 'qwen3-coder-30b' vs
+    'openrouter:qwen/qwen3-coder-30b-a3b-instruct')."""
+    if not driver:
+        return False
+    aliases = {driver}
+    try:
+        from pmharness.registry import load_catalog
+        for m in load_catalog().get("models", []):
+            if m.get("name") == driver and m.get("openrouter"):
+                aliases.add(m["openrouter"])
+    except Exception:
+        pass
+    for spec in enabled:
+        model = spec.split(":", 1)[1] if ":" in spec else spec
+        if spec in aliases or model in aliases:
+            return True
+    return False
+
+
 def _resolve_available_driver():
-    """If the configured driver's provider is unavailable (e.g. OpenRouter was
-    disconnected but the saved driver still routes through it), fall back to the
-    first available enabled model so the app never defaults to a dead driver."""
+    """Make sure the active driver is one the user can actually use: its
+    provider must have a key AND, when the user has curated an enabled picker
+    set, the driver must be in that set. Otherwise fall back to the first
+    available enabled model -- so a fresh boot never lands on the compiled-in
+    default (qwen3-coder-30b) when the user disabled it, and never lands on a
+    dead provider."""
     global _cfg
     try:
-        if _driver_provider_available(_cfg.driver):
+        if not _driver_provider_available(_cfg.driver):
+            driver_ok = False
+        elif _cfg.driver.startswith("stub") or "HARNESS_DRIVER" in os.environ:
+            # Stub/offline drivers and an explicit env override are deliberate
+            # choices -- never second-guess them against the picker curation.
+            driver_ok = True
+        else:
+            from . import model_visibility as _mv
+            enabled = _mv.get_enabled()
+            driver_ok = not enabled or _driver_in_enabled_set(_cfg.driver, enabled)
+        if driver_ok:
             return
-        # Pick the first available pilot (enabled set, key-filtered).
         from . import model_visibility as _mv
+        # Pick the first available pilot (enabled set, key-filtered).
         candidates = _mv.enabled_pilots()
         for spec in candidates:
             if _driver_provider_available(spec):
