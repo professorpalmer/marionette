@@ -237,11 +237,14 @@ def _uvicorn_cmd(backend_dir: str, port: int) -> list[str] | None:
 def _spawn(cmd: list[str], cwd: str, log):
     kwargs = dict(cwd=cwd, stdout=log, stderr=log, stdin=subprocess.DEVNULL)
     if _IS_WINDOWS:
-        # Detach from Marionette's process group so it survives respawns, without
-        # flashing a console window behind the app on every launch.
+        # Detach from Marionette's process group so it survives respawns,
+        # without flashing a console window on every launch. Deliberately NOT
+        # DETACHED_PROCESS: it is mutually exclusive with CREATE_NO_WINDOW at
+        # the CreateProcess level, and combining them made Windows Terminal
+        # open a visible window for uvicorn. CREATE_NO_WINDOW alone gives the
+        # child its own hidden console, which is detachment enough.
         kwargs["creationflags"] = (
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
             | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
     else:

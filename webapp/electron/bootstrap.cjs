@@ -56,6 +56,7 @@ function run(cmd, args, opts = {}) {
     env: opts.env || process.env,
     cwd: opts.cwd,
     shell: opts.shell || false,
+    windowsHide: true,
   });
   if (res.status !== 0) {
     const detail = (res.stderr || res.stdout || "").trim();
@@ -77,13 +78,13 @@ function runNpm(args, opts = {}) {
 
 function commandExists(name) {
   const check = process.platform === "win32" ? "where" : "which";
-  const res = spawnSync(check, [name], { encoding: "utf8" });
+  const res = spawnSync(check, [name], { encoding: "utf8", windowsHide: true });
   return res.status === 0;
 }
 
 function nodeMajor() {
   if (!commandExists("node")) return 0;
-  const res = spawnSync("node", ["-v"], { encoding: "utf8" });
+  const res = spawnSync("node", ["-v"], { encoding: "utf8", windowsHide: true });
   if (res.status !== 0) return 0;
   return parseInt(String(res.stdout).replace(/^v/, "").split(".")[0], 10) || 0;
 }
@@ -256,7 +257,7 @@ function cloneOrUpdate(dest, repoUrl, branch, onProgress) {
     onProgress(`Updating checkout (${branch})...`, 30);
     run("git", ["-C", dest, "fetch", "--no-tags", "origin", branch]);
     run("git", ["-C", dest, "checkout", branch]);
-    const merge = spawnSync("git", ["-C", dest, "merge", "--ff-only", `origin/${branch}`], { encoding: "utf8" });
+    const merge = spawnSync("git", ["-C", dest, "merge", "--ff-only", `origin/${branch}`], { encoding: "utf8", windowsHide: true });
     if (merge.status !== 0) {
       onProgress("Local changes present; skipped fast-forward.", 32);
     }
