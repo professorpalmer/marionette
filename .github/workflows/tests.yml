@@ -18,12 +18,19 @@ concurrency:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # Floor (3.9, the requires-python minimum) + the dev interpreter (3.11).
+        # Floor (3.9, the requires-python minimum) + the dev interpreter (3.11),
+        # on every OS users actually run: Linux, macOS, and Windows.
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.9", "3.11"]
+        exclude:
+          # actions/setup-python has no CPython 3.9 build for arm64 macOS.
+          # The 3.9 floor is still proven on Linux and Windows.
+          - os: macos-latest
+            python-version: "3.9"
     steps:
       - uses: actions/checkout@v5
 

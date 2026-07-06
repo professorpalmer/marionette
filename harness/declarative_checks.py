@@ -292,6 +292,8 @@ def _run_shell_check(spec: CheckSpec, repo: str, timeout_default: int) -> CheckR
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=max(1, int(timeout)),
         )
         output = res.stdout or ""
