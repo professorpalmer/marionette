@@ -3051,10 +3051,17 @@ class ConversationalSession(ToolDispatchMixin):
                             continue
 
                         headline = f"hash_edit {act.path}: {msg}"
-                        yield ConvEvent("action_result", {
+                        hash_edit_result = {
                             "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
                             "artifacts": [{"type": "file", "headline": headline}],
-                        })
+                        }
+                        # AST preview (round 6, opt-in): structural diff
+                        # computed by _do_hash_edit on the write pass.
+                        ast_preview = getattr(self, "_last_ast_preview", None)
+                        if ast_preview and ast_preview.get("available"):
+                            hash_edit_result["ast_preview"] = ast_preview
+                        self._last_ast_preview = None
+                        yield ConvEvent("action_result", hash_edit_result)
                         self._append_action_result(act, aid, f"(hash_edit {act.path} successfully applied: {headline})", is_native)
                         turn_changed_files.append(target_path)
                     except Exception as e:

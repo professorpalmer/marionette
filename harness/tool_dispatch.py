@@ -532,6 +532,16 @@ class ToolDispatchMixin:
                 return False, status, f"hash_edit failed: {result.message}"
             if write:
                 atomic_write_text(target_path, new_text)
+                # AST preview (round 6, opt-in): stash a structural diff for
+                # the conversation layer to merge into the action_result.
+                self._last_ast_preview = None
+                try:
+                    from .ast_preview import ast_preview_enabled, structural_diff
+
+                    if ast_preview_enabled() and target_path.endswith(".py"):
+                        self._last_ast_preview = structural_diff(original, new_text)
+                except Exception:
+                    self._last_ast_preview = None
             return True, "success", result.message
         except Exception as e:
             return False, "exception", str(e)
