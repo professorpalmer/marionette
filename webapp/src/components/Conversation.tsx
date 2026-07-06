@@ -1319,29 +1319,41 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           // trailing worker-stream preview before finalizing the pilot's own text.
           const p = (p0.length > 0 && p0[p0.length - 1].kind === "msg" && (p0[p0.length - 1] as { kind: "msg"; msg: Msg }).msg.workerStream)
             ? p0.slice(0, -1) : p0;
-          const lastIdx = p.length - 1;
-          if (lastIdx >= 0 && p[lastIdx].kind === "msg") {
-            const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
-            if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
-              // Finalize the streaming bubble in place. If the final text is
-              // empty, KEEP whatever already streamed into the bubble (don't wipe
-              // visible narration) -- only drop the bubble when it never had any
-              // text at all. This preserves the text -> tool -> text -> tool
-              // thought chain instead of making intermediate prose vanish when a
-              // step finalizes with an empty cleaned-say.
-              const finalText = d.text || lastMsg.msg.text || "";
-              if (!finalText.trim()) {
-                return p.slice(0, lastIdx);
-              }
-              const updatedMsg = {
-                ...lastMsg.msg,
-                text: finalText,
-                streaming: false
-              };
-              const updatedItems = [...p];
-              updatedItems[lastIdx] = { kind: "msg", msg: updatedMsg };
-              return deduplicateConsecutiveAssistantMessages(updatedItems);
+          // Find the pilot's open streaming bubble, scanning back PAST any tool
+          // cards / reasoning / codegraph chips that landed after it. Only
+          // checking the very last item lost the race when action_start events
+          // arrived before this finalizer: the bubble stayed streaming:true
+          // forever (so it rendered standalone, excluded from the activity fold)
+          // AND a duplicate finalized copy was appended into the fold -- the
+          // narration showed up both outside and inside the collapse.
+          let streamIdx = -1;
+          for (let i = p.length - 1; i >= 0; i--) {
+            const it = p[i];
+            if (it.kind === "card" || it.kind === "thinking" || it.kind === "codegraph_context") continue;
+            if (it.kind === "msg") {
+              const m = (it as { kind: "msg"; msg: Msg }).msg;
+              if (m.role === "assistant" && m.streaming && !m.workerStream) streamIdx = i;
             }
+            break;
+          }
+          if (streamIdx >= 0) {
+            const lastMsg = p[streamIdx] as { kind: "msg"; msg: Msg };
+            // Finalize the streaming bubble in place. If the final text is
+            // empty, KEEP whatever already streamed into the bubble (don't wipe
+            // visible narration) -- only drop the bubble when it never had any
+            // text at all. This preserves the text -> tool -> text -> tool
+            // thought chain instead of making intermediate prose vanish when a
+            // step finalizes with an empty cleaned-say.
+            const finalText = d.text || lastMsg.msg.text || "";
+            if (!finalText.trim()) {
+              return [...p.slice(0, streamIdx), ...p.slice(streamIdx + 1)];
+            }
+            const updatedItems = [...p];
+            updatedItems[streamIdx] = {
+              kind: "msg",
+              msg: { ...lastMsg.msg, text: finalText, streaming: false },
+            };
+            return deduplicateConsecutiveAssistantMessages(updatedItems);
           }
           if (!d.text) {
             return p;

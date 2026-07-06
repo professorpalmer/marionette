@@ -736,6 +736,10 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1440, height: 900, backgroundColor: "#0f1113",
     titleBarStyle: "hiddenInset",
+    // Windows/Linux render an in-window "File Edit View..." menu bar that
+    // stacks a second ugly strip under the title bar (macOS puts the menu in
+    // the system bar, so it never shows there). Hide it; Alt still reveals it.
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
