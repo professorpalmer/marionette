@@ -328,6 +328,8 @@ export type ContextUsageResponse = {
   tool_output_tokens_saved?: number;
   tool_output_savings_usd?: number;
   tool_output_compactions?: number;
+  history_compactions?: number;
+  history_tokens_saved?: number;
 };
 
 // Above this many characters, a chat message / autopilot objective is routed

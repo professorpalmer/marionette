@@ -1032,7 +1032,22 @@ class ConversationalSession(ToolDispatchMixin):
             "limit": budget,
             "categories": categories,
             **self._tool_output_savings_fields(),
+            **self._history_compaction_fields(),
         }
+
+    def _history_compaction_fields(self) -> dict:
+        try:
+            from harness.history_compaction_journal import history_compaction_payload
+
+            return history_compaction_payload(
+                self.state_dir,
+                self.harness_session_id or "default",
+            )
+        except Exception:
+            return {
+                "history_compactions": 0,
+                "history_tokens_saved": 0,
+            }
 
     def _tool_output_savings_fields(self) -> dict:
         """Compact tool-output savings for context/usage APIs."""
@@ -1189,12 +1204,29 @@ class ConversationalSession(ToolDispatchMixin):
             "content": f"[Earlier conversation summarized to fit context]\n{summary}",
             "_compressed_summary": True
         }
-        
+
+        chars_before = sum(len(str(m.get("content") or "")) for m in middle_block)
+        chars_after = len(summary_msg["content"])
+
         self._history[:] = [self._history[0], summary_msg] + recent_block
         # Compaction replaces the middle with a summary; new length usually
         # differs but not guaranteed (a tiny middle replaced by a summary_msg
         # could land at the same length). Explicitly invalidate.
         self._invalidate_ctx_cache()
+
+        try:
+            from harness.history_compaction_journal import record_history_compaction
+
+            record_history_compaction(
+                self.state_dir,
+                self.harness_session_id or "default",
+                len(middle_block),
+                chars_before,
+                chars_after,
+                summary,
+            )
+        except Exception:
+            pass
 
         after_tokens = self._estimate_context_tokens()
         yield ConvEvent("compaction", {

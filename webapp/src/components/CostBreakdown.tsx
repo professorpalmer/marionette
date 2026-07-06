@@ -13,6 +13,8 @@ export type CostBreakdownData = {
   cache_savings_usd?: number;
   tool_output_tokens_saved?: number;
   tool_output_savings_usd?: number;
+  history_compactions?: number;
+  history_tokens_saved?: number;
   price_in?: number;
   price_out?: number;
 };
@@ -47,6 +49,14 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   const compactTokens =
     typeof data.tool_output_tokens_saved === "number" && isFinite(data.tool_output_tokens_saved) && data.tool_output_tokens_saved > 0
       ? data.tool_output_tokens_saved
+      : 0;
+  const historyCompactions =
+    typeof data.history_compactions === "number" && isFinite(data.history_compactions) && data.history_compactions > 0
+      ? data.history_compactions
+      : 0;
+  const historyTokensSaved =
+    typeof data.history_tokens_saved === "number" && isFinite(data.history_tokens_saved) && data.history_tokens_saved > 0
+      ? data.history_tokens_saved
       : 0;
   const cached =
     typeof data.tokens_cached === "number" && isFinite(data.tokens_cached) && data.tokens_cached > 0
@@ -91,6 +101,13 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         <div className="flex items-center justify-between mb-1 text-faint">
           <span>Tool-output tokens avoided</span>
           <span className="tabular-nums">{fmtTokens(compactTokens)}</span>
+        </div>
+      ) : null}
+
+      {historyCompactions > 0 ? (
+        <div className="flex items-center justify-between mb-1 text-faint">
+          <span>History compaction</span>
+          <span className="tabular-nums">{fmtTokens(historyTokensSaved)} saved ({historyCompactions} event{historyCompactions === 1 ? "" : "s"})</span>
         </div>
       ) : null}
 

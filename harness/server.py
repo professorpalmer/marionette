@@ -106,17 +106,30 @@ def _tool_output_savings_fields(price_in: float) -> dict:
     try:
         from .tool_output_savings import session_savings_payload
 
-        return session_savings_payload(
+        payload = session_savings_payload(
             _pilot.state_dir,
             getattr(_pilot, "harness_session_id", "") or "",
             price_in,
         )
     except Exception:
-        return {
+        payload = {
             "tool_output_tokens_saved": 0,
             "tool_output_savings_usd": 0.0,
             "tool_output_compactions": 0,
         }
+    try:
+        from .history_compaction_journal import history_compaction_payload
+
+        payload.update(
+            history_compaction_payload(
+                _pilot.state_dir,
+                getattr(_pilot, "harness_session_id", "") or "default",
+            )
+        )
+    except Exception:
+        payload.setdefault("history_compactions", 0)
+        payload.setdefault("history_tokens_saved", 0)
+    return payload
 
 
 def _job_cost(tokens_in: float, tokens_out: float, tokens_total: float,
