@@ -22,8 +22,29 @@ const outPng = path.join(buildDir, "icon.png");
 
 const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256];
 
+// The source art is a rounded-rect tile painted on an OPAQUE WHITE canvas.
+// macOS hides that (the Dock masks every icon into its own squircle), but
+// Windows renders the file verbatim -- white corners on the taskbar. Cut the
+// tile out with a rounded-rect alpha mask: radius measured from the art
+// (~208px at 1024), overshot slightly and inset 1px so no white fringe
+// survives antialiasing at the edges.
+async function cutRoundedTile(srcBuf) {
+  const { width, height } = await sharp(srcBuf).metadata();
+  const radius = Math.round(width * 0.225);
+  const mask = Buffer.from(
+    `<svg width="${width}" height="${height}">` +
+    `<rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="${radius}" ry="${radius}" fill="#fff"/>` +
+    `</svg>`
+  );
+  return sharp(srcBuf)
+    .ensureAlpha()
+    .composite([{ input: mask, blend: "dest-in" }])
+    .png()
+    .toBuffer();
+}
+
 async function main() {
-  const srcBuf = await readFile(src);
+  const srcBuf = await cutRoundedTile(await readFile(src));
   const png512 = await sharp(srcBuf)
     .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .png()
