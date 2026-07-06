@@ -7,6 +7,7 @@ instead of bespoke per-resource schemas. Supported schemes:
   artifact://  full artifact payloads and fields
   agent://     worker run records and fields
   conflict://  git merge-conflict listing and resolution dry-run previews
+  spill://     oversized tool outputs persisted by the context budget layer
 
 Read-only by design; existing store APIs and HTTP endpoints are untouched.
 Paths are normalized to POSIX segments, traversal is rejected, and backslashes
@@ -28,7 +29,7 @@ from puppetmaster.store_factory import create_store
 from .paths import path_within
 from .state import DurableState
 
-SUPPORTED_SCHEMES = frozenset({"job", "artifact", "agent", "conflict"})
+SUPPORTED_SCHEMES = frozenset({"job", "artifact", "agent", "conflict", "spill"})
 
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._-]+$")
 _CONFLICT_MARKER = re.compile(r"^(<{7}|={7}|>{7})")
@@ -104,7 +105,7 @@ def parse_internal_uri(uri: str) -> ParsedInternalUri:
     if scheme not in SUPPORTED_SCHEMES:
         raise InternalUriError(f"unsupported scheme {scheme!r}")
 
-    if not remainder and scheme not in ("job", "agent", "conflict"):
+    if not remainder and scheme not in ("job", "agent", "conflict", "spill"):
         raise InternalUriError(f"{scheme}:// requires a path")
 
     if "?" in remainder:
@@ -158,6 +159,8 @@ def resolve_internal_uri(
         resource = _resolve_artifact(parsed, ctx)
     elif parsed.scheme == "agent":
         resource = _resolve_agent(parsed, ctx)
+    elif parsed.scheme == "spill":
+        resource = _resolve_spill(parsed, ctx)
     else:
         resource = _resolve_conflict(parsed, ctx)
 
@@ -182,8 +185,14 @@ def search_internal_uris(
 
     schemes = [scheme] if scheme else sorted(SUPPORTED_SCHEMES)
     hits: list[str] = []
-    store = ctx.store()
-    durable = ctx.durable()
+
+    # Store-backed schemes need Puppetmaster state; spill and conflict do not.
+    # Build the store lazily so those schemes remain searchable without it.
+    store = None
+    durable = None
+    if any(sch in ("job", "artifact", "agent") for sch in schemes):
+        store = ctx.store()
+        durable = ctx.durable()
 
     for sch in schemes:
         if len(hits) >= max_results:
@@ -219,6 +228,18 @@ def search_internal_uris(
             for rel in _git_unmerged_files(ctx.repo):
                 if needle in rel.lower():
                     hits.append(f"conflict://{rel}\tunmerged")
+                    if len(hits) >= max_results:
+                        break
+        elif sch == "spill":
+            from .spill_registry import list_spills
+
+            for row in list_spills(ctx.state_dir):
+                haystack = f"{row['session_id']}/{row['tool_call_id']} {row['path']}".lower()
+                if needle in haystack:
+                    hits.append(
+                        f"spill://{row['session_id']}/{row['tool_call_id']}"
+                        f"\t{row['chars']:,} chars"
+                    )
                     if len(hits) >= max_results:
                         break
 
@@ -392,6 +413,55 @@ def _resolve_agent(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Intern
     if field_name not in run:
         raise InternalUriError(f"agent field not found: {field_name}")
     return _text_resource(url, _stringify(run[field_name]))
+
+
+def _resolve_spill(parsed: ParsedInternalUri, ctx: InternalUriContext) -> InternalResource:
+    from .spill_registry import list_spills, resolve_spill
+
+    if not ctx.state_dir:
+        raise InternalUriError("spill:// requires a configured state_dir")
+
+    url = f"spill://{parsed.path}" if parsed.path else "spill://"
+
+    if not parsed.path:
+        entries = [
+            f"{row['session_id']}/{row['tool_call_id']}\t{row['chars']:,} chars"
+            for row in list_spills(ctx.state_dir)
+        ]
+        return _json_resource(url, entries, is_directory=True)
+
+    parts = parsed.path.split("/")
+    session_id = parts[0]
+    _require_safe_id(session_id, "session id")
+
+    if len(parts) == 1:
+        entries = [
+            f"{row['tool_call_id']}\t{row['chars']:,} chars"
+            for row in list_spills(ctx.state_dir, session_id=session_id)
+        ]
+        return _json_resource(url, entries, is_directory=True)
+
+    if len(parts) != 2:
+        raise InternalUriError("spill:// takes session_id/tool_call_id")
+
+    tool_call_id = parts[1]
+    _require_safe_id(tool_call_id, "tool call id")
+
+    row = resolve_spill(ctx.state_dir, session_id, tool_call_id)
+    if row is None:
+        raise InternalUriError(f"spill not found: {session_id}/{tool_call_id}")
+
+    file_path = str(row["path"])
+    # The registry only ever indexes files under pmharness-results, but the db
+    # is on-disk state -- re-verify confinement before serving the content.
+    results_root = os.path.join(os.path.abspath(ctx.state_dir), "pmharness-results")
+    if not path_within(os.path.realpath(file_path), results_root, allow_equal=False):
+        raise InternalUriError(f"spill path escapes the results directory: {tool_call_id}")
+    if not os.path.isfile(file_path):
+        raise InternalUriError(f"spill file no longer exists: {tool_call_id}")
+
+    with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+        return _text_resource(url, fh.read())
 
 
 def _resolve_conflict(parsed: ParsedInternalUri, ctx: InternalUriContext) -> InternalResource:

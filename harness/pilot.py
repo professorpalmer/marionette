@@ -559,9 +559,10 @@ def build_tools_schema(
             "function": {
                 "name": "search_state",
                 "description": (
-                    "Search durable state (past jobs, artifacts, agent transcripts, merge conflicts) "
-                    "by keyword. Returns matching internal URIs (job://, artifact://, agent://, "
-                    "conflict://) that can be opened with read_file or list_dir."
+                    "Search durable state (past jobs, artifacts, agent transcripts, merge conflicts, "
+                    "spilled tool outputs) by keyword. Returns matching internal URIs (job://, "
+                    "artifact://, agent://, conflict://, spill://) that can be opened with "
+                    "read_file or list_dir."
                 ),
                 "parameters": {
                     "type": "object",
@@ -569,7 +570,7 @@ def build_tools_schema(
                         "query": {"type": "string", "description": "Keyword to search durable state indexes"},
                         "scheme": {
                             "type": "string",
-                            "enum": ["job", "artifact", "agent", "conflict"],
+                            "enum": ["job", "artifact", "agent", "conflict", "spill"],
                             "description": "Optional URI scheme to restrict the search",
                         },
                         "max_results": {"type": "integer", "description": "Optional max results, default 50"},

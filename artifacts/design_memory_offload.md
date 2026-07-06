@@ -1,5 +1,9 @@
 # Design: verbose-output offload to durable internal URIs
 
+> Status: SHIPPED with a dedicated `spill://` scheme (not the `artifact://`
+> variant) and no env flag — the URI line is additive next to the path.
+> See `artifacts/spill_offload_acceptance.md` for the as-built shape.
+
 ## Problem
 
 Large tool outputs are already spilled by `maybe_persist_result` in

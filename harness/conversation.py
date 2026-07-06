@@ -1450,6 +1450,7 @@ class ConversationalSession(ToolDispatchMixin):
             state_dir=self._state_dir_or_tempdir,
             config=self.context_budget_config,
             on_compaction=self._tool_output_compaction_callback(tc_id),
+            spill_session_id=self.harness_session_id or "default",
         )
         # Tag full-file reads with their path so the pre-send pass can elide an
         # EARLIER read of the same file once a newer read supersedes it (the

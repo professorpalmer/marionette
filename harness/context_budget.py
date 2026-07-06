@@ -142,6 +142,7 @@ def build_persisted_message(
     has_more: bool,
     original_size: int,
     file_path: str,
+    spill_uri: Optional[str] = None,
 ) -> str:
     """Build the <persisted-output> replacement block.
 
@@ -160,6 +161,8 @@ def build_persisted_message(
     msg = f"{PERSISTED_OUTPUT_TAG}\n"
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
+    if spill_uri:
+        msg += f"Also addressable as: {spill_uri} (read_file works on this URI; search_state finds it)\n"
     msg += "Use read_file with start_line and limit to read specific sections\n\n"
     msg += f"Preview ({label}):\n"
     msg += preview
@@ -192,8 +195,14 @@ def maybe_persist_result(
     head_tail: Optional[bool] = None,
     dedupe: bool = False,
     on_compaction: Optional[CompactionCallback] = None,
+    spill_session_id: Optional[str] = None,
 ) -> str:
     """Layer 2: persist oversized result, return preview + path. Falls back to inline truncation if write fails.
+
+    spill_session_id: when set, the spilled file is indexed in the spill
+    registry and the replacement message carries a durable spill:// URI in
+    addition to the filesystem path. Registration failures are silent -- the
+    path fallback always remains usable.
 
     head_tail: when True the preview shows the first and last lines of the
     output; when None (default) a smart default is used that enables head+tail
@@ -216,7 +225,23 @@ def maybe_persist_result(
     original_len = len(content)
     try:
         file_path = spill_to_disk(content, result_id, state_dir, dedupe=dedupe)
-        result = build_persisted_message(preview, has_more, original_len, file_path)
+        uri = None
+        if spill_session_id:
+            from harness.spill_registry import register_spill, spill_uri
+
+            uri = spill_uri(spill_session_id, result_id)
+            if uri is not None:
+                registered = register_spill(
+                    state_dir=state_dir,
+                    session_id=spill_session_id,
+                    tool_call_id=result_id,
+                    path=file_path,
+                    chars=original_len,
+                    content_hash=content_hash(content) if dedupe else "",
+                )
+                if not registered:
+                    uri = None
+        result = build_persisted_message(preview, has_more, original_len, file_path, spill_uri=uri)
         _notify_compaction(on_compaction, original_len, len(result), "persist")
         return result
     except Exception as e:
@@ -287,6 +312,7 @@ def enforce_turn_budget(
             config=config,
             threshold=0,
             on_compaction=per_msg_compaction,
+            spill_session_id=savings_session_id,
         )
         if replacement != content:
             total_size -= size
