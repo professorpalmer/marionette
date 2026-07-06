@@ -50,7 +50,10 @@ export default function UpdateBanner() {
       .then((res: any) => {
         if (cancelled || !res) return;
         if (res.available || res.downloaded) {
-          setLatest(res.latest || res.branch || "");
+          // Only a real version string labels the banner. Source-run updates
+          // track a branch tip, and falling back to the branch name rendered
+          // the nonsense "vmain of Marionette is ready".
+          setLatest(res.latest || "");
           readyRef.current = true;
           setReady(true);
         }

@@ -160,9 +160,18 @@ async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersio
     // checkout is dirty and/or ahead of origin).
     const { dirty, ahead } = await inspectTree(repoRoot, branch);
 
+    // Version string at the fetched tip, so the banner can say "v0.7.35 is
+    // ready" instead of a generic label (or worse, the branch name).
+    let latest = "";
+    const pkg = await gitCapture(repoRoot, ["show", "FETCH_HEAD:webapp/package.json"]);
+    if (pkg.ok) {
+      try { latest = JSON.parse(pkg.out).version || ""; } catch { /* leave empty */ }
+    }
+
     return {
       available: behind > 0,
       behind,
+      latest,
       branch,
       currentSha: currentSha.slice(0, 8),
       targetSha: targetSha.slice(0, 8),
