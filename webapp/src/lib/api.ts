@@ -66,6 +66,8 @@ export type Job = {
   updated_at?: number | string | null;
   tokens?: number;
   est_cost_usd?: number;
+  tool_output_tokens_saved?: number;
+  tool_output_compactions?: number;
   task_count?: number;
   tasks?: Task[];
   // /api/jobs sends an artifact COUNT; embedded views may send the full list.

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS tool_output_savings (
     compact_chars INTEGER NOT NULL,
     tokens_saved INTEGER NOT NULL,
     reason TEXT NOT NULL DEFAULT '',
+    job_id TEXT,
     UNIQUE(session_id, tool_call_id)
 );
 CREATE INDEX IF NOT EXISTS idx_tool_output_savings_session
@@ -152,6 +153,7 @@ def make_compaction_callback(
     state_dir: str,
     session_id: str,
     tool_call_id: str,
+    job_id: Optional[str] = None,
 ) -> CompactionCallback:
     """Build a callback for context_budget hooks."""
 
@@ -163,6 +165,7 @@ def make_compaction_callback(
             original_chars=original_chars,
             compact_chars=compact_chars,
             reason=reason,
+            job_id=job_id,
         )
 
     return _cb
@@ -185,7 +188,14 @@ class ToolOutputSavingsLedger:
         self._conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate_schema()
         self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        assert self._conn is not None
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(tool_output_savings)")}
+        if "job_id" not in cols:
+            self._conn.execute("ALTER TABLE tool_output_savings ADD COLUMN job_id TEXT")
 
     def _append_jsonl(self, rec: dict) -> None:
         if not _jsonl_enabled():
@@ -205,6 +215,7 @@ class ToolOutputSavingsLedger:
         original_chars: int,
         compact_chars: int,
         reason: str = "compact",
+        job_id: Optional[str] = None,
     ) -> bool:
         """Append one savings record. Returns True when a new row was inserted."""
         saved = tokens_avoided(original_chars, compact_chars)
@@ -220,6 +231,7 @@ class ToolOutputSavingsLedger:
             "compact_chars": int(compact_chars),
             "tokens_saved": saved,
             "reason": reason or "compact",
+            "job_id": job_id or "",
         }
         inserted = False
         try:
@@ -229,7 +241,7 @@ class ToolOutputSavingsLedger:
                 cur = self._conn.execute(
                     "INSERT OR IGNORE INTO tool_output_savings "
                     "(ts, session_id, tool_call_id, original_chars, compact_chars, "
-                    "tokens_saved, reason) VALUES (?,?,?,?,?,?,?)",
+                    "tokens_saved, reason, job_id) VALUES (?,?,?,?,?,?,?,?)",
                     (
                         ts,
                         sid,
@@ -238,6 +250,7 @@ class ToolOutputSavingsLedger:
                         int(compact_chars),
                         saved,
                         reason or "compact",
+                        job_id or None,
                     ),
                 )
                 self._conn.commit()
@@ -250,17 +263,34 @@ class ToolOutputSavingsLedger:
             self._append_jsonl(rec)
         return inserted
 
-    def summarize(self, *, session_id: Optional[str] = None) -> ToolOutputSavingsSummary:
-        """Aggregate stored records, optionally scoped to one session."""
+    def summarize(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        job_id: Optional[str] = None,
+    ) -> ToolOutputSavingsSummary:
+        """Aggregate stored records, optionally scoped to one session or job."""
         try:
             with self._lock:
                 self._ensure_db()
                 assert self._conn is not None
-                if session_id:
+                if session_id and job_id:
+                    rows = self._conn.execute(
+                        "SELECT tokens_saved, original_chars, compact_chars, reason "
+                        "FROM tool_output_savings WHERE session_id = ? AND job_id = ?",
+                        (session_id, job_id),
+                    ).fetchall()
+                elif session_id:
                     rows = self._conn.execute(
                         "SELECT tokens_saved, original_chars, compact_chars, reason "
                         "FROM tool_output_savings WHERE session_id = ?",
                         (session_id,),
+                    ).fetchall()
+                elif job_id:
+                    rows = self._conn.execute(
+                        "SELECT tokens_saved, original_chars, compact_chars, reason "
+                        "FROM tool_output_savings WHERE job_id = ?",
+                        (job_id,),
                     ).fetchall()
                 else:
                     rows = self._conn.execute(
@@ -322,6 +352,7 @@ def try_record(
     original_chars: int,
     compact_chars: int,
     reason: str = "compact",
+    job_id: Optional[str] = None,
 ) -> None:
     """Hot-path helper: record savings, swallowing all errors."""
     if tokens_avoided(original_chars, compact_chars) <= 0:
@@ -333,6 +364,7 @@ def try_record(
             original_chars=original_chars,
             compact_chars=compact_chars,
             reason=reason,
+            job_id=job_id,
         )
     except Exception:
         pass
@@ -352,5 +384,23 @@ def session_savings_payload(
     return {
         "tool_output_tokens_saved": summary.tokens_saved,
         "tool_output_savings_usd": round(usd, 6),
+        "tool_output_compactions": summary.record_count,
+    }
+
+
+def job_savings_payload(state_dir: str, job_id: str) -> dict:
+    """Build API-facing savings fields for one swarm job."""
+    if not job_id:
+        return {
+            "tool_output_tokens_saved": 0,
+            "tool_output_savings_usd": 0.0,
+            "tool_output_compactions": 0,
+        }
+    try:
+        summary = get_ledger(state_dir).summarize(job_id=job_id)
+    except Exception:
+        summary = ToolOutputSavingsSummary()
+    return {
+        "tool_output_tokens_saved": summary.tokens_saved,
         "tool_output_compactions": summary.record_count,
     }

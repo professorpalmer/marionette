@@ -132,6 +132,18 @@ def _tool_output_savings_fields(price_in: float) -> dict:
     return payload
 
 
+def _job_savings_fields(job_id: str) -> dict:
+    try:
+        from .tool_output_savings import job_savings_payload
+
+        return job_savings_payload(_pilot.state_dir, job_id)
+    except Exception:
+        return {
+            "tool_output_tokens_saved": 0,
+            "tool_output_compactions": 0,
+        }
+
+
 def _job_cost(tokens_in: float, tokens_out: float, tokens_total: float,
               price_in: float, price_out: float) -> float:
     """Deterministic per-job cost. Uses the real in/out split when the job
@@ -3237,7 +3249,8 @@ class Handler(BaseHTTPRequestHandler):
                         jobs_list.append({
                             "job_id": jid,
                             "tokens": tokens,
-                            "est_cost_usd": round(total, 6)
+                            "est_cost_usd": round(total, 6),
+                            **_job_savings_fields(jid),
                         })
                     except Exception as e:
                         _diag("server.usage_job_cost", e, msg=f"job={jid}")
@@ -3367,7 +3380,8 @@ class Handler(BaseHTTPRequestHandler):
                         "tokens": tokens,
                         "est_cost_usd": round(est_cost_usd, 6),
                         "artifacts": artifacts_list,
-                        "tasks": tasks_list
+                        "tasks": tasks_list,
+                        **_job_savings_fields(jid),
                     })
             except Exception as e:
                 _diag("server.jobs_list_aggregate", e)

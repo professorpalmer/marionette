@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import threading
 import urllib.error
@@ -19,6 +20,7 @@ from harness.tool_output_savings import (
     aggregate_jsonl_records,
     estimate_tokens,
     get_ledger,
+    job_savings_payload,
     parse_jsonl_records,
     savings_usd,
     session_savings_payload,
@@ -260,6 +262,75 @@ def test_integration_maybe_persist_records_savings(tmp_path):
     summary = get_ledger(state_dir).summarize(session_id=session_id)
     assert summary.record_count == 1
     assert summary.tokens_saved == tokens_avoided(len(large), len(result))
+
+
+def test_job_id_migration_and_filter(tmp_path):
+    state_dir = str(tmp_path)
+    ledger = get_ledger(state_dir)
+    ledger.record(
+        session_id="sess",
+        tool_call_id="tc1",
+        original_chars=4000,
+        compact_chars=400,
+        reason="persist",
+        job_id="job_alpha",
+    )
+    ledger.record(
+        session_id="sess",
+        tool_call_id="tc2",
+        original_chars=2000,
+        compact_chars=200,
+        reason="persist",
+        job_id="job_beta",
+    )
+    alpha = ledger.summarize(job_id="job_alpha")
+    assert alpha.record_count == 1
+    assert alpha.tokens_saved == tokens_avoided(4000, 400)
+
+    payload = job_savings_payload(state_dir, "job_beta")
+    assert payload["tool_output_tokens_saved"] == tokens_avoided(2000, 200)
+    assert payload["tool_output_compactions"] == 1
+
+
+def test_job_id_column_added_to_legacy_db(tmp_path):
+    state_dir = str(tmp_path)
+    db_path = tmp_path / "tool_output_savings.sqlite"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE tool_output_savings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL NOT NULL,
+            session_id TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL,
+            original_chars INTEGER NOT NULL,
+            compact_chars INTEGER NOT NULL,
+            tokens_saved INTEGER NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            UNIQUE(session_id, tool_call_id)
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO tool_output_savings "
+        "(ts, session_id, tool_call_id, original_chars, compact_chars, tokens_saved, reason) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (1.0, "legacy", "tc0", 1000, 100, tokens_avoided(1000, 100), "persist"),
+    )
+    conn.commit()
+    conn.close()
+
+    ledger = get_ledger(state_dir)
+    ledger.record(
+        session_id="legacy",
+        tool_call_id="tc1",
+        original_chars=800,
+        compact_chars=80,
+        reason="persist",
+        job_id="job_legacy",
+    )
+    summary = ledger.summarize(job_id="job_legacy")
+    assert summary.record_count == 1
 
 
 @pytest.mark.parametrize("chars_per_token", [CHARS_PER_TOKEN])

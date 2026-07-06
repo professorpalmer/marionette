@@ -325,6 +325,8 @@ class ConversationalSession(ToolDispatchMixin):
         self.state_dir = config.state_dir or tempfile.mkdtemp(prefix="pilot-")
         # Harness session id (from SessionStore) for savings-ledger dedupe scope.
         self.harness_session_id: str = ""
+        # Swarm job id for per-job tool-output savings attribution (worker sessions).
+        self.savings_job_id: str = ""
         # Provider-aware pilot: 'provider:model' spans any provider whose key is
         # set; a bare model resolves against available providers, else OpenRouter.
         try:
@@ -1078,6 +1080,7 @@ class ConversationalSession(ToolDispatchMixin):
             state_dir=self._state_dir_or_tempdir,
             session_id=self.harness_session_id or "default",
             tool_call_id=tool_call_id,
+            job_id=self.savings_job_id or None,
         )
 
     def _format_block_for_summary(self, messages: list[dict]) -> str:
@@ -4067,6 +4070,7 @@ class ConversationalSession(ToolDispatchMixin):
                 state_dir=self._state_dir_or_tempdir,
                 config=self.context_budget_config,
                 savings_session_id=self.harness_session_id or "default",
+                savings_job_id=self.savings_job_id or None,
             )
             self._history[history_len_before_actions:] = new_messages
 
@@ -5337,7 +5341,7 @@ class ConversationalSession(ToolDispatchMixin):
         def _run():
             try:
                 with _ambient_budget_ctx(_governing):
-                    box["res"] = run_edit_worker(_effective_config, objective, requested_adapter=requested_adapter)
+                    box["res"] = run_edit_worker(_effective_config, objective, requested_adapter=requested_adapter, job_id=job_id)
             except Exception as exc:  # surfaced to the caller after join
                 box["exc"] = exc
             finally:

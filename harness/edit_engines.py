@@ -168,6 +168,7 @@ def select_edit_engine(config: "HarnessConfig", requested_adapter: str = "") -> 
 
 def run_edit_worker(
     config: "HarnessConfig", goal: str, requested_adapter: str = "",
+    job_id: str = "",
 ) -> "WorkerResult":
     """Run the selected in-process edit engine and return a normalized result.
 
@@ -179,12 +180,12 @@ def run_edit_worker(
         if result.error in _FALLBACK_REASONS:
             _diag("edit_engines.run_edit_worker",
                   msg=f"agentic engine unavailable ({result.error}); falling back to native")
-            return run_native_edit(config, goal)
+            return run_native_edit(config, goal, job_id=job_id)
         return result
-    return run_native_edit(config, goal)
+    return run_native_edit(config, goal, job_id=job_id)
 
 
-def run_native_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
+def run_native_edit(config: "HarnessConfig", goal: str, job_id: str = "") -> "WorkerResult":
     """Marionette's own pilot loop driven in a worktree (the rich engine)."""
     from harness.autobudget import AutoBudget
     from harness.worker import ProviderWorker
@@ -193,6 +194,7 @@ def run_native_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
         config.repo, goal,
         driver=config.driver, reach=config.reach,
         budget=AutoBudget.from_env(), require_codegraph=False,
+        job_id=job_id,
     )
     # ProviderWorker.run() stamps tokens_out from the budget on every return path.
     return worker.run()

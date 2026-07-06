@@ -180,6 +180,10 @@ function jobTokens(j: Job): number {
   return Number(j.tokens || 0);
 }
 
+function jobCompactTokens(j: Job): number {
+  return Number(j.tool_output_tokens_saved || 0);
+}
+
 function formatCost(cost: number): string {
   return cost > 0 ? `$${cost.toFixed(4)}` : "$0";
 }
@@ -447,9 +451,12 @@ export default function SwarmPane() {
               </Tooltip>
             </div>
             <div className="flex items-center gap-3 shrink-0 text-[10px] pl-2">
-              {(jobCost(j) > 0 || jobTokens(j) > 0) && (
+              {(jobCost(j) > 0 || jobTokens(j) > 0 || jobCompactTokens(j) > 0) && (
                 <span className="text-muted font-mono flex items-center gap-1.5">
                   {jobTokens(j) > 0 && <span>{jobTokens(j).toLocaleString()}t</span>}
+                  {jobCompactTokens(j) > 0 && (
+                    <span className="text-accent/90">{jobCompactTokens(j).toLocaleString()} compact</span>
+                  )}
                   {jobCost(j) > 0 && <span className="text-good/90">{formatCost(jobCost(j))}</span>}
                 </span>
               )}

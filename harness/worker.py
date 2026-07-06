@@ -332,12 +332,14 @@ class ProviderWorker:
         run_tests: str = "",
         keep_worktree_on_failure: bool = False,
         require_codegraph: bool = False,
+        job_id: str = "",
     ):
         self.repo = os.path.abspath(repo) if repo else ""
         self.goal = goal
         self.driver = driver
         self.reach = reach
         self.base = base
+        self.job_id = job_id or ""
         # Shared-budget threading: if a supervising fully-auto run installed a
         # governing budget for this thread, adopt a child() of it so this
         # worker's spend rolls up into the ONE tree-wide ceiling that never
@@ -450,6 +452,8 @@ class ProviderWorker:
             # (not at module top) to keep worker <-> conversation acyclic.
             from harness.conversation import ConversationalSession
             session = ConversationalSession(worker_cfg)
+            if self.job_id:
+                session.savings_job_id = self.job_id
             
             with patch_subprocess_run(wt_path):
                 for ev in session.run_auto(

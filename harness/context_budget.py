@@ -237,6 +237,7 @@ def enforce_turn_budget(
     on_compaction: Optional[CompactionCallback] = None,
     *,
     savings_session_id: Optional[str] = None,
+    savings_job_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Layer 3: enforce aggregate budget across all tool results in a turn."""
     candidates = []
@@ -274,6 +275,7 @@ def enforce_turn_budget(
                     state_dir=state_dir,
                     session_id=savings_session_id,
                     tool_call_id=tc_id,
+                    job_id=savings_job_id,
                 )
             except Exception:
                 pass
