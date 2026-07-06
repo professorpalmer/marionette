@@ -338,3 +338,101 @@ def snapshot_memory_layers(
         "L3": measure_l3_cold(state_dir, session_id),
         "snapshot_at": snapshot_at,
     }
+
+
+def _journal_path(state_dir: str) -> str:
+    return os.path.join(os.path.abspath(state_dir), JOURNAL_FILENAME)
+
+
+def record_memory_layer_snapshot(
+    state_dir: str,
+    session_id: str,
+    turn: int,
+    snapshot: dict[str, Any],
+) -> None:
+    """Append one layer snapshot record. Failures are swallowed."""
+    if not state_dir or turn <= 0 or not isinstance(snapshot, dict):
+        return
+    try:
+        record = {
+            "session_id": session_id or "default",
+            "turn": int(turn),
+            "ts": time.time(),
+            "snapshot": snapshot,
+        }
+        os.makedirs(os.path.abspath(state_dir), exist_ok=True)
+        with open(_journal_path(state_dir), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+
+def layer_snapshot_at(
+    state_dir: str,
+    session_id: str,
+    turn: int,
+) -> Optional[dict[str, Any]]:
+    """Newest recorded snapshot for ``turn`` in ``session_id``, or None."""
+    if not state_dir or turn <= 0:
+        return None
+    path = _journal_path(state_dir)
+    if not os.path.isfile(path):
+        return None
+    sid = session_id or "default"
+    newest: Optional[dict[str, Any]] = None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                if record.get("session_id") != sid:
+                    continue
+                if int(record.get("turn", -1)) != int(turn):
+                    continue
+                snap = record.get("snapshot")
+                if isinstance(snap, dict):
+                    newest = snap
+    except Exception:
+        return None
+    return newest
+
+
+def latest_layer_snapshot(state_dir: str, session_id: str) -> dict[str, Any]:
+    """Most recent snapshot for ``session_id``, or ``{}`` when absent."""
+    if not state_dir:
+        return {}
+    path = _journal_path(state_dir)
+    if not os.path.isfile(path):
+        return {}
+    sid = session_id or "default"
+    newest: Optional[dict[str, Any]] = None
+    newest_ts = -1.0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(record, dict) or record.get("session_id") != sid:
+                    continue
+                snap = record.get("snapshot")
+                if not isinstance(snap, dict):
+                    continue
+                ts = float(record.get("ts") or 0)
+                if ts >= newest_ts:
+                    newest_ts = ts
+                    newest = snap
+    except Exception:
+        return {}
+    return newest or {}

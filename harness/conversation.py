@@ -2028,6 +2028,10 @@ class ConversationalSession(ToolDispatchMixin):
         # behavior toggles for this turn. Observability only; never raises.
         try:
             from .turn_context import record_turn_context
+            from .memory_layers import (
+                record_memory_layer_snapshot,
+                snapshot_memory_layers,
+            )
 
             _turn_index = sum(
                 1 for m in self._history if m.get("role") == "user"
@@ -2037,6 +2041,17 @@ class ConversationalSession(ToolDispatchMixin):
                 self.harness_session_id or "default",
                 _turn_index,
                 repo=self.config.repo or "",
+            )
+            record_memory_layer_snapshot(
+                self.state_dir,
+                self.harness_session_id or "default",
+                _turn_index,
+                snapshot_memory_layers(
+                    self,
+                    self.state_dir,
+                    self.harness_session_id or "default",
+                    repo=self.config.repo or "",
+                ),
             )
         except Exception:
             pass
