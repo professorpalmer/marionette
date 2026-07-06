@@ -78,6 +78,21 @@ function detectUv(env) {
   });
 }
 
+function statusPath(line) {
+  const raw = line.slice(3).trim();
+  const renamed = raw.split(" -> ").pop();
+  return renamed.replace(/^"|"$/g, "").replace(/\\/g, "/");
+}
+
+function isTrackedSelfEditLine(line) {
+  if (!line.trim() || line.startsWith("??")) return false;
+  const file = statusPath(line);
+  return !(
+    file.startsWith("results/") ||
+    file.startsWith(".codegraph/")
+  );
+}
+
 // Inspect the working tree so the updater can tell a clean checkout apart from
 // one the user (or Marionette editing itself) has modified. `dirty` = tracked
 // changes exist besides results/ (which is gitignored churn). `ahead` = local
@@ -90,12 +105,14 @@ async function inspectTree(repoRoot, branch) {
   // block a fast-forward merge, and the pilot routinely drops scratch files
   // (analysis scripts, result dumps) into the checkout -- counting those made
   // every update nag "you have local self-edits" forever.
-  const dirty = status.ok &&
-    status.out.split("\n").some((l) => l.trim() && !l.startsWith("??") && !/\bresults\//.test(l));
+  const dirtyFiles = status.ok
+    ? status.out.split("\n").filter(isTrackedSelfEditLine).map(statusPath)
+    : [];
+  const dirty = dirtyFiles.length > 0;
   // Commits on HEAD that FETCH_HEAD (the fetched branch tip) doesn't contain.
   const aheadRes = await gitCapture(repoRoot, ["rev-list", "--count", "FETCH_HEAD..HEAD"]);
   const ahead = aheadRes.ok ? (parseInt(aheadRes.out, 10) || 0) : 0;
-  return { dirty, ahead };
+  return { dirty, dirtyFiles, ahead };
 }
 
 // Stream a child process, forwarding trimmed output lines to onLine, resolving
@@ -166,7 +183,7 @@ async function checkForUpdate({ repoRoot, branch = DEFAULT_BRANCH, currentVersio
 
     // Tree state so the UI can pick an apply strategy up front (a self-edited
     // checkout is dirty and/or ahead of origin).
-    const { dirty, ahead } = await inspectTree(repoRoot, branch);
+    const { dirty, dirtyFiles, ahead } = await inspectTree(repoRoot, branch);
 
     // Version string at the fetched tip, so the banner can say "v0.7.35 is
     // ready" instead of a generic label (or worse, the branch name).
@@ -229,7 +246,7 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     if (fetched.code !== 0) return { ok: false, error: fetched.tail || "git fetch failed" };
 
     // Diverged/dirty preflight: decide whether we can fast-forward at all.
-    const { dirty, ahead } = await inspectTree(repoRoot, branch);
+    const { dirty, dirtyFiles, ahead } = await inspectTree(repoRoot, branch);
     if (ahead > 0) {
       return {
         ok: false,
@@ -244,8 +261,10 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
         ok: false,
         code: "dirty",
         error:
-          "You have uncommitted changes (self-edits). Choose 'Stash & update' to set them " +
-          "aside and reapply them after updating, or commit them first.",
+          "You have uncommitted changes (self-edits): " +
+          (dirtyFiles.length ? dirtyFiles.slice(0, 6).join(", ") : "tracked files changed") +
+          (dirtyFiles.length > 6 ? `, and ${dirtyFiles.length - 6} more` : "") +
+          ". Choose 'Stash & update' to set them aside and reapply them after updating, or commit them first.",
       };
     }
     if (dirty && strategy === "stash") {
@@ -418,4 +437,4 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   });
 }
 
-module.exports = { registerUpdateBridge, checkForUpdate, applyUpdate };
+module.exports = { registerUpdateBridge, checkForUpdate, applyUpdate, isTrackedSelfEditLine, statusPath };

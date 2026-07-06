@@ -16,6 +16,7 @@ const rebuild = require("./update-rebuild.cjs");
 const pm = require("./update-pm.cjs");
 const env = require("./update-env.cjs");
 const marker = require("./update-marker.cjs");
+const bridge = require("./update-bridge.cjs");
 
 test("canonicalGitHubRemote: ssh and https forms of the same repo compare equal", () => {
   const ssh = remote.canonicalGitHubRemote("git@github.com:professorpalmer/marionette.git");
@@ -137,6 +138,18 @@ test("buildUpdaterEnv: an empty shell env leaves the base PATH intact", () => {
   const basePath = ["/usr/bin", "/bin"].join(path.delimiter);
   const merged = env.buildUpdaterEnv({ processEnv: { PATH: basePath }, shellEnv: {} });
   assert.equal(merged.PATH, basePath);
+});
+
+test("isTrackedSelfEditLine: ignores untracked files and CodeGraph metadata", () => {
+  assert.equal(bridge.isTrackedSelfEditLine("?? scratch.txt"), false);
+  assert.equal(bridge.isTrackedSelfEditLine(" M results/run.sqlite"), false);
+  assert.equal(bridge.isTrackedSelfEditLine(" M .codegraph/config.json"), false);
+  assert.equal(bridge.isTrackedSelfEditLine(" M harness/server.py"), true);
+});
+
+test("statusPath: normalizes renamed and Windows-style paths", () => {
+  assert.equal(bridge.statusPath(" M harness\\server.py"), "harness/server.py");
+  assert.equal(bridge.statusPath("R  old.js -> webapp\\electron\\main.cjs"), "webapp/electron/main.cjs");
 });
 
 test("readLiveUpdateMarker: live pid within age ceiling is reported", () => {
