@@ -6,10 +6,33 @@ back in with @pytest.mark.network, and are deselected by default in CI runs.
 """
 import socket
 import os
+import shutil
+import stat
 import tempfile
 import pytest
 
 os.environ["PMHARNESS_MCP_ALLOW_PRIVATE"] = "1"
+
+# Windows: git marks object files read-only, which makes shutil.rmtree fail
+# with PermissionError on every temp-git-repo teardown. Wrap rmtree once here
+# (instead of touching dozens of per-test cleanup calls) with an error handler
+# that clears the read-only bit and retries the failed delete.
+if os.name == "nt":
+    _real_rmtree = shutil.rmtree
+
+    def _clear_readonly_and_retry(func, path, _exc_info):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except Exception:
+            pass
+
+    def _rmtree_windows(path, ignore_errors=False, onerror=None, **kwargs):
+        if onerror is None and not kwargs.get("onexc"):
+            onerror = _clear_readonly_and_retry
+        return _real_rmtree(path, ignore_errors=ignore_errors, onerror=onerror, **kwargs)
+
+    shutil.rmtree = _rmtree_windows
 
 # Seal off the developer's real ~/.pmharness BEFORE pytest collects (imports)
 # any test module. Several test modules import harness.server at top level, and

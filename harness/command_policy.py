@@ -165,17 +165,27 @@ def run_cancellable(
     Returns (output: str, exit_code: int, status: str) where status is one of
     "ok" | "cancelled" | "timeout" | "truncated" | "error". Never raises.
     """
-    import fcntl
     import signal
     import time as _time
+    try:
+        import fcntl
+    except ImportError:  # Windows: no fcntl; blocking-read fallback below applies
+        fcntl = None
 
     # Snapshot the cancel flag BEFORE launch. A flag already set here is stale
     # (sibling-stream poison / leftover interrupt), not a stop aimed at us.
     stale_cancel = cancel_event is not None and cancel_event.is_set()
     start = _time.monotonic()
     try:
-        # start_new_session=True puts the child in its own process group so we
-        # can signal the entire tree (shell + everything it spawned).
+        # Put the child in its own process group so we can signal the entire
+        # tree (shell + everything it spawned). start_new_session is POSIX-only;
+        # on Windows the equivalent is the CREATE_NEW_PROCESS_GROUP flag, and
+        # tree-kill goes through taskkill in _kill_group.
+        group_kwargs = (
+            {"start_new_session": True}
+            if os.name == "posix"
+            else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        )
         proc = subprocess.Popen(
             command,
             shell=True,
@@ -184,23 +194,63 @@ def run_cancellable(
             stderr=subprocess.STDOUT,
             text=True,
             errors="backslashreplace",
-            start_new_session=True,
+            **group_kwargs,
         )
     except Exception as e:
         return (f"Failed to execute command: {e}", -1, "error")
 
     # Set the pipe to non-blocking so we can read from it without stalling.
-    if proc.stdout:
+    nonblocking = False
+    if proc.stdout and fcntl is not None:
         try:
             fd = proc.stdout.fileno()
             fl = fcntl.fcntl(fd, fcntl.F_GETFL)
             fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            nonblocking = True
         except Exception:
-            # Fallback for platforms where this isn't supported (e.g. Windows).
-            # The logic below handles a blocking read(), but polling is preferred.
             pass
 
+    # Without a non-blocking pipe (Windows has no fcntl), an inline read()
+    # blocks until the child exits -- which would starve the cancel/timeout
+    # polling below and make Stop a no-op. Drain the pipe from a daemon
+    # thread instead so the poll loop stays responsive.
+    _threaded_chunks: list = []
+    _drain_thread = None
+    if proc.stdout and not nonblocking:
+        import threading as _threading
+
+        def _drain_pipe():
+            try:
+                while True:
+                    chunk = proc.stdout.read(65536)
+                    if not chunk:
+                        break
+                    _threaded_chunks.append(chunk)
+            except Exception:
+                pass
+
+        _drain_thread = _threading.Thread(target=_drain_pipe, daemon=True)
+        _drain_thread.start()
+
     def _kill_group():
+        if os.name != "posix":
+            # Windows: taskkill /T kills the whole tree (children included),
+            # which os.killpg would do on POSIX. /F because the console shells
+            # spawned with shell=True have no graceful-TERM equivalent here.
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=5,
+                )
+            except Exception:
+                pass
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return
+
         # Capture the group id BEFORE the parent exits -- once proc is reaped,
         # os.getpgid(proc.pid) raises and we lose the ability to sweep survivors.
         try:
@@ -250,7 +300,13 @@ def run_cancellable(
     status = "ok"
 
     while proc.poll() is None:
-        if proc.stdout:
+        if _drain_thread is not None:
+            # Reader thread owns the pipe; harvest what it has collected so far.
+            while _threaded_chunks:
+                chunk = _threaded_chunks.pop(0)
+                output_chunks.append(chunk)
+                total_read += len(chunk)
+        elif proc.stdout:
             try:
                 chunk = proc.stdout.read(65536)
                 if chunk:
@@ -276,7 +332,13 @@ def run_cancellable(
         _time.sleep(poll_interval)
 
     # One final read to drain the pipe after the process has exited.
-    if proc.stdout:
+    if _drain_thread is not None:
+        _drain_thread.join(timeout=2)
+        while _threaded_chunks:
+            chunk = _threaded_chunks.pop(0)
+            output_chunks.append(chunk)
+            total_read += len(chunk)
+    elif proc.stdout:
         try:
             chunk = proc.stdout.read()
             if chunk:

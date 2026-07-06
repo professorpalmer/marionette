@@ -5415,7 +5415,9 @@ class ConversationalSession(ToolDispatchMixin):
         # Operator-provided command is safe to run with shell=True if needed
         # (e.g., if it has shell metacharacters or piping), but prefer shlex.split
         # where simple. Operator-provided config, not model-provided.
-        has_meta = any(c in verify_cmd for c in ";&|><$`*?~")
+        # Windows always uses the shell: shlex.split is POSIX-quoting-only and
+        # strips the backslashes out of paths like C:\...\python.exe.
+        has_meta = os.name == "nt" or any(c in verify_cmd for c in ";&|><$`*?~")
         
         try:
             if has_meta:

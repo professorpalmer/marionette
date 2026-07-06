@@ -298,6 +298,15 @@ class ToolDispatchMixin:
                     return False, "exception", f"ripgrep failed with code {p.returncode}: {output.strip()}"
 
                 lines = [l for l in output.splitlines() if l.strip()]
+                if os.sep == "\\":
+                    # Normalize the path prefix (everything before the first
+                    # ':') to forward slashes so results read identically on
+                    # every platform. Relative paths carry no drive colon.
+                    lines = [
+                        l.split(":", 1)[0].replace("\\", "/") + ":" + l.split(":", 1)[1]
+                        if ":" in l else l
+                        for l in lines
+                    ]
                 truncated = len(lines) > max_results
                 lines = lines[:max_results]
                 result_text = "\n".join(lines)
@@ -334,7 +343,7 @@ class ToolDispatchMixin:
                     with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                         for line_num, line in enumerate(f, 1):
                             if compiled_re.search(line):
-                                rel_path = os.path.relpath(file_path, self.config.repo)
+                                rel_path = os.path.relpath(file_path, self.config.repo).replace(os.sep, "/")
                                 line_text = line.rstrip("\r\n")
                                 matches.append(f"{rel_path}:{line_num}: {line_text}")
                                 if len(matches) > max_results:

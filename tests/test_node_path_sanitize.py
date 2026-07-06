@@ -77,12 +77,16 @@ def test_ensure_node_on_path_rejects_cursor_and_prepends_clean(monkeypatch, tmp_
         _exec, "_node_candidate_dirs", lambda: [poisoned_app_dir, HOMEBREW_DIR]
     )
 
+    # _ensure_node_on_path probes for the platform binary name (node.exe on
+    # Windows), so the fake filesystem must expose that same name.
+    exe = "node.exe" if os.name == "nt" else "node"
+
     def fake_isfile(path):
         # Both the poisoned dir and the clean dir "contain" a node, but the
         # poisoned one must be rejected by _is_app_bundle_path filtering.
         return path in {
-            os.path.join(poisoned_app_dir, "node"),
-            HOMEBREW_NODE,
+            os.path.join(poisoned_app_dir, exe),
+            os.path.join(HOMEBREW_DIR, exe),
         }
 
     monkeypatch.setattr(os.path, "isfile", fake_isfile)

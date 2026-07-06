@@ -2,12 +2,26 @@
 blocks the thread uninterruptibly, so a user Stop could not kill a long/unbounded
 command. run_cancellable polls a cancel event and kills the whole process group.
 """
+import sys
 import threading
 import time
 
 import pytest
 
 from harness.command_policy import run_cancellable
+
+
+def _sleep_cmd(seconds, then_echo=None):
+    """A long-running command that works under both /bin/sh and cmd.exe.
+
+    POSIX `sleep` doesn't exist on Windows, and cmd has no `;` chaining --
+    a Python one-liner via the current interpreter behaves identically on
+    both, so these tests exercise the real kill path everywhere.
+    """
+    body = f"import time; time.sleep({seconds})"
+    if then_echo:
+        body += f"; print({then_echo!r})"
+    return f'"{sys.executable}" -c "{body}"'
 
 
 def test_normal_completion():
@@ -27,7 +41,7 @@ def test_cancel_kills_promptly():
     ev = threading.Event()
     threading.Thread(target=lambda: (time.sleep(0.3), ev.set())).start()
     t0 = time.time()
-    out, code, status = run_cancellable("sleep 30", timeout=None, cancel_event=ev)
+    out, code, status = run_cancellable(_sleep_cmd(30), timeout=None, cancel_event=ev)
     elapsed = time.time() - t0
     assert status == "cancelled"
     assert code == 130
@@ -46,7 +60,7 @@ def test_stale_preset_cancel_does_not_kill_fresh_command():
     # Must outlive one poll interval (0.1s) so the runner actually reaches its
     # cancel check -- a sub-0.1s command finishes first and never exercises the
     # race, so it cannot distinguish level- from edge-triggered behavior.
-    out, code, status = run_cancellable("sleep 0.3; echo alive", timeout=10, cancel_event=ev)
+    out, code, status = run_cancellable(_sleep_cmd(0.3, then_echo="alive"), timeout=10, cancel_event=ev)
     assert status == "ok", f"stale pre-set flag wrongly cancelled: {status}"
     assert code == 0
     assert "alive" in out
@@ -59,7 +73,7 @@ def test_cancel_set_during_run_still_kills():
     ev = threading.Event()  # clear at launch
     threading.Thread(target=lambda: (time.sleep(0.3), ev.set())).start()
     t0 = time.time()
-    out, code, status = run_cancellable("sleep 30", timeout=None, cancel_event=ev)
+    out, code, status = run_cancellable(_sleep_cmd(30), timeout=None, cancel_event=ev)
     elapsed = time.time() - t0
     assert status == "cancelled"
     assert code == 130
@@ -69,7 +83,7 @@ def test_cancel_set_during_run_still_kills():
 
 def test_timeout_kills():
     t0 = time.time()
-    out, code, status = run_cancellable("sleep 30", timeout=1)
+    out, code, status = run_cancellable(_sleep_cmd(30), timeout=1)
     elapsed = time.time() - t0
     assert status == "timeout"
     assert elapsed < 5
@@ -79,6 +93,11 @@ def test_timeout_kills():
 import sys as _sys
 
 
+@pytest.mark.skipif(
+    _sys.platform == "win32",
+    reason="pgrep/sh job-control constructs are POSIX-only; the Windows tree-kill "
+           "path (taskkill /T) is covered by test_cancel_kills_promptly.",
+)
 @pytest.mark.skipif(
     _sys.platform.startswith("linux"),
     reason=(

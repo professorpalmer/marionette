@@ -130,7 +130,9 @@ def spill_to_disk(
     file_path = os.path.join(target_dir, file_name)
     with open(file_path, "w", encoding="utf-8", errors="replace") as f:
         f.write(content)
-    return file_path
+    # Forward slashes everywhere: the path is echoed to the model (which reads
+    # it back via read_file), and Windows accepts both separators anyway.
+    return file_path.replace(os.sep, "/")
 
 
 def build_persisted_message(

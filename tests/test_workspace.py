@@ -54,8 +54,11 @@ def test_open_workspace_endpoints():
             resp_body = json.loads(e.read().decode())
             assert "existing directory" in resp_body["error"]
 
-        # 3. Create a temp directory with a git repository
-        with tempfile.TemporaryDirectory() as tmpdir:
+        # 3. Create a temp directory with a git repository.
+        # ignore_cleanup_errors: opening the workspace kicks off async probes
+        # (codegraph status) that can briefly hold the dir on Windows, where an
+        # in-use file makes rmtree raise instead of succeeding as on POSIX.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             real_tmp = os.path.realpath(tmpdir)
             # init git repo
             subprocess.run(["git", "init", "-b", "main", real_tmp], capture_output=True, check=True)
@@ -139,7 +142,12 @@ class _OpenProjectPilot:
         from pmharness.drivers.openai_compat import DriverResponse
         self.calls += 1
         if self.calls == 1:
-            txt = f'{{"say":"Opening...","actions":[{{"kind":"open_project","path":"{self.path}"}}]}}'
+            # json.dumps so Windows backslash paths are escaped as valid JSON
+            # (an f-string would inject raw '\U...' sequences the parser rejects).
+            txt = json.dumps({
+                "say": "Opening...",
+                "actions": [{"kind": "open_project", "path": self.path}],
+            })
         else:
             txt = '{"say":"Done","actions":[]}'
         return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)

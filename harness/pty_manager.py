@@ -7,19 +7,33 @@ input via POST. Sessions are keyed by id; output is buffered so a late SSE subsc
 still catches up.
 """
 import os
-import pty
 import select
 import signal
 import struct
-import fcntl
-import termios
 import threading
 import time
 import uuid
 
+# pty/termios/fcntl are Unix-only. On Windows they don't exist; importing this
+# module must still succeed so the backend (and every non-terminal feature)
+# boots. PTY_AVAILABLE gates session creation instead.
+try:
+    import pty
+    import fcntl
+    import termios
+    PTY_AVAILABLE = True
+except ImportError:
+    pty = fcntl = termios = None
+    PTY_AVAILABLE = False
+
 
 class PtySession:
     def __init__(self, cwd: str = None, cols: int = 80, rows: int = 24):
+        if not PTY_AVAILABLE:
+            raise RuntimeError(
+                "The built-in terminal requires a Unix PTY and is not yet "
+                "supported on Windows."
+            )
         self.id = uuid.uuid4().hex[:12]
         self.cols = cols
         self.rows = rows

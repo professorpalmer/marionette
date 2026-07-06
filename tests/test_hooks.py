@@ -54,7 +54,10 @@ def test_hooks_module_and_endpoints():
         hooks_list = [{
             "id": "h1",
             "event": "preRun",
-            "command": "echo 'hello from test_hooks' > " + os.path.join(tmp_dir, "hook_out.txt"),
+            # No quotes around the echo text: cmd.exe echoes single quotes
+            # literally, so quoting would make the written content differ by
+            # platform. Bare words echo identically under /bin/sh and cmd.
+            "command": "echo hello from test_hooks > " + os.path.join(tmp_dir, "hook_out.txt"),
             "enabled": True
         }]
         _hk.save_hooks(hooks_list)

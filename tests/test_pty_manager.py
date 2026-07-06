@@ -1,7 +1,15 @@
 """Tests for the built-in terminal PTY manager (stdlib-only)."""
 import time
 
-from harness.pty_manager import PtyManager
+import pytest
+
+from harness.pty_manager import PTY_AVAILABLE, PtyManager
+
+# PTY sessions require Unix pty/termios; on Windows PtyManager.create raises
+# RuntimeError by design (import still succeeds so the backend boots).
+pytestmark = pytest.mark.skipif(
+    not PTY_AVAILABLE, reason="no Unix PTY on this platform (Windows)"
+)
 
 
 def test_pty_create_write_read_kill():

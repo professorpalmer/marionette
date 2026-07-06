@@ -27,6 +27,12 @@ def _run_cmd(cmd):
     return _ev("action_start", {"kind": "run_command", "goal": cmd})
 
 
+def _norm(path):
+    """The detector reports abspath-normalized destinations (drive-prefixed
+    backslash form on Windows); normalize expectations the same way."""
+    return os.path.abspath(path)
+
+
 def test_detects_absolute_path_cat_redirect_outside_worktree():
     # Classic escape: `cat > /abs/path` while cwd is the worktree. run_command
     # sets cwd but does NOT confine writes, so the file lands outside and the
@@ -35,7 +41,7 @@ def test_detects_absolute_path_cat_redirect_outside_worktree():
         outside = "/tmp/outside_marionette_test/x"
         events = [_run_cmd(f"cat > {outside}")]
         found = _detect_escaped_writes(events, wt)
-        assert outside in found, found
+        assert _norm(outside) in found, found
 
 
 def test_detects_various_write_forms():
@@ -57,7 +63,7 @@ def test_detects_various_write_forms():
             "/var/tmp/pm_esc_e",
             "/var/tmp/pm_esc_f",
         ):
-            assert expected in found, (expected, found)
+            assert _norm(expected) in found, (expected, found)
 
 
 def test_ignores_writes_inside_worktree():
@@ -92,7 +98,7 @@ def test_worktree_prefix_is_boundary_aware():
     # startswith check would false-negative here.
     events = [_run_cmd("cat > /tmp/wtx/y")]
     found = _detect_escaped_writes(events, "/tmp/wt")
-    assert "/tmp/wtx/y" in found
+    assert _norm("/tmp/wtx/y") in found
 
 
 def test_never_raises_on_malformed_events():
@@ -137,8 +143,8 @@ def test_multiple_writes_deduped_and_sorted():
         ]
         found = _detect_escaped_writes(events, wt)
         assert found == sorted(set(found))
-        assert "/var/tmp/pm_esc_a" in found
-        assert "/var/tmp/pm_esc_z" in found
+        assert _norm("/var/tmp/pm_esc_a") in found
+        assert _norm("/var/tmp/pm_esc_z") in found
 
 
 def test_worker_result_has_escaped_paths_field():

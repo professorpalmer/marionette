@@ -1,6 +1,7 @@
 """Tests for real pilot agent tools (read_file, write_file, run_command, list_dir)."""
 import json
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from harness.config import HarnessConfig
@@ -136,7 +137,10 @@ def test_run_command_survives_cancel_poisoned_after_action_start():
                 if self.calls == 1:
                     return FakeResponse(text=json.dumps({
                         "say": "Running command now",
-                        "actions": [{"kind": "run_command", "command": "sleep 0.3; echo alive_marker_42"}],
+                        # Python one-liner sleep: portable across /bin/sh and
+                        # cmd.exe (POSIX `sleep` and `;` chaining are not).
+                        "actions": [{"kind": "run_command", "command":
+                            f'"{sys.executable}" -c "import time; time.sleep(0.3); print(\'alive_marker_42\')"'}],
                     }))
                 return FakeResponse(text=json.dumps({"say": "Done", "actions": []}))
 

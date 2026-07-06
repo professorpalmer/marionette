@@ -167,7 +167,7 @@ def test_parallel_reads_timing_sanity(monkeypatch):
     # Monkeypatch ConversationalSession._do_read_file
     original_do_read_file = ConversationalSession._do_read_file
     def mocked_do_read_file(self, act):
-        time.sleep(0.2)
+        time.sleep(0.5)
         return original_do_read_file(self, act)
         
     monkeypatch.setattr(ConversationalSession, "_do_read_file", mocked_do_read_file)
@@ -183,5 +183,7 @@ def test_parallel_reads_timing_sanity(monkeypatch):
     list(s.send("run parallel timed reads"))
     elapsed = time.time() - start_time
     
-    # Under 0.45 seconds (3 * 0.2s = 0.6s if serial, but parallel should be ~0.2s)
-    assert elapsed < 0.45, f"Elapsed time {elapsed}s was not under 0.45s!"
+    # Serial would be 3 * 0.5s = 1.5s of sleeping alone; parallel is ~0.5s.
+    # The 1.2s bound leaves room for per-turn overhead (git/config probes are
+    # notably slower on Windows) while still failing a serial regression.
+    assert elapsed < 1.2, f"Elapsed time {elapsed}s suggests reads ran serially!"

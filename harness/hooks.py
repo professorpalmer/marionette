@@ -56,11 +56,15 @@ def run_hooks(event: str, context: dict) -> None:
         if not cmd:
             continue
             
+        # shell=False with an explicit shell wrapper, per subprocess guidance.
+        # /bin/sh on POSIX; cmd.exe on Windows (which has no /bin/sh).
+        shell_wrapper = (
+            ["/bin/sh", "-c", cmd] if os.name == "posix" else ["cmd", "/c", cmd]
+        )
         try:
-            # We run with shell=False as recommended using shell wrapper: ["/bin/sh", "-c", cmd]
             # Capture output, 15s timeout, never crash the run
             subprocess.run(
-                ["/bin/sh", "-c", cmd],
+                shell_wrapper,
                 input=context_json,
                 capture_output=True,
                 text=True,

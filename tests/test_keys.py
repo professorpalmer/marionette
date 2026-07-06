@@ -57,8 +57,11 @@ def test_set_and_get_api_key_status():
     file_path = get_keys_file_path()
     assert os.path.exists(file_path)
     
-    mode = os.stat(file_path).st_mode & 0o777
-    assert mode == 0o600
+    if os.name == "posix":
+        # POSIX-only: Windows has no rwx permission bits (chmod only toggles
+        # the read-only flag), so st_mode reports 0o666 regardless.
+        mode = os.stat(file_path).st_mode & 0o777
+        assert mode == 0o600
     
     # Check status and that full key is excluded
     status = get_api_key_status("openrouter")

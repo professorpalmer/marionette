@@ -76,7 +76,9 @@ def test_maybe_persist_result():
 def test_maybe_persist_result_exception_fallback():
     config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
     content = "this content is definitely longer than ten characters"
-    res = maybe_persist_result(content, "id123", "/nonexistent_directory_cannot_write/!", config)
+    # Embedded NUL makes the path unwritable on every platform (Windows happily
+    # creates "/nonexistent_directory_cannot_write/!" at the drive root).
+    res = maybe_persist_result(content, "id123", "/nonexistent\0directory", config)
     assert "[Truncated: tool response was" in res
     assert "Full output could not be saved" in res
 

@@ -22,10 +22,12 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
 win:
+  icon: build/icon.ico
   target:
     - nsis
   artifactName: "${productName}-${version}-Setup.${ext}"
 linux:
+  icon: build/icon.png
   target:
     - AppImage
   category: Development

@@ -24,3 +24,6 @@ build/*.iconset/
 signing.env
 .signing-keys/
 .DS_Store
+
+# Per-machine Cursor config (mcp.json carries the user's API key)
+.cursor/

@@ -2567,7 +2567,9 @@ class Handler(BaseHTTPRequestHandler):
                     rel_path = os.path.relpath(full_path, repo_abs)
                     if rel_path == "." or rel_path.startswith(".."):
                         continue
-                    files_list.append(rel_path)
+                    # Forward slashes: the renderer's file tree and @-mention
+                    # matching expect one separator on every platform.
+                    files_list.append(rel_path.replace(os.sep, "/"))
                     if len(files_list) >= 2000:
                         break
                 if len(files_list) >= 2000:
@@ -4037,8 +4039,11 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
         except Exception:
             pass
 
-    # allow quick restarts without TIME_WAIT blocking the bind
-    ThreadingHTTPServer.allow_reuse_address = True
+    # allow quick restarts without TIME_WAIT blocking the bind. POSIX-only:
+    # on Windows SO_REUSEADDR means "two live sockets may bind the same port",
+    # which silently defeats the already-in-use guard (EADDRINUSE never fires)
+    # and lets a second backend hijack the first one's port.
+    ThreadingHTTPServer.allow_reuse_address = os.name == "posix"
 
     # Cap concurrent request threads. ThreadingHTTPServer is thread-per-request
     # with NO ceiling, so a burst of slow requests (e.g. many hung provider

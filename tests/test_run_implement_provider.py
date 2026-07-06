@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import sys
 import tempfile
 import subprocess
 from unittest.mock import patch, MagicMock
@@ -135,7 +136,9 @@ def test_run_implement_external_fallback(monkeypatch):
         pm_cmd_called = []
         def mock_pm_cmd(*args, **kwargs):
             pm_cmd_called.append(args)
-            return ["echo", "job_123456789012"]
+            # `echo` is a shell builtin, not an executable, so spawning it as
+            # an argv list fails on Windows; a python -c print works everywhere.
+            return [sys.executable, "-c", "print('job_123456789012')"]
         monkeypatch.setattr("harness.conversation._puppetmaster_cmd", mock_pm_cmd)
 
         # Mock pilot completing and returning run_implement action with an external adapter

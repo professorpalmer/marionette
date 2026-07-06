@@ -118,11 +118,14 @@ test("isEditableInstall: matches only the editable marker line", () => {
 });
 
 test("buildUpdaterEnv: login-shell PATH is prepended so npm/uv resolve (fixes spawn ENOENT)", () => {
+  // Join fixture PATHs with the platform delimiter -- hardcoded ":" would not
+  // split on Windows and the assertions below would see one giant segment.
+  const joinPath = (...dirs) => dirs.join(path.delimiter);
   const merged = env.buildUpdaterEnv({
-    processEnv: { PATH: "/usr/bin:/bin", HARNESS_TOKEN: "keep-me" },
-    shellEnv: { PATH: "/opt/homebrew/bin:/usr/bin", SSH_AUTH_SOCK: "/tmp/agent.sock" },
+    processEnv: { PATH: joinPath("/usr/bin", "/bin"), HARNESS_TOKEN: "keep-me" },
+    shellEnv: { PATH: joinPath("/opt/homebrew/bin", "/usr/bin"), SSH_AUTH_SOCK: "/tmp/agent.sock" },
   });
-  const parts = merged.PATH.split(require("node:path").delimiter);
+  const parts = merged.PATH.split(path.delimiter);
   assert.equal(parts[0], "/opt/homebrew/bin", "homebrew (shell) dir comes first");
   assert.ok(parts.includes("/bin"), "base PATH dirs are preserved");
   assert.equal(parts.filter((p) => p === "/usr/bin").length, 1, "duplicate dirs are de-duplicated");
@@ -131,8 +134,9 @@ test("buildUpdaterEnv: login-shell PATH is prepended so npm/uv resolve (fixes sp
 });
 
 test("buildUpdaterEnv: an empty shell env leaves the base PATH intact", () => {
-  const merged = env.buildUpdaterEnv({ processEnv: { PATH: "/usr/bin:/bin" }, shellEnv: {} });
-  assert.equal(merged.PATH, "/usr/bin:/bin");
+  const basePath = ["/usr/bin", "/bin"].join(path.delimiter);
+  const merged = env.buildUpdaterEnv({ processEnv: { PATH: basePath }, shellEnv: {} });
+  assert.equal(merged.PATH, basePath);
 });
 
 test("readLiveUpdateMarker: live pid within age ceiling is reported", () => {

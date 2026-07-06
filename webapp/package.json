@@ -1,7 +1,7 @@
 {
   "name": "pm-harness",
   "private": true,
-  "version": "0.7.33",
+  "version": "0.7.34",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "electron:dev": "concurrently -k \"vite --host 127.0.0.1 --port 5273\" \"wait-on http://127.0.0.1:5273 && cross-env PMHARNESS_DEV_SERVER=http://127.0.0.1:5273 electron .\"",
     "electron": "electron .",
     "electron:build": "npm run build && electron .",
-    "dist": "npm run build && electron-builder --config electron-builder.yml"
+    "dist": "npm run build && electron-builder --config electron-builder.yml",
+    "make-icon": "node scripts/make_icon.mjs"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",
@@ -44,7 +45,9 @@
     "electron-builder": "^25.1.8",
     "@electron/notarize": "^2.5.0",
     "oxlint": "^1.69.0",
+    "png-to-ico": "^2.1.8",
     "postcss": "^8.5.15",
+    "sharp": "^0.34.3",
     "tailwindcss": "^3.4.19",
     "typescript": "~6.0.2",
     "vite": "^8.1.0",

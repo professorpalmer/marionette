@@ -44,8 +44,11 @@ def test_ergonomics_workspace_files():
             "X-Harness-Token": srv._TOKEN
         }
 
-        # 2. Open a temporary workspace and write some files
-        with tempfile.TemporaryDirectory() as tmpdir:
+        # 2. Open a temporary workspace and write some files.
+        # ignore_cleanup_errors: opening the workspace kicks off async probes
+        # (codegraph status) that can briefly hold the dir open on Windows,
+        # where an in-use file turns rmtree into a PermissionError.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             real_tmp = os.path.realpath(tmpdir)
             # init git repo
             subprocess.run(["git", "init", "-b", "main", real_tmp], capture_output=True, check=True)
