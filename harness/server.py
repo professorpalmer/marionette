@@ -2164,6 +2164,9 @@ class Handler(BaseHTTPRequestHandler):
                 av_val = _parse_bool(body["autoVerify"])
                 _cfg.auto_verify = av_val
                 _set_env_setting("HARNESS_AUTO_VERIFY", "true" if av_val else "false")
+            if "hash_edit_enabled" in body:
+                he_val = _parse_bool(body["hash_edit_enabled"])
+                _set_env_setting("HARNESS_HASH_EDIT", "1" if he_val else "0")
             if "verifyCommand" in body:
                 vc_val = str(body["verifyCommand"]).strip()
                 _cfg.verify_command = vc_val
@@ -4156,6 +4159,8 @@ def _available_pilots():
 
 
 def _get_settings_dict():
+    from harness.hash_edit import hash_edit_enabled
+
     reach = _cfg.reach
     status = get_api_key_status(reach)
     preflight_ok = (_session.preflight() is None)
@@ -4170,6 +4175,7 @@ def _get_settings_dict():
         "autoVerify": getattr(_cfg, "auto_verify", True),
         "verifyCommand": getattr(_cfg, "verify_command", ""),
         "autoCommandGuard": getattr(_pilot, "_auto_command_guard", True),
+        "hash_edit_enabled": hash_edit_enabled(),
         "commandTimeout": (os.environ.get("HARNESS_COMMAND_TIMEOUT", "").strip() or "120"),
         "maxPilotSteps": (os.environ.get("HARNESS_MAX_PILOT_STEPS", "").strip() or "40"),
         "state_dir": _session.state_dir,

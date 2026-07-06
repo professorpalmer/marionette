@@ -501,6 +501,32 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("general", "hash edit hash-anchored experimental") && (<>
+        {/* Hash-anchored edits (experimental) */}
+        <div className="space-y-1.5">
+          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+            Hash-Anchored Edits
+          </label>
+          <button
+            onClick={() => update({ hash_edit_enabled: !(settings.hash_edit_enabled ?? false) })}
+            disabled={saving}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
+              (settings.hash_edit_enabled ?? false)
+                ? "bg-accent/10 border-accent/30 text-accent"
+                : "bg-panel2 border-edge text-muted"
+            } disabled:opacity-50`}
+          >
+            <span className="font-medium text-[11px]">Hash-anchored edits (experimental)</span>
+            <span className="text-[10px] uppercase font-bold tracking-wider">
+              {(settings.hash_edit_enabled ?? false) ? "on" : "off"}
+            </span>
+          </button>
+          <p className="text-[10px] text-muted">
+            When on, the agent may apply edits anchored by content hashes instead of line numbers.
+          </p>
+        </div>
+
+        </>)}
         {gate("general", "review edits diff review toggle") && (<>
         {/* Diff Review Toggle */}
         <div className="space-y-1.5">

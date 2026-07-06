@@ -46,6 +46,7 @@ def test_settings_get_returns_expected_shape():
         assert "budget" in data
         assert "models" in data
         assert "auto_distill" in data
+        assert "hash_edit_enabled" in data
         assert "wiki_auto" in data
         assert "state_dir" in data
         assert "repo" in data
@@ -74,25 +75,30 @@ def test_settings_post_updates_settings_successfully():
         initial_data = json.loads(resp.read().decode())
         initial_budget = initial_data["budget"]
         initial_auto_distill = initial_data["auto_distill"]
+        initial_hash_edit = initial_data["hash_edit_enabled"]
 
         # Modify values
         target_budget = 7 if initial_budget != 7 else 12
         target_auto_distill = not initial_auto_distill
+        target_hash_edit = not initial_hash_edit
 
         # Post update
         post_resp = _post(port, "/api/settings",
-                          {"budget": target_budget, "auto_distill": target_auto_distill},
+                          {"budget": target_budget, "auto_distill": target_auto_distill,
+                           "hash_edit_enabled": target_hash_edit},
                           {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN})
         assert post_resp.status == 200
         post_data = json.loads(post_resp.read().decode())
         
         assert post_data["budget"] == target_budget
         assert post_data["auto_distill"] is target_auto_distill
+        assert post_data["hash_edit_enabled"] is target_hash_edit
 
         # Verify via subsequent GET
         get_resp2 = _get(port, "/api/settings")
         get_data2 = json.loads(get_resp2.read().decode())
         assert get_data2["budget"] == target_budget
         assert get_data2["auto_distill"] is target_auto_distill
+        assert get_data2["hash_edit_enabled"] is target_hash_edit
     finally:
         httpd.shutdown()

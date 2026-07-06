@@ -18,6 +18,7 @@ export type Settings = {
   reviewEditsBeforeApply?: boolean;
   autoVerify?: boolean;
   autoCommandGuard?: boolean;
+  hash_edit_enabled?: boolean;
   commandTimeout?: string;
   maxPilotSteps?: string;
   wiki_auto?: boolean;
