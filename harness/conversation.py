@@ -1987,6 +1987,7 @@ class ConversationalSession(ToolDispatchMixin):
         autopilot required.
         """
         self._cancel.clear()
+        self._pending_advisor_warnings = []
         if not self._busy.acquire(blocking=False):
             # The lock is held. Normally that means a turn is genuinely streaming.
             # But if a previous turn's generator was never closed (hard crash /
@@ -2068,6 +2069,12 @@ class ConversationalSession(ToolDispatchMixin):
                     if aid and aid in action_starts:
                         duration_ms = int((time.time() - action_starts[aid]) * 1000)
                         ev.data["duration_ms"] = duration_ms
+                    # Advisor warnings (round 6): surface once, on the first
+                    # action_result after the advisor ran. Advisory only.
+                    pending_warnings = getattr(self, "_pending_advisor_warnings", None)
+                    if pending_warnings:
+                        ev.data["advisor_warnings"] = list(pending_warnings)
+                        self._pending_advisor_warnings = []
                     if ev.data.get("error"):
                         self._has_tool_failure = True
                     else:
@@ -2683,6 +2690,19 @@ class ConversationalSession(ToolDispatchMixin):
                     results = executor.map(run_prefetch, read_actions_with_idx)
                     for idx, res in results:
                         prefetch[idx] = res
+
+            # Advisor pass (round 6, opt-in): one read-only review of this
+            # turn's pending action list. Warnings are attached to the first
+            # action_result of the turn in send(); execution never blocks.
+            try:
+                from .advisor import advise, advisor_enabled
+
+                if turn.actions and advisor_enabled():
+                    self._pending_advisor_warnings = advise(
+                        turn.actions, self.config.repo or "", self.pilot
+                    )
+            except Exception:
+                self._pending_advisor_warnings = []
 
             history_len_before_actions = len(self._history)
             # Track files edited THIS turn (for the auto-verify loop below).
