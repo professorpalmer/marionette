@@ -204,6 +204,13 @@ def available_pilots() -> list:
     return entries
 
 
+def _finalize_driver(driver):
+    """Optional cassette record/replay wrapper (HARNESS_CASSETTE_MODE)."""
+    from pmharness.drivers.cassette import maybe_wrap_cassette
+
+    return maybe_wrap_cassette(driver)
+
+
 def build_pilot(spec: str, *, max_tokens: int | None = None):
     """Build a thin driver for a pilot spec.
 
@@ -239,7 +246,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
                 f"no provider key available for pilot {spec!r}. Set: OPENROUTER_API_KEY"
             )
         from pmharness.registry import build as registry_build
-        return registry_build(preset_name, reach="openrouter")
+        return _finalize_driver(registry_build(preset_name, reach="openrouter"))
 
     from pmharness.drivers.openai_compat import OpenAICompatDriver
     from pmharness.drivers.anthropic import AnthropicDriver
@@ -281,7 +288,9 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         kwargs = {}
         if burl and burl.rstrip("/").endswith("v1beta"):
             kwargs["base_url"] = burl
-        return GeminiDriver(name=spec, model=model, api_key_env=key_env, max_tokens=max_tokens, **kwargs)
+        return _finalize_driver(
+            GeminiDriver(name=spec, model=model, api_key_env=key_env, max_tokens=max_tokens, **kwargs)
+        )
 
     if provider.api_mode == "anthropic_messages":
         # AnthropicDriver appends /messages, so the base must end in the version
@@ -289,10 +298,14 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         burl = provider.base_url
         if burl.rstrip("/").endswith("anthropic.com"):
             burl = burl.rstrip("/") + "/v1"
-        return AnthropicDriver(name=spec, model=model, base_url=burl,
-                               api_key_env=key_env, max_tokens=max_tokens)
-    return OpenAICompatDriver(name=spec, model=model, base_url=provider.base_url,
-                              api_key_env=key_env, max_tokens=max_tokens)
+        return _finalize_driver(
+            AnthropicDriver(name=spec, model=model, base_url=burl,
+                            api_key_env=key_env, max_tokens=max_tokens)
+        )
+    return _finalize_driver(
+        OpenAICompatDriver(name=spec, model=model, base_url=provider.base_url,
+                           api_key_env=key_env, max_tokens=max_tokens)
+    )
 
 
 class ProviderError(RuntimeError):

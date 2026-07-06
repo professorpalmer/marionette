@@ -333,7 +333,7 @@ class ConversationalSession(ToolDispatchMixin):
             self.pilot = prov.build_pilot(config.driver)
         except prov.ProviderError:
             # fall back to the eval registry (OpenRouter field) for known names
-            self.pilot = reg.build(config.driver, reach=config.reach)
+            self.pilot = prov._finalize_driver(reg.build(config.driver, reach=config.reach))
         # propagate repo/adapter so the bridge runs real analysis when configured
         if config.repo:
             os.environ["HARNESS_REPO"] = config.repo
