@@ -57,6 +57,7 @@ a row states otherwise.
 | `HARNESS_TOKEN` | random | Bearer token for local HTTP API auth; auto-generated if unset. | - |
 | `HARNESS_TOOL_DISCOVERY` | on (`1`) | Enables dynamic `search_tools` catalog activation; set `0` to disable. | - |
 | `HARNESS_TOOL_OUTPUT_SAVINGS_JSONL` | off | Mirrors tool-output savings ledger rows to JSONL for audit. | - |
+| `HARNESS_TURN_BUDGET` | on | Parses `+Nk`/`+Nk!` output-budget directives from user messages; advisory note in system prompt, hard ceiling stops the tool loop. | Round 10 / 0.8.0 |
 | `HARNESS_TURN_BUDGET_CHARS` | `48000` | Soft char budget consulted by context-budget helpers. | - |
 | `HARNESS_TURN_CONTEXT` | on | Journals per-turn flag fingerprints to `turn_context.jsonl`; set `0` to disable. | Round 6 / 0.7.46 |
 | `HARNESS_TURN_DEADLINE_SECONDS` | `600` | Wall-clock deadline for a single conversational turn. | - |

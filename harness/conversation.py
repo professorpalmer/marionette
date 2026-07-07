@@ -573,6 +573,9 @@ class ConversationalSession(ToolDispatchMixin):
         # already-shown (the frontend finalizes the streaming bubble in place
         # rather than re-dumping the text).
         self._streamed_prose = ""
+        # Per-turn output budget from +Nk / +Nk! user directive (Round 10).
+        self._turn_budget: Optional[dict] = None
+        self._turn_output_tokens: int = 0
         # Reload any persisted provider-worker history from a prior process so the
         # swarm panel keeps its history across a backend restart. Stale 'running'
         # jobs (whose thread died with the old process) are marked interrupted.
@@ -1060,7 +1063,43 @@ class ConversationalSession(ToolDispatchMixin):
             **self._tool_output_savings_fields(),
             **self._history_compaction_fields(),
             **self._spill_usage_fields(),
+            **self._turn_budget_usage_fields(),
         }
+
+    def _turn_budget_system_note(self) -> str:
+        try:
+            if not self._turn_budget:
+                return ""
+            total = int(self._turn_budget.get("total") or 0)
+            if total <= 0:
+                return ""
+            return f"output budget for this turn: {total} tokens"
+        except Exception:
+            return ""
+
+    def _turn_budget_exhausted(self) -> bool:
+        try:
+            if not self._turn_budget or not self._turn_budget.get("hard"):
+                return False
+            total = int(self._turn_budget.get("total") or 0)
+            if total <= 0:
+                return False
+            return self._turn_output_tokens > total
+        except Exception:
+            return False
+
+    def _turn_budget_usage_fields(self) -> dict:
+        try:
+            fields: dict = {}
+            if self._turn_budget:
+                fields["turn_budget_total"] = int(self._turn_budget.get("total") or 0)
+                fields["turn_budget_hard"] = bool(self._turn_budget.get("hard"))
+            fields["turn_output_tokens"] = int(self._turn_output_tokens or 0)
+            if self._turn_budget_exhausted():
+                fields["turn_budget_exhausted"] = True
+            return fields
+        except Exception:
+            return {}
 
     def _spill_usage_fields(self) -> dict:
         try:
@@ -2267,6 +2306,16 @@ class ConversationalSession(ToolDispatchMixin):
                                          "(you cannot see the image, only this text):\n\n"
                                          + "\n\n".join(blocks) + "\n\n---\n" + user_message)
 
+            self._turn_output_tokens = 0
+            self._turn_budget = None
+            try:
+                from .turn_budget import parse_turn_budget, turn_budget_enabled
+
+                if turn_budget_enabled():
+                    self._turn_budget = parse_turn_budget(user_message)
+            except Exception:
+                pass
+
             # Preserve strict user/assistant alternation in _history: if the last
             # message is already a user turn (e.g. a background job just drained a
             # pilot-resume continuation before the user typed), merge into it rather
@@ -2403,6 +2452,9 @@ class ConversationalSession(ToolDispatchMixin):
                 )
                 if mcp_section:
                     sys_prompt += "\n\n" + mcp_section
+                turn_note = self._turn_budget_system_note()
+                if turn_note:
+                    sys_prompt += "\n\n" + turn_note
 
                 self._history[0]["content"] = sys_prompt
                 prompt = self._render_history()
@@ -2481,6 +2533,7 @@ class ConversationalSession(ToolDispatchMixin):
                 _t_in = int(getattr(resp, "tokens_in", 0) or len(prompt) // 4)
                 self._tokens_used += _t_out + _t_in
                 self._tokens_out += _t_out
+                self._turn_output_tokens += _t_out
                 self._tokens_in += _t_in
                 # Remember this turn's REAL prompt size so the live context
                 # estimate (compaction trigger + composer % meter) can prefer
@@ -2607,6 +2660,15 @@ class ConversationalSession(ToolDispatchMixin):
                 self._history.append(assistant_msg)
             else:
                 self._history.append({"role": "assistant", "content": cleaned_say_text or "(acting)"})
+
+            if self._turn_budget_exhausted():
+                self._maybe_ingest(user_message, turn_prose, turn_findings)
+                yield ConvEvent("assistant_done", {
+                    "turns": step + 1,
+                    "swarms": swarms,
+                    "turn_budget_exhausted": True,
+                })
+                return
 
             if len(turn.actions) > 0 or (cleaned_say_text and len(cleaned_say_text.strip()) > 0):
                 consecutive_non_productive = 0
