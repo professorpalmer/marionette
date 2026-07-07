@@ -811,9 +811,10 @@ function configureBrowserSession() {
   try {
     const ses = session.fromPartition("persist:browser");
     // A mainstream Chrome UA so login flows behave like a normal browser.
+    // Chrome 120 is too old for Google's security checks; use a recent stable.
     const chromeUA =
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+      "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
     try { ses.setUserAgent(chromeUA); } catch {}
   } catch (e) {
     _dbg2(`browser session config failed: ${e}`);
@@ -956,8 +957,37 @@ app.on("web-contents-created", (_e, contents) => {
       try { childWindow.setAlwaysOnTop(true, "floating"); } catch {}
       wirePopoutWindow(childWindow);
     });
-    // Guarantee Cmd/Ctrl+click pop-out on every load (incl. SPA navigations).
-    contents.on("did-finish-load", () => injectPopoutClickCatcher(contents));
+    // Hide automation signals on every navigation so Google/Gmail login
+    // doesn't flag the in-app browser as "unsafe". Electron's <webview>
+    // leaks navigator.webdriver=true, zero plugins, and absence of
+    // navigator.languages -- all of which trigger bot-detection.
+    const hideAutomation = () => {
+      try {
+        contents.executeJavaScript(`(() => {
+          try {
+            if (window.__pmAutomationHidden) return;
+            window.__pmAutomationHidden = true;
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            const opl = navigator.plugins;
+            Object.defineProperty(navigator, 'plugins', {
+              get: () => opl.length > 0 ? opl : [
+                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
+              ]
+            });
+            if (!navigator.languages || navigator.languages.length === 0) {
+              Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            }
+            const omt = navigator.mimeTypes;
+            Object.defineProperty(navigator, 'mimeTypes', {
+              get: () => omt.length > 0 ? omt : [
+                { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }
+              ]
+            });
+          } catch (_) {}
+        })();`).catch(() => {});
+      } catch (_) {}
+    };
+    contents.on("did-finish-load", () => { hideAutomation(); injectPopoutClickCatcher(contents); });
     contents.on("console-message", (_evt, _level, message) => {
       if (typeof message === "string" && message.startsWith(POPOUT_CLICK_SENTINEL)) {
         const url = message.slice(POPOUT_CLICK_SENTINEL.length);

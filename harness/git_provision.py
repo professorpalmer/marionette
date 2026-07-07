@@ -239,7 +239,7 @@ def save_device_token(token: str) -> None:
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
         mode = 0o600
         fd = os.open(path, flags, mode)
-        with os.fdopen(fd, 'w', encoding="utf-8") as f:
+        with os.fdopen(fd, 'w', encoding="utf-8", newline="") as f:
             f.write(token)
     except Exception:
         with open(path, "w", encoding="utf-8") as f:

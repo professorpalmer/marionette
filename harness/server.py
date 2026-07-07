@@ -212,7 +212,7 @@ def _write_platform_json_atomic(path: str, data: dict) -> None:
         os.makedirs(dir_path, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_path or ".", prefix="platform_")
     try:
-        with os.fdopen(tmp_fd, 'w', encoding="utf-8") as f:
+        with os.fdopen(tmp_fd, 'w', encoding="utf-8", newline="") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp_path, path)
     except Exception:

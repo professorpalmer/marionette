@@ -308,7 +308,18 @@ from .config import HarnessConfig
 from .state import DurableState
 
 
-HARD_PILOT_STEPS = int(os.environ.get("HARNESS_MAX_PILOT_STEPS", "40"))  # safety cap on pilot<->swarm round-trips per user message
+_HARD_PILOT_STEPS_DEFAULT = 40  # safety cap on pilot<->swarm round-trips per user message
+
+
+def _hard_pilot_steps() -> int:
+    """Live-read the step cap so test isolation (conftest deleting the env var)
+    actually takes effect even if the module was imported while the app had
+    set HARNESS_MAX_PILOT_STEPS=0. A module-level constant captured at import
+    would freeze the app's value and defeat the per-test monkeypatch."""
+    try:
+        return int(os.environ.get("HARNESS_MAX_PILOT_STEPS", str(_HARD_PILOT_STEPS_DEFAULT)))
+    except ValueError:
+        return _HARD_PILOT_STEPS_DEFAULT
 
 
 def append_failed_declarative_checks_summary(summary: str, declarative_checks) -> str:
@@ -2478,10 +2489,11 @@ class ConversationalSession(ToolDispatchMixin):
         # governor halts it, or the user stops it. Otherwise cap at 2x the
         # configured pilot-step budget.
         import itertools as _itertools
+        _hard_steps = _hard_pilot_steps()
         try:
-            _pilot_steps = int(os.environ.get("HARNESS_MAX_PILOT_STEPS", str(HARD_PILOT_STEPS)))
+            _pilot_steps = int(os.environ.get("HARNESS_MAX_PILOT_STEPS", str(_hard_steps)))
         except ValueError:
-            _pilot_steps = HARD_PILOT_STEPS
+            _pilot_steps = _hard_steps
         if _pilot_steps <= 0:
             _step_iter = _itertools.count()
             max_steps = 0  # 0 == unlimited (used by the limit message below)
@@ -3121,7 +3133,7 @@ class ConversationalSession(ToolDispatchMixin):
                         import tempfile
                         fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-")
                         try:
-                            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                            with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:
                                 f.write(act.content)
                             os.replace(temp_path, target_path)
                         except Exception as e:
@@ -3207,7 +3219,7 @@ class ConversationalSession(ToolDispatchMixin):
                         import tempfile
                         fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-")
                         try:
-                            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                            with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:
                                 f.write(new_content)
                             os.replace(temp_path, target_path)
                         except Exception as e:
@@ -6085,6 +6097,14 @@ class ConversationalSession(ToolDispatchMixin):
                 if self._cancel.is_set():
                     tripped = "cancelled (client disconnect)"
                     break
+                # Feed token delta to the governor mid-stream so a token ceiling
+                # trips inside a single send() call (not just between cycles).
+                # Without this, an unbounded pilot loop with HARNESS_MAX_PILOT_STEPS=0
+                # would burn through the entire swarm ceiling before tokens are checked.
+                _mid_delta = self._tokens_used - tokens_at_cycle_start
+                if _mid_delta > 0:
+                    budget.add_tokens(_mid_delta)
+                    tokens_at_cycle_start = self._tokens_used
                 tripped = budget.check()
                 if tripped:
                     break

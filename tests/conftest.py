@@ -125,6 +125,27 @@ def _clear_wiki_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_pilot_env(monkeypatch):
+    """Reset env vars that the running Marionette app may have set in the
+    developer's shell. Without this, HARNESS_MAX_PILOT_STEPS=0 (unlimited
+    autopilot) makes every test with a non-terminating fake pilot hang forever,
+    and HARNESS_AUTO_COMMAND_GUARD=off silently disables the command guard.
+    The app also persists feature flags via _set_env_setting that can change
+    test behavior (auto-verify, edit review, distill, hash-edit, etc.)."""
+    for _var in (
+        "HARNESS_MAX_PILOT_STEPS",
+        "HARNESS_AUTO_COMMAND_GUARD",
+        "HARNESS_AUTO_DISTILL",
+        "HARNESS_REVIEW_EDITS_BEFORE_APPLY",
+        "HARNESS_AUTO_VERIFY",
+        "HARNESS_HASH_EDIT",
+        "HARNESS_VERIFY_COMMAND",
+        "HARNESS_COMMAND_TIMEOUT",
+    ):
+        monkeypatch.delenv(_var, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_provider_state(monkeypatch, tmp_path_factory):
     """Give every test its own clean state dir, isolated from the developer's
     real ~/.pmharness (keys.json / disconnected.json / workspace.json / token).

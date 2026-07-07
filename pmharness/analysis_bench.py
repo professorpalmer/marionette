@@ -81,9 +81,9 @@ ANALYSIS_QUESTIONS = (
     AnalysisQ(
         id="pilot_steps_cap",
         prompt=("What is the safety cap on pilot<->swarm round-trips per user message "
-                "in harness/conversation.py (HARD_PILOT_STEPS)? State the number."),
-        must_contain=("10",),
-        must_not_contain=("HARD_PILOT_STEPS = 5", "cap of 5", "cap of 8", "20"),
+                "in harness/conversation.py (_HARD_PILOT_STEPS_DEFAULT)? State the number."),
+        must_contain=("40",),
+        must_not_contain=("HARD_PILOT_STEPS = 5", "cap of 5", "cap of 8", "10"),
     ),
     AnalysisQ(
         id="provider_count",

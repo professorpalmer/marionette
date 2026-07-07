@@ -59,6 +59,7 @@ def test_guard_blocks_dangerous_in_auto_mode(tmp_path):
     s = ConversationalSession(cfg)
     s.pilot = _CmdPilot("ssh prod systemctl stop nginx")
     s._auto_mode = True
+    s._auto_command_guard = True  # env may have HARNESS_AUTO_COMMAND_GUARD=off
     blocked, _ = _run(s, "go")
     assert len(blocked) == 1
     assert blocked[0]["category"] == "remote-shell"

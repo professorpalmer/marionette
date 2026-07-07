@@ -90,7 +90,7 @@ def _write_disconnected(names: set) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix="disc_")
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
             json.dump(sorted(names), f)
         os.replace(tmp_path, path)
     except Exception:

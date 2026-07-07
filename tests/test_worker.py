@@ -303,7 +303,7 @@ def test_worker_leaf_mode_schemas_and_defense(monkeypatch):
     config = HarnessConfig(no_delegation=True, repo=os.path.abspath("."))
     session = ConversationalSession(config)
 
-    # Mock pilot chat() to return a run_implement attempt
+    # Mock pilot chat() to return a run_implement attempt, then terminate.
     mock_pilot = MagicMock()
     first_resp = MagicMock()
     first_resp.text = json.dumps({
@@ -312,7 +312,11 @@ def test_worker_leaf_mode_schemas_and_defense(monkeypatch):
     })
     first_resp.meta = {}
     first_resp.error = None
-    mock_pilot.chat.return_value = first_resp
+    done_resp = MagicMock()
+    done_resp.text = json.dumps({"say": "Done", "actions": []})
+    done_resp.meta = {}
+    done_resp.error = None
+    mock_pilot.chat.side_effect = [first_resp, done_resp]
     session.pilot = mock_pilot
 
     # Trigger action loop

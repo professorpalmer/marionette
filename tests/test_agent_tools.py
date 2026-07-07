@@ -98,12 +98,20 @@ def test_agent_tools_execution():
 
         # Verify confinement rejection
         class TraversalPilot:
+            def __init__(self):
+                self.calls = 0
             def complete(self, prompt, system=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return FakeResponse(text=json.dumps({
+                        "say": "Trying traversal",
+                        "actions": [
+                            {"kind": "read_file", "path": "../../etc/passwd"}
+                        ]
+                    }))
                 return FakeResponse(text=json.dumps({
-                    "say": "Trying traversal",
-                    "actions": [
-                        {"kind": "read_file", "path": "../../etc/passwd"}
-                    ]
+                    "say": "Done",
+                    "actions": []
                 }))
 
         session_traversal = ConversationalSession(cfg)

@@ -54,7 +54,7 @@ class SessionStore:
             payload = {"sessions": self._sessions, "active": self._active}
             tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".sessions_")
             try:
-                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
                     json.dump(payload, f)
                 os.replace(tmp_path, self.path)
             except Exception:

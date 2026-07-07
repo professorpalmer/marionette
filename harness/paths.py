@@ -17,6 +17,23 @@ via ``allow_equal`` so each call site keeps its correct, intended behavior.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+
+def _resolve(path: str) -> str:
+    """Resolve symlinks and normalize, without ``os.path.realpath`` hangs on Windows.
+
+    ``os.path.realpath`` on Windows can deadlock or run indefinitely when the
+    path does not exist (ntpath iterates parent directories via the Win32 API).
+    On POSIX we keep realpath for symlink-resilient confinement; on Windows we
+    fall back to ``abspath + normpath`` which is safe and fast.
+    """
+    if os.name == "nt":
+        return os.path.normpath(os.path.abspath(path))
+    try:
+        return os.path.realpath(path)
+    except Exception:
+        return os.path.normpath(os.path.abspath(path))
 
 
 def path_within(path: str, parent: str, *, allow_equal: bool) -> bool:
@@ -31,8 +48,8 @@ def path_within(path: str, parent: str, *, allow_equal: bool) -> bool:
     closed, the safe default for a security check).
     """
     try:
-        real_path = os.path.realpath(path)
-        real_parent = os.path.realpath(parent)
+        real_path = _resolve(path)
+        real_parent = _resolve(parent)
         if os.path.commonpath([real_parent, real_path]) != real_parent:
             return False
         if not allow_equal and real_path == real_parent:
