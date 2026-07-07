@@ -33,19 +33,37 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
   }, []);
 
   // Self-update check: how far behind the tracked branch we are (desktop only).
-  // Silent on failure -- an update nudge must never get in the way.
+  // Silent on failure -- an update nudge must never get in the way. Re-checks
+  // every 30 minutes and on window focus (throttled) so a release that lands
+  // mid-session surfaces without a relaunch -- previously the pill only ever
+  // checked once on mount.
   useEffect(() => {
     const ipc = (window as any).harnessIPC;
     if (!ipc || !ipc.updates) return;
     let cancelled = false;
-    ipc.updates.check()
-      .then((res: any) => {
-        if (!cancelled && res && res.available) {
-          setUpdate({ behind: res.behind || 0, branch: res.branch || "main", version: res.current || "" });
-        }
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
+    let lastCheck = 0;
+    const MIN_GAP_MS = 5 * 60 * 1000;
+    const check = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastCheck < MIN_GAP_MS) return;
+      lastCheck = now;
+      ipc.updates.check()
+        .then((res: any) => {
+          if (!cancelled && res && res.available) {
+            setUpdate({ behind: res.behind || 0, branch: res.branch || "main", version: res.current || "" });
+          }
+        })
+        .catch(() => {});
+    };
+    check(true);
+    const interval = window.setInterval(() => check(true), 30 * 60 * 1000);
+    const onFocus = () => check();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
   }, []);
 
   // The UpdateBanner owns the single, robust apply() path (latching, error

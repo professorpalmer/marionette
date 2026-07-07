@@ -44,21 +44,36 @@ export default function UpdateBanner() {
       setProgress(base + (p.percent != null && !hasPct ? ` ${p.percent}%` : ""));
     };
 
-    // Catch an update that already finished downloading before this mounted.
-    ipc.updates
-      .check()
-      .then((res: any) => {
-        if (cancelled || !res) return;
-        if (res.available || res.downloaded) {
-          // Only a real version string labels the banner. Source-run updates
-          // track a branch tip, and falling back to the branch name rendered
-          // the nonsense "vmain of Marionette is ready".
-          setLatest(res.latest || "");
-          readyRef.current = true;
-          setReady(true);
-        }
-      })
-      .catch(() => {});
+    // Check now, then re-check every 30 minutes and on window focus (throttled)
+    // so a release that lands mid-session raises the banner without a relaunch.
+    // Never re-check while an apply is in flight -- checkForUpdate runs a git
+    // fetch that could race the updater's own fetch/merge.
+    let lastCheck = 0;
+    const MIN_GAP_MS = 5 * 60 * 1000;
+    const check = (force = false) => {
+      if (committedRef.current) return;
+      const now = Date.now();
+      if (!force && now - lastCheck < MIN_GAP_MS) return;
+      lastCheck = now;
+      ipc.updates
+        .check()
+        .then((res: any) => {
+          if (cancelled || !res || committedRef.current) return;
+          if (res.available || res.downloaded) {
+            // Only a real version string labels the banner. Source-run updates
+            // track a branch tip, and falling back to the branch name rendered
+            // the nonsense "vmain of Marionette is ready".
+            setLatest(res.latest || "");
+            readyRef.current = true;
+            setReady(true);
+          }
+        })
+        .catch(() => {});
+    };
+    check(true);
+    const interval = window.setInterval(() => check(true), 30 * 60 * 1000);
+    const onFocus = () => check();
+    window.addEventListener("focus", onFocus);
 
     // React to live updater events. Every payload carries `version`, so we label
     // the banner from the event alone -- deliberately NOT calling updates:check
@@ -104,6 +119,8 @@ export default function UpdateBanner() {
 
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
       if (off) off();
     };
   }, []);
