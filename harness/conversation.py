@@ -1069,7 +1069,19 @@ class ConversationalSession(ToolDispatchMixin):
             **self._history_compaction_fields(),
             **self._spill_usage_fields(),
             **self._turn_budget_usage_fields(),
+            **self._append_only_usage_fields(),
         }
+
+    def _append_only_usage_fields(self) -> dict:
+        try:
+            if not self._resolve_append_only():
+                return {}
+            return {
+                "append_only_context": True,
+                "prefix_stable_turns": int(self._prefix_stable_turns or 0),
+            }
+        except Exception:
+            return {}
 
     def _turn_budget_system_note(self) -> str:
         try:

@@ -178,5 +178,44 @@ def test_append_only_off_keeps_turn_note_in_system(monkeypatch):
             "output budget for this turn: 50000 tokens" in system
             for system in pilot.system_prompts
         )
+        usage = session.get_context_usage()
+        assert "append_only_context" not in usage
+        assert "prefix_stable_turns" not in usage
+    finally:
+        shutil.rmtree(temp_dir)
+
+
+def test_prefix_stable_turns_increments(monkeypatch):
+    session, temp_dir = _make_session(monkeypatch, append_only="on")
+    try:
+        turns = [
+            json.dumps({"say": "turn one", "actions": []}),
+            json.dumps({"say": "turn two", "actions": []}),
+        ]
+        session.pilot = _RecordingPilot(turns)
+        list(session.send("first"))
+        list(session.send("second"))
+        usage = session.get_context_usage()
+        assert usage.get("append_only_context") is True
+        assert usage.get("prefix_stable_turns", 0) >= 1
+    finally:
+        shutil.rmtree(temp_dir)
+
+
+def test_prefix_stable_turns_resets_on_compaction(monkeypatch):
+    session, temp_dir = _make_session(monkeypatch, append_only="on")
+    try:
+        session.pilot = _RecordingPilot(["summary text"])
+        session._prefix_stable_turns = 3
+        session._last_rendered_prompt = "prior prompt bytes"
+        session._frozen_system_prompt = "frozen"
+        session._history[0]["content"] = "sys"
+        for i in range(8):
+            session._history.append({"role": "user", "content": f"msg {i} " + ("x" * 200)})
+            session._history.append({"role": "assistant", "content": f"resp {i} " + ("y" * 200)})
+        list(session._maybe_compact_history(force=True))
+        usage = session.get_context_usage()
+        assert usage.get("append_only_context") is True
+        assert usage.get("prefix_stable_turns") == 0
     finally:
         shutil.rmtree(temp_dir)
