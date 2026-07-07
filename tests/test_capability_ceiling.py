@@ -3,7 +3,12 @@ floor. payload.min_capability FORCES the classifier output to one exact value,
 so every swarm worker "needed" the same score and the balanced policy pinned
 them all to the single cheapest model that cleared it (the all-swarms-route-to-
 glm-5.2 symptom). max_capability only clips the top: cheap roles still classify
-low and route to cheap models."""
+low and route to cheap models.
+
+The installed puppetmaster may predate the ceiling (PyPI puppetmaster-ai
+<= 1.10.0 only knows min_capability), so the payload key is capability-detected:
+these tests assert the fallback contract, not one fixed key.
+"""
 import pytest
 
 from pmharness.bridge import (
@@ -11,24 +16,28 @@ from pmharness.bridge import (
     _router_supports_max_capability,
 )
 
-
-def test_local_router_supports_max_capability():
-    # The bundled Puppetmaster ships TaskSignals.explicit_max_capability; the
-    # legacy min_capability fallback exists only for older PyPI builds.
-    assert _router_supports_max_capability() is True
+ROUTER_HAS_CEILING = _router_supports_max_capability()
+EXPECTED_KEY = "max_capability" if ROUTER_HAS_CEILING else "min_capability"
 
 
-def test_analysis_payload_is_ceiling_not_floor(monkeypatch):
+def test_support_probe_matches_installed_router():
+    from puppetmaster.router import TaskSignals
+
+    has_field = "explicit_max_capability" in getattr(
+        TaskSignals, "__dataclass_fields__", {})
+    assert ROUTER_HAS_CEILING is has_field
+
+
+def test_analysis_payload_uses_ceiling_when_router_supports_it(monkeypatch):
     monkeypatch.delenv("HARNESS_ANALYSIS_DEEP", raising=False)
     monkeypatch.delenv("HARNESS_ANALYSIS_MAX_CAPABILITY", raising=False)
     payload = _analysis_capability_payload()
-    assert payload == {"max_capability": 85}
-    assert "min_capability" not in payload
+    assert payload == {EXPECTED_KEY: 85}
 
 
 def test_analysis_payload_env_override(monkeypatch):
     monkeypatch.setenv("HARNESS_ANALYSIS_MAX_CAPABILITY", "70")
-    assert _analysis_capability_payload() == {"max_capability": 70}
+    assert _analysis_capability_payload() == {EXPECTED_KEY: 70}
 
 
 def test_analysis_payload_deep_removes_cap(monkeypatch):
@@ -40,16 +49,19 @@ def test_ceiling_still_differentiates_cheap_and_hard_tasks():
     """End-to-end through the real router: with the ceiling Marionette sends,
     an easy role must classify far below the cap while a hard role clips to it
     -- the property min_capability destroyed."""
-    router = pytest.importorskip("puppetmaster.router")
+    if not ROUTER_HAS_CEILING:
+        pytest.skip("installed puppetmaster predates max_capability")
+    from puppetmaster.router import TaskSignals, classify_capability_needed
+
     ceiling = _analysis_capability_payload().get("max_capability")
     if ceiling is None:
-        pytest.skip("deep mode or legacy router in this environment")
+        pytest.skip("deep mode enabled in this environment")
 
-    easy = router.classify_capability_needed(router.TaskSignals(
+    easy = classify_capability_needed(TaskSignals(
         instruction="verify the build output", role="verify-runtime",
         explicit_max_capability=ceiling,
     ))
-    hard = router.classify_capability_needed(router.TaskSignals(
+    hard = classify_capability_needed(TaskSignals(
         instruction="security audit of authentication across every endpoint",
         role="security-review", explicit_max_capability=ceiling,
     ))
