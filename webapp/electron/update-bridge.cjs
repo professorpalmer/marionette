@@ -11,9 +11,11 @@
 // (MIT, Nous Research): passive HTTPS fetch to dodge passkey prompts, behind
 // count with shallow-clone fallback, an in-progress marker, retry-once rebuild.
 //
-// Every git/npm/pip invocation streams its output to the renderer as progress.
-// A failed check is SILENT (an update check must never nag). A failed apply
-// surfaces a clear message and leaves the working tree as git left it.
+// The renderer sees calm stage labels only ("Updating source", "Rebuilding
+// app"); raw git/npm/pip output goes to ~/.pmharness/update.log so deprecation
+// warnings never scroll across the UI. A failed check is SILENT (an update
+// check must never nag). A failed apply surfaces a clear message and leaves
+// the working tree as git left it.
 
 const { spawn, execFile } = require("node:child_process");
 const path = require("node:path");
@@ -31,6 +33,19 @@ const REPO_HTML_URL = "https://github.com/professorpalmer/marionette";
 
 function pmharnessHome() {
   return path.join(os.homedir(), ".pmharness");
+}
+
+// Raw child-process output (npm warnings, git chatter, pip noise) goes to a log
+// file, NOT the update banner. Deprecation warnings and dependency chatter read
+// like something is broken when they scroll across the UI; the banner shows only
+// calm stage labels, and this file keeps the full transcript for debugging.
+function appendUpdateLog(line) {
+  try {
+    require("node:fs").appendFileSync(
+      path.join(pmharnessHome(), "update.log"),
+      `${new Date().toISOString()} ${line}\n`
+    );
+  } catch { /* logging must never break an update */ }
 }
 
 function hiddenProcessOptions(opts = {}) {
@@ -268,7 +283,7 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     const origin = await gitCapture(repoRoot, ["config", "--get", "remote.origin.url"]);
     if (!origin.ok) return { ok: false, error: "not a git checkout (no origin remote)" };
     const fetched = await runStreamed("git", ["-C", repoRoot, "fetch", "--no-tags", "origin", branch], { env: childEnv },
-      (l) => progress("fetch", l, 0.5));
+      (l) => { appendUpdateLog(`[fetch] ${l}`); progress("fetch", "Fetching latest changes", 0.5); });
     if (fetched.code !== 0) return { ok: false, error: fetched.tail || "git fetch failed" };
 
     const recovered = await recoverInterruptedMerge(repoRoot);
@@ -312,13 +327,13 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     // pull (fast-forward only -- never rewrite the user's local work silently)
     progress("pull", "Updating source", 0.3);
     let pulled = await runStreamed("git", ["-C", repoRoot, "merge", "--ff-only", "FETCH_HEAD"], { env: childEnv },
-      (l) => progress("pull", l, 0.5));
+      (l) => { appendUpdateLog(`[pull] ${l}`); progress("pull", "Updating source", 0.5); });
     if (pulled.code !== 0 && mergeFailureLooksLikeStaleIndex(pulled.tail)) {
       progress("pull", "Repairing stale update state", 0.55);
       const repaired = await recoverInterruptedMerge(repoRoot);
       if (repaired.ok) {
         pulled = await runStreamed("git", ["-C", repoRoot, "merge", "--ff-only", "FETCH_HEAD"], { env: childEnv },
-          (l) => progress("pull", l, 0.65));
+          (l) => { appendUpdateLog(`[pull] ${l}`); progress("pull", "Updating source", 0.65); });
       }
     }
     if (pulled.code !== 0) {
@@ -371,17 +386,18 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
 
     if (pyChanged) {
       progress("deps", "Updating Python dependencies", 0.3);
+      const onDepLine = (l) => { appendUpdateLog(`[deps] ${l}`); progress("deps", "Updating Python dependencies", 0.4); };
       const dep = hasUv
         ? await runStreamed("uv", ["pip", "install", "--python", py, "-e", "."],
-            { cwd: repoRoot, env: childEnv }, (l) => progress("deps", l, 0.4))
+            { cwd: repoRoot, env: childEnv }, onDepLine)
         : await runStreamed(py, ["-m", "pip", "install", "-e", ".", "--quiet"],
-            { cwd: repoRoot, env: childEnv }, (l) => progress("deps", l, 0.4));
+            { cwd: repoRoot, env: childEnv }, onDepLine);
       if (dep.code !== 0) return { ok: false, error: dep.tail || "python dependency install failed" };
     }
     if (nodeChanged) {
       progress("deps", "Updating node dependencies", 0.7);
       const npmci = await runNpmStreamed(["ci"], { cwd: path.join(repoRoot, "webapp"), env: childEnv },
-        (l) => progress("deps", l, 0.8));
+        (l) => { appendUpdateLog(`[deps] ${l}`); progress("deps", "Updating node dependencies", 0.8); });
       if (npmci.code !== 0) return { ok: false, error: npmci.tail || "npm ci failed" };
     }
 
@@ -402,22 +418,25 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
       progress("deps", "Puppetmaster: " + pmPlan.reason + ", leaving as-is", 0.9);
     } else {
       progress("deps", "Updating Puppetmaster", 0.9);
+      const onPmLine = (l) => { appendUpdateLog(`[deps] ${l}`); progress("deps", "Updating Puppetmaster", 0.92); };
       const pm = hasUv
         ? await runStreamed("uv", ["pip", "install", "--python", py, "--upgrade", pmPlan.spec],
-            { cwd: repoRoot, env: childEnv }, (l) => progress("deps", l, 0.92))
+            { cwd: repoRoot, env: childEnv }, onPmLine)
         : await runStreamed(py, ["-m", "pip", "install", "--upgrade", pmPlan.spec, "--quiet"],
-            { cwd: repoRoot, env: childEnv }, (l) => progress("deps", l, 0.92));
+            { cwd: repoRoot, env: childEnv }, onPmLine);
       if (pm.code !== 0) {
-        progress("deps", "Puppetmaster upgrade skipped: " + (pm.tail || "unavailable"), 0.95);
+        appendUpdateLog(`[deps] Puppetmaster upgrade skipped: ${pm.tail || "unavailable"}`);
+        progress("deps", "Puppetmaster upgrade skipped", 0.95);
       }
     }
 
     // build -- rebuild the renderer into dist/. Retry once: a first build can
     // trip on a still-settling tree; the second is a near-no-op if the first won.
     const rebuild = async (attempt) => {
-      progress("build", attempt === 0 ? "Rebuilding app" : "Rebuilding app (retry)", 0.1);
+      const label = attempt === 0 ? "Rebuilding app" : "Rebuilding app (retry)";
+      progress("build", label, 0.1);
       return runNpmStreamed(["run", "build"], { cwd: path.join(repoRoot, "webapp"), env: childEnv },
-        (l) => progress("build", l, 0.5));
+        (l) => { appendUpdateLog(`[build] ${l}`); progress("build", label, 0.5); });
     };
     const built = await runRebuildWithRetry(rebuild);
     if (built.code !== 0) return { ok: false, error: built.tail || "renderer build failed" };
