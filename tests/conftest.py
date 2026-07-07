@@ -19,6 +19,7 @@ os.environ["PMHARNESS_MCP_ALLOW_PRIVATE"] = "1"
 # that clears the read-only bit and retries the failed delete.
 if os.name == "nt":
     _real_rmtree = shutil.rmtree
+    _rmtree_guard = False
 
     def _clear_readonly_and_retry(func, path, _exc_info):
         try:
@@ -28,9 +29,22 @@ if os.name == "nt":
             pass
 
     def _rmtree_windows(path, ignore_errors=False, onerror=None, **kwargs):
-        if onerror is None and not kwargs.get("onexc"):
-            onerror = _clear_readonly_and_retry
-        return _real_rmtree(path, ignore_errors=ignore_errors, onerror=onerror, **kwargs)
+        global _rmtree_guard
+        # tempfile's teardown onerror re-enters shutil.rmtree; without this guard
+        # the patch recurses until RecursionError on Windows 3.9 CI.
+        if _rmtree_guard:
+            return _real_rmtree(
+                path, ignore_errors=ignore_errors, onerror=onerror, **kwargs
+            )
+        _rmtree_guard = True
+        try:
+            if onerror is None and not kwargs.get("onexc"):
+                onerror = _clear_readonly_and_retry
+            return _real_rmtree(
+                path, ignore_errors=ignore_errors, onerror=onerror, **kwargs
+            )
+        finally:
+            _rmtree_guard = False
 
     shutil.rmtree = _rmtree_windows
 
