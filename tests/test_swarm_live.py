@@ -85,12 +85,15 @@ def test_swarm_live_surfaces_local_provider_jobs():
             assert live[0]["tasks"] and live[0]["tasks"][0]["status"] == "running"
 
             srv._pilot._finish_local_job(
-                "local-abc123", ok=True, summary="Applied patch", files=["a.py", "b.py"]
+                "local-abc123", ok=True, summary="Applied patch", files=["a.py", "b.py"],
+                tokens=12_500, est_cost_usd=0.42,
             )
 
             data = json.loads(_get(port, "/api/swarm/live", headers=headers).read().decode())
             done = [j for j in data["jobs"] if j.get("id") == "local-abc123"][0]
             assert done["status"] == "completed"
+            assert done["tokens"] == 12_500
+            assert abs(done["est_cost_usd"] - 0.42) < 1e-6
             assert done["artifacts"] and "2 files" in done["artifacts"][0]["headline"]
         finally:
             httpd.shutdown()

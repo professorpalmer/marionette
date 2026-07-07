@@ -199,6 +199,71 @@ def _job_cost(tokens_in: float, tokens_out: float, tokens_total: float,
     return (float(tokens_total) / 1.0e6) * price_out
 
 
+def _swarm_registry() -> list:
+    """Load the model registry for per-job actual-cost pricing. Best-effort."""
+    try:
+        from puppetmaster.model_registry import default_registry_path, load_registry
+        return load_registry(default_registry_path())
+    except Exception:
+        return []
+
+
+def _routing_estimate_cost(artifacts) -> float:
+    """Sum router pre-flight estimates; interim fallback before usage lands."""
+    try:
+        from puppetmaster.models import ArtifactType
+    except Exception:
+        return 0.0
+    seen_router_tasks: set = set()
+    total = 0.0
+    for artifact in artifacts:
+        if artifact.type != ArtifactType.ROUTING or artifact.created_by != "router":
+            continue
+        task_id = getattr(artifact, "task_id", None)
+        if task_id:
+            if task_id in seen_router_tasks:
+                continue
+            seen_router_tasks.add(task_id)
+        payload = artifact.payload or {}
+        total += float(
+            payload.get("estimated_cost_usd") or payload.get("nominal_cost_usd") or 0.0
+        )
+    return total
+
+
+def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
+    """Return (tokens, cost_usd) for a swarm job.
+
+    Prefers measured/estimated usage priced against the registry
+    (:func:`puppetmaster.cost.price_job`). Falls back to the router's pre-flight
+    estimate only while no task has recorded token usage yet.
+    """
+    from puppetmaster.usage import aggregate_token_usage
+    from puppetmaster.cost import price_job
+
+    tokens = 0
+    try:
+        token_usage_dict = aggregate_token_usage(raw_arts)
+        tokens = int(token_usage_dict.get("total_tokens", 0) or 0)
+    except Exception:
+        pass
+
+    est_cost_usd = 0.0
+    try:
+        job_cost = price_job(raw_arts, registry)
+        has_usage = (
+            (job_cost.measured_runs + job_cost.estimated_runs) > 0
+            or tokens > 0
+        )
+        if has_usage:
+            est_cost_usd = job_cost.total_marginal_cost_usd
+        else:
+            est_cost_usd = _routing_estimate_cost(raw_arts)
+    except Exception:
+        est_cost_usd = _routing_estimate_cost(raw_arts)
+    return tokens, round(est_cost_usd, 6)
+
+
 def _get_platform_json_path() -> str:
     override = os.environ.get("TEST_PLATFORM_JSON_PATH")
     if override:
@@ -3276,10 +3341,9 @@ class Handler(BaseHTTPRequestHandler):
             _cache_savings_usd = _cache_savings(_t_cached, price_in)
             jobs_list = []
             try:
-                from puppetmaster.models import ArtifactType
-                from puppetmaster.usage import aggregate_token_usage
                 jobs = _jobs_snapshot()
                 store = _session.state().store
+                registry = _swarm_registry()
                 jids = [j.get("id") for j in jobs if j.get("id")]
                 # Batch: one bulk artifact read regrouped by job_id, instead of
                 # one store.list_artifacts(jid) query PER job (the N+1).
@@ -3293,31 +3357,11 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         artifacts = (arts_by_job.get(jid, []) if arts_by_job is not None
                                      else store.list_artifacts(jid))
-                        routing = []
-                        seen_router_tasks = set()
-                        total = 0.0
-                        for artifact in artifacts:
-                            if artifact.type == ArtifactType.ROUTING and artifact.created_by == "router":
-                                task_id = artifact.task_id
-                                if task_id:
-                                    if task_id in seen_router_tasks:
-                                        continue
-                                    seen_router_tasks.add(task_id)
-                                routing.append(artifact)
-                        for artifact in routing:
-                            payload = artifact.payload or {}
-                            cost = float(payload.get("estimated_cost_usd") or 0.0)
-                            total += cost
-                        tokens = 0
-                        try:
-                            token_usage_dict = aggregate_token_usage(artifacts)
-                            tokens = token_usage_dict.get("total_tokens", 0)
-                        except Exception:
-                            pass
+                        tokens, est_cost_usd = _job_swarm_accounting(artifacts, registry)
                         jobs_list.append({
                             "job_id": jid,
                             "tokens": tokens,
-                            "est_cost_usd": round(total, 6),
+                            "est_cost_usd": est_cost_usd,
                             **_job_savings_fields(jid),
                         })
                     except Exception as e:
@@ -3365,8 +3409,7 @@ class Handler(BaseHTTPRequestHandler):
                 state_obj = _session.state()
                 jobs = _jobs_snapshot()
                 store = state_obj.store
-                from puppetmaster.models import ArtifactType
-                from puppetmaster.usage import aggregate_token_usage
+                registry = _swarm_registry()
 
                 jids = [j.get("id") for j in jobs if j.get("id")]
                 # Batch all three per-job reads (the old N+1 read artifacts TWICE
@@ -3399,27 +3442,7 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         artifacts_list = []
 
-                    tokens = 0
-                    est_cost_usd = 0.0
-                    try:
-                        seen_router_tasks = set()
-                        for artifact in raw_arts:
-                            if artifact.type == ArtifactType.ROUTING and artifact.created_by == "router":
-                                task_id = artifact.task_id
-                                if task_id:
-                                    if task_id in seen_router_tasks:
-                                        continue
-                                    seen_router_tasks.add(task_id)
-                                payload = artifact.payload or {}
-                                cost = float(payload.get("estimated_cost_usd") or 0.0)
-                                est_cost_usd += cost
-                        try:
-                            token_usage_dict = aggregate_token_usage(raw_arts)
-                            tokens = token_usage_dict.get("total_tokens", 0)
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
+                    tokens, est_cost_usd = _job_swarm_accounting(raw_arts, registry)
 
                     tasks_list = []
                     try:
@@ -3446,7 +3469,7 @@ class Handler(BaseHTTPRequestHandler):
                         "created_at": j.get("created_at"),
                         "task_count": j.get("task_count", 0),
                         "tokens": tokens,
-                        "est_cost_usd": round(est_cost_usd, 6),
+                        "est_cost_usd": est_cost_usd,
                         "artifacts": artifacts_list,
                         "tasks": tasks_list,
                         **_job_savings_fields(jid),

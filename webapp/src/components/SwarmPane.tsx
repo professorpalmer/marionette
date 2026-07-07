@@ -140,7 +140,7 @@ function swarmSignature(res: SwarmLive | null): string {
     for (const t of tasks) parts.push(`${t.id}=${t.status}`);
   }
   const s = res.session;
-  if (s) parts.push(`S:${s.tokens_used}:${(s.est_cost_usd ?? 0).toFixed(4)}:${s.driver ?? ""}`);
+  if (s) parts.push(`S:${s.driver ?? ""}`);
   return parts.join("|");
 }
 
@@ -169,11 +169,7 @@ function dedupeFindings(arts: Artifact[]): FindingRow[] {
 }
 
 function jobCost(j: Job): number {
-  const explicit = Number(j.est_cost_usd || 0);
-  if (explicit > 0) return explicit;
-  return jobArtifactList(j)
-    .filter((a) => (a.type || "").toUpperCase() === "ROUTING")
-    .reduce((sum, a) => sum + Number(a.est_cost_usd || 0), 0);
+  return Number(j.est_cost_usd || 0);
 }
 
 function jobTokens(j: Job): number {
@@ -376,9 +372,6 @@ export default function SwarmPane() {
   const failedCount = finished.filter((j) => jobStatus(j) === "cancelled").length;
   const runningCount = running.filter((j) => jobStatus(j) === "in_progress").length;
   const anyRunning = runningCount > 0;
-  const finishedCost = finished.reduce((sum, j) => sum + jobCost(j), 0);
-  const finishedTokens = finished.reduce((sum, j) => sum + jobTokens(j), 0);
-  const sessionCost = Number(data?.session?.est_cost_usd || 0);
 
   const dismissJob = (id: string) =>
     setDismissed((prev) => new Set(prev).add(id));
@@ -451,13 +444,13 @@ export default function SwarmPane() {
               </Tooltip>
             </div>
             <div className="flex items-center gap-3 shrink-0 text-[10px] pl-2">
-              {(jobCost(j) > 0 || jobTokens(j) > 0 || jobCompactTokens(j) > 0) && (
+              {(terminal || jobCost(j) > 0 || jobTokens(j) > 0 || jobCompactTokens(j) > 0) && (
                 <span className="text-muted font-mono flex items-center gap-1.5">
                   {jobTokens(j) > 0 && <span>{jobTokens(j).toLocaleString()}t</span>}
                   {jobCompactTokens(j) > 0 && (
                     <span className="text-accent/90">{jobCompactTokens(j).toLocaleString()} compact</span>
                   )}
-                  {jobCost(j) > 0 && <span className="text-good/90">{formatCost(jobCost(j))}</span>}
+                  <span className="text-good/90">{formatCost(jobCost(j))}</span>
                 </span>
               )}
               {/* Kill: running jobs only. Best-effort cooperative cancel on the
@@ -815,11 +808,6 @@ export default function SwarmPane() {
                     {failedCount > 0 && (
                       <span className="text-risk/70 normal-case tracking-normal">{"\u00b7"} {failedCount} failed</span>
                     )}
-                    {(finishedCost > 0 || finishedTokens > 0) && (
-                      <span className="text-good/70 normal-case tracking-normal">
-                        {"\u00b7"} {finishedTokens > 0 ? `${finishedTokens.toLocaleString()}t ` : ""}{formatCost(finishedCost)}
-                      </span>
-                    )}
                   </button>
                   <button
                     onClick={clearFinished}
@@ -835,34 +823,6 @@ export default function SwarmPane() {
           </>
         )}
       </div>
-
-      {/* Footer: session totals. */}
-      {data?.session && (
-        <div className="shrink-0 border-t border-edge bg-panel2/80 px-3 py-2 flex items-center justify-between text-[10px] text-muted font-medium select-none">
-          <div className="flex items-center gap-1.5 min-w-0">
-            {anyRunning ? (
-              <>
-                <Loader2 size={11} className="text-accent shrink-0 animate-spin" />
-                <span className="truncate">SWARM RUNNING: <span className="text-txt font-mono font-semibold">{data.session.driver || "unknown"}</span></span>
-              </>
-            ) : (
-              <>
-                <Activity size={11} className="text-faint shrink-0" />
-                <span className="truncate text-faint">Session total <span className="text-muted font-mono">{data.session.driver || ""}</span></span>
-              </>
-            )}
-          </div>
-          <div className="flex items-center gap-3 shrink-0">
-            <span>Tokens: <strong className="text-txt font-mono font-semibold">{data.session.tokens_used.toLocaleString()}</strong></span>
-            {(data.session.tool_output_tokens_saved ?? 0) > 0 ? (
-              <span className="text-accent/80" title="Context tokens avoided by compact tool outputs">
-                Compact: <strong className="font-mono font-semibold">{data.session.tool_output_tokens_saved!.toLocaleString()}</strong>
-              </span>
-            ) : null}
-            <span>Cost: <strong className="text-good font-mono font-semibold">{formatCost(sessionCost)}</strong></span>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

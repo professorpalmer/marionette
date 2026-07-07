@@ -5078,6 +5078,7 @@ class ConversationalSession(ToolDispatchMixin):
 
     def _finish_local_job(self, job_id: str, ok: bool, summary: str = "",
                           files: Optional[list] = None, tokens: int = 0,
+                          est_cost_usd: float = 0.0,
                           status: str = "") -> None:
         """Flip a live local job to its terminal state so the panel stops showing
         a spinner and surfaces the outcome (files touched + a one-line summary)."""
@@ -5097,23 +5098,20 @@ class ConversationalSession(ToolDispatchMixin):
             job["updated_at"] = time.time()
             if tokens:
                 job["tokens"] = tokens
-                # Single-worker / provider-worker jobs previously recorded tokens
-                # but never a cost, so the tracker showed $0 for them (only
-                # multi-worker store jobs, which sum ROUTING artifact costs, had a
-                # price). Derive an estimate from the driver model's real prices.
-                # These jobs only carry a single combined `tokens` total (no
-                # in/out split), so we price it at the OUTPUT rate rather than a
-                # 50/50 blend: completion tokens run 3-5x input and dominate cost,
-                # so a blend systematically under-prices output-heavy jobs. This
-                # matches the /api/usage session fallback (_job_cost/_session_cost).
+            real_cost = float(est_cost_usd or 0.0)
+            if not real_cost and tokens:
+                # Provider-worker jobs only carry a combined token total (no
+                # in/out split). Price at the output rate so output-heavy runs
+                # are not systematically under-priced.
                 try:
                     from pmharness.registry import resolve_price
                     from harness.server import _job_cost
                     price_in, price_out = resolve_price(self.config.driver)
-                    job["est_cost_usd"] = round(
-                        _job_cost(0, 0, tokens, price_in, price_out), 6)
+                    real_cost = _job_cost(0, 0, tokens, price_in, price_out)
                 except Exception:
-                    pass
+                    real_cost = 0.0
+            if real_cost:
+                job["est_cost_usd"] = round(real_cost, 6)
             if job.get("tasks"):
                 job["tasks"][0]["status"] = terminal
             if cancelled and not summary:
@@ -5427,6 +5425,7 @@ class ConversationalSession(ToolDispatchMixin):
                 summary=res_dict.get("summary", ""),
                 files=res_dict.get("files") or [],
                 tokens=res_dict.get("tokens_out", 0) + res_dict.get("tokens_in", 0),
+                est_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
             )
             self._swarm_results.put({
                 "job_id": job_id,
