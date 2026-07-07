@@ -2739,6 +2739,12 @@ class Handler(BaseHTTPRequestHandler):
             results = []
             for ev in _pilot.drain_swarm_results():
                 results.append({"kind": ev.kind, "data": ev.data})
+            if results:
+                # The drain just appended history + display entries (incl. the
+                # swarm outcome badge). This poll path runs while the session is
+                # idle, so persist now -- otherwise closing the app before the
+                # next turn would drop them.
+                _checkpoint_transcript()
             return self._send(200, json.dumps({"results": results}))
         if u.path == "/api/session/queue":
             # PROMPT QUEUE snapshot -- the sequential "playlist" of full user

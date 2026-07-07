@@ -1184,7 +1184,9 @@ function SwarmResultCard({ applied, files, summary, error, objective }: {
         <span className="text-muted truncate">{obj}</span>
         <span className="flex-1 min-w-[8px]" />
         {applied
-          ? <span className="text-faint shrink-0 tabular-nums">{files.length} file{files.length === 1 ? "" : "s"}</span>
+          ? (files.length > 0
+            ? <span className="text-faint shrink-0 tabular-nums">{files.length} file{files.length === 1 ? "" : "s"}</span>
+            : <span className="text-faint shrink-0 truncate max-w-[45%]">{summary}</span>)
           : <span className="text-risk/70 shrink-0 truncate max-w-[45%]">{error || "error"}</span>}
         {hasBody && (open
           ? <ChevronDown size={12} className="text-faint shrink-0" />

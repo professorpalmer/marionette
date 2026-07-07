@@ -3716,6 +3716,34 @@ class ConversationalSession(ToolDispatchMixin):
                         "adapter": result.adapter, "mode": result.mode,
                         "auth_failure": auth_failure,
                     })
+                    # Give the synchronous analysis swarm the same green/red
+                    # outcome badge that background implement swarms get. Before
+                    # this, only run_implement/run_parallel emitted swarm_result,
+                    # so audits finished with no visible "swarm done/failed"
+                    # confirmation. Persist to the display transcript too so the
+                    # badge survives reloads.
+                    _swarm_ok = bool(result.num_artifacts) and not auth_failure
+                    _badge_summary = (
+                        f"{result.num_artifacts} artifacts via {result.adapter}"
+                        if result.num_artifacts else "no artifacts produced"
+                    )
+                    _badge_error = auth_failure or (
+                        None if _swarm_ok else "swarm produced no artifacts"
+                    )
+                    _badge = {
+                        "job_id": result.job_id or aid,
+                        "applied": _swarm_ok,
+                        "files": [],
+                        "summary": _badge_summary,
+                        "error": _badge_error,
+                        "objective": act.goal,
+                    }
+                    self._display_transcript.append({"type": "swarm_result", **_badge})
+                    yield ConvEvent("swarm_result", {
+                        "job_id": _badge["job_id"],
+                        "objective": act.goal,
+                        "result": _badge,
+                    })
                     # collect non-substrate findings for durable knowledge capture
                     if result.adapter != "demo":
                         turn_findings.extend(
@@ -5757,6 +5785,20 @@ class ConversationalSession(ToolDispatchMixin):
                     )
                 else:
                     self._history.append({"role": "user", "content": resume_text})
+
+                # Persist the outcome to the display transcript so the green/red
+                # "swarm done / swarm failed" badge survives a session reload or
+                # app restart -- the live ConvEvent below only reaches a renderer
+                # that is open right now.
+                self._display_transcript.append({
+                    "type": "swarm_result",
+                    "job_id": job_id,
+                    "applied": bool(applied),
+                    "files": list(applied_files or []),
+                    "summary": summary or "",
+                    "error": res_job.get("error") or None,
+                    "objective": objective,
+                })
 
                 # Yield ConvEvent kind="swarm_result"
                 yield ConvEvent("swarm_result", {

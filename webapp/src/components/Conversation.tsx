@@ -566,6 +566,18 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                     result: m.result || undefined
                   }
                 };
+              } else if (m.type === "swarm_result") {
+                // Persisted swarm outcome badge (green "swarm done" / red
+                // "swarm failed") -- restored so it survives app restarts.
+                return {
+                  kind: "swarm_result" as const,
+                  job_id: m.job_id || "",
+                  applied: !!m.applied,
+                  files: Array.isArray(m.files) ? m.files : [],
+                  summary: m.summary || "",
+                  error: m.error || null,
+                  objective: m.objective || ""
+                };
               } else {
                 return {
                   kind: "msg" as const,

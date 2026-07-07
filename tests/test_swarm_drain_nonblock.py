@@ -73,3 +73,30 @@ def test_drain_injects_pilot_resume_continuation():
     ]
     assert resume, "expected a user-role pilot-resume continuation in history"
     assert "without waiting for the user to ask" in resume[0]["content"]
+
+
+def test_drain_persists_swarm_badge_to_display_transcript():
+    """The green/red 'swarm done / swarm failed' badge must survive a session
+    reload: the live ConvEvent only reaches a renderer that is open right now,
+    so the outcome is also recorded in the display transcript."""
+    s = _session()
+    s._swarm_results.put({
+        "job_id": "abc123",
+        "objective": "fix the parser",
+        "result": {
+            "applied": True,
+            "files": ["parser.py"],
+            "summary": "patched the tokenizer",
+        },
+    })
+    list(s.drain_swarm_results())
+    badges = [d for d in s.export_display_transcript() if d.get("type") == "swarm_result"]
+    assert badges == [{
+        "type": "swarm_result",
+        "job_id": "abc123",
+        "applied": True,
+        "files": ["parser.py"],
+        "summary": "patched the tokenizer",
+        "error": None,
+        "objective": "fix the parser",
+    }]
