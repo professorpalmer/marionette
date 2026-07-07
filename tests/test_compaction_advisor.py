@@ -205,3 +205,43 @@ def test_advisor_compaction_error_keeps_default_trigger(monkeypatch, tmp_path):
     monkeypatch.setattr(compaction_advisor, "assess_layer_pressure", _raise)
     events = list(session._maybe_compact_history())
     assert events == []
+
+
+def test_small_window_ratio_behavior_unchanged():
+    """32k budget: ratio thresholds bind; behavior matches pre-Round-10."""
+    budget = 32_000
+    l0 = int(budget * 4 * (_HOT_SOON_RATIO - 0.01))
+    advice = assess_layer_pressure(_snapshot(l0), budget)
+    assert advice["level"] == "none"
+
+    l0_at = int(budget * 4 * _HOT_SOON_RATIO)
+    advice = assess_layer_pressure(_snapshot(l0_at), budget)
+    assert advice["level"] == "soon"
+    assert "percent of budget" in advice["reasons"][0]
+
+
+def test_large_window_absolute_soon_fires_before_ratio():
+    """1M budget with 160k-token L0 equivalent fires soon via absolute rule."""
+    budget = 1_000_000
+    l0_bytes = 160_000 * 4
+    advice = assess_layer_pressure(_snapshot(l0_bytes), budget)
+    assert advice["level"] == "soon"
+    assert "150000 tokens on a large window" in advice["reasons"][0]
+
+
+def test_absolute_threshold_env_zero_restores_ratio_only(monkeypatch):
+    budget = 1_000_000
+    l0_bytes = 160_000 * 4
+    monkeypatch.setenv("HARNESS_ADVISOR_SOON_TOKENS", "0")
+    monkeypatch.setenv("HARNESS_ADVISOR_NOW_TOKENS", "0")
+    advice = assess_layer_pressure(_snapshot(l0_bytes), budget)
+    assert advice["level"] == "none"
+
+
+def test_absolute_threshold_invalid_env_ignored(monkeypatch):
+    budget = 1_000_000
+    l0_bytes = 160_000 * 4
+    monkeypatch.setenv("HARNESS_ADVISOR_SOON_TOKENS", "not-a-number")
+    advice = assess_layer_pressure(_snapshot(l0_bytes), budget)
+    assert advice["level"] == "soon"
+    assert "150000 tokens on a large window" in advice["reasons"][0]

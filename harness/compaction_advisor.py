@@ -12,6 +12,8 @@ _HOT_NOW_RATIO = 0.70
 _HOT_SOON_RATIO = 0.55
 _HOT_L1_COMBO_RATIO = 0.40
 _L1_PRESSURE_BYTES = 5 * 1024 * 1024
+_HOT_NOW_TOKENS = 270_000
+_HOT_SOON_TOKENS = 150_000
 
 
 def _env_enabled(name: str, default_on: bool) -> bool:
@@ -23,6 +25,49 @@ def _env_enabled(name: str, default_on: bool) -> bool:
     if raw in ("1", "true", "on", "yes"):
         return True
     return default_on
+
+
+def _env_token_threshold(name: str, default: int) -> int:
+    """Parse an absolute token threshold. Invalid falls back; zero/negative disables."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return 0
+    return value
+
+
+def _effective_thresholds(budget: int) -> tuple[float, float, int, int]:
+    """Return (now_ratio, soon_ratio, binding_now_tokens, binding_soon_tokens).
+
+    binding_* is the absolute token count when that rule is the binding constraint,
+    else 0.
+    """
+    now_tokens = _env_token_threshold("HARNESS_ADVISOR_NOW_TOKENS", _HOT_NOW_TOKENS)
+    soon_tokens = _env_token_threshold("HARNESS_ADVISOR_SOON_TOKENS", _HOT_SOON_TOKENS)
+
+    now_ratio = _HOT_NOW_RATIO
+    soon_ratio = _HOT_SOON_RATIO
+    binding_now = 0
+    binding_soon = 0
+
+    if now_tokens > 0:
+        absolute_now = float(now_tokens) / float(budget)
+        if absolute_now < now_ratio:
+            now_ratio = absolute_now
+            binding_now = now_tokens
+
+    if soon_tokens > 0:
+        absolute_soon = float(soon_tokens) / float(budget)
+        if absolute_soon < soon_ratio:
+            soon_ratio = absolute_soon
+            binding_soon = soon_tokens
+
+    return now_ratio, soon_ratio, binding_now, binding_soon
 
 
 def advisor_enabled() -> bool:
@@ -92,14 +137,22 @@ def assess_layer_pressure(snapshot: dict, max_context_tokens: int) -> dict[str, 
     reasons: list[str] = []
     level = "none"
 
-    if hot_ratio >= _HOT_NOW_RATIO:
+    now_threshold, soon_threshold, binding_now, binding_soon = _effective_thresholds(budget)
+
+    if hot_ratio >= now_threshold:
         level = "now"
-        pct = int(round(hot_ratio * 100))
-        reasons.append(f"hot context at {pct} percent of budget")
-    elif hot_ratio >= _HOT_SOON_RATIO:
+        if binding_now:
+            reasons.append(f"hot context above {binding_now} tokens on a large window")
+        else:
+            pct = int(round(hot_ratio * 100))
+            reasons.append(f"hot context at {pct} percent of budget")
+    elif hot_ratio >= soon_threshold:
         level = "soon"
-        pct = int(round(hot_ratio * 100))
-        reasons.append(f"hot context at {pct} percent of budget")
+        if binding_soon:
+            reasons.append(f"hot context above {binding_soon} tokens on a large window")
+        else:
+            pct = int(round(hot_ratio * 100))
+            reasons.append(f"hot context at {pct} percent of budget")
     elif hot_ratio >= _HOT_L1_COMBO_RATIO and l1_bytes > _L1_PRESSURE_BYTES:
         level = "soon"
         pct = int(round(hot_ratio * 100))

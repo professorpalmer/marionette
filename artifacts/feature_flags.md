@@ -9,6 +9,8 @@ a row states otherwise.
 | --- | --- | --- | --- |
 | `HARNESS_ADVISOR` | off | Opt-in second-pass advisor warnings after tool actions (`harness/advisor.py`). | Round 6 / 0.7.46 |
 | `HARNESS_ADVISOR_COMPACTION` | off | When on, lowers history-compaction trigger from 75% to 65% of context budget when compaction advice level is `now`. | Round 8 / 0.7.48 |
+| `HARNESS_ADVISOR_NOW_TOKENS` | `270000` | Absolute hot-now token floor for compaction advice on large windows; `min(ratio, tokens/budget)` binding rule. Set `0` to disable absolute rule. | Round 10 / 0.8.0 |
+| `HARNESS_ADVISOR_SOON_TOKENS` | `150000` | Absolute hot-soon token floor for compaction advice on large windows; `min(ratio, tokens/budget)` binding rule. Set `0` to disable absolute rule. | Round 10 / 0.8.0 |
 | `HARNESS_ALLOW_PRIVATE_URLS` | off | Allows HTTP fetches to private/loopback hosts in `url_safety.py` (normally blocked). | - |
 | `HARNESS_AST_PREVIEW` | off | Attaches structural AST diff metadata to `hash_edit` tool results. | Round 6 / 0.7.46 |
 | `HARNESS_AUTO_COMMAND_GUARD` | on | Blocks risky shell patterns in auto-run commands; set `off` to disable (not recommended). | - |
