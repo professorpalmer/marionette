@@ -29,7 +29,27 @@ def _resolve(path: str) -> str:
     fall back to ``abspath + normpath`` which is safe and fast.
     """
     if os.name == "nt":
-        return os.path.normpath(os.path.abspath(path))
+        normalized = os.path.normpath(os.path.abspath(path))
+        # Plain abspath keeps 8.3 short names (e.g. RUNNER~1 on CI), which
+        # breaks containment comparisons against long-form spellings of the
+        # same location. realpath only misbehaves on NONEXISTENT paths, so
+        # resolve the longest existing ancestor (safe, single resolution)
+        # and reattach the nonexistent tail unchanged.
+        existing = normalized
+        tail: list[str] = []
+        try:
+            while existing and not os.path.exists(existing):
+                head, part = os.path.split(existing)
+                if head == existing or not part:
+                    return normalized
+                tail.append(part)
+                existing = head
+            resolved = os.path.realpath(existing)
+        except Exception:
+            return normalized
+        if tail:
+            return os.path.normpath(os.path.join(resolved, *reversed(tail)))
+        return resolved
     try:
         return os.path.realpath(path)
     except Exception:

@@ -28,7 +28,9 @@ def temp_git_repo():
         
         yield temp_dir
     finally:
-        shutil.rmtree(temp_dir)
+        # ignore_errors: git background maintenance can race the teardown walk
+        # (observed on macOS CI: FileNotFoundError on maintenance.lock).
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def test_checkpoint_lifecycle(temp_git_repo):
