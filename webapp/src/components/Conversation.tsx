@@ -1147,17 +1147,34 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   );
 
   // Append decoded text to the streaming assistant bubble (one state update).
+  // Find the open streaming bubble scanning back PAST decoration items
+  // (reasoning rows, tool cards, codegraph chips) that may land after it while
+  // the typewriter is still draining. Only checking the very last item split
+  // the stream into a second bubble whenever a `thinking` event arrived
+  // mid-drain -- the classic "same message posted twice around a reasoning
+  // row" bug on models that emit reasoning (deepseek et al).
+  const findStreamingBubbleIdx = (p: Item[]): number => {
+    for (let i = p.length - 1; i >= 0; i--) {
+      const it = p[i];
+      if (it.kind === "card" || it.kind === "thinking" || it.kind === "codegraph_context") continue;
+      if (it.kind === "msg") {
+        const m = (it as { kind: "msg"; msg: Msg }).msg;
+        if (m.role === "assistant" && m.streaming) return i;
+      }
+      break;
+    }
+    return -1;
+  };
+
   const appendStreamingText = (chunk: string) => {
     if (!chunk) return;
     setItems((p) => {
-      const lastIdx = p.length - 1;
-      if (lastIdx >= 0 && p[lastIdx].kind === "msg") {
-        const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
-        if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
-          const updated = [...p];
-          updated[lastIdx] = { kind: "msg", msg: { ...lastMsg.msg, text: lastMsg.msg.text + chunk } };
-          return updated;
-        }
+      const idx = findStreamingBubbleIdx(p);
+      if (idx >= 0) {
+        const bubble = p[idx] as { kind: "msg"; msg: Msg };
+        const updated = [...p];
+        updated[idx] = { kind: "msg", msg: { ...bubble.msg, text: bubble.msg.text + chunk } };
+        return updated;
       }
       return [...p, { kind: "msg", msg: { role: "assistant", text: chunk, streaming: true, isPlan: planTurnRef.current } }];
     });
@@ -1273,13 +1290,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setStatus("streaming");
         // Ensure a streaming bubble exists, then queue the text for the
         // typewriter loop (smooth cadence) instead of painting on arrival.
+        // Reuse an open bubble even when decoration items (reasoning/cards)
+        // landed after it -- same scan as appendStreamingText, so deltas never
+        // fork a duplicate bubble mid-turn.
         setItems((p) => {
-          const lastIdx = p.length - 1;
-          if (lastIdx >= 0 && p[lastIdx].kind === "msg") {
-            const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
-            if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
-              return p;
-            }
+          if (findStreamingBubbleIdx(p) >= 0) {
+            return p;
           }
           return [...p, { kind: "msg", msg: { role: "assistant", text: "", streaming: true, isPlan: planTurnRef.current } }];
         });
