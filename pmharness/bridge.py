@@ -78,15 +78,31 @@ def _browser_swarm_enabled(goal: str) -> bool:
     return any(s in g for s in signals)
 
 
+def _router_supports_max_capability() -> bool:
+    """True when the installed Puppetmaster's router understands the
+    ``max_capability`` ceiling. Older puppetmaster-ai builds (<= 1.10.0) only
+    know ``min_capability``; sending them the new key would silently drop the
+    cost cap entirely, so callers fall back to the legacy pin instead."""
+    try:
+        from puppetmaster.router import TaskSignals
+        return "explicit_max_capability" in getattr(
+            TaskSignals, "__dataclass_fields__", {})
+    except Exception:
+        return False
+
+
 def _analysis_capability_payload() -> dict:
     """Cap the capability the analysis swarm asks for so the router lands on a
     balanced mid-tier model (sonnet / gemini-pro) instead of first-picking the
     frontier model for a routine read-only audit.
 
     The agentic adapter carries its own retry+degrade envelope, so a mid-tier
-    model is more than sufficient for read-only analysis. Set an explicit
-    capability ceiling of 85 (clears the strongest analysis roles' need without
-    demanding a 99-cap frontier model). Opt back into frontier depth by setting
+    model is more than sufficient for read-only analysis. Set a capability
+    CEILING of 85 via payload.max_capability -- clips the top of the classifier
+    output while cheap roles (verify=25, explore=50) still classify low and
+    route to cheap models. (The previous min_capability=85 FORCED every task's
+    need to exactly 85, which pinned every swarm worker to the one cheapest
+    86-cap model regardless of role.) Opt back into frontier depth by setting
     HARNESS_ANALYSIS_DEEP=1, which removes the cap.
     """
     import os as _os
@@ -96,7 +112,12 @@ def _analysis_capability_payload() -> dict:
         ceiling = int(_os.environ.get("HARNESS_ANALYSIS_MAX_CAPABILITY", "85"))
     except (TypeError, ValueError):
         ceiling = 85
-    return {"min_capability": max(0, min(100, ceiling))}
+    ceiling = max(0, min(100, ceiling))
+    if _router_supports_max_capability():
+        return {"max_capability": ceiling}
+    # Legacy fallback: keeps the cost cap on older routers even though it
+    # flattens per-task differentiation (need pinned to exactly the ceiling).
+    return {"min_capability": ceiling}
 
 
 # First-principles STOP conditions, ported from the ARC-AGI winning harnesses'

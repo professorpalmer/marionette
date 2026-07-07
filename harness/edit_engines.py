@@ -237,16 +237,23 @@ def run_agentic_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
                 # Cost guardrail (mirrors the analysis-swarm cap in bridge.py):
                 # role="implement" has a high base score that first-picks the
                 # frontier model (opus, ~$15/$75 per Mtok). A balanced policy with
-                # a capability ceiling lands on a strong-but-far-cheaper coder
-                # (sonnet, ~$3/$15) that is more than capable of edits. Opt into
-                # frontier depth with HARNESS_IMPLEMENT_DEEP=1.
+                # a capability CEILING (max_capability, not min_capability --
+                # min would force every edit to the exact same score and pin one
+                # model) lands on a strong-but-far-cheaper coder that is more
+                # than capable of edits. Opt into frontier depth with
+                # HARNESS_IMPLEMENT_DEEP=1.
                 payload["routing_policy"] = "balanced"
                 if os.environ.get("HARNESS_IMPLEMENT_DEEP", "").strip() not in ("1", "true", "yes"):
                     try:
-                        payload["min_capability"] = int(
+                        _cap = int(
                             os.environ.get("HARNESS_IMPLEMENT_MAX_CAPABILITY", "86"))
                     except (TypeError, ValueError):
-                        payload["min_capability"] = 86
+                        _cap = 86
+                    from pmharness.bridge import _router_supports_max_capability
+                    _cap_key = ("max_capability"
+                                if _router_supports_max_capability()
+                                else "min_capability")
+                    payload[_cap_key] = _cap
             if provider:
                 payload["provider"] = provider
             if model:
