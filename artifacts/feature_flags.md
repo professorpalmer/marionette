@@ -12,6 +12,7 @@ a row states otherwise.
 | `HARNESS_ADVISOR_NOW_TOKENS` | `270000` | Absolute hot-now token floor for compaction advice on large windows; `min(ratio, tokens/budget)` binding rule. Set `0` to disable absolute rule. | Round 10 / 0.8.0 |
 | `HARNESS_ADVISOR_SOON_TOKENS` | `150000` | Absolute hot-soon token floor for compaction advice on large windows; `min(ratio, tokens/budget)` binding rule. Set `0` to disable absolute rule. | Round 10 / 0.8.0 |
 | `HARNESS_ALLOW_PRIVATE_URLS` | off | Allows HTTP fetches to private/loopback hosts in `url_safety.py` (normally blocked). | - |
+| `HARNESS_APPEND_ONLY_CONTEXT` | `auto` | Append-only context mode: `on`/`off`/`auto`. When active, freezes the system prompt prefix and moves per-turn CodeGraph and turn-budget content into the latest user message for KV-cache reuse on local/discount providers. Auto-detects Ollama, LM Studio, llama.cpp, vLLM, sglang, DeepSeek, and loopback/RFC1918/`.local` base URLs. | Round 11 / 0.9.0 |
 | `HARNESS_AST_PREVIEW` | off | Attaches structural AST diff metadata to `hash_edit` tool results. | Round 6 / 0.7.46 |
 | `HARNESS_AUTO_COMMAND_GUARD` | on | Blocks risky shell patterns in auto-run commands; set `off` to disable (not recommended). | - |
 | `HARNESS_AUTO_DISTILL` | off | Auto-runs skill distillation after pilot turns when enabled. | - |
