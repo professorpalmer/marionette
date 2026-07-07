@@ -97,6 +97,33 @@ def test_job_swarm_accounting_uses_actual_usage_not_routing_estimate():
     assert abs(cost - 0.14) < 1e-6
 
 
+def test_job_swarm_accounting_keeps_estimate_when_usage_unpriceable():
+    """Usage from a model the registry cannot price must not zero the cost.
+
+    Regression: a finished job showed the routing estimate while running, then
+    snapped to $0 on completion because price_job returned 0 for its unpriced
+    usage records and that 0 was treated as authoritative."""
+    arts = [
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.0067, "model_id": "unknown-model"},
+        ),
+        _artifact(
+            task_id="t1",
+            payload={
+                "tokens_in": 300_000,
+                "tokens_out": 60_000,
+                "model": "unknown-model",
+            },
+        ),
+    ]
+    tokens, cost = _job_swarm_accounting(arts, registry=[])
+    assert tokens == 360_000
+    assert abs(cost - 0.0067) < 1e-9
+
+
 def test_job_swarm_accounting_falls_back_to_routing_before_usage():
     registry = [_registry_spec("worker-model")]
     arts = [

@@ -100,3 +100,35 @@ def test_swarm_live_surfaces_local_provider_jobs():
             srv._pilot._local_jobs.clear()
     finally:
         shutil.rmtree(tmp_dir)
+
+
+def test_session_total_includes_swarm_store_job_cost(monkeypatch):
+    """Regression: swarm store jobs bill on their own adapters, but their cost
+    never rolled into the session total shown in the status bar. /api/usage and
+    /api/swarm/live must both add store-job spend (and only store-job spend --
+    local provider jobs are already inside _worker_cost_usd)."""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        httpd, port, srv = _server(tmp_dir)
+        try:
+            headers = {"X-Harness-Token": srv._TOKEN}
+            baseline = json.loads(
+                _get(port, "/api/usage", headers=headers).read().decode()
+            )["session"]["est_cost_usd"]
+
+            monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [{"id": "job_fake1"}])
+            monkeypatch.setattr(
+                srv, "_job_swarm_accounting", lambda arts, registry: (50_000, 0.37)
+            )
+
+            usage = json.loads(_get(port, "/api/usage", headers=headers).read().decode())
+            assert abs(usage["session"]["est_cost_usd"] - (baseline + 0.37)) < 1e-6
+
+            live = json.loads(
+                _get(port, "/api/swarm/live", headers=headers).read().decode()
+            )
+            assert abs(live["session"]["est_cost_usd"] - (baseline + 0.37)) < 1e-6
+        finally:
+            httpd.shutdown()
+    finally:
+        shutil.rmtree(tmp_dir)

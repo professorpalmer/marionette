@@ -251,11 +251,11 @@ def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
     est_cost_usd = 0.0
     try:
         job_cost = price_job(raw_arts, registry)
-        has_usage = (
-            (job_cost.measured_runs + job_cost.estimated_runs) > 0
-            or tokens > 0
-        )
-        if has_usage:
+        # Only trust the usage-priced total when it actually priced something.
+        # Usage can land with models the registry cannot price (priced_tasks=0,
+        # cost 0.0); treating that as authoritative made finished jobs snap
+        # from the routing estimate back to $0. Keep the estimate instead.
+        if job_cost.total_marginal_cost_usd > 0:
             est_cost_usd = job_cost.total_marginal_cost_usd
         else:
             est_cost_usd = _routing_estimate_cost(raw_arts)
@@ -3368,6 +3368,11 @@ class Handler(BaseHTTPRequestHandler):
                         _diag("server.usage_job_cost", e, msg=f"job={jid}")
             except Exception as e:
                 _diag("server.usage_jobs_aggregate", e)
+            # Swarm store jobs bill on their own adapters/keys and are not part
+            # of the pilot meters (unlike local provider workers, folded in via
+            # _worker_cost_usd) -- add them so the session total is real spend.
+            swarm_cost = sum(float(j.get("est_cost_usd") or 0.0) for j in jobs_list)
+            est_session_cost += swarm_cost
             response_data = {
                 "session": {
                     "tokens_used": tokens_used,
@@ -3498,6 +3503,17 @@ class Handler(BaseHTTPRequestHandler):
             _t_cached = int(getattr(_pilot, "_tokens_cached", 0) or 0)
             est_session_cost = _session_cost_split(_pilot, price_in, price_out)
             _cache_savings_usd = _cache_savings(_t_cached, price_in)
+            # Add swarm store-job spend (local provider jobs are already inside
+            # _worker_cost_usd; store jobs bill separately). Sum only jobs that
+            # came from the durable store, not the merged-in local ones.
+            try:
+                est_session_cost += sum(
+                    float(j.get("est_cost_usd") or 0.0)
+                    for j in res_jobs
+                    if not str(j.get("id") or "").startswith("local-")
+                )
+            except Exception:
+                pass
             
             response_data = {
                 "session": {
