@@ -118,7 +118,7 @@ def test_maybe_persist_default_head_only_for_generic_results(tmp_path):
 
 
 def test_maybe_persist_multibyte_preview_is_valid(tmp_path):
-    content = "\u4e2d\u6587\u5185\u5bb9 " * 1000
+    content = "\u4e2d\u6587\u5185\u5bb9 " * 3000
     config = BudgetConfig(max_result_chars=50, preview_chars=101)
     msg = maybe_persist_result(
         content=content,

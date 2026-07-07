@@ -223,6 +223,28 @@ def maybe_persist_result(
     )
 
     original_len = len(content)
+    estimated_path = os.path.join(
+        os.path.abspath(state_dir), "pmharness-results", f"{result_id}.txt"
+    ).replace(os.sep, "/")
+    estimated_uri = None
+    if spill_session_id:
+        try:
+            from harness.spill_registry import spill_uri
+
+            estimated_uri = spill_uri(spill_session_id, result_id)
+        except Exception:
+            estimated_uri = None
+    estimated_result = build_persisted_message(
+        preview, has_more, original_len, estimated_path, spill_uri=estimated_uri
+    )
+    try:
+        from harness.offload_policy import should_offload
+
+        if not should_offload(original_len, len(estimated_result)):
+            return content
+    except Exception:
+        return content
+
     try:
         file_path = spill_to_disk(content, result_id, state_dir, dedupe=dedupe)
         uri = None
@@ -251,6 +273,13 @@ def maybe_persist_result(
             f"[Truncated: tool response was {original_len:,} chars. "
             f"Full output could not be saved: {e}]"
         )
+        try:
+            from harness.offload_policy import should_offload
+
+            if not should_offload(original_len, len(fallback_msg)):
+                return content
+        except Exception:
+            return content
         _notify_compaction(on_compaction, original_len, len(fallback_msg), "truncate_fallback")
         return fallback_msg
 

@@ -20,6 +20,8 @@ from harness.spill_registry import (
 
 import pytest
 
+_GATE_FLOOR_CHARS = 12_500
+
 
 def test_register_and_resolve_round_trip():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -58,7 +60,7 @@ def test_registration_failure_is_silent():
 def test_maybe_persist_result_emits_spill_uri():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
-        large = "x" * 500
+        large = "x" * _GATE_FLOOR_CHARS
         msg = maybe_persist_result(
             large, "call_big", tmpdir, config, spill_session_id="sess1"
         )
@@ -66,13 +68,13 @@ def test_maybe_persist_result_emits_spill_uri():
         assert "pmharness-results/call_big.txt" in msg
         row = resolve_spill(tmpdir, "sess1", "call_big")
         assert row is not None
-        assert row["chars"] == 500
+        assert row["chars"] == _GATE_FLOOR_CHARS
 
 
 def test_maybe_persist_result_without_session_omits_uri():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
-        msg = maybe_persist_result("y" * 500, "call_plain", tmpdir, config)
+        msg = maybe_persist_result("y" * _GATE_FLOOR_CHARS, "call_plain", tmpdir, config)
         assert "spill://" not in msg
         assert resolve_spill(tmpdir, "default", "call_plain") is None
 
@@ -80,7 +82,7 @@ def test_maybe_persist_result_without_session_omits_uri():
 def test_spill_uri_resolves_full_content():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
-        large = "line one\n" * 100
+        large = "line one\n" * 2000
         maybe_persist_result(large, "call_read", tmpdir, config, spill_session_id="sess1")
 
         ctx = InternalUriContext(state_dir=tmpdir)
@@ -89,14 +91,14 @@ def test_spill_uri_resolves_full_content():
         assert resource.content == large
 
         sliced = resolve_internal_uri("spill://sess1/call_read:2-3", ctx)
-        assert "[lines 2-3 of 100]" in sliced.content
+        assert "[lines 2-3 of 2000]" in sliced.content
 
 
 def test_spill_directory_listings():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
-        maybe_persist_result("a" * 500, "call_1", tmpdir, config, spill_session_id="sess1")
-        maybe_persist_result("b" * 500, "call_2", tmpdir, config, spill_session_id="sess2")
+        maybe_persist_result("a" * _GATE_FLOOR_CHARS, "call_1", tmpdir, config, spill_session_id="sess1")
+        maybe_persist_result("b" * _GATE_FLOOR_CHARS, "call_2", tmpdir, config, spill_session_id="sess2")
 
         ctx = InternalUriContext(state_dir=tmpdir)
         root = resolve_internal_uri("spill://", ctx)
@@ -129,7 +131,7 @@ def test_spill_resolution_missing_row_and_file():
             resolve_internal_uri("spill://sess1/nothing", ctx)
 
         config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
-        msg = maybe_persist_result("z" * 500, "call_gone", tmpdir, config, spill_session_id="sess1")
+        msg = maybe_persist_result("z" * _GATE_FLOOR_CHARS, "call_gone", tmpdir, config, spill_session_id="sess1")
         assert "spill://sess1/call_gone" in msg
         os.remove(os.path.join(tmpdir, "pmharness-results", "call_gone.txt"))
         with pytest.raises(InternalUriError):
@@ -139,7 +141,7 @@ def test_spill_resolution_missing_row_and_file():
 def test_search_state_finds_spills_without_store():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
-        maybe_persist_result("q" * 500, "call_find_me", tmpdir, config, spill_session_id="sess1")
+        maybe_persist_result("q" * _GATE_FLOOR_CHARS, "call_find_me", tmpdir, config, spill_session_id="sess1")
 
         ctx = InternalUriContext(state_dir=tmpdir)
         # Scheme-scoped search must not require the Puppetmaster job store.
@@ -219,7 +221,7 @@ def test_usage_api_includes_spill_fields():
         try:
             config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
             maybe_persist_result(
-                "x" * 500,
+                "x" * _GATE_FLOOR_CHARS,
                 "spill_usage_call",
                 tmp_dir,
                 config,
@@ -234,7 +236,7 @@ def test_usage_api_includes_spill_fields():
             usage = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
             session = usage["session"]
             assert session["spill_count"] >= 1
-            assert session["spill_chars"] >= 500
+            assert session["spill_chars"] >= _GATE_FLOOR_CHARS
         finally:
             httpd.shutdown()
     finally:

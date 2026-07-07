@@ -241,7 +241,7 @@ def test_integration_maybe_persist_records_savings(tmp_path):
     state_dir = str(tmp_path)
     session_id = "integ-session"
     tc_id = "read_file_1"
-    large = "x" * 5000
+    large = "x" * 12_500
     config = BudgetConfig(max_result_chars=800, preview_chars=400)
 
     from harness.tool_output_savings import make_compaction_callback

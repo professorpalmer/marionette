@@ -12,6 +12,9 @@ from harness.context_budget import (
 )
 from harness.conversation import ConversationalSession
 
+# Offload gate floor: 3000 tokens ~= 12000 chars.
+_GATE_FLOOR_CHARS = 12_500
+
 
 @dataclass
 class DummyConfig:
@@ -60,8 +63,8 @@ def test_maybe_persist_result():
         res = maybe_persist_result(small, "id1", tmpdir, config)
         assert res == small
 
-        # Large content
-        large = "this content is definitely longer than ten characters"
+        # Large content (above offload gate floor)
+        large = "x" * _GATE_FLOOR_CHARS
         res = maybe_persist_result(large, "id2", tmpdir, config)
         assert PERSISTED_OUTPUT_TAG in res
         assert "pmharness-results/id2.txt" in res
@@ -75,7 +78,7 @@ def test_maybe_persist_result():
 
 def test_maybe_persist_result_exception_fallback():
     config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
-    content = "this content is definitely longer than ten characters"
+    content = "x" * _GATE_FLOOR_CHARS
     # Embedded NUL makes the path unwritable on every platform (Windows happily
     # creates "/nonexistent_directory_cannot_write/!" at the drive root).
     res = maybe_persist_result(content, "id123", "/nonexistent\0directory", config)
@@ -91,7 +94,7 @@ def test_enforce_turn_budget():
         messages = [
             {"role": "tool", "tool_call_id": "tc1", "content": "small content"},  # 13 chars
             {"role": "tool", "tool_call_id": "tc2", "content": "a" * 150},  # 150 chars
-            {"role": "tool", "tool_call_id": "tc3", "content": "b" * 5000},  # 5000 chars
+            {"role": "tool", "tool_call_id": "tc3", "content": "b" * _GATE_FLOOR_CHARS},
         ]
         # Total: 5163 chars (> 3000 turn_budget_chars)
         # tc3 is the largest and gets persisted first.
@@ -120,7 +123,7 @@ def test_enforce_turn_budget_already_persisted_skipped():
         # Total size exceeds budget, but msg0 is already persisted.
         messages = [
             {"role": "tool", "tool_call_id": "tc1", "content": f"{PERSISTED_OUTPUT_TAG} already saved"},
-            {"role": "tool", "tool_call_id": "tc2", "content": "b" * 4000},
+            {"role": "tool", "tool_call_id": "tc2", "content": "b" * _GATE_FLOOR_CHARS},
         ]
         enforce_turn_budget(messages, tmpdir, config)
         assert PERSISTED_OUTPUT_TAG in messages[0]["content"]

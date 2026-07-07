@@ -45,6 +45,8 @@ a row states otherwise.
 | `HARNESS_MAX_TOOL_RESULT_CHARS` | `24000` (conversation) / `8000` (context_budget) | Truncation threshold for tool output retained in history. | - |
 | `HARNESS_MAX_WORKERS` | `64` | Upper bound on concurrent worker slots in the server. | - |
 | `HARNESS_NO_DELEGATION` | off | Hides delegation tools from the visible catalog for leaf workers. | - |
+| `HARNESS_OFFLOAD_MARGIN` | `0.9` | Maximum replacement/original char ratio for tool-output offload; above this the result stays verbatim. | Round 10 / 0.8.0 |
+| `HARNESS_OFFLOAD_MIN_TOKENS` | `3000` | Minimum estimated tokens before tool-output spill/compaction is considered. | Round 10 / 0.8.0 |
 | `HARNESS_REACH` | `openrouter` | Default provider reach (`openrouter`, etc.). | - |
 | `HARNESS_REPO` | empty | Target git repository path for real swarm/analysis runs. | - |
 | `HARNESS_REVIEW_EDITS_BEFORE_APPLY` | off | Requires human approval before applying batched file edits. | - |
