@@ -24,6 +24,7 @@ Start here, then follow the map:
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The three-pane app, the pilot loop, module map, data flow. |
 | [DISTILLER_ARCHITECTURE.md](DISTILLER_ARCHITECTURE.md) | How completed sessions distill into durable skills/rules and wiki pages. |
 | [docs/session_decisions_v0_7_x.md](docs/session_decisions_v0_7_x.md) | Durable record of v0.7.x decisions: token economics, security auth gate, swarm findings capture, persistence, composer UX, the distribution model. |
+| [docs/session_decisions_v0_8_0_to_0_9_x.md](docs/session_decisions_v0_8_0_to_0_9_x.md) | v0.8.0--v0.9.x: OMP token lift, append-only KV-cache context, swarm cost accounting, live OpenRouter pricing, Windows console hygiene. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, conventions, how self-updating works for contributors. |
 | [RELEASING.md](RELEASING.md) | The source-run release model (why there is no binary to ship). |
 | [AGENTS.md](AGENTS.md) | Rules for agents/contributors working in this repo. |
@@ -94,8 +95,9 @@ The cost thesis is measured, not asserted:
 | **Puppetmaster delegation** | run_swarm (read-only analysis), run_implement (edit-capable worktree worker), run_parallel (concurrent waves). Heavy/multi-file work runs as durable, auditable jobs. |
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
-| **Honest token economics** | Prompt caching across Anthropic/OpenAI/Gemini with a stable + moving cache breakpoint, cost billed at the real cache-read discount, and the context meter driven by the driver's actual token usage -- so cost and context reflect reality and the status bar shows the dollars caching saved you. |
-| **Cost transparency** | The status bar expands to a per-session breakdown: session spend, prompt-cache dollars saved, and the framing that each task step is routed to the cheapest capable model. Delegated worker/swarm spend is priced at each worker's own model rate and counted toward the session total, so the number reflects real cost end to end. |
+| **Honest token economics** | Prompt caching across Anthropic/OpenAI/Gemini with a stable + moving cache breakpoint, cost billed at the real cache-read discount, and the context meter driven by the driver's actual token usage -- so cost and context reflect reality and the status bar shows the dollars caching saved you. Savings-gated tool-output offload, absolute-token compaction advice, and optional per-turn output budgets (`+Nk` / `+Nk!`) cut waste without hiding results. |
+| **Append-only context mode** | For local and cache-discounting providers, keeps the system prompt prefix byte-stable across turns and appends dynamic context in a trailer so provider KV caches reuse the heavy prefix -- real-dollar savings on long sessions. |
+| **Cost transparency** | The status bar is the single session-total surface: pilot spend plus every delegated swarm/worker job, priced at each job's actual model rate when usage is known. Unknown models fall back to the live OpenRouter price map (public `/models` feed, disk-cached), then to the router's pre-flight estimate -- never silently $0. The swarm panel shows per-job tokens and cost on each card only (no duplicate footer). |
 | **Full-auto mode** | Unattended objective pursuit bounded by an AutoBudget governor (max swarms / tokens / seconds / idle), with a non-bypassable command safety guard. |
 | **Command safety guard** | In full-auto, irreversible/remote/escalating shell commands (recursive deletes, ssh/scp, curl-pipe-to-shell, force-push, sudo, disk writes, key exfil) are screened and blocked; interactive co-working is untouched. Configurable per-command timeout (default 120s; 0/off = unbounded for long sessions). |
 
@@ -235,6 +237,9 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_AUTO_COMMAND_GUARD` | Full-auto danger guard; default on, off to disable. |
 | `HARNESS_WIKI_ORCHESTRATE` | Local wiki structuring: unset (off), 1/approve (prepare-and-approve), auto (silent ingest). |
 | `HARNESS_AUTO_MAX_SWARMS` / `_TOKENS` / `_SECONDS` / `_MAX_IDLE` | Full-auto budget governor ceilings. |
+| `HARNESS_APPEND_ONLY_CONTEXT` | Force append-only KV-cache context mode (auto-detected for local/cache-discounting endpoints when unset). |
+
+Swarm job costs in the UI come from measured usage priced against `~/.puppetmaster/models.json`, then the live OpenRouter `/models` map (cached under `~/.pmharness/or_models_cache.json`), then the router pre-flight estimate. No manual registry entry is required for OpenRouter-hosted models like `z-ai/glm-5.2`.
 
 ## Conventions
 
