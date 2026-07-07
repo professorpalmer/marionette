@@ -576,6 +576,11 @@ class ConversationalSession(ToolDispatchMixin):
         # Per-turn output budget from +Nk / +Nk! user directive (Round 10).
         self._turn_budget: Optional[dict] = None
         self._turn_output_tokens: int = 0
+        # Append-only context mode (Round 11): frozen system prefix for KV reuse.
+        self._append_only: Optional[bool] = None
+        self._frozen_system_prompt: Optional[str] = None
+        self._last_rendered_prompt: str = ""
+        self._prefix_stable_turns: int = 0
         # Reload any persisted provider-worker history from a prior process so the
         # swarm panel keeps its history across a backend restart. Stale 'running'
         # jobs (whose thread died with the old process) are marked interrupted.
@@ -1101,6 +1106,98 @@ class ConversationalSession(ToolDispatchMixin):
         except Exception:
             return {}
 
+    _TURN_CONTEXT_TRAILER = "\n\n[context for this turn]\n"
+
+    def _resolve_append_only(self) -> bool:
+        if self._append_only is not None:
+            return self._append_only
+        try:
+            from .append_only_context import append_only_setting, should_enable_append_only
+
+            driver_name = str(getattr(self.config, "driver", "") or "")
+            base_url = str(getattr(self.pilot, "base_url", "") or "")
+            self._append_only = should_enable_append_only(
+                append_only_setting(), base_url, driver_name
+            )
+        except Exception:
+            self._append_only = False
+        return self._append_only
+
+    def _reset_append_only_freeze(self) -> None:
+        self._frozen_system_prompt = None
+        self._last_rendered_prompt = ""
+        self._prefix_stable_turns = 0
+
+    def _build_turn_cg_section(self, user_message: str) -> str:
+        cg_section = ""
+        _no_deleg = getattr(self.config, "no_delegation", False)
+        if not self.config.repo or _no_deleg:
+            return cg_section
+        try:
+            from puppetmaster.codegraph import codegraph_context, codegraph_prompt_section
+
+            cg_slice = codegraph_context(task=user_message, cwd=self.config.repo)
+            if cg_slice:
+                authoritative = (
+                    "CODEGRAPH HAS ALREADY BEEN QUERIED FOR THIS TASK. The relevant "
+                    "symbols, definitions, and code are provided in the section below. "
+                    "USE THIS as your primary source. Do NOT re-read entire files that "
+                    "already appear here -- only read_file specific additional lines you "
+                    "still need (with start_line + limit), or call search_codegraph to "
+                    "widen the graph. Whole-file dumps when the answer is already below "
+                    "are wasteful and wrong.\n"
+                )
+                cg_section = authoritative + codegraph_prompt_section(cg_slice)
+            self._cg_cache_key = user_message
+            self._cg_cache_section = cg_section
+            self._cg_cache_symbols = cg_slice.count("- **") + cg_slice.count("#### ") if cg_slice else 0
+        except Exception:
+            pass
+        return cg_section
+
+    def _append_turn_context_trailer(self, message: str, user_message: str) -> str:
+        try:
+            parts = []
+            cg_section = self._build_turn_cg_section(user_message)
+            if cg_section:
+                parts.append(cg_section)
+            turn_note = self._turn_budget_system_note()
+            if turn_note:
+                parts.append(turn_note)
+            if not parts:
+                return message
+            return message + self._TURN_CONTEXT_TRAILER + "\n\n".join(parts)
+        except Exception:
+            return message
+
+    def _ensure_frozen_system_prompt(self, base_sys: str) -> str:
+        if self._frozen_system_prompt is not None:
+            return self._frozen_system_prompt
+        try:
+            sys_prompt = base_sys
+            mcp_section = _format_mcp_tools_section(
+                self._mcp,
+                self._tool_catalog,
+                no_delegation=getattr(self.config, "no_delegation", False),
+                browser_enabled=getattr(self.config, "browser_enabled", True),
+            )
+            if mcp_section:
+                sys_prompt += "\n\n" + mcp_section
+            self._frozen_system_prompt = sys_prompt
+            if self._history and self._history[0].get("role") == "system":
+                self._history[0]["content"] = self._frozen_system_prompt
+        except Exception:
+            self._frozen_system_prompt = base_sys
+        return self._frozen_system_prompt or base_sys
+
+    def _record_prompt_stability(self, prompt: str) -> None:
+        try:
+            if self._last_rendered_prompt and prompt.startswith(self._last_rendered_prompt):
+                self._prefix_stable_turns += 1
+            self._last_rendered_prompt = prompt
+        except Exception:
+            pass
+
     def _spill_usage_fields(self) -> dict:
         try:
             from harness.spill_registry import spill_usage_payload
@@ -1308,6 +1405,7 @@ class ConversationalSession(ToolDispatchMixin):
         # differs but not guaranteed (a tiny middle replaced by a summary_msg
         # could land at the same length). Explicitly invalidate.
         self._invalidate_ctx_cache()
+        self._reset_append_only_freeze()
 
         try:
             from harness.history_compaction_journal import record_history_compaction
@@ -2316,6 +2414,11 @@ class ConversationalSession(ToolDispatchMixin):
             except Exception:
                 pass
 
+            if self._resolve_append_only():
+                processed_message = self._append_turn_context_trailer(
+                    processed_message, user_message
+                )
+
             # Preserve strict user/assistant alternation in _history: if the last
             # message is already a user turn (e.g. a background job just drained a
             # pilot-resume continuation before the user typed), merge into it rather
@@ -2333,7 +2436,10 @@ class ConversationalSession(ToolDispatchMixin):
             # so the driver sees the most relevant code BEFORE it starts calling tools.
             # Skip for no_delegation worker sessions (they run in a fresh worktree with
             # no CodeGraph index). Degrades to a no-op when codegraph is unavailable.
-            if not getattr(self.config, "no_delegation", False):
+            if (
+                not getattr(self.config, "no_delegation", False)
+                and not self._resolve_append_only()
+            ):
                 cg_context = self._get_codegraph_context(user_message)
                 if cg_context:
                     self._history.append({"role": "user", "content": cg_context})
@@ -2393,7 +2499,8 @@ class ConversationalSession(ToolDispatchMixin):
             # from their toolset), so skipping it is pure win.
             _no_deleg = getattr(self.config, "no_delegation", False)
             cg_symbol_count = 0
-            if self.config.repo and not _no_deleg:
+            append_only = self._resolve_append_only()
+            if self.config.repo and not _no_deleg and not append_only:
                 # Cache the CodeGraph slice per user message: the underlying
                 # codegraph_context() is a blocking Node subprocess (~270-500ms).
                 # Recomputing it on every step of a multi-step turn (identical
@@ -2441,23 +2548,28 @@ class ConversationalSession(ToolDispatchMixin):
             resp = None
             self._streamed_prose = ""  # reset per step; set if this step streams
             for attempt in range(2):
-                sys_prompt = base_sys
-                if cg_section:
-                    sys_prompt += "\n\n" + cg_section
-                mcp_section = _format_mcp_tools_section(
-                    self._mcp,
-                    self._tool_catalog,
-                    no_delegation=getattr(self.config, "no_delegation", False),
-                    browser_enabled=getattr(self.config, "browser_enabled", True),
-                )
-                if mcp_section:
-                    sys_prompt += "\n\n" + mcp_section
-                turn_note = self._turn_budget_system_note()
-                if turn_note:
-                    sys_prompt += "\n\n" + turn_note
+                if append_only:
+                    sys_prompt = self._ensure_frozen_system_prompt(base_sys)
+                    prompt = self._render_history()
+                    self._record_prompt_stability(prompt)
+                else:
+                    sys_prompt = base_sys
+                    if cg_section:
+                        sys_prompt += "\n\n" + cg_section
+                    mcp_section = _format_mcp_tools_section(
+                        self._mcp,
+                        self._tool_catalog,
+                        no_delegation=getattr(self.config, "no_delegation", False),
+                        browser_enabled=getattr(self.config, "browser_enabled", True),
+                    )
+                    if mcp_section:
+                        sys_prompt += "\n\n" + mcp_section
+                    turn_note = self._turn_budget_system_note()
+                    if turn_note:
+                        sys_prompt += "\n\n" + turn_note
 
-                self._history[0]["content"] = sys_prompt
-                prompt = self._render_history()
+                    self._history[0]["content"] = sys_prompt
+                    prompt = self._render_history()
 
                 # Guarantee tool_use/tool_result pairing so a prior interrupted
                 # spree (cancel/steer/worker-ceiling/exception) can't 400 the next
@@ -2525,7 +2637,8 @@ class ConversationalSession(ToolDispatchMixin):
                     yield ConvEvent("error", {"error": f"pilot transport: {e}"})
                     return
                 finally:
-                    self._history[0]["content"] = base_sys
+                    if not append_only:
+                        self._history[0]["content"] = base_sys
 
                 # real token metering: prompt + completion (drivers report tokens_out;
                 # estimate tokens_in from prompt length when not provided).
