@@ -145,7 +145,11 @@ def _isolate_pilot_env(monkeypatch):
     autopilot) makes every test with a non-terminating fake pilot hang forever,
     and HARNESS_AUTO_COMMAND_GUARD=off silently disables the command guard.
     The app also persists feature flags via _set_env_setting that can change
-    test behavior (auto-verify, edit review, distill, hash-edit, etc.)."""
+    test behavior (auto-verify, edit review, distill, hash-edit, etc.).
+    HARNESS_SWARM_ADAPTER/HARNESS_REPO matter most: the running app exports
+    them (agentic + the open workspace), and with them inherited the e2e/stage4
+    tests leave the documented "demo" default and fail with "swarm exited with
+    incomplete tasks". Tests that need a specific adapter set it explicitly."""
     for _var in (
         "HARNESS_MAX_PILOT_STEPS",
         "HARNESS_AUTO_COMMAND_GUARD",
@@ -155,6 +159,8 @@ def _isolate_pilot_env(monkeypatch):
         "HARNESS_HASH_EDIT",
         "HARNESS_VERIFY_COMMAND",
         "HARNESS_COMMAND_TIMEOUT",
+        "HARNESS_SWARM_ADAPTER",
+        "HARNESS_REPO",
     ):
         monkeypatch.delenv(_var, raising=False)
 
