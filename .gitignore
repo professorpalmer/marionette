@@ -18,6 +18,7 @@ webapp/build/*.iconset/
 build/*.iconset/
 
 # Agent artifacts (plans, local agent state) -- never commit
+artifacts/
 .hermes/
 
 # Stray secrets -- never commit

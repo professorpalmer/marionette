@@ -23,8 +23,6 @@ Start here, then follow the map:
 | [README](README.md) (this file) | What Marionette is, capabilities, install, run, configure. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The three-pane app, the pilot loop, module map, data flow. |
 | [DISTILLER_ARCHITECTURE.md](DISTILLER_ARCHITECTURE.md) | How completed sessions distill into durable skills/rules and wiki pages. |
-| [docs/session_decisions_v0_7_x.md](docs/session_decisions_v0_7_x.md) | Durable record of v0.7.x decisions: token economics, security auth gate, swarm findings capture, persistence, composer UX, the distribution model. |
-| [docs/session_decisions_v0_8_0_to_0_9_x.md](docs/session_decisions_v0_8_0_to_0_9_x.md) | v0.8.0--v0.9.x: OMP token lift, append-only KV-cache context, swarm cost accounting, live OpenRouter pricing, Windows console hygiene. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, conventions, how self-updating works for contributors. |
 | [RELEASING.md](RELEASING.md) | The source-run release model (why there is no binary to ship). |
 | [AGENTS.md](AGENTS.md) | Rules for agents/contributors working in this repo. |
