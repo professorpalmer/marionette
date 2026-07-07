@@ -124,6 +124,38 @@ def test_job_swarm_accounting_keeps_estimate_when_usage_unpriceable():
     assert abs(cost - 0.0067) < 1e-9
 
 
+def test_job_swarm_accounting_prices_unknown_models_from_live_map(monkeypatch):
+    """Models missing from ~/.puppetmaster/models.json get real usage-based
+    pricing from the live OpenRouter price map instead of the frozen routing
+    estimate."""
+    import pmharness.registry as registry_mod
+
+    monkeypatch.setattr(
+        registry_mod, "price",
+        lambda name: (0.4, 1.6) if name == "z-ai/glm-5.2" else (None, None),
+    )
+    arts = [
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.0067, "model_id": "z-ai/glm-5.2"},
+        ),
+        _artifact(
+            task_id="t1",
+            payload={
+                "tokens_in": 1_000_000,
+                "tokens_out": 100_000,
+                "model": "z-ai/glm-5.2",
+            },
+        ),
+    ]
+    tokens, cost = _job_swarm_accounting(arts, registry=[])
+    assert tokens == 1_100_000
+    # 1M*$0.4/M + 100k*$1.6/M = $0.56 of measured spend, not the $0.0067 estimate.
+    assert abs(cost - 0.56) < 1e-6
+
+
 def test_job_swarm_accounting_falls_back_to_routing_before_usage():
     registry = [_registry_spec("worker-model")]
     arts = [

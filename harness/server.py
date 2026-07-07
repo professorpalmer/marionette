@@ -231,12 +231,37 @@ def _routing_estimate_cost(artifacts) -> float:
     return total
 
 
+def _live_price_unpriced_tasks(job_cost) -> float:
+    """Price usage records the registry could not price against the live
+    OpenRouter price map (public /models feed, disk-cached). Worker model ids
+    like 'z-ai/glm-5.2' are OpenRouter slugs, so this usually resolves exactly;
+    unmatched models contribute nothing. Best-effort, never raises."""
+    try:
+        from pmharness.registry import price
+    except Exception:
+        return 0.0
+    total = 0.0
+    for task in getattr(job_cost, "tasks", []):
+        if task.priced or (not task.tokens_in and not task.tokens_out):
+            continue
+        try:
+            price_in, price_out = price(task.model_id)
+        except Exception:
+            continue
+        if price_in is None or price_out is None:
+            continue
+        total += ((task.tokens_in / 1.0e6) * price_in
+                  + (task.tokens_out / 1.0e6) * price_out)
+    return total
+
+
 def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
     """Return (tokens, cost_usd) for a swarm job.
 
     Prefers measured/estimated usage priced against the registry
-    (:func:`puppetmaster.cost.price_job`). Falls back to the router's pre-flight
-    estimate only while no task has recorded token usage yet.
+    (:func:`puppetmaster.cost.price_job`), topped up with live OpenRouter rates
+    for models the registry does not know. Falls back to the router's
+    pre-flight estimate only while nothing could be priced from usage.
     """
     from puppetmaster.usage import aggregate_token_usage
     from puppetmaster.cost import price_job
@@ -251,12 +276,13 @@ def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
     est_cost_usd = 0.0
     try:
         job_cost = price_job(raw_arts, registry)
-        # Only trust the usage-priced total when it actually priced something.
-        # Usage can land with models the registry cannot price (priced_tasks=0,
-        # cost 0.0); treating that as authoritative made finished jobs snap
-        # from the routing estimate back to $0. Keep the estimate instead.
-        if job_cost.total_marginal_cost_usd > 0:
-            est_cost_usd = job_cost.total_marginal_cost_usd
+        usage_cost = job_cost.total_marginal_cost_usd + _live_price_unpriced_tasks(job_cost)
+        # Only trust the usage-priced total when something actually priced.
+        # Usage can land with models neither source can price (cost 0.0);
+        # treating that as authoritative made finished jobs snap from the
+        # routing estimate back to $0. Keep the estimate instead.
+        if usage_cost > 0:
+            est_cost_usd = usage_cost
         else:
             est_cost_usd = _routing_estimate_cost(raw_arts)
     except Exception:
