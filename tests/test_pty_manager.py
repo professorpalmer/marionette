@@ -71,6 +71,7 @@ def test_windows_shell_falls_back_to_comspec(monkeypatch):
     assert _windows_shell() == r"C:\Windows\System32\cmd.exe"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows COMSPEC validation")
 def test_windows_shell_rejects_bogus_comspec(monkeypatch):
     monkeypatch.setattr(pty_manager.shutil, "which", lambda _n: None)
     monkeypatch.setenv("COMSPEC", "not-a-shell")
