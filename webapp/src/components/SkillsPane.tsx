@@ -34,10 +34,23 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
       await refresh();
     } finally { setBusy(""); }
   };
-  const approve = async (slug: string) => { setBusy(slug); try { await api.skillApprove(slug); await refresh(); } finally { setBusy(""); } };
-  const reject = async (slug: string) => { setBusy(slug); try { await api.skillReject(slug); await refresh(); } finally { setBusy(""); } };
-  const approveRule = async (slug: string) => { setBusy(slug); try { await api.ruleApprove(slug); await refresh(); } finally { setBusy(""); } };
-  const rejectRule = async (slug: string) => { setBusy(slug); try { await api.ruleReject(slug); await refresh(); } finally { setBusy(""); } };
+  // The backend answers HTTP 200 {ok:false} when a slug can't be found, so a
+  // bare await+refresh made a failed click look like a silent no-op. Surface
+  // the failure in the message strip instead.
+  const act = async (slug: string, call: (slug: string) => Promise<{ ok: boolean }>, verb: string) => {
+    setBusy(slug); setMsg("");
+    try {
+      const res = await call(slug);
+      if (!res.ok) { setMsg(`${verb} failed -- item not found (try Distill again)`); return; }
+      await refresh();
+    } catch {
+      setMsg(`${verb} failed`);
+    } finally { setBusy(""); }
+  };
+  const approve = (slug: string) => act(slug, api.skillApprove, "Approve");
+  const reject = (slug: string) => act(slug, api.skillReject, "Reject");
+  const approveRule = (slug: string) => act(slug, api.ruleApprove, "Approve");
+  const rejectRule = (slug: string) => act(slug, api.ruleReject, "Reject");
 
   const addRule = async () => {
     const text = newRuleText.trim();

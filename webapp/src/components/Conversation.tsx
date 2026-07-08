@@ -1143,16 +1143,16 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                 if (parts.length > 0) {
                   const notice = `Self-learning: ${parts.join(", ")} - review in Skills tab`;
                   setDistillNotice(notice);
-                  setTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
+                  setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
                 }
               } else if (anyEvt.kind === "wiki_prepared" && anyEvt.data) {
                 const d = anyEvt.data;
                 const pages = d.pages || [];
                 if (pages.length > 0) {
                   if (d.auto_ingested) {
-                    setDistillNotice(`Wiki: ${pages.length} page${pages.length === 1 ? "" : "s"} auto-ingested (local orchestration)`);
                     const notice = `Wiki: ${pages.length} page${pages.length === 1 ? "" : "s"} auto-ingested (local orchestration)`;
-                    setTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
+                    setDistillNotice(notice);
+                    setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
                   } else {
                     setWikiPrepared({ pages, autoIngested: false });
                   }
@@ -1295,9 +1295,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         if (pages.length > 0) {
           if (d.auto_ingested) {
             // Silent-auto mode already ingested -- just a quiet confirmation footnote.
-            setDistillNotice(`Wiki: ${pages.length} page${pages.length === 1 ? "" : "s"} auto-ingested (local orchestration)`);
             const notice = `Wiki: ${pages.length} page${pages.length === 1 ? "" : "s"} auto-ingested (local orchestration)`;
-            setTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
+            setDistillNotice(notice);
+            setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
           } else {
             // Prepare-and-approve: surface the pages for one-click ingest.
             setWikiPrepared({ pages, autoIngested: false });
@@ -1486,7 +1486,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           const notice = `Self-learning: ${parts.join(", ")} - review in Skills tab`;
           setDistillNotice(notice);
           // Quiet footnote: auto-fade after 8s so it never lingers like a push notif.
-          setTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
+          setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
         }
       } else if (ev.kind === "auto_halt") {
         setStatus("done");
@@ -1563,7 +1563,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     if (resumeQueuedRef.current) return;      // keep-alive continuation wins
     const next = queueItemsRef.current[0];
     if (!next || !next.text) return;
-    setTimeout(() => {
+    setSafeTimeout(() => {
       if (cancelRef.current || resumeQueuedRef.current) return;
       setQueueItems((prev) => prev.filter((it) => it.id !== next.id));
       queueItemsRef.current = queueItemsRef.current.filter((it) => it.id !== next.id);
@@ -1588,7 +1588,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     // pick it up. Only clear it once we've actually committed to running.
     if (cancelRef.current) return;
     resumeQueuedRef.current = false;
-    setTimeout(() => {
+    setSafeTimeout(() => {
       if (cancelRef.current) { resumeQueuedRef.current = true; return; }
       executeSendRef.current("", false, false, true);
     }, 60);
@@ -1922,7 +1922,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                     const res = await api.wikiIngestPrepared(pages);
                     const notice = `Wiki: ${res.ingested} page${res.ingested === 1 ? "" : "s"} ingested`;
                     setDistillNotice(notice);
-                    setTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 6000);
+                    setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 6000);
                   } catch {
                     setDistillNotice("Wiki ingest failed");
                   }
@@ -2508,6 +2508,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 function WorkspaceChip() {
   const [ws, setWs] = useState<{ repo: string; branch: string; recents?: string[] } | null>(null);
   const [open, setOpen] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
   const refresh = () => api.getWorkspace().then((w) => setWs(w as any)).catch(() => {});
   useEffect(() => {
     refresh();
@@ -2524,12 +2525,28 @@ function WorkspaceChip() {
     return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("click", onClick); };
   }, [open]);
 
+  // Auto-fade so a failed open doesn't leave a permanent error chip.
+  useEffect(() => {
+    if (!openError) return;
+    const id = setTimeout(() => setOpenError(null), 6000);
+    return () => clearTimeout(id);
+  }, [openError]);
+
   const openPath = async (p: string) => {
     setOpen(false);
+    setOpenError(null);
     try {
       const res = await api.openWorkspace(p);
-      if ((res as any).ok) { refresh(); window.dispatchEvent(new Event("harness-config-changed")); }
-    } catch { /* ignore */ }
+      if ((res as any).ok) {
+        refresh();
+        window.dispatchEvent(new Event("harness-config-changed"));
+      } else {
+        // A stale recent (deleted/moved folder) used to no-op silently here.
+        setOpenError((res as any).error || `Could not open ${base(p)}`);
+      }
+    } catch (err) {
+      setOpenError((err as Error)?.message || `Could not open ${base(p)}`);
+    }
   };
   const browse = async () => {
     const picked = await pickFolder();
@@ -2551,6 +2568,7 @@ function WorkspaceChip() {
       </button>
       {ws?.branch ? <span className="text-faint flex items-center gap-0.5"><GitBranch size={10} />{ws.branch}</span> : null}
       <span className="text-faint/70">Local</span>
+      {openError && <span className="text-risk/90 truncate max-w-[240px]" title={openError}>{openError}</span>}
       {open && (
         <div onClick={(e) => e.stopPropagation()}
           className="absolute bottom-full left-0 mb-1 w-64 bg-panel border border-edge rounded-lg shadow-xl shadow-black/40 py-1 z-50">

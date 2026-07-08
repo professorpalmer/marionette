@@ -26,6 +26,19 @@ reinjectPortableTools();
 const isDev = !!process.env.PMHARNESS_DEV_SERVER;
 const isPackaged = app.isPackaged;
 
+// Keep the renderer at full speed while the window is blurred or occluded
+// (pattern lifted from Hermes desktop). The transcript streams to screen
+// through a requestAnimationFrame-gated typewriter pump, and Chromium pauses
+// rAF (and clamps timers) for backgrounded/occluded renderers -- without
+// these, a live answer freezes the moment focus moves to another window and
+// only paints on refocus. `backgroundThrottling: false` on the BrowserWindow
+// covers the blurred case; these process-level switches additionally stop
+// Chromium from backgrounding or occlusion-throttling the renderer. Must run
+// before app `ready`.
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+
 function pmharnessHome() {
   return path.join(os.homedir(), ".pmharness");
 }
@@ -781,6 +794,9 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       webviewTag: true,   // enables the real in-app browser
+      // rAF-gated streaming must keep painting while blurred (see the
+      // process-level switches at the top of this file).
+      backgroundThrottling: false,
     },
   });
   // expose the backend port to the renderer for any direct needs

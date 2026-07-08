@@ -246,6 +246,32 @@ export default function RightPane({ artifacts, onOpenWizard }: {
     };
   }, [isResizing, splitState.direction]);
 
+  // Re-clamp the split whenever the container resizes. The drag handler above
+  // enforces the per-pane pixel minimum only WHILE dragging, so a restored
+  // localStorage percent (or the pane shrinking under a narrow window) could
+  // leave a sub-pane crushed below MIN_PANE_PX until the user re-dragged.
+  useEffect(() => {
+    if (!splitState.isSplit) return;
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const MIN_PANE_PX = 260;
+    const reclampSplit = () => {
+      const rect = el.getBoundingClientRect();
+      const total = splitState.direction === "horizontal" ? rect.height : rect.width;
+      if (total <= 0) return;
+      const minPct = (MIN_PANE_PX / total) * 100;
+      const maxPct = 100 - minPct;
+      updateSplitState((prev) => {
+        const clamped = minPct >= maxPct ? 50 : Math.max(minPct, Math.min(maxPct, prev.percent));
+        return clamped === prev.percent ? prev : { ...prev, percent: clamped };
+      });
+    };
+    const observer = new ResizeObserver(reclampSplit);
+    observer.observe(el);
+    reclampSplit();
+    return () => observer.disconnect();
+  }, [splitState.isSplit, splitState.direction]);
+
   // Compute label visibility based on sub-pane widths
 
 

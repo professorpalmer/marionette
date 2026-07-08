@@ -958,6 +958,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                                 const res = await api.removeHook(hk.id);
                                 if (res.ok) {
                                   setHooks(hooks.filter(h => h.id !== hk.id));
+                                } else {
+                                  setHookError((res as any).error || "Failed to remove hook");
                                 }
                               } catch (err: any) {
                                 setHookError(err?.error || "Failed to remove hook");

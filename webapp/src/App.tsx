@@ -123,6 +123,23 @@ export default function App() {
   // persist layout
   useEffect(() => { localStorage.setItem(LS.left, String(leftW)); }, [leftW]);
   useEffect(() => { localStorage.setItem(LS.right, String(rightW)); }, [rightW]);
+
+  // Re-clamp persisted rail widths against the real window width on mount and
+  // whenever the window shrinks. The Resizer clamps only during a drag, so a
+  // wide saved layout restored into a small window (or a live shrink) could
+  // leave the two rails consuming nearly everything and crush the chat column
+  // until the user manually re-dragged both handles.
+  useEffect(() => {
+    const MIN_CENTER = 360;
+    const reclampRails = () => {
+      const avail = window.innerWidth - MIN_CENTER;
+      setLeftW((w) => clamp(Math.min(w, Math.max(180, avail - rightW)), 180, 420));
+      setRightW((w) => clamp(Math.min(w, Math.max(340, avail - leftW)), 340, 640));
+    };
+    reclampRails();
+    window.addEventListener("resize", reclampRails);
+    return () => window.removeEventListener("resize", reclampRails);
+  }, [leftW, rightW]);
   useEffect(() => { localStorage.setItem(LS.leftOpen, leftOpen ? "1" : "0"); }, [leftOpen]);
   useEffect(() => { localStorage.setItem(LS.rightOpen, rightOpen ? "1" : "0"); }, [rightOpen]);
 

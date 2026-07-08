@@ -325,20 +325,35 @@ export default function SwarmPane() {
   // the next poll surfaces the terminal 'cancelled' state.
   const cancelJob = async (id: string) => {
     setCancelling((prev) => new Set(prev).add(id));
+    let accepted = false;
     try {
-      await api.swarmCancel(id);
+      const res = await api.swarmCancel(id);
+      accepted = !!res.ok;
     } catch {
-      // Swallow -- a failed cancel just means the next poll keeps showing the job
-      // as running; the user can retry.
-    } finally {
-      try {
-        const res = await api.swarmLive(scopedRepo);
-        mutate(res);
-      } catch {
-        // Ignore; the poll loop will refetch shortly.
-      }
+      // Fall through -- treated as not accepted below.
+    }
+    if (!accepted) {
+      // Restore the Kill button so the user can retry. Leaving the id in the
+      // set rendered a permanent 'cancelling...' with no affordance to retry.
+      setCancelling((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    }
+    try {
+      const res = await api.swarmLive(scopedRepo);
+      mutate(res);
+    } catch {
+      // Ignore; the poll loop will refetch shortly.
     }
   };
+
+  // Drop cancel markers once their job leaves in_progress, so the set cannot
+  // accumulate stale ids across job lifetimes.
+  useEffect(() => {
+    const live = data?.jobs;
+    if (!live || cancelling.size === 0) return;
+    const stillRunning = new Set(live.filter((j) => jobStatus(j) === "in_progress").map((j) => j.id));
+    const survivors = [...cancelling].filter((id) => stillRunning.has(id));
+    if (survivors.length !== cancelling.size) setCancelling(new Set(survivors));
+  }, [data]);
 
   // Self-scheduling poll (not setInterval) so a new request is only ever queued
   // AFTER the previous one settles. The old fixed 2s interval fired regardless of

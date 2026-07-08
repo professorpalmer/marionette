@@ -1042,7 +1042,14 @@ function loadSessionJobsHeight(): number {
     if (!raw) return fallback;
     const n = Number.parseInt(raw, 10);
     if (!Number.isFinite(n) || n <= 0) return fallback;
-    return Math.max(sessionJobsMinHeight(), n);
+    // Upper-bound against the window BEFORE first paint. The layout-aware
+    // clamp (getMaxSessionJobsHeight) needs refs that only exist after mount,
+    // so a tall height saved from a big window would otherwise flash a jobs
+    // panel that swallows the whole rail for one frame in a small window.
+    const conservativeMax = typeof window === "undefined"
+      ? n
+      : Math.max(sessionJobsMinHeight(), Math.round(window.innerHeight * 0.6));
+    return Math.min(conservativeMax, Math.max(sessionJobsMinHeight(), n));
   } catch {
     return fallback;
   }

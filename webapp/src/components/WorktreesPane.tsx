@@ -60,6 +60,11 @@ export default function WorktreesPane() {
           setWtStatus("Worktree removed successfully");
           setTimeout(() => setWtStatus(""), 3000);
           loadWorktrees();
+        } else {
+          // Without this branch a non-throwing {ok:false} left "Removing..."
+          // stuck on screen forever (the Electron transport resolves 4xx).
+          setWtError((res as any).error || "Failed to remove worktree");
+          setWtStatus("");
         }
       } catch (err: any) {
         setWtError(err?.error || "Failed to remove worktree");
@@ -77,6 +82,9 @@ export default function WorktreesPane() {
         setWtStatus("Worktrees pruned successfully");
         setTimeout(() => setWtStatus(""), 3000);
         loadWorktrees();
+      } else {
+        setWtError((res as any).error || "Failed to prune worktrees");
+        setWtStatus("");
       }
     } catch (err: any) {
       setWtError(err?.error || "Failed to prune worktrees");
