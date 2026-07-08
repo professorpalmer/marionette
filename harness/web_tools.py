@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import http.client
 import os
 import re
+import socket
 import urllib.request
 import urllib.parse
 import urllib.error
 import html.parser
 from typing import Optional
 
-from harness.url_safety import is_safe_url, normalize_url_for_request
+from harness.url_safety import is_safe_url, is_safe_url_pinned, normalize_url_for_request
 from harness.paths import path_within
 
 WEB_FETCH_LIMIT = 16000
@@ -41,8 +43,106 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 _SAFE_OPENER = urllib.request.build_opener(_SafeRedirectHandler)
 
 
-def _safe_urlopen(req, timeout):
-    """urlopen replacement that validates redirect targets (SSRF guard)."""
+class _PinnedIPHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection that connects to *pinned_ip* instead of the hostname.
+
+    The original hostname is kept for the Host header (set automatically by
+    http.client based on ``self.host``).
+    """
+
+    def __init__(self, *args, pinned_ip=None, **kwargs):
+        self._pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        if self._pinned_ip:
+            self.sock = socket.create_connection(
+                (self._pinned_ip, self.port), self.timeout, self.source_address,
+            )
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        else:
+            super().connect()
+
+
+class _PinnedIPHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection that connects to *pinned_ip* instead of the hostname.
+
+    The original hostname is kept for the Host header (auto-set by http.client)
+    and for TLS SNI / certificate verification via *server_hostname*.
+    """
+
+    def __init__(self, *args, pinned_ip=None, **kwargs):
+        self._pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        if self._pinned_ip:
+            self.sock = socket.create_connection(
+                (self._pinned_ip, self.port), self.timeout, self.source_address,
+            )
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            if self._tunnel_host:
+                self._tunnel()
+            # Use the *original* hostname for TLS SNI / cert verification
+            self.sock = self._context.wrap_socket(
+                self.sock, server_hostname=self.host,
+            )
+        else:
+            super().connect()
+
+
+class _PinnedIPHTTPHandler(urllib.request.HTTPHandler):
+    """HTTPHandler that injects a pinned-IP transport."""
+
+    def __init__(self, pinned_ip=None, *args, **kwargs):
+        self._pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def http_open(self, req):
+        return self.do_open(
+            lambda *a, **kw: _PinnedIPHTTPConnection(
+                *a, pinned_ip=self._pinned_ip, **kw
+            ),
+            req,
+        )
+
+
+class _PinnedIPHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPSHandler that injects a pinned-IP transport."""
+
+    def __init__(self, pinned_ip=None, *args, **kwargs):
+        self._pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def https_open(self, req):
+        return self.do_open(
+            lambda *a, **kw: _PinnedIPHTTPSConnection(
+                *a, pinned_ip=self._pinned_ip, **kw
+            ),
+            req,
+        )
+
+
+def _make_pinned_opener(pinned_ip: str):
+    """Build an opener that connects to *pinned_ip* while preserving the
+    original hostname in HTTP Host headers and HTTPS SNI / certificate
+    verification (see _PinnedIPHTTPHandler / _PinnedIPHTTPSHandler)."""
+    return urllib.request.build_opener(
+        _PinnedIPHTTPHandler(pinned_ip=pinned_ip),
+        _PinnedIPHTTPSHandler(pinned_ip=pinned_ip),
+        _SafeRedirectHandler,
+    )
+
+
+def _safe_urlopen(req, timeout, pinned_ip=None):
+    """urlopen replacement that validates redirect targets (SSRF guard).
+
+    When *pinned_ip* is provided the opener connects to that IP instead of
+    re-resolving the hostname, closing the TOCTOU DNS-rebinding window.
+    """
+    if pinned_ip:
+        opener = _make_pinned_opener(pinned_ip)
+        return opener.open(req, timeout=timeout)
     return _SAFE_OPENER.open(req, timeout=timeout)
 
 
@@ -188,14 +288,14 @@ def web_search(query: str, timeout: int = 10) -> str:
     try:
         query_encoded = urllib.parse.quote_plus(query)
         url = f"https://html.duckduckgo.com/html/?q={query_encoded}"
-        ok, reason = is_safe_url(url)
+        ok, reason, pinned_ip = is_safe_url_pinned(url)
         if not ok:
             return f"Refused to search the web: unsafe URL ({reason})."
         url = normalize_url_for_request(url)
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
         })
-        with _safe_urlopen(req, timeout) as response:
+        with _safe_urlopen(req, timeout, pinned_ip=pinned_ip) as response:
             # Cap the read to WEB_FETCH_MAX_BYTES to prevent memory exhaustion.
             raw_bytes = response.read(WEB_FETCH_MAX_BYTES + 1)
             if len(raw_bytes) > WEB_FETCH_MAX_BYTES:
@@ -235,14 +335,14 @@ def _truncate(text: str, source_url: str) -> str:
 
 
 def _fetch_one(url: str, timeout: int) -> str:
-    ok, reason = is_safe_url(url)
+    ok, reason, pinned_ip = is_safe_url_pinned(url)
     if not ok:
         return f"Refused to fetch web page: unsafe URL ({reason})."
     url = normalize_url_for_request(url)
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     })
-    with _safe_urlopen(req, timeout) as response:
+    with _safe_urlopen(req, timeout, pinned_ip=pinned_ip) as response:
         content_type = response.headers.get("Content-Type", "").lower()
 
         if "application/pdf" in content_type or url.lower().split("?")[0].endswith(".pdf"):
@@ -298,11 +398,14 @@ def web_fetch(url: str, timeout: int = 12) -> str:
 
 def read_pdf(path_or_url: str, workspace_repo: Optional[str] = None) -> str:
     if path_or_url.startswith(("http://", "https://")):
+        ok, reason, pinned_ip = is_safe_url_pinned(path_or_url)
+        if not ok:
+            return f"Refused to fetch PDF: unsafe URL ({reason})."
         try:
             req = urllib.request.Request(path_or_url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
             })
-            with _safe_urlopen(req, 12) as response:
+            with _safe_urlopen(req, 12, pinned_ip=pinned_ip) as response:
                 # Cap the read to WEB_FETCH_MAX_BYTES to prevent memory exhaustion.
                 pdf_data = response.read(WEB_FETCH_MAX_BYTES + 1)
                 if len(pdf_data) > WEB_FETCH_MAX_BYTES:

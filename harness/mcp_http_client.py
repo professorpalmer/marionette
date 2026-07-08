@@ -12,16 +12,89 @@ Config shape (standard, alongside stdio's command/args):
                              "headers": {"Authorization": "Bearer ..."}}}}
 """
 
+import http.client
 import json
+import os
+import socket
 import urllib.request
 import urllib.error
-import socket
 import ipaddress
-import os
 from urllib.parse import urlparse
 from typing import Dict, List, Optional
 
 from .mcp_client import McpTool, McpError, PROTOCOL_VERSION, CLIENT_INFO
+
+
+class _PinnedIPHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection pinned to a specific IP (TOCTOU DNS-rebinding fix)."""
+
+    def __init__(self, *args, pinned_ip=None, **kwargs):
+        self._pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        if self._pinned_ip:
+            self.sock = socket.create_connection(
+                (self._pinned_ip, self.port), self.timeout, self.source_address,
+            )
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        else:
+            super().connect()
+
+
+class _PinnedIPHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection pinned to a specific IP (TOCTOU DNS-rebinding fix)."""
+
+    def __init__(self, *args, pinned_ip=None, **kwargs):
+        self._pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        if self._pinned_ip:
+            self.sock = socket.create_connection(
+                (self._pinned_ip, self.port), self.timeout, self.source_address,
+            )
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            if self._tunnel_host:
+                self._tunnel()
+            # Use the *original* hostname for TLS SNI / cert verification
+            self.sock = self._context.wrap_socket(
+                self.sock, server_hostname=self.host,
+            )
+        else:
+            super().connect()
+
+
+class _PinnedIPHTTPHandler(urllib.request.HTTPHandler):
+    """HTTPHandler that injects a pinned-IP transport."""
+
+    def __init__(self, pinned_ip=None, *args, **kwargs):
+        self._pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def http_open(self, req):
+        return self.do_open(
+            lambda *a, **kw: _PinnedIPHTTPConnection(
+                *a, pinned_ip=self._pinned_ip, **kw
+            ),
+            req,
+        )
+
+
+class _PinnedIPHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPSHandler that injects a pinned-IP transport."""
+
+    def __init__(self, pinned_ip=None, *args, **kwargs):
+        self._pinned_ip = pinned_ip
+        super().__init__(*args, **kwargs)
+
+    def https_open(self, req):
+        return self.do_open(
+            lambda *a, **kw: _PinnedIPHTTPSConnection(
+                *a, pinned_ip=self._pinned_ip, **kw
+            ),
+            req,
+        )
 
 
 class HttpMcpClient:
@@ -31,15 +104,22 @@ class HttpMcpClient:
                  timeout: float = 30.0):
         self.name = name
         self.url = url
-        self.validate_url(url)
+        self._pinned_ip = self.validate_url(url)
         self.headers = dict(headers or {})
         self.timeout = timeout
         self._id = 0
         self._session_id: Optional[str] = None
         self._initialized = False
         self._server_info: dict = {}
+        self._opener = self._make_pinned_opener(self._pinned_ip) if self._pinned_ip else None
 
-    def validate_url(self, url: str) -> None:
+    def validate_url(self, url: str) -> Optional[str]:
+        """Validate the URL for SSRF safety and return a pinned IP address.
+
+        Returns the first validated resolved IP (or the literal IP if the
+        hostname is already an IP literal), or None if the hostname could not
+        be resolved. Raises McpError if the URL is unsafe.
+        """
         try:
             u = urlparse(url)
         except Exception as e:
@@ -58,12 +138,25 @@ class HttpMcpClient:
         
         allow_private = os.environ.get("PMHARNESS_MCP_ALLOW_PRIVATE", "").strip() in ("1", "true", "yes", "on")
         if allow_private:
-            return
+            return hostname if self._is_ip_literal(hostname) else None
             
+        # If it's an IP literal, check and pin it directly
+        if self._is_ip_literal(hostname):
+            try:
+                ip = ipaddress.ip_address(hostname)
+            except ValueError:
+                raise McpError(f"Invalid IP address: {hostname}")
+            if str(ip) == "169.254.169.254":
+                raise McpError("Access to cloud metadata IP is blocked.")
+            if (ip.is_private or ip.is_loopback or ip.is_link_local or 
+                ip.is_reserved or ip.is_multicast):
+                raise McpError(f"Access to private/local IP {ip} is blocked for security reasons.")
+            return hostname  # pin the literal IP
+
         try:
             infos = socket.getaddrinfo(hostname, None)
         except socket.gaierror:
-            return
+            return None  # can't resolve, will fail on connect
             
         for family, socktype, proto, canonname, sockaddr in infos:
             ip_str = str(sockaddr[0])
@@ -80,6 +173,30 @@ class HttpMcpClient:
             if (ip.is_private or ip.is_loopback or ip.is_link_local or 
                 ip.is_reserved or ip.is_multicast):
                 raise McpError(f"Access to private/local IP {ip} is blocked for security reasons.")
+
+        # First resolved address is the pin target
+        first_ip = str(infos[0][4][0])
+        if "%" in first_ip:
+            first_ip = first_ip.split("%")[0]
+        return first_ip
+
+    @staticmethod
+    def _is_ip_literal(hostname: str) -> bool:
+        try:
+            ipaddress.ip_address(hostname)
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _make_pinned_opener(pinned_ip: str):
+        """Build an opener that connects to *pinned_ip* while preserving the
+        original hostname in HTTP Host headers and HTTPS SNI / certificate
+        verification."""
+        return urllib.request.build_opener(
+            _PinnedIPHTTPHandler(pinned_ip=pinned_ip),
+            _PinnedIPHTTPSHandler(pinned_ip=pinned_ip),
+        )
 
     # ---- lifecycle ----------------------------------------------------------
     def start(self) -> None:
@@ -121,7 +238,11 @@ class HttpMcpClient:
             headers["Mcp-Session-Id"] = self._session_id
         req = urllib.request.Request(self.url, data=body, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            if self._opener:
+                r = self._opener.open(req, timeout=timeout)
+            else:
+                r = urllib.request.urlopen(req, timeout=timeout)
+            with r:
                 # capture a session id if the server issued one
                 sid = r.headers.get("Mcp-Session-Id")
                 if sid:

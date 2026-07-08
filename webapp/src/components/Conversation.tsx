@@ -188,13 +188,29 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const [attachedImages, setAttachedImages] = useState<{ path: string; name: string; previewUrl: string }[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Refs to track every outstanding setTimeout so we can clear them on unmount
+  // and avoid state-updates-after-unmount warnings.
+  const timeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const setSafeTimeout = (fn: () => void, ms: number) => {
+    const id = setTimeout(() => { timeoutsRef.current.delete(id); fn(); }, ms);
+    timeoutsRef.current.add(id);
+    return id;
+  };
+
+  useEffect(() => {
+    return () => {
+      timeoutsRef.current.forEach(clearTimeout);
+      timeoutsRef.current.clear();
+    };
+  }, []);
+
   // Auto-fade upload errors after 6s so a transient failure doesn't sit in the
   // composer looking permanently broken (it used to persist until the next
   // upload attempt). Pass null to clear immediately.
   const flashUploadError = (msg: string | null) => {
     setUploadError(msg);
     if (msg) {
-      window.setTimeout(() => setUploadError((cur) => (cur === msg ? null : cur)), 6000);
+      setSafeTimeout(() => setUploadError((cur) => (cur === msg ? null : cur)), 6000);
     }
   };
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
@@ -673,7 +689,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             // with an unanswered user turn. Auto-continue it so the conversation
             // survives the swap -- the Hermes-style seamless self-edit loop.
             if (res.resume_pending) {
-              setTimeout(() => resumeTriggerRef.current(), 300);
+              setSafeTimeout(() => resumeTriggerRef.current(), 300);
             }
           }
         })

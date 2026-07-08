@@ -52,7 +52,11 @@ def _read_keys() -> dict:
     try:
         with open(path, 'r', encoding="utf-8", errors="replace") as f:
             return json.load(f)
-    except Exception:
+    except Exception as exc:
+        # A corrupted keys file must not crash callers, but silently treating
+        # it as "no keys" made every provider look disconnected with no trail.
+        from .diag import note
+        note("keys.read_keys", exc, msg=f"unreadable keys file at {path}")
         return {}
 
 _DISCONNECTED_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "disconnected.json")

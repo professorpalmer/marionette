@@ -1,9 +1,11 @@
 import ipaddress
+import socket
 
 import pytest
 
 from harness.url_safety import (
     is_safe_url,
+    is_safe_url_pinned,
     normalize_url_for_request,
     redact_sensitive_query_params,
 )
@@ -106,3 +108,104 @@ def test_redact_sensitive_query_params():
     assert "zzz" not in out
     assert "q=hello" in out
     assert "REDACTED" in out
+
+
+# -- is_safe_url_pinned tests (TOCTOU DNS-rebinding fix) ---------------------
+
+def test_pinned_public_url(monkeypatch):
+    _patch_resolve(monkeypatch, "93.184.216.34")
+    ok, reason, pinned = is_safe_url_pinned("https://example.com/page")
+    assert ok, reason
+    assert pinned == "93.184.216.34"
+
+
+def test_pinned_ip_literal():
+    ok, reason, pinned = is_safe_url_pinned("http://93.184.216.34/")
+    assert ok, reason
+    assert pinned == "93.184.216.34"
+
+
+def test_pinned_ip_literal_private_blocked():
+    ok, reason, pinned = is_safe_url_pinned("http://10.0.0.5/")
+    assert not ok
+    assert pinned is None
+
+
+def test_pinned_metadata_ip_blocked():
+    ok, reason, pinned = is_safe_url_pinned("http://169.254.169.254/latest/meta-data/")
+    assert not ok
+    assert pinned is None
+
+
+def test_pinned_metadata_hostname_blocked(monkeypatch):
+    _patch_resolve(monkeypatch, "169.254.169.254")
+    ok, reason, pinned = is_safe_url_pinned("http://metadata.google.internal/computeMetadata/v1/")
+    assert not ok
+    assert pinned is None
+
+
+def test_pinned_dns_rebind_to_private_blocked(monkeypatch):
+    _patch_resolve(monkeypatch, "10.1.2.3")
+    ok, reason, pinned = is_safe_url_pinned("https://evil.example.com/")
+    assert not ok
+    assert pinned is None
+    assert "resolved" in reason
+
+
+def test_pinned_loopback_ip_blocked(monkeypatch):
+    _patch_resolve(monkeypatch, "127.0.0.1")
+    ok, reason, pinned = is_safe_url_pinned("http://127.0.0.1:8080/")
+    assert not ok
+    assert pinned is None
+
+
+def test_pinned_localhost_blocked(monkeypatch):
+    _patch_resolve(monkeypatch, "127.0.0.1")
+    ok, reason, pinned = is_safe_url_pinned("http://localhost/admin")
+    assert not ok
+    assert pinned is None
+
+
+def test_pinned_escape_hatch(monkeypatch):
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
+    _patch_resolve(monkeypatch, "10.0.0.5")
+    ok, reason, pinned = is_safe_url_pinned("http://10.0.0.5/")
+    assert ok, reason
+    assert pinned == "10.0.0.5"
+
+
+def test_pinned_metadata_still_blocked_with_hatch(monkeypatch):
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
+    _patch_resolve(monkeypatch, "169.254.169.254")
+    ok, reason, pinned = is_safe_url_pinned("http://169.254.169.254/latest/meta-data/")
+    assert not ok
+    assert pinned is None
+
+
+def test_pinned_non_http_scheme():
+    ok, reason, pinned = is_safe_url_pinned("file:///etc/passwd")
+    assert not ok
+    assert pinned is None
+
+
+def test_pinned_unresolvable_host(monkeypatch):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        raise socket.gaierror("Name or service not known")
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
+    ok, reason, pinned = is_safe_url_pinned("http://doesnotexist.example.com/")
+    assert ok, "unresolvable hosts are let through (will fail on connect)"
+    assert pinned is None
+
+
+def test_is_safe_url_still_works(monkeypatch):
+    """Verify is_safe_url (the original API) still works unchanged."""
+    _patch_resolve(monkeypatch, "93.184.216.34")
+    ok, reason = is_safe_url("https://example.com/page")
+    assert ok, reason
+
+
+def test_pinned_ipv6(monkeypatch):
+    _patch_resolve(monkeypatch, "2606:2800:220:1:248:1893:25c8:1946")
+    ok, reason, pinned = is_safe_url_pinned("https://example.com/")
+    assert ok, reason
+    assert pinned == "2606:2800:220:1:248:1893:25c8:1946"

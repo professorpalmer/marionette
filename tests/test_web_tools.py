@@ -32,10 +32,10 @@ def mock_urlopen(monkeypatch):
     """Fixture to mock urllib.request.urlopen."""
     calls = []
 
-    def _mock(req, timeout=None):
+    def _mock(req, timeout=None, pinned_ip=None):
         # web_tools routes all fetches through _safe_urlopen(req, timeout) (an
         # SSRF-safe opener that re-validates redirect hops). Accept timeout
-        # positionally-or-by-keyword so this mock matches that call shape.
+        # positionally-or-by-keyword and pinned_ip so this mock matches that call shape.
         url = req.full_url if hasattr(req, "full_url") else req
         calls.append(url)
         
@@ -92,7 +92,7 @@ def test_web_search_success(mock_urlopen):
 
 
 def test_web_search_empty_or_blocked(monkeypatch):
-    def _mock_blocked(req, timeout=None):
+    def _mock_blocked(req, timeout=None, pinned_ip=None):
         return FakeResponse(b"<html>Blocked or Bot Challenge</html>", {"Content-Type": "text/html"})
     
     import harness.web_tools as _wt; monkeypatch.setattr(_wt, "_safe_urlopen", _mock_blocked)
@@ -195,3 +195,96 @@ def test_web_fetch_pdf_routing(mock_urlopen, monkeypatch):
 
     res = web_fetch("http://testpdf.com")
     assert "This is text extracted from a routed PDF." in res
+
+
+# -- TOCTOU DNS-rebinding: pinned IP tests -----------------------------------
+
+def _patch_resolve(monkeypatch, ip):
+    """Force socket.getaddrinfo to resolve any host to the given IP."""
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        fam = 10 if ":" in ip else 2  # AF_INET6 / AF_INET
+        return [(fam, 1, 6, "", (ip, port or 0))]
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
+
+
+def test_fetch_one_uses_pinned_ip(monkeypatch):
+    """Verify that _fetch_one passes the pinned IP to _safe_urlopen."""
+    _patch_resolve(monkeypatch, "93.184.216.34")
+    captured_args = {}
+
+    def mock_safe_urlopen(req, timeout, pinned_ip=None):
+        captured_args["pinned_ip"] = pinned_ip
+        return FakeResponse(b"ok", {"Content-Type": "text/plain"})
+
+    import harness.web_tools as wt
+    monkeypatch.setattr(wt, "_safe_urlopen", mock_safe_urlopen)
+
+    from harness.web_tools import _fetch_one
+    result = _fetch_one("https://example.com/page", 5)
+    assert captured_args.get("pinned_ip") == "93.184.216.34", (
+        f"Expected pinned_ip='93.184.216.34', got {captured_args.get('pinned_ip')}"
+    )
+
+
+def test_web_search_uses_pinned_ip(monkeypatch):
+    """Verify that web_search passes the pinned IP to _safe_urlopen."""
+    _patch_resolve(monkeypatch, "40.114.177.156")  # duckduckgo.com IP
+    captured_args = {}
+
+    def mock_safe_urlopen(req, timeout, pinned_ip=None):
+        captured_args["pinned_ip"] = pinned_ip
+        return FakeResponse(
+            b"<html><body><div class=\"result\"><a class=\"result__a\" href=\"https://ex.com\">T</a>"
+            b"<span class=\"result__snippet\">S</span></div></body></html>",
+            {"Content-Type": "text/html"}
+        )
+
+    import harness.web_tools as wt
+    monkeypatch.setattr(wt, "_safe_urlopen", mock_safe_urlopen)
+
+    from harness.web_tools import web_search
+    result = web_search("test")
+    assert captured_args.get("pinned_ip") == "40.114.177.156", (
+        f"Expected pinned_ip='40.114.177.156', got {captured_args.get('pinned_ip')}"
+    )
+
+
+def test_read_pdf_url_uses_pinned_ip(monkeypatch):
+    """Verify that read_pdf with a URL passes the pinned IP to _safe_urlopen."""
+    _patch_resolve(monkeypatch, "93.184.216.34")
+    captured_args = {}
+
+    # Mock before importing, as _PatchResolve is applied at import time of the module
+    def mock_safe_urlopen(req, timeout, pinned_ip=None):
+        captured_args["pinned_ip"] = pinned_ip
+        return FakeResponse(b"%PDF-1.4 mock", {"Content-Type": "application/pdf"})
+
+    import harness.web_tools as wt
+    monkeypatch.setattr(wt, "_safe_urlopen", mock_safe_urlopen)
+
+    # We need to prevent the PDF parser from being called; mock pypdf at module level
+    monkeypatch.setitem(sys.modules, "pypdf", None)
+
+    from harness.web_tools import read_pdf
+    result = read_pdf("https://example.com/doc.pdf")
+    assert captured_args.get("pinned_ip") == "93.184.216.34", (
+        f"Expected pinned_ip='93.184.216.34', got {captured_args.get('pinned_ip')}"
+    )
+
+
+def test_fetch_one_blocked_url_no_request(monkeypatch):
+    """Verify that a blocked URL never reaches _safe_urlopen."""
+    _patch_resolve(monkeypatch, "10.0.0.5")
+    called = []
+
+    def mock_safe_urlopen(req, timeout, pinned_ip=None):
+        called.append(True)
+        return FakeResponse(b"", {"Content-Type": "text/plain"})
+
+    import harness.web_tools as wt
+    monkeypatch.setattr(wt, "_safe_urlopen", mock_safe_urlopen)
+
+    from harness.web_tools import _fetch_one
+    result = _fetch_one("http://10.0.0.5/secret", 5)
+    assert "unsafe URL" in result
+    assert not called, "_safe_urlopen should not be called for blocked URLs"
