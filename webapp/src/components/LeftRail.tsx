@@ -398,7 +398,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             const count = projectSessions.length;
             
             return (
-              <div key={projectPath} className={`rounded transition ${isSelected ? "bg-panel2/50 border-l-2 border-accent" : "hover:bg-panel2/20"}`}>
+              <div key={projectPath} className={`rounded transition min-w-0 overflow-hidden ${isSelected ? "bg-panel2/50 border-l-2 border-accent" : "hover:bg-panel2/20"}`}>
                 {/* Project Row */}
                 <div
                   onClick={() => handleProjectRowClick(projectPath, isCurrentActive, isExpanded)}
@@ -453,7 +453,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
                 {/* Sessions (Expandable inline) */}
                 {isExpanded && (
-                  <div className="pl-4 pr-1 pb-1.5 space-y-0.5 border-l border-edge/30 ml-3.5 mt-0.5">
+                  <div className="pl-4 pr-1 pb-1.5 space-y-0.5 border-l border-edge/30 ml-3.5 mt-0.5 min-w-0 overflow-hidden">
                     {isCurrentActive && projectSessions.length > 0 && (
                       <div className="px-1 pb-1 flex justify-end">
                         {confirmClearSessions ? (
@@ -504,17 +504,17 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                               className="w-full bg-bg border border-accent rounded px-2 py-1 text-[12px] text-txt focus:outline-none"
                             />
                           ) : (
-                            <div className="flex items-center gap-0.5">
+                            <div className="flex items-center gap-0.5 min-w-0">
                               <button onClick={() => switchSession(s.id)}
                                 onDoubleClick={() => {
                                   setRenamingId(s.id);
                                   setRenamingTitle(s.title || "Untitled");
                                 }}
                                 onContextMenu={(e) => handleContextMenu(e, s)}
-                                className={`flex-1 text-left rounded px-1.5 py-1 flex items-center gap-1.5 text-[12.5px] transition
+                                className={`flex-1 min-w-0 text-left rounded px-1.5 py-1 flex items-center gap-1.5 text-[12.5px] transition
                                   ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}`}>
-                                <MessageSquare size={11} className={s.active ? "text-accent" : "text-faint"} />
-                                <span className="flex-1 truncate">{s.title || "Untitled"}</span>
+                                <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />
+                                <span className="flex-1 min-w-0 truncate">{s.title || "Untitled"}</span>
                               </button>
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
