@@ -18,7 +18,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     archived: boolean;
   } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [confirmClearSessions, setConfirmClearSessions] = useState(false);
   const [projectContextMenu, setProjectContextMenu] = useState<{
     x: number;
     y: number;
@@ -331,15 +330,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
   };
 
-  const handleClearSessions = async () => {
-    const res = await api.clearSessions();
-    await revalidateSessions();
-    if (res.active) {
-      await switchSession(res.active);
-    }
-    setConfirmClearSessions(false);
-  };
-
   const handleExport = (sid: string, format: "md" | "json") => {
     const url = api.exportUrl(sid, format);
     const a = document.createElement("a");
@@ -562,34 +552,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                 {/* Sessions (Expandable inline) */}
                 {isExpanded && (
                   <div className="pl-4 pr-1 pb-1.5 space-y-0.5 border-l border-edge/30 ml-3.5 mt-0.5 min-w-0 overflow-hidden">
-                    {isCurrentActive && projectSessions.length > 0 && (
-                      <div className="px-1 pb-1 flex justify-end">
-                        {confirmClearSessions ? (
-                          <div className="flex items-center gap-2 text-[10px]">
-                            <span className="text-muted">Clear all?</span>
-                            <button
-                              onClick={handleClearSessions}
-                              className="text-red-400 font-semibold hover:underline"
-                            >
-                              Yes
-                            </button>
-                            <button
-                              onClick={() => setConfirmClearSessions(false)}
-                              className="text-muted hover:underline"
-                            >
-                              No
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => setConfirmClearSessions(true)}
-                            className="text-[10px] text-faint hover:text-red-400 transition-colors"
-                          >
-                            Clear sessions
-                          </button>
-                        )}
-                      </div>
-                    )}
                     {projectSessions.length === 0 ? (
                       panelSwitching && isSelected ? (
                         <div className="text-[11px] text-faint italic px-2 py-1 flex items-center gap-1.5">
