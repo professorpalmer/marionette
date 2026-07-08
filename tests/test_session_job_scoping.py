@@ -3,6 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import tempfile
+import threading
+import urllib.parse
+import urllib.request
+from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
 from harness.job_scoping import (
@@ -219,3 +225,129 @@ def test_cwd_under_repo_longest_prefix():
         SimpleNamespace(payload={"cwd": "/work/a"}),
         SimpleNamespace(payload={"cwd": "/work/a/deep/nested"}),
     ]) == os.path.normcase(os.path.abspath("/work/a/deep/nested"))
+
+
+def _api_server(tmp_state_dir):
+    import harness.server as srv
+
+    srv._session.state_dir = tmp_state_dir
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    return httpd, port, srv
+
+
+def _api_get(port, path, token):
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        headers={"X-Harness-Token": token},
+        method="GET",
+    )
+    return urllib.request.urlopen(req, timeout=10)
+
+
+def _seed_two_repo_jobs(tmp_path):
+    """Legacy (unstamped) jobs under two repo roots in one store."""
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    store = create_store("sqlite", str(tmp_path / "state"))
+
+    job_a = store.create_job("job in repo a")
+    _save_task(store, job_a.id, str(repo_a))
+
+    job_b = store.create_job("job in repo b")
+    _save_task(store, job_b.id, str(repo_b))
+
+    return store, str(repo_a), str(repo_b), job_a.id, job_b.id
+
+
+def test_api_jobs_repo_query_overrides_cfg_repo(tmp_path, monkeypatch):
+    """?repo= scopes legacy jobs to the requested root instead of _cfg.repo."""
+    store, repo_a, repo_b, job_a_id, job_b_id = _seed_two_repo_jobs(tmp_path)
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        httpd, port, srv = _api_server(str(tmp_path / "state"))
+        try:
+            monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [
+                {"id": job_a_id, "goal": "job in repo a", "status": "complete", "adapter": "agentic"},
+                {"id": job_b_id, "goal": "job in repo b", "status": "complete", "adapter": "agentic"},
+            ])
+            monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=store))
+            srv._cfg.repo = repo_b
+
+            headers_token = srv._TOKEN
+            default_ids = {j["id"] for j in json.loads(
+                _api_get(port, "/api/jobs", headers_token).read().decode()
+            )}
+            assert job_b_id in default_ids
+            assert job_a_id not in default_ids
+
+            scoped_a = urllib.parse.quote(repo_a, safe="")
+            override_ids = {j["id"] for j in json.loads(
+                _api_get(port, f"/api/jobs?repo={scoped_a}", headers_token).read().decode()
+            )}
+            assert job_a_id in override_ids
+            assert job_b_id not in override_ids
+        finally:
+            httpd.shutdown()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_api_jobs_missing_repo_param_falls_back_to_cfg_repo(tmp_path, monkeypatch):
+    store, repo_a, repo_b, job_a_id, job_b_id = _seed_two_repo_jobs(tmp_path)
+    try:
+        httpd, port, srv = _api_server(str(tmp_path / "state"))
+        try:
+            monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [
+                {"id": job_a_id, "goal": "job in repo a", "status": "complete", "adapter": "agentic"},
+                {"id": job_b_id, "goal": "job in repo b", "status": "complete", "adapter": "agentic"},
+            ])
+            monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=store))
+            srv._cfg.repo = repo_a
+
+            ids = {j["id"] for j in json.loads(
+                _api_get(port, "/api/jobs", srv._TOKEN).read().decode()
+            )}
+            assert job_a_id in ids
+            assert job_b_id not in ids
+        finally:
+            httpd.shutdown()
+    finally:
+        pass
+
+
+def test_api_swarm_live_repo_query_scopes_jobs(tmp_path, monkeypatch):
+    store, repo_a, repo_b, job_a_id, job_b_id = _seed_two_repo_jobs(tmp_path)
+    try:
+        httpd, port, srv = _api_server(str(tmp_path / "state"))
+        try:
+            monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [
+                {"id": job_a_id, "goal": "job in repo a", "status": "complete", "adapter": "agentic"},
+                {"id": job_b_id, "goal": "job in repo b", "status": "complete", "adapter": "agentic"},
+            ])
+            monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(
+                store=store,
+                format_artifacts=lambda arts: [],
+                job_artifacts=lambda jid: [],
+            ))
+            monkeypatch.setattr(srv, "_swarm_registry", lambda: [])
+            monkeypatch.setattr(srv, "_job_swarm_accounting", lambda arts, registry: (0, 0.0))
+            monkeypatch.setattr(srv, "_job_savings_fields", lambda jid: {})
+            monkeypatch.setattr(srv._pilot, "live_local_jobs", lambda: [])
+            srv._cfg.repo = repo_b
+
+            scoped_a = urllib.parse.quote(repo_a, safe="")
+            data = json.loads(
+                _api_get(port, f"/api/swarm/live?repo={scoped_a}", srv._TOKEN).read().decode()
+            )
+            ids = {j["id"] for j in data["jobs"]}
+            assert job_a_id in ids
+            assert job_b_id not in ids
+        finally:
+            httpd.shutdown()
+    finally:
+        pass

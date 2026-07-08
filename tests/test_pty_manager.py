@@ -12,6 +12,7 @@ from harness.pty_manager import (
     PtyManager,
     PtySession,
     _append_to_buffer,
+    _unix_shell,
     _windows_shell,
     _windows_shell_command,
 )
@@ -64,8 +65,39 @@ def test_windows_shell_prefers_pwsh(monkeypatch):
 def test_windows_shell_falls_back_to_comspec(monkeypatch):
     monkeypatch.setattr(pty_manager.shutil, "which", lambda _n: None)
     monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    monkeypatch.setattr(pty_manager.os.path, "isabs", lambda p: p.startswith("C:\\"))
     monkeypatch.setattr(pty_manager.os.path, "isfile", lambda p: p.endswith("cmd.exe"))
+    monkeypatch.setattr(pty_manager.os, "access", lambda _p, _m: True)
     assert _windows_shell() == r"C:\Windows\System32\cmd.exe"
+
+
+def test_windows_shell_rejects_bogus_comspec(monkeypatch):
+    monkeypatch.setattr(pty_manager.shutil, "which", lambda _n: None)
+    monkeypatch.setenv("COMSPEC", "not-a-shell")
+    notes = []
+    monkeypatch.setattr(pty_manager, "_diag_note", lambda where, **kw: notes.append((where, kw)))
+    assert _windows_shell() == r"C:\Windows\System32\cmd.exe"
+    assert notes
+    assert notes[0][0] == "pty_manager._windows_shell"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix SHELL validation")
+def test_unix_shell_rejects_bogus_shell(monkeypatch):
+    monkeypatch.setenv("SHELL", "bash")
+    notes = []
+    monkeypatch.setattr(pty_manager, "_diag_note", lambda where, **kw: notes.append((where, kw)))
+    assert _unix_shell() == "/bin/sh"
+    assert notes
+    assert notes[0][0] == "pty_manager._unix_shell"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix SHELL validation")
+def test_unix_shell_uses_valid_absolute_shell(monkeypatch, tmp_path):
+    shell = tmp_path / "myshell"
+    shell.write_text("")
+    shell.chmod(0o755)
+    monkeypatch.setenv("SHELL", str(shell))
+    assert _unix_shell() == str(shell)
 
 
 def test_windows_shell_command_powershell():

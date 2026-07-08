@@ -250,6 +250,7 @@ function WorkerProgress({ tasks }: { tasks: Task[] }) {
 
 export default function SwarmPane() {
   const [data, setData] = useState<SwarmLive | null>(null);
+  const [selectedProjectRoot, setSelectedProjectRoot] = useState("");
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
   const [expandedAlts, setExpandedAlts] = useState<Record<string, boolean>>({});
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
@@ -268,6 +269,17 @@ export default function SwarmPane() {
   const toggleFinding = (id: string) => setExpandedFindings((p) => ({ ...p, [id]: !p[id] }));
 
   useEffect(() => { saveDismissed(dismissed); }, [dismissed]);
+
+  useEffect(() => {
+    const onProject = (e: Event) => {
+      const path = (e as CustomEvent<string>).detail;
+      if (typeof path === "string") setSelectedProjectRoot(path);
+    };
+    window.addEventListener("harness-project-selected", onProject);
+    return () => window.removeEventListener("harness-project-selected", onProject);
+  }, []);
+
+  const scopedRepo = selectedProjectRoot || undefined;
 
   // Drive a 1s clock only while something is running so relative "last activity"
   // labels advance live. Stops ticking when nothing is running to avoid needless
@@ -303,7 +315,7 @@ export default function SwarmPane() {
       // as running; the user can retry.
     } finally {
       try {
-        const res = await api.swarmLive();
+        const res = await api.swarmLive(scopedRepo);
         setData(res);
       } catch {
         // Ignore; the poll loop will refetch shortly.
@@ -335,7 +347,7 @@ export default function SwarmPane() {
       if (inFlight) { schedule(500); return; }
       inFlight = true;
       const startedAt = performance.now();
-      api.swarmLive()
+      api.swarmLive(scopedRepo)
         .then((res) => {
           if (!active) return;
           const sig = swarmSignature(res);
@@ -363,7 +375,7 @@ export default function SwarmPane() {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, []);
+  }, [scopedRepo]);
 
   const allJobs = data?.jobs || [];
   const visibleJobs = allJobs.filter((j) => !dismissed.has(j.id));

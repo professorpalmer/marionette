@@ -42,6 +42,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const [selectedProjectPath, setSelectedProjectPath] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
 
@@ -166,7 +167,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     if (!picked) return;
     await handleOpenProject(picked);
   };
-  useEffect(() => { api.jobs().then(setJobs).catch(() => {}); }, [jobsRefresh]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -276,6 +276,27 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const rawRecents = workspaceInfo?.recents || [];
   const projects = Array.from(new Set([currentRepo, ...rawRecents])).filter(Boolean);
 
+  // Keep the highlighted project aligned with the backend workspace when it changes
+  // (open folder, session switch, etc.).
+  useEffect(() => {
+    if (currentRepo) {
+      setSelectedProjectPath(currentRepo);
+      window.dispatchEvent(new CustomEvent("harness-project-selected", { detail: currentRepo }));
+    }
+  }, [currentRepo]);
+
+  const selectProject = (projectPath: string) => {
+    setSelectedProjectPath(projectPath);
+    window.dispatchEvent(new CustomEvent("harness-project-selected", { detail: projectPath }));
+  };
+
+  const loadJobs = () => {
+    const repo = selectedProjectPath || undefined;
+    api.jobs(repo).then(setJobs).catch(() => {});
+  };
+
+  useEffect(() => { loadJobs(); }, [jobsRefresh, selectedProjectPath]);
+
   const handleProjectContextMenu = (e: React.MouseEvent, path: string) => {
     e.preventDefault();
     setProjectContextMenu({
@@ -286,6 +307,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const handleProjectRowClick = (projectPath: string, isActive: boolean, isExpanded: boolean) => {
+    selectProject(projectPath);
     if (isActive) {
       setExpandedProjects(prev => ({
         ...prev,
@@ -325,6 +347,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           {projects.map((projectPath) => {
             const basename = getWorkspaceBasename(projectPath) || "Untitled Project";
             const isCurrentActive = !!(workspaceInfo?.repo && projectPath === workspaceInfo.repo);
+            const isSelected = projectPath === selectedProjectPath;
             const isExpanded = expandedProjects[projectPath] !== undefined 
               ? expandedProjects[projectPath] 
               : isCurrentActive;
@@ -334,7 +357,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             const count = projectSessions.length;
             
             return (
-              <div key={projectPath} className={`rounded transition ${isCurrentActive ? "bg-panel2/50 border-l-2 border-accent" : "hover:bg-panel2/20"}`}>
+              <div key={projectPath} className={`rounded transition ${isSelected ? "bg-panel2/50 border-l-2 border-accent" : "hover:bg-panel2/20"}`}>
                 {/* Project Row */}
                 <div
                   onClick={() => handleProjectRowClick(projectPath, isCurrentActive, isExpanded)}
@@ -346,6 +369,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
+                      selectProject(projectPath);
                       setExpandedProjects(prev => ({ ...prev, [projectPath]: !isExpanded }));
                     }}
                     className="p-0.5 hover:bg-panel2 rounded text-muted hover:text-txt transition-colors flex items-center justify-center"
@@ -361,7 +385,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   )}
 
                   {/* Basename */}
-                  <span className={`text-[12.5px] truncate font-medium flex-1 ${isCurrentActive ? "text-txt font-semibold" : "text-muted hover:text-txt"}`}>
+                  <span className={`text-[12.5px] truncate font-medium flex-1 ${isSelected ? "text-txt font-semibold" : "text-muted hover:text-txt"}`}>
                     {basename}
                   </span>
 

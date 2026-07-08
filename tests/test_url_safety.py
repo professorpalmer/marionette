@@ -193,8 +193,31 @@ def test_pinned_unresolvable_host(monkeypatch):
         raise socket.gaierror("Name or service not known")
     monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
     ok, reason, pinned = is_safe_url_pinned("http://doesnotexist.example.com/")
-    assert ok, "unresolvable hosts are let through (will fail on connect)"
+    assert not ok
     assert pinned is None
+    assert "could not be resolved" in reason
+
+
+def test_unresolvable_host_blocked(monkeypatch):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        raise socket.gaierror("Name or service not known")
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
+    ok, reason = is_safe_url("http://doesnotexist.example.com/")
+    assert not ok
+    assert "could not be resolved" in reason
+
+
+def test_unresolvable_host_empty_dns(monkeypatch):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return []
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
+    ok, reason = is_safe_url("http://doesnotexist.example.com/")
+    assert not ok
+    assert "no addresses" in reason
+    ok2, reason2, pinned = is_safe_url_pinned("http://doesnotexist.example.com/")
+    assert not ok2
+    assert pinned is None
+    assert "no addresses" in reason2
 
 
 def test_is_safe_url_still_works(monkeypatch):

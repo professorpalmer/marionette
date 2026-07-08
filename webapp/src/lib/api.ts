@@ -384,8 +384,19 @@ export const api = {
   getUsage: () => getJSON<UsageData>("/api/usage"),
   settings: () => getJSON<Settings>("/api/settings"),
   updateSettings: (partial: Partial<Settings> & { api_key?: string; clear_api_key?: boolean }) => postJSON<Settings>("/api/settings", partial),
-  jobs: () => getJSON<Job[]>("/api/jobs"),
-  swarmLive: () => getJSON<SwarmLive>(withToken("/api/swarm/live")),
+  jobs: (repoRoot?: string) => {
+    const path = repoRoot
+      ? `/api/jobs?repo=${encodeURIComponent(repoRoot)}`
+      : "/api/jobs";
+    return getJSON<Job[]>(path);
+  },
+  swarmLive: (repoRoot?: string) => {
+    let path = withToken("/api/swarm/live");
+    if (repoRoot) {
+      path += `${path.includes("?") ? "&" : "?"}repo=${encodeURIComponent(repoRoot)}`;
+    }
+    return getJSON<SwarmLive>(path);
+  },
   swarmCancel: (jobId: string) =>
     postJSON<{ ok: boolean; job_id?: string; error?: string }>(withToken("/api/swarm/cancel"), { job_id: jobId }),
   artifacts: (jobId: string) => getJSON<Artifact[]>(`/api/artifacts?job_id=${encodeURIComponent(jobId)}`),

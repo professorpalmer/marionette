@@ -19,6 +19,8 @@ import threading
 import uuid
 from typing import Optional
 
+from harness.diag import note as _diag_note
+
 # ---------------------------------------------------------------------------
 # Platform availability
 # ---------------------------------------------------------------------------
@@ -205,16 +207,46 @@ def _append_to_buffer(buffer: bytearray, lock: threading.Lock, data: bytes) -> N
             del buffer[: len(buffer) - _BUFFER_CAP]
 
 
+def _default_shell() -> str:
+    if os.name == "nt":
+        return r"C:\Windows\System32\cmd.exe"
+    return "/bin/sh"
+
+
+def _shell_path_is_usable(path: str | None) -> bool:
+    """True when *path* is an absolute path to an existing executable file."""
+    return bool(path) and os.path.isabs(path) and os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _validated_env_shell(env_var: str, *, where: str) -> str | None:
+    """Return *env_var*'s value when it is a trusted shell path, else None."""
+    candidate = os.environ.get(env_var, "")
+    if _shell_path_is_usable(candidate):
+        return candidate
+    if candidate:
+        _diag_note(
+            where,
+            msg=f"invalid {env_var}={candidate!r}, falling back to platform default",
+        )
+    return None
+
+
 def _windows_shell() -> str:
     """Prefer pwsh.exe, then powershell.exe, then cmd.exe / COMSPEC."""
     for name in ("pwsh", "pwsh.exe", "powershell.exe", "cmd.exe"):
         found = shutil.which(name)
         if found:
             return found
-    comspec = os.environ.get("COMSPEC")
-    if comspec and os.path.isfile(comspec):
+    comspec = _validated_env_shell("COMSPEC", where="pty_manager._windows_shell")
+    if comspec:
         return comspec
-    return r"C:\Windows\System32\cmd.exe"
+    return _default_shell()
+
+
+def _unix_shell() -> str:
+    """Return a trusted interactive shell for Unix PTY sessions."""
+    shell = _validated_env_shell("SHELL", where="pty_manager._unix_shell")
+    return shell or _default_shell()
 
 
 def _windows_shell_command(shell: str) -> str:
@@ -280,7 +312,7 @@ class PtySession:
     # ----- Unix -------------------------------------------------------------
 
     def _init_unix(self, cols: int, rows: int) -> None:
-        shell = os.environ.get("SHELL", "/bin/bash")
+        shell = _unix_shell()
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             try:

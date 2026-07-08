@@ -112,8 +112,7 @@ def is_safe_url_pinned(url: str) -> Tuple[bool, str, Optional[str]]:
     *pinned_ip* when making the HTTP request while keeping the original hostname
     in the Host header and (for HTTPS) TLS SNI / certificate verification.
     When the hostname is already a literal IP, *pinned_ip* is that literal.
-    When the hostname does not resolve, *pinned_ip* is None (the request will
-    fail naturally on connect).
+    When the hostname does not resolve, *ok* is False and *pinned_ip* is None.
     """
     return _is_safe_url_impl(url)
 
@@ -160,10 +159,11 @@ def _is_safe_url_impl(url: str) -> Tuple[bool, str, Optional[str]]:
     # Resolve the hostname and check every resolved address.
     try:
         infos = socket.getaddrinfo(host, parsed.port or None, proto=socket.IPPROTO_TCP)
-    except (socket.gaierror, socket.error, UnicodeError):
-        # Cannot resolve. Do not fail open on private checks, but there is no
-        # IP to inspect; let the request proceed and fail naturally on connect.
-        return True, "", None
+    except (socket.gaierror, socket.error, UnicodeError) as exc:
+        return False, f"hostname {host_lc!r} could not be resolved: {exc}", None
+
+    if not infos:
+        return False, f"hostname {host_lc!r} could not be resolved (no addresses)", None
 
     for info in infos:
         sockaddr = info[4]

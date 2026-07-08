@@ -1,12 +1,13 @@
 {
   "name": "pm-harness",
   "private": true,
-  "version": "0.9.8",
+  "version": "0.9.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test": "vitest run",
     "test:electron": "node --test electron/*.test.cjs",
     "preview": "vite preview",
     "electron:dev": "concurrently -k \"vite --host 127.0.0.1 --port 5273\" \"wait-on http://127.0.0.1:5273 && cross-env PMHARNESS_DEV_SERVER=http://127.0.0.1:5273 electron .\"",
@@ -34,6 +35,8 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
     "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
@@ -44,12 +47,14 @@
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
     "@electron/notarize": "^2.5.0",
+    "jsdom": "^26.1.0",
     "oxlint": "^1.69.0",
     "png-to-ico": "^2.1.8",
     "postcss": "^8.5.15",
     "sharp": "^0.34.3",
     "tailwindcss": "^3.4.19",
     "typescript": "~6.0.2",
+    "vitest": "^4.1.9",
     "vite": "^8.1.0",
     "wait-on": "^9.0.10"
   },

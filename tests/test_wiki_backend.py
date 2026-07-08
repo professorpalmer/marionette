@@ -8,6 +8,8 @@ OS-aware helpers without cloning or installing anything.
 from __future__ import annotations
 
 import os
+import subprocess
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -103,3 +105,23 @@ def test_find_existing_backend_dir_prefers_override(isolated_state, tmp_path, mo
     open(os.path.join(str(override), "app", "main.py"), "w").close()
     monkeypatch.setenv("MARIONETTE_WIKI_DIR", str(override))
     assert wiki_backend._find_existing_backend_dir() == str(override)
+
+
+def test_spawn_uses_platform_process_group_kwargs(monkeypatch):
+    popen_calls = []
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(wiki_backend.subprocess, "Popen", fake_popen)
+    log = open(os.devnull, "ab")
+    wiki_backend._spawn(["uvicorn"], os.getcwd(), log)
+    assert popen_calls
+    _, kwargs = popen_calls[0]
+    if os.name == "posix":
+        assert kwargs.get("start_new_session") is True
+        assert "creationflags" not in kwargs
+    else:
+        assert "start_new_session" not in kwargs
+        assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP

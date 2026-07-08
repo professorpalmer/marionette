@@ -3445,7 +3445,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/platform":
             return self._send(200, json.dumps(_get_platform_adapters()))
         if u.path == "/api/jobs":
-            return self._send(200, json.dumps(_scoped_jobs_snapshot()))
+            q = parse_qs(u.query)
+            repo_override = q.get("repo", [""])[0]
+            return self._send(200, json.dumps(_scoped_jobs_snapshot(repo_root=repo_override or None)))
         if u.path == "/api/usage":
             if self._guard():
                 return
@@ -3541,9 +3543,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/swarm/live":
             if self._guard():
                 return
-            qtok = parse_qs(u.query).get("token", [""])[0]
+            q = parse_qs(u.query)
+            qtok = q.get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
+            repo_override = q.get("repo", [""])[0]
+            scoped_repo = (repo_override or "").strip() or (_cfg.repo or "")
             res_jobs = []
             try:
                 from pmharness.registry import resolve_price
@@ -3554,7 +3559,7 @@ class Handler(BaseHTTPRequestHandler):
                 from .job_scoping import filter_local_jobs, resolve_job_model
 
                 state_obj = _session.state()
-                jobs = _scoped_jobs_snapshot()
+                jobs = _scoped_jobs_snapshot(repo_root=repo_override or None)
                 store = state_obj.store
                 registry = _swarm_registry()
 
@@ -3639,7 +3644,7 @@ class Handler(BaseHTTPRequestHandler):
                 scoped_locals = filter_local_jobs(
                     _pilot.live_local_jobs(),
                     active_session_id=_sessions.active or getattr(_pilot, "harness_session_id", "") or "",
-                    repo_root=_cfg.repo or "",
+                    repo_root=scoped_repo,
                 )
                 for lj in scoped_locals:
                     if lj.get("id") not in existing_ids:
@@ -4387,8 +4392,12 @@ def _jobs_snapshot() -> list:
     return _last_jobs_snapshot
 
 
-def _scoped_jobs_snapshot() -> list:
-    """Jobs visible for the active harness session and open workspace."""
+def _scoped_jobs_snapshot(repo_root: str | None = None) -> list:
+    """Jobs visible for the active harness session and open workspace.
+
+    When ``repo_root`` is present and non-empty it overrides ``_cfg.repo`` for
+    legacy (unstamped) cwd filtering; stamped session jobs are unchanged.
+    """
     from .job_scoping import filter_store_jobs
 
     jobs = _jobs_snapshot()
@@ -4396,11 +4405,12 @@ def _scoped_jobs_snapshot() -> list:
         store = _session.state().store
     except Exception:
         return jobs
+    effective_repo = (repo_root or "").strip() or (_cfg.repo or "")
     return filter_store_jobs(
         jobs,
         store,
         active_session_id=_sessions.active or getattr(_pilot, "harness_session_id", "") or "",
-        repo_root=_cfg.repo or "",
+        repo_root=effective_repo,
     )
 
 
