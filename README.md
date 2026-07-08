@@ -12,8 +12,6 @@ checkout.
 
 > Status: v0.9.2, deliberately pre-1.0. Vetted privately before any wider release.
 
-Community: join the Discord at https://discord.gg/VQmkmGtQnA
-
 ## Documentation
 
 Start here, then follow the map:
