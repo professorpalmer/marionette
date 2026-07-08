@@ -124,7 +124,9 @@ def is_safe_url(url: str) -> Tuple[bool, str]:
     return ok, reason
 
 
-def is_safe_url_pinned(url: str) -> Tuple[bool, str, Optional[str]]:
+def is_safe_url_pinned(
+    url: str, *, allow_private: Optional[bool] = None
+) -> Tuple[bool, str, Optional[str]]:
     """Return (ok, reason, pinned_ip).
 
     Like is_safe_url() but also returns the first validated resolved IP address
@@ -137,11 +139,17 @@ def is_safe_url_pinned(url: str) -> Tuple[bool, str, Optional[str]]:
     in the Host header and (for HTTPS) TLS SNI / certificate verification.
     When the hostname is already a literal IP, *pinned_ip* is that literal.
     When the hostname does not resolve, *ok* is False and *pinned_ip* is None.
+
+    *allow_private* overrides the HARNESS_ALLOW_PRIVATE_URLS env hatch, for
+    callers with their own escape hatch (the MCP client). Metadata endpoints
+    stay blocked regardless.
     """
-    return _is_safe_url_impl(url, use_dns_cache=False)
+    return _is_safe_url_impl(url, use_dns_cache=False, allow_private=allow_private)
 
 
-def _is_safe_url_impl(url: str, *, use_dns_cache: bool) -> Tuple[bool, str, Optional[str]]:
+def _is_safe_url_impl(
+    url: str, *, use_dns_cache: bool, allow_private: Optional[bool] = None
+) -> Tuple[bool, str, Optional[str]]:
     """Shared implementation for is_safe_url and is_safe_url_pinned."""
     if not url or not isinstance(url, str):
         return False, "empty or non-string URL", None
@@ -160,7 +168,8 @@ def _is_safe_url_impl(url: str, *, use_dns_cache: bool) -> Tuple[bool, str, Opti
     if host_lc in METADATA_HOSTS:
         return False, f"blocked cloud metadata host {host_lc!r}", None
 
-    allow_private = allow_private_urls()
+    if allow_private is None:
+        allow_private = allow_private_urls()
 
     # If the host is a literal IP, check it directly (covers 127.0.0.1, 10.x,
     # 192.168.x, 169.254.169.254, etc.).

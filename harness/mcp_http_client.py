@@ -18,8 +18,6 @@ import os
 import socket
 import urllib.request
 import urllib.error
-import ipaddress
-from urllib.parse import urlparse
 from typing import Dict, List, Optional
 
 from .mcp_client import McpTool, McpError, PROTOCOL_VERSION, CLIENT_INFO
@@ -116,77 +114,31 @@ class HttpMcpClient:
     def validate_url(self, url: str) -> Optional[str]:
         """Validate the URL for SSRF safety and return a pinned IP address.
 
-        Returns the first validated resolved IP (or the literal IP if the
-        hostname is already an IP literal), or None if the hostname could not
-        be resolved. Raises McpError if the URL is unsafe.
+        Delegates to harness.url_safety so this client and the web tools share
+        ONE blocklist -- a bespoke copy here had drifted (it missed the
+        metadata hostnames and the AWS IPv6 metadata address, and read a
+        different escape-hatch env var). Metadata endpoints stay blocked even
+        with a hatch set. Returns the first validated resolved IP, or None if
+        the hostname could not be resolved (the request then fails at connect
+        time). Raises McpError if the URL is unsafe.
         """
-        try:
-            u = urlparse(url)
-        except Exception as e:
-            raise McpError(f"Invalid URL: {e}")
-        
-        if u.scheme not in ("http", "https"):
-            raise McpError(f"Invalid URL scheme '{u.scheme}'. Only http and https are allowed.")
-        
-        hostname = u.hostname
-        if not hostname:
-            raise McpError("Invalid URL: missing hostname.")
-        
-        # Block the cloud metadata IP 169.254.169.254 explicitly
-        if hostname == "169.254.169.254":
-            raise McpError("Access to cloud metadata IP is blocked.")
-        
-        allow_private = os.environ.get("PMHARNESS_MCP_ALLOW_PRIVATE", "").strip() in ("1", "true", "yes", "on")
-        if allow_private:
-            return hostname if self._is_ip_literal(hostname) else None
-            
-        # If it's an IP literal, check and pin it directly
-        if self._is_ip_literal(hostname):
-            try:
-                ip = ipaddress.ip_address(hostname)
-            except ValueError:
-                raise McpError(f"Invalid IP address: {hostname}")
-            if str(ip) == "169.254.169.254":
-                raise McpError("Access to cloud metadata IP is blocked.")
-            if (ip.is_private or ip.is_loopback or ip.is_link_local or 
-                ip.is_reserved or ip.is_multicast):
-                raise McpError(f"Access to private/local IP {ip} is blocked for security reasons.")
-            return hostname  # pin the literal IP
+        from .url_safety import allow_private_urls, is_safe_url_pinned
 
-        try:
-            infos = socket.getaddrinfo(hostname, None)
-        except socket.gaierror:
+        # Honor both hatches: the MCP-specific var (documented for hosted MCP
+        # servers on a VPN/LAN) and the rig-wide one, so setting either yields
+        # one consistent posture instead of two half-open ones.
+        mcp_hatch = os.environ.get("PMHARNESS_MCP_ALLOW_PRIVATE", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        ok, reason, pinned_ip = is_safe_url_pinned(
+            url, allow_private=mcp_hatch or allow_private_urls()
+        )
+        if ok:
+            ip = pinned_ip or ""
+            return ip.split("%")[0] if "%" in ip else (pinned_ip or None)
+        if "could not be resolved" in reason:
             return None  # can't resolve, will fail on connect
-            
-        for family, socktype, proto, canonname, sockaddr in infos:
-            ip_str = str(sockaddr[0])
-            if "%" in ip_str:
-                ip_str = ip_str.split("%")[0]
-            try:
-                ip = ipaddress.ip_address(ip_str)
-            except ValueError:
-                continue
-                
-            if str(ip) == "169.254.169.254":
-                raise McpError("Access to cloud metadata IP is blocked.")
-                
-            if (ip.is_private or ip.is_loopback or ip.is_link_local or 
-                ip.is_reserved or ip.is_multicast):
-                raise McpError(f"Access to private/local IP {ip} is blocked for security reasons.")
-
-        # First resolved address is the pin target
-        first_ip = str(infos[0][4][0])
-        if "%" in first_ip:
-            first_ip = first_ip.split("%")[0]
-        return first_ip
-
-    @staticmethod
-    def _is_ip_literal(hostname: str) -> bool:
-        try:
-            ipaddress.ip_address(hostname)
-            return True
-        except ValueError:
-            return False
+        raise McpError(f"Unsafe MCP URL: {reason}")
 
     @staticmethod
     def _make_pinned_opener(pinned_ip: str):

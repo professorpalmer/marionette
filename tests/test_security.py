@@ -168,6 +168,39 @@ def test_mcp_url_ssrf_blocking(monkeypatch):
     finally:
         del os.environ["PMHARNESS_MCP_ALLOW_PRIVATE"]
 
+    # 6. Metadata endpoints the bespoke validator used to miss (now shared
+    #    with url_safety): hostnames and the AWS IPv6 metadata address. These
+    #    stay blocked even with the escape hatch set.
+    monkeypatch.setenv("PMHARNESS_MCP_ALLOW_PRIVATE", "1")
+    for bad in (
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://metadata/latest/meta-data/",
+        "http://[fd00:ec2::254]/latest/meta-data/",
+    ):
+        with pytest.raises(McpError):
+            HttpMcpClient("test", bad)
+    monkeypatch.delenv("PMHARNESS_MCP_ALLOW_PRIVATE")
+
+    # 7. The rig-wide hatch (HARNESS_ALLOW_PRIVATE_URLS) opens this client too
+    #    -- one env var, one posture.
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
+    client = HttpMcpClient("test", "http://127.0.0.1:1/")
+    assert client.url == "http://127.0.0.1:1/"
+    monkeypatch.delenv("HARNESS_ALLOW_PRIVATE_URLS")
+
+
+def test_host_ok_loopback_forms():
+    """The DNS-rebinding Host check must accept every literal loopback form
+    (with and without a port, IPv6 bracketed) and reject anything else."""
+    import harness.server as srv
+
+    for good in ("127.0.0.1", "127.0.0.1:8000", "localhost", "localhost:53218",
+                 "[::1]", "[::1]:8000"):
+        assert srv._host_ok(good), good
+    for bad in ("", "evil.com", "evil.com:8000", "127.0.0.1.evil.com",
+                "[::2]:8000", "localhost.evil.com"):
+        assert not srv._host_ok(bad), bad
+
 
 def test_api_run_image_path_traversal_blocked():
     import os

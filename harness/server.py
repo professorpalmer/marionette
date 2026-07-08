@@ -40,7 +40,7 @@ from .sessions import (
 from .autobudget import AutoBudget
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd, _ensure_node_on_path
 from .diag import note as _diag
-from .secure_files import restrict_to_owner
+from .secure_files import restrict_dir_to_owner, restrict_to_owner
 
 
 # Prompt-cache reads are billed at a steep discount vs fresh input tokens:
@@ -1100,7 +1100,12 @@ _rules = RuleStore()
 _commands = CommandStore()
 _memory = MemoryStore()
 _UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "harness-uploads")
-os.makedirs(_UPLOAD_DIR, exist_ok=True)
+os.makedirs(_UPLOAD_DIR, mode=0o700, exist_ok=True)
+# The mode above only applies when the dir is created (and is umask-clipped);
+# harden explicitly so uploaded images are never world-readable under the
+# shared system temp dir -- on Windows too (icacls), where makedirs mode is a
+# no-op.
+restrict_dir_to_owner(_UPLOAD_DIR)
 
 # Message stash: large chat/autopilot payloads cannot ride in the SSE GET's
 # query string (they'd blow past the HTTP request-line limit and get
@@ -1151,7 +1156,12 @@ def _host_ok(host_header: str) -> bool:
     attacker domain (evil.com -> 127.0.0.1) shows its own name in Host."""
     if not host_header:
         return False
-    host = host_header.rsplit(":", 1)[0] if host_header.count(":") <= 1 else host_header.rsplit(":", 1)[0]
+    if host_header.startswith("["):
+        # Bracketed IPv6 ("[::1]" or "[::1]:8000"): the bracket pair is the
+        # host. A blind rsplit(":") would mangle the portless form to "[:".
+        host = host_header.split("]", 1)[0] + "]"
+    else:
+        host = host_header.rsplit(":", 1)[0]
     return host in _ALLOWED_HOSTS
 
 

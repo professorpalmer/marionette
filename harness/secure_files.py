@@ -39,6 +39,23 @@ def _windows_account() -> str | None:
     return _WINDOWS_ACCOUNT or None
 
 
+def restrict_dir_to_owner(path: str) -> bool:
+    """Owner-only a DIRECTORY. Returns True on success, never raises.
+
+    Distinct from restrict_to_owner on both platforms: POSIX directories need
+    the execute bit to be traversable (0o600 locks the owner out too), and on
+    Windows the grants must carry (OI)(CI) so files inside the directory
+    inherit owner access -- a plain-file grant would strip inherited ACEs from
+    existing children and leave them unopenable by anyone."""
+    if os.name != "nt":
+        try:
+            os.chmod(path, 0o700)
+            return True
+        except OSError:
+            return False
+    return _icacls_owner_only(path, inheritable=True)
+
+
 def restrict_to_owner(path: str) -> bool:
     """Make `path` readable/writable by the owner only. Returns True on success.
 
@@ -51,17 +68,22 @@ def restrict_to_owner(path: str) -> bool:
             return True
         except OSError:
             return False
+    return _icacls_owner_only(path, inheritable=False)
 
+
+def _icacls_owner_only(path: str, *, inheritable: bool) -> bool:
+    """Replace `path`'s ACL with owner + SYSTEM full control via icacls."""
     account = _windows_account()
     if not account:
         return False
+    flags = "(OI)(CI)" if inheritable else ""
     try:
         # /inheritance:r drops inherited ACEs; the explicit grants then form
         # the complete ACL. SYSTEM keeps services/backup tooling functional.
         proc = subprocess.run(
             ["icacls", path, "/inheritance:r",
-             "/grant:r", f"{account}:F",
-             "/grant:r", "*S-1-5-18:F"],  # SYSTEM by SID: locale-proof
+             "/grant:r", f"{account}:{flags}F",
+             "/grant:r", f"*S-1-5-18:{flags}F"],  # SYSTEM by SID: locale-proof
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=15,

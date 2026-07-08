@@ -780,7 +780,13 @@ function openMarkdownHref(href: string, e: React.MouseEvent): void {
     e.preventDefault();
     const path = href.replace(/^file:\/\//, "").replace(/:(\d+)(:\d+)?$/, "");
     window.dispatchEvent(new CustomEvent("harness-open-file", { detail: { path } }));
+    return;
   }
+  // Catch-all: anything that is neither an external http(s) URL nor a file
+  // path (javascript:, data:, unknown schemes) must never reach the anchor's
+  // default navigation -- in Electron that is script execution in the
+  // renderer.
+  e.preventDefault();
 }
 
 // Memoized so a streaming bubble only re-parses when the text actually changes.
