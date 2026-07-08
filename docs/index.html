@@ -3,160 +3,354 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Marionette</title>
-  <meta name="description" content="Marionette is a desktop coding agent built on the Puppetmaster orchestrator. It splits work into parallel workers, routes each task to the cheapest model that can handle it, and keeps durable, replayable state. Installers for macOS, Windows, and Linux.">
+  <title>Marionette — a desktop coding agent built on durable orchestration</title>
+  <meta name="description" content="Marionette is a desktop coding agent built on the Puppetmaster orchestrator. Workers run as real subprocesses with leases and durable SQLite artifacts, tasks route to the cheapest capable model, and every run is replayable. macOS, Windows, and Linux.">
   <style>
     :root {
-      --bg: #fdfdfb;
-      --fg: #1a1a18;
-      --muted: #5c5c56;
-      --line: #d9d9d2;
-      --link: #1f4fa0;
-      --code-bg: #f2f2ec;
-      --btn: #1a1a18;
-      --btn-fg: #fdfdfb;
+      --bg: #0c0d0f;
+      --bg-raise: #121316;
+      --bg-card: #16181c;
+      --fg: #e8e6e1;
+      --fg-dim: #9a988f;
+      --fg-faint: #66655e;
+      --line: #24262b;
+      --line-soft: #1b1d21;
+      --accent: #d8b465;
+      --accent-dim: #8a7443;
+      --ok: #7fb069;
+      --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Helvetica, Arial, sans-serif;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; }
     body {
       background: var(--bg);
       color: var(--fg);
-      font-family: Georgia, "Times New Roman", serif;
-      font-size: 17px;
+      font-family: var(--sans);
+      font-size: 16px;
       line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
     }
-    .wrap { max-width: 42rem; margin: 0 auto; padding: 3.5rem 1.25rem 4rem; }
+    a { color: inherit; }
+    ::selection { background: var(--accent-dim); color: var(--bg); }
 
-    header { margin-bottom: 2.5rem; }
-    h1 { font-size: 2rem; font-weight: 700; margin: 0 0 .25rem; letter-spacing: -0.01em; }
-    .tagline { color: var(--muted); margin: 0; }
+    .wrap { max-width: 68rem; margin: 0 auto; padding: 0 1.5rem; }
 
-    p { margin: 0 0 1.1rem; }
-    a { color: var(--link); }
-    a:hover { text-decoration-thickness: 2px; }
-    strong { font-weight: 700; }
+    /* ---------- nav ---------- */
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1.4rem 0;
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .brand { font-weight: 650; letter-spacing: .01em; text-decoration: none; font-size: 1.02rem; }
+    .brand .dot { color: var(--accent); }
+    .nav-links { display: flex; gap: 1.6rem; font-size: .88rem; color: var(--fg-dim); }
+    .nav-links a { text-decoration: none; }
+    .nav-links a:hover { color: var(--fg); }
 
-    h2 {
-      font-size: 1.05rem;
-      font-weight: 700;
-      margin: 2.4rem 0 .8rem;
-      padding-top: 1.4rem;
-      border-top: 1px solid var(--line);
+    /* ---------- hero ---------- */
+    .hero { padding: 5.5rem 0 3.5rem; }
+    .kicker {
+      font-family: var(--mono); font-size: .74rem; letter-spacing: .14em;
+      text-transform: uppercase; color: var(--accent); margin: 0 0 1.1rem;
+    }
+    h1 {
+      font-size: clamp(2rem, 5vw, 3.1rem);
+      font-weight: 640;
+      line-height: 1.12;
+      letter-spacing: -0.022em;
+      margin: 0 0 1.2rem;
+      max-width: 46rem;
+    }
+    .lede {
+      color: var(--fg-dim); font-size: 1.08rem; max-width: 40rem; margin: 0 0 2.2rem;
+    }
+    .lede strong { color: var(--fg); font-weight: 560; }
+
+    .cta-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: .5rem;
+      text-decoration: none; font-weight: 580; font-size: .93rem;
+      padding: .74rem 1.35rem; border-radius: 7px;
+      border: 1px solid transparent;
+    }
+    .btn-primary { background: var(--fg); color: var(--bg); }
+    .btn-primary:hover { background: #fff; }
+    .btn-ghost { border-color: var(--line); color: var(--fg-dim); }
+    .btn-ghost:hover { color: var(--fg); border-color: var(--fg-faint); }
+    .cta-note { color: var(--fg-faint); font-size: .84rem; width: 100%; margin-top: .35rem; }
+    .cta-note a { color: var(--fg-dim); }
+
+    /* ---------- job feed panel ---------- */
+    .feed {
+      margin: 3.6rem 0 0;
+      background: var(--bg-raise);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 24px 60px -32px rgba(0,0,0,.8);
+    }
+    .feed-bar {
+      display: flex; align-items: center; gap: .6rem;
+      padding: .65rem 1rem;
+      border-bottom: 1px solid var(--line-soft);
+      font-family: var(--mono); font-size: .72rem; color: var(--fg-faint);
+    }
+    .feed-bar .dots { display: flex; gap: .38rem; margin-right: .4rem; }
+    .feed-bar .dots span { width: 9px; height: 9px; border-radius: 50%; background: var(--line); display: block; }
+    .feed pre {
+      margin: 0; padding: 1.1rem 1.25rem 1.3rem;
+      font-family: var(--mono); font-size: .8rem; line-height: 1.75;
+      overflow-x: auto; color: var(--fg-dim);
+    }
+    .feed .t { color: var(--fg-faint); }
+    .feed .k { color: var(--accent); }
+    .feed .ok { color: var(--ok); }
+    .feed .f { color: var(--fg); }
+
+    /* ---------- pillars ---------- */
+    section { padding: 4.2rem 0 0; }
+    .sec-label {
+      font-family: var(--mono); font-size: .72rem; letter-spacing: .14em;
+      text-transform: uppercase; color: var(--fg-faint); margin: 0 0 .7rem;
+    }
+    h2 { font-size: 1.55rem; font-weight: 620; letter-spacing: -0.015em; margin: 0 0 .8rem; }
+    .sec-lede { color: var(--fg-dim); max-width: 42rem; margin: 0 0 2.2rem; }
+
+    .pillars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .pillar { background: var(--bg-card); padding: 1.7rem 1.6rem 1.9rem; }
+    .pillar h3 { margin: 0 0 .55rem; font-size: 1.02rem; font-weight: 600; }
+    .pillar p { margin: 0; color: var(--fg-dim); font-size: .92rem; }
+    .pillar .glyph {
+      font-family: var(--mono); font-size: .78rem; color: var(--accent);
+      display: block; margin-bottom: 1rem;
     }
 
-    ul { margin: 0 0 1.1rem; padding-left: 1.3rem; }
-    li { margin-bottom: .55rem; }
-
-    code, .cmd code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: .85em;
-      background: var(--code-bg);
-      padding: .12em .35em;
-      border-radius: 3px;
+    /* ---------- lifecycle ---------- */
+    .life {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.4rem;
+      counter-reset: step;
     }
-
-    .dl-btn {
-      display: inline-block;
-      background: var(--btn);
-      color: var(--btn-fg);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      font-size: .95rem;
-      font-weight: 600;
-      text-decoration: none;
-      padding: .7rem 1.3rem;
-      border-radius: 5px;
+    .life div { position: relative; padding-top: 1rem; border-top: 1px solid var(--line); }
+    .life div::before {
+      counter-increment: step; content: "0" counter(step);
+      font-family: var(--mono); font-size: .72rem; color: var(--accent);
+      position: absolute; top: -0.62rem; background: var(--bg); padding-right: .6rem;
     }
-    .dl-btn:hover { opacity: .85; }
-    .dl-sub { color: var(--muted); font-size: .92rem; margin-top: .7rem; }
+    .life h3 { font-size: .95rem; font-weight: 600; margin: .3rem 0 .4rem; }
+    .life p { margin: 0; color: var(--fg-dim); font-size: .88rem; }
 
-    .install-tabs { display: flex; gap: 1rem; margin-bottom: .5rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: .88rem; }
+    /* ---------- features ---------- */
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2.2rem 3rem; }
+    .feat h3 { font-size: .98rem; font-weight: 600; margin: 0 0 .4rem; }
+    .feat p { margin: 0; color: var(--fg-dim); font-size: .92rem; }
+    .feat code { font-family: var(--mono); font-size: .82em; background: var(--bg-card); border: 1px solid var(--line-soft); padding: .1em .35em; border-radius: 4px; }
+
+    /* ---------- install ---------- */
+    .install-box {
+      background: var(--bg-raise); border: 1px solid var(--line); border-radius: 10px;
+      padding: 2rem 2rem 2.2rem; display: grid; grid-template-columns: 1fr 1.2fr; gap: 2.5rem;
+    }
+    .install-box h2 { margin-bottom: .5rem; }
+    .install-box .sec-lede { margin-bottom: 1.4rem; }
+    .dl-sub { color: var(--fg-faint); font-size: .85rem; margin-top: .9rem; }
+    .dl-sub a { color: var(--fg-dim); }
+
+    .install-tabs { display: flex; gap: 1.2rem; margin-bottom: .7rem; font-size: .84rem; }
     .install-tabs button {
-      appearance: none; background: none; border: none; padding: 0 0 .15rem;
-      font: inherit; color: var(--muted); cursor: pointer;
+      appearance: none; background: none; border: none; padding: 0 0 .3rem;
+      font: inherit; font-size: .84rem; color: var(--fg-faint); cursor: pointer;
       border-bottom: 2px solid transparent;
     }
-    .install-tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--fg); font-weight: 600; }
-
+    .install-tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
     .cmd {
-      display: flex; align-items: center; gap: .75rem;
-      background: var(--code-bg); border: 1px solid var(--line); border-radius: 5px;
-      padding: .7rem .9rem;
+      display: flex; align-items: center; gap: .8rem;
+      background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+      padding: .8rem 1rem;
     }
-    .cmd code { flex: 1; background: none; padding: 0; white-space: pre-wrap; word-break: break-all; }
+    .cmd code { flex: 1; font-family: var(--mono); font-size: .8rem; color: var(--fg-dim); white-space: pre-wrap; word-break: break-all; }
     .cmd button {
-      appearance: none; background: var(--bg); border: 1px solid var(--line);
-      border-radius: 4px; padding: .3rem .6rem; cursor: pointer;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      font-size: .78rem; color: var(--muted); white-space: nowrap;
+      appearance: none; background: var(--bg-card); border: 1px solid var(--line);
+      border-radius: 5px; padding: .32rem .7rem; cursor: pointer;
+      font-family: var(--sans); font-size: .76rem; color: var(--fg-dim); white-space: nowrap;
     }
     .cmd button:hover { color: var(--fg); }
+    .update-note { color: var(--fg-faint); font-size: .84rem; margin-top: 1rem; }
+    .update-note code { font-family: var(--mono); font-size: .84em; }
 
+    /* ---------- footer ---------- */
     footer {
-      margin-top: 3rem; padding-top: 1.3rem; border-top: 1px solid var(--line);
-      color: var(--muted); font-size: .92rem;
+      margin-top: 5rem; padding: 2rem 0 2.6rem;
+      border-top: 1px solid var(--line-soft);
+      color: var(--fg-faint); font-size: .86rem;
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1rem;
     }
-    footer a { color: var(--muted); }
+    footer a { color: var(--fg-dim); text-decoration: none; }
+    footer a:hover { color: var(--fg); }
+    footer .links { display: flex; gap: 1.4rem; }
+
+    @media (max-width: 860px) {
+      .pillars { grid-template-columns: 1fr; }
+      .life { grid-template-columns: 1fr 1fr; row-gap: 2rem; }
+      .grid { grid-template-columns: 1fr; }
+      .install-box { grid-template-columns: 1fr; }
+      .hero { padding-top: 3.5rem; }
+    }
+    @media (max-width: 520px) {
+      .life { grid-template-columns: 1fr; }
+      .nav-links { gap: 1rem; }
+    }
   </style>
 </head>
 <body>
-  <main class="wrap">
-    <header>
-      <h1>Marionette</h1>
-      <p class="tagline">A desktop coding agent built on the Puppetmaster orchestrator.</p>
+  <div class="wrap">
+    <nav>
+      <a class="brand" href="#">marionette<span class="dot">.</span></a>
+      <div class="nav-links">
+        <a href="#architecture">Architecture</a>
+        <a href="#features">Features</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/professorpalmer/marionette">GitHub</a>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <p class="kicker">Desktop coding agent &middot; macOS / Windows / Linux</p>
+      <h1>Orchestration you can audit.<br>Not a chat loop you have to trust.</h1>
+      <p class="lede">
+        Marionette runs on <a href="https://github.com/professorpalmer/Puppetmaster" style="color:var(--fg)">Puppetmaster</a>:
+        every worker is a <strong>real OS subprocess</strong> holding a <strong>lease</strong> on its task, writing
+        <strong>structured artifacts to durable SQLite state</strong> as it goes. Runs are parallel, replayable, and
+        inspectable after the fact &mdash; and each task routes to the cheapest model that can actually handle it.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" id="dlPrimary" href="https://github.com/professorpalmer/marionette/releases/latest"><span id="dlLabel">Download</span></a>
+        <a class="btn btn-ghost" href="#install">Install from the terminal</a>
+        <p class="cta-note" id="dlOther">Builds are available for macOS, Windows, and Linux.</p>
+      </div>
+
+      <div class="feed" aria-hidden="true">
+        <div class="feed-bar">
+          <span class="dots"><span></span><span></span><span></span></span>
+          puppetmaster &middot; job feed &middot; state.sqlite
+        </div>
+        <pre><span class="t">02:41:07</span>  <span class="k">job_337b</span>  dispatch   4 workers, swarm_mode=implement
+<span class="t">02:41:08</span>  <span class="k">task_01</span>   lease      pid 20144 acquired, ttl 120s, heartbeat on
+<span class="t">02:41:09</span>  <span class="k">task_01</span>   ROUTING    picked composer-2.5 (cap 78 &ge; 71) &middot; 3 cheaper rejected
+<span class="t">02:42:31</span>  <span class="k">task_01</span>   ARTIFACT   finding: TOCTOU window in url_safety.resolve
+<span class="t">02:44:02</span>  <span class="k">task_01</span>   PATCH      +508 &minus;31 across 7 files &middot; stored, replayable
+<span class="t">02:44:03</span>  <span class="k">task_01</span>   <span class="ok">verified</span>   gates passed &middot; lease released &middot; state durable
+<span class="t">02:44:03</span>  <span class="k">job_337b</span>  <span class="f">stitched summary ready &middot; recall later at zero token cost</span></pre>
+      </div>
     </header>
 
-    <p>
-      Most coding agents are a single model in a chat loop. Marionette takes a different shape:
-      it sits on top of <a href="https://github.com/professorpalmer/Puppetmaster">Puppetmaster</a>,
-      an orchestration engine that splits work into parallel workers and routes each task to the
-      cheapest model that can actually handle it. Trivial work runs on cheap or local models.
-      Hard problems get a frontier model. You are not locked to any one provider.
-    </p>
-    <p>
-      Every worker is a real subprocess with durable state in SQLite, so runs are replayable
-      and auditable after the fact. The agent works over a live CodeGraph of your repository
-      instead of grepping around, and it can edit and update its own source. The model is a
-      swappable part. The orchestration is the point.
-    </p>
+    <section id="architecture">
+      <p class="sec-label">Why it's different</p>
+      <h2>Durable state is the foundation. Routing is the multiplier.</h2>
+      <p class="sec-lede">
+        Most agents are one long conversation: opaque while running, gone when it ends.
+        Marionette's unit of work is a job backed by real process isolation and a permanent record.
+      </p>
+      <div class="pillars">
+        <div class="pillar">
+          <span class="glyph">proc &middot; lease &middot; heartbeat</span>
+          <h3>Real subprocess workers</h3>
+          <p>Each worker is an independent OS process holding a lease on its task, with heartbeats and timeouts. A crashed worker loses its lease and the task recovers &mdash; nothing hangs, nothing is silently dropped.</p>
+        </div>
+        <div class="pillar">
+          <span class="glyph">sqlite &middot; artifacts &middot; replay</span>
+          <h3>Durable, auditable runs</h3>
+          <p>Findings, patches, routing decisions, and verification results persist as structured artifacts in SQLite. Replay any run, diff any patch, and recall results in a later session at zero token cost.</p>
+        </div>
+        <div class="pillar">
+          <span class="glyph">route &middot; capability &middot; cost</span>
+          <h3>Cost-aware model routing</h3>
+          <p>A tiered router scores each task and picks the cheapest model that clears the bar. Trivial work runs on cheap or local models; hard problems get a frontier model. Every decision is recorded with the alternatives it rejected.</p>
+        </div>
+      </div>
+    </section>
 
-    <h2>Download</h2>
-    <p>
-      <a class="dl-btn" id="dlPrimary" href="https://github.com/professorpalmer/marionette/releases/latest">
-        <span id="dlLabel">Download</span>
-      </a>
-    </p>
-    <p class="dl-sub" id="dlOther">Builds are available for macOS, Windows, and Linux.</p>
+    <section>
+      <p class="sec-label">Lifecycle</p>
+      <h2>What happens when you hand Marionette a job</h2>
+      <p class="sec-lede">Every stage leaves a record. Nothing depends on a transcript surviving.</p>
+      <div class="life">
+        <div>
+          <h3>Dispatch</h3>
+          <p>Work fans out to parallel workers &mdash; a read-only analysis swarm or an implement worker in a clean worktree.</p>
+        </div>
+        <div>
+          <h3>Lease</h3>
+          <p>Each worker acquires a lease on its task. Heartbeats keep it; a dead worker forfeits it and the task is recoverable.</p>
+        </div>
+        <div>
+          <h3>Artifacts</h3>
+          <p>Findings, patches, and routing decisions stream into SQLite as structured artifacts while the run is still going.</p>
+        </div>
+        <div>
+          <h3>Recall</h3>
+          <p>A stitched summary lands at the end. Any session &mdash; today or next month &mdash; can pull the results back without re-running anything.</p>
+        </div>
+      </div>
+    </section>
 
-    <h2>Install from the terminal</h2>
-    <div class="install-tabs" role="tablist">
-      <button id="tabUnix" role="tab" aria-selected="true">macOS / Linux</button>
-      <button id="tabWin" role="tab" aria-selected="false">Windows</button>
-    </div>
-    <div class="cmd">
-      <code id="cmd">curl -fsSL https://professorpalmer.github.io/marionette/install.sh | bash</code>
-      <button id="copyBtn">Copy</button>
-    </div>
-    <p style="margin-top:.9rem; color:var(--muted); font-size:.95rem;">
-      Updates are continuous. The in-app update pill pulls <code>main</code>, rebuilds, and
-      relaunches, so a merge reaches every install on its next click.
-    </p>
+    <section id="features">
+      <p class="sec-label">Also in the box</p>
+      <h2>Built for long-horizon work</h2>
+      <div class="grid" style="margin-top:2rem">
+        <div class="feat">
+          <h3>CodeGraph retrieval</h3>
+          <p>Workers query an indexed graph of your repository &mdash; definitions, callers, impact &mdash; instead of burning tokens on repeated directory crawls. Shared context, not re-exploration.</p>
+        </div>
+        <div class="feat">
+          <h3>Spend receipts, not vibes</h3>
+          <p>Provider-reported, cache-aware cost accounting per job. See what each run cost, which model ran it, and why the cheaper options were rejected.</p>
+        </div>
+        <div class="feat">
+          <h3>A personal knowledge wiki</h3>
+          <p>Sessions distill into a portable, cross-session wiki you own as plain markdown &mdash; decisions, context, and handoffs that outlive any one chat.</p>
+        </div>
+        <div class="feat">
+          <h3>Runs from source, updates itself</h3>
+          <p>The same code on macOS, Windows, and Linux. stdlib-only Python backend with Puppetmaster as the one real dependency &mdash; and the agent can edit and update its own source.</p>
+        </div>
+      </div>
+    </section>
 
-    <h2>What you get</h2>
-    <ul>
-      <li><strong>Worker swarms.</strong> Fan work out to many workers running in parallel, each with its own durable, inspectable state. Not one long conversation.</li>
-      <li><strong>Cost-aware model routing.</strong> A tiered router picks the model per task. You can watch what each job cost and why that model was chosen.</li>
-      <li><strong>CodeGraph retrieval.</strong> Queries against an indexed graph of your repo instead of repeated directory crawls.</li>
-      <li><strong>A personal knowledge wiki.</strong> Sessions distill into a portable, cross-session wiki you own as plain markdown.</li>
-      <li><strong>Runs from source.</strong> The same code on macOS, Windows, and Linux. stdlib-only Python backend; Puppetmaster is the one real dependency.</li>
-    </ul>
+    <section id="install">
+      <div class="install-box" style="margin-top:1rem">
+        <div>
+          <h2>Get Marionette</h2>
+          <p class="sec-lede">Free and open source. Bring your own provider keys &mdash; you are not locked to any one model vendor.</p>
+          <a class="btn btn-primary" id="dlPrimary2" href="https://github.com/professorpalmer/marionette/releases/latest"><span id="dlLabel2">Download</span></a>
+          <p class="dl-sub" id="dlOther2">Builds are available for macOS, Windows, and Linux.</p>
+        </div>
+        <div>
+          <div class="install-tabs" role="tablist">
+            <button id="tabUnix" role="tab" aria-selected="true">macOS / Linux</button>
+            <button id="tabWin" role="tab" aria-selected="false">Windows</button>
+          </div>
+          <div class="cmd">
+            <code id="cmd">curl -fsSL https://professorpalmer.github.io/marionette/install.sh | bash</code>
+            <button id="copyBtn">Copy</button>
+          </div>
+          <p class="update-note">
+            Updates are continuous: the in-app update pill pulls <code>main</code>, rebuilds, and relaunches,
+            so a merge reaches every install on its next click.
+          </p>
+        </div>
+      </div>
+    </section>
 
     <footer>
-      Open source.
-      <a href="https://github.com/professorpalmer/marionette">Source on GitHub</a> &middot;
-      <a href="https://github.com/professorpalmer/marionette/releases/latest">All releases</a> &middot;
-      <a href="https://discord.gg/VQmkmGtQnA">Discord</a>
+      <span>Open source. Built on <a href="https://github.com/professorpalmer/Puppetmaster">Puppetmaster</a>.</span>
+      <span class="links">
+        <a href="https://github.com/professorpalmer/marionette">GitHub</a>
+        <a href="https://github.com/professorpalmer/marionette/releases/latest">Releases</a>
+        <a href="https://discord.gg/VQmkmGtQnA">Discord</a>
+      </span>
     </footer>
-  </main>
+  </div>
 
   <script>
     (function () {
@@ -189,18 +383,22 @@
       }
 
       var os = detectOS();
-      var primary = document.getElementById("dlPrimary");
-      var label = document.getElementById("dlLabel");
-      var other = document.getElementById("dlOther");
+      var buttons = [
+        { a: document.getElementById("dlPrimary"),  label: document.getElementById("dlLabel"),  other: document.getElementById("dlOther") },
+        { a: document.getElementById("dlPrimary2"), label: document.getElementById("dlLabel2"), other: document.getElementById("dlOther2") }
+      ];
 
       function paint(hrefs) {
-        primary.href = hrefs[os] || RELEASES;
-        label.textContent = LABELS[os];
-        other.innerHTML = OTHER[os];
+        buttons.forEach(function (b) {
+          if (!b.a) return;
+          b.a.href = hrefs[os] || RELEASES;
+          b.label.textContent = LABELS[os];
+          b.other.innerHTML = OTHER[os];
+        });
       }
       paint(FALLBACK);
 
-      // Upgrade the button to the newest release's real assets.
+      // Upgrade the buttons to the newest release's real assets.
       fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (rel) {
