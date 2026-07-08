@@ -136,15 +136,29 @@ class SkillStore:
             p = self._path(st, slug)
             if p.exists():
                 return p
+        # Legacy fallback: older writers (and direct file drops) saved skills
+        # under un-truncated filenames, while API slugs are always the 48-char
+        # _slug of the name. Without this scan those skills parse and list
+        # fine but can never be approved/rejected -- get() misses the file.
+        safe = _slug(slug)
+        for st in STATES:
+            d = self.root / st
+            if not d.exists():
+                continue
+            for f in d.glob("*.md"):
+                if _slug(f.stem) == safe:
+                    return f
         return None
 
     def save(self, skill: Skill) -> Path:
         with self._lock:
-            # ensure a skill lives in exactly one state dir
+            # ensure a skill lives in exactly one file: state moves change the
+            # dir, and legacy un-truncated filenames get renormalized to the
+            # canonical slug path (found via the _find fallback scan).
             existing = self._find(skill.slug)
-            if existing and existing.parent.name != skill.state:
-                existing.unlink()
             p = self._path(skill.state, skill.slug)
+            if existing and existing != p:
+                existing.unlink()
             # atomic: write temp in the same dir, then os.replace (no torn reads)
             tmp = p.with_suffix(".md.tmp")
             # open() rather than Path.write_text: newline= lands there in

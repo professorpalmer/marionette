@@ -5,9 +5,13 @@ data the GUI renders -- jobs, artifacts, and the live event stream. Read-only;
 the Session does the writing by driving the Orchestrator.
 """
 
+import json
+import os
+import sqlite3
 from typing import Any, Optional
 
 from puppetmaster.store_factory import create_store
+from .diag import note as _diag
 
 
 def _normalize_rejected(rejected: Any) -> Optional[list]:
@@ -69,7 +73,15 @@ class DurableState:
         self.store = create_store(backend, state_dir)
 
     def list_jobs(self) -> list:
-        jobs = self.store.list_jobs()
+        try:
+            jobs = self.store.list_jobs()
+        except Exception as e:
+            # One poisoned row (e.g. a status string this puppetmaster build
+            # doesn't know) must not blank the whole jobs feed -- that is how
+            # the swarm tracker went permanently empty. Degrade to a raw
+            # row-tolerant read that skips only the bad rows.
+            _diag("state.list_jobs_fallback", e)
+            return self._list_jobs_raw_tolerant()
         jids = [j.id for j in jobs]
         # Batch the per-job lookups instead of one query per job (the old N+1:
         # count_artifacts + list_tasks per job, scaling with history size).
@@ -134,6 +146,42 @@ class DurableState:
                 "task_count": task_count,
                 "label": getattr(j, "label", None),
             })
+        return out
+
+    def _list_jobs_raw_tolerant(self) -> list:
+        """Read the sqlite jobs table directly, skipping rows the installed
+        puppetmaster cannot deserialize. Returns the same dict shape as
+        list_jobs, minus task/artifact enrichment (the GUI tolerates zeros)."""
+        db_path = os.path.join(self.state_dir, "state.sqlite3")
+        if not os.path.exists(db_path):
+            return []
+        out = []
+        try:
+            uri = "file:" + db_path.replace(os.sep, "/") + "?mode=ro"
+            con = sqlite3.connect(uri, uri=True, timeout=5)
+            try:
+                rows = con.execute("SELECT id, data FROM jobs").fetchall()
+            finally:
+                con.close()
+        except Exception as e:
+            _diag("state.list_jobs_raw", e)
+            return []
+        for job_id, data in rows:
+            try:
+                d = json.loads(data)
+                out.append({
+                    "id": job_id,
+                    "goal": d.get("goal", ""),
+                    "status": str(d.get("status", "")),
+                    "artifacts": 0,
+                    "created_at": d.get("created_at"),
+                    "role": "",
+                    "adapter": "",
+                    "task_count": 0,
+                    "label": d.get("label"),
+                })
+            except Exception:
+                continue
         return out
 
     def format_artifacts(self, artifacts: list) -> list:

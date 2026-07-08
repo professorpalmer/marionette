@@ -16,6 +16,29 @@ def test_store_save_get_states(tmp_path):
     assert (tmp_path / "active" / f"{sk.slug}.md").exists()
 
 
+def test_store_finds_legacy_untruncated_filenames(tmp_path):
+    """Skills written under un-truncated filenames (older writers / direct
+    file drops) list fine but used to be unapprovable: the API slug is the
+    48-char _slug of the name, and lookup missed the longer file."""
+    long_name = "Audit harness env var leakage and cross-platform pitfalls in test suite"
+    s = SkillStore(root=str(tmp_path))
+    legacy = tmp_path / "pending" / (
+        "audit-harness-env-var-leakage-and-cross-platform-pitfalls-in-test-suite.md")
+    legacy.write_text(
+        f"---\nname: {long_name}\nstate: pending\n---\n\nsteps here\n",
+        encoding="utf-8")
+
+    sk = Skill(name=long_name, state="pending")
+    assert len(sk.slug) <= 48
+    got = s.get(sk.slug)
+    assert got and got.name == long_name
+
+    promoted = s.set_state(sk.slug, "active")
+    assert promoted and promoted.state == "active"
+    assert not legacy.exists()
+    assert (tmp_path / "active" / f"{sk.slug}.md").exists()
+
+
 def test_store_list_and_used(tmp_path):
     s = SkillStore(root=str(tmp_path))
     s.save(Skill(name="A", state="active"))

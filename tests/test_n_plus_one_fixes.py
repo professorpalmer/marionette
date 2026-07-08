@@ -101,3 +101,35 @@ def test_state_list_jobs_uses_batch(monkeypatch):
     assert ds.store.bulk_calls == 1      # one bulk task fetch
     assert ds.store.per_job_calls == 0   # no per-job task/count queries
     assert all(j["artifacts"] == 3 and j["task_count"] == 1 for j in jobs)
+
+
+def test_state_list_jobs_survives_poisoned_status_row(tmp_path):
+    """A job row whose status string the installed puppetmaster can't parse
+    must degrade to a raw row-tolerant read, not blank the whole feed (this
+    is exactly how the swarm tracker went permanently empty)."""
+    import json
+    import sqlite3
+
+    from harness.state import DurableState
+
+    state_dir = str(tmp_path)
+    ds = DurableState(state_dir)
+    ds.store.init()  # materialize the sqlite schema before raw inserts
+    con = sqlite3.connect(os.path.join(state_dir, "state.sqlite3"))
+    for jid, status in (("job_ok", "running"), ("job_bad", "not-a-status")):
+        con.execute(
+            "INSERT INTO jobs (id, data) VALUES (?, ?)",
+            (jid, json.dumps({
+                "id": jid, "goal": "g", "status": status,
+                "created_at": "2026-07-08T00:00:00+00:00",
+            })),
+        )
+    con.commit()
+    con.close()
+
+    jobs = ds.list_jobs()
+    by_id = {j["id"]: j for j in jobs}
+    assert "job_ok" in by_id
+    # The poison row either parses (new puppetmaster coerces it) or is kept
+    # via the raw fallback -- both are fine; an empty list is the bug.
+    assert len(jobs) >= 1
