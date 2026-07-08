@@ -91,7 +91,7 @@ def _install_agentic_mocks(monkeypatch, *, orchestrator_result=None, capture_pay
         def __init__(self, store):
             self.store = store
 
-        def run(self, goal, specs=None, worker_mode="inline"):
+        def run(self, goal, specs=None, worker_mode="inline", **kwargs):
             return orchestrator_result or _fake_pm_result()
 
     monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
@@ -510,7 +510,7 @@ def test_run_edit_worker_dispatches_native(monkeypatch):
         monkeypatch.setattr("harness.edit_engines.select_edit_engine", lambda *a, **k: "native")
         native_called = []
 
-        def fake_native(config, goal, job_id=""):
+        def fake_native(config, goal, job_id="", **kwargs):
             native_called.append((goal, job_id))
             return WorkerResult(ok=True, summary="native ran")
 

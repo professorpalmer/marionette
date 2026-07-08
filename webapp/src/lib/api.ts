@@ -67,6 +67,7 @@ export type Job = {
   updated_at?: number | string | null;
   tokens?: number;
   est_cost_usd?: number;
+  model?: string;
   tool_output_tokens_saved?: number;
   tool_output_compactions?: number;
   task_count?: number;
@@ -108,7 +109,7 @@ export type SwarmLive = {
   jobs: Job[];
 };
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
-export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string };
+export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number };
 
 export type SessionState = {
   state: "idle" | "thinking" | "awaiting_swarm";

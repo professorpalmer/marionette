@@ -2683,9 +2683,22 @@ class ConversationalSession(ToolDispatchMixin):
                 # input was served near-free -- proof we are not token-hungry.
                 try:
                     _meta = getattr(resp, "meta", None) or {}
-                    self._tokens_cached += int(_meta.get("cache_read_tokens", 0) or 0)
+                    _cache_delta = int(_meta.get("cache_read_tokens", 0) or 0)
+                    self._tokens_cached += _cache_delta
                 except Exception:
-                    pass
+                    _cache_delta = 0
+                try:
+                    from pmharness.registry import resolve_price
+                    _price_in, _price_out = resolve_price(self.config.driver)
+                except Exception:
+                    _price_in, _price_out = 0.0, 0.0
+                _pilot_cost = (_t_in * float(_price_in) + _t_out * float(_price_out)) / 1_000_000.0
+                self._accumulate_session_meters(
+                    input_tokens=_t_in,
+                    output_tokens=_t_out,
+                    cache_read_tokens=_cache_delta,
+                    estimated_cost_usd=_pilot_cost,
+                )
 
                 if resp and resp.error:
                     from pmharness.drivers import error_classifier
@@ -3651,6 +3664,7 @@ class ConversationalSession(ToolDispatchMixin):
                         try:
                             r = execute_intent(
                                 _intent, state_dir=self.state_dir,
+                                session_id=self.harness_session_id or "",
                                 on_delta=lambda wid, kind, text: _delta_q.put(
                                     ("delta", (wid, kind, text))),
                             )
@@ -3824,7 +3838,11 @@ class ConversationalSession(ToolDispatchMixin):
 
                         try:
                             import json
-                            cmd = _puppetmaster_cmd(adapter, act.goal, "--cwd", effective_repo, "--mode", "implement", "--allow-dirty", "--allow-non-worktree")
+                            cmd = _puppetmaster_cmd(
+                                adapter, act.goal, "--cwd", effective_repo,
+                                "--mode", "implement", "--allow-dirty", "--allow-non-worktree",
+                                *self._job_dispatch_label_args(),
+                            )
                             p = subprocess.Popen(
                                 cmd,
                                 stdout=subprocess.PIPE,
@@ -3923,7 +3941,7 @@ class ConversationalSession(ToolDispatchMixin):
                             short = uuid.uuid4().hex[:8]
                             job_id = f"local-{short}"
                             self._session_job_ids.append(job_id)
-                            self._register_local_job(job_id, act.goal, role="implement")
+                            self._register_local_job(job_id, act.goal, role="implement", cwd=effective_repo)
                             
                             # Warm heavy imports single-threaded before the worker
                             # thread races the PyInstaller PYZ reader (see fn docs).
@@ -4069,7 +4087,8 @@ class ConversationalSession(ToolDispatchMixin):
                             cmd = _puppetmaster_cmd(
                                 "--state-dir", state_dir, adapter, sub_goal,
                                 "--cwd", effective_repo, "--mode", mode,
-                                "--allow-dirty", "--allow-non-worktree"
+                                "--allow-dirty", "--allow-non-worktree",
+                                *self._job_dispatch_label_args(),
                             )
                             try:
                                 proc = subprocess.Popen(
@@ -4233,7 +4252,7 @@ class ConversationalSession(ToolDispatchMixin):
                                 short = uuid.uuid4().hex[:8]
                                 job_id = f"local-{short}"
                                 try:
-                                    self._register_local_job(job_id, sub_goal, role="implement")
+                                    self._register_local_job(job_id, sub_goal, role="implement", cwd=effective_repo)
                                     # Submit the selected edit engine through the
                                     # bounded-inflight gate. A False return means
                                     # the pool is at capacity: release the
@@ -4471,6 +4490,36 @@ class ConversationalSession(ToolDispatchMixin):
         self._display_transcript.append({"type": "message", "role": "assistant", "text": limit_msg})
         yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
 
+    def _accumulate_session_meters(
+        self,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        estimated_cost_usd: float = 0.0,
+    ) -> None:
+        """Persist cumulative usage on the active harness session (distinct from
+        the boot-scoped pricing pill in /api/usage)."""
+        sid = self.harness_session_id or ""
+        store = getattr(self, "_session_store", None)
+        if sid and store is not None:
+            try:
+                store.accumulate_meters(
+                    sid,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    estimated_cost_usd=estimated_cost_usd,
+                )
+            except Exception:
+                pass
+
+    def _job_dispatch_label_args(self) -> list:
+        from harness.job_scoping import job_label_for_session
+
+        label = job_label_for_session(self.harness_session_id or "")
+        return ["--label", label] if label else []
+
     def _attribute_worker_cost(self, tokens_in: int, tokens_out: int,
                                real_cost_usd: float = 0.0,
                                model_spec: str = "",
@@ -4495,23 +4544,30 @@ class ConversationalSession(ToolDispatchMixin):
             to = int(tokens_out or 0)
             self._worker_tokens_in += ti
             self._worker_tokens_out += to
-            if not count_dollars:
-                return
             cost = float(real_cost_usd or 0.0)
-            if cost <= 0.0:
-                spec = model_spec or getattr(self.config, "swarm_adapter", "") \
-                    or getattr(self.config, "driver", "")
-                try:
-                    from pmharness.registry import resolve_price
-                    price_in, price_out = resolve_price(spec)
-                except Exception:
+            if count_dollars:
+                if cost <= 0.0:
+                    spec = model_spec or getattr(self.config, "swarm_adapter", "") \
+                        or getattr(self.config, "driver", "")
                     try:
                         from pmharness.registry import resolve_price
-                        price_in, price_out = resolve_price(getattr(self.config, "driver", ""))
+                        price_in, price_out = resolve_price(spec)
                     except Exception:
-                        price_in, price_out = 0.0, 0.0
-                cost = (ti * float(price_in) + to * float(price_out)) / 1_000_000.0
-            self._worker_cost_usd += max(0.0, cost)
+                        try:
+                            from pmharness.registry import resolve_price
+                            price_in, price_out = resolve_price(getattr(self.config, "driver", ""))
+                        except Exception:
+                            price_in, price_out = 0.0, 0.0
+                    cost = (ti * float(price_in) + to * float(price_out)) / 1_000_000.0
+                self._worker_cost_usd += max(0.0, cost)
+            else:
+                cost = 0.0
+            if ti or to:
+                self._accumulate_session_meters(
+                    input_tokens=ti,
+                    output_tokens=to,
+                    estimated_cost_usd=cost if count_dollars else 0.0,
+                )
         except Exception:
             pass
 
@@ -4617,6 +4673,8 @@ class ConversationalSession(ToolDispatchMixin):
         # the PILOT's model rate (resolve_price cannot price adapter names like
         # 'agentic'), so cheap-model workers were charged at e.g. opus rates.
         self._attribute_worker_cost(sum_in, sum_out, count_dollars=False)
+        if sum_cached:
+            self._accumulate_session_meters(cache_read_tokens=sum_cached)
         return (sum_in, sum_out, sum_cached)
 
     def _apply_worker_patch(self, artifacts: list, job_id: str = "") -> tuple[bool, list[str], str]:
@@ -5086,12 +5144,17 @@ class ConversationalSession(ToolDispatchMixin):
         with self._inflight_lock:
             self._inflight_objectives.discard(key)
 
-    def _register_local_job(self, job_id: str, goal: str, role: str = "implement") -> None:
+    def _register_local_job(self, job_id: str, goal: str, role: str = "implement",
+                            cwd: str = "") -> None:
         """Record a dispatched provider-native worker so it appears in the swarm
         panel while it runs (the panel otherwise only sees Puppetmaster store
         jobs). Shaped like a store job: a single synthesized worker task carries
         the live status the UI renders."""
         import time
+        from harness.job_scoping import job_label_for_session
+
+        effective_cwd = cwd or self.config.repo or ""
+        session_id = self.harness_session_id or ""
         with self._local_jobs_lock:
             self._local_job_cancels[job_id] = threading.Event()
             now = time.time()
@@ -5101,6 +5164,10 @@ class ConversationalSession(ToolDispatchMixin):
                 "status": "running",
                 "role": role,
                 "adapter": self.config.driver or "provider",
+                "model": self.config.driver or "provider",
+                "session_id": session_id,
+                "cwd": effective_cwd,
+                "label": job_label_for_session(session_id),
                 "created_at": now,
                 "updated_at": now,
                 "task_count": 1,
@@ -5684,9 +5751,11 @@ class ConversationalSession(ToolDispatchMixin):
         # finalizer transparently target the requested repo. When empty, the
         # original self.config is used unchanged (existing behavior).
         _effective_config = self.config
+        effective_cwd = self.config.repo or ""
         if target_repo:
             try:
                 _effective_config = _dc_replace(self.config, repo=target_repo)
+                effective_cwd = target_repo
             except Exception:
                 _effective_config = self.config
 
@@ -5700,7 +5769,14 @@ class ConversationalSession(ToolDispatchMixin):
         def _run():
             try:
                 with _ambient_budget_ctx(_governing):
-                    box["res"] = run_edit_worker(_effective_config, objective, requested_adapter=requested_adapter, job_id=job_id)
+                    box["res"] = run_edit_worker(
+                        _effective_config,
+                        objective,
+                        requested_adapter=requested_adapter,
+                        job_id=job_id,
+                        session_id=self.harness_session_id or "",
+                        cwd=effective_cwd,
+                    )
             except Exception as exc:  # surfaced to the caller after join
                 box["exc"] = exc
             finally:

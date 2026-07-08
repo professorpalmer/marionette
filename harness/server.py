@@ -286,20 +286,39 @@ def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
     (:func:`puppetmaster.cost.price_job`), topped up with live OpenRouter rates
     for models the registry does not know. Falls back to the router's
     pre-flight estimate only while nothing could be priced from usage.
+    When no ROUTING artifact exists (provider-native workers), usage is read
+    from VERIFICATION payloads instead.
     """
     from puppetmaster.usage import aggregate_token_usage
     from puppetmaster.cost import price_job
 
+    try:
+        from puppetmaster.models import ArtifactType
+    except Exception:
+        ArtifactType = None
+
+    arts_for_usage = list(raw_arts or [])
+    if ArtifactType is not None:
+        has_routing = any(
+            getattr(a, "type", None) == ArtifactType.ROUTING for a in arts_for_usage
+        )
+        if not has_routing:
+            verification = [
+                a for a in arts_for_usage if getattr(a, "type", None) == ArtifactType.VERIFICATION
+            ]
+            if verification:
+                arts_for_usage = verification
+
     tokens = 0
     try:
-        token_usage_dict = aggregate_token_usage(raw_arts)
+        token_usage_dict = aggregate_token_usage(arts_for_usage)
         tokens = int(token_usage_dict.get("total_tokens", 0) or 0)
     except Exception:
         pass
 
     est_cost_usd = 0.0
     try:
-        job_cost = price_job(raw_arts, registry)
+        job_cost = price_job(arts_for_usage, registry)
         usage_cost = job_cost.total_marginal_cost_usd + _live_price_unpriced_tasks(job_cost)
         # Only trust the usage-priced total when something actually priced.
         # Usage can land with models neither source can price (cost 0.0);
@@ -888,6 +907,7 @@ _pilot_swap_lock = threading.Lock()
 from .pty_manager import PtyManager
 _pty = PtyManager()
 _pilot._mcp = _mcp
+_pilot._session_store = _sessions
 _init_platform_lock()
 _seed_agentic_catalog()
 
@@ -938,6 +958,7 @@ def _rebuild_pilot_and_session():
         _pilot._history = old_history
         _pilot._auto_distill = old_auto_distill
         _pilot._mcp = _mcp
+        _pilot._session_store = _sessions
         _sync_pilot_session_id()
 
 # Startup: Restore the active/most-recent session's transcript into _pilot
@@ -3367,7 +3388,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/platform":
             return self._send(200, json.dumps(_get_platform_adapters()))
         if u.path == "/api/jobs":
-            return self._send(200, json.dumps(_jobs_snapshot()))
+            return self._send(200, json.dumps(_scoped_jobs_snapshot()))
         if u.path == "/api/usage":
             if self._guard():
                 return
@@ -3473,8 +3494,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 price_in, price_out = 0.5, 2.0
             try:
+                from .job_scoping import filter_local_jobs, resolve_job_model
+
                 state_obj = _session.state()
-                jobs = _jobs_snapshot()
+                jobs = _scoped_jobs_snapshot()
                 store = state_obj.store
                 registry = _swarm_registry()
 
@@ -3510,6 +3533,11 @@ class Handler(BaseHTTPRequestHandler):
                         artifacts_list = []
 
                     tokens, est_cost_usd = _job_swarm_accounting(raw_arts, registry)
+                    job_model = resolve_job_model(
+                        raw_arts,
+                        (tasks_by_job.get(jid, []) if tasks_by_job is not None else []),
+                        j.get("adapter", ""),
+                    )
 
                     tasks_list = []
                     try:
@@ -3533,6 +3561,7 @@ class Handler(BaseHTTPRequestHandler):
                         "status": j.get("status", ""),
                         "role": j.get("role", ""),
                         "adapter": j.get("adapter", ""),
+                        "model": job_model,
                         "created_at": j.get("created_at"),
                         "task_count": j.get("task_count", 0),
                         "tokens": tokens,
@@ -3550,7 +3579,12 @@ class Handler(BaseHTTPRequestHandler):
             # reads "No swarm jobs yet" while a worker is visibly running.
             try:
                 existing_ids = {j.get("id") for j in res_jobs}
-                for lj in _pilot.live_local_jobs():
+                scoped_locals = filter_local_jobs(
+                    _pilot.live_local_jobs(),
+                    active_session_id=_sessions.active or getattr(_pilot, "harness_session_id", "") or "",
+                    repo_root=_cfg.repo or "",
+                )
+                for lj in scoped_locals:
                     if lj.get("id") not in existing_ids:
                         res_jobs.append(lj)
             except Exception as e:
@@ -3565,9 +3599,7 @@ class Handler(BaseHTTPRequestHandler):
             _t_cached = int(getattr(_pilot, "_tokens_cached", 0) or 0)
             est_session_cost = _session_cost_split(_pilot, price_in, price_out)
             _cache_savings_usd = _cache_savings(_t_cached, price_in)
-            # Add swarm store-job spend (local provider jobs are already inside
-            # _worker_cost_usd; store jobs bill separately). Sum only jobs that
-            # came from the durable store, not the merged-in local ones.
+            # Add swarm store-job spend from the scoped job list only.
             try:
                 est_session_cost += sum(
                     float(j.get("est_cost_usd") or 0.0)
@@ -4293,6 +4325,23 @@ def _jobs_snapshot() -> list:
             print(f"[jobs poll error] {e!r} -- serving last-known", file=sys.stderr)
             return _last_jobs_snapshot
     return _last_jobs_snapshot
+
+
+def _scoped_jobs_snapshot() -> list:
+    """Jobs visible for the active harness session and open workspace."""
+    from .job_scoping import filter_store_jobs
+
+    jobs = _jobs_snapshot()
+    try:
+        store = _session.state().store
+    except Exception:
+        return jobs
+    return filter_store_jobs(
+        jobs,
+        store,
+        active_session_id=_sessions.active or getattr(_pilot, "harness_session_id", "") or "",
+        repo_root=_cfg.repo or "",
+    )
 
 
 def _pilot_preflight():

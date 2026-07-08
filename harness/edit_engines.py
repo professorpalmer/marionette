@@ -168,24 +168,55 @@ def select_edit_engine(config: "HarnessConfig", requested_adapter: str = "") -> 
 
 def run_edit_worker(
     config: "HarnessConfig", goal: str, requested_adapter: str = "",
-    job_id: str = "",
+    job_id: str = "", session_id: str = "", cwd: str = "",
 ) -> "WorkerResult":
     """Run the selected in-process edit engine and return a normalized result.
 
     Falls back from agentic to native only when agentic could not run at all.
     """
     engine = select_edit_engine(config, requested_adapter)
+    target_cwd = cwd or config.repo
     if engine == "agentic":
-        result = run_agentic_edit(config, goal)
+        result = run_agentic_edit(config, goal, session_id=session_id, cwd=target_cwd)
         if result.error in _FALLBACK_REASONS:
             _diag("edit_engines.run_edit_worker",
                   msg=f"agentic engine unavailable ({result.error}); falling back to native")
-            return run_native_edit(config, goal, job_id=job_id)
+            return run_native_edit(config, goal, job_id=job_id, session_id=session_id, cwd=target_cwd)
         return result
-    return run_native_edit(config, goal, job_id=job_id)
+    return run_native_edit(config, goal, job_id=job_id, session_id=session_id, cwd=target_cwd)
 
 
-def run_native_edit(config: "HarnessConfig", goal: str, job_id: str = "") -> "WorkerResult":
+def run_implement(
+    config: "HarnessConfig", goal: str, requested_adapter: str = "",
+    job_id: str = "", session_id: str = "", cwd: str = "",
+) -> "WorkerResult":
+    """Dispatch a single implement worker (agentic or native)."""
+    return run_edit_worker(
+        config, goal, requested_adapter=requested_adapter,
+        job_id=job_id, session_id=session_id, cwd=cwd,
+    )
+
+
+def run_parallel(
+    config: "HarnessConfig", goals: list[str], requested_adapter: str = "",
+    session_id: str = "", cwd: str = "",
+) -> list["WorkerResult"]:
+    """Run several implement workers sequentially (caller fans out concurrency)."""
+    results = []
+    for goal in goals or []:
+        if not (goal or "").strip():
+            continue
+        results.append(run_implement(
+            config, goal, requested_adapter=requested_adapter,
+            session_id=session_id, cwd=cwd,
+        ))
+    return results
+
+
+def run_native_edit(
+    config: "HarnessConfig", goal: str, job_id: str = "",
+    session_id: str = "", cwd: str = "",
+) -> "WorkerResult":
     """Marionette's own pilot loop driven in a worktree (the rich engine)."""
     from harness.autobudget import AutoBudget
     from harness.worker import ProviderWorker
@@ -200,7 +231,9 @@ def run_native_edit(config: "HarnessConfig", goal: str, job_id: str = "") -> "Wo
     return worker.run()
 
 
-def run_agentic_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
+def run_agentic_edit(
+    config: "HarnessConfig", goal: str, *, session_id: str = "", cwd: str = "",
+) -> "WorkerResult":
     """Puppetmaster's first-class agentic adapter in implement mode, run in an
     isolated worktree; the diff is captured for the normal review/apply gate.
 
@@ -208,6 +241,7 @@ def run_agentic_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
     one of the ``AGENTIC_*`` reasons so the dispatcher can fall back to native.
     """
     from harness.worker import WorkerResult
+    from harness.job_scoping import job_label_for_session, stamp_task_payload
 
     if not agentic_available():
         return WorkerResult(ok=False, error=AGENTIC_UNAVAILABLE,
@@ -226,13 +260,14 @@ def run_agentic_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
     model = (os.environ.get("HARNESS_IMPLEMENT_MODEL", "") or "").strip()
 
     try:
-        with managed_worktree(config.repo) as wt_path:
-            payload: dict = {
+        repo_root = cwd or config.repo
+        with managed_worktree(repo_root) as wt_path:
+            payload: dict = stamp_task_payload({
                 "mode": "implement",
                 "cwd": wt_path,
                 "prompt": goal,
                 "auto_route": not (provider and model),
-            }
+            }, session_id=session_id, cwd=wt_path)
             if not (provider and model):
                 # Cost guardrail (mirrors the analysis-swarm cap in bridge.py):
                 # role="implement" has a high base score that first-picks the
@@ -272,7 +307,12 @@ def run_agentic_edit(config: "HarnessConfig", goal: str) -> "WorkerResult":
             tmp = tempfile.mkdtemp(prefix="pmh-edit-")
             try:
                 store = create_store("sqlite", tmp)
-                result = Orchestrator(store).run(goal, specs=[spec], worker_mode="inline")
+                result = Orchestrator(store).run(
+                    goal,
+                    specs=[spec],
+                    worker_mode="inline",
+                    label=job_label_for_session(session_id),
+                )
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
 

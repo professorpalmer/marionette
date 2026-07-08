@@ -25,6 +25,10 @@ class SessionMeta:
     archived: bool = False
     repo: str = ""
     branch: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    estimated_cost_usd: float = 0.0
 
 
 class SessionStore:
@@ -71,7 +75,42 @@ class SessionStore:
             "archived": s.get("archived", False),
             "repo": s.get("repo", ""),
             "branch": s.get("branch", ""),
+            "input_tokens": int(s.get("input_tokens", 0) or 0),
+            "output_tokens": int(s.get("output_tokens", 0) or 0),
+            "cache_read_tokens": int(s.get("cache_read_tokens", 0) or 0),
+            "estimated_cost_usd": float(s.get("estimated_cost_usd", 0.0) or 0.0),
         } for s in self._sessions]
+
+    def accumulate_meters(
+        self,
+        sid: str,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        estimated_cost_usd: float = 0.0,
+    ) -> None:
+        """Persist cumulative token/cost meters on a chat session."""
+        if not sid:
+            return
+        tin = int(input_tokens or 0)
+        tout = int(output_tokens or 0)
+        tcached = int(cache_read_tokens or 0)
+        cost = float(estimated_cost_usd or 0.0)
+        if not (tin or tout or tcached or cost):
+            return
+        with self._lock:
+            for s in self._sessions:
+                if s["id"] != sid:
+                    continue
+                s["input_tokens"] = int(s.get("input_tokens", 0) or 0) + tin
+                s["output_tokens"] = int(s.get("output_tokens", 0) or 0) + tout
+                s["cache_read_tokens"] = int(s.get("cache_read_tokens", 0) or 0) + tcached
+                s["estimated_cost_usd"] = round(
+                    float(s.get("estimated_cost_usd", 0.0) or 0.0) + cost, 6
+                )
+                self._save()
+                break
 
     def create(self, title: Optional[str] = None, repo: str = "", branch: str = "") -> dict:
         with self._lock:

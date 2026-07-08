@@ -250,7 +250,7 @@ def test_run_implement_agentic_engine_default(monkeypatch):
         # (no provider network / worktree), exercising dispatch + apply.
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
 
-        def fake_agentic(config, goal):
+        def fake_agentic(config, goal, **kwargs):
             assert goal == "Add world to test.txt"
             return WorkerResult(ok=True, patch=canned_patch,
                                 files_changed=["test.txt"], summary="agentic patch",

@@ -397,9 +397,10 @@ export default function SwarmPane() {
     const routingArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() === "ROUTING");
     const streamArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() !== "ROUTING");
     const tasks = j.tasks || [];
-    const routerModel = routingArts.find((a: Artifact) => a.model)?.model || "";
+    const routerModel = j.model || routingArts.find((a: Artifact) => a.model)?.model || "";
     const workerCount = tasks.length;
     const adapter = j.adapter || tasks[0]?.adapter || "";
+    const displayModel = routerModel || adapter;
     const terminal = isTerminal(j);
 
     const toggle = () => setExpandedJobs((prev) => ({ ...prev, [j.id]: !isExpanded }));
@@ -487,11 +488,11 @@ export default function SwarmPane() {
 
           {/* Model + worker count + adapter -- the "who's doing this and on what"
               line, so the swarm's shape reads without expanding. */}
-          {(routerModel || workerCount > 0 || adapter) && (
+          {(displayModel || workerCount > 0 || adapter) && (
             <div className="flex items-center gap-1.5 pl-6 pr-1 mt-1 flex-wrap">
-              {routerModel && (
-                <span className="flex items-center gap-1 text-[9px] font-mono text-accent/90 bg-accent/10 px-1.5 py-0.5 rounded" title={`Router model: ${routerModel}`}>
-                  <Cpu size={9} /> {routerModel}
+              {displayModel && (
+                <span className="flex items-center gap-1 text-[9px] font-mono text-accent/90 bg-accent/10 px-1.5 py-0.5 rounded" title={`Model: ${displayModel}`}>
+                  <Cpu size={9} /> {displayModel}
                 </span>
               )}
               {workerCount > 0 && (
@@ -608,8 +609,8 @@ export default function SwarmPane() {
               <div className="p-2 bg-panel rounded border border-edge/45 text-[10px] flex items-center justify-between text-muted">
                 <span className="flex items-center gap-1.5 truncate max-w-[72%]">
                   <Cpu size={11} className="text-accent shrink-0" />
-                  <span className="text-txt font-mono font-medium truncate" title={j.adapter}>
-                    {j.adapter || "provider worker"}
+                  <span className="text-txt font-mono font-medium truncate" title={displayModel}>
+                    {displayModel || "provider worker"}
                   </span>
                 </span>
                 <span className="flex items-center gap-2 shrink-0 font-mono">

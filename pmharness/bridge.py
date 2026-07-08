@@ -394,6 +394,7 @@ def execute_intent(
     state_dir: Optional[str] = None,
     worker_mode: Optional[str] = None,
     on_delta: Optional[Callable[[str, str, str], None]] = None,
+    session_id: Optional[str] = None,
 ) -> Optional[BridgeResult]:
     """Run a run_swarm intent against Puppetmaster. Returns None for non-swarm
     actions (answer/stop) since there is nothing to execute.
@@ -414,10 +415,12 @@ def execute_intent(
     import os as _os
     from puppetmaster.store_factory import create_store
     from puppetmaster.orchestrator import Orchestrator
+    from harness.job_scoping import job_label_for_session, stamp_task_payload
 
     _clear_delta_sink = _install_delta_sink(on_delta)
     tmp = state_dir or tempfile.mkdtemp(prefix="pmh-exec-")
     store = create_store("sqlite", tmp)
+    job_label = job_label_for_session(session_id or "")
 
     try:
         # Swarm adapter selection (safety-first):
@@ -451,7 +454,7 @@ def execute_intent(
                     instruction=_analysis_instruction(
                         intent.goal, repo_cwd, r, browser=_browser),
                     adapter="agentic",
-                    payload={
+                    payload=stamp_task_payload({
                         "read_only": True, "no_edit": True, "dry_run": True,
                         "cwd": repo_cwd, "prompt": intent.goal,
                         "auto_route": True,
@@ -479,10 +482,11 @@ def execute_intent(
                         # would grab a too-weak model that starves out).
                         "routing_policy": "balanced",
                         **_analysis_capability_payload(),
-                    },
+                    }, session_id=session_id or "", cwd=repo_cwd),
                 ))
             result = Orchestrator(store).run(
                 intent.goal, specs=specs, worker_mode=worker_mode or "inline",
+                label=job_label,
             )
             adapter = "agentic"
         elif swarm_adapter == "openai" and repo_cwd:
@@ -496,7 +500,7 @@ def execute_intent(
                     role=r,
                     instruction=_analysis_instruction(intent.goal, repo_cwd, r),
                     adapter="openai",
-                    payload={
+                    payload=stamp_task_payload({
                         "read_only": True, "no_edit": True, "dry_run": True,
                         "cwd": repo_cwd, "prompt": intent.goal,
                         "auto_route": False,
@@ -506,12 +510,13 @@ def execute_intent(
                         # schema so base_url + key + an open model just works. Falls
                         # back to native OpenAI only if HARNESS_ANALYSIS_REACH=openai.
                         **_analysis_provider_payload(),
-                    },
+                    }, session_id=session_id or "", cwd=repo_cwd),
                 ))
             # inline: the analysis worker runs in-process so the env-based key
             # wiring propagates reliably, and it yields richer multi-artifact output.
             result = Orchestrator(store).run(
                 intent.goal, specs=specs, worker_mode=worker_mode or "inline",
+                label=job_label,
             )
             adapter = "openai"
         else:
@@ -521,6 +526,7 @@ def execute_intent(
                 intent.goal,
                 roles=intent.roles,
                 worker_mode=worker_mode or "subprocess",
+                label=job_label,
             )
             adapter = "demo"
 

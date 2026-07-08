@@ -117,6 +117,7 @@ def test_session_total_includes_swarm_store_job_cost(monkeypatch):
             )["session"]["est_cost_usd"]
 
             monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [{"id": "job_fake1"}])
+            monkeypatch.setattr(srv, "_scoped_jobs_snapshot", lambda: [{"id": "job_fake1"}])
             monkeypatch.setattr(
                 srv, "_job_swarm_accounting", lambda arts, registry: (50_000, 0.37)
             )

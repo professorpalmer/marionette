@@ -169,3 +169,20 @@ def test_job_swarm_accounting_falls_back_to_routing_before_usage():
     tokens, cost = _job_swarm_accounting(arts, registry)
     assert tokens == 0
     assert abs(cost - 0.062) < 1e-6
+
+
+def test_job_swarm_accounting_prices_verification_without_routing():
+    registry = [_registry_spec("worker-model", input_per_mtok_usd=1.0, output_per_mtok_usd=2.0)]
+    arts = [
+        _artifact(
+            task_id="t1",
+            payload={
+                "tokens_in": 50_000,
+                "tokens_out": 10_000,
+                "model": "worker-model",
+            },
+        ),
+    ]
+    tokens, cost = _job_swarm_accounting(arts, registry)
+    assert tokens == 60_000
+    assert abs(cost - 0.07) < 1e-6

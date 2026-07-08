@@ -132,6 +132,7 @@ class DurableState:
                 "role": role,
                 "adapter": adapter,
                 "task_count": task_count,
+                "label": getattr(j, "label", None),
             })
         return out
 
