@@ -150,6 +150,102 @@ def test_delete_single_session_via_delete_method(tmp_path):
         httpd.shutdown()
 
 
+def test_delete_active_session_stays_in_same_workspace(tmp_path):
+    """Deleting the active session must promote a sibling from the SAME
+    workspace -- never the newest session globally, which auto-switched the
+    whole app to another dir (often a leaked temp worktree)."""
+    store = SessionStore(str(tmp_path / "sessions.json"))
+    repo_a = tmp_path / "repo_a"
+    repo_b = tmp_path / "repo_b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+
+    older_a = store.create("A-old", repo=str(repo_a), workspace_root=str(repo_a))
+    newest_b = store.create("B-new", repo=str(repo_b), workspace_root=str(repo_b))
+    active_a = store.create("A-active", repo=str(repo_a), workspace_root=str(repo_a))
+
+    new_active = store.delete(active_a["id"])
+    assert new_active == older_a["id"]
+    assert new_active != newest_b["id"]
+
+
+def test_delete_last_session_in_workspace_leaves_no_active(tmp_path):
+    """No same-workspace sibling left: active becomes None instead of yanking
+    the workspace to wherever the newest global session lives."""
+    store = SessionStore(str(tmp_path / "sessions.json"))
+    repo_a = tmp_path / "repo_a"
+    repo_b = tmp_path / "repo_b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+
+    store.create("B", repo=str(repo_b), workspace_root=str(repo_b))
+    only_a = store.create("A", repo=str(repo_a), workspace_root=str(repo_a))
+
+    assert store.delete(only_a["id"]) is None
+
+
+def test_delete_rootless_active_promotes_rootless_peer(tmp_path):
+    store = SessionStore(str(tmp_path / "sessions.json"))
+    peer = store.create("One")
+    active = store.create("Two")
+    assert store.delete(active["id"]) == peer["id"]
+
+
+def test_ephemeral_temp_sessions_pruned_on_load(tmp_path, monkeypatch):
+    """Session rows rooted in the OS temp dir (worker worktrees, test repos
+    that leaked into live state) are dropped when the store loads."""
+    import harness.sessions as sessions_mod
+
+    fake_tmp = tmp_path / "faketmp"
+    temp_repo = fake_tmp / "tmpabc123"
+    temp_repo.mkdir(parents=True)
+    real_repo = tmp_path / "repo_a"
+    real_repo.mkdir()
+
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps({
+        "sessions": [
+            {"id": "real1", "title": "Real", "created": 1.0,
+             "workspace_root": str(real_repo)},
+            {"id": "temp1", "title": "tmpabc123", "created": 2.0,
+             "workspace_root": str(temp_repo)},
+        ],
+        "active": "real1",
+    }))
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(sessions_mod.tempfile, "gettempdir", lambda: str(fake_tmp))
+    store = SessionStore(str(path))
+
+    ids = {s["id"] for s in store._sessions}
+    assert ids == {"real1"}
+
+
+def test_record_recent_workspace_keeps_prior_repo_on_temp_target(tmp_path, monkeypatch):
+    """The persisted "repo" key is the boot-restore workspace; a temp-dir open
+    must not overwrite it (that resurrected phantom temp dirs on relaunch)."""
+    import harness.server as srv
+
+    fake_tmp = tmp_path / "faketmp"
+    temp_repo = fake_tmp / "tmpxyz"
+    temp_repo.mkdir(parents=True)
+    real_repo = tmp_path / "repo_a"
+    real_repo.mkdir()
+
+    monkeypatch.setattr(srv, "_workspace_json_path", lambda: str(tmp_path / "workspace.json"))
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    import tempfile as _tempfile
+    monkeypatch.setattr(_tempfile, "gettempdir", lambda: str(fake_tmp))
+
+    srv._record_recent_workspace(str(real_repo))
+    srv._record_recent_workspace(str(temp_repo))
+
+    data = json.loads((tmp_path / "workspace.json").read_text())
+    assert data["repo"] == str(real_repo)
+    assert str(temp_repo) not in data["recents"]
+    assert str(real_repo) in data["recents"]
+
+
 def test_clear_sessions_only_current_workspace(tmp_path):
     httpd, port, srv = _server()
     repo_a = tmp_path / "repo_a"

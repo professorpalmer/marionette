@@ -1,6 +1,7 @@
 """Tests for real pilot agent tools (read_file, write_file, run_command, list_dir)."""
 import json
 import os
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -123,8 +124,6 @@ def test_agent_tools_execution():
         assert len(results) > 0
         assert "rejected" in results[0].get("error", "").lower() or "traversal" in results[0].get("error", "").lower()
     finally:
-        import shutil
-
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
@@ -141,7 +140,11 @@ def test_run_command_survives_cancel_poisoned_after_action_start():
     We reproduce it deterministically: consume the generator and set _cancel the
     instant the run_command action_start is emitted (i.e. right before the runner
     launches). With edge-triggered cancellation the command must still complete."""
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # mkdtemp + ignore_errors teardown, not TemporaryDirectory: on Windows the
+    # spawned subprocess can hold the dir handle a beat past completion, and
+    # TemporaryDirectory's cleanup raises WinError 32 (flaky CI teardown).
+    tmpdir = tempfile.mkdtemp()
+    try:
         real_tmp = os.path.realpath(tmpdir)
         cfg = HarnessConfig(repo=real_tmp, swarm_adapter="demo")
         session = ConversationalSession(cfg)
@@ -176,6 +179,8 @@ def test_run_command_survives_cancel_poisoned_after_action_start():
         assert cmd_result is not None, "run_command produced no result -- it was killed before launch"
         headline = cmd_result["artifacts"][0]["headline"]
         assert headline == "Command exited with 0", f"command was wrongly cancelled: {headline!r}"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @dataclass

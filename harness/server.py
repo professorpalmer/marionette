@@ -632,10 +632,13 @@ def _record_recent_workspace(target_repo: str) -> list:
     try:
         os.makedirs(os.path.dirname(ws_json_path), exist_ok=True)
         recents = []
+        prior_repo = ""
         if os.path.exists(ws_json_path):
             try:
                 with open(ws_json_path, encoding="utf-8", errors="replace") as f:
-                    recents = json.load(f).get("recents", []) or []
+                    _ws_data = json.load(f)
+                    recents = _ws_data.get("recents", []) or []
+                    prior_repo = _ws_data.get("repo", "") or ""
             except Exception:
                 recents = []
         # never persist temp dirs (test/ephemeral state_dirs leak otherwise)
@@ -653,12 +656,17 @@ def _record_recent_workspace(target_repo: str) -> list:
         recents = [r for r in recents if _persistable(r)]
         recents = recents[:8]
 
+        # The "repo" key is what boot restores as the active workspace, so a
+        # temp dir here resurrects as a phantom project on next launch. Keep
+        # the prior persisted repo when the new target is ephemeral.
+        persisted_repo = target_repo if _persistable(target_repo) else prior_repo
+
         # Use atomic-write
         target_dir = os.path.dirname(ws_json_path)
         fd, temp_path = _tf.mkstemp(dir=target_dir, prefix=".tmp-")
         try:
             with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as f:
-                json.dump({"repo": target_repo, "recents": recents}, f)
+                json.dump({"repo": persisted_repo, "recents": recents}, f)
             os.replace(temp_path, ws_json_path)
         except Exception as e:
             if os.path.exists(temp_path):
@@ -915,6 +923,45 @@ _pilot._mcp = _mcp
 _pilot._session_store = _sessions
 _init_platform_lock()
 _seed_agentic_catalog()
+
+
+def _reap_stale_swarms_on_boot() -> None:
+    """Sweep dead-but-'running' jobs to 'stalled' in every store the tracker
+    reads (harness store + the per-project CLI store). Pre-update zombies --
+    jobs whose orchestrator died with the old process -- otherwise show as
+    running forever and can't be cancelled, since there is nothing left to
+    cancel."""
+    try:
+        from puppetmaster.liveness import reap_stalled_jobs
+    except Exception as e:
+        _diag("server.boot_reaper_import", e)
+        return
+    stores = []
+    try:
+        stores.append(_session.state().store)
+    except Exception as e:
+        _diag("server.boot_reaper_harness_store", e)
+    try:
+        from .cli_job_merge import open_cli_durable_state
+        cli_state = open_cli_durable_state(_cfg.repo or "")
+        if cli_state is not None:
+            stores.append(cli_state.store)
+    except Exception as e:
+        _diag("server.boot_reaper_cli_store", e)
+    for store in stores:
+        try:
+            reaped = reap_stalled_jobs(store)
+            if reaped:
+                _diag(
+                    "server.boot_reaper",
+                    msg=f"stalled {len(reaped)} zombie job(s): "
+                        f"{[r['job_id'] for r in reaped]}",
+                )
+        except Exception as e:
+            _diag("server.boot_reaper_sweep", e)
+
+
+threading.Thread(target=_reap_stale_swarms_on_boot, daemon=True).start()
 
 
 def _sessions_state_dir() -> str:
@@ -1573,33 +1620,51 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 _diag("server.swarm_cancel_local", e)
             # 2) Durable Puppetmaster store job -- best-effort mark cancelled.
-            try:
-                state_obj = _session.state()
-                store = getattr(state_obj, "store", None)
-                known = False
+            # Check BOTH stores the tracker reads: the harness store and the
+            # per-project CLI store (jobs started via `python -m puppetmaster`
+            # live only there; cancel used to 404 on them).
+            def _candidate_stores():
                 try:
-                    job_ids = {j.get("id") for j in state_obj.list_jobs()}
-                    known = job_id in job_ids
-                except Exception:
-                    known = False
-                if known and store is not None:
-                    marked = False
-                    for meth in ("cancel_job", "set_job_status", "update_job_status"):
-                        fn = getattr(store, meth, None)
-                        if fn is None:
-                            continue
-                        try:
-                            if meth == "cancel_job":
-                                fn(job_id)
-                            else:
-                                fn(job_id, "cancelled")
-                            marked = True
-                            break
-                        except Exception:
-                            continue
+                    state_obj = _session.state()
+                    yield getattr(state_obj, "store", None), state_obj.list_jobs
+                except Exception as e:
+                    _diag("server.swarm_cancel_harness_store", e)
+                try:
+                    from .cli_job_merge import open_cli_durable_state
+                    cli_state = open_cli_durable_state(_cfg.repo or "")
+                    if cli_state is not None:
+                        yield cli_state.store, cli_state.store.list_jobs
+                except Exception as e:
+                    _diag("server.swarm_cancel_cli_store", e)
+
+            def _mark_cancelled(store) -> bool:
+                for meth in ("cancel_job", "set_job_status", "update_job_status"):
+                    fn = getattr(store, meth, None)
+                    if fn is None:
+                        continue
+                    try:
+                        fn(job_id) if meth == "cancel_job" else fn(job_id, "cancelled")
+                        return True
+                    except Exception:
+                        continue
+                return False
+
+            try:
+                for store, list_jobs in _candidate_stores():
+                    if store is None:
+                        continue
+                    try:
+                        known = any(
+                            (j.get("id") if isinstance(j, dict) else getattr(j, "id", None)) == job_id
+                            for j in list_jobs()
+                        )
+                    except Exception:
+                        known = False
+                    if not known:
+                        continue
                     return self._send(200, json.dumps({
                         "ok": True, "job_id": job_id, "durable": True,
-                        "marked": marked,
+                        "marked": _mark_cancelled(store),
                     }))
             except Exception as e:
                 _diag("server.swarm_cancel_durable", e)
@@ -2119,6 +2184,13 @@ class Handler(BaseHTTPRequestHandler):
                 if target_repo and os.path.isdir(target_repo) and target_repo != _cfg.repo:
                     _cfg.repo = target_repo
                     os.environ["HARNESS_REPO"] = target_repo
+                    # Session-switch repoints must land in recents too, or the
+                    # dir only exists in the projects list while it is current
+                    # and vanishes the moment the workspace moves elsewhere.
+                    try:
+                        _record_recent_workspace(target_repo)
+                    except Exception as e:
+                        _diag("server.session_switch_record_recent", e)
                     _rebuild_pilot_and_session()
                     
                     history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)

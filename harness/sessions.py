@@ -57,6 +57,24 @@ class SessionStore:
                 self._active = data.get("active")
             except Exception:
                 self._sessions, self._active = [], None
+            self._prune_ephemeral_rows()
+
+    def _prune_ephemeral_rows(self) -> None:
+        """Drop non-active sessions rooted in temp dirs (worker worktrees,
+        pilot self-test opens). They pollute the store, and worse, ``delete``
+        used to pick one as the next active session -- yanking the whole
+        workspace to a random temp dir."""
+        kept = [
+            s for s in self._sessions
+            if s.get("id") == self._active
+            or not _is_ephemeral_root(session_stored_root(s))
+        ]
+        if len(kept) != len(self._sessions):
+            self._sessions = kept
+            try:
+                self._save()
+            except Exception:
+                pass
 
     def _save(self) -> None:
         with self._lock:
@@ -161,15 +179,31 @@ class SessionStore:
 
     def delete(self, sid: str) -> Optional[str]:
         with self._lock:
+            deleted_root = ""
+            for s in self._sessions:
+                if s["id"] == sid:
+                    deleted_root = session_stored_root(s)
+                    break
             self._sessions = [s for s in self._sessions if s["id"] != sid]
             if self._active == sid:
-                if self._sessions:
-                    most_recent = max(self._sessions, key=lambda s: s.get("created", 0))
-                    self._active = most_recent["id"]
-                else:
-                    self._active = None
+                self._active = self._pick_next_active(deleted_root)
             self._save()
             return self._active
+
+    def _pick_next_active(self, preferred_root: str) -> Optional[str]:
+        """Most recent session in the same workspace as the one just deleted,
+        or None. Never promotes a session from another workspace: doing so made
+        the frontend auto-switch dirs (often to a leaked temp worktree), so
+        closing the last session in a dir yanked the user somewhere else and
+        the dir dropped out of the projects list. Staying put with no active
+        session keeps the workspace and lets the user start fresh in place."""
+        same_root = [
+            s for s in self._sessions
+            if _same_root(session_stored_root(s), preferred_root)
+        ]
+        if not same_root:
+            return None
+        return max(same_root, key=lambda s: s.get("created", 0))["id"]
 
     def clear_for_workspace(self, workspace_root: str, state_dir: str = "") -> tuple[list[str], Optional[str]]:
         """Drop session metadata rows for ``workspace_root`` only (not job store)."""
@@ -183,11 +217,9 @@ class SessionStore:
                     kept.append(s)
             self._sessions = kept
             if self._active in deleted:
-                if self._sessions:
-                    most_recent = max(self._sessions, key=lambda row: row.get("created", 0))
-                    self._active = most_recent["id"]
-                else:
-                    self._active = None
+                # Everything visible in this workspace is gone; do not promote
+                # a session from another workspace (see _pick_next_active).
+                self._active = self._pick_next_active(workspace_root)
             self._save()
             return deleted, self._active
 
@@ -235,6 +267,30 @@ class SessionStore:
 def session_stored_root(session: dict) -> str:
     """Persisted workspace root on a session row (``workspace_root`` or legacy ``repo``)."""
     return (session.get("workspace_root") or session.get("repo") or "").strip()
+
+
+def _same_root(a: str, b: str) -> bool:
+    """Path-normalized equality; two rootless sessions also count as peers."""
+    if not a and not b:
+        return True
+    if not a or not b:
+        return False
+    return _norm_path(a) == _norm_path(b)
+
+
+def _is_ephemeral_root(root: str) -> bool:
+    """True for roots under the OS temp dir (worker worktrees, test repos).
+
+    Skipped under pytest so the suite's own tmp_path fixtures keep working.
+    """
+    if not root or "PYTEST_CURRENT_TEST" in os.environ:
+        return False
+    try:
+        real = os.path.realpath(root)
+        tmp = os.path.realpath(tempfile.gettempdir())
+        return real.startswith(tmp) or "/var/folders/" in real
+    except Exception:
+        return False
 
 
 def infer_legacy_session_root(session: dict, state_dir: str) -> str:

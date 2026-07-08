@@ -82,7 +82,7 @@ function summarizeRouting(art: Artifact): string {
 function jobStatus(j: Job): Status {
   const s = (j.status || "").toLowerCase();
   if (s.includes("complete") || s.includes("done")) return "completed";
-  if (s.includes("fail") || s.includes("cancel") || s.includes("error")) return "cancelled";
+  if (s.includes("fail") || s.includes("cancel") || s.includes("error") || s.includes("stall")) return "cancelled";
   if (s.includes("run") || s.includes("progress") || s.includes("active")) return "in_progress";
   return "pending";
 }
