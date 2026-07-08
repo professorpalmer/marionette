@@ -224,26 +224,34 @@ def test_ephemeral_temp_sessions_pruned_on_load(tmp_path, monkeypatch):
 def test_record_recent_workspace_keeps_prior_repo_on_temp_target(tmp_path, monkeypatch):
     """The persisted "repo" key is the boot-restore workspace; a temp-dir open
     must not overwrite it (that resurrected phantom temp dirs on relaunch)."""
+    import os
+    import shutil
     import harness.server as srv
 
     fake_tmp = tmp_path / "faketmp"
     temp_repo = fake_tmp / "tmpxyz"
     temp_repo.mkdir(parents=True)
-    real_repo = tmp_path / "repo_a"
-    real_repo.mkdir()
+    # The "real" repo must live outside every temp tree: on macOS pytest's own
+    # tmp_path sits under /var/folders (the OS temp root), which the guard
+    # rightly classifies as ephemeral once PYTEST_CURRENT_TEST is removed.
+    real_repo = os.path.join(os.getcwd(), "pytest-real-repo-recents")
+    os.makedirs(real_repo, exist_ok=True)
 
     monkeypatch.setattr(srv, "_workspace_json_path", lambda: str(tmp_path / "workspace.json"))
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     import tempfile as _tempfile
     monkeypatch.setattr(_tempfile, "gettempdir", lambda: str(fake_tmp))
 
-    srv._record_recent_workspace(str(real_repo))
-    srv._record_recent_workspace(str(temp_repo))
+    try:
+        srv._record_recent_workspace(str(real_repo))
+        srv._record_recent_workspace(str(temp_repo))
 
-    data = json.loads((tmp_path / "workspace.json").read_text())
-    assert data["repo"] == str(real_repo)
-    assert str(temp_repo) not in data["recents"]
-    assert str(real_repo) in data["recents"]
+        data = json.loads((tmp_path / "workspace.json").read_text())
+        assert data["repo"] == str(real_repo)
+        assert str(temp_repo) not in data["recents"]
+        assert str(real_repo) in data["recents"]
+    finally:
+        shutil.rmtree(real_repo, ignore_errors=True)
 
 
 def test_clear_sessions_only_current_workspace(tmp_path):
