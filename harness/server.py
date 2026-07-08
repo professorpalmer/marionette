@@ -122,6 +122,43 @@ def _job_in_cost_window(created_at: Any) -> bool:
         return True
 
 
+def _active_session_total(session_job_ids, arts_getter, registry) -> Any:
+    """Lifetime running total for the ACTIVE chat session, surviving restarts.
+
+    The boot pill above resets to $0 on every relaunch/update (pilot meters are
+    per-process, swarm dollars are epoch-windowed), which loses the budgeting
+    trail. This figure instead combines:
+
+    * the session row's persisted meters (pilot spend + local-worker dollars,
+      accumulated turn-by-turn in harness_sessions.json), and
+    * dollars for every swarm-store job stamped with this session id, across
+      ALL app runs -- store-job dollars are deliberately kept OUT of the
+      persisted meters (see _add_worker_tokens_from_artifacts) so pricing them
+      here from artifacts x registry never double-bills.
+    """
+    sid = _sessions.active or ""
+    if not sid:
+        return None
+    row = next((s for s in _sessions.list() if s.get("id") == sid), None)
+    if row is None:
+        return None
+    swarm_cost = 0.0
+    for jid in session_job_ids:
+        try:
+            _tokens, cost = _job_swarm_accounting(arts_getter(jid), registry)
+            swarm_cost += cost
+        except Exception as e:
+            _diag("server.session_total_job", e, msg=f"job={jid}")
+    return {
+        "session_id": sid,
+        "est_cost_usd": round(
+            float(row.get("estimated_cost_usd") or 0.0) + swarm_cost, 6
+        ),
+        "input_tokens": int(row.get("input_tokens") or 0),
+        "output_tokens": int(row.get("output_tokens") or 0),
+    }
+
+
 def _sync_pilot_session_id() -> None:
     """Keep the pilot's savings-ledger session scope aligned with SessionStore."""
     try:
@@ -3641,28 +3678,44 @@ class Handler(BaseHTTPRequestHandler):
             est_session_cost = _session_cost_split(_pilot, price_in, price_out)
             _cache_savings_usd = _cache_savings(_t_cached, price_in)
             jobs_list = []
+            session_total = None
             try:
                 # Only jobs created during THIS app run: the swarm store
                 # persists across launches, so an unfiltered sum quietly billed
                 # the "session" for every job ever run in the state dir.
-                jobs = [j for j in _jobs_snapshot()
+                all_jobs = _jobs_snapshot()
+                jobs = [j for j in all_jobs
                         if _job_in_cost_window(j.get("created_at"))]
                 store = _session.state().store
                 registry = _swarm_registry()
                 jids = [j.get("id") for j in jobs if j.get("id")]
+                # Jobs stamped with the ACTIVE chat session, across ALL app
+                # runs -- the lifetime session total must survive restarts.
+                from .job_scoping import parse_job_session_id
+                active_sid = _sessions.active or ""
+                session_jids = [
+                    j.get("id") for j in all_jobs
+                    if j.get("id") and active_sid
+                    and parse_job_session_id(j.get("label"), []) == active_sid
+                ]
                 # Batch: one bulk artifact read regrouped by job_id, instead of
                 # one store.list_artifacts(jid) query PER job (the N+1).
+                fetch_jids = list(dict.fromkeys(jids + session_jids))
                 arts_by_job: dict = {}
                 try:
-                    for a in _retry_on_locked(lambda: store.list_artifacts_for_jobs(jids)):
+                    for a in _retry_on_locked(lambda: store.list_artifacts_for_jobs(fetch_jids)):
                         arts_by_job.setdefault(getattr(a, "job_id", None), []).append(a)
                 except Exception:
                     arts_by_job = None  # fall back to per-job reads
+
+                def _job_arts(jid):
+                    if arts_by_job is not None:
+                        return arts_by_job.get(jid, [])
+                    return store.list_artifacts(jid)
+
                 for jid in jids:
                     try:
-                        artifacts = (arts_by_job.get(jid, []) if arts_by_job is not None
-                                     else store.list_artifacts(jid))
-                        tokens, est_cost_usd = _job_swarm_accounting(artifacts, registry)
+                        tokens, est_cost_usd = _job_swarm_accounting(_job_arts(jid), registry)
                         jobs_list.append({
                             "job_id": jid,
                             "tokens": tokens,
@@ -3671,6 +3724,7 @@ class Handler(BaseHTTPRequestHandler):
                         })
                     except Exception as e:
                         _diag("server.usage_job_cost", e, msg=f"job={jid}")
+                session_total = _active_session_total(session_jids, _job_arts, registry)
             except Exception as e:
                 _diag("server.usage_jobs_aggregate", e)
             # Swarm store jobs: dollars come ONLY from here (usage artifacts x
@@ -3693,6 +3747,10 @@ class Handler(BaseHTTPRequestHandler):
                     "cache_savings_usd": round(_cache_savings_usd, 6),
                     **_tool_output_savings_fields(price_in),
                 },
+                # Lifetime running total for the active chat session
+                # (persisted meters + all-time session-stamped swarm jobs);
+                # unlike "session" above, it survives restarts and updates.
+                "session_total": session_total,
                 "jobs": jobs_list
             }
             return self._send(200, json.dumps(response_data))

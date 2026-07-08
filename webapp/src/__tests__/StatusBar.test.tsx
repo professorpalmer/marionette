@@ -93,4 +93,86 @@ describe("StatusBar usage pills", () => {
       expect(screen.getByText("~$0.05")).toBeInTheDocument();
     });
   });
+
+  it("shows the lifetime session total beside the boot-scoped figure", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 1500,
+        est_cost_usd: 0.05,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+      },
+      session_total: {
+        session_id: "abc123",
+        est_cost_usd: 3.174,
+        input_tokens: 900000,
+        output_tokens: 120000,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("~$0.05")).toBeInTheDocument();
+    });
+    expect(screen.getByText("session")).toBeInTheDocument();
+    expect(screen.getByText("~$3.17")).toBeInTheDocument();
+  });
+
+  it("shows the session total even when boot usage is still zero", async () => {
+    // The whole point: after a restart/update the boot meters are 0 but the
+    // persisted session total keeps the budgeting trail visible.
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 0,
+        est_cost_usd: 0,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+      },
+      session_total: {
+        session_id: "abc123",
+        est_cost_usd: 1.25,
+        input_tokens: 400000,
+        output_tokens: 60000,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("~$1.25")).toBeInTheDocument();
+    });
+    expect(screen.getByText("session")).toBeInTheDocument();
+    expect(screen.queryByText("~$0.00")).not.toBeInTheDocument();
+  });
+
+  it("hides the session total when it has not accrued any cost", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 1500,
+        est_cost_usd: 0.05,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+      },
+      session_total: {
+        session_id: "abc123",
+        est_cost_usd: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("~$0.05")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("session")).not.toBeInTheDocument();
+  });
 });

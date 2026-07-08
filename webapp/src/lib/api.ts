@@ -278,6 +278,14 @@ export type UsageData = {
       reasons?: string[];
     };
   };
+  // Lifetime running total for the active chat session (persisted across
+  // app restarts/updates, unlike `session` which is boot-scoped).
+  session_total?: {
+    session_id: string;
+    est_cost_usd: number;
+    input_tokens: number;
+    output_tokens: number;
+  } | null;
   jobs: {
     job_id: string;
     tokens: number;
