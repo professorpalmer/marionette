@@ -1,5 +1,5 @@
 // Typed harness API -- thin wrappers over the transport seam.
-import { getJSON, postJSON, deleteJSON, stream, withToken, uploadFile, type StreamEvent } from "./transport";
+import { getJSON, postJSON, stream, withToken, uploadFile, type StreamEvent } from "./transport";
 
 export type Config = {
   driver: string; reach: string; budget: number;
@@ -411,8 +411,10 @@ export const api = {
   getSwarmResults: () => getJSON<SwarmResultsResponse>(withToken("/api/session/swarm-results")),
   createSession: (title?: string) => postJSON<Session>("/api/sessions/create", { title }),
   switchSession: (id: string) => postJSON("/api/sessions/switch", { id }),
+  // POST rather than DELETE: the packaged Electron preload only bridges
+  // getJSON/postJSON, so a DELETE falls through to an unroutable fetch.
   deleteSession: (id: string) =>
-    deleteJSON<{ ok: boolean; active: string | null }>(withToken(`/api/sessions/${encodeURIComponent(id)}`)),
+    postJSON<{ ok: boolean; active: string | null }>("/api/sessions/delete", { id }),
   clearSessions: () =>
     postJSON<{ ok: boolean; deleted: number; active: string | null }>(withToken("/api/sessions/clear"), {}),
   archiveSession: (id: string, archived: boolean) => postJSON<{ ok: boolean }>("/api/sessions/archive", { session: id, archived }),

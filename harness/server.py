@@ -1557,6 +1557,15 @@ class Handler(BaseHTTPRequestHandler):
             job_id = (body.get("job_id") or "").strip()
             if not job_id:
                 return self._send(400, json.dumps({"ok": False, "error": "missing job_id"}))
+            # 0) Trip the in-process kill switch FIRST: inline agentic workers
+            # check it mid-stream (per chunk) and per turn, so the swarm stops in
+            # seconds instead of "cancelling..." until the workers run out of
+            # turns naturally.
+            try:
+                from puppetmaster.cancellation import request_cancel
+                request_cancel(job_id)
+            except Exception as e:
+                _diag("server.swarm_cancel_flag", e)
             # 1) Local provider-worker job on the live conversation.
             try:
                 if hasattr(_pilot, "cancel_local_job") and _pilot.cancel_local_job(job_id):

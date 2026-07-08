@@ -455,6 +455,11 @@ async function _startBackendOnce() {
     env: customEnv,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    // POSIX: own process group so quit can signal the WHOLE tree (backend +
+    // workers + codegraph node + wiki). Signalling just the backend pid orphans
+    // those children; survivors hold the SQLite lock and ports, and the next
+    // fast relaunch dies against them ("stuck until manual restart").
+    detached: process.platform !== "win32",
   });
 
   backend.on("error", (e) => _dbg(`spawn error: ${e.message}`));
@@ -1078,6 +1083,32 @@ app.whenReady().then(async () => {
   });
 });
 
+function killBackendTree(b) {
+  // Kill the backend AND its children (workers, codegraph node, wiki backend).
+  // Killing only the backend pid leaves orphans holding the SQLite lock and
+  // ports; a fast relaunch then spawns a backend that dies against them and the
+  // app sits "stuck" until a manual restart from Settings.
+  if (process.platform === "win32") {
+    // taskkill /T walks the child tree; TerminateProcess via b.kill() does not.
+    try {
+      require("node:child_process").spawnSync(
+        "taskkill", ["/pid", String(b.pid), "/T", "/F"],
+        { windowsHide: true, timeout: 5000 },
+      );
+    } catch {}
+    try { b.kill(); } catch {}
+    return;
+  }
+  // POSIX: the backend was spawned detached (own process group), so a negative
+  // pid signals the whole group.
+  try { process.kill(-b.pid, "SIGTERM"); } catch { try { b.kill("SIGTERM"); } catch {} }
+  try {
+    setTimeout(() => {
+      try { process.kill(-b.pid, "SIGKILL"); } catch { try { if (!b.killed) b.kill("SIGKILL"); } catch {} }
+    }, 800);
+  } catch {}
+}
+
 function cleanupBackend() {
   // Tear the backend down on a REAL quit so the next launch always starts a fresh
   // backend running the latest code. Two things matter for the "Cmd+Q then reopen
@@ -1085,18 +1116,14 @@ function cleanupBackend() {
   //   1. Remove the marker FIRST -- startBackend adopts any healthy backend it
   //      finds on the marker port, so a lingering survivor would be reused (old
   //      code). No marker => reopen can only spawn fresh.
-  //   2. SIGTERM, then SIGKILL after a short grace, so a backend that is slow to
-  //      exit (mid tool call / draining) can never survive into the next session.
+  //   2. Kill the whole process tree (see killBackendTree), so a backend that is
+  //      slow to exit (mid tool call / draining) can never survive into the next
+  //      session and strand the relaunch.
   unlinkMarker();
   if (backend) {
     const b = backend;
     backend = null;
-    try { b.kill("SIGTERM"); } catch {}
-    // Escalate if it hasn't exited promptly. On quit the event loop is tearing
-    // down, so keep the grace short; the SIGKILL is a safety net, not the norm.
-    try {
-      setTimeout(() => { try { if (!b.killed) b.kill("SIGKILL"); } catch {} }, 800);
-    } catch {}
+    killBackendTree(b);
   }
 }
 app.on("window-all-closed", () => {
@@ -1110,4 +1137,16 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
-app.on("before-quit", () => { quitting = true; cleanupBackend(); cleanupVite(); });
+let quitFinalized = false;
+app.on("before-quit", (e) => {
+  quitting = true;
+  if (quitFinalized) return;
+  // Hold the quit open just long enough for the SIGTERM->SIGKILL grace timer to
+  // run. Without this the event loop tears down at ~0ms, the escalation never
+  // fires, and a slow-to-exit backend survives into the next launch -- the
+  // "closed fast, now it's stuck until manual restart" failure.
+  e.preventDefault();
+  cleanupBackend();
+  cleanupVite();
+  setTimeout(() => { quitFinalized = true; app.quit(); }, 1000);
+});

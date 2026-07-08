@@ -81,6 +81,13 @@ def cwd_under_repo(cwd: str, repo_root: str) -> bool:
         return False
 
 
+_RUNNING_STATUSES = frozenset({"running", "in_progress", "pending", "started"})
+
+
+def job_is_running(status: Any) -> bool:
+    return str(status or "").strip().lower() in _RUNNING_STATUSES
+
+
 def job_visible_for_view(
     *,
     session_id: str,
@@ -88,12 +95,17 @@ def job_visible_for_view(
     tasks: list,
     active_session_id: str,
     repo_root: str,
+    status: Any = None,
 ) -> bool:
     """Filter rule for /api/jobs and /api/swarm/live.
 
     Visible when the stamped session matches the active session, OR the job is
     an unstamped legacy row whose task cwd lies under the current workspace.
+    A RUNNING job is always visible: live work must never be scoped out of the
+    tracker (a stale/missing stamp or a self-checkout cwd otherwise hides it).
     """
+    if job_is_running(status):
+        return True
     stamped = parse_job_session_id(label, tasks)
     if stamped:
         return stamped == (active_session_id or "")
@@ -173,6 +185,7 @@ def filter_store_jobs(
             tasks=tasks,
             active_session_id=active_session_id,
             repo_root=repo_root,
+            status=job.get("status"),
         ):
             row = dict(job)
             if label is not None:
@@ -185,10 +198,12 @@ def filter_local_jobs(local_jobs: list[dict], *, active_session_id: str, repo_ro
     """Apply the same visibility rule to in-process ``local-*`` worker rows."""
     visible: list[dict] = []
     for job in local_jobs or []:
+        if job_is_running(job.get("status")):
+            visible.append(job)
+            continue
         label = job.get("label")
         session_id = job.get("session_id") or parse_job_session_id(label, [])
         cwd = (job.get("cwd") or "").strip()
-        tasks = job.get("tasks") or []
         if session_id:
             if session_id == (active_session_id or ""):
                 visible.append(job)

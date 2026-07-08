@@ -48,12 +48,21 @@ def _core_always() -> Set[str]:
     return core
 
 # Main interactive pilot extras that stay visible without activation.
+# The moat tools (delegation verbs, CodeGraph, wiki) MUST be here: the swarm
+# gate blocks broad-intent turns until run_swarm/run_implement/run_parallel is
+# dispatched, so hiding those verbs behind search_tools activation deadlocks
+# the pilot into suppression loops -- and every model, regardless of tool-use
+# quality, should see the durable-orchestration surface out of the gate.
 _PILOT_EXTRAS: Set[str] = {
     "search_codegraph",
     "search_files",
     "memory",
     "open_project",
     "route_task",
+    "run_swarm",
+    "run_implement",
+    "run_parallel",
+    "query_wiki",
 }
 
 # Worker leaf extras (no delegation tools).

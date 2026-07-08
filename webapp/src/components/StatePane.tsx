@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { api, type CodegraphStatus, type WikiGraphData } from "../lib/api";
-import { panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
+import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
 export default function StatePane({ artifacts }: {
@@ -10,12 +10,17 @@ export default function StatePane({ artifacts }: {
 }) {
   // CodeGraph status state
   const [reindexing, setReindexing] = useState(false);
-  const [projectRoot, setProjectRoot] = useState("");
+  // Seed from the last announced root: a pane instance that mounts AFTER the
+  // harness-project-selected event (tab switch, second window) would otherwise
+  // stay rootless forever and render "CODEGRAPH none / WIKI off" while its
+  // sibling shows live data.
+  const [projectRoot, setProjectRoot] = useState(lastSelectedProjectRoot);
   const projectSwitching = useProjectSwitching();
 
   const {
     data: cg,
     isValidating: cgValidating,
+    isTransitioning: cgTransitioning,
     isShowingStale: cgStale,
     revalidate: revalidateCg,
   } = useStaleWhileRevalidate<CodegraphStatus>(
@@ -27,6 +32,7 @@ export default function StatePane({ artifacts }: {
   const {
     data: wiki,
     isValidating: wikiValidating,
+    isTransitioning: wikiTransitioning,
     isShowingStale: wikiStale,
     revalidate: revalidateWiki,
   } = useStaleWhileRevalidate<WikiGraphData>(
@@ -219,7 +225,7 @@ export default function StatePane({ artifacts }: {
   const wikiWord = wikiOk ? "connected" : wikiErr ? "error" : "off";
   const wikiMetric = wikiOk ? `${(wiki?.nodes || []).length} pages` : "";
 
-  const statusDimmed = projectSwitching || cgValidating || wikiValidating;
+  const statusDimmed = projectSwitching || cgTransitioning || wikiTransitioning;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">

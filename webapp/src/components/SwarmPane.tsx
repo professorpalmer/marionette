@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X } from "lucide-react";
 import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
-import { panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
+import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
 // A clean, self-contained hover tooltip. The native `title=` tooltip renders as a
@@ -251,7 +251,9 @@ function WorkerProgress({ tasks }: { tasks: Task[] }) {
 }
 
 export default function SwarmPane() {
-  const [selectedProjectRoot, setSelectedProjectRoot] = useState("");
+  // Seeded so an instance mounting after the project-selected event scopes
+  // to the same repo as its siblings instead of the unscoped default view.
+  const [selectedProjectRoot, setSelectedProjectRoot] = useState(lastSelectedProjectRoot);
   const projectSwitching = useProjectSwitching();
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
   const [expandedAlts, setExpandedAlts] = useState<Record<string, boolean>>({});
@@ -286,6 +288,7 @@ export default function SwarmPane() {
   const {
     data,
     isValidating,
+    isTransitioning,
     isShowingStale,
     mutate,
   } = useStaleWhileRevalidate<SwarmLive | null>(
@@ -781,7 +784,9 @@ export default function SwarmPane() {
     );
   };
 
-  const panelDimmed = projectSwitching || isValidating;
+  // Dim only on genuine transitions -- dimming every ~2.5s poll cycle made the
+  // whole pane visibly "blink" while a swarm ran.
+  const panelDimmed = projectSwitching || isTransitioning;
 
   return (
     <div className={`flex flex-col h-full overflow-hidden bg-panel ${panelOpacityClass(panelDimmed, isShowingStale)}`}>
@@ -791,7 +796,7 @@ export default function SwarmPane() {
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
           <Network size={11} className="text-faint/70" />
           <span>Swarm Tracker</span>
-          {isValidating && <Loader2 size={10} className="animate-spin text-muted shrink-0" />}
+          {isTransitioning && <Loader2 size={10} className="animate-spin text-muted shrink-0" />}
           {visibleJobs.length > 0 && <span className="text-faint/60 normal-case tracking-normal">({visibleJobs.length})</span>}
         </div>
         <div className="flex items-center gap-2.5 text-[10px]">

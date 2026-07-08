@@ -110,6 +110,39 @@ def test_stamped_job_visible_only_for_matching_session():
     )
 
 
+def test_running_job_always_visible_regardless_of_scope():
+    # Live work must never be scoped out of the tracker: a running swarm whose
+    # stamp or cwd mismatches the view (e.g. auditing the self-checkout from a
+    # different project) still shows while it runs.
+    label = job_label_for_session("sess-a")
+    tasks = [SimpleNamespace(payload={"cwd": "/somewhere/else", "session_id": "sess-a"})]
+    assert job_visible_for_view(
+        session_id="sess-a",
+        label=label,
+        tasks=tasks,
+        active_session_id="sess-b",
+        repo_root="/work/b",
+        status="running",
+    )
+    assert not job_visible_for_view(
+        session_id="sess-a",
+        label=label,
+        tasks=tasks,
+        active_session_id="sess-b",
+        repo_root="/work/b",
+        status="complete",
+    )
+
+
+def test_running_local_job_always_visible():
+    rows = [
+        {"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/elsewhere"},
+        {"id": "local-2", "status": "complete", "session_id": "sess-a", "cwd": "/elsewhere"},
+    ]
+    visible = filter_local_jobs(rows, active_session_id="sess-b", repo_root="/work/b")
+    assert [j["id"] for j in visible] == ["local-1"]
+
+
 def test_filter_store_jobs_two_sessions_two_repos(tmp_path):
     repo_a = tmp_path / "repo-a"
     repo_b = tmp_path / "repo-b"

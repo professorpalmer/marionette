@@ -10,6 +10,13 @@ export interface UseSWRResult<T> {
   isValidating: boolean;
   /** Displayed data belongs to a previous cache key (kept visible while revalidating). */
   isShowingStale: boolean;
+  /**
+   * True only while the view genuinely lacks current data: first load for a key,
+   * or a key change still showing the previous key's data. Background
+   * revalidations of already-current data are NOT transitions -- use this (not
+   * isValidating) to drive dim/fade effects, or every poll cycle flickers.
+   */
+  isTransitioning: boolean;
   error: unknown;
   revalidate: () => Promise<T | undefined>;
   mutate: (value: T | undefined) => void;
@@ -35,6 +42,7 @@ export function useStaleWhileRevalidate<T>(
   const [displayKey, setDisplayKey] = useState(keyStr);
   const [isValidating, setIsValidating] = useState(false);
   const [error, setError] = useState<unknown>(undefined);
+  const hasEverLoadedKey = displayKey === keyStr && data !== undefined;
 
   const requestIdRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -98,8 +106,9 @@ export function useStaleWhileRevalidate<T>(
   }, [keyStr, enabled, revalidate]);
 
   const isShowingStale = !!data && displayKey !== keyStr && keyStr !== "";
+  const isTransitioning = isValidating && !hasEverLoadedKey;
 
-  return { data, isValidating, isShowingStale, error, revalidate, mutate };
+  return { data, isValidating, isShowingStale, isTransitioning, error, revalidate, mutate };
 }
 
 /** Read cached data for a key without subscribing (used for per-project session counts). */

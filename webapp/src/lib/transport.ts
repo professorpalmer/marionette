@@ -45,15 +45,9 @@ export async function postJSON<T = any>(path: string, body: any): Promise<T> {
   return r.json();
 }
 
-export async function deleteJSON<T = any>(path: string): Promise<T> {
-  if (ipc?.deleteJSON) return ipc.deleteJSON(path);
-  const r = await fetch(path, {
-    method: "DELETE",
-    headers: { "X-Harness-Token": authToken() },
-  });
-  if (!r.ok) throw new Error(`${path} -> ${r.status}`);
-  return r.json();
-}
+// NOTE: no deleteJSON here on purpose. The Electron preload bridge only routes
+// GET/POST; a DELETE silently falls through to fetch, which cannot reach the
+// backend in the desktop app. Deletion endpoints are POST verbs instead.
 
 // Stream server-sent events. Returns a cancel() function. In Electron this maps
 // to an IPC event channel; on the web it's EventSource.

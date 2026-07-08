@@ -14,6 +14,19 @@ export function dispatchProjectSwitching(switching: boolean): void {
   );
 }
 
+const PROJECT_ROOT_KEY = "pmharness.lastProjectRoot";
+
+/** Announce the selected project root and remember it for late-mounting panes. */
+export function dispatchProjectSelected(root: string): void {
+  try { localStorage.setItem(PROJECT_ROOT_KEY, root); } catch { /* storage full */ }
+  window.dispatchEvent(new CustomEvent("harness-project-selected", { detail: root }));
+}
+
+/** Last announced project root -- panes that mount after the event use this seed. */
+export function lastSelectedProjectRoot(): string {
+  try { return localStorage.getItem(PROJECT_ROOT_KEY) || ""; } catch { return ""; }
+}
+
 /** Subscribe to coordinated project-switch transitions from LeftRail. */
 export function useProjectSwitching(): boolean {
   const [switching, setSwitching] = useState(false);

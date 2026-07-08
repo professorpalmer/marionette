@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, XCircle, Trash2 } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job, type Artifact } from "../lib/api";
 import { pickFolder } from "../lib/transport";
-import { dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
+import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { readSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
@@ -126,6 +126,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const {
     data: workspaceInfo,
     isValidating: workspaceValidating,
+    isTransitioning: workspaceTransitioning,
     isShowingStale: workspaceStale,
     revalidate: revalidateWorkspace,
     mutate: mutateWorkspace,
@@ -146,6 +147,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const {
     data: sessions = [],
     isValidating: sessionsValidating,
+    isTransitioning: sessionsTransitioning,
     isShowingStale: sessionsStale,
     revalidate: revalidateSessions,
   } = useStaleWhileRevalidate<Session[]>(
@@ -160,6 +162,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const {
     data: jobs = [],
     isValidating: jobsValidating,
+    isTransitioning: jobsTransitioning,
     isShowingStale: jobsStale,
     revalidate: revalidateJobs,
   } = useStaleWhileRevalidate<Job[]>(
@@ -168,8 +171,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     { enabled: !!selectedProjectPath },
   );
 
+  // Dim only on real transitions (key change / first load), never on background
+  // polls of already-current data -- polling dims read as UI "blinking".
   const panelSwitching =
-    opening || workspaceValidating || sessionsValidating || jobsValidating;
+    opening || workspaceTransitioning || sessionsTransitioning || jobsTransitioning;
 
   useEffect(() => {
     dispatchProjectSwitching(panelSwitching);
@@ -376,13 +381,13 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   useEffect(() => {
     if (currentRepo) {
       setSelectedProjectPath(currentRepo);
-      window.dispatchEvent(new CustomEvent("harness-project-selected", { detail: currentRepo }));
+      dispatchProjectSelected(currentRepo);
     }
   }, [currentRepo]);
 
   const selectProject = (projectPath: string) => {
     setSelectedProjectPath(projectPath);
-    window.dispatchEvent(new CustomEvent("harness-project-selected", { detail: projectPath }));
+    dispatchProjectSelected(projectPath);
   };
 
   useEffect(() => { void revalidateJobs(); }, [jobsRefresh, revalidateJobs]);
