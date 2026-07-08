@@ -52,6 +52,13 @@ from .tool_dispatch import (
     _strip_ansi,
     is_safe_path,
 )
+from .pilot_guards import (
+    guards_active,
+    check_pilot_guards,
+    new_turn_guard_state,
+    record_action_execution,
+)
+from .diag import note as _diag_note
 
 
 _WORKER_IMPORTS_WARMED = False
@@ -2898,13 +2905,25 @@ class ConversationalSession(ToolDispatchMixin):
 
             # 4. Execute each action as a collapsible tool-call.
             READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "search_files", "web_search", "web_fetch", "read_pdf", "view_image", "lsp"}
+            guard_state = new_turn_guard_state()
+            guard_suppressed: dict[int, Any] = {}
+            guard_recorded_indices: set[int] = set()
             prefetch = {}
             read_actions_with_idx = []
+            prefetch_targets = []
             for idx, act in enumerate(turn.actions):
                 if act.kind in READ_ONLY_KINDS:
                     read_actions_with_idx.append((idx, act))
+                    if guards_active():
+                        guard_verdict = check_pilot_guards(guard_state, act.kind, act)
+                        if guard_verdict.suppress:
+                            guard_suppressed[idx] = guard_verdict
+                            continue
+                        record_action_execution(guard_state, act.kind, act)
+                        guard_recorded_indices.add(idx)
+                    prefetch_targets.append((idx, act))
 
-            if len(read_actions_with_idx) >= 2 and not self._cancel.is_set():
+            if len(prefetch_targets) >= 2 and not self._cancel.is_set():
                 from concurrent.futures import ThreadPoolExecutor
                 
                 def run_prefetch(idx_and_act):
@@ -2930,9 +2949,9 @@ class ConversationalSession(ToolDispatchMixin):
                         return idx, (False, "exception", str(exc))
                     return idx, (False, "exception", f"Unknown prefetch kind {act.kind}")
 
-                max_workers = min(8, len(read_actions_with_idx))
+                max_workers = min(8, len(prefetch_targets))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    results = executor.map(run_prefetch, read_actions_with_idx)
+                    results = executor.map(run_prefetch, prefetch_targets)
                     for idx, res in results:
                         prefetch[idx] = res
 
@@ -3027,6 +3046,28 @@ class ConversationalSession(ToolDispatchMixin):
                     })
                     self._append_action_result(act, aid, err_msg, is_native)
                     continue
+
+                if guards_active():
+                    if idx in guard_suppressed:
+                        guard_verdict = guard_suppressed[idx]
+                        _diag_note(
+                            "pilot_guards",
+                            msg=f"{guard_verdict.reason} suppressed {act.kind}: {guard_verdict.message[:200]}",
+                        )
+                        yield ConvEvent("action_result", {"id": aid, "error": guard_verdict.message})
+                        self._append_action_result(act, aid, guard_verdict.message, is_native)
+                        continue
+                    if idx not in guard_recorded_indices:
+                        guard_verdict = check_pilot_guards(guard_state, act.kind, act)
+                        if guard_verdict.suppress:
+                            _diag_note(
+                                "pilot_guards",
+                                msg=f"{guard_verdict.reason} suppressed {act.kind}: {guard_verdict.message[:200]}",
+                            )
+                            yield ConvEvent("action_result", {"id": aid, "error": guard_verdict.message})
+                            self._append_action_result(act, aid, guard_verdict.message, is_native)
+                            continue
+                        record_action_execution(guard_state, act.kind, act)
 
                 # ---- open_project branch --------------------------------------
                 if act.kind == "open_project":
