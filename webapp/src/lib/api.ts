@@ -507,8 +507,22 @@ export const api = {
   toggleModel: (spec: string, enabled: boolean) => postJSON<{ ok: boolean; enabled: string[] }>("/api/models/toggle", { spec, enabled }),
   setEnabledModels: (enabled: string[]) => postJSON<{ ok: boolean; enabled: string[] }>("/api/models/set", { enabled }),
   rules: () => getJSON<any[]>("/api/rules"),
+  ruleAdd: (text: string, scope?: string) =>
+    postJSON<{ ok: boolean; slug: string; text: string; scope: string; state: string; source: string }>(
+      "/api/rules/add", { text, scope: scope || "global" }),
+  ruleUpdate: (slug: string, patch: { text?: string; scope?: string }) =>
+    postJSON<{ ok: boolean; slug: string; text: string; scope: string; state: string }>(
+      "/api/rules/update", { slug, ...patch }),
+  ruleRemove: (slug: string) => postJSON<{ ok: boolean }>("/api/rules/remove", { slug }),
   ruleApprove: (slug: string) => postJSON<{ ok: boolean }>("/api/rules/approve", { slug }),
   ruleReject: (slug: string) => postJSON<{ ok: boolean }>("/api/rules/reject", { slug }),
+  skillAdd: (name: string, description: string, body: string) =>
+    postJSON<{ ok: boolean; slug: string; name: string; state: string; source: string }>(
+      "/api/skills/add", { name, description, body }),
+  skillUpdate: (slug: string, patch: { name?: string; description?: string; body?: string }) =>
+    postJSON<{ ok: boolean; slug: string; name: string; description: string; state: string }>(
+      "/api/skills/update", { slug, ...patch }),
+  skillRemove: (slug: string) => postJSON<{ ok: boolean }>("/api/skills/remove", { slug }),
   skillApprove: (slug: string) => postJSON<{ ok: boolean }>("/api/skills/approve", { slug }),
   skillReject: (slug: string) => postJSON<{ ok: boolean }>("/api/skills/reject", { slug }),
   memory: () => getJSON<{ memory: { id: string; text: string; category: string; created_at: number; source: string }[]; total_chars: number; limit: number }>("/api/memory"),

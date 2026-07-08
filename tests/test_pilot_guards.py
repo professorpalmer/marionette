@@ -12,21 +12,25 @@ from harness.pilot_guards import (
     LOOP_REPEAT_CAP,
     SWARM_GATE_READ_ALLOWANCE,
     TurnGuardState,
+    check_cli_redirect,
     check_delegate_gate,
     check_iteration_budget,
     check_loop_guard,
     check_pilot_guards,
     check_swarm_gate,
+    cli_redirect_enabled,
     delegate_gate_enabled,
     guards_active,
     is_broad_intent_user_message,
     is_exploration_command,
     is_native_exploration,
+    is_puppetmaster_cli_command,
     is_swarm_gate_blocked_exploration,
     iteration_budget_enabled,
     loop_guard_enabled,
     new_turn_guard_state,
     normalize_action_args,
+    puppetmaster_cli_native_mapping,
     record_action_execution,
     swarm_gate_enabled,
     turn_tool_budget_cap,
@@ -208,11 +212,13 @@ def test_guards_active_reflects_either_switch(monkeypatch):
     monkeypatch.setenv("HARNESS_DELEGATE_GATE", "1")
     monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
     monkeypatch.setenv("HARNESS_PILOT_TOOL_BUDGET", "25")
+    monkeypatch.setenv("HARNESS_CLI_REDIRECT", "1")
     assert guards_active() is True
     monkeypatch.setenv("HARNESS_LOOP_GUARD", "0")
     monkeypatch.setenv("HARNESS_DELEGATE_GATE", "0")
     monkeypatch.setenv("HARNESS_SWARM_GATE", "0")
     monkeypatch.setenv("HARNESS_PILOT_TOOL_BUDGET", "0")
+    monkeypatch.setenv("HARNESS_CLI_REDIRECT", "0")
     assert guards_active() is False
 
 
@@ -392,3 +398,118 @@ def test_session_suppresses_duplicate_read(monkeypatch, tmp_path):
     events = list(session.send("go"))
     results = [e.data.get("error", "") for e in events if e.kind == "action_result"]
     assert any("SUPPRESSED" in (r or "") for r in results)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m puppetmaster swarm --goal map auth",
+        "puppetmaster cursor --implement",
+        "puppetmaster.exe status",
+        "python -m puppetmaster route --instruction plan refactor",
+    ],
+)
+def test_puppetmaster_cli_detection_positives(command):
+    assert is_puppetmaster_cli_command(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m pytest -q",
+        "npm run build",
+        "echo hello",
+        "git status",
+    ],
+)
+def test_puppetmaster_cli_detection_negatives(command):
+    assert is_puppetmaster_cli_command(command) is False
+
+
+@pytest.mark.parametrize(
+    "command,expected_kind,expected_fragment",
+    [
+        (
+            "python -m puppetmaster swarm --goal map auth",
+            "run_swarm",
+            'goal="...", roles=["explore","pipeline-mapper"]',
+        ),
+        (
+            "puppetmaster cursor --implement",
+            "run_implement",
+            'goal="..."',
+        ),
+        (
+            "puppetmaster.exe status",
+            "action_result",
+            "prior run_swarm action_result",
+        ),
+        (
+            "python -m puppetmaster route --instruction plan",
+            "route_task",
+            'instruction="..."',
+        ),
+    ],
+)
+def test_cli_redirect_mapping(command, expected_kind, expected_fragment):
+    native_kind, example = puppetmaster_cli_native_mapping(command)
+    assert native_kind == expected_kind
+    verdict = check_cli_redirect(new_turn_guard_state(), "run_command", _Act(command=command))
+    assert verdict.suppress is True
+    assert verdict.reason == "cli_redirect"
+    assert expected_kind in verdict.message or expected_fragment in verdict.message
+    assert expected_fragment in verdict.message or expected_fragment in example
+
+
+def test_cli_redirect_kill_switch(monkeypatch):
+    monkeypatch.setenv("HARNESS_CLI_REDIRECT", "0")
+    assert cli_redirect_enabled() is False
+    act = _Act(kind="run_command", command="python -m puppetmaster swarm")
+    verdict = check_cli_redirect(new_turn_guard_state(), "run_command", act)
+    assert verdict.suppress is False
+
+
+def test_cli_redirect_before_swarm_gate_on_broad_turn():
+    state = new_turn_guard_state("Give me an audit of this directory")
+    act = _Act(kind="run_command", command="python -m puppetmaster swarm --goal map")
+    verdict = check_pilot_guards(state, "run_command", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "cli_redirect"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo hello",
+        "ls",
+        "ls -1",
+        "dir",
+    ],
+)
+def test_echo_and_dir_probes_count_as_exploration(command):
+    assert is_exploration_command(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo hello",
+        "ls -1",
+        "dir",
+    ],
+)
+def test_swarm_gate_blocks_echo_and_dir_probes_on_broad_turn(command):
+    state = new_turn_guard_state("Give me an audit of this directory")
+    act = _Act(kind="run_command", command=command)
+    assert is_swarm_gate_blocked_exploration(state, "run_command", act) is True
+    verdict = check_swarm_gate(state, "run_command", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "swarm_gate"
+
+
+def test_echo_not_blocked_on_narrow_turn():
+    state = new_turn_guard_state("Where is TurnGuardState defined?")
+    act = _Act(kind="run_command", command="echo hello")
+    assert is_swarm_gate_blocked_exploration(state, "run_command", act) is False
+    verdict = check_swarm_gate(state, "run_command", act)
+    assert verdict.suppress is False

@@ -12,7 +12,8 @@ Per-turn guards wired before native tool dispatch:
 4. ITERATION BUDGET — hard cap on total tool calls per pilot turn.
 
 Disable via HARNESS_LOOP_GUARD=0 / HARNESS_SWARM_GATE=0 / HARNESS_DELEGATE_GATE=0 /
-HARNESS_PILOT_TOOL_BUDGET=0 (or numeric HARNESS_TURN_BUDGET >= 2 for cap override).
+HARNESS_PILOT_TOOL_BUDGET=0 / HARNESS_CLI_REDIRECT=0 (or numeric HARNESS_TURN_BUDGET >= 2
+for cap override).
 """
 
 import json
@@ -65,6 +66,30 @@ _EXPLORATION_CMD_RE = re.compile(
     re.IGNORECASE,
 )
 
+_BARE_DIR_PROBE_RE = re.compile(
+    r"^(?:ls(?:\s+-1)?|dir)\s*$",
+    re.IGNORECASE,
+)
+
+_ECHO_PROBE_RE = re.compile(
+    r"^echo\b",
+    re.IGNORECASE,
+)
+
+_PUPPETMASTER_CLI_RE = re.compile(
+    r"(?:^|[\s;&|])"
+    r"(?:python(?:\d+(?:\.\d+)*)?\s+-m\s+puppetmaster|puppetmaster(?:\.exe)?)"
+    r"(?:\s+"
+    r"(swarm|analysis|cursor|agentic|implement|edit|status|artifacts|route|should-delegate)"
+    r")?\b",
+    re.IGNORECASE,
+)
+
+_CLI_SWARM_SUBCMDS = frozenset({"swarm", "analysis"})
+_CLI_IMPLEMENT_SUBCMDS = frozenset({"implement", "edit", "cursor", "agentic"})
+_CLI_ROUTE_SUBCMDS = frozenset({"route", "should-delegate"})
+_CLI_STATUS_SUBCMDS = frozenset({"status", "artifacts"})
+
 _BROAD_INTENT_RE = re.compile(
     r"(?:"
     r"\baudit\b|"
@@ -115,6 +140,12 @@ def delegate_gate_enabled() -> bool:
     )
 
 
+def cli_redirect_enabled() -> bool:
+    return os.environ.get("HARNESS_CLI_REDIRECT", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
 def iteration_budget_enabled() -> bool:
     return turn_tool_budget_cap() > 0
 
@@ -140,6 +171,7 @@ def guards_active() -> bool:
         or swarm_gate_enabled()
         or delegate_gate_enabled()
         or iteration_budget_enabled()
+        or cli_redirect_enabled()
     )
 
 
@@ -277,7 +309,59 @@ def is_exploration_command(command: str) -> bool:
     cmd = _norm_whitespace(command)
     if not cmd:
         return False
+    if _BARE_DIR_PROBE_RE.match(cmd):
+        return True
+    if _ECHO_PROBE_RE.match(cmd):
+        return True
     return bool(_EXPLORATION_CMD_RE.search(cmd))
+
+
+def is_puppetmaster_cli_command(command: str) -> bool:
+    cmd = _norm_whitespace(command)
+    if not cmd:
+        return False
+    return bool(_PUPPETMASTER_CLI_RE.search(cmd))
+
+
+def _extract_puppetmaster_subcommand(command: str) -> str:
+    cmd = _norm_whitespace(command)
+    match = _PUPPETMASTER_CLI_RE.search(cmd)
+    if not match:
+        return ""
+    subcmd = (match.group(1) or "").strip().lower()
+    return subcmd
+
+
+def puppetmaster_cli_native_mapping(command: str) -> tuple[str, str]:
+    """Return (native_kind, one-line example) for a Puppetmaster CLI command."""
+    subcmd = _extract_puppetmaster_subcommand(command)
+    if subcmd in _CLI_SWARM_SUBCMDS or not subcmd:
+        return (
+            "run_swarm",
+            'goal="...", roles=["explore","pipeline-mapper"]',
+        )
+    if subcmd in _CLI_IMPLEMENT_SUBCMDS:
+        return ("run_implement", 'goal="..."')
+    if subcmd in _CLI_ROUTE_SUBCMDS:
+        return ("route_task", 'instruction="..."')
+    if subcmd in _CLI_STATUS_SUBCMDS:
+        return ("action_result", "use prior run_swarm action_result records")
+    return (
+        "run_swarm",
+        'goal="...", roles=["explore","pipeline-mapper"]',
+    )
+
+
+def _cli_redirect_message(native_kind: str, example: str) -> str:
+    if native_kind == "action_result":
+        return (
+            "(REDIRECT: Puppetmaster CLI status/artifacts are already in prior "
+            "run_swarm action_result records — read those instead of run_command.)"
+        )
+    return (
+        f"(REDIRECT: use native {native_kind} instead of Puppetmaster CLI. "
+        f"Example: {native_kind}({example}))"
+    )
 
 
 def is_native_exploration(kind: str, act: Any) -> bool:
@@ -337,6 +421,25 @@ def _iteration_budget_suppress_message(cap: int) -> str:
         f"(SUPPRESSED: per-turn tool-call budget exhausted ({cap}/{cap} calls used). "
         f"Summarize findings for the user and/or dispatch background workers "
         f"(run_swarm/run_implement/run_parallel) instead of more inline tool calls.)"
+    )
+
+
+def check_cli_redirect(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
+    del state
+    if not cli_redirect_enabled():
+        return GuardVerdict(False)
+    if kind != "run_command":
+        return GuardVerdict(False)
+
+    command = getattr(act, "command", "") or ""
+    if not is_puppetmaster_cli_command(command):
+        return GuardVerdict(False)
+
+    native_kind, example = puppetmaster_cli_native_mapping(command)
+    return GuardVerdict(
+        suppress=True,
+        reason="cli_redirect",
+        message=_cli_redirect_message(native_kind, example),
     )
 
 
@@ -408,7 +511,11 @@ def check_iteration_budget(state: TurnGuardState, kind: str, act: Any) -> GuardV
 
 
 def check_pilot_guards(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
-    """Apply loop breaker, swarm gate, delegate gate, then iteration budget."""
+    """Apply CLI redirect, loop breaker, swarm gate, delegate gate, then budget."""
+    cli_verdict = check_cli_redirect(state, kind, act)
+    if cli_verdict.suppress:
+        return cli_verdict
+
     loop_verdict = check_loop_guard(state, kind, act)
     if loop_verdict.suppress:
         return loop_verdict

@@ -55,6 +55,8 @@ from .tool_dispatch import (
 from .pilot_guards import (
     guards_active,
     check_pilot_guards,
+    check_cli_redirect,
+    cli_redirect_enabled,
     new_turn_guard_state,
     record_action_execution,
 )
@@ -3046,6 +3048,19 @@ class ConversationalSession(ToolDispatchMixin):
                     })
                     self._append_action_result(act, aid, err_msg, is_native)
                     continue
+
+                # Kernel-force native Puppetmaster verbs: CLI redirect runs every turn
+                # (independent of broad-intent gate and other guard kill switches).
+                if act.kind == "run_command" and cli_redirect_enabled():
+                    cli_verdict = check_cli_redirect(guard_state, act.kind, act)
+                    if cli_verdict.suppress:
+                        _diag_note(
+                            "pilot_guards",
+                            msg=f"{cli_verdict.reason} suppressed {act.kind}: {cli_verdict.message[:200]}",
+                        )
+                        yield ConvEvent("action_result", {"id": aid, "error": cli_verdict.message})
+                        self._append_action_result(act, aid, cli_verdict.message, is_native)
+                        continue
 
                 if guards_active():
                     if idx in guard_suppressed:

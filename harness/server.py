@@ -1481,7 +1481,9 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/wiki/ingest-prepared",
                       "/api/models/toggle", "/api/models/set",
                       "/api/skills/reject", "/api/skills/archive",
+                      "/api/skills/add", "/api/skills/update", "/api/skills/remove",
                       "/api/rules/approve", "/api/rules/reject",
+                      "/api/rules/add", "/api/rules/update", "/api/rules/remove",
                       "/api/memory/add", "/api/memory/remove",
                       "/api/settings", "/api/providers/probe", "/api/providers/key", "/api/wiki/config",
                       "/api/platform", "/api/reviews/apply", "/api/reviews/dismiss",
@@ -1950,6 +1952,48 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/skills/approve":
             sk = _skills.set_state(body.get("slug", ""), "active")
             return self._send(200, json.dumps({"ok": bool(sk)}))
+        if path == "/api/skills/add":
+            name = (body.get("name") or "").strip()
+            if not name:
+                return self._send(400, json.dumps({"error": "name is required"}))
+            from .skill_store import Skill
+            sk = Skill(
+                name=name,
+                description=(body.get("description") or "").strip(),
+                body=(body.get("body") or "").strip(),
+                state="active",
+                source="manual",
+            )
+            _skills.save(sk)
+            return self._send(200, json.dumps({
+                "ok": True,
+                "slug": sk.slug,
+                "name": sk.name,
+                "state": sk.state,
+                "source": sk.source,
+            }))
+        if path == "/api/skills/update":
+            slug = (body.get("slug") or "").strip()
+            if not slug:
+                return self._send(400, json.dumps({"error": "slug is required"}))
+            sk = _skills.update(
+                slug,
+                name=body.get("name"),
+                description=body.get("description"),
+                body=body.get("body"),
+            )
+            if not sk:
+                return self._send(404, json.dumps({"error": "skill not found"}))
+            return self._send(200, json.dumps({
+                "ok": True,
+                "slug": sk.slug,
+                "name": sk.name,
+                "description": sk.description,
+                "state": sk.state,
+            }))
+        if path == "/api/skills/remove":
+            ok = _skills.remove(body.get("slug", ""))
+            return self._send(200, json.dumps({"ok": ok}))
         if path == "/api/skills/reject":
             _skills.set_state(body.get("slug", ""), "archived")
             return self._send(200, json.dumps({"ok": True}))
@@ -1958,6 +2002,43 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({"ok": True}))
         if path == "/api/rules/approve":
             ok = _rules.set_state(body.get("slug", ""), "active")
+            return self._send(200, json.dumps({"ok": ok}))
+        if path == "/api/rules/add":
+            text = (body.get("text") or "").strip()
+            if not text:
+                return self._send(400, json.dumps({"error": "text is required"}))
+            from .rule_store import Rule
+            rule = Rule(
+                text=text,
+                scope=(body.get("scope") or "global").strip() or "global",
+                state="active",
+                source="manual",
+            )
+            _rules.add(rule)
+            return self._send(200, json.dumps({
+                "ok": True,
+                "slug": rule.slug,
+                "text": rule.text,
+                "scope": rule.scope,
+                "state": rule.state,
+                "source": rule.source,
+            }))
+        if path == "/api/rules/update":
+            slug = (body.get("slug") or "").strip()
+            if not slug:
+                return self._send(400, json.dumps({"error": "slug is required"}))
+            rule = _rules.update(slug, text=body.get("text"), scope=body.get("scope"))
+            if not rule:
+                return self._send(404, json.dumps({"error": "rule not found"}))
+            return self._send(200, json.dumps({
+                "ok": True,
+                "slug": rule.slug,
+                "text": rule.text,
+                "scope": rule.scope,
+                "state": rule.state,
+            }))
+        if path == "/api/rules/remove":
+            ok = _rules.remove(body.get("slug", ""))
             return self._send(200, json.dumps({"ok": ok}))
         if path == "/api/rules/reject":
             _rules.set_state(body.get("slug", ""), "archived")
@@ -3556,13 +3637,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 price_in, price_out = 0.5, 2.0
             try:
+                from .cli_job_merge import (
+                    bulk_load_store_artifacts,
+                    bulk_load_store_tasks,
+                    partition_jobs_by_store,
+                )
                 from .job_scoping import filter_local_jobs, resolve_job_model
 
                 state_obj = _session.state()
-                jobs = _scoped_jobs_snapshot(repo_root=repo_override or None)
-                store = state_obj.store
                 registry = _swarm_registry()
+                jobs, store, cli_store = _scoped_jobs_with_stores(repo_root=repo_override or None)
 
+                harness_jids, cli_jids = partition_jobs_by_store(jobs)
                 jids = [j.get("id") for j in jobs if j.get("id")]
                 # Batch all three per-job reads (the old N+1 read artifacts TWICE
                 # plus tasks, per job): one bulk artifacts read + one bulk tasks
@@ -3570,13 +3656,15 @@ class Handler(BaseHTTPRequestHandler):
                 arts_by_job: dict = {}
                 tasks_by_job: dict = {}
                 try:
-                    for a in _retry_on_locked(lambda: store.list_artifacts_for_jobs(jids)):
-                        arts_by_job.setdefault(getattr(a, "job_id", None), []).append(a)
+                    harness_arts = bulk_load_store_artifacts(store, harness_jids)
+                    cli_arts = bulk_load_store_artifacts(cli_store, cli_jids)
+                    arts_by_job = {**harness_arts, **cli_arts}
                 except Exception:
                     arts_by_job = None
                 try:
-                    for t in _retry_on_locked(lambda: store.list_tasks_for_jobs(jids)):
-                        tasks_by_job.setdefault(getattr(t, "job_id", None), []).append(t)
+                    harness_tasks = bulk_load_store_tasks(store, harness_jids)
+                    cli_tasks = bulk_load_store_tasks(cli_store, cli_jids)
+                    tasks_by_job = {**harness_tasks, **cli_tasks}
                 except Exception:
                     tasks_by_job = None
 
@@ -3585,8 +3673,9 @@ class Handler(BaseHTTPRequestHandler):
                     if not jid:
                         continue
 
+                    job_store = cli_store if j.get("source") == "cli" and cli_store else store
                     raw_arts = (arts_by_job.get(jid, []) if arts_by_job is not None
-                                else store.list_artifacts(jid))
+                                else _retry_on_locked(lambda: job_store.list_artifacts(jid)))
                     # job_artifacts() formats the same artifacts for display; build
                     # it from the batched list when available to avoid a re-read.
                     try:
@@ -3604,7 +3693,7 @@ class Handler(BaseHTTPRequestHandler):
                     tasks_list = []
                     try:
                         raw_tasks = (tasks_by_job.get(jid, []) if tasks_by_job is not None
-                                     else store.list_tasks(jid))
+                                     else _retry_on_locked(lambda: job_store.list_tasks(jid)))
                         for t in raw_tasks:
                             tasks_list.append({
                                 "id": getattr(t, "id", ""),
@@ -3630,6 +3719,7 @@ class Handler(BaseHTTPRequestHandler):
                         "est_cost_usd": est_cost_usd,
                         "artifacts": artifacts_list,
                         "tasks": tasks_list,
+                        "source": j.get("source", "harness"),
                         **_job_savings_fields(jid),
                     })
             except Exception as e:
@@ -4392,26 +4482,49 @@ def _jobs_snapshot() -> list:
     return _last_jobs_snapshot
 
 
-def _scoped_jobs_snapshot(repo_root: str | None = None) -> list:
-    """Jobs visible for the active harness session and open workspace.
-
-    When ``repo_root`` is present and non-empty it overrides ``_cfg.repo`` for
-    legacy (unstamped) cwd filtering; stamped session jobs are unchanged.
-    """
+def _scoped_jobs_with_stores(repo_root: str | None = None) -> tuple[list, Any, Any | None]:
+    """Visible jobs plus harness and optional CLI stores for bulk reads."""
+    from .cli_job_merge import merge_scoped_cli_jobs
     from .job_scoping import filter_store_jobs
 
     jobs = _jobs_snapshot()
     try:
         store = _session.state().store
     except Exception:
-        return jobs
+        return jobs, None, None
     effective_repo = (repo_root or "").strip() or (_cfg.repo or "")
-    return filter_store_jobs(
+    workspace_root = effective_repo or os.getcwd()
+    active_session_id = _sessions.active or getattr(_pilot, "harness_session_id", "") or ""
+    visible = filter_store_jobs(
         jobs,
         store,
-        active_session_id=_sessions.active or getattr(_pilot, "harness_session_id", "") or "",
+        active_session_id=active_session_id,
         repo_root=effective_repo,
     )
+    try:
+        merged, cli_store = merge_scoped_cli_jobs(
+            visible,
+            harness_store=store,
+            active_session_id=active_session_id,
+            repo_root=effective_repo,
+            workspace_root=workspace_root,
+        )
+        return merged, store, cli_store
+    except Exception as e:
+        _diag("server.scoped_jobs_cli_merge", e)
+        return [{**j, "source": j.get("source", "harness")} for j in visible], store, None
+
+
+def _scoped_jobs_snapshot(repo_root: str | None = None) -> list:
+    """Jobs visible for the active harness session and open workspace.
+
+    When ``repo_root`` is present and non-empty it overrides ``_cfg.repo`` for
+    legacy (unstamped) cwd filtering; stamped session jobs are unchanged.
+    Merges read-only CLI jobs from the Puppetmaster per-project store when
+    present (tagged ``source``: ``harness`` or ``cli``).
+    """
+    jobs, _, _ = _scoped_jobs_with_stores(repo_root)
+    return jobs
 
 
 def _pilot_preflight():

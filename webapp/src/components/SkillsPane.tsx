@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { GraduationCap, Check, X, Archive, Sparkles } from "lucide-react";
+import { GraduationCap, Check, X, Archive, Sparkles, Plus } from "lucide-react";
 import { api } from "../lib/api";
 
 // Self-learning panel: review AUTO-DISTILLED candidate skills (PENDING) and
@@ -11,6 +11,12 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
   const [expanded, setExpanded] = useState<string>("");
+  const [newRuleText, setNewRuleText] = useState("");
+  const [newRuleScope, setNewRuleScope] = useState("global");
+  const [newSkillName, setNewSkillName] = useState("");
+  const [newSkillDesc, setNewSkillDesc] = useState("");
+  const [newSkillBody, setNewSkillBody] = useState("");
+  const [formError, setFormError] = useState("");
 
   const refresh = () => {
     api.skills().then(setSkills).catch(() => {});
@@ -32,6 +38,34 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
   const reject = async (slug: string) => { setBusy(slug); try { await api.skillReject(slug); await refresh(); } finally { setBusy(""); } };
   const approveRule = async (slug: string) => { setBusy(slug); try { await api.ruleApprove(slug); await refresh(); } finally { setBusy(""); } };
   const rejectRule = async (slug: string) => { setBusy(slug); try { await api.ruleReject(slug); await refresh(); } finally { setBusy(""); } };
+
+  const addRule = async () => {
+    const text = newRuleText.trim();
+    if (!text) { setFormError("Rule text is required"); return; }
+    setFormError(""); setBusy("add-rule");
+    try {
+      await api.ruleAdd(text, newRuleScope.trim() || "global");
+      setNewRuleText("");
+      setMsg("Rule added");
+      await refresh();
+    } catch {
+      setFormError("Failed to add rule");
+    } finally { setBusy(""); }
+  };
+
+  const addSkill = async () => {
+    const name = newSkillName.trim();
+    if (!name) { setFormError("Skill name is required"); return; }
+    setFormError(""); setBusy("add-skill");
+    try {
+      await api.skillAdd(name, newSkillDesc.trim(), newSkillBody.trim());
+      setNewSkillName(""); setNewSkillDesc(""); setNewSkillBody("");
+      setMsg("Skill added");
+      await refresh();
+    } catch {
+      setFormError("Failed to add skill");
+    } finally { setBusy(""); }
+  };
 
   const pendingRules = rules.filter((r) => r.state === "pending");
   const activeRules = rules.filter((r) => r.state === "active");
@@ -64,6 +98,62 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
           </div>
         )}
         {msg && <div className="text-[10px] text-muted px-1">{msg}</div>}
+        {formError && <div className="text-[10px] text-risk px-1">{formError}</div>}
+
+        <div className="border border-edge/50 rounded-lg p-2 bg-panel2/30 space-y-2">
+          <div className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+            <Plus size={10} /> Add rule
+          </div>
+          <input
+            type="text"
+            placeholder="Always run tests before claiming done"
+            value={newRuleText}
+            onChange={(e) => setNewRuleText(e.target.value)}
+            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent"
+          />
+          <input
+            type="text"
+            placeholder="Scope (default: global)"
+            value={newRuleScope}
+            onChange={(e) => setNewRuleScope(e.target.value)}
+            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent font-mono"
+          />
+          <button onClick={addRule} disabled={busy === "add-rule"}
+            className="w-full h-6 rounded bg-accent2 text-accent text-[10px] font-medium hover:brightness-125 disabled:opacity-40">
+            Add rule
+          </button>
+        </div>
+
+        <div className="border border-edge/50 rounded-lg p-2 bg-panel2/30 space-y-2">
+          <div className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+            <Plus size={10} /> Add skill
+          </div>
+          <input
+            type="text"
+            placeholder="Skill name"
+            value={newSkillName}
+            onChange={(e) => setNewSkillName(e.target.value)}
+            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent"
+          />
+          <input
+            type="text"
+            placeholder="When to use this skill"
+            value={newSkillDesc}
+            onChange={(e) => setNewSkillDesc(e.target.value)}
+            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent"
+          />
+          <textarea
+            placeholder="Numbered steps (markdown)"
+            value={newSkillBody}
+            onChange={(e) => setNewSkillBody(e.target.value)}
+            rows={3}
+            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent font-mono resize-y"
+          />
+          <button onClick={addSkill} disabled={busy === "add-skill"}
+            className="w-full h-6 rounded bg-accent2 text-accent text-[10px] font-medium hover:brightness-125 disabled:opacity-40">
+            Add skill
+          </button>
+        </div>
 
         {pending.length > 0 && (
           <div>

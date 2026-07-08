@@ -18,13 +18,14 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional
 
+from .skill_store import _slug as _filename_slug
+
 RULES_PATH = Path(os.path.expanduser("~/.pmharness/rules.json"))
 STATES = ("pending", "active", "archived")
 
 
 def _slug(text: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
-    return (s[:48] or "rule")
+    return _filename_slug(text, fallback="rule")
 
 
 @dataclass
@@ -50,7 +51,7 @@ class RuleStore:
         if not self.path.exists():
             return []
         try:
-            return json.loads(self.path.read_text()) or []
+            return json.loads(self.path.read_text(encoding="utf-8")) or []
         except Exception:
             return []
 
@@ -58,7 +59,8 @@ class RuleStore:
         # atomic: temp + os.replace so a concurrent reader never sees a truncated
         # file (which _load would swallow and return [], dropping all rules).
         tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(rules, indent=2))
+        tmp.write_text(json.dumps(rules, indent=2, ensure_ascii=False),
+                       encoding="utf-8", newline="\n")
         os.replace(tmp, self.path)
 
     def list(self, state: Optional[str] = None) -> List[Rule]:
@@ -108,3 +110,30 @@ class RuleStore:
             if union and inter / union >= threshold:
                 return _slug(r.get("text", ""))
         return None
+
+    def remove(self, slug: str) -> bool:
+        with self._lock:
+            rules = self._load()
+            kept = [r for r in rules if _slug(r.get("text", "")) != slug]
+            if len(kept) == len(rules):
+                return False
+            self._save(kept)
+            return True
+
+    def update(self, slug: str, *, text: Optional[str] = None,
+               scope: Optional[str] = None) -> Optional[Rule]:
+        with self._lock:
+            rules = self._load()
+            hit = None
+            for r in rules:
+                if _slug(r.get("text", "")) == slug:
+                    if text is not None:
+                        r["text"] = text.strip() or r.get("text", "")
+                    if scope is not None:
+                        r["scope"] = scope.strip() or r.get("scope", "global")
+                    hit = Rule(**r)
+                    break
+            if not hit:
+                return None
+            self._save(rules)
+            return hit

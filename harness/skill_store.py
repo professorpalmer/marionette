@@ -25,10 +25,20 @@ from typing import Dict, List, Optional
 SKILLS_DIR = Path(os.path.expanduser("~/.pmharness/skills"))
 STATES = ("pending", "active", "archived")
 
+# Windows rejects CON/PRN/AUX/NUL/COM1-9/LPT1-9 as filenames regardless of extension.
+_WIN_RESERVED = frozenset(
+    {*(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10)),
+     "CON", "PRN", "AUX", "NUL"}
+)
 
-def _slug(name: str) -> str:
+
+def _slug(name: str, *, fallback: str = "skill") -> str:
     s = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
-    return s or "skill"
+    s = (s[:48] or fallback).rstrip(". ")
+    stem = s.split(".", 1)[0].upper()
+    if stem in _WIN_RESERVED:
+        s = f"{s}-item" if s else fallback
+    return s or fallback
 
 
 @dataclass
@@ -137,7 +147,7 @@ class SkillStore:
             p = self._path(skill.state, skill.slug)
             # atomic: write temp in the same dir, then os.replace (no torn reads)
             tmp = p.with_suffix(".md.tmp")
-            tmp.write_text(skill.to_markdown())
+            tmp.write_text(skill.to_markdown(), encoding="utf-8", newline="\n")
             os.replace(tmp, p)
             return p
 
@@ -211,3 +221,29 @@ class SkillStore:
 
     def exists(self, slug: str) -> bool:
         return self._find(slug) is not None
+
+    def remove(self, slug: str) -> bool:
+        with self._lock:
+            p = self._find(slug)
+            if not p:
+                return False
+            p.unlink()
+            return True
+
+    def update(self, slug: str, *, name: Optional[str] = None,
+               description: Optional[str] = None, body: Optional[str] = None) -> Optional[Skill]:
+        old_path = self._find(slug)
+        sk = self.get(slug)
+        if not sk:
+            return None
+        old_slug = sk.slug
+        if name is not None:
+            sk.name = name.strip() or sk.name
+        if description is not None:
+            sk.description = description.strip()
+        if body is not None:
+            sk.body = body.strip()
+        self.save(sk)
+        if old_path and sk.slug != old_slug and old_path.exists():
+            old_path.unlink()
+        return sk
