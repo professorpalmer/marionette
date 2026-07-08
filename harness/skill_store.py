@@ -147,7 +147,10 @@ class SkillStore:
             p = self._path(skill.state, skill.slug)
             # atomic: write temp in the same dir, then os.replace (no torn reads)
             tmp = p.with_suffix(".md.tmp")
-            tmp.write_text(skill.to_markdown(), encoding="utf-8", newline="\n")
+            # open() rather than Path.write_text: newline= lands there in
+            # 3.10+, and we still support the 3.9 floor.
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                f.write(skill.to_markdown())
             os.replace(tmp, p)
             return p
 

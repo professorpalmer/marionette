@@ -59,8 +59,10 @@ class RuleStore:
         # atomic: temp + os.replace so a concurrent reader never sees a truncated
         # file (which _load would swallow and return [], dropping all rules).
         tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(rules, indent=2, ensure_ascii=False),
-                       encoding="utf-8", newline="\n")
+        # open() rather than Path.write_text: newline= lands there in 3.10+,
+        # and we still support the 3.9 floor.
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(rules, indent=2, ensure_ascii=False))
         os.replace(tmp, self.path)
 
     def list(self, state: Optional[str] = None) -> List[Rule]:
