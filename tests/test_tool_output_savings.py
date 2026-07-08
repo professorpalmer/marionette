@@ -61,6 +61,24 @@ def test_sqlite_dedupe_by_session_and_tool_call_id(tmp_path):
     assert summary.tokens_saved == tokens_avoided(8000, 1500)
 
 
+def test_jsonl_mirror_uses_lf_only(tmp_path, monkeypatch):
+    """JSONL audit mirror must write LF newlines on all platforms (no CRLF)."""
+    monkeypatch.setenv("HARNESS_TOOL_OUTPUT_SAVINGS_JSONL", "1")
+    ledger = ToolOutputSavingsLedger(str(tmp_path))
+    assert ledger.record(
+        session_id="sess-lf",
+        tool_call_id="tc-lf",
+        original_chars=8000,
+        compact_chars=1500,
+        reason="persist",
+    )
+    path = tmp_path / "tool_output_savings.jsonl"
+    assert path.exists()
+    raw = path.read_bytes()
+    assert b"\r\n" not in raw
+    assert raw.endswith(b"\n")
+
+
 def test_concurrent_append_safety(tmp_path):
     """Many threads appending distinct tool_call ids must not corrupt SQLite."""
     state_dir = str(tmp_path)

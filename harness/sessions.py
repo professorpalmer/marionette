@@ -85,7 +85,7 @@ class SessionStore:
             payload = {"sessions": self._sessions, "active": self._active}
             tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".sessions_")
             try:
-                with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as f:
                     json.dump(payload, f)
                 os.replace(tmp_path, self.path)
             except Exception:
@@ -375,7 +375,7 @@ def save_transcript(state_dir: str, session_id: str, messages: Any) -> None:
     p = os.path.join(trans_dir, f"{safe_sid}.json")
     tmp = p + ".tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             json.dump(messages, f, indent=2)
         os.replace(tmp, p)
     except Exception:

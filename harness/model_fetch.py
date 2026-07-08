@@ -56,7 +56,7 @@ def _write_cache(data: dict) -> None:
     try:
         path = _cache_path()
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             json.dump(data, f)
         os.replace(tmp, path)
     except Exception as e:

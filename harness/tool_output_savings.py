@@ -202,7 +202,7 @@ class ToolOutputSavingsLedger:
             return
         try:
             os.makedirs(self.state_dir, exist_ok=True)
-            with open(self._jsonl_path, "a", encoding="utf-8") as fh:
+            with open(self._jsonl_path, "a", encoding="utf-8", newline="\n") as fh:
                 fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
         except OSError:
             pass

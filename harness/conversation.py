@@ -623,7 +623,7 @@ class ConversationalSession(ToolDispatchMixin):
             return
         try:
             tmp = self._prompt_queue_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
                 json.dump({"queue": items}, f)
             os.replace(tmp, self._prompt_queue_path)
         except Exception:
@@ -4607,7 +4607,12 @@ class ConversationalSession(ToolDispatchMixin):
                     except Exception:
                         verify_cmd = None
                 if verify_cmd:
-                    yield ConvEvent("verifying", {"cmd": verify_cmd, "auto": True})
+                    _verify_display = (
+                        _verify._command_display(verify_cmd)
+                        if hasattr(_verify, "_command_display")
+                        else str(verify_cmd)
+                    )
+                    yield ConvEvent("verifying", {"cmd": _verify_display, "auto": True})
                     try:
                         _timeout = int(os.environ.get("HARNESS_AUTO_VERIFY_TIMEOUT", "30"))
                     except ValueError:
@@ -4621,14 +4626,14 @@ class ConversationalSession(ToolDispatchMixin):
                     excerpt = output[-1500:] if output else ""
                     yield ConvEvent("auto_verify", {
                         "passed": passed,
-                        "command": verify_cmd,
+                        "command": _verify_display,
                         "output_excerpt": excerpt,
                     })
                     if not passed and not self._cancel.is_set():
                         auto_verify_iters += 1
                         feedback = (
                             "[auto-verify] The project check failed after your edits:\n"
-                            f"$ {verify_cmd}\n{output}\n"
+                            f"$ {_verify_display}\n{output}\n"
                             "Fix the issue, then continue."
                         )
                         self._history.append({"role": "user", "content": feedback})
@@ -5402,7 +5407,7 @@ class ConversationalSession(ToolDispatchMixin):
             if len(items) > self._LOCAL_JOBS_HISTORY_CAP:
                 items = items[-self._LOCAL_JOBS_HISTORY_CAP:]
             tmp = self._local_jobs_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
                 json.dump({"jobs": items}, f)
             os.replace(tmp, self._local_jobs_path)
         except Exception:

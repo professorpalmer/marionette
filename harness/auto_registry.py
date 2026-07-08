@@ -202,9 +202,62 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
         return _CURATED_MODELS.get(provider_name, [])
 
 
+def _live_prices_enabled() -> bool:
+    """HARNESS_LIVE_PRICES=0 disables OpenRouter price overlay (default on)."""
+    return os.environ.get("HARNESS_LIVE_PRICES", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _overlay_live_prices(slug: str, input_price: float, output_price: float) -> tuple:
+    """Best-effort live OpenRouter price overlay via pmharness.registry.
+
+    Returns (input, output, applied) where applied is True when live rates
+    replaced the static numbers. Never raises; any miss/exception keeps static.
+    """
+    if not _live_prices_enabled():
+        return input_price, output_price, False
+    try:
+        from pmharness.registry import price as _or_price
+
+        live = _or_price(slug)
+        if (
+            isinstance(live, (tuple, list))
+            and len(live) >= 2
+            and live[0] is not None
+            and live[1] is not None
+            and float(live[0]) > 0
+            and float(live[1]) > 0
+        ):
+            return float(live[0]), float(live[1]), True
+    except Exception as e:
+        _diag("auto_registry.live_price", e, msg=f"slug={slug}")
+    return input_price, output_price, False
+
+
+# Module-level counter for one aggregate diag line per sync (not per-model spam).
+_LIVE_PRICE_APPLIED = 0
+_LIVE_PRICE_FALLBACK = 0
+
+
+def _reset_live_price_stats() -> None:
+    global _LIVE_PRICE_APPLIED, _LIVE_PRICE_FALLBACK
+    _LIVE_PRICE_APPLIED = 0
+    _LIVE_PRICE_FALLBACK = 0
+
+
 def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: str) -> dict:
     """Build a single agentic ModelSpec dict. Known models get their real
-    benchmark-anchored numbers; unknown ones fall back to the tier template."""
+    benchmark-anchored numbers; unknown ones fall back to the tier template.
+
+    After static resolution, best-effort overlays live OpenRouter prices from
+    pmharness.registry (disk-cached, 6s fetch, never raises). Capability score,
+    context window, and tags stay static. HARNESS_LIVE_PRICES=0 skips overlay.
+    """
+    global _LIVE_PRICE_APPLIED, _LIVE_PRICE_FALLBACK
     known = _KNOWN_MODEL_SPECS.get(slug)
     if known:
         capability_score, input_price, output_price, context_window, tags = known
@@ -215,7 +268,15 @@ def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: st
             # Fallback to balanced if tier not found
             template = templates.get("balanced", (75, 1.0, 3.0, 100000, ["balanced"]))
         capability_score, input_price, output_price, context_window, tags = template
-    
+
+    input_price, output_price, applied = _overlay_live_prices(
+        slug, input_price, output_price
+    )
+    if applied:
+        _LIVE_PRICE_APPLIED += 1
+    else:
+        _LIVE_PRICE_FALLBACK += 1
+
     return {
         "id": f"agentic/{slug}",
         "adapter": "agentic",
@@ -278,6 +339,7 @@ def sync_agentic_registry(force: bool = False) -> dict:
         # Build agentic specs for each live provider
         new_agentic_specs = []
         synced_providers = []
+        _reset_live_price_stats()
         for provider_name, agentic_name, key in live_providers:
             models = _get_provider_models_from_discovery(provider_name, key)
             if not models:
@@ -290,7 +352,14 @@ def sync_agentic_registry(force: bool = False) -> dict:
                 for model_name, tier, slug in models:
                     spec = _build_agentic_spec(agentic_name, model_name, tier, slug)
                     new_agentic_specs.append(spec)
-        
+
+        _diag(
+            "auto_registry.live_prices",
+            msg=(
+                f"live={_LIVE_PRICE_APPLIED} static_fallback={_LIVE_PRICE_FALLBACK} "
+                f"enabled={int(_live_prices_enabled())}"
+            ),
+        )        
         # Read existing models.json
         models_path = get_models_file_path()
         existing_models = {"models": []}

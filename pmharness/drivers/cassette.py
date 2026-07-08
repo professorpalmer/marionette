@@ -163,7 +163,7 @@ class CassetteDriver:
         self._data["driver"] = getattr(self._inner, "name", "")
         if not self._data.get("recorded_at"):
             self._data["recorded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        with open(self._path, "w", encoding="utf-8") as fh:
+        with open(self._path, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(self._data, fh, indent=2, sort_keys=True)
 
     def _lookup(self, req_hash: str) -> Optional[dict]:

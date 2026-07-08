@@ -44,7 +44,9 @@ class MemoryStore:
 
     def _save(self, entries: List[dict]) -> None:
         tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(entries, indent=2))
+        # Python 3.9 floor: Path.write_text has no newline=; open() enforces UTF-8 + LF.
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(entries, indent=2))
         os.replace(tmp, self.path)
 
     def list(self) -> List[MemoryEntry]:

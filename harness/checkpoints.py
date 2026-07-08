@@ -340,7 +340,7 @@ class CheckpointStore:
             valid = self._filter_existing_commits(raw)
             valid = valid[-50:]
             temp_file = str(self._meta_file) + ".tmp"
-            with open(temp_file, "w", encoding="utf-8") as f:
+            with open(temp_file, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(valid, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
@@ -410,7 +410,7 @@ class CheckpointStore:
                 checkpoints = checkpoints[-50:]
 
             temp_file = str(self._meta_file) + ".tmp"
-            with open(temp_file, "w", encoding="utf-8") as f:
+            with open(temp_file, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(checkpoints, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())

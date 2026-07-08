@@ -38,7 +38,7 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     tmp = _store_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, _store_path())
 

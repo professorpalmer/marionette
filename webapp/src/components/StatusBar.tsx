@@ -14,7 +14,6 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
 }) {
   const [branch, setBranch] = useState("");
   const [usage, setUsage] = useState<UsageData["session"] | null>(null);
-  const [sessionTotal, setSessionTotal] = useState<UsageData["session_total"]>(null);
   const [costOpen, setCostOpen] = useState(false);
   const costRef = useRef<HTMLDivElement | null>(null);
   const [update, setUpdate] = useState<{ behind: number; branch: string; version: string } | null>(null);
@@ -129,7 +128,6 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
         if (data && data.session) {
           setUsage(data.session);
         }
-        setSessionTotal(data?.session_total ?? null);
       })
       .catch((err) => console.error("Failed to load usage in StatusBar", err))
       .finally(() => { usageInFlight.current = false; });
@@ -186,10 +184,6 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
   };
 
   const showUsage = usage && (usage.tokens_used > 0 || usage.est_cost_usd > 0);
-  const showSessionTotal = sessionTotal != null && (
-    sessionTotal.est_cost_usd > 0
-    || ((sessionTotal.input_tokens ?? 0) + (sessionTotal.output_tokens ?? 0) > 0)
-  );
 
   return (
     <div className="flex items-center gap-3 px-3 h-6 border-t border-edge bg-panel text-[10px] text-muted select-none">
@@ -283,22 +277,6 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
                 </div>
               )}
             </span>
-          </span>
-        </>
-      )}
-      {/* Lifetime session total, "|"-separated from the boot-scoped figure.
-          The boot pill resets to $0 on every restart/update; this one is the
-          persisted running total for the active chat session, so budgeting
-          visibility survives relaunches. */}
-      {showSessionTotal && (
-        <>
-          <span className="w-px h-3 bg-edge/40" />
-          <span
-            className="flex items-center gap-1 text-muted/80"
-            title="All-time estimated spend for this chat session -- keeps counting across app restarts and updates"
-          >
-            <span className="text-faint">session</span>
-            <span className="text-txt/90 font-medium">~{formatCost(sessionTotal!.est_cost_usd)}</span>
           </span>
         </>
       )}

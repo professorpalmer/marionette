@@ -229,7 +229,7 @@ def save_connection(method: str, repo_full_name: str, html_url: str) -> None:
         "html_url": html_url,
         "connected_at": time.time()
     }
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, indent=2)
 
 

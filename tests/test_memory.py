@@ -14,6 +14,26 @@ from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 
 
+def test_memory_store_utf8_lf_roundtrip(tmp_path):
+    """Non-ASCII memory entries round-trip; on-disk bytes use LF only (no CRLF)."""
+    path = tmp_path / "memory.json"
+    store = MemoryStore(path=str(path))
+    text = "User prefers cafe\u00e9 and \u65e5\u672c\u8a9e"
+    entry = store.add(text, category="preference", source="user")
+    assert entry.text == text
+
+    raw = path.read_bytes()
+    assert b"\r\n" not in raw
+    # File is valid UTF-8 (json.dumps may escape non-ASCII as \\uXXXX; either is fine).
+    decoded = raw.decode("utf-8")
+    assert "preference" in decoded
+
+    store2 = MemoryStore(path=str(path))
+    entries = store2.list()
+    assert len(entries) == 1
+    assert entries[0].text == text
+
+
 def test_memory_store_crud(tmp_path):
     path = tmp_path / "memory.json"
     store = MemoryStore(path=str(path))

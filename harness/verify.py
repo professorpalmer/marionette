@@ -16,11 +16,15 @@ Design constraints (see task spec):
     fast is found rather than guessing an expensive command.
   - run_verify never raises; it returns (passed, truncated_output).
   - Prefer a per-file scoped check built from the changed files.
+  - Builders return argv lists where feasible; run_verify uses shell=False for
+    lists and shell=True only for legacy string commands (compound shell forms
+    like `cd X && npx ...` or `make check`).
 """
 
 import os
 import shlex
 import subprocess
+from typing import List, Optional, Union
 
 # Cap on output fed back into the chat transcript. Kept small: this is an inline
 # tool observation, not a full log.
@@ -30,6 +34,9 @@ MAX_OUTPUT = 4000
 # but we still know the ecosystem. Deliberately empty by default -- callers fall
 # back to None (skip) rather than run something slow/unscoped.
 DEFAULT = ""
+
+# Command may be an argv list (preferred, shell=False) or a legacy shell string.
+VerifyCommand = Union[str, List[str]]
 
 
 def _rel(repo: str, path: str) -> str:
@@ -125,18 +132,32 @@ def _changed_of(changed_files: list[str], *exts: str) -> list[str]:
     return [p for p in changed_files if p.endswith(exts)]
 
 
-def _tsc_command(tsconfig: str) -> str:
+def _npx_argv() -> str:
+    """Resolve the npx launcher for list-form argv.
+
+    On Windows, CreateProcess cannot run the npm/npx .cmd shims without a shell;
+    keep compound `cd && npx` builders on the string+shell path instead. For
+    root-level list argv we still use bare 'npx' (PATH resolution via shell=False
+    works for .exe; .cmd may need PATHEXT). Prefer list form for python/py_compile
+    and root tsc; subdir tsc stays string+shell.
+    """
+    return "npx"
+
+
+def _tsc_command(tsconfig: str) -> VerifyCommand:
     """Build the `npx tsc --noEmit` invocation for a repo-relative tsconfig.
 
     When the tsconfig sits in a subproject (e.g. webapp/tsconfig.json), run
-    from that directory: npx resolves tsc from the nearest node_modules/.bin,
-    which lives beside the subproject's package.json, not the repo root.
+    from that directory via a compound shell string (`cd X && npx ...`): list
+    argv cannot express `cd` without changing run_verify's cwd semantics, and
+    on Windows npm/npx are .cmd shims that need shell=True. Root-level tsconfig
+    returns an argv list (shell=False).
     """
     project_dir = os.path.dirname(tsconfig)
     if project_dir:
         tsc = _shell_join("npx", "tsc", "--noEmit", "-p", os.path.basename(tsconfig))
         return f"cd {_shell_join(project_dir)} && {tsc}"
-    return _shell_join("npx", "tsc", "--noEmit", "-p", tsconfig)
+    return [_npx_argv(), "tsc", "--noEmit", "-p", tsconfig]
 
 
 def _shell_join(*args: str) -> str:
@@ -150,16 +171,20 @@ def _shell_join(*args: str) -> str:
     return " ".join(shlex.quote(a) for a in args)
 
 
-def build_scoped_command(repo: str, changed_files: list[str]) -> str | None:
+def _command_display(cmd: VerifyCommand) -> str:
+    """Human-readable form for events / feedback (list -> shell-joined)."""
+    if isinstance(cmd, list):
+        return _shell_join(*cmd)
+    return cmd
+
+
+def build_scoped_command(repo: str, changed_files: list[str]) -> Optional[VerifyCommand]:
     """Given the changed files, build a FAST per-file syntax/type check scoped to
     just those files, or None when scoping is not possible.
 
-    - Changed .py files    -> `python -m py_compile <files>` (a real syntax check
-                               of exactly what was edited; fast, no import side effects
-                               beyond compiling).
-    - Changed .ts/.tsx     -> a `tsc --noEmit` (project-scoped when a tsconfig is
-                               present; tsc typechecks the whole project referenced
-                               by the config, which is still the fast/correct scope).
+    - Changed .py files    -> argv list: ``[python, -m, py_compile, ...]``
+    - Changed .ts/.tsx     -> argv list for root tsconfig, or shell string when
+                               the tsconfig lives in a subproject (`cd && npx`).
 
     Returns None if there are no supported changed files to scope to.
     """
@@ -173,31 +198,34 @@ def build_scoped_command(repo: str, changed_files: list[str]) -> str | None:
         tsconfig = _find_tsconfig(repo, changed_files)
         if tsconfig:
             return _tsc_command(tsconfig)
-        # No tsconfig: fall back to a loose per-file tsc syntax check.
+        # No tsconfig: fall back to a loose per-file tsc syntax check (argv list).
         rel_ts = [_rel(repo, p) for p in ts]
-        return _shell_join("npx", "tsc", "--noEmit", *rel_ts)
+        return [_npx_argv(), "tsc", "--noEmit", *rel_ts]
 
     if py:
         import sys
 
         py_exe = sys.executable or "python"
         rel_py = [_rel(repo, p) for p in py]
-        return _shell_join(py_exe, "-m", "py_compile", *rel_py)
+        return [py_exe, "-m", "py_compile", *rel_py]
 
     return None
 
 
-def detect_verify_command(repo: str, changed_files: list[str] | None = None) -> str | None:
+def detect_verify_command(
+    repo: str, changed_files: list[str] | None = None
+) -> Optional[VerifyCommand]:
     """Detect a FAST, project-appropriate check from repo markers, scoped to the
-    edited files when possible. Returns a shell command string, or None when
-    nothing sensible/fast is found.
+    edited files when possible. Returns an argv list when feasible, a shell
+    string for compound forms (`cd && ...`, `make`), or None when nothing
+    sensible/fast is found.
 
     Priority (an explicit operator override is handled by the caller, not here):
       1. A webapp/ or package.json project declaring a `typecheck`/`build` script
          -> a `tsc --noEmit` (project-scoped via tsconfig when available).
       2. A Python project (pyproject.toml/setup.py) with a tests dir -> a FAST
          syntax check of the CHANGED .py files (py_compile), NOT a full pytest.
-      3. A Makefile with a `check`/`lint` target -> `make <target>`.
+      3. A Makefile with a `check`/`lint` target -> `make <target>` (string).
       4. Else None.
 
     Keep it conservative and FAST (sub-10s ideal): this runs inline in a chat
@@ -237,14 +265,14 @@ def detect_verify_command(repo: str, changed_files: list[str] | None = None) -> 
         tsconfig = _find_tsconfig(repo, changed_files)
         if tsconfig:
             return _tsc_command(tsconfig)
-        return "npx tsc --noEmit"
+        return [_npx_argv(), "tsc", "--noEmit"]
 
     # 2. Python project with tests but nothing python edited this turn: a full
     #    pytest is too slow inline, so skip.
     if is_python and py_has_tests and not py_changed:
         return None
 
-    # 3. Makefile check/lint target.
+    # 3. Makefile check/lint target (compound make stays on string+shell path).
     target = _makefile_has_target(repo, "check", "lint")
     if target:
         return f"make {target}"
@@ -273,7 +301,7 @@ def _has_package_json_script_in(repo: str, subdir: str, *scripts: str) -> bool:
 
 def run_verify(
     repo: str,
-    command: str,
+    command: VerifyCommand,
     changed_files: list[str] | None = None,
     timeout: int = 30,
     cancel_event=None,
@@ -281,17 +309,23 @@ def run_verify(
     """Run `command` with cwd=repo and a timeout. Return (passed, output) where
     output is truncated to MAX_OUTPUT chars. NEVER raises.
 
+    Accepts an argv list (preferred: subprocess with shell=False) or a legacy
+    shell string (shell=True fallback for operator overrides and compound forms
+    like `cd webapp && npx tsc ...`).
+
     `changed_files` is accepted so callers can pass the same list used to build
     the command; it is not required here (the command is already scoped).
     """
     if not command:
         return True, ""
     cwd = repo or None
+    use_shell = not isinstance(command, (list, tuple))
+    display = _command_display(command)
 
     try:
         res = subprocess.run(
-            command,
-            shell=True,
+            command if use_shell else list(command),
+            shell=use_shell,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -308,7 +342,7 @@ def run_verify(
         output = f"{out}\n[auto-verify timed out after {timeout} seconds]"
     except Exception as e:  # noqa: BLE001 - never raise into the chat turn
         passed = False
-        output = f"[auto-verify could not run '{command}': {e}]"
+        output = f"[auto-verify could not run '{display}': {e}]"
 
     if len(output) > MAX_OUTPUT:
         output = output[:MAX_OUTPUT] + "\n[output truncated]"

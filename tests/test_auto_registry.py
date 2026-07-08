@@ -15,9 +15,14 @@ from unittest.mock import patch
 
 
 def test_sync_with_gemini_and_anthropic_only(monkeypatch, tmp_path):
-    """With only gemini+anthropic keys, registry should contain only those providers."""
+    """With only gemini+anthropic keys, registry should contain only those providers.
+
+    HARNESS_LIVE_PRICES=0 so this hermetic test pins static template prices
+    (live overlay is covered separately).
+    """
     models_path = tmp_path / "models.json"
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
     
     # Mock provider keys: only gemini and anthropic
     def mock_get_provider_key(provider):
@@ -75,6 +80,7 @@ def test_disconnected_provider_is_dropped(monkeypatch, tmp_path):
     """A disconnected provider should not appear in the registry even if it has a key."""
     models_path = tmp_path / "models.json"
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
     
     # Mock provider keys: gemini, anthropic, and openai all have keys
     def mock_get_provider_key(provider):
@@ -117,6 +123,7 @@ def test_preserves_non_agentic_entries(monkeypatch, tmp_path):
     """Pre-existing non-agentic entries should be preserved during sync."""
     models_path = tmp_path / "models.json"
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
     
     # Create existing models.json with mixed agentic and non-agentic entries
     existing_data = {
@@ -206,6 +213,7 @@ def test_idempotent_sync(monkeypatch, tmp_path):
     """Running sync multiple times should be idempotent."""
     models_path = tmp_path / "models.json"
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
     
     # Mock provider keys: only anthropic
     def mock_get_provider_key(provider):
@@ -249,6 +257,7 @@ def test_no_keys_no_agentic_entries(monkeypatch, tmp_path):
     """With no provider keys, no agentic entries should be created."""
     models_path = tmp_path / "models.json"
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
     
     # Create existing models.json with a non-agentic entry
     existing_data = {
@@ -312,3 +321,66 @@ def test_import_module():
     import harness.auto_registry
     assert hasattr(harness.auto_registry, 'sync_agentic_registry')
     assert hasattr(harness.auto_registry, 'sync_agentic_registry_safe')
+
+
+def test_build_agentic_spec_uses_live_prices(monkeypatch):
+    """When pmharness.registry.price returns usable rates, overlay them."""
+    monkeypatch.delenv("HARNESS_LIVE_PRICES", raising=False)
+    from harness.auto_registry import _AGENTIC_TEMPLATES, _build_agentic_spec
+
+    live_in, live_out = 9.9, 19.9
+
+    def fake_price(name):
+        return (live_in, live_out)
+
+    with patch("pmharness.registry.price", fake_price):
+        spec = _build_agentic_spec("anthropic", "claude-sonnet-4-5", "balanced", "claude-sonnet-4-5")
+
+    assert spec["input_per_mtok_usd"] == live_in
+    assert spec["output_per_mtok_usd"] == live_out
+    # Static capability/context/tags preserved from template.
+    template = _AGENTIC_TEMPLATES["anthropic"]["balanced"]
+    assert spec["capability_score"] == template[0]
+    assert spec["context_window"] == template[3]
+    assert spec["tags"] == list(template[4])
+
+
+def test_build_agentic_spec_keeps_static_on_price_miss(monkeypatch):
+    """(None, None) or raised price() keeps static template numbers."""
+    monkeypatch.delenv("HARNESS_LIVE_PRICES", raising=False)
+    from harness.auto_registry import _AGENTIC_TEMPLATES, _build_agentic_spec
+
+    template = _AGENTIC_TEMPLATES["anthropic"]["balanced"]
+
+    with patch("pmharness.registry.price", lambda name: (None, None)):
+        spec = _build_agentic_spec("anthropic", "claude-sonnet-4-5", "balanced", "claude-sonnet-4-5")
+    assert spec["input_per_mtok_usd"] == template[1]
+    assert spec["output_per_mtok_usd"] == template[2]
+
+    def boom(name):
+        raise RuntimeError("no network")
+
+    with patch("pmharness.registry.price", boom):
+        spec2 = _build_agentic_spec("anthropic", "claude-sonnet-4-5", "balanced", "claude-sonnet-4-5")
+    assert spec2["input_per_mtok_usd"] == template[1]
+    assert spec2["output_per_mtok_usd"] == template[2]
+
+
+def test_build_agentic_spec_live_prices_kill_switch(monkeypatch):
+    """HARNESS_LIVE_PRICES=0 skips the overlay entirely."""
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+    from harness.auto_registry import _AGENTIC_TEMPLATES, _build_agentic_spec
+
+    template = _AGENTIC_TEMPLATES["anthropic"]["balanced"]
+    called = []
+
+    def fake_price(name):
+        called.append(name)
+        return (9.9, 19.9)
+
+    with patch("pmharness.registry.price", fake_price):
+        spec = _build_agentic_spec("anthropic", "claude-sonnet-4-5", "balanced", "claude-sonnet-4-5")
+
+    assert called == []
+    assert spec["input_per_mtok_usd"] == template[1]
+    assert spec["output_per_mtok_usd"] == template[2]

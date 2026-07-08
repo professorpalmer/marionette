@@ -231,7 +231,7 @@ def _live_windows() -> dict:
             fresh = _fetch_live_windows()
             if fresh:
                 try:
-                    with open(path, "w") as f:
+                    with open(path, "w", encoding="utf-8", newline="\n") as f:
                         _json.dump({"fetched_at": _time.time(), "windows": fresh,
                                     "prices": _PRICE_MEM}, f)
                 except Exception:

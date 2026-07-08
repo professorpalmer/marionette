@@ -519,7 +519,7 @@ def _write_platform_json_atomic(path: str, data: dict) -> None:
         os.makedirs(dir_path, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_path or ".", prefix="platform_")
     try:
-        with os.fdopen(tmp_fd, 'w', encoding="utf-8", newline="") as f:
+        with os.fdopen(tmp_fd, 'w', encoding="utf-8", newline="\n") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp_path, path)
     except Exception:
@@ -5056,7 +5056,7 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
 
     try:
         os.makedirs(marker_dir, exist_ok=True)
-        with open(marker_path, "w", encoding="utf-8") as f:
+        with open(marker_path, "w", encoding="utf-8", newline="\n") as f:
             json.dump({
                 "port": port,
                 "pid": os.getpid(),
