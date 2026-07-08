@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, XCircle, Trash2 } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job, type Artifact } from "../lib/api";
 import { pickFolder } from "../lib/transport";
+import { dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
+import { readSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
   jobsRefresh: number;
   onSessionChange?: (id: string) => void;
 }) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [jobs, setJobs] = useState<Job[]>([]);
   const [swapping, setSwapping] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -108,7 +108,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
     try {
       await api.renameSession(id, renamingTitle.trim());
-      await loadSess();
+      await revalidateSessions();
     } catch (err) {
       console.error(err);
     } finally {
@@ -117,17 +117,70 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const [opening, setOpening] = useState(false);
-  const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
+  const codegraphByRepoRef = useRef<Record<string, string>>({});
 
-  const fetchWorkspace = () =>
-    api.getWorkspace().then(setWorkspaceInfo).catch(() => {});
+  const onSessionsLoaded = useCallback((sess: Session[]) => {
+    const active = sess.find((s) => s.active);
+    onSessionChange?.(active ? active.id : "");
+  }, [onSessionChange]);
+
+  const {
+    data: workspaceInfo,
+    isValidating: workspaceValidating,
+    isShowingStale: workspaceStale,
+    revalidate: revalidateWorkspace,
+    mutate: mutateWorkspace,
+  } = useStaleWhileRevalidate<WorkspaceInfo>(
+    "workspace",
+    () => api.getWorkspace(),
+    {
+      onSuccess: (info) => {
+        if (info.repo && info.codegraph_status) {
+          codegraphByRepoRef.current[info.repo] = info.codegraph_status;
+        }
+      },
+    },
+  );
+
+  const currentRepo = workspaceInfo?.repo || "";
+
+  const {
+    data: sessions = [],
+    isValidating: sessionsValidating,
+    isShowingStale: sessionsStale,
+    revalidate: revalidateSessions,
+  } = useStaleWhileRevalidate<Session[]>(
+    `sessions:${currentRepo || "__none__"}`,
+    () => api.sessions(),
+    {
+      enabled: !!currentRepo,
+      onSuccess: onSessionsLoaded,
+    },
+  );
+
+  const {
+    data: jobs = [],
+    isValidating: jobsValidating,
+    isShowingStale: jobsStale,
+    revalidate: revalidateJobs,
+  } = useStaleWhileRevalidate<Job[]>(
+    `jobs:${selectedProjectPath || "__none__"}`,
+    () => api.jobs(selectedProjectPath || undefined),
+    { enabled: !!selectedProjectPath },
+  );
+
+  const panelSwitching =
+    opening || workspaceValidating || sessionsValidating || jobsValidating;
+
+  useEffect(() => {
+    dispatchProjectSwitching(panelSwitching);
+  }, [panelSwitching]);
 
   const handleForgetProject = async (path: string) => {
     const previous = workspaceInfo;
-    setWorkspaceInfo((prev) => {
-      if (!prev) return prev;
-      return { ...prev, recents: (prev.recents || []).filter((r) => r !== path) };
-    });
+    mutateWorkspace(previous
+      ? { ...previous, recents: (previous.recents || []).filter((r) => r !== path) }
+      : undefined);
     setExpandedProjects((prev) => {
       const next = { ...prev };
       delete next[path];
@@ -135,71 +188,60 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     });
     try {
       const res = await api.forgetWorkspace(path);
-      setWorkspaceInfo((prev) => (prev ? { ...prev, recents: res.recents } : prev));
+      mutateWorkspace(previous ? { ...previous, recents: res.recents } : undefined);
     } catch (err) {
       console.error(err);
-      if (previous) setWorkspaceInfo(previous);
-      else await fetchWorkspace();
+      if (previous) mutateWorkspace(previous);
+      else await revalidateWorkspace();
     }
   };
 
   const loadWs = () => api.workspaces().then(setWorkspaces).catch(() => {});
-  const loadSess = () => api.sessions().then((sess) => {
-    setSessions(sess);
-    const active = sess.find((s) => s.active);
-    if (active) {
-      onSessionChange?.(active.id);
-    } else {
-      onSessionChange?.("");
-    }
-  }).catch(() => {});
   useEffect(() => {
     loadWs();
-    loadSess();
-    fetchWorkspace();
     const handleConfigChanged = () => {
       loadWs();
-      loadSess();
-      fetchWorkspace();
+      void revalidateSessions();
+      void revalidateWorkspace();
+      void revalidateJobs();
     };
     window.addEventListener("harness-config-changed", handleConfigChanged);
     return () => {
       window.removeEventListener("harness-config-changed", handleConfigChanged);
     };
-  }, []);
+  }, [revalidateSessions, revalidateWorkspace, revalidateJobs]);
 
   // Poll workspace status while CodeGraph indexes so the badge flips to READY
   // without opening a session or switching directories.
   useEffect(() => {
     if (workspaceInfo?.codegraph_status !== "indexing") return;
-    const poll = () => { fetchWorkspace(); };
+    const poll = () => { void revalidateWorkspace(); };
     poll();
     const timer = setInterval(poll, 4000);
     return () => clearInterval(timer);
-  }, [workspaceInfo?.codegraph_status]);
+  }, [workspaceInfo?.codegraph_status, revalidateWorkspace]);
 
   useEffect(() => {
     if (workspaceInfo?.codegraph_status !== "indexing") return;
-    const onFocus = () => { fetchWorkspace(); };
+    const onFocus = () => { void revalidateWorkspace(); };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [workspaceInfo?.codegraph_status]);
+  }, [workspaceInfo?.codegraph_status, revalidateWorkspace]);
 
   const handleOpenProject = async (path: string) => {
     setOpening(true);
     try {
       const res = await api.openWorkspace(path);
       if (res.ok) {
-        setWorkspaceInfo((prev): WorkspaceInfo => ({
+        if (res.codegraph) codegraphByRepoRef.current[res.repo] = res.codegraph;
+        mutateWorkspace({
           repo: res.repo,
           branch: res.branch,
           is_git: res.is_git,
           codegraph_status: res.codegraph,
-          recents: prev?.recents,
-        }));
-        await fetchWorkspace();
-        await loadWs();
-        await loadSess();
+          recents: workspaceInfo?.recents,
+        });
+        await Promise.all([revalidateWorkspace(), loadWs(), revalidateSessions()]);
         window.dispatchEvent(new Event("harness-config-changed"));
       } else {
         alert("Failed to open directory: " + (res as any).error);
@@ -268,14 +310,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
   const switchSession = async (id: string) => {
     await api.switchSession(id);
-    await loadSess();
+    await revalidateSessions();
     // Session switch can repoint the active repo (and thus the codegraph) on the
     // backend. Fire the same event the dir-open path uses so the codegraph/state
     // panel refetches -- without this, clicking a session leaves the old graph
     // shown even though the backend already swapped repos.
     window.dispatchEvent(new Event("harness-config-changed"));
   };
-  const newSession = async () => { await api.createSession(); await loadSess(); };
+  const newSession = async () => { await api.createSession(); await revalidateSessions(); };
   useEffect(() => {
     const onNew = () => { newSession(); };
     window.addEventListener("harness-new-session", onNew);
@@ -283,7 +325,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   }, []);
   const handleDeleteSession = async (id: string) => {
     const res = await api.deleteSession(id);
-    await loadSess();
+    await revalidateSessions();
     if (res.active) {
       await switchSession(res.active);
     }
@@ -291,7 +333,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const handleClearSessions = async () => {
     const res = await api.clearSessions();
-    await loadSess();
+    await revalidateSessions();
     if (res.active) {
       await switchSession(res.active);
     }
@@ -321,9 +363,23 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const activeSessions = sessions.filter((s) => !s.archived);
   const archivedSessions = sessions.filter((s) => s.archived);
 
-  const currentRepo = workspaceInfo?.repo || "";
   const rawRecents = workspaceInfo?.recents || [];
   const projects = Array.from(new Set([currentRepo, ...rawRecents])).filter(Boolean);
+
+  const projectSessionsFor = (projectPath: string): Session[] => {
+    const live = activeSessions.filter((s) => s.repo === projectPath);
+    if (live.length > 0) return live;
+    if (projectPath === selectedProjectPath && (panelSwitching || opening)) {
+      const cached = readSWRCache<Session[]>(`sessions:${projectPath}`);
+      if (cached?.length) return cached.filter((s) => !s.archived);
+    }
+    return live;
+  };
+
+  const codegraphStatusFor = (projectPath: string, isCurrentActive: boolean) => {
+    if (isCurrentActive && workspaceInfo?.codegraph_status) return workspaceInfo.codegraph_status;
+    return codegraphByRepoRef.current[projectPath];
+  };
 
   // Keep the highlighted project aligned with the backend workspace when it changes
   // (open folder, session switch, etc.).
@@ -339,12 +395,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     window.dispatchEvent(new CustomEvent("harness-project-selected", { detail: projectPath }));
   };
 
-  const loadJobs = () => {
-    const repo = selectedProjectPath || undefined;
-    api.jobs(repo).then(setJobs).catch(() => {});
-  };
-
-  useEffect(() => { loadJobs(); }, [jobsRefresh, selectedProjectPath]);
+  useEffect(() => { void revalidateJobs(); }, [jobsRefresh, revalidateJobs]);
 
   useEffect(() => { saveHiddenSessionJobs(hiddenJobIds); }, [hiddenJobIds]);
 
@@ -435,10 +486,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       </div>
       </div>
 
-      <div ref={upperSectionsRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0">
+      <div ref={upperSectionsRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0 ${panelOpacityClass(panelSwitching, sessionsStale || workspaceStale)}`}>
       {/* PROJECTS SECTION */}
-      <Section title="Projects">
-        {projects.length === 0 && <Empty>No projects</Empty>}
+      <Section title="Projects" headerSpinner={panelSwitching && (sessionsValidating || workspaceValidating)}>
+        {projects.length === 0 && !panelSwitching && <Empty>No projects</Empty>}
         <div className="space-y-1">
           {projects.map((projectPath) => {
             const basename = getWorkspaceBasename(projectPath) || "Untitled Project";
@@ -448,9 +499,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               ? expandedProjects[projectPath] 
               : isCurrentActive;
             
-            const projectSessions = activeSessions.filter((s) => s.repo === projectPath);
+            const projectSessions = projectSessionsFor(projectPath);
             projectSessions.sort((a, b) => b.created - a.created);
             const count = projectSessions.length;
+            const cgStatus = codegraphStatusFor(projectPath, isCurrentActive);
+            const showCgBadge = !!cgStatus && (isCurrentActive || isSelected);
             
             return (
               <div key={projectPath} className={`rounded transition min-w-0 overflow-hidden ${isSelected ? "bg-panel2/50 border-l-2 border-accent" : "hover:bg-panel2/20"}`}>
@@ -486,15 +539,15 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   </span>
 
                   {/* CodeGraph status (inline compact) */}
-                  {isCurrentActive && workspaceInfo?.codegraph_status && (
+                  {showCgBadge && (
                     <span className={`text-[9px] font-semibold uppercase px-1 rounded shrink-0 ${
-                      workspaceInfo.codegraph_status === "ready" 
+                      cgStatus === "ready" 
                         ? "text-good bg-good/10" 
-                        : workspaceInfo.codegraph_status === "indexing" 
+                        : cgStatus === "indexing" 
                           ? "text-warn bg-warn/10 animate-pulse" 
                           : "text-faint bg-panel2"
                     }`}>
-                      {workspaceInfo.codegraph_status}
+                      {cgStatus}
                     </span>
                   )}
 
@@ -538,7 +591,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       </div>
                     )}
                     {projectSessions.length === 0 ? (
-                      <div className="text-[11px] text-faint italic px-2 py-1">No sessions</div>
+                      panelSwitching && isSelected ? (
+                        <div className="text-[11px] text-faint italic px-2 py-1 flex items-center gap-1.5">
+                          <Loader2 size={10} className="animate-spin shrink-0" />
+                          Loading sessions...
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-faint italic px-2 py-1">No sessions</div>
+                      )
                     ) : (
                       projectSessions.map((s) => (
                         <div key={s.id} className="group relative">
@@ -692,7 +752,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           session doesn't swallow the left rail. Vertically resizable via the
           grab handle above the header. */}
       <div
-        className="px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col"
+        className={`px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col ${panelOpacityClass(panelSwitching, jobsStale)}`}
         style={sessionJobsCollapsed ? undefined : { height: sessionJobsHeight }}
       >
         {!sessionJobsCollapsed && (
@@ -716,6 +776,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           >
             {sessionJobsCollapsed ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
             <span className="truncate">Session Jobs</span>
+            {jobsValidating && !sessionJobsCollapsed && (
+              <Loader2 size={10} className="animate-spin text-muted shrink-0" />
+            )}
             {visibleJobs.length > 0 && (
               <span className="text-faint/70 normal-case tracking-normal shrink-0">({visibleJobs.length})</span>
             )}
@@ -751,9 +814,16 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0 pb-1">
             {visibleJobs.length === 0 ? (
               <div className="px-1 py-1">
+                {jobsValidating ? (
+                  <div className="text-[11px] text-faint italic px-1 py-1 flex items-center gap-1.5">
+                    <Loader2 size={10} className="animate-spin shrink-0" />
+                    Loading jobs...
+                  </div>
+                ) : (
                 <Empty>
                   {hiddenJobCount > 0 ? "All session jobs cleared" : "No jobs yet"}
                 </Empty>
+                )}
                 {hiddenJobCount > 0 && (
                   <button
                     onClick={restoreHiddenJobs}
@@ -885,7 +955,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           <button
             onClick={async () => {
               await api.archiveSession(contextMenu.sessionId, !contextMenu.archived);
-              await loadSess();
+              await revalidateSessions();
               setContextMenu(null);
             }}
             className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
@@ -1077,11 +1147,19 @@ function JobStatusIcon({ status }: { status: JobStatus }) {
   return <Circle size={12} className="text-muted shrink-0" />;
 }
 
-function Section({ title, action, children }: any) {
+function Section({ title, action, headerSpinner, children }: {
+  title: string;
+  action?: React.ReactNode;
+  headerSpinner?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <div className="px-2 pt-4 shrink-0 min-w-0">
       <div className="flex items-center justify-between px-2 mb-2 mt-0.5">
-        <span className="text-[11px] uppercase tracking-wider text-muted font-semibold">{title}</span>
+        <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted font-semibold">
+          {title}
+          {headerSpinner && <Loader2 size={10} className="animate-spin text-muted shrink-0" />}
+        </span>
         {action}
       </div>
       {children}

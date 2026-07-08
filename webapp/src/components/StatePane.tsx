@@ -1,18 +1,39 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { api, type CodegraphStatus, type WikiGraphData } from "../lib/api";
+import { panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
+import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
 export default function StatePane({ artifacts }: {
   artifacts: { type: string; headline: string; confidence?: number; id?: string; created_by?: string; [key: string]: any }[];
   embedded?: boolean;
 }) {
   // CodeGraph status state
-  const [cg, setCg] = useState<CodegraphStatus | null>(null);
   const [reindexing, setReindexing] = useState(false);
+  const [projectRoot, setProjectRoot] = useState("");
+  const projectSwitching = useProjectSwitching();
 
-  // Wiki status state
-  const [wiki, setWiki] = useState<WikiGraphData | null>(null);
-  const [loadingWiki, setLoadingWiki] = useState(false);
+  const {
+    data: cg,
+    isValidating: cgValidating,
+    isShowingStale: cgStale,
+    revalidate: revalidateCg,
+  } = useStaleWhileRevalidate<CodegraphStatus>(
+    `codegraph:${projectRoot || "__none__"}`,
+    () => api.getCodegraph(),
+    { enabled: !!projectRoot },
+  );
+
+  const {
+    data: wiki,
+    isValidating: wikiValidating,
+    isShowingStale: wikiStale,
+    revalidate: revalidateWiki,
+  } = useStaleWhileRevalidate<WikiGraphData>(
+    `wiki:${projectRoot || "__none__"}`,
+    () => api.getWikiGraph(),
+    { enabled: !!projectRoot },
+  );
 
   // Telemetry (CodeGraph / Wiki) is collapsed by default so it reads as a quiet
   // status line, not a wall of stats competing with the actual findings. The
@@ -22,26 +43,27 @@ export default function StatePane({ artifacts }: {
   const toggleCg = () => setCgOpen((v) => { localStorage.setItem("pmharness.statePane.cgOpen", v ? "0" : "1"); return !v; });
   const toggleWiki = () => setWikiOpen((v) => { localStorage.setItem("pmharness.statePane.wikiOpen", v ? "0" : "1"); return !v; });
 
-  const fetchCg = async () => {
-    try {
-      const res = await api.getCodegraph();
-      setCg(res);
-    } catch (err) {
-      console.error(err);
-    }
-  };
+  useEffect(() => {
+    const onProject = (e: Event) => {
+      const path = (e as CustomEvent<string>).detail;
+      if (typeof path === "string") setProjectRoot(path);
+    };
+    window.addEventListener("harness-project-selected", onProject);
+    return () => window.removeEventListener("harness-project-selected", onProject);
+  }, []);
 
-  const fetchWiki = async () => {
-    setLoadingWiki(true);
-    try {
-      const res = await api.getWikiGraph();
-      setWiki(res);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingWiki(false);
-    }
-  };
+  useEffect(() => {
+    const onChange = () => {
+      void revalidateCg();
+      void revalidateWiki();
+    };
+    window.addEventListener("harness-config-changed", onChange);
+    window.addEventListener("harness-new-session", onChange);
+    return () => {
+      window.removeEventListener("harness-config-changed", onChange);
+      window.removeEventListener("harness-new-session", onChange);
+    };
+  }, [revalidateCg, revalidateWiki]);
 
   // Open the hosted wiki in the in-app Browser tab so a disconnected user has a
   // one-click path to create (or self-host) their portable LLM wiki. Mirrors the
@@ -54,44 +76,22 @@ export default function StatePane({ artifacts }: {
   };
 
   useEffect(() => {
-    fetchCg();
-    fetchWiki();
-    // Re-fetch CodeGraph + Wiki when the active project/workspace changes, so
-    // the panel reflects the newly-opened repo instead of showing stale stats.
-    // (Backend re-points + re-indexes CodeGraph on /api/workspace/open; the
-    // panel must re-poll to see it.) Mirrors FileTree's refresh wiring.
-    const onChange = () => { fetchCg(); fetchWiki(); };
-    window.addEventListener("harness-config-changed", onChange);
-    window.addEventListener("harness-new-session", onChange);
-    return () => {
-      window.removeEventListener("harness-config-changed", onChange);
-      window.removeEventListener("harness-new-session", onChange);
-    };
-  }, []);
-
-  // Poll /api/codegraph frequently while indexing so the panel flips to READY
-  // promptly on its own when the index finishes. setInterval waits one full
-  // interval before its first tick, so a slow (10s) poll left the panel showing
-  // INDEXING for up to 10s after completion -- which read as "stuck until you
-  // click the dir" (a manual click fires harness-config-changed -> instant
-  // refetch). A tight 2s poll makes the transition feel immediate.
-  useEffect(() => {
-    let timer: any = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
     if (cg?.status === "indexing") {
       timer = setInterval(() => {
-        fetchCg();
+        void revalidateCg();
       }, 2000);
     }
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [cg?.status]);
+  }, [cg?.status, revalidateCg]);
 
   const handleReindex = async () => {
     setReindexing(true);
     try {
       await api.reindexCodegraph();
-      await fetchCg();
+      await revalidateCg();
     } catch (err) {
       console.error(err);
     } finally {
@@ -219,12 +219,14 @@ export default function StatePane({ artifacts }: {
   const wikiWord = wikiOk ? "connected" : wikiErr ? "error" : "off";
   const wikiMetric = wikiOk ? `${(wiki?.nodes || []).length} pages` : "";
 
+  const statusDimmed = projectSwitching || cgValidating || wikiValidating;
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Telemetry status strip: CodeGraph + Wiki collapsed to quiet one-line
           pills. This is proof-of-power chrome -- kept available, kept subdued,
           so the eye lands on the findings below instead of a wall of stats. */}
-      <div className="px-2 pt-2 pb-1.5 shrink-0 flex flex-col gap-1">
+      <div className={`px-2 pt-2 pb-1.5 shrink-0 flex flex-col gap-1 ${panelOpacityClass(statusDimmed, cgStale || wikiStale)}`}>
         {/* CodeGraph pill */}
         <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden">
           <button
@@ -234,7 +236,7 @@ export default function StatePane({ artifacts }: {
           >
             {cgOpen ? <ChevronDown className="w-3 h-3 text-faint shrink-0" /> : <ChevronRight className="w-3 h-3 text-faint shrink-0" />}
             <span className="uppercase tracking-wider font-semibold text-faint">CodeGraph</span>
-            {cgIndexing
+            {cgValidating || cgIndexing
               ? <Loader2 className="w-2.5 h-2.5 animate-spin text-accent shrink-0" />
               : <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${cgDot}`} aria-hidden />}
             <span className="text-muted lowercase">{cgWord}</span>
@@ -304,7 +306,7 @@ export default function StatePane({ artifacts }: {
           >
             {wikiOpen ? <ChevronDown className="w-3 h-3 text-faint shrink-0" /> : <ChevronRight className="w-3 h-3 text-faint shrink-0" />}
             <span className="uppercase tracking-wider font-semibold text-faint">Wiki</span>
-            {loadingWiki
+            {wikiValidating
               ? <Loader2 className="w-2.5 h-2.5 animate-spin text-faint shrink-0" />
               : <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${wikiDot}`} aria-hidden />}
             <span className="text-muted lowercase">{wikiWord}</span>
@@ -332,12 +334,12 @@ export default function StatePane({ artifacts }: {
                       <ExternalLink className="w-2.5 h-2.5" /> Set up portablellm.wiki
                     </button>
                     <button
-                      onClick={fetchWiki}
-                      disabled={loadingWiki}
+                      onClick={() => void revalidateWiki()}
+                      disabled={wikiValidating}
                       className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
                       title="Re-check wiki connection"
                     >
-                      <RefreshCw className={`w-2.5 h-2.5 ${loadingWiki ? "animate-spin" : ""}`} />
+                      <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
                     </button>
                   </div>
                 </div>
@@ -349,12 +351,12 @@ export default function StatePane({ artifacts }: {
                     {wiki?.base_url && <span className="text-faint ml-1.5 truncate">{wiki.base_url}</span>}
                   </span>
                   <button
-                    onClick={fetchWiki}
-                    disabled={loadingWiki}
+                    onClick={() => void revalidateWiki()}
+                    disabled={wikiValidating}
                     className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
                     title="Refresh Wiki Stats"
                   >
-                    <RefreshCw className={`w-2.5 h-2.5 ${loadingWiki ? "animate-spin" : ""}`} />
+                    <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
                   </button>
                 </div>
               )}

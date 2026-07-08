@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X } from "lucide-react";
 import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
+import { panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
+import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
 // A clean, self-contained hover tooltip. The native `title=` tooltip renders as a
 // large unstyled OS box that covers the tracker and never wraps sensibly; this
@@ -249,8 +251,8 @@ function WorkerProgress({ tasks }: { tasks: Task[] }) {
 }
 
 export default function SwarmPane() {
-  const [data, setData] = useState<SwarmLive | null>(null);
   const [selectedProjectRoot, setSelectedProjectRoot] = useState("");
+  const projectSwitching = useProjectSwitching();
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
   const [expandedAlts, setExpandedAlts] = useState<Record<string, boolean>>({});
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
@@ -280,6 +282,18 @@ export default function SwarmPane() {
   }, []);
 
   const scopedRepo = selectedProjectRoot || undefined;
+
+  const {
+    data,
+    isValidating,
+    isShowingStale,
+    mutate,
+  } = useStaleWhileRevalidate<SwarmLive | null>(
+    `swarm:${scopedRepo || "__default__"}`,
+    () => api.swarmLive(scopedRepo),
+  );
+
+  const lastSigRef = useRef("");
 
   // Drive a 1s clock only while something is running so relative "last activity"
   // labels advance live. Stops ticking when nothing is running to avoid needless
@@ -316,7 +330,7 @@ export default function SwarmPane() {
     } finally {
       try {
         const res = await api.swarmLive(scopedRepo);
-        setData(res);
+        mutate(res);
       } catch {
         // Ignore; the poll loop will refetch shortly.
       }
@@ -333,10 +347,13 @@ export default function SwarmPane() {
   // the window is hidden, backs off when the backend is under load, and skips the
   // re-render when nothing changed.
   useEffect(() => {
+    lastSigRef.current = swarmSignature(data ?? null);
+  }, [scopedRepo]);
+
+  useEffect(() => {
     let active = true;
     let timer: number | undefined;
     let inFlight = false;
-    let lastSig = "";
 
     const schedule = (ms: number) => {
       if (active) timer = window.setTimeout(tick, ms);
@@ -351,11 +368,12 @@ export default function SwarmPane() {
         .then((res) => {
           if (!active) return;
           const sig = swarmSignature(res);
-          if (sig !== lastSig) { lastSig = sig; setData(res); }
+          if (sig !== lastSigRef.current) {
+            lastSigRef.current = sig;
+            mutate(res);
+          }
           const hasRunning = (res.jobs || []).some((j) => jobStatus(j) === "in_progress");
           const elapsed = performance.now() - startedAt;
-          // Base cadence by activity; add backoff proportional to how slow the
-          // backend just was, so we relieve rather than amplify contention.
           const base = hasRunning ? 2000 : 5000;
           const backoff = elapsed > 1500 ? Math.min(elapsed, 8000) : 0;
           schedule(base + backoff);
@@ -365,7 +383,6 @@ export default function SwarmPane() {
     };
 
     tick();
-    // Resume promptly when the user returns to a paused tab.
     const onVisible = () => {
       if (!document.hidden && !inFlight) { window.clearTimeout(timer); tick(); }
     };
@@ -375,7 +392,7 @@ export default function SwarmPane() {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [scopedRepo]);
+  }, [scopedRepo, mutate]);
 
   const allJobs = data?.jobs || [];
   const visibleJobs = allJobs.filter((j) => !dismissed.has(j.id));
@@ -764,14 +781,17 @@ export default function SwarmPane() {
     );
   };
 
+  const panelDimmed = projectSwitching || isValidating;
+
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-panel">
+    <div className={`flex flex-col h-full overflow-hidden bg-panel ${panelOpacityClass(panelDimmed, isShowingStale)}`}>
       {/* Persistent header: the tracker always announces itself, with live
           aggregate counts, so it reads as a dashboard even at rest. */}
       <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-edge/60 select-none">
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
           <Network size={11} className="text-faint/70" />
           <span>Swarm Tracker</span>
+          {isValidating && <Loader2 size={10} className="animate-spin text-muted shrink-0" />}
           {visibleJobs.length > 0 && <span className="text-faint/60 normal-case tracking-normal">({visibleJobs.length})</span>}
         </div>
         <div className="flex items-center gap-2.5 text-[10px]">
@@ -797,7 +817,9 @@ export default function SwarmPane() {
           <div className="flex flex-col items-center justify-center h-48 text-center px-6 gap-2">
             <Network size={20} className="text-faint/50" />
             <span className="text-[12px] text-muted font-medium">
-              {hiddenCount > 0 ? "All swarm jobs cleared" : "No swarm jobs yet"}
+              {isValidating && !data
+                ? "Loading swarm jobs..."
+                : hiddenCount > 0 ? "All swarm jobs cleared" : "No swarm jobs yet"}
             </span>
             {hiddenCount > 0 ? (
               // "Clear" hid every job. Without this affordance the pane read as
