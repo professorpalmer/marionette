@@ -676,7 +676,8 @@ def _record_recent_workspace(target_repo: str) -> list:
                     pass
             raise e
 
-        restrict_to_owner(ws_json_path)
+        if not restrict_to_owner(ws_json_path):
+            _diag("secure_files.restrict_failed", msg=ws_json_path)
         return recents
     except Exception:
         # Fallback to get recents if possible
@@ -736,7 +737,8 @@ def _forget_recent_workspace(forget_path: str) -> list:
                     pass
             raise e
 
-        restrict_to_owner(ws_json_path)
+        if not restrict_to_owner(ws_json_path):
+            _diag("secure_files.restrict_failed", msg=ws_json_path)
         return recents
     except Exception:
         # Fallback to get recents if possible
@@ -1099,7 +1101,8 @@ try:
     os.makedirs(os.path.dirname(_TOKEN_FILE), exist_ok=True)
     with open(_TOKEN_FILE, "w", encoding="utf-8") as _tf2:
         _tf2.write(_TOKEN)
-    restrict_to_owner(_TOKEN_FILE)
+    if not restrict_to_owner(_TOKEN_FILE):
+        _diag("secure_files.restrict_failed", msg=_TOKEN_FILE)
 except OSError:
     pass
 

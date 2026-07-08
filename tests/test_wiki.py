@@ -15,6 +15,26 @@ def test_configured_with_env(monkeypatch):
     assert WikiClient().configured is True
 
 
+def test_rejects_http_non_loopback_base_url(monkeypatch):
+    monkeypatch.delenv("HARNESS_WIKI_URL", raising=False)
+    monkeypatch.delenv("WIKI_API_BASE", raising=False)
+    c = WikiClient(base_url="http://evil.example.com:8000", token="tok")
+    assert c.base_url == ""
+    assert c.configured is False
+
+
+def test_accepts_https_base_url():
+    c = WikiClient(base_url="https://wiki.example.com", token="tok")
+    assert c.base_url == "https://wiki.example.com"
+    assert c.configured is True
+
+
+def test_accepts_http_loopback_base_url():
+    c = WikiClient(base_url="http://127.0.0.1:8000", token="tok")
+    assert c.base_url == "http://127.0.0.1:8000"
+    assert c.configured is True
+
+
 def test_ingest_unconfigured_returns_error(monkeypatch):
     monkeypatch.delenv("HARNESS_WIKI_URL", raising=False)
     monkeypatch.delenv("HARNESS_WIKI_TOKEN", raising=False)
@@ -56,10 +76,10 @@ def test_ingest_posts_correct_payload(monkeypatch):
         captured["auth"] = req.headers.get("Authorization")
         return FakeResp()
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    c = WikiClient(base_url="http://wiki", token="secret")
+    c = WikiClient(base_url="https://wiki.example.com", token="secret")
     r = c.ingest("My Slug", "body text", note="n")
     assert r.ok and r.rel_path.endswith("x.md")
-    assert captured["url"] == "http://wiki/owner/ingest"
+    assert captured["url"] == "https://wiki.example.com/owner/ingest"
     assert captured["body"]["slug"] == "my-slug"
     assert captured["body"]["content"] == "body text"
     assert captured["body"]["run_orchestrator"] is False

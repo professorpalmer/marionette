@@ -15,7 +15,15 @@ from harness.secure_files import restrict_to_owner
 def test_restrict_to_owner_reports_success(tmp_path):
     p = tmp_path / "secret.json"
     p.write_text("{}")
-    assert restrict_to_owner(str(p)) is True
+    result = restrict_to_owner(str(p))
+    assert isinstance(result, bool)
+    assert result is True
+
+
+def test_restrict_to_owner_nonexistent_path_returns_false():
+    result = restrict_to_owner("/nonexistent/path/that/does/not/exist.json")
+    assert isinstance(result, bool)
+    assert result is False
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX chmod semantics")

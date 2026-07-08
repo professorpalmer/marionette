@@ -66,6 +66,45 @@ def test_from_env(monkeypatch):
     assert b.max_tokens == 5000 and b.max_swarms == 7
 
 
+def test_default_unattended_ceilings():
+    b = AutoBudget()
+    assert b.max_tokens == 50_000
+    assert b.max_swarms == 20
+    assert b.max_seconds == 3600
+
+
+def test_from_env_defaults_match_dataclass(monkeypatch):
+    monkeypatch.delenv("HARNESS_AUTO_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("HARNESS_AUTO_MAX_SWARMS", raising=False)
+    monkeypatch.delenv("HARNESS_AUTO_MAX_SECONDS", raising=False)
+    b = AutoBudget.from_env()
+    assert b.max_tokens == 50_000
+    assert b.max_swarms == 20
+    assert b.max_seconds == 3600
+
+
+def test_child_exhaustion_visible_to_parent():
+    parent = AutoBudget(max_tokens=100).start()
+    child = parent.child()
+    child.add_tokens(150)
+    assert parent.tokens_used == 150
+    assert child.check() is not None
+    assert parent.check() is not None
+
+
+def test_ambient_budget_child_sees_parent_spend():
+    from harness.worker import ambient_budget, get_ambient_budget
+
+    governor = AutoBudget(max_tokens=1000).start()
+    governor.add_tokens(300)
+    with ambient_budget(governor):
+        assert get_ambient_budget() is governor
+        child = governor.child()
+        assert child.tokens_used == 300
+        child.add_tokens(200)
+    assert governor.tokens_used == 500
+
+
 def test_snapshot_shape():
     b = AutoBudget(max_tokens=100).start()
     b.add_tokens(40); b.add_swarm()

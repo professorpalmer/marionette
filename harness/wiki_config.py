@@ -9,6 +9,7 @@ import json
 import os
 
 from .secure_files import restrict_to_owner
+from .diag import note as _diag
 
 _WIKI_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "wiki.json")
 
@@ -65,7 +66,8 @@ def set_wiki_config(api_base: str = None, owner_token: str = None) -> dict:
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             json.dump(cur, f)
         os.replace(tmp, p)
-        restrict_to_owner(p)
+        if not restrict_to_owner(p):
+            _diag("secure_files.restrict_failed", msg=p)
     except Exception:
         pass
     _apply_to_env(cur)

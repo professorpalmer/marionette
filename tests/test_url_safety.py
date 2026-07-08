@@ -227,6 +227,72 @@ def test_is_safe_url_still_works(monkeypatch):
     assert ok, reason
 
 
+def _clear_dns_cache():
+    import harness.url_safety as us
+    with us._DNS_CACHE_LOCK:
+        us._DNS_CACHE.clear()
+
+
+def test_dns_cache_reuses_within_ttl(monkeypatch):
+    calls = []
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        calls.append(host)
+        fam = 2
+        return [(fam, 1, 6, "", ("93.184.216.34", port or 0))]
+
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
+    _clear_dns_cache()
+    url = "https://dns-cache-hit.example.com/page"
+    ok1, reason1 = is_safe_url(url)
+    ok2, reason2 = is_safe_url(url)
+    assert ok1 and ok2, (reason1, reason2)
+    assert len(calls) == 1
+
+
+def test_dns_cache_re_resolves_after_expiry(monkeypatch):
+    calls = []
+    clock = [0.0]
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        calls.append(host)
+        fam = 2
+        return [(fam, 1, 6, "", ("93.184.216.34", port or 0))]
+
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr("harness.url_safety.time.monotonic", lambda: clock[0])
+    _clear_dns_cache()
+    url = "https://dns-cache-expire.example.com/page"
+    ok1, _ = is_safe_url(url)
+    assert ok1
+    assert len(calls) == 1
+    clock[0] = 30.0
+    ok2, _ = is_safe_url(url)
+    assert ok2
+    assert len(calls) == 1
+    clock[0] = 61.0
+    ok3, _ = is_safe_url(url)
+    assert ok3
+    assert len(calls) == 2
+
+
+def test_pinned_does_not_use_dns_cache(monkeypatch):
+    calls = []
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        calls.append(host)
+        fam = 2
+        return [(fam, 1, 6, "", ("93.184.216.34", port or 0))]
+
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
+    _clear_dns_cache()
+    url = "https://dns-pinned-fresh.example.com/page"
+    ok1, _, _ = is_safe_url_pinned(url)
+    ok2, _, _ = is_safe_url_pinned(url)
+    assert ok1 and ok2
+    assert len(calls) == 2
+
+
 def test_pinned_ipv6(monkeypatch):
     _patch_resolve(monkeypatch, "2606:2800:220:1:248:1893:25c8:1946")
     ok, reason, pinned = is_safe_url_pinned("https://example.com/")

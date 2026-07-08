@@ -8,6 +8,7 @@ import subprocess
 import logging
 
 from .secure_files import restrict_to_owner
+from .diag import note as _diag
 
 logger = logging.getLogger("harness.hooks")
 
@@ -31,7 +32,8 @@ def save_hooks(hooks: list[dict]) -> None:
         with os.fdopen(temp_fd, "w", encoding="utf-8", newline="\n") as f:
             json.dump({"hooks": hooks}, f)
         os.replace(temp_path, _HOOKS_JSON)
-        restrict_to_owner(_HOOKS_JSON)
+        if not restrict_to_owner(_HOOKS_JSON):
+            _diag("secure_files.restrict_failed", msg=_HOOKS_JSON)
     except Exception as e:
         logger.error(f"Failed to save hooks: {e}")
 

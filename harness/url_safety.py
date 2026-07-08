@@ -11,8 +11,32 @@ import ipaddress
 import os
 import re
 import socket
+import threading
+import time
 import urllib.parse
 from typing import Optional, Tuple
+
+_DNS_CACHE: dict[str, tuple[float, list]] = {}
+_DNS_CACHE_LOCK = threading.Lock()
+_DNS_CACHE_TTL = 60.0
+_DNS_CACHE_MAX = 256
+
+
+def _cached_getaddrinfo(host: str, port, *, use_cache: bool) -> list:
+    """Resolve host via getaddrinfo, optionally serving a short-lived cache hit."""
+    if use_cache:
+        now = time.monotonic()
+        with _DNS_CACHE_LOCK:
+            entry = _DNS_CACHE.get(host)
+            if entry is not None and entry[0] > now:
+                return entry[1]
+    infos = socket.getaddrinfo(host, port or None, proto=socket.IPPROTO_TCP)
+    if use_cache and infos:
+        with _DNS_CACHE_LOCK:
+            if len(_DNS_CACHE) >= _DNS_CACHE_MAX:
+                _DNS_CACHE.pop(next(iter(_DNS_CACHE)))
+            _DNS_CACHE[host] = (time.monotonic() + _DNS_CACHE_TTL, infos)
+    return infos
 
 # Cloud metadata endpoints. These are ALWAYS blocked, regardless of any
 # escape hatch, because they are the classic SSRF credential-theft target.
@@ -96,7 +120,7 @@ def is_safe_url(url: str) -> Tuple[bool, str]:
     resolved IP. To close the TOCTOU DNS-rebinding window between the safety
     check and the actual HTTP request, use is_safe_url_pinned() instead.
     """
-    ok, reason, _ = _is_safe_url_impl(url)
+    ok, reason, _ = _is_safe_url_impl(url, use_dns_cache=True)
     return ok, reason
 
 
@@ -114,10 +138,10 @@ def is_safe_url_pinned(url: str) -> Tuple[bool, str, Optional[str]]:
     When the hostname is already a literal IP, *pinned_ip* is that literal.
     When the hostname does not resolve, *ok* is False and *pinned_ip* is None.
     """
-    return _is_safe_url_impl(url)
+    return _is_safe_url_impl(url, use_dns_cache=False)
 
 
-def _is_safe_url_impl(url: str) -> Tuple[bool, str, Optional[str]]:
+def _is_safe_url_impl(url: str, *, use_dns_cache: bool) -> Tuple[bool, str, Optional[str]]:
     """Shared implementation for is_safe_url and is_safe_url_pinned."""
     if not url or not isinstance(url, str):
         return False, "empty or non-string URL", None
@@ -158,7 +182,7 @@ def _is_safe_url_impl(url: str) -> Tuple[bool, str, Optional[str]]:
 
     # Resolve the hostname and check every resolved address.
     try:
-        infos = socket.getaddrinfo(host, parsed.port or None, proto=socket.IPPROTO_TCP)
+        infos = _cached_getaddrinfo(host, parsed.port, use_cache=use_dns_cache)
     except (socket.gaierror, socket.error, UnicodeError) as exc:
         return False, f"hostname {host_lc!r} could not be resolved: {exc}", None
 

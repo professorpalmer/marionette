@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.error
 
 from .secure_files import restrict_to_owner
+from .diag import note as _diag
 
 class GitProvisioner:
     def detect_gh(self) -> dict:
@@ -244,7 +245,8 @@ def save_device_token(token: str) -> None:
     except Exception:
         with open(path, "w", encoding="utf-8") as f:
             f.write(token)
-    restrict_to_owner(path)
+    if not restrict_to_owner(path):
+        _diag("secure_files.restrict_failed", msg=path)
 
 
 def load_connection() -> dict | None:

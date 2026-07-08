@@ -25,6 +25,7 @@ import json
 import os
 import re
 import time
+import ipaddress
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -32,6 +33,28 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .diag import note as _diag
+
+
+def _wiki_base_url_allowed(url: str) -> bool:
+    """Accept https anywhere, or http only to loopback (local wiki backend)."""
+    if not url:
+        return True
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    scheme = parsed.scheme.lower()
+    if scheme == "https":
+        return True
+    if scheme != "http":
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if host in {"localhost", "ip6-localhost", "ip6-loopback"}:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -49,6 +72,9 @@ class WikiClient:
         # WIKI_OWNER_TOKEN reach the tenant manifest/graph behind the share-tier gating.
         # Fall back to the public HARNESS_WIKI_URL / HARNESS_WIKI_TOKEN.
         self.base_url = (base_url or os.environ.get("WIKI_API_BASE", "") or os.environ.get("HARNESS_WIKI_URL", "")).rstrip("/")
+        if self.base_url and not _wiki_base_url_allowed(self.base_url):
+            _diag("wiki.insecure_base_url", msg=self.base_url)
+            self.base_url = ""
         self.token = token or os.environ.get("WIKI_OWNER_TOKEN", "") or os.environ.get("HARNESS_WIKI_TOKEN", "")
         self.subdir = subdir or os.environ.get("HARNESS_WIKI_SUBDIR", "conversations")
         self.timeout = timeout

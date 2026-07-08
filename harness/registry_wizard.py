@@ -10,6 +10,7 @@ from typing import Optional
 from .providers import Provider, PROVIDERS, get_provider
 from .keys import _read_keys
 from .secure_files import restrict_to_owner
+from .diag import note as _diag
 
 # Define paths
 def get_routing_file_path() -> str:
@@ -53,7 +54,8 @@ def write_json_atomic(path: str, data: dict, chmod_mode: Optional[int] = None):
         os.replace(tmp_path, path)
         if chmod_mode is not None:
             # Owner-only ACL on Windows too; plain os.chmod is a no-op there.
-            restrict_to_owner(path)
+            if not restrict_to_owner(path):
+                _diag("secure_files.restrict_failed", msg=path)
     except Exception:
         if os.path.exists(tmp_path):
             try:

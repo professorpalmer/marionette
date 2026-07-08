@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 from .mcp_client import StdioMcpClient, McpTool, McpError
 from .mcp_http_client import HttpMcpClient
 from .secure_files import restrict_to_owner
+from .diag import note as _diag
 
 CONFIG_DIR = Path(os.path.expanduser("~/.pmharness"))
 CONFIG_PATH = CONFIG_DIR / "mcp.json"
@@ -74,7 +75,8 @@ class McpManager:
             with os.fdopen(tmp_fd, 'w', encoding='utf-8', newline='\n') as f:
                 json.dump(data, f, indent=2)
             os.replace(tmp_path, path)
-            restrict_to_owner(path)
+            if not restrict_to_owner(path):
+                _diag("secure_files.restrict_failed", msg=path)
         except Exception:
             if os.path.exists(tmp_path):
                 try:

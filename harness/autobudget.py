@@ -28,9 +28,9 @@ from typing import Optional
 
 @dataclass
 class AutoBudget:
-    max_tokens: int = 100_000
+    max_tokens: int = 50_000
     max_seconds: int = 3600          # 1 hour default
-    max_swarms: int = 40
+    max_swarms: int = 20
     max_idle_steps: int = 3          # consecutive no-new-finding steps before halt
     killswitch_path: str = ""        # touch this file to stop a run
 
@@ -174,9 +174,9 @@ class AutoBudget:
             except ValueError:
                 return default
         return cls(
-            max_tokens=_i("HARNESS_AUTO_MAX_TOKENS", 100_000),
+            max_tokens=_i("HARNESS_AUTO_MAX_TOKENS", 50_000),
             max_seconds=_i("HARNESS_AUTO_MAX_SECONDS", 3600),
-            max_swarms=_i("HARNESS_AUTO_MAX_SWARMS", 40),
+            max_swarms=_i("HARNESS_AUTO_MAX_SWARMS", 20),
             max_idle_steps=_i("HARNESS_AUTO_MAX_IDLE", 3),
             killswitch_path=os.environ.get("HARNESS_AUTO_KILLSWITCH", "").strip(),
         )

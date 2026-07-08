@@ -85,10 +85,10 @@ def test_wiki_query_success(monkeypatch):
         
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     
-    client = WikiClient(base_url="http://wiki", token="secret")
+    client = WikiClient(base_url="https://wiki.example.com", token="secret")
     res = client.query("How does Auth work?")
     assert res == "Auth uses JWT in middleware.py"
-    assert captured["url"] == "http://wiki/wiki/query"
+    assert captured["url"] == "https://wiki.example.com/wiki/query"
     assert captured["body"] == {"question": "How does Auth work?"}
     assert captured["auth"] == "Bearer secret"
 
@@ -115,8 +115,8 @@ def test_wiki_query_fallback(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     
-    client = WikiClient(base_url="http://wiki", token="secret")
+    client = WikiClient(base_url="https://wiki.example.com", token="secret")
     res = client.query("What pages exist?")
     assert "Fallback wiki index summary:" in res
     assert "- Authentication (auth): Auth uses JWT" in res
-    assert "http://wiki/wiki/manifest.json" in calls
+    assert "https://wiki.example.com/wiki/manifest.json" in calls

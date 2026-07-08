@@ -4,6 +4,7 @@ import json
 import tempfile
 
 from .secure_files import restrict_to_owner
+from .diag import note as _diag
 
 _KEYS_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "keys.json")
 
@@ -36,7 +37,8 @@ def _write_keys(keys: dict):
         with os.fdopen(tmp_fd, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(keys, f)
         os.replace(tmp_path, path)
-        restrict_to_owner(path)
+        if not restrict_to_owner(path):
+            _diag("secure_files.restrict_failed", msg=path)
     except Exception:
         if os.path.exists(tmp_path):
             try:

@@ -128,12 +128,12 @@ def test_wiki_client_graph_prefers_direct_graph_endpoint(monkeypatch):
         raise AssertionError("unexpected url " + req.full_url)
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    client = WikiClient(base_url="http://mywiki", token="mysecret")
+    client = WikiClient(base_url="https://mywiki.example.com", token="mysecret")
     res = client.graph()
     assert res["error"] is None
     assert res["nodes"] == [{"id": "a", "title": "A", "section": None, "tags": None}]
     assert res["edges"] == [{"source": "a", "target": "b"}]
-    assert calls == ["http://mywiki/wiki/graph"]
+    assert calls == ["https://mywiki.example.com/wiki/graph"]
 
 
 def test_wiki_client_graph_live_mocked(monkeypatch):
@@ -171,7 +171,7 @@ def test_wiki_client_graph_live_mocked(monkeypatch):
         raise AssertionError("unexpected url " + url)
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    client = WikiClient(base_url="http://mywiki", token="mysecret")
+    client = WikiClient(base_url="https://mywiki.example.com", token="mysecret")
     res = client.graph()
     assert res["error"] is None
     assert len(res["nodes"]) == 2

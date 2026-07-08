@@ -10,6 +10,7 @@ from typing import Optional
 
 from .paths import path_within
 from .secure_files import restrict_to_owner
+from .diag import note as _diag
 
 logger = logging.getLogger("pmharness.worktrees")
 
@@ -421,7 +422,8 @@ def set_max_worktrees(max_count: int) -> None:
         with os.fdopen(temp_fd, "w", encoding="utf-8", newline="\n") as f:
             json.dump({"max_worktrees": max_count}, f)
         os.replace(temp_path, _WORKTREES_JSON)
-        restrict_to_owner(_WORKTREES_JSON)
+        if not restrict_to_owner(_WORKTREES_JSON):
+            _diag("secure_files.restrict_failed", msg=_WORKTREES_JSON)
     except Exception as exc:
         logger.warning("failed to persist max_worktrees to %s: %s", _WORKTREES_JSON, exc)
 
