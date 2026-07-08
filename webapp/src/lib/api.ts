@@ -91,6 +91,11 @@ export type Artifact = {
   // diffstat so job cards can show "3 files +40 -12" instead of truncated text.
   files?: string[] | null;
   diffstat?: { files: number; insertions: number; deletions: number } | null;
+  // Verification verdicts: "result" is failed/blocked/pass, "failure" is the
+  // machine class (no_model, billing_or_quota, ...). Used to render a swarm
+  // whose every worker fast-failed as a failed run, not a green "done".
+  result?: string;
+  failure?: string;
 };
 // Job.artifacts is a count in /api/jobs but a full list in /swarm/live; this
 // narrows to the embedded list (empty when the payload only carried a count).

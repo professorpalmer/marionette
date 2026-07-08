@@ -231,6 +231,12 @@ class DurableState:
                 # instead of "undefined".
                 "rejected": _normalize_rejected(payload.get("rejected")),
                 "detail": payload.get("reason") or payload.get("detail"),
+                # Verification verdicts. "result" is failed/blocked/pass;
+                # "failure" is the machine class (no_model, billing_or_quota).
+                # The GUI needs these to render a swarm whose every worker
+                # fast-failed as a red failed run instead of a green "done".
+                "result": payload.get("result"),
+                "failure": payload.get("failure"),
                 # Only present for patch artifacts; None elsewhere so the GUI can
                 # cheaply test truthiness before rendering a diffstat row.
                 "files": files,

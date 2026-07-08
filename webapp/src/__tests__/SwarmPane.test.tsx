@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SwarmPane from "../components/SwarmPane";
 import { api, type SwarmLive } from "../lib/api";
@@ -64,6 +64,61 @@ describe("SwarmPane model badge", () => {
 
     await waitFor(() => {
       expect(screen.getByTitle("Model: openrouter")).toHaveTextContent("openrouter");
+    });
+  });
+});
+
+describe("SwarmPane dead-run detection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it("renders a complete job whose every artifact failed as a failed run with the reason", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "complete",
+        adapter: "agentic",
+        artifacts: [
+          { type: "verification", headline: "audit", result: "failed", failure: "no_model" },
+          { type: "verification", headline: "audit", result: "failed", failure: "no_model" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    // Terminal jobs fold into the collapsed Finished accordion; open it.
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+
+    await waitFor(() => {
+      expect(screen.getByText(/all workers failed: no model/)).toBeInTheDocument();
+      expect(screen.getByText("failed")).toBeInTheDocument();
+      expect(screen.queryByText("done")).not.toBeInTheDocument();
+    });
+  });
+
+  it("keeps a complete job with real findings rendered as done", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "complete",
+        adapter: "agentic",
+        artifacts: [
+          { type: "finding", headline: "found a bug" },
+          { type: "verification", headline: "audit", result: "failed", failure: "no_model" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+
+    await waitFor(() => {
+      expect(screen.getByText("done")).toBeInTheDocument();
+      expect(screen.queryByText(/all workers failed/)).not.toBeInTheDocument();
     });
   });
 });

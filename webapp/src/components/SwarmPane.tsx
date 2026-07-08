@@ -170,6 +170,21 @@ function dedupeFindings(arts: Artifact[]): FindingRow[] {
   return [...rows.values()].sort((a, b) => rank(a.art.type) - rank(b.art.type));
 }
 
+// A "dead run": the job reads complete, but every artifact it produced is a
+// failed verdict -- e.g. all workers fast-failed with no_model before doing any
+// work. Older Puppetmaster versions stitched these into COMPLETE, so the
+// tracker painted a fully dead swarm as a healthy green "done" at $0 (the
+// worst failure mode: it looks like success). Detect it from the verdicts and
+// return the failure class so the card can render red with the reason.
+function jobDeadRunFailure(j: Job): string | null {
+  if (jobStatus(j) !== "completed") return null;
+  const arts = jobArtifactList(j);
+  if (arts.length === 0) return null;
+  const failed = arts.filter((a) => (a.result || "").toLowerCase() === "failed" || (a.result || "").toLowerCase() === "blocked");
+  if (failed.length !== arts.length) return null;
+  return failed.find((a) => a.failure)?.failure || "workers failed";
+}
+
 function jobCost(j: Job): number {
   return Number(j.est_cost_usd || 0);
 }
@@ -210,8 +225,8 @@ function jobPhase(j: Job): { key: string; label: string; index: number; failed: 
   return { key: "dispatched", label: "dispatched", index: 0, failed: false };
 }
 
-function PhaseStrip({ job }: { job: Job }) {
-  const { index, failed, key } = jobPhase(job);
+function PhaseStrip({ job, phase }: { job: Job; phase?: ReturnType<typeof jobPhase> }) {
+  const { index, failed, key } = phase ?? jobPhase(job);
   const active = key !== "done" && !failed;
   return (
     <div className="flex items-center gap-1 mt-1.5" title={PHASES.join(" -> ")}>
@@ -416,7 +431,7 @@ export default function SwarmPane() {
   const visibleJobs = allJobs.filter((j) => !dismissed.has(j.id));
   const running = visibleJobs.filter((j) => !isTerminal(j));
   const finished = visibleJobs.filter((j) => isTerminal(j));
-  const failedCount = finished.filter((j) => jobStatus(j) === "cancelled").length;
+  const failedCount = finished.filter((j) => jobStatus(j) === "cancelled" || jobDeadRunFailure(j) !== null).length;
   const runningCount = running.filter((j) => jobStatus(j) === "in_progress").length;
   const anyRunning = runningCount > 0;
 
@@ -435,10 +450,13 @@ export default function SwarmPane() {
   // accordion. Defined in-scope so it closes over the expand/dismiss state
   // instead of threading a dozen props.
   const renderJob = (j: Job) => {
-    const st = jobStatus(j);
+    const deadRunFailure = jobDeadRunFailure(j);
+    const st: Status = deadRunFailure ? "cancelled" : jobStatus(j);
     const manualExpanded = expandedJobs[j.id];
     const isExpanded = manualExpanded !== undefined ? manualExpanded : (st === "in_progress");
-    const phase = jobPhase(j);
+    const phase = deadRunFailure
+      ? { key: "failed", label: "failed", index: 2, failed: true }
+      : jobPhase(j);
 
     const artifacts = jobArtifactList(j);
     const routingArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() === "ROUTING");
@@ -553,9 +571,17 @@ export default function SwarmPane() {
             </div>
           )}
 
+          {/* Dead run: every worker fast-failed before doing work. Say so and
+              why, instead of letting the card read as a normal finished swarm. */}
+          {deadRunFailure && (
+            <div className="pl-6 pr-1 mt-1 text-[9.5px] text-risk/90">
+              all workers failed: {deadRunFailure.replace(/_/g, " ")} -- no work ran, nothing was spent
+            </div>
+          )}
+
           {/* Phase strip + label -- the at-a-glance "where is this swarm". */}
           <div className="flex items-center gap-2 pl-6 pr-1 mt-1">
-            <div className="flex-1"><PhaseStrip job={j} /></div>
+            <div className="flex-1"><PhaseStrip job={j} phase={phase} /></div>
             <span className={`text-[9px] font-medium tabular-nums shrink-0 ${
               phase.failed ? "text-risk/80" : phase.key === "done" ? "text-good/80" : "text-accent/80"
             }`}>
