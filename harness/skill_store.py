@@ -56,7 +56,10 @@ class Skill:
     @property
     def slug(self) -> str:
         if getattr(self, "supersedes", ""):
-            return f"{self.supersedes}-patch"
+            # Keep the -patch suffix inside the 48-char filename cap: a long
+            # base slug + "-patch" re-truncated by _slug loses the suffix and
+            # COLLIDES with the base skill's file (overwriting it on save).
+            return _slug(self.supersedes)[:42].rstrip("-") + "-patch"
         return _slug(self.name)
 
     def to_markdown(self) -> str:
@@ -137,9 +140,12 @@ class SkillStore:
             if p.exists():
                 return p
         # Legacy fallback: older writers (and direct file drops) saved skills
-        # under un-truncated filenames, while API slugs are always the 48-char
-        # _slug of the name. Without this scan those skills parse and list
-        # fine but can never be approved/rejected -- get() misses the file.
+        # under un-truncated or otherwise non-canonical filenames, while API
+        # slugs come from the parsed skill. Without this scan those skills
+        # parse and list fine but can never be approved/rejected -- get()
+        # misses the file. Match by filename slug first, then by the slug the
+        # file's content actually produces (covers -patch files whose name
+        # diverges from the filename).
         safe = _slug(slug)
         for st in STATES:
             d = self.root / st
@@ -147,6 +153,17 @@ class SkillStore:
                 continue
             for f in d.glob("*.md"):
                 if _slug(f.stem) == safe:
+                    return f
+        for st in STATES:
+            d = self.root / st
+            if not d.exists():
+                continue
+            for f in d.glob("*.md"):
+                try:
+                    parsed = _parse(f.read_text(encoding="utf-8", errors="replace"))
+                except Exception:
+                    continue
+                if parsed.slug == slug:
                     return f
         return None
 

@@ -39,6 +39,24 @@ def test_store_finds_legacy_untruncated_filenames(tmp_path):
     assert (tmp_path / "active" / f"{sk.slug}.md").exists()
 
 
+def test_patch_slug_never_collides_with_base(tmp_path):
+    """A -patch variant of a skill whose slug is near the 48-char filename cap
+    must not truncate back to the base slug: that made the patch file OVERWRITE
+    the base skill on save."""
+    long_name = "Debug empty UI panel despite backend having data"
+    base = Skill(name=long_name, state="pending")
+    assert len(base.slug) == 48  # the pathological length that collided
+    patch = Skill(name="improved", state="pending", supersedes=base.slug)
+    assert patch.slug != base.slug
+    assert patch.slug.endswith("-patch")
+    assert len(patch.slug) <= 48
+
+    s = SkillStore(root=str(tmp_path))
+    s.save(base)
+    s.save(patch)
+    assert s.get(base.slug).name == long_name  # base survived the patch save
+
+
 def test_store_list_and_used(tmp_path):
     s = SkillStore(root=str(tmp_path))
     s.save(Skill(name="A", state="active"))
