@@ -131,3 +131,140 @@ def test_run_parallel_provider_default(monkeypatch):
 
     finally:
         shutil.rmtree(repo_dir)
+
+
+def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
+    """mode=analysis with empty-diff worker -> swarm_result applied=True and
+    local job completed (not the red 'swarm failed' badge)."""
+    import time
+
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = HarnessConfig()
+        cfg.repo = repo_dir
+        session = ConversationalSession(cfg)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+
+        expects_seen = []
+
+        def mock_worker_run(self):
+            expects_seen.append(getattr(self, "expects_diff", True))
+            return WorkerResult(
+                ok=True,
+                patch="",
+                files_changed=[],
+                summary="Last assistant message: Audit findings: none.",
+            )
+
+        monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
+
+        mock_pilot = MagicMock()
+        first_resp = MagicMock()
+        first_resp.text = json.dumps({
+            "say": "Running analysis",
+            "actions": [{
+                "kind": "run_parallel",
+                "goals": ["Audit auth"],
+                "mode": "analysis",
+            }],
+        })
+        first_resp.meta = {}
+        first_resp.error = None
+        mock_pilot.chat.return_value = first_resp
+        session.pilot = mock_pilot
+
+        events = list(session.send("audit please"))
+        swarm_pendings = [e for e in events if e.kind == "swarm_pending"]
+        assert len(swarm_pendings) == 1
+        job_ids = swarm_pendings[0].data["job_ids"]
+        assert len(job_ids) == 1
+        job_id = job_ids[0]
+
+        start_time = time.time()
+        while time.time() - start_time < 5:
+            with session._swarm_futures_lock:
+                if not session._swarm_futures:
+                    break
+            time.sleep(0.1)
+
+        drain_events = list(session.drain_swarm_results())
+        swarm_results = [e for e in drain_events if e.kind == "swarm_result"]
+        assert len(swarm_results) == 1
+        res = swarm_results[0].data["result"]
+        assert res["applied"] is True
+        assert res.get("error") in (None, "")
+        assert res.get("has_patch_art") is False
+        assert "Audit findings" in (res.get("summary") or "")
+
+        with session._local_jobs_lock:
+            job = session._local_jobs.get(job_id)
+            assert job is not None
+            assert job["status"] == "completed"
+            assert job["role"] == "analysis"
+
+        assert expects_seen == [False]
+    finally:
+        shutil.rmtree(repo_dir)
+
+
+def test_run_parallel_implement_empty_diff_not_applied(monkeypatch):
+    """Implement mode empty diff still surfaces applied=False (swarm failed badge)."""
+    import time
+
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = HarnessConfig()
+        cfg.repo = repo_dir
+        session = ConversationalSession(cfg)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+
+        def mock_worker_run(self):
+            assert getattr(self, "expects_diff", True) is True
+            return WorkerResult(
+                ok=False,
+                patch="",
+                summary="no changes captured in the worktree diff (worktree=/tmp/x)",
+            )
+
+        monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
+
+        mock_pilot = MagicMock()
+        first_resp = MagicMock()
+        first_resp.text = json.dumps({
+            "say": "Implementing",
+            "actions": [{
+                "kind": "run_parallel",
+                "goals": ["Add a feature"],
+                "mode": "implement",
+            }],
+        })
+        first_resp.meta = {}
+        first_resp.error = None
+        mock_pilot.chat.return_value = first_resp
+        session.pilot = mock_pilot
+
+        events = list(session.send("implement please"))
+        job_ids = [e for e in events if e.kind == "swarm_pending"][0].data["job_ids"]
+        job_id = job_ids[0]
+
+        start_time = time.time()
+        while time.time() - start_time < 5:
+            with session._swarm_futures_lock:
+                if not session._swarm_futures:
+                    break
+            time.sleep(0.1)
+
+        drain_events = list(session.drain_swarm_results())
+        swarm_results = [e for e in drain_events if e.kind == "swarm_result"]
+        assert len(swarm_results) == 1
+        res = swarm_results[0].data["result"]
+        assert res["applied"] is False
+
+        with session._local_jobs_lock:
+            job = session._local_jobs.get(job_id)
+            assert job["status"] == "completed" or job["status"] == "failed"
+            # _finish_local_job uses ok=not error; empty-diff failure has error
+            # from apply_msg path -- either failed or completed depending on
+            # whether error key is set. applied=False is the badge contract.
+    finally:
+        shutil.rmtree(repo_dir)

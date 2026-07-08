@@ -1118,6 +1118,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       api.getSwarmResults()
         .then((res) => {
           if (res && res.results && res.results.length > 0) {
+            // At most one triggerResume per poll tick (first pilot_resume wins;
+            // extras only set resumeQueuedRef). Mid-stream path already coalesces.
+            let pollResumeFired = false;
             res.results.forEach((evt) => {
               const anyEvt = evt as any;
               if (anyEvt.kind === "swarm_result" && anyEvt.data) {
@@ -1126,7 +1129,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                 // Background job finished while the session was idle. The backend
                 // already extended history with the result + continuation; kick
                 // off a keep-alive turn so the pilot continues without a prompt.
-                resumeTriggerRef.current();
+                if (!pollResumeFired) {
+                  pollResumeFired = true;
+                  resumeTriggerRef.current();
+                } else {
+                  resumeQueuedRef.current = true;
+                }
               } else if (anyEvt.kind === "distilled" && anyEvt.data) {
                 const d = anyEvt.data;
                 const parts: string[] = [];

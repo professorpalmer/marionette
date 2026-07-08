@@ -229,6 +229,11 @@ def test_normalize_near_identical_paths():
 
 
 def test_loop_suppresses_identical_repeat():
+    """Without a cached successful result, an identical repeat still hard-suppresses.
+
+    Intentional: loop-guard replay only fires when a prior SUCCESSFUL result was
+    recorded for the same (kind, args); otherwise the old SUPPRESSED path remains.
+    """
     state = new_turn_guard_state()
     act = _Act(kind="read_file", path="main.py")
 
@@ -240,6 +245,42 @@ def test_loop_suppresses_identical_repeat():
     assert verdict.reason == "loop"
     assert "SUPPRESSED" in verdict.message
     assert "run_swarm" in verdict.message
+
+
+def test_loop_replays_identical_successful_call():
+    """Second identical successful call returns cached content, not SUPPRESSED."""
+    from harness.pilot_guards import record_successful_result
+
+    state = new_turn_guard_state()
+    act = _Act(kind="read_file", path="main.py")
+    record_action_execution(state, "read_file", act)
+    record_successful_result(state, "read_file", act, "(read_file main.py returned)\nhello")
+
+    verdict = check_loop_guard(state, "read_file", act)
+    assert verdict.suppress is True
+    assert verdict.replay is True
+    assert verdict.reason == "loop_replay"
+    assert "[cached repeat of identical call]" in verdict.message
+    assert "hello" in verdict.message
+    assert "SUPPRESSED" not in verdict.message
+
+
+def test_loop_hard_suppresses_after_repeat_cap():
+    """The (LOOP_REPEAT_CAP + 1)th identical call hard-suppresses after replays."""
+    from harness.pilot_guards import record_successful_result
+
+    state = new_turn_guard_state()
+    act = _Act(kind="read_file", path="main.py")
+    # Original + (CAP - 1) replays already recorded => prior == CAP
+    for _ in range(LOOP_REPEAT_CAP):
+        record_action_execution(state, "read_file", act)
+        record_successful_result(state, "read_file", act, "cached body")
+
+    verdict = check_loop_guard(state, "read_file", act)
+    assert verdict.suppress is True
+    assert verdict.replay is False
+    assert verdict.reason == "loop"
+    assert "SUPPRESSED" in verdict.message
 
 
 def test_loop_suppresses_near_identical_repeat():
@@ -360,10 +401,14 @@ def test_is_native_exploration_classification():
 
 
 def test_session_suppresses_duplicate_read(monkeypatch, tmp_path):
-    """End-to-end: duplicate read_file in one turn is blocked in conversation."""
+    """End-to-end: duplicate read_file in one turn replays the cached result.
+
+    Intentional behavior change: identical successful calls now return a cached
+    replay (token bleed fix) instead of a SUPPRESSED error. Hard-suppress still
+    fires after LOOP_REPEAT_CAP identical executions in the same turn.
+    """
     import json
     import os
-    import shutil
     import tempfile
 
     from harness.config import HarnessConfig
@@ -396,8 +441,13 @@ def test_session_suppresses_duplicate_read(monkeypatch, tmp_path):
 
     session.pilot = DuplicatePilot()
     events = list(session.send("go"))
-    results = [e.data.get("error", "") for e in events if e.kind == "action_result"]
-    assert any("SUPPRESSED" in (r or "") for r in results)
+    # Second identical read should be a cached replay, not a SUPPRESSED error.
+    errors = [e.data.get("error", "") for e in events if e.kind == "action_result"]
+    assert not any("SUPPRESSED" in (r or "") for r in errors)
+    history_text = " ".join(
+        m.get("content", "") for m in session._history if isinstance(m.get("content"), str)
+    )
+    assert "[cached repeat of identical call]" in history_text
 
 
 @pytest.mark.parametrize(
@@ -442,7 +492,7 @@ def test_puppetmaster_cli_detection_negatives(command):
         (
             "puppetmaster.exe status",
             "action_result",
-            "prior run_swarm action_result",
+            "action_result/swarm_result",
         ),
         (
             "python -m puppetmaster route --instruction plan",
@@ -459,6 +509,20 @@ def test_cli_redirect_mapping(command, expected_kind, expected_fragment):
     assert verdict.reason == "cli_redirect"
     assert expected_kind in verdict.message or expected_fragment in verdict.message
     assert expected_fragment in verdict.message or expected_fragment in example
+
+
+def test_cli_redirect_status_names_in_history_records():
+    """Status/artifacts CLI redirect must name action_result/swarm_result in history."""
+    verdict = check_cli_redirect(
+        new_turn_guard_state(),
+        "run_command",
+        _Act(command="puppetmaster status"),
+    )
+    assert verdict.suppress is True
+    assert "action_result" in verdict.message
+    assert "swarm_result" in verdict.message
+    assert "search_state" in verdict.message
+    assert "ALREADY" in verdict.message or "already" in verdict.message.lower()
 
 
 def test_cli_redirect_kill_switch(monkeypatch):

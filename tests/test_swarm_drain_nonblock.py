@@ -75,6 +75,37 @@ def test_drain_injects_pilot_resume_continuation():
     assert "without waiting for the user to ask" in resume[0]["content"]
 
 
+def test_drain_coalesces_multiple_results_to_one_pilot_resume():
+    """Three queued results emit per-job swarm_result badges but exactly one
+    pilot_resume and one merged user continuation naming all finished job ids."""
+    s = _session()
+    for i in range(3):
+        s._swarm_results.put({
+            "job_id": f"job{i}",
+            "objective": f"goal {i}",
+            "result": {
+                "applied": True,
+                "files": [f"f{i}.py"],
+                "summary": f"done {i}",
+            },
+        })
+    events = list(s.drain_swarm_results())
+    kinds = [e.kind for e in events]
+    assert kinds.count("swarm_result") == 3
+    assert kinds.count("pilot_resume") == 1
+    resume_ev = next(e for e in events if e.kind == "pilot_resume")
+    assert set(resume_ev.data.get("job_ids") or []) == {"job0", "job1", "job2"}
+
+    resumes = [
+        m for m in s._history
+        if m["role"] == "user" and "finished]" in m["content"]
+    ]
+    assert len(resumes) == 1
+    assert "job0" in resumes[0]["content"]
+    assert "job1" in resumes[0]["content"]
+    assert "job2" in resumes[0]["content"]
+
+
 def test_drain_persists_swarm_badge_to_display_transcript():
     """The green/red 'swarm done / swarm failed' badge must survive a session
     reload: the live ConvEvent only reaches a renderer that is open right now,

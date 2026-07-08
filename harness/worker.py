@@ -335,6 +335,7 @@ class ProviderWorker:
         keep_worktree_on_failure: bool = False,
         require_codegraph: bool = False,
         job_id: str = "",
+        expects_diff: bool = True,
     ):
         self.repo = os.path.abspath(repo) if repo else ""
         self.goal = goal
@@ -342,6 +343,9 @@ class ProviderWorker:
         self.reach = reach
         self.base = base
         self.job_id = job_id or ""
+        # Analysis/review workers report findings without editing; empty worktree
+        # diffs are success for them. Implement mode still requires a patch.
+        self.expects_diff = bool(expects_diff)
         # Shared-budget threading: if a supervising fully-auto run installed a
         # governing budget for this thread, adopt a child() of it so this
         # worker's spend rolls up into the ONE tree-wide ceiling that never
@@ -564,12 +568,11 @@ class ProviderWorker:
             escaped = _detect_escaped_writes(events, wt_path)
 
             if not patch.strip():
-                # Empty diff is a benign no-op, not an execution failure. `ok`
-                # is False (no usable patch) but `success` is True so the finally
-                # block cleans up the worktree -- keep_worktree_on_failure retains
-                # only on exceptions, and an unchanged worktree has nothing to
-                # inspect. (See test_worker_empty_change; the ok/success split is
-                # intentional, not an inconsistency.)
+                # Empty diff is a benign no-op for the run itself (`success` True
+                # so the finally block cleans the worktree). Whether `ok` is True
+                # depends on expects_diff: implement workers need a patch;
+                # analysis/review workers report findings without editing.
+                # Escaped writes always fail regardless of expects_diff.
                 success = True
                 if escaped:
                     # Loud, worktree-scoped summary: the user needs to know the
@@ -592,9 +595,32 @@ class ProviderWorker:
                         escaped_paths=escaped,
                         declarative_checks=check_payload,
                     )
+                if self.expects_diff:
+                    return WorkerResult(
+                        ok=False,
+                        summary=f"no changes captured in the worktree diff (worktree={wt_path})",
+                        events=events,
+                        worktree=wt_path,
+                        declarative_checks=check_payload,
+                    )
+                # Analysis/review: empty diff is success; summarize from the
+                # same last-message / halt-reason builder as the patch path.
+                last_message = ""
+                halt_reason = ""
+                for ev in events:
+                    if ev.kind == "message":
+                        last_message = ev.data.get("text") or ""
+                    elif ev.kind == "auto_halt":
+                        halt_reason = ev.data.get("reason") or ""
+                summary_parts = []
+                if halt_reason:
+                    summary_parts.append(f"Halt reason: {halt_reason}")
+                if last_message:
+                    summary_parts.append(f"Last assistant message: {last_message}")
+                summary = "\n".join(summary_parts) if summary_parts else "No summary available."
                 return WorkerResult(
-                    ok=False,
-                    summary=f"no changes captured in the worktree diff (worktree={wt_path})",
+                    ok=True,
+                    summary=summary,
                     events=events,
                     worktree=wt_path,
                     declarative_checks=check_payload,

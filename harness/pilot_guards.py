@@ -206,6 +206,9 @@ class TurnGuardState:
     """Mutable per-turn state; reset at the start of each pilot action batch."""
 
     execution_counts: dict[tuple[str, str], int] = field(default_factory=dict)
+    # Prior successful tool-result content keyed by (kind, normalized_args).
+    # Used by the loop guard to replay identical calls instead of re-executing.
+    successful_results: dict[tuple[str, str], str] = field(default_factory=dict)
     exploration_count: int = 0
     delegation_seen: bool = False
     user_message: str = ""
@@ -220,6 +223,9 @@ class GuardVerdict:
     suppress: bool
     reason: str = ""
     message: str = ""
+    # When True, ``message`` is a cached prior result to return as a successful
+    # action_result (loop-guard replay) rather than an error.
+    replay: bool = False
 
 
 def is_broad_intent_user_message(message: str) -> bool:
@@ -345,7 +351,7 @@ def puppetmaster_cli_native_mapping(command: str) -> tuple[str, str]:
     if subcmd in _CLI_ROUTE_SUBCMDS:
         return ("route_task", 'instruction="..."')
     if subcmd in _CLI_STATUS_SUBCMDS:
-        return ("action_result", "use prior run_swarm action_result records")
+        return ("action_result", "read prior action_result/swarm_result; or search_state")
     return (
         "run_swarm",
         'goal="...", roles=["explore","pipeline-mapper"]',
@@ -355,8 +361,9 @@ def puppetmaster_cli_native_mapping(command: str) -> tuple[str, str]:
 def _cli_redirect_message(native_kind: str, example: str) -> str:
     if native_kind == "action_result":
         return (
-            "(REDIRECT: Puppetmaster CLI status/artifacts are already in prior "
-            "run_swarm action_result records — read those instead of run_command.)"
+            "(REDIRECT: Puppetmaster CLI status/artifacts results are ALREADY in "
+            "history as action_result/swarm_result records — read those instead of "
+            "run_command. Use search_state to look up durable job/artifact state.)"
         )
     return (
         f"(REDIRECT: use native {native_kind} instead of Puppetmaster CLI. "
@@ -449,13 +456,44 @@ def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
 
     key = (kind, normalize_action_args(kind, act))
     prior = state.execution_counts.get(key, 0)
-    if prior >= 1:
+    if prior < 1:
+        return GuardVerdict(False)
+
+    # LOOP_REPEAT_CAP bounds how many times the same (kind, args) may run this
+    # turn (1 original + up to CAP-1 cached replays). The (CAP+1)th identical
+    # call hard-suppresses with the existing error -- so the cap finally means
+    # something (previously every repeat was suppressed immediately).
+    if prior >= LOOP_REPEAT_CAP:
         return GuardVerdict(
             suppress=True,
             reason="loop",
             message=_loop_suppress_message(kind, prior),
         )
-    return GuardVerdict(False)
+
+    cached = state.successful_results.get(key)
+    if cached is not None:
+        return GuardVerdict(
+            suppress=True,
+            reason="loop_replay",
+            message=f"[cached repeat of identical call]\n{cached}",
+            replay=True,
+        )
+
+    # Identical call but no successful prior result to replay -- hard suppress.
+    return GuardVerdict(
+        suppress=True,
+        reason="loop",
+        message=_loop_suppress_message(kind, prior),
+    )
+
+
+def record_successful_result(state: TurnGuardState, kind: str, act: Any, content: str) -> None:
+    """Store a successful tool result for loop-guard replay within this turn."""
+    try:
+        key = (kind, normalize_action_args(kind, act))
+        state.successful_results[key] = content or ""
+    except Exception:
+        pass
 
 
 def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:

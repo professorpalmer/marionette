@@ -200,6 +200,34 @@ def test_worker_empty_change(monkeypatch):
         shutil.rmtree(repo_dir)
 
 
+def test_worker_empty_change_analysis_ok(monkeypatch):
+    """Analysis/review workers (expects_diff=False) treat empty diff as success
+    and summarize from the last assistant message / halt reason."""
+    repo_dir = create_temp_git_repo()
+    try:
+        def mock_run_auto_empty(self, objective, budget=None, require_codegraph=True):
+            yield ConvEvent("message", {"text": "Audit complete: no issues found in auth."})
+            yield ConvEvent("auto_halt", {"reason": "pilot reports objective met"})
+
+        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto_empty)
+
+        worker = ProviderWorker(
+            repo=repo_dir,
+            goal="Audit the repository",
+            expects_diff=False,
+            keep_worktree_on_failure=True,
+        )
+        res = worker.run()
+
+        assert res.ok is True
+        assert res.patch == ""
+        assert "Audit complete" in (res.summary or "")
+        assert "no changes captured" not in (res.summary or "")
+        assert not os.path.exists(res.worktree)
+    finally:
+        shutil.rmtree(repo_dir)
+
+
 def test_worker_destructive_guards(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:

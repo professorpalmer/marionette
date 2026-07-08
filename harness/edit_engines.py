@@ -169,6 +169,7 @@ def select_edit_engine(config: "HarnessConfig", requested_adapter: str = "") -> 
 def run_edit_worker(
     config: "HarnessConfig", goal: str, requested_adapter: str = "",
     job_id: str = "", session_id: str = "", cwd: str = "",
+    expects_diff: bool = True,
 ) -> "WorkerResult":
     """Run the selected in-process edit engine and return a normalized result.
 
@@ -177,29 +178,41 @@ def run_edit_worker(
     engine = select_edit_engine(config, requested_adapter)
     target_cwd = cwd or config.repo
     if engine == "agentic":
-        result = run_agentic_edit(config, goal, session_id=session_id, cwd=target_cwd)
+        result = run_agentic_edit(
+            config, goal, session_id=session_id, cwd=target_cwd,
+            expects_diff=expects_diff,
+        )
         if result.error in _FALLBACK_REASONS:
             _diag("edit_engines.run_edit_worker",
                   msg=f"agentic engine unavailable ({result.error}); falling back to native")
-            return run_native_edit(config, goal, job_id=job_id, session_id=session_id, cwd=target_cwd)
+            return run_native_edit(
+                config, goal, job_id=job_id, session_id=session_id, cwd=target_cwd,
+                expects_diff=expects_diff,
+            )
         return result
-    return run_native_edit(config, goal, job_id=job_id, session_id=session_id, cwd=target_cwd)
+    return run_native_edit(
+        config, goal, job_id=job_id, session_id=session_id, cwd=target_cwd,
+        expects_diff=expects_diff,
+    )
 
 
 def run_implement(
     config: "HarnessConfig", goal: str, requested_adapter: str = "",
     job_id: str = "", session_id: str = "", cwd: str = "",
+    expects_diff: bool = True,
 ) -> "WorkerResult":
     """Dispatch a single implement worker (agentic or native)."""
     return run_edit_worker(
         config, goal, requested_adapter=requested_adapter,
         job_id=job_id, session_id=session_id, cwd=cwd,
+        expects_diff=expects_diff,
     )
 
 
 def run_parallel(
     config: "HarnessConfig", goals: list[str], requested_adapter: str = "",
     session_id: str = "", cwd: str = "",
+    expects_diff: bool = True,
 ) -> list["WorkerResult"]:
     """Run several implement workers sequentially (caller fans out concurrency)."""
     results = []
@@ -209,6 +222,7 @@ def run_parallel(
         results.append(run_implement(
             config, goal, requested_adapter=requested_adapter,
             session_id=session_id, cwd=cwd,
+            expects_diff=expects_diff,
         ))
     return results
 
@@ -216,6 +230,7 @@ def run_parallel(
 def run_native_edit(
     config: "HarnessConfig", goal: str, job_id: str = "",
     session_id: str = "", cwd: str = "",
+    expects_diff: bool = True,
 ) -> "WorkerResult":
     """Marionette's own pilot loop driven in a worktree (the rich engine)."""
     from harness.autobudget import AutoBudget
@@ -226,6 +241,7 @@ def run_native_edit(
         driver=config.driver, reach=config.reach,
         budget=AutoBudget.from_env(), require_codegraph=False,
         job_id=job_id,
+        expects_diff=expects_diff,
     )
     # ProviderWorker.run() stamps tokens_out from the budget on every return path.
     return worker.run()
@@ -233,6 +249,7 @@ def run_native_edit(
 
 def run_agentic_edit(
     config: "HarnessConfig", goal: str, *, session_id: str = "", cwd: str = "",
+    expects_diff: bool = True,
 ) -> "WorkerResult":
     """Puppetmaster's first-class agentic adapter in implement mode, run in an
     isolated worktree; the diff is captured for the normal review/apply gate.
@@ -325,6 +342,11 @@ def run_agentic_edit(
                 if failure in ("no_model", "unknown_provider", "route_failed"):
                     return WorkerResult(ok=False, error=AGENTIC_ROUTE_FAILED,
                                         summary=final_text or "Agentic engine could not select a model/provider.")
+                if not expects_diff:
+                    return WorkerResult(
+                        ok=True, tokens_out=tokens_out, tokens_in=tokens_in,
+                        summary=final_text or "No summary available.",
+                    )
                 return WorkerResult(ok=False, tokens_out=tokens_out, tokens_in=tokens_in,
                                     summary=final_text or "no changes produced")
 

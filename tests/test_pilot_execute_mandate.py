@@ -17,3 +17,9 @@ def test_pilot_system_covers_ssh_and_shell_env():
 
 def test_pilot_system_forbids_handing_manual_command_lists():
     assert "type by\nhand" in PILOT_SYSTEM or "type by hand" in PILOT_SYSTEM
+
+
+def test_pilot_system_forbids_puppetmaster_cli_shell():
+    assert "NEVER shell the Puppetmaster CLI" in PILOT_SYSTEM
+    assert "run_swarm" in PILOT_SYSTEM
+    assert "search_state" in PILOT_SYSTEM

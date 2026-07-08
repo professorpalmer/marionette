@@ -1663,7 +1663,9 @@ class ConversationalSession(ToolDispatchMixin):
         except Exception:
             return ""
 
-    def _append_action_result(self, act: Any, aid: str, content: str, is_native: bool) -> None:
+    def _append_action_result(
+        self, act: Any, aid: str, content: str, is_native: bool, *, ok: bool = True,
+    ) -> None:
         tc_id = getattr(act, "tool_call_id", None) or aid
         from harness.context_budget import maybe_persist_result
         clamped_content = maybe_persist_result(
@@ -1696,6 +1698,27 @@ class ConversationalSession(ToolDispatchMixin):
         if read_path:
             msg["_read_path"] = read_path
         self._history.append(msg)
+
+        # Loop-guard cache: remember successful results so identical repeats
+        # within the turn can replay instead of re-executing (token bleed).
+        # Skip suppress/redirect/error-shaped content even if ok was left True.
+        if ok:
+            try:
+                from .pilot_guards import record_successful_result
+                gs = getattr(self, "_turn_guard_state", None)
+                kind = getattr(act, "kind", "") or ""
+                head = (clamped_content or "")[:24]
+                if (
+                    gs is not None
+                    and kind
+                    and kind != "__invalid__"
+                    and not head.startswith("(SUPPRESSED")
+                    and not head.startswith("(REDIRECT")
+                    and " failed:" not in (clamped_content or "")[:120]
+                ):
+                    record_successful_result(gs, kind, act, clamped_content)
+            except Exception:
+                pass
 
     def _read_allowed_roots(self) -> list:
         """Roots read_file may read from: the open workspace, plus the app's own
@@ -2908,6 +2931,7 @@ class ConversationalSession(ToolDispatchMixin):
             # 4. Execute each action as a collapsible tool-call.
             READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "search_files", "web_search", "web_fetch", "read_pdf", "view_image", "lsp"}
             guard_state = new_turn_guard_state(user_message)
+            self._turn_guard_state = guard_state
             guard_suppressed: dict[int, Any] = {}
             guard_recorded_indices: set[int] = set()
             prefetch = {}
@@ -2919,6 +2943,21 @@ class ConversationalSession(ToolDispatchMixin):
                     if guards_active():
                         guard_verdict = check_pilot_guards(guard_state, act.kind, act)
                         if guard_verdict.suppress:
+                            if getattr(guard_verdict, "replay", False):
+                                guard_suppressed[idx] = guard_verdict
+                                # Replay still counts toward the loop-repeat cap.
+                                try:
+                                    record_action_execution(guard_state, act.kind, act)
+                                except Exception:
+                                    pass
+                                continue
+                            # Defer hard loop-suppress to execution time so an
+                            # earlier identical action in this turn can populate
+                            # the successful-result cache for replay. Other
+                            # guards (swarm_gate, delegate, budget) still apply
+                            # immediately.
+                            if getattr(guard_verdict, "reason", "") == "loop":
+                                continue
                             guard_suppressed[idx] = guard_verdict
                             continue
                         record_action_execution(guard_state, act.kind, act)
@@ -3059,28 +3098,62 @@ class ConversationalSession(ToolDispatchMixin):
                             msg=f"{cli_verdict.reason} suppressed {act.kind}: {cli_verdict.message[:200]}",
                         )
                         yield ConvEvent("action_result", {"id": aid, "error": cli_verdict.message})
-                        self._append_action_result(act, aid, cli_verdict.message, is_native)
+                        self._append_action_result(act, aid, cli_verdict.message, is_native, ok=False)
                         continue
 
                 if guards_active():
                     if idx in guard_suppressed:
                         guard_verdict = guard_suppressed[idx]
+                        if getattr(guard_verdict, "replay", False):
+                            _diag_note(
+                                "pilot_guards",
+                                msg=f"{guard_verdict.reason} replayed {act.kind}",
+                            )
+                            yield ConvEvent("action_result", {
+                                "id": aid,
+                                "num": 1,
+                                "types": ["cached"],
+                                "adapter": "local",
+                                "mode": "tool",
+                                "artifacts": [{"type": "cached", "headline": "cached repeat of identical call"}],
+                            })
+                            self._append_action_result(act, aid, guard_verdict.message, is_native, ok=True)
+                            continue
                         _diag_note(
                             "pilot_guards",
                             msg=f"{guard_verdict.reason} suppressed {act.kind}: {guard_verdict.message[:200]}",
                         )
                         yield ConvEvent("action_result", {"id": aid, "error": guard_verdict.message})
-                        self._append_action_result(act, aid, guard_verdict.message, is_native)
+                        self._append_action_result(act, aid, guard_verdict.message, is_native, ok=False)
                         continue
                     if idx not in guard_recorded_indices:
                         guard_verdict = check_pilot_guards(guard_state, act.kind, act)
                         if guard_verdict.suppress:
+                            if getattr(guard_verdict, "replay", False):
+                                try:
+                                    record_action_execution(guard_state, act.kind, act)
+                                except Exception:
+                                    pass
+                                _diag_note(
+                                    "pilot_guards",
+                                    msg=f"{guard_verdict.reason} replayed {act.kind}",
+                                )
+                                yield ConvEvent("action_result", {
+                                    "id": aid,
+                                    "num": 1,
+                                    "types": ["cached"],
+                                    "adapter": "local",
+                                    "mode": "tool",
+                                    "artifacts": [{"type": "cached", "headline": "cached repeat of identical call"}],
+                                })
+                                self._append_action_result(act, aid, guard_verdict.message, is_native, ok=True)
+                                continue
                             _diag_note(
                                 "pilot_guards",
                                 msg=f"{guard_verdict.reason} suppressed {act.kind}: {guard_verdict.message[:200]}",
                             )
                             yield ConvEvent("action_result", {"id": aid, "error": guard_verdict.message})
-                            self._append_action_result(act, aid, guard_verdict.message, is_native)
+                            self._append_action_result(act, aid, guard_verdict.message, is_native, ok=False)
                             continue
                         record_action_execution(guard_state, act.kind, act)
 
@@ -3968,6 +4041,16 @@ class ConversationalSession(ToolDispatchMixin):
                         # native pilot when no provider key is present / native is asked.
                         from harness.edit_engines import select_edit_engine
                         engine = select_edit_engine(self.config, act.adapter or "")
+                        # Mode drives whether an empty worktree diff is success
+                        # (analysis/review) or failure (implement). Do NOT infer
+                        # from prompt keywords -- only the explicit mode field.
+                        try:
+                            _mode = (getattr(act, "mode", None) or "implement").strip().lower()
+                        except Exception:
+                            _mode = "implement"
+                        if _mode not in ("implement", "analysis", "review"):
+                            _mode = "implement"
+                        expects_diff = _mode not in ("analysis", "review")
                         yield ConvEvent("action_start", {
                             "id": aid,
                             "kind": "run_implement",
@@ -3997,7 +4080,7 @@ class ConversationalSession(ToolDispatchMixin):
                             short = uuid.uuid4().hex[:8]
                             job_id = f"local-{short}"
                             self._session_job_ids.append(job_id)
-                            self._register_local_job(job_id, act.goal, role="implement", cwd=effective_repo)
+                            self._register_local_job(job_id, act.goal, role=_mode, cwd=effective_repo)
                             
                             # Warm heavy imports single-threaded before the worker
                             # thread races the PyInstaller PYZ reader (see fn docs).
@@ -4007,7 +4090,11 @@ class ConversationalSession(ToolDispatchMixin):
                             # rather than queueing unbounded on the executor;
                             # the objective release below happens via the
                             # existing "claimed and not dispatched" cleanup.
-                            if not self._submit_swarm(self._run_provider_worker_background, job_id, act.goal, act.adapter or "", _target_repo_override):
+                            if not self._submit_swarm(
+                                self._run_provider_worker_background,
+                                job_id, act.goal, act.adapter or "", _target_repo_override,
+                                expects_diff,
+                            ):
                                 cap_msg = (
                                     f"Swarm capacity reached ({self._swarm_inflight()} in flight); "
                                     "not dispatching more right now. Wait for an in-flight worker to finish."
@@ -4281,6 +4368,13 @@ class ConversationalSession(ToolDispatchMixin):
                         # goal (keys-only, router-picked) or the native pilot fallback.
                         from harness.edit_engines import select_edit_engine
                         engine = select_edit_engine(self.config, act.adapter or "")
+                        try:
+                            _mode = (getattr(act, "mode", None) or "implement").strip().lower()
+                        except Exception:
+                            _mode = "implement"
+                        if _mode not in ("implement", "analysis", "review"):
+                            _mode = "implement"
+                        expects_diff = _mode not in ("analysis", "review")
                         yield ConvEvent("action_start", {
                             "id": aid,
                             "kind": "run_parallel",
@@ -4308,7 +4402,7 @@ class ConversationalSession(ToolDispatchMixin):
                                 short = uuid.uuid4().hex[:8]
                                 job_id = f"local-{short}"
                                 try:
-                                    self._register_local_job(job_id, sub_goal, role="implement", cwd=effective_repo)
+                                    self._register_local_job(job_id, sub_goal, role=_mode, cwd=effective_repo)
                                     # Submit the selected edit engine through the
                                     # bounded-inflight gate. A False return means
                                     # the pool is at capacity: release the
@@ -4316,6 +4410,7 @@ class ConversationalSession(ToolDispatchMixin):
                                     submitted = self._submit_swarm(
                                         self._run_provider_worker_background,
                                         job_id, sub_goal, act.adapter or "", _target_repo_override,
+                                        expects_diff,
                                     )
                                 except Exception:
                                     # Never dispatched -> release so it is not leaked.
@@ -5396,7 +5491,10 @@ class ConversationalSession(ToolDispatchMixin):
         with self._local_jobs_lock:
             return [dict(job) for job in self._local_jobs.values()]
 
-    def _run_provider_worker_background(self, job_id: str, objective: str, requested_adapter: str = "", target_repo: str = "") -> None:
+    def _run_provider_worker_background(
+        self, job_id: str, objective: str, requested_adapter: str = "",
+        target_repo: str = "", expects_diff: bool = True,
+    ) -> None:
         try:
             from harness.worker import WorkerResult
 
@@ -5405,7 +5503,10 @@ class ConversationalSession(ToolDispatchMixin):
             # target_repo (optional): abs path to a DIFFERENT git repo than the
             # open workspace; swaps self.config for a shallow-copied per-dispatch
             # HarnessConfig so the engines transparently target that repo.
-            res = self._run_edit_worker_bounded(objective, requested_adapter, job_id=job_id, target_repo=target_repo)
+            res = self._run_edit_worker_bounded(
+                objective, requested_adapter, job_id=job_id,
+                target_repo=target_repo, expects_diff=expects_diff,
+            )
             if self._local_job_cancelled(job_id):
                 # A cancel landed while the worker was running. The job was already
                 # flipped to 'cancelled' by cancel_local_job(); drop the result so
@@ -5459,6 +5560,37 @@ class ConversationalSession(ToolDispatchMixin):
                     "num_artifacts": 0,
                     "artifact_types": [],
                     "ar_list": []
+                }
+            elif not (res.patch or "").strip():
+                # Analysis/review success with no patch: report applied=True so
+                # the badge is green, but do NOT synthesize a patch artifact or
+                # call _apply_worker_patch. Cost attribution still runs.
+                tokens_in = int(getattr(res, "tokens_in", 0) or 0)
+                tokens_out = int(getattr(res, "tokens_out", 0) or 0)
+                tokens_cached = int(getattr(res, "tokens_cached", 0) or 0)
+                with self._apply_lock:
+                    self._tokens_used += tokens_out + tokens_in
+                    self._tokens_in += tokens_in
+                    self._tokens_out += tokens_out
+                    self._tokens_cached += tokens_cached
+                    self._attribute_worker_cost(
+                        tokens_in, tokens_out,
+                        real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0))
+                res_dict = {
+                    "job_id": job_id,
+                    "applied": True,
+                    "files": [],
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                    "tokens_cached": tokens_cached,
+                    "summary": res.summary or "Successfully completed analysis task",
+                    "error": None,
+                    "artifacts": [],
+                    "has_patch_art": False,
+                    "apply_msg": "",
+                    "num_artifacts": 0,
+                    "artifact_types": [],
+                    "ar_list": [],
                 }
             else:
                 artifacts = []
@@ -5782,7 +5914,8 @@ class ConversationalSession(ToolDispatchMixin):
         return v if v > 0 else 0.0
 
     def _run_edit_worker_bounded(self, objective: str, requested_adapter: str,
-                                 job_id: str = "", target_repo: str = ""):
+                                 job_id: str = "", target_repo: str = "",
+                                 expects_diff: bool = True):
         """Run the edit worker under a hard wall-clock deadline. The work runs in
         a daemon thread; if it blows the deadline we return None so the caller can
         free its _swarm_pool slot immediately. The orphaned worker thread is a
@@ -5832,6 +5965,7 @@ class ConversationalSession(ToolDispatchMixin):
                         job_id=job_id,
                         session_id=self.harness_session_id or "",
                         cwd=effective_cwd,
+                        expects_diff=expects_diff,
                     )
             except Exception as exc:  # surfaced to the caller after join
                 box["exc"] = exc
@@ -5876,105 +6010,148 @@ class ConversationalSession(ToolDispatchMixin):
             return
         try:
             import queue
+            finished_jobs: list[tuple[str, str]] = []  # (job_id, objective)
             while True:
                 try:
                     item = self._swarm_results.get_nowait()
                 except queue.Empty:
                     break
-                
-                job_id = item["job_id"]
-                objective = item["objective"]
-                res_job = item["result"]
-                
-                if isinstance(res_job, dict) and res_job.get("kind") in ("distilled", "wiki_prepared"):
-                    yield ConvEvent(res_job["kind"], res_job["data"])
-                    self._swarm_results.task_done()
-                    continue
-                
-                # Append a labeled follow-up assistant message to self._history (SINGLE-WRITER held via _busy lock!)
-                applied = res_job["applied"]
-                applied_files = res_job["files"]
-                summary = res_job["summary"]
-                
-                msg_content = f"[swarm result for: {objective}] {summary}"
-                if applied and applied_files:
-                    msg_content += f"; applied {len(applied_files)} files"
-                elif res_job.get("held_for_review"):
-                    msg_content += f"; held for review"
-                elif res_job.get("has_patch_art") and not applied:
-                    msg_content += f"; patch failed to apply: {res_job.get('apply_msg')}"
-                
-                self._history.append({"role": "assistant", "content": msg_content})
 
-                # The assistant "[swarm result ...]" line above is only a RECORD of
-                # the raw result -- there is nothing for the pilot to respond to, so
-                # it would otherwise sit until the user prompts "check it". Append a
-                # short user-role continuation that re-activates the pilot so it
-                # reports the finding and takes the next step on its own. Written
-                # here under the single-writer _busy lock, exactly like the record.
-                resume_text = (
-                    f"[background job {job_id} finished] The result above is now "
-                    "available. Report the outcome to the user concisely and take "
-                    "the appropriate next step (validate, run tests, apply/fix, or "
-                    "run a narrowed follow-up) without waiting for the user to ask."
-                )
-                # Re-activate the pilot with a user-role continuation. But never
-                # create two adjacent user messages: some chat APIs (Anthropic)
-                # require strict user/assistant alternation, and the concurrency
-                # stress test guards it. If the last message is already a user turn
-                # (e.g. the user typed while a job was in flight), MERGE the resume
-                # text into it instead of appending a second user message.
-                if self._history and self._history[-1].get("role") == "user":
-                    self._history[-1]["content"] = (
-                        self._history[-1]["content"].rstrip() + "\n\n" + resume_text
-                    )
-                else:
-                    self._history.append({"role": "user", "content": resume_text})
+                try:
+                    job_id = item["job_id"]
+                    objective = item["objective"]
+                    res_job = item["result"]
 
-                # Persist the outcome to the display transcript so the green/red
-                # "swarm done / swarm failed" badge survives a session reload or
-                # app restart -- the live ConvEvent below only reaches a renderer
-                # that is open right now.
-                self._display_transcript.append({
-                    "type": "swarm_result",
-                    "job_id": job_id,
-                    "applied": bool(applied),
-                    "files": list(applied_files or []),
-                    "summary": summary or "",
-                    "error": res_job.get("error") or None,
-                    "objective": objective,
-                })
+                    if isinstance(res_job, dict) and res_job.get("kind") in ("distilled", "wiki_prepared"):
+                        yield ConvEvent(res_job["kind"], res_job["data"])
+                        self._swarm_results.task_done()
+                        continue
 
-                # Yield ConvEvent kind="swarm_result"
-                yield ConvEvent("swarm_result", {
-                    "job_id": job_id,
-                    "objective": objective,
-                    "result": res_job,
-                    "message": msg_content
-                })
+                    # Append a labeled follow-up assistant message to self._history (SINGLE-WRITER held via _busy lock!)
+                    applied = res_job["applied"]
+                    applied_files = res_job["files"]
+                    summary = res_job["summary"]
 
-                # Signal the UI that the pilot is being resumed to interpret this.
-                yield ConvEvent("pilot_resume", {
-                    "job_id": job_id,
-                    "objective": objective
-                })
+                    msg_content = f"[swarm result for: {objective}] {summary}"
+                    if applied and applied_files:
+                        msg_content += f"; applied {len(applied_files)} files"
+                    elif res_job.get("held_for_review"):
+                        msg_content += f"; held for review"
+                    elif res_job.get("has_patch_art") and not applied:
+                        msg_content += f"; patch failed to apply: {res_job.get('apply_msg')}"
 
-                pending_review = res_job.get("pending_review")
-                if pending_review:
-                    yield ConvEvent("pending_review", {
-                        "id": pending_review["id"],
-                        "summary": pending_review["summary"]
+                    self._history.append({"role": "assistant", "content": msg_content})
+
+                    # Persist the outcome to the display transcript so the green/red
+                    # "swarm done / swarm failed" badge survives a session reload or
+                    # app restart -- the live ConvEvent below only reaches a renderer
+                    # that is open right now.
+                    self._display_transcript.append({
+                        "type": "swarm_result",
+                        "job_id": job_id,
+                        "applied": bool(applied),
+                        "files": list(applied_files or []),
+                        "summary": summary or "",
+                        "error": res_job.get("error") or None,
+                        "objective": objective,
                     })
 
-                checkpoint_id = res_job.get("checkpoint_id")
-                if checkpoint_id:
-                    yield ConvEvent("checkpoint", {
-                        "id": checkpoint_id,
-                        "trigger": "swarm_patch",
-                        "label": f"Before swarm patch {job_id[:8]}"
+                    # Yield ConvEvent kind="swarm_result" (per-job; badges depend on it)
+                    yield ConvEvent("swarm_result", {
+                        "job_id": job_id,
+                        "objective": objective,
+                        "result": res_job,
+                        "message": msg_content
                     })
-                
-                self._swarm_results.task_done()
+
+                    pending_review = res_job.get("pending_review")
+                    if pending_review:
+                        yield ConvEvent("pending_review", {
+                            "id": pending_review["id"],
+                            "summary": pending_review["summary"]
+                        })
+
+                    checkpoint_id = res_job.get("checkpoint_id")
+                    if checkpoint_id:
+                        yield ConvEvent("checkpoint", {
+                            "id": checkpoint_id,
+                            "trigger": "swarm_patch",
+                            "label": f"Before swarm patch {job_id[:8]}"
+                        })
+
+                    finished_jobs.append((job_id, objective))
+                except Exception:
+                    # Best-effort: never raise on the chat hot path; degrade to
+                    # continuing the drain so remaining results still surface.
+                    pass
+                finally:
+                    try:
+                        self._swarm_results.task_done()
+                    except Exception:
+                        pass
+
+            # Coalesce: one merged user continuation + one pilot_resume per drain
+            # pass (not per job). Keeps the keep-alive contract while avoiding
+            # N resume turns when N workers finish in the same poll window.
+            if finished_jobs:
+                try:
+                    if len(finished_jobs) == 1:
+                        job_id, _obj = finished_jobs[0]
+                        resume_text = (
+                            f"[background job {job_id} finished] The result above is now "
+                            "available. Report the outcome to the user concisely and take "
+                            "the appropriate next step (validate, run tests, apply/fix, or "
+                            "run a narrowed follow-up) without waiting for the user to ask."
+                        )
+                    else:
+                        ids = ", ".join(jid for jid, _ in finished_jobs)
+                        resume_text = (
+                            f"[background jobs {ids} finished] The results above are now "
+                            "available. Report the outcomes to the user concisely and take "
+                            "the appropriate next step (validate, run tests, apply/fix, or "
+                            "run a narrowed follow-up) without waiting for the user to ask."
+                        )
+                    # Re-activate the pilot with a user-role continuation. But never
+                    # create two adjacent user messages: some chat APIs (Anthropic)
+                    # require strict user/assistant alternation, and the concurrency
+                    # stress test guards it. If the last message is already a user turn
+                    # (e.g. the user typed while a job was in flight), MERGE the resume
+                    # text into it instead of appending a second user message.
+                    if self._history and self._history[-1].get("role") == "user":
+                        self._history[-1]["content"] = (
+                            self._history[-1]["content"].rstrip() + "\n\n" + resume_text
+                        )
+                    else:
+                        self._history.append({"role": "user", "content": resume_text})
+
+                    yield ConvEvent("pilot_resume", {
+                        "job_id": finished_jobs[0][0],
+                        "job_ids": [jid for jid, _ in finished_jobs],
+                        "objective": finished_jobs[0][1],
+                    })
+                except Exception:
+                    # Degrade: emit one resume per job (previous behavior) so the
+                    # keep-alive contract is preserved even if merge fails.
+                    for job_id, objective in finished_jobs:
+                        try:
+                            resume_text = (
+                                f"[background job {job_id} finished] The result above is now "
+                                "available. Report the outcome to the user concisely and take "
+                                "the appropriate next step (validate, run tests, apply/fix, or "
+                                "run a narrowed follow-up) without waiting for the user to ask."
+                            )
+                            if self._history and self._history[-1].get("role") == "user":
+                                self._history[-1]["content"] = (
+                                    self._history[-1]["content"].rstrip() + "\n\n" + resume_text
+                                )
+                            else:
+                                self._history.append({"role": "user", "content": resume_text})
+                            yield ConvEvent("pilot_resume", {
+                                "job_id": job_id,
+                                "objective": objective,
+                            })
+                        except Exception:
+                            pass
         finally:
             self._busy.release()
 
