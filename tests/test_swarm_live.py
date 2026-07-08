@@ -75,7 +75,16 @@ def test_swarm_live_surfaces_local_provider_jobs():
         try:
             headers = {"X-Harness-Token": srv._TOKEN}
 
-            srv._pilot._register_local_job("local-abc123", "Build the scheduler")
+            workspace = str(tmp_dir)
+            srv._cfg.repo = workspace
+            if not srv._sessions.active:
+                srv._sessions.create("Swarm live test", repo=workspace, workspace_root=workspace)
+            srv._sync_pilot_session_id()
+            srv._pilot._register_local_job(
+                "local-abc123",
+                "Build the scheduler",
+                cwd=workspace,
+            )
 
             data = json.loads(_get(port, "/api/swarm/live", headers=headers).read().decode())
             live = [j for j in data["jobs"] if j.get("id") == "local-abc123"]

@@ -1,5 +1,5 @@
 // Typed harness API -- thin wrappers over the transport seam.
-import { getJSON, postJSON, stream, withToken, uploadFile, type StreamEvent } from "./transport";
+import { getJSON, postJSON, deleteJSON, stream, withToken, uploadFile, type StreamEvent } from "./transport";
 
 export type Config = {
   driver: string; reach: string; budget: number;
@@ -108,8 +108,16 @@ export type SwarmLive = {
   };
   jobs: Job[];
 };
+export type WorkspaceInfo = {
+  repo: string;
+  branch: string;
+  is_git: boolean;
+  codegraph_status: string;
+  recents?: string[];
+};
+
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
-export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number };
+export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number };
 
 export type SessionState = {
   state: "idle" | "thinking" | "awaiting_swarm";
@@ -392,7 +400,10 @@ export const api = {
   getSwarmResults: () => getJSON<SwarmResultsResponse>(withToken("/api/session/swarm-results")),
   createSession: (title?: string) => postJSON<Session>("/api/sessions/create", { title }),
   switchSession: (id: string) => postJSON("/api/sessions/switch", { id }),
-  deleteSession: (id: string) => postJSON<{ ok: boolean; active: string | null }>("/api/sessions/delete", { session: id }),
+  deleteSession: (id: string) =>
+    deleteJSON<{ ok: boolean; active: string | null }>(withToken(`/api/sessions/${encodeURIComponent(id)}`)),
+  clearSessions: () =>
+    postJSON<{ ok: boolean; deleted: number; active: string | null }>(withToken("/api/sessions/clear"), {}),
   archiveSession: (id: string, archived: boolean) => postJSON<{ ok: boolean }>("/api/sessions/archive", { session: id, archived }),
   renameSession: (id: string, title: string) => postJSON<{ ok: boolean }>("/api/sessions/rename", { session: id, title }),
   swapPilot: (model: string) => getJSON(withToken(`/api/pilot?model=${encodeURIComponent(model)}`)),
@@ -522,7 +533,7 @@ export const api = {
 
   openWorkspace: (path: string) => postJSON<{ ok: boolean; repo: string; branch: string; is_git: boolean; codegraph: "indexing" | "ready" | "unsupported"; active_session?: string }>("/api/workspace/open", { path }),
   forgetWorkspace: (path: string) => postJSON<{ ok: boolean; recents: string[] }>("/api/workspace/forget", { path }),
-  getWorkspace: () => getJSON<{ repo: string; branch: string; is_git: boolean; codegraph_status: string; recents?: string[] }>("/api/workspace"),
+  getWorkspace: () => getJSON<WorkspaceInfo>("/api/workspace"),
   getWorkspaceFiles: () => getJSON<{ files: string[] }>(withToken("/api/workspace/files")),
   searchSymbols: (q: string) => getJSON<{ symbols: { name: string; kind: string; path: string; line: number }[]; status?: string }>(withToken("/api/workspace/symbols?q=" + encodeURIComponent(q))),
   readFile: (path: string) => getJSON<{ ok: boolean; path: string; content: string; truncated: boolean; error?: string; binary?: boolean }>("/api/file/read?path=" + encodeURIComponent(path)),

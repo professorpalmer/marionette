@@ -2905,7 +2905,7 @@ class ConversationalSession(ToolDispatchMixin):
 
             # 4. Execute each action as a collapsible tool-call.
             READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "search_files", "web_search", "web_fetch", "read_pdf", "view_image", "lsp"}
-            guard_state = new_turn_guard_state()
+            guard_state = new_turn_guard_state(user_message)
             guard_suppressed: dict[int, Any] = {}
             guard_recorded_indices: set[int] = set()
             prefetch = {}

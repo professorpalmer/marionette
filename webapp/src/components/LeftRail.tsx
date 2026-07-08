@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, XCircle } from "lucide-react";
-import { api, type Workspace, type Session, type Job, type Artifact } from "../lib/api";
+import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, XCircle, Trash2 } from "lucide-react";
+import { api, type Workspace, type WorkspaceInfo, type Session, type Job, type Artifact } from "../lib/api";
 import { pickFolder } from "../lib/transport";
 
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
@@ -18,6 +18,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     archived: boolean;
   } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmClearSessions, setConfirmClearSessions] = useState(false);
   const [projectContextMenu, setProjectContextMenu] = useState<{
     x: number;
     y: number;
@@ -66,10 +67,30 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const [opening, setOpening] = useState(false);
-  const [workspaceInfo, setWorkspaceInfo] = useState<any>(null);
+  const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
 
-  const fetchWorkspace = () => {
+  const fetchWorkspace = () =>
     api.getWorkspace().then(setWorkspaceInfo).catch(() => {});
+
+  const handleForgetProject = async (path: string) => {
+    const previous = workspaceInfo;
+    setWorkspaceInfo((prev) => {
+      if (!prev) return prev;
+      return { ...prev, recents: (prev.recents || []).filter((r) => r !== path) };
+    });
+    setExpandedProjects((prev) => {
+      const next = { ...prev };
+      delete next[path];
+      return next;
+    });
+    try {
+      const res = await api.forgetWorkspace(path);
+      setWorkspaceInfo((prev) => (prev ? { ...prev, recents: res.recents } : prev));
+    } catch (err) {
+      console.error(err);
+      if (previous) setWorkspaceInfo(previous);
+      else await fetchWorkspace();
+    }
   };
 
   const loadWs = () => api.workspaces().then(setWorkspaces).catch(() => {});
@@ -97,12 +118,36 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     };
   }, []);
 
+  // Poll workspace status while CodeGraph indexes so the badge flips to READY
+  // without opening a session or switching directories.
+  useEffect(() => {
+    if (workspaceInfo?.codegraph_status !== "indexing") return;
+    const poll = () => { fetchWorkspace(); };
+    poll();
+    const timer = setInterval(poll, 4000);
+    return () => clearInterval(timer);
+  }, [workspaceInfo?.codegraph_status]);
+
+  useEffect(() => {
+    if (workspaceInfo?.codegraph_status !== "indexing") return;
+    const onFocus = () => { fetchWorkspace(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [workspaceInfo?.codegraph_status]);
+
   const handleOpenProject = async (path: string) => {
     setOpening(true);
     try {
       const res = await api.openWorkspace(path);
       if (res.ok) {
-        fetchWorkspace();
+        setWorkspaceInfo((prev): WorkspaceInfo => ({
+          repo: res.repo,
+          branch: res.branch,
+          is_git: res.is_git,
+          codegraph_status: res.codegraph,
+          recents: prev?.recents,
+        }));
+        await fetchWorkspace();
         await loadWs();
         await loadSess();
         window.dispatchEvent(new Event("harness-config-changed"));
@@ -187,6 +232,23 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     window.addEventListener("harness-new-session", onNew);
     return () => window.removeEventListener("harness-new-session", onNew);
   }, []);
+  const handleDeleteSession = async (id: string) => {
+    const res = await api.deleteSession(id);
+    await loadSess();
+    if (res.active) {
+      await switchSession(res.active);
+    }
+  };
+
+  const handleClearSessions = async () => {
+    const res = await api.clearSessions();
+    await loadSess();
+    if (res.active) {
+      await switchSession(res.active);
+    }
+    setConfirmClearSessions(false);
+  };
+
   const handleExport = (sid: string, format: "md" | "json") => {
     const url = api.exportUrl(sid, format);
     const a = document.createElement("a");
@@ -262,7 +324,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         <div className="space-y-1">
           {projects.map((projectPath) => {
             const basename = getWorkspaceBasename(projectPath) || "Untitled Project";
-            const isCurrentActive = workspaceInfo?.repo && projectPath === workspaceInfo.repo;
+            const isCurrentActive = !!(workspaceInfo?.repo && projectPath === workspaceInfo.repo);
             const isExpanded = expandedProjects[projectPath] !== undefined 
               ? expandedProjects[projectPath] 
               : isCurrentActive;
@@ -327,6 +389,34 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                 {/* Sessions (Expandable inline) */}
                 {isExpanded && (
                   <div className="pl-4 pr-1 pb-1.5 space-y-0.5 border-l border-edge/30 ml-3.5 mt-0.5">
+                    {isCurrentActive && projectSessions.length > 0 && (
+                      <div className="px-1 pb-1 flex justify-end">
+                        {confirmClearSessions ? (
+                          <div className="flex items-center gap-2 text-[10px]">
+                            <span className="text-muted">Clear all?</span>
+                            <button
+                              onClick={handleClearSessions}
+                              className="text-red-400 font-semibold hover:underline"
+                            >
+                              Yes
+                            </button>
+                            <button
+                              onClick={() => setConfirmClearSessions(false)}
+                              className="text-muted hover:underline"
+                            >
+                              No
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setConfirmClearSessions(true)}
+                            className="text-[10px] text-faint hover:text-red-400 transition-colors"
+                          >
+                            Clear sessions
+                          </button>
+                        )}
+                      </div>
+                    )}
                     {projectSessions.length === 0 ? (
                       <div className="text-[11px] text-faint italic px-2 py-1">No sessions</div>
                     ) : (
@@ -349,17 +439,49 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                               className="w-full bg-bg border border-accent rounded px-2 py-1 text-[12px] text-txt focus:outline-none"
                             />
                           ) : (
-                            <button onClick={() => switchSession(s.id)}
-                              onDoubleClick={() => {
-                                setRenamingId(s.id);
-                                setRenamingTitle(s.title || "Untitled");
-                              }}
-                              onContextMenu={(e) => handleContextMenu(e, s)}
-                              className={`w-full text-left rounded px-1.5 py-1 flex items-center gap-1.5 text-[12.5px] transition
-                                ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}`}>
-                              <MessageSquare size={11} className={s.active ? "text-accent" : "text-faint"} />
-                              <span className="flex-1 truncate">{s.title || "Untitled"}</span>
-                            </button>
+                            <div className="flex items-center gap-0.5">
+                              <button onClick={() => switchSession(s.id)}
+                                onDoubleClick={() => {
+                                  setRenamingId(s.id);
+                                  setRenamingTitle(s.title || "Untitled");
+                                }}
+                                onContextMenu={(e) => handleContextMenu(e, s)}
+                                className={`flex-1 text-left rounded px-1.5 py-1 flex items-center gap-1.5 text-[12.5px] transition
+                                  ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}`}>
+                                <MessageSquare size={11} className={s.active ? "text-accent" : "text-faint"} />
+                                <span className="flex-1 truncate">{s.title || "Untitled"}</span>
+                              </button>
+                              {confirmDeleteId === s.id ? (
+                                <div className="flex items-center gap-1 shrink-0 pr-0.5">
+                                  <button
+                                    onClick={async () => {
+                                      await handleDeleteSession(s.id);
+                                      setConfirmDeleteId(null);
+                                    }}
+                                    className="text-[10px] text-red-400 font-semibold hover:underline"
+                                  >
+                                    Yes
+                                  </button>
+                                  <button
+                                    onClick={() => setConfirmDeleteId(null)}
+                                    className="text-[10px] text-muted hover:underline"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setConfirmDeleteId(s.id);
+                                  }}
+                                  title="Delete session"
+                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-faint hover:text-red-400 hover:bg-panel2 transition-all shrink-0"
+                                >
+                                  <Trash2 size={11} />
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
                       ))
@@ -561,11 +683,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               <div className="flex gap-2">
                 <button
                   onClick={async () => {
-                    const res = await api.deleteSession(contextMenu.sessionId);
-                    await loadSess();
-                    if (res.active) {
-                      await switchSession(res.active);
-                    }
+                    await handleDeleteSession(contextMenu.sessionId);
                     setContextMenu(null);
                     setConfirmDeleteId(null);
                   }}
@@ -607,10 +725,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               <div className="flex gap-2">
                 <button
                   onClick={async () => {
-                    await api.forgetWorkspace(projectContextMenu.projectPath);
-                    fetchWorkspace();
-                    await loadWs();
-                    await loadSess();
+                    await handleForgetProject(projectContextMenu.projectPath);
                     setProjectContextMenu(null);
                     setConfirmForgetPath(null);
                   }}

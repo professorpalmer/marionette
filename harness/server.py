@@ -31,7 +31,12 @@ from .rule_store import RuleStore
 from .command_store import CommandStore
 from .memory_store import MemoryStore, MEMORY_CHAR_LIMIT
 from . import workspaces as _ws
-from .sessions import SessionStore, save_transcript, load_transcript
+from .sessions import (
+    SessionStore,
+    save_transcript,
+    load_transcript,
+    session_visible_for_workspace,
+)
 from .autobudget import AutoBudget
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd, _ensure_node_on_path
 from .diag import note as _diag
@@ -911,6 +916,42 @@ _pilot._session_store = _sessions
 _init_platform_lock()
 _seed_agentic_catalog()
 
+
+def _sessions_state_dir() -> str:
+    return _cfg.state_dir or _tf.gettempdir()
+
+
+def _remove_session_transcript(sid: str) -> None:
+    safe_sid = "".join(c for c in sid if c.isalnum() or c in ("-", "_"))
+    if not safe_sid:
+        return
+    state_dir = _sessions_state_dir()
+    trans_dir = os.path.abspath(os.path.join(state_dir, "transcripts"))
+    p = os.path.abspath(os.path.join(trans_dir, f"{safe_sid}.json"))
+    if p.startswith(trans_dir) and os.path.exists(p):
+        try:
+            os.remove(p)
+        except Exception as e:
+            _diag("server.session_delete_transcript", e, msg=f"sid={safe_sid}")
+
+
+def _handle_session_delete(sid: str) -> tuple[int, dict]:
+    if not sid:
+        return 400, {"error": "missing session id"}
+    is_active = (_sessions.active == sid)
+    from .hooks import run_hooks
+    run_hooks("sessionEnd", {"session_id": sid})
+    new_active = _sessions.delete(sid)
+    _remove_session_transcript(sid)
+    if is_active:
+        if new_active:
+            history = load_transcript(_sessions_state_dir(), new_active)
+            _pilot.load_history(history)
+        else:
+            _pilot.load_history([])
+    return 200, {"ok": True, "active": new_active}
+
+
 def _apply_model_context_window():
     """Recompute _cfg.max_context_tokens for the active driver's real window
     after a model swap. An explicit HARNESS_MAX_CONTEXT_TOKENS env override
@@ -1366,7 +1407,7 @@ class Handler(BaseHTTPRequestHandler):
         if origin and origin != "null" and _origin_ok(origin):
             self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Harness-Token")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 
     def _guard(self) -> bool:
         """Reject cross-origin / rebound / unauthenticated requests. Returns True
@@ -1401,6 +1442,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204); self._cors(); self.end_headers()
 
+    def do_DELETE(self):
+        if self._guard():
+            return
+        if not self._token_ok():
+            return self._send(403, json.dumps({"error": "missing or bad token"}))
+        u = urlparse(self.path)
+        prefix = "/api/sessions/"
+        if u.path.startswith(prefix) and u.path not in ("/api/sessions/clear",):
+            sid = u.path[len(prefix):].strip("/")
+            if not sid or "/" in sid:
+                return self._send(400, json.dumps({"error": "missing session id"}))
+            status, payload = _handle_session_delete(sid)
+            return self._send(status, json.dumps(payload))
+        return self._send(404, json.dumps({"error": "not found"}))
+
     def do_POST(self):
         global _codegraph_status
         if self._guard():
@@ -1412,7 +1468,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_upload()
         if u.path in ("/api/workspaces/switch", "/api/workspaces/create",
                       "/api/sessions/create", "/api/sessions/switch",
-                      "/api/sessions/delete", "/api/sessions/archive", "/api/sessions/rename",
+                      "/api/sessions/delete", "/api/sessions/clear",
+                      "/api/sessions/archive", "/api/sessions/rename",
                       "/api/session/interrupt", "/api/session/compact", "/api/session/steer",
                       "/api/session/queue", "/api/session/queue/reorder",
                       "/api/session/persist", "/api/restart",
@@ -1786,7 +1843,10 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
             # Select the target project's session instead of carrying the current one
-            target_sessions = [s for s in _sessions.list() if s.get("repo") == target_repo]
+            target_sessions = [
+                s for s in _sessions.list()
+                if session_visible_for_workspace(s, target_repo, _sessions_state_dir())
+            ]
             if target_sessions:
                 newest_session = max(target_sessions, key=lambda s: s.get("created", 0))
                 _sessions.switch(newest_session["id"])
@@ -1939,7 +1999,7 @@ class Handler(BaseHTTPRequestHandler):
                             branch = proc_branch.stdout.strip()
                 except Exception:
                     pass
-            res = _sessions.create(title, repo=repo, branch=branch)
+            res = _sessions.create(title, repo=repo, branch=branch, workspace_root=repo)
             _pilot.load_history([])
             
             from .hooks import run_hooks
@@ -1995,31 +2055,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(res))
         if path == "/api/sessions/delete":
             sid = body.get("session") or body.get("id") or ""
-            if not sid:
-                return self._send(400, json.dumps({"error": "missing session id"}))
-            is_active = (_sessions.active == sid)
-            
+            status, payload = _handle_session_delete(sid)
+            return self._send(status, json.dumps(payload))
+        if path == "/api/sessions/clear":
+            repo_root = _cfg.repo or ""
+            state_dir = _sessions_state_dir()
+            prior_active = _sessions.active
+            deleted_ids, new_active = _sessions.clear_for_workspace(repo_root, state_dir)
             from .hooks import run_hooks
-            run_hooks("sessionEnd", {"session_id": sid})
-            
-            new_active = _sessions.delete(sid)
-            safe_sid = "".join(c for c in sid if c.isalnum() or c in ("-", "_"))
-            if safe_sid:
-                state_dir = _cfg.state_dir or _tf.gettempdir()
-                trans_dir = os.path.abspath(os.path.join(state_dir, "transcripts"))
-                p = os.path.abspath(os.path.join(trans_dir, f"{safe_sid}.json"))
-                if p.startswith(trans_dir) and os.path.exists(p):
-                    try:
-                        os.remove(p)
-                    except Exception as e:
-                        _diag("server.session_delete_transcript", e, msg=f"sid={safe_sid}")
-            if is_active:
+            for sid in deleted_ids:
+                run_hooks("sessionEnd", {"session_id": sid})
+                _remove_session_transcript(sid)
+            if prior_active in deleted_ids:
                 if new_active:
-                    history = load_transcript(_cfg.state_dir or _tf.gettempdir(), new_active)
+                    history = load_transcript(state_dir, new_active)
                     _pilot.load_history(history)
                 else:
                     _pilot.load_history([])
-            return self._send(200, json.dumps({"ok": True, "active": new_active}))
+            return self._send(200, json.dumps({
+                "ok": True,
+                "deleted": len(deleted_ids),
+                "active": new_active,
+            }))
         if path == "/api/sessions/archive":
             sid = body.get("session") or body.get("id") or ""
             if not sid:
@@ -3865,7 +3922,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         if u.path == "/api/sessions":
-            return self._send(200, json.dumps(_sessions.list()))
+            return self._send(200, json.dumps(_sessions.list(
+                workspace_root=_cfg.repo or "",
+                state_dir=_sessions_state_dir(),
+            )))
         if u.path == "/api/auto":
             q = parse_qs(u.query)
             objective = q.get("objective", [""])[0]

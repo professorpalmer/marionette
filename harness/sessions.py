@@ -4,6 +4,12 @@ from __future__ import annotations
 UI can list/create/switch them (the Cursor/Hermes sidebar pattern). Each session
 has its own ConversationalSession transcript in memory; this module persists the
 LIST + which is active. Transcript bodies live with the live session objects.
+
+Workspace scoping (``session_visible_for_workspace``):
+- New rows store ``workspace_root`` (the open repo cwd) at creation.
+- ``/api/sessions`` lists only rows visible for the active workspace.
+- Legacy rows with no stored root: infer from the first transcript display entry
+  that carries a ``cwd``; if none, show in every workspace (never hide silently).
 """
 
 import json
@@ -15,6 +21,8 @@ import uuid
 from dataclasses import dataclass, asdict
 from typing import Optional, Any
 
+from .job_scoping import cwd_under_repo, _norm_path
+
 
 @dataclass
 class SessionMeta:
@@ -25,6 +33,7 @@ class SessionMeta:
     archived: bool = False
     repo: str = ""
     branch: str = ""
+    workspace_root: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
@@ -68,18 +77,25 @@ class SessionStore:
                     pass
                 raise
 
-    def list(self) -> list[dict]:
-        return [{
+    def list(self, workspace_root: str = "", state_dir: str = "") -> list[dict]:
+        rows = [{
             **s,
             "active": s["id"] == self._active,
             "archived": s.get("archived", False),
             "repo": s.get("repo", ""),
             "branch": s.get("branch", ""),
+            "workspace_root": session_stored_root(s),
             "input_tokens": int(s.get("input_tokens", 0) or 0),
             "output_tokens": int(s.get("output_tokens", 0) or 0),
             "cache_read_tokens": int(s.get("cache_read_tokens", 0) or 0),
             "estimated_cost_usd": float(s.get("estimated_cost_usd", 0.0) or 0.0),
         } for s in self._sessions]
+        if not workspace_root:
+            return rows
+        return [
+            row for row in rows
+            if session_visible_for_workspace(row, workspace_root, state_dir)
+        ]
 
     def accumulate_meters(
         self,
@@ -112,14 +128,28 @@ class SessionStore:
                 self._save()
                 break
 
-    def create(self, title: Optional[str] = None, repo: str = "", branch: str = "") -> dict:
+    def create(
+        self,
+        title: Optional[str] = None,
+        repo: str = "",
+        branch: str = "",
+        workspace_root: str = "",
+    ) -> dict:
         with self._lock:
             sid = uuid.uuid4().hex[:12]
-            meta = asdict(SessionMeta(id=sid, title=title or "New session", created=time.time(), repo=repo, branch=branch))
+            ws_root = (workspace_root or repo or "").strip()
+            meta = asdict(SessionMeta(
+                id=sid,
+                title=title or "New session",
+                created=time.time(),
+                repo=repo,
+                branch=branch,
+                workspace_root=ws_root,
+            ))
             self._sessions.append(meta)
             self._active = sid
             self._save()
-            return {**meta, "active": True}
+            return {**meta, "active": True, "workspace_root": ws_root}
 
     def switch(self, sid: str) -> dict:
         with self._lock:
@@ -140,6 +170,26 @@ class SessionStore:
                     self._active = None
             self._save()
             return self._active
+
+    def clear_for_workspace(self, workspace_root: str, state_dir: str = "") -> tuple[list[str], Optional[str]]:
+        """Drop session metadata rows for ``workspace_root`` only (not job store)."""
+        with self._lock:
+            deleted: list[str] = []
+            kept: list[dict] = []
+            for s in self._sessions:
+                if session_visible_for_workspace(s, workspace_root, state_dir):
+                    deleted.append(s["id"])
+                else:
+                    kept.append(s)
+            self._sessions = kept
+            if self._active in deleted:
+                if self._sessions:
+                    most_recent = max(self._sessions, key=lambda row: row.get("created", 0))
+                    self._active = most_recent["id"]
+                else:
+                    self._active = None
+            self._save()
+            return deleted, self._active
 
     def archive(self, sid: str, archived: bool = True) -> None:
         with self._lock:
@@ -180,6 +230,45 @@ class SessionStore:
     @property
     def active(self) -> Optional[str]:
         return self._active
+
+
+def session_stored_root(session: dict) -> str:
+    """Persisted workspace root on a session row (``workspace_root`` or legacy ``repo``)."""
+    return (session.get("workspace_root") or session.get("repo") or "").strip()
+
+
+def infer_legacy_session_root(session: dict, state_dir: str) -> str:
+    """First ``cwd`` on the session transcript display stream, if any."""
+    sid = session.get("id") or ""
+    if not sid or not state_dir:
+        return ""
+    data = load_transcript(state_dir, sid)
+    if not isinstance(data, dict):
+        return ""
+    for entry in data.get("display") or []:
+        if not isinstance(entry, dict):
+            continue
+        cwd = (entry.get("cwd") or "").strip()
+        if cwd:
+            return cwd
+    return ""
+
+
+def session_visible_for_workspace(session: dict, workspace_root: str, state_dir: str = "") -> bool:
+    """True when ``session`` belongs in the sidebar for the active workspace."""
+    if not workspace_root:
+        return True
+    stored = session_stored_root(session)
+    if stored:
+        if _norm_path(stored) == _norm_path(workspace_root):
+            return True
+        return cwd_under_repo(stored, workspace_root) or cwd_under_repo(workspace_root, stored)
+    inferred = infer_legacy_session_root(session, state_dir)
+    if inferred:
+        if _norm_path(inferred) == _norm_path(workspace_root):
+            return True
+        return cwd_under_repo(inferred, workspace_root)
+    return True
 
 
 def derive_title(prompt: str) -> str:

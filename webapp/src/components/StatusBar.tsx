@@ -198,36 +198,36 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
       {showUsage && (
         <>
           <span className="w-px h-3 bg-edge/40" />
-          <span className="flex items-center gap-1 text-muted/80" title="Session token usage and estimated cost">
+          <span className="flex items-center gap-1.5 text-muted/80" title="Token usage and estimated cost since the app started">
             <Coins size={10} className="text-faint" />
             <span>{formatTokens(usage.tokens_used)} tok</span>
-            {usage.tokens_cached && usage.tokens_cached > 0 ? (
-              <span
-                className="text-accent/80"
-                title={`Prompt tokens served from cache (near-free input)${
-                  usage.cache_savings_usd && usage.cache_savings_usd > 0
-                    ? ` -- saved ~${formatCost(usage.cache_savings_usd)} vs no caching`
-                    : ""
-                }`}
-              >
-                {formatTokens(usage.tokens_cached)} cached
-                {usage.cache_savings_usd && usage.cache_savings_usd > 0
-                  ? ` (~${formatCost(usage.cache_savings_usd)} saved)`
-                  : ""}
-              </span>
-            ) : null}
-            {usage.tool_output_tokens_saved && usage.tool_output_tokens_saved > 0 ? (
-              <span
-                className="text-accent/70"
-                title={`Context tokens avoided by compacting oversized tool outputs${
-                  usage.tool_output_savings_usd && usage.tool_output_savings_usd > 0
-                    ? ` (~${formatCost(usage.tool_output_savings_usd)} at input price)`
-                    : ""
-                }`}
-              >
-                {formatTokens(usage.tool_output_tokens_saved)} compacted
-              </span>
-            ) : null}
+            {(() => {
+              const cached = usage.tokens_cached || 0;
+              const compacted = usage.tool_output_tokens_saved || 0;
+              const savedUsd = (usage.cache_savings_usd || 0) + (usage.tool_output_savings_usd || 0);
+              if (cached <= 0 && compacted <= 0) return null;
+              const detail = [
+                cached > 0
+                  ? `${formatTokens(cached)} prompt tokens served from cache${
+                      usage.cache_savings_usd ? ` (~${formatCost(usage.cache_savings_usd)})` : ""
+                    }`
+                  : "",
+                compacted > 0
+                  ? `${formatTokens(compacted)} tool-output tokens compacted away${
+                      usage.tool_output_savings_usd ? ` (~${formatCost(usage.tool_output_savings_usd)})` : ""
+                    }`
+                  : "",
+              ].filter(Boolean).join("  ·  ");
+              return (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-good/10 border border-good/20 text-good/90"
+                  title={`Saved vs no caching or compaction: ${detail}`}
+                >
+                  <span className="text-good/60" aria-hidden="true">&#8595;</span>
+                  {savedUsd > 0 ? `${formatCost(savedUsd)} saved` : `${formatTokens(cached + compacted)} saved`}
+                </span>
+              );
+            })()}
             {/* The estimated cost is now a click/hover trigger for a compact
                 routing-value breakdown (why this model / what it saved). It
                 stays a plain figure when there is nothing meaningful to expand. */}
@@ -235,8 +235,8 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
               <button
                 type="button"
                 onClick={() => setCostOpen((v) => !v)}
-                title="Session estimated cost -- click for the routing cost breakdown"
-                className="text-good font-medium hover:text-good/80 transition cursor-pointer"
+                title="Estimated spend since the app started -- click for the full cost breakdown"
+                className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-good/40 hover:text-good transition cursor-pointer"
               >
                 ~{formatCost(usage.est_cost_usd)}
               </button>

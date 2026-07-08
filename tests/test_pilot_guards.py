@@ -1,4 +1,4 @@
-"""Tests for harness/pilot_guards.py — loop breaker and delegate gate."""
+"""Tests for harness/pilot_guards.py — loop breaker, swarm gate, delegate gate, budget."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -6,20 +6,30 @@ from dataclasses import dataclass, field
 import pytest
 
 from harness.pilot_guards import (
+    BROAD_SWARM_ROLES,
     DELEGATE_THRESHOLD,
+    IterationBudget,
     LOOP_REPEAT_CAP,
+    SWARM_GATE_READ_ALLOWANCE,
     TurnGuardState,
     check_delegate_gate,
+    check_iteration_budget,
     check_loop_guard,
     check_pilot_guards,
+    check_swarm_gate,
     delegate_gate_enabled,
     guards_active,
+    is_broad_intent_user_message,
     is_exploration_command,
     is_native_exploration,
+    is_swarm_gate_blocked_exploration,
+    iteration_budget_enabled,
     loop_guard_enabled,
     new_turn_guard_state,
     normalize_action_args,
     record_action_execution,
+    swarm_gate_enabled,
+    turn_tool_budget_cap,
 )
 
 
@@ -31,9 +41,152 @@ class _Act:
     query: str = ""
     goal: str = ""
     goals: list = field(default_factory=list)
+    roles: list = field(default_factory=list)
     arguments: dict = field(default_factory=dict)
     start_line: int | None = None
     limit: int | None = None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Give me an audit of this directory",
+        "Please review the codebase for security issues",
+        "Look through the repo and find problems",
+        "Find all places we handle auth",
+        "Map the pipeline architecture",
+        "What could break if we ship this?",
+        "Do a sweep of error handling",
+        "Draft a refactor plan for the harness",
+        "Improve quality across the project",
+    ],
+)
+def test_broad_intent_classification_positives(message):
+    assert is_broad_intent_user_message(message) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "hi",
+        "thanks!",
+        "Where is PilotAction defined?",
+        "What calls normalize_action_args?",
+        "How does check_loop_guard work?",
+        "Show me the function parse_turn_budget",
+        "Find the class TurnGuardState",
+    ],
+)
+def test_broad_intent_classification_negatives(message):
+    assert is_broad_intent_user_message(message) is False
+
+
+def test_swarm_gate_disabled_by_env(monkeypatch):
+    monkeypatch.delenv("HARNESS_SWARM_GATE", raising=False)
+    assert swarm_gate_enabled() is True
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "0")
+    assert swarm_gate_enabled() is False
+
+
+def test_iteration_budget_cap_from_env(monkeypatch):
+    monkeypatch.setenv("HARNESS_PILOT_TOOL_BUDGET", "10")
+    assert turn_tool_budget_cap() == 10
+    monkeypatch.delenv("HARNESS_PILOT_TOOL_BUDGET", raising=False)
+    monkeypatch.setenv("HARNESS_TURN_BUDGET", "15")
+    assert turn_tool_budget_cap() == 15
+    monkeypatch.setenv("HARNESS_PILOT_TOOL_BUDGET", "0")
+    assert turn_tool_budget_cap() == 0
+    assert iteration_budget_enabled() is False
+
+
+def test_swarm_gate_suppresses_list_dir_before_dispatch():
+    state = new_turn_guard_state("Give me an audit of this directory")
+    act = _Act(kind="list_dir", path=".")
+    verdict = check_swarm_gate(state, "list_dir", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "swarm_gate"
+    assert "run_swarm" in verdict.message
+    for role in BROAD_SWARM_ROLES:
+        assert role in verdict.message
+
+
+def test_swarm_gate_allows_two_reads_then_blocks():
+    state = new_turn_guard_state("Review the platform for regressions")
+    for i in range(SWARM_GATE_READ_ALLOWANCE):
+        act = _Act(kind="read_file", path=f"a{i}.py")
+        assert check_swarm_gate(state, "read_file", act).suppress is False
+        record_action_execution(state, "read_file", act)
+
+    blocked = _Act(kind="read_file", path="extra.py")
+    verdict = check_swarm_gate(state, "read_file", blocked)
+    assert verdict.suppress is True
+    assert verdict.reason == "swarm_gate"
+
+
+def test_swarm_gate_unlocks_after_swarm_dispatch():
+    state = new_turn_guard_state("Audit the harness directory")
+    record_action_execution(state, "run_swarm", _Act(kind="run_swarm", goal="map harness"))
+    assert state.swarm_dispatched is True
+
+    verdict = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
+    assert verdict.suppress is False
+
+
+def test_swarm_gate_off_allows_exploration(monkeypatch):
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "0")
+    state = new_turn_guard_state("Give me an audit of this directory")
+    verdict = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
+    assert verdict.suppress is False
+
+
+def test_swarm_gate_not_active_for_narrow_message():
+    state = new_turn_guard_state("Where is TurnGuardState defined?")
+    assert state.broad_intent is False
+    verdict = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
+    assert verdict.suppress is False
+
+
+def test_iteration_budget_blocks_after_cap():
+    budget = IterationBudget(cap=3)
+    state = TurnGuardState(iteration_budget=budget)
+    for _ in range(3):
+        assert check_iteration_budget(state, "read_file", _Act()).suppress is False
+        record_action_execution(state, "read_file", _Act(kind="read_file", path="x.py"))
+
+    verdict = check_iteration_budget(state, "run_swarm", _Act(kind="run_swarm", goal="go"))
+    assert verdict.suppress is True
+    assert verdict.reason == "budget"
+    assert "budget exhausted" in verdict.message
+
+
+def test_iteration_budget_consume_refund():
+    budget = IterationBudget(cap=2)
+    assert budget.consume() is True
+    assert budget.used == 1
+    assert budget.remaining == 1
+    budget.refund()
+    assert budget.used == 0
+    assert budget.consume() is True
+    assert budget.consume() is True
+    assert budget.consume() is False
+
+
+def test_per_turn_reset_includes_broad_intent_and_budget():
+    turn1 = new_turn_guard_state("Audit the repo")
+    record_action_execution(turn1, "list_dir", _Act(kind="list_dir", path="."))
+    assert turn1.broad_intent is True
+
+    turn2 = new_turn_guard_state("Where is foo defined?")
+    assert turn2.broad_intent is False
+    assert turn2.iteration_budget is not None
+    assert turn2.iteration_budget.used == 0
+
+
+def test_check_pilot_guards_swarm_gate_before_delegate():
+    state = new_turn_guard_state("Give me an audit of this directory")
+    verdict = check_pilot_guards(state, "list_dir", _Act(kind="list_dir", path="."))
+    assert verdict.suppress is True
+    assert verdict.reason == "swarm_gate"
 
 
 def test_loop_guard_disabled_by_env(monkeypatch):
@@ -53,9 +206,13 @@ def test_delegate_gate_disabled_by_env(monkeypatch):
 def test_guards_active_reflects_either_switch(monkeypatch):
     monkeypatch.setenv("HARNESS_LOOP_GUARD", "1")
     monkeypatch.setenv("HARNESS_DELEGATE_GATE", "1")
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
+    monkeypatch.setenv("HARNESS_PILOT_TOOL_BUDGET", "25")
     assert guards_active() is True
     monkeypatch.setenv("HARNESS_LOOP_GUARD", "0")
     monkeypatch.setenv("HARNESS_DELEGATE_GATE", "0")
+    monkeypatch.setenv("HARNESS_SWARM_GATE", "0")
+    monkeypatch.setenv("HARNESS_PILOT_TOOL_BUDGET", "0")
     assert guards_active() is False
 
 

@@ -2,13 +2,17 @@ from __future__ import annotations
 
 """Deterministic pilot behavior guards for the tool-execution layer.
 
-Two pure, per-turn guards wired before native tool dispatch:
+Per-turn guards wired before native tool dispatch:
 
 1. LOOP BREAKER — suppress repeated (tool, normalized-args) calls within a turn.
-2. DELEGATE GATE — after too many native exploration calls without delegation,
+2. SWARM GATE — on broad-intent user messages, block native exploration until
+   run_swarm / run_parallel / run_implement is dispatched.
+3. DELEGATE GATE — after too many native exploration calls without delegation,
    redirect the pilot to search_codegraph or Puppetmaster dispatch verbs.
+4. ITERATION BUDGET — hard cap on total tool calls per pilot turn.
 
-Disable via HARNESS_LOOP_GUARD=0 / HARNESS_DELEGATE_GATE=0.
+Disable via HARNESS_LOOP_GUARD=0 / HARNESS_SWARM_GATE=0 / HARNESS_DELEGATE_GATE=0 /
+HARNESS_PILOT_TOOL_BUDGET=0 (or numeric HARNESS_TURN_BUDGET >= 2 for cap override).
 """
 
 import json
@@ -20,6 +24,8 @@ from typing import Any
 # Thresholds (override via env for tuning in the field).
 LOOP_REPEAT_CAP = int(os.environ.get("HARNESS_LOOP_REPEAT_CAP", "3"))
 DELEGATE_THRESHOLD = int(os.environ.get("HARNESS_DELEGATE_THRESHOLD", "8"))
+SWARM_GATE_READ_ALLOWANCE = int(os.environ.get("HARNESS_SWARM_GATE_READ_ALLOWANCE", "2"))
+TURN_TOOL_BUDGET_DEFAULT = int(os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "25"))
 
 # Puppetmaster / structural tools — never blocked by the delegate gate.
 DELEGATION_EXEMPT_KINDS = frozenset({
@@ -30,6 +36,20 @@ DELEGATION_EXEMPT_KINDS = frozenset({
     "run_parallel",
     "route_task",
 })
+
+SWARM_DISPATCH_KINDS = frozenset({
+    "run_swarm",
+    "run_implement",
+    "run_parallel",
+})
+
+BROAD_SWARM_ROLES = (
+    "explore",
+    "pipeline-mapper",
+    "decision-explainer",
+    "conflict-auditor",
+    "test-coverage-reviewer",
+)
 
 NATIVE_EXPLORATION_KINDS = frozenset({
     "search_files",
@@ -45,9 +65,46 @@ _EXPLORATION_CMD_RE = re.compile(
     re.IGNORECASE,
 )
 
+_BROAD_INTENT_RE = re.compile(
+    r"(?:"
+    r"\baudit\b|"
+    r"\breview\b(?:\s+(?:the|this|my|our|entire|whole|full|platform|codebase|repo|project|directory|dir|folder|module|system|app|service|quality|security|architecture))?|"
+    r"look\s+through|"
+    r"find\s+all\b|"
+    r"map\s+the\b|"
+    r"improve\s+quality|"
+    r"what\s+could\s+break|"
+    r"\bsweep\b|"
+    r"refactor\s+plan|"
+    r"give\s+me\s+an?\s+(?:audit|review|assessment|overview|analysis)|"
+    r"comprehensive\s+(?:review|audit|analysis)|"
+    r"across\s+the\s+(?:codebase|repo|project|directory)|"
+    r"whole\s+(?:codebase|repo|project|directory)"
+    r")",
+    re.IGNORECASE,
+)
+
+_NARROW_INTENT_RE = re.compile(
+    r"(?:"
+    r"where\s+is\b|"
+    r"what\s+(?:calls|defines|implements)\b|"
+    r"how\s+does\s+\S+\s+work|"
+    r"definition\s+of\b|"
+    r"show\s+me\s+(?:the\s+)?(?:function|class|method|symbol)\b|"
+    r"find\s+(?:the\s+)?(?:function|class|method|symbol)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def loop_guard_enabled() -> bool:
     return os.environ.get("HARNESS_LOOP_GUARD", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def swarm_gate_enabled() -> bool:
+    return os.environ.get("HARNESS_SWARM_GATE", "1").strip().lower() not in (
         "0", "false", "no", "off",
     )
 
@@ -58,8 +115,58 @@ def delegate_gate_enabled() -> bool:
     )
 
 
+def iteration_budget_enabled() -> bool:
+    return turn_tool_budget_cap() > 0
+
+
+def turn_tool_budget_cap() -> int:
+    pilot_raw = os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "").strip()
+    if pilot_raw:
+        try:
+            return max(0, int(pilot_raw))
+        except (TypeError, ValueError):
+            pass
+    turn_raw = os.environ.get("HARNESS_TURN_BUDGET", "").strip()
+    if turn_raw.isdigit():
+        val = int(turn_raw)
+        if val >= 2:
+            return val
+    return TURN_TOOL_BUDGET_DEFAULT
+
+
 def guards_active() -> bool:
-    return loop_guard_enabled() or delegate_gate_enabled()
+    return (
+        loop_guard_enabled()
+        or swarm_gate_enabled()
+        or delegate_gate_enabled()
+        or iteration_budget_enabled()
+    )
+
+
+@dataclass
+class IterationBudget:
+    """Hard cap on tool calls per pilot turn (consume/refund pattern)."""
+
+    cap: int
+    used: int = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.used >= self.cap
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.cap - self.used)
+
+    def consume(self) -> bool:
+        if self.exhausted:
+            return False
+        self.used += 1
+        return True
+
+    def refund(self) -> None:
+        if self.used > 0:
+            self.used -= 1
 
 
 @dataclass
@@ -69,6 +176,11 @@ class TurnGuardState:
     execution_counts: dict[tuple[str, str], int] = field(default_factory=dict)
     exploration_count: int = 0
     delegation_seen: bool = False
+    user_message: str = ""
+    broad_intent: bool = False
+    swarm_dispatched: bool = False
+    read_file_count: int = 0
+    iteration_budget: IterationBudget | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +188,16 @@ class GuardVerdict:
     suppress: bool
     reason: str = ""
     message: str = ""
+
+
+def is_broad_intent_user_message(message: str) -> bool:
+    """Classify user text for broad audit/review/sweep tasks (pure function)."""
+    text = _norm_whitespace(message or "")
+    if not text:
+        return False
+    if _NARROW_INTENT_RE.search(text):
+        return False
+    return bool(_BROAD_INTENT_RE.search(text))
 
 
 def _norm_path(path: str) -> str:
@@ -166,12 +288,37 @@ def is_native_exploration(kind: str, act: Any) -> bool:
     return False
 
 
+def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any) -> bool:
+    if not state.broad_intent or state.swarm_dispatched:
+        return False
+    if kind == "read_file":
+        return state.read_file_count >= SWARM_GATE_READ_ALLOWANCE
+    if kind in ("list_dir", "search_files"):
+        return True
+    if kind == "run_command" and is_exploration_command(getattr(act, "command", "") or ""):
+        return True
+    return False
+
+
 def _loop_suppress_message(kind: str, repeat_count: int) -> str:
     return (
         f"(SUPPRESSED: repeat {kind} call #{repeat_count + 1} this turn — identical or "
         f"near-identical arguments to a call already executed. Change your approach: try "
         f"search_codegraph for structure, dispatch run_swarm/run_implement for broad work, "
         f"or reformulate with different parameters. Loop guard cap={LOOP_REPEAT_CAP}.)"
+    )
+
+
+def _swarm_gate_suppress_message(kind: str) -> str:
+    roles = ", ".join(BROAD_SWARM_ROLES)
+    return (
+        f"(SUPPRESSED: native exploration {kind} — this turn's user message is a broad "
+        f"audit/review/sweep task and you have not dispatched run_swarm/run_parallel/"
+        f"run_implement yet. Your FIRST action on broad work must be run_swarm with "
+        f"MULTIPLE roles ({roles}) and auto-routed models so parallel workers map the "
+        f"space. The durable artifact store makes every swarm cheaper on follow-up turns "
+        f"(artifact recall is zero-token). After dispatch, native exploration unlocks to "
+        f"validate findings. search_codegraph remains available for narrow symbol lookups.)"
     )
 
 
@@ -182,6 +329,14 @@ def _delegate_suppress_message(kind: str, exploration_count: int) -> str:
         f"Use search_codegraph for codebase structure, or dispatch run_swarm for broad "
         f"analysis / run_implement for multi-file edits instead of more grep/read/list "
         f"sweeps.)"
+    )
+
+
+def _iteration_budget_suppress_message(cap: int) -> str:
+    return (
+        f"(SUPPRESSED: per-turn tool-call budget exhausted ({cap}/{cap} calls used). "
+        f"Summarize findings for the user and/or dispatch background workers "
+        f"(run_swarm/run_implement/run_parallel) instead of more inline tool calls.)"
     )
 
 
@@ -198,6 +353,20 @@ def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
             message=_loop_suppress_message(kind, prior),
         )
     return GuardVerdict(False)
+
+
+def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
+    if not swarm_gate_enabled():
+        return GuardVerdict(False)
+
+    if not is_swarm_gate_blocked_exploration(state, kind, act):
+        return GuardVerdict(False)
+
+    return GuardVerdict(
+        suppress=True,
+        reason="swarm_gate",
+        message=_swarm_gate_suppress_message(kind),
+    )
 
 
 def check_delegate_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
@@ -222,12 +391,37 @@ def check_delegate_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerd
     return GuardVerdict(False)
 
 
+def check_iteration_budget(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
+    del kind, act
+    if not iteration_budget_enabled():
+        return GuardVerdict(False)
+
+    budget = state.iteration_budget
+    if budget is None or not budget.exhausted:
+        return GuardVerdict(False)
+
+    return GuardVerdict(
+        suppress=True,
+        reason="budget",
+        message=_iteration_budget_suppress_message(budget.cap),
+    )
+
+
 def check_pilot_guards(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
-    """Apply loop breaker first, then delegate gate."""
+    """Apply loop breaker, swarm gate, delegate gate, then iteration budget."""
     loop_verdict = check_loop_guard(state, kind, act)
     if loop_verdict.suppress:
         return loop_verdict
-    return check_delegate_gate(state, kind, act)
+
+    swarm_verdict = check_swarm_gate(state, kind, act)
+    if swarm_verdict.suppress:
+        return swarm_verdict
+
+    delegate_verdict = check_delegate_gate(state, kind, act)
+    if delegate_verdict.suppress:
+        return delegate_verdict
+
+    return check_iteration_budget(state, kind, act)
 
 
 def record_action_execution(state: TurnGuardState, kind: str, act: Any) -> None:
@@ -235,11 +429,25 @@ def record_action_execution(state: TurnGuardState, kind: str, act: Any) -> None:
     key = (kind, normalize_action_args(kind, act))
     state.execution_counts[key] = state.execution_counts.get(key, 0) + 1
 
+    if kind in SWARM_DISPATCH_KINDS:
+        state.swarm_dispatched = True
+
     if kind in DELEGATION_EXEMPT_KINDS:
         state.delegation_seen = True
     elif is_native_exploration(kind, act):
         state.exploration_count += 1
 
+    if kind == "read_file":
+        state.read_file_count += 1
 
-def new_turn_guard_state() -> TurnGuardState:
-    return TurnGuardState()
+    if state.iteration_budget is not None:
+        state.iteration_budget.consume()
+
+
+def new_turn_guard_state(user_message: str = "") -> TurnGuardState:
+    cap = turn_tool_budget_cap()
+    return TurnGuardState(
+        user_message=user_message or "",
+        broad_intent=is_broad_intent_user_message(user_message or ""),
+        iteration_budget=IterationBudget(cap) if cap > 0 else None,
+    )

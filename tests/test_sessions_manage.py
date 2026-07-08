@@ -39,6 +39,7 @@ def test_sessions_manage_post_rejected_without_token(tmp_path):
     httpd, port, srv = _server()
     # Override server's state_dir with a temporary one to avoid reading/writing real user data
     srv._cfg.state_dir = str(tmp_path)
+    srv._cfg.repo = ""
     srv._sessions.path = str(tmp_path / "harness_sessions.json")
     srv._sessions._sessions = []
     
@@ -65,6 +66,7 @@ def test_sessions_manage_post_rejected_without_token(tmp_path):
 def test_sessions_archive_works_fine(tmp_path):
     httpd, port, srv = _server()
     srv._cfg.state_dir = str(tmp_path)
+    srv._cfg.repo = ""
     srv._sessions.path = str(tmp_path / "harness_sessions.json")
     srv._sessions._sessions = []
     
@@ -108,6 +110,7 @@ def test_sessions_archive_works_fine(tmp_path):
 def test_sessions_delete_and_transcript_removal(tmp_path):
     httpd, port, srv = _server()
     srv._cfg.state_dir = str(tmp_path)
+    srv._cfg.repo = ""
     srv._sessions.path = str(tmp_path / "harness_sessions.json")
     srv._sessions._sessions = []
     
@@ -127,9 +130,13 @@ def test_sessions_delete_and_transcript_removal(tmp_path):
         trans_file = tmp_path / "transcripts" / f"{sid1}.json"
         assert trans_file.exists()
         
-        # Delete first session
-        post_resp = _post(port, "/api/sessions/delete", {"session": sid1},
-                          {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN})
+        # Delete first session (DELETE endpoint)
+        del_req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/sessions/{sid1}",
+            headers={"X-Harness-Token": srv._TOKEN},
+            method="DELETE",
+        )
+        post_resp = urllib.request.urlopen(del_req, timeout=10)
         assert post_resp.status == 200
         post_data = json.loads(post_resp.read().decode())
         assert post_data["ok"] is True
@@ -146,8 +153,12 @@ def test_sessions_delete_and_transcript_removal(tmp_path):
         assert sessions[0]["id"] == sid2
         
         # Now delete session 2 (which is active)
-        post_resp2 = _post(port, "/api/sessions/delete", {"session": sid2},
-                           {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN})
+        del_req2 = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/sessions/{sid2}",
+            headers={"X-Harness-Token": srv._TOKEN},
+            method="DELETE",
+        )
+        post_resp2 = urllib.request.urlopen(del_req2, timeout=10)
         assert post_resp2.status == 200
         post_data2 = json.loads(post_resp2.read().decode())
         assert post_data2["ok"] is True
