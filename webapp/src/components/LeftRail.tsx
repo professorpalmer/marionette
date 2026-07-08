@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, XCircle, Trash2 } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job, type Artifact } from "../lib/api";
 import { pickFolder } from "../lib/transport";
@@ -33,9 +33,52 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [confirmClearJobs, setConfirmClearJobs] = useState(false);
   const [showAllJobs, setShowAllJobs] = useState(false);
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
+  const [sessionJobsHeight, setSessionJobsHeight] = useState(loadSessionJobsHeight);
   // /api/jobs only carries an artifact COUNT per job; the full artifact list is
   // fetched lazily the first time a card is expanded and cached here.
   const [artifactsByJob, setArtifactsByJob] = useState<Record<string, Artifact[]>>({});
+
+  const railRef = useRef<HTMLElement>(null);
+  const topChromeRef = useRef<HTMLDivElement>(null);
+  const upperSectionsRef = useRef<HTMLDivElement>(null);
+  const sessionJobsHeightRef = useRef(sessionJobsHeight);
+  const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
+
+  sessionJobsHeightRef.current = sessionJobsHeight;
+
+  const getMaxSessionJobsHeight = () => {
+    const rail = railRef.current;
+    const top = topChromeRef.current;
+    const upper = upperSectionsRef.current;
+    if (!rail || !top || !upper) return sessionJobsMinHeight();
+    const available = rail.clientHeight - top.offsetHeight;
+    return Math.max(sessionJobsMinHeight(), available - upper.scrollHeight);
+  };
+
+  const clampSessionJobsHeight = (height: number) =>
+    Math.min(getMaxSessionJobsHeight(), Math.max(sessionJobsMinHeight(), height));
+
+  const onSessionJobsResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (sessionJobsCollapsed) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    resizeDragRef.current = { startY: e.clientY, startH: sessionJobsHeightRef.current };
+  };
+
+  const onSessionJobsResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizeDragRef.current) return;
+    const delta = resizeDragRef.current.startY - e.clientY;
+    setSessionJobsHeight(clampSessionJobsHeight(resizeDragRef.current.startH + delta));
+  };
+
+  const finishSessionJobsResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizeDragRef.current) return;
+    resizeDragRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    saveSessionJobsHeight(sessionJobsHeightRef.current);
+  };
 
   const toggleJobCard = (j: Job) => {
     const opening = !expandedJobs[j.id];
@@ -305,6 +348,15 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   useEffect(() => { saveHiddenSessionJobs(hiddenJobIds); }, [hiddenJobIds]);
 
+  useEffect(() => {
+    const clampToViewport = () => {
+      setSessionJobsHeight((h) => clampSessionJobsHeight(h));
+    };
+    clampToViewport();
+    window.addEventListener("resize", clampToViewport);
+    return () => window.removeEventListener("resize", clampToViewport);
+  }, [archivedExpanded, archivedSessions.length, workspaceInfo?.is_git, projects.length, sessionJobsCollapsed]);
+
   const toggleSessionJobsCollapsed = () => {
     setSessionJobsCollapsed((v) => {
       const next = !v;
@@ -360,7 +412,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   return (
-    <aside className="bg-panel border-r border-edge flex flex-col h-full overflow-hidden">
+    <aside ref={railRef} className="bg-panel border-r border-edge flex flex-col h-full overflow-hidden">
+      <div ref={topChromeRef}>
       {/* Slim draggable bar to clear the macOS traffic lights; no product label
           (the title bar already names the app, like Cursor/Hermes). */}
       <div style={{ height: 30, WebkitAppRegion: "drag" } as React.CSSProperties} />
@@ -380,7 +433,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           {opening ? "Opening..." : "Open Folder..."}
         </button>
       </div>
+      </div>
 
+      <div ref={upperSectionsRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0">
       {/* PROJECTS SECTION */}
       <Section title="Projects">
         {projects.length === 0 && <Empty>No projects</Empty>}
@@ -628,13 +683,33 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         </Section>
       )}
 
+      </div>
+
       {/* JOBS -- clean task-list styling (mirrors the composer TaskStack): a
           slim status row per job, click to expand a card with richer detail
           (adapter/role, tokens/cost, artifact headlines) instead of a lone
           line of truncated text. Bounded height + collapsible header so a long
-          session doesn't swallow the left rail. */}
-      <div className="px-2 pt-4 mt-auto shrink-0 border-t border-edge/40 min-w-0">
-        <div className="flex items-center justify-between px-2 mb-1.5 mt-0.5 gap-2 min-w-0">
+          session doesn't swallow the left rail. Vertically resizable via the
+          grab handle above the header. */}
+      <div
+        className="px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col"
+        style={sessionJobsCollapsed ? undefined : { height: sessionJobsHeight }}
+      >
+        {!sessionJobsCollapsed && (
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize session jobs panel"
+            onPointerDown={onSessionJobsResizePointerDown}
+            onPointerMove={onSessionJobsResizePointerMove}
+            onPointerUp={finishSessionJobsResize}
+            onPointerCancel={finishSessionJobsResize}
+            className="h-1.5 -mt-1.5 mb-0.5 cursor-row-resize touch-none flex items-center justify-center group shrink-0"
+          >
+            <div className="w-8 h-0.5 rounded-full bg-edge/80 group-hover:bg-muted/80 transition-colors" />
+          </div>
+        )}
+        <div className={`flex items-center justify-between px-2 mb-1.5 gap-2 min-w-0 shrink-0 ${sessionJobsCollapsed ? "pt-4 mt-0.5" : "pt-1 mt-0"}`}>
           <button
             onClick={toggleSessionJobsCollapsed}
             className="flex items-center gap-1 min-w-0 text-[11px] uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
@@ -673,7 +748,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           )}
         </div>
         {!sessionJobsCollapsed && (
-          <div className="max-h-[min(280px,35vh)] min-h-0 overflow-y-auto overflow-x-hidden min-w-0">
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0 pb-1">
             {visibleJobs.length === 0 ? (
               <div className="px-1 py-1">
                 <Empty>
@@ -722,7 +797,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                         <ChevronDown size={11} className={`text-faint shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`} />
                       </button>
                       {isOpen && (
-                        <div className="px-2 pb-1.5 pt-0.5 border-t border-edge/50 space-y-1 min-w-0 overflow-hidden">
+                        <div className="px-2 pb-1.5 pt-1 border-t border-edge/50 space-y-1.5 min-w-0 max-h-48 overflow-y-auto overflow-x-hidden">
+                          <p className={`text-[12px] leading-snug break-words whitespace-normal ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}>
+                            {j.goal}
+                          </p>
                           {detail.length > 0 && (
                             <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-faint">
                               {detail.map((d, i) => (
@@ -731,7 +809,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                             </div>
                           )}
                           {diff && (
-                            <div className="flex items-center gap-2 text-[10px] tabular-nums text-faint">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] tabular-nums text-faint">
                               <span>{diff.files} file{diff.files === 1 ? "" : "s"} changed</span>
                               {diff.insertions > 0 && <span className="text-good">+{diff.insertions}</span>}
                               {diff.deletions > 0 && <span className="text-red-400/90">-{diff.deletions}</span>}
@@ -739,15 +817,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                           )}
                           {arts.length > 0 ? (
                             <div className="space-y-0.5">
-                              {arts.slice(0, 4).map((a, i) => (
+                              {arts.map((a, i) => (
                                 <div key={a.id || i} className="text-[11px] text-txt/90 flex items-start gap-1.5 leading-snug min-w-0">
                                   <span className="text-good mt-[3px] shrink-0">·</span>
-                                  <span className="flex-1 min-w-0 truncate">{a.headline}</span>
+                                  <span className="flex-1 min-w-0 break-words whitespace-normal">{a.headline}</span>
                                 </div>
                               ))}
-                              {arts.length > 4 && (
-                                <div className="text-[10px] text-faint pl-3">+{arts.length - 4} more</div>
-                              )}
                             </div>
                           ) : loadedArts === undefined ? (
                             <div className="text-[10px] text-faint italic">Loading artifacts...</div>
@@ -901,8 +976,35 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 type JobStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
 const SESSION_JOBS_COLLAPSED_KEY = "pmharness.leftRail.sessionJobsCollapsed";
+const SESSION_JOBS_HEIGHT_KEY = "pmharness.leftRail.sessionJobsHeight.v1";
 const SESSION_JOBS_HIDDEN_KEY = "pmharness.leftRail.hiddenSessionJobs.v1";
 const SESSION_JOBS_DISPLAY_CAP = 20;
+
+function sessionJobsMinHeight(): number {
+  if (typeof window === "undefined") return 280;
+  return Math.min(280, Math.round(window.innerHeight * 0.35));
+}
+
+function loadSessionJobsHeight(): number {
+  const fallback = sessionJobsMinHeight();
+  try {
+    const raw = localStorage.getItem(SESSION_JOBS_HEIGHT_KEY);
+    if (!raw) return fallback;
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.max(sessionJobsMinHeight(), n);
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSessionJobsHeight(height: number): void {
+  try {
+    localStorage.setItem(SESSION_JOBS_HEIGHT_KEY, String(Math.round(height)));
+  } catch {
+    // localStorage full/unavailable -- height still works for this session.
+  }
+}
 
 function loadHiddenSessionJobs(): Set<string> {
   try {
