@@ -265,6 +265,10 @@ export type UsageData = {
     price_out: number;
     tokens_cached?: number;
     cache_savings_usd?: number;
+    /** Router baseline-vs-chosen savings (balanced/cheap policies only). */
+    routing_saved_usd?: number;
+    /** Swarm prompt-cache savings priced from usage artifacts x registry. */
+    cache_saved_usd_swarm?: number;
     tool_output_tokens_saved?: number;
     tool_output_savings_usd?: number;
     tool_output_compactions?: number;

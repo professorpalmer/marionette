@@ -42,18 +42,42 @@ describe("CostBreakdown", () => {
     expect(screen.getByText(/soon — L1 nearing limit/)).toBeInTheDocument();
   });
 
+  it("renders routing and swarm-cache savings rows when positive", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.70,
+          routing_saved_usd: 0.40,
+          cache_saved_usd_swarm: 0.05,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Routing saved")).toBeInTheDocument();
+    const routingRow = screen.getByText("Routing saved").closest("div");
+    expect(within(routingRow!).getByText("~$0.40")).toBeInTheDocument();
+    expect(screen.getByText("Swarm cache saved")).toBeInTheDocument();
+    const swarmRow = screen.getByText("Swarm cache saved").closest("div");
+    expect(within(swarmRow!).getByText("~$0.05")).toBeInTheDocument();
+  });
+
   it("omits zero or absent savings rows", () => {
     render(
       <CostBreakdown
         data={{
           tokens_used: 500,
           est_cost_usd: 0.01,
+          routing_saved_usd: 0,
+          cache_saved_usd_swarm: 0,
         }}
       />,
     );
 
     expect(screen.getByText("Estimated spend")).toBeInTheDocument();
     expect(screen.queryByText("Prompt-cache saved")).not.toBeInTheDocument();
+    expect(screen.queryByText("Routing saved")).not.toBeInTheDocument();
+    expect(screen.queryByText("Swarm cache saved")).not.toBeInTheDocument();
     expect(screen.queryByText("Compact tool outputs saved")).not.toBeInTheDocument();
     expect(
       screen.getByText(/Each task step is routed to the cheapest capable model/),

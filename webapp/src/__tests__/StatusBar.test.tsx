@@ -55,6 +55,28 @@ describe("StatusBar usage pills", () => {
     });
   });
 
+  it("folds routing and swarm-cache savings into the green saved chip", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 1000,
+        est_cost_usd: 0.70,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+        cache_savings_usd: 0.01,
+        routing_saved_usd: 0.40,
+        cache_saved_usd_swarm: 0.05,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("$0.46 saved")).toBeInTheDocument();
+    });
+  });
+
   it("hides the saved pill when there is no cache or compaction savings", async () => {
     mockGetUsage.mockResolvedValue({
       session: {
@@ -92,6 +114,26 @@ describe("StatusBar usage pills", () => {
     await waitFor(() => {
       expect(screen.getByText("~$0.05")).toBeInTheDocument();
     });
+  });
+
+  it("shows the boot cost cluster when tokens are zero but swarm dollars exist", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 0,
+        est_cost_usd: 0.70,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("~$0.70")).toBeInTheDocument();
+    });
+    expect(screen.getByText("0 tok")).toBeInTheDocument();
   });
 
   it("shows the lifetime session total beside the boot-scoped figure", async () => {
@@ -148,6 +190,53 @@ describe("StatusBar usage pills", () => {
     });
     expect(screen.getByText("session")).toBeInTheDocument();
     expect(screen.queryByText("~$0.00")).not.toBeInTheDocument();
+  });
+
+  it("shows the session pill for a swarm-only session total of $0.70", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 0,
+        est_cost_usd: 0,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+      },
+      session_total: {
+        session_id: "abc123",
+        est_cost_usd: 0.70,
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("session")).toBeInTheDocument();
+      expect(screen.getByText("~$0.70")).toBeInTheDocument();
+    });
+  });
+
+  it("hides the session total when session_total is null", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 1500,
+        est_cost_usd: 0.05,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+      },
+      session_total: null,
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("~$0.05")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("session")).not.toBeInTheDocument();
   });
 
   it("hides the session total when it has not accrued any cost", async () => {

@@ -375,6 +375,137 @@ def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
     return tokens, round(est_cost_usd, 6)
 
 
+_COST_OPTIMIZING_POLICIES = frozenset({"balanced", "cheap"})
+
+
+def _routing_saved_usd(raw_arts) -> float:
+    """Dollars saved by cost-optimizing router picks vs the snapshotted baseline.
+
+    Only ``balanced`` / ``cheap`` policies count; ``quality`` / ``escalating`` are
+    deliberate spend and contribute 0. Best-effort -- never raises.
+    """
+    try:
+        from puppetmaster.models import ArtifactType
+    except Exception:
+        return 0.0
+    seen_tasks: set = set()
+    total = 0.0
+    try:
+        for artifact in raw_arts or []:
+            if getattr(artifact, "type", None) != ArtifactType.ROUTING:
+                continue
+            if getattr(artifact, "created_by", "") != "router":
+                continue
+            task_id = getattr(artifact, "task_id", None)
+            if task_id:
+                if task_id in seen_tasks:
+                    continue
+                seen_tasks.add(task_id)
+            payload = getattr(artifact, "payload", None) or {}
+            if not isinstance(payload, dict):
+                continue
+            policy = str(payload.get("policy") or "")
+            if policy not in _COST_OPTIMIZING_POLICIES:
+                continue
+            try:
+                baseline = float(payload.get("baseline_cost_usd") or 0.0)
+                estimated = float(payload.get("estimated_cost_usd") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if baseline <= 0:
+                continue
+            total += max(0.0, baseline - estimated)
+    except Exception:
+        return 0.0
+    return total
+
+
+def _registry_input_per_mtok(model_id: str, registry: list) -> float:
+    """Resolve a model's input $/MTok from the registry; 0 when unknown."""
+    if not model_id:
+        return 0.0
+    for spec in registry or []:
+        if getattr(spec, "id", None) == model_id:
+            try:
+                return float(getattr(spec, "input_per_mtok_usd", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+        if getattr(spec, "adapter_model_name", None) == model_id:
+            try:
+                return float(getattr(spec, "input_per_mtok_usd", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
+
+
+def _cache_saved_usd_swarm(raw_arts, registry: list) -> float:
+    """Swarm prompt-cache savings from usage-bearing task artifacts.
+
+    Per task with ``tokens_cached > 0``: tokens_cached/1e6 * input_per_mtok *
+    (1 - CACHE_READ_MULTIPLIER). Skips tasks whose usage already carried
+    ``real_cost_usd`` (cache discount is inside the provider total). Best-effort.
+    """
+    seen_tasks: set = set()
+    total = 0.0
+    try:
+        for artifact in raw_arts or []:
+            payload = getattr(artifact, "payload", None) or {}
+            if not isinstance(payload, dict):
+                continue
+            if "tokens_in" not in payload and "tokens_out" not in payload:
+                continue
+            task_id = getattr(artifact, "task_id", None)
+            if task_id:
+                if task_id in seen_tasks:
+                    continue
+                seen_tasks.add(task_id)
+            try:
+                tokens_cached = int(payload.get("tokens_cached") or 0)
+            except (TypeError, ValueError):
+                continue
+            if tokens_cached <= 0:
+                continue
+            try:
+                real_cost = float(payload.get("real_cost_usd") or 0.0)
+            except (TypeError, ValueError):
+                real_cost = 0.0
+            if real_cost > 0:
+                continue
+            model = (
+                payload.get("model")
+                or payload.get("model_id")
+                or ""
+            )
+            price_in = _registry_input_per_mtok(str(model), registry)
+            if price_in <= 0:
+                continue
+            total += (tokens_cached / 1.0e6) * price_in * (1.0 - CACHE_READ_MULTIPLIER)
+    except Exception:
+        return 0.0
+    return total
+
+
+def _sum_job_set_savings(job_ids, arts_getter, registry: list) -> tuple[float, float]:
+    """Sum routing + swarm-cache savings over a job id set. Never raises."""
+    routing = 0.0
+    cache = 0.0
+    for jid in job_ids or []:
+        try:
+            arts = arts_getter(jid)
+        except Exception as e:
+            _diag("server.usage_savings_arts", e, msg=f"job={jid}")
+            continue
+        try:
+            routing += _routing_saved_usd(arts)
+        except Exception as e:
+            _diag("server.usage_routing_saved", e, msg=f"job={jid}")
+        try:
+            cache += _cache_saved_usd_swarm(arts, registry)
+        except Exception as e:
+            _diag("server.usage_cache_saved_swarm", e, msg=f"job={jid}")
+    return routing, cache
+
+
 def _get_platform_json_path() -> str:
     override = os.environ.get("TEST_PLATFORM_JSON_PATH")
     if override:
@@ -3689,43 +3820,75 @@ class Handler(BaseHTTPRequestHandler):
             _cache_savings_usd = _cache_savings(_t_cached, price_in)
             jobs_list = []
             session_total = None
+            routing_saved_usd = 0.0
+            cache_saved_usd_swarm = 0.0
             try:
-                # Only jobs created during THIS app run: the swarm store
-                # persists across launches, so an unfiltered sum quietly billed
-                # the "session" for every job ever run in the state dir.
-                all_jobs = _jobs_snapshot()
+                # Same merged, workspace-scoped job set the tracker uses
+                # (/api/swarm/live): harness store + per-project CLI store, so
+                # MCP/CLI-dispatched swarm spend reaches the status bar.
+                from .cli_job_merge import (
+                    bulk_load_store_artifacts,
+                    partition_jobs_by_store,
+                )
+
+                repo_override = parse_qs(u.query).get("repo", [""])[0]
+                all_jobs, store, cli_store = _scoped_jobs_with_stores(
+                    repo_root=repo_override or None
+                )
+                # Boot pill: only jobs created during THIS app run (epoch window).
                 jobs = [j for j in all_jobs
                         if _job_in_cost_window(j.get("created_at"))]
-                store = _session.state().store
                 registry = _swarm_registry()
                 jids = [j.get("id") for j in jobs if j.get("id")]
-                # Jobs stamped with the ACTIVE chat session, across ALL app
-                # runs -- the lifetime session total must survive restarts.
-                from .job_scoping import parse_job_session_id
-                active_sid = _sessions.active or ""
-                session_jids = [
-                    j.get("id") for j in all_jobs
-                    if j.get("id") and active_sid
-                    and parse_job_session_id(j.get("label"), []) == active_sid
-                ]
-                # Batch: one bulk artifact read regrouped by job_id, instead of
-                # one store.list_artifacts(jid) query PER job (the N+1).
-                fetch_jids = list(dict.fromkeys(jids + session_jids))
+                harness_jids, cli_jids = partition_jobs_by_store(all_jobs)
+
                 arts_by_job: dict = {}
                 try:
-                    for a in _retry_on_locked(lambda: store.list_artifacts_for_jobs(fetch_jids)):
-                        arts_by_job.setdefault(getattr(a, "job_id", None), []).append(a)
+                    harness_arts = bulk_load_store_artifacts(store, harness_jids)
+                    cli_arts = bulk_load_store_artifacts(cli_store, cli_jids)
+                    arts_by_job = {**harness_arts, **cli_arts}
                 except Exception:
                     arts_by_job = None  # fall back to per-job reads
+
+                # Owning-store lookup: each job is priced from its own store.
+                job_by_id = {j.get("id"): j for j in all_jobs if j.get("id")}
+
+                def _owning_store(jid):
+                    job = job_by_id.get(jid) or {}
+                    if job.get("source") == "cli" and cli_store is not None:
+                        return cli_store
+                    return store
 
                 def _job_arts(jid):
                     if arts_by_job is not None:
                         return arts_by_job.get(jid, [])
-                    return store.list_artifacts(jid)
+                    owning = _owning_store(jid)
+                    if owning is None:
+                        return []
+                    try:
+                        return _retry_on_locked(lambda: owning.list_artifacts(jid))
+                    except Exception:
+                        return []
+
+                # Lifetime session_total: the merged workspace-visible set
+                # (filter_store_jobs + CLI merge) already includes stamped jobs
+                # (label OR task-payload session_id via parse_job_session_id) and
+                # unstamped cwd-visible swarm jobs. Dedupe by job id; harness
+                # wins via merge_scoped_cli_jobs order.
+                session_jids: list = []
+                seen_session: set = set()
+                for j in all_jobs:
+                    jid = j.get("id")
+                    if not jid or jid in seen_session:
+                        continue
+                    seen_session.add(jid)
+                    session_jids.append(jid)
 
                 for jid in jids:
                     try:
-                        tokens, est_cost_usd = _job_swarm_accounting(_job_arts(jid), registry)
+                        tokens, est_cost_usd = _job_swarm_accounting(
+                            _job_arts(jid), registry
+                        )
                         jobs_list.append({
                             "job_id": jid,
                             "tokens": tokens,
@@ -3734,7 +3897,12 @@ class Handler(BaseHTTPRequestHandler):
                         })
                     except Exception as e:
                         _diag("server.usage_job_cost", e, msg=f"job={jid}")
-                session_total = _active_session_total(session_jids, _job_arts, registry)
+                session_total = _active_session_total(
+                    session_jids, _job_arts, registry
+                )
+                routing_saved_usd, cache_saved_usd_swarm = _sum_job_set_savings(
+                    session_jids, _job_arts, registry
+                )
             except Exception as e:
                 _diag("server.usage_jobs_aggregate", e)
             # Swarm store jobs: dollars come ONLY from here (usage artifacts x
@@ -3755,11 +3923,16 @@ class Handler(BaseHTTPRequestHandler):
                     # the USD that discount saved vs full input price.
                     "tokens_cached": _t_cached,
                     "cache_savings_usd": round(_cache_savings_usd, 6),
+                    # Routing + swarm-cache savings over the merged session job
+                    # set (additive to the pilot cache/compaction figures).
+                    "routing_saved_usd": round(routing_saved_usd, 6),
+                    "cache_saved_usd_swarm": round(cache_saved_usd_swarm, 6),
                     **_tool_output_savings_fields(price_in),
                 },
                 # Lifetime running total for the active chat session
-                # (persisted meters + all-time session-stamped swarm jobs);
-                # unlike "session" above, it survives restarts and updates.
+                # (persisted meters + all-time session-stamped / workspace-
+                # visible swarm jobs); unlike "session" above, it survives
+                # restarts and updates.
                 "session_total": session_total,
                 "jobs": jobs_list
             }

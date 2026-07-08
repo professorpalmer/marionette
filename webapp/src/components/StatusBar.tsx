@@ -185,7 +185,11 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
     return `$${num.toFixed(2)}`;
   };
 
-  const showUsage = usage && usage.tokens_used > 0;
+  const showUsage = usage && (usage.tokens_used > 0 || usage.est_cost_usd > 0);
+  const showSessionTotal = sessionTotal != null && (
+    sessionTotal.est_cost_usd > 0
+    || ((sessionTotal.input_tokens ?? 0) + (sessionTotal.output_tokens ?? 0) > 0)
+  );
 
   return (
     <div className="flex items-center gap-3 px-3 h-6 border-t border-edge bg-panel text-[10px] text-muted select-none">
@@ -206,8 +210,12 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
             {(() => {
               const cached = usage.tokens_cached || 0;
               const compacted = usage.tool_output_tokens_saved || 0;
-              const savedUsd = (usage.cache_savings_usd || 0) + (usage.tool_output_savings_usd || 0);
-              if (cached <= 0 && compacted <= 0) return null;
+              const savedUsd =
+                (usage.cache_savings_usd || 0)
+                + (usage.tool_output_savings_usd || 0)
+                + (usage.routing_saved_usd || 0)
+                + (usage.cache_saved_usd_swarm || 0);
+              if (cached <= 0 && compacted <= 0 && savedUsd <= 0) return null;
               const detail = [
                 cached > 0
                   ? `${formatTokens(cached)} prompt tokens served from cache${
@@ -218,6 +226,12 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
                   ? `${formatTokens(compacted)} tool-output tokens compacted away${
                       usage.tool_output_savings_usd ? ` (~${formatCost(usage.tool_output_savings_usd)})` : ""
                     }`
+                  : "",
+                usage.routing_saved_usd
+                  ? `routing vs frontier baseline (~${formatCost(usage.routing_saved_usd)})`
+                  : "",
+                usage.cache_saved_usd_swarm
+                  ? `swarm prompt-cache (~${formatCost(usage.cache_saved_usd_swarm)})`
                   : "",
               ].filter(Boolean).join("  ·  ");
               return (
@@ -250,6 +264,8 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
                       est_cost_usd: usage.est_cost_usd,
                       tokens_cached: usage.tokens_cached,
                       cache_savings_usd: usage.cache_savings_usd,
+                      routing_saved_usd: usage.routing_saved_usd,
+                      cache_saved_usd_swarm: usage.cache_saved_usd_swarm,
                       tool_output_tokens_saved: usage.tool_output_tokens_saved,
                       tool_output_savings_usd: usage.tool_output_savings_usd,
                       history_compactions: usage.history_compactions,
@@ -274,7 +290,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
           The boot pill resets to $0 on every restart/update; this one is the
           persisted running total for the active chat session, so budgeting
           visibility survives relaunches. */}
-      {sessionTotal && sessionTotal.est_cost_usd > 0 && (
+      {showSessionTotal && (
         <>
           <span className="w-px h-3 bg-edge/40" />
           <span
@@ -282,7 +298,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
             title="All-time estimated spend for this chat session -- keeps counting across app restarts and updates"
           >
             <span className="text-faint">session</span>
-            <span className="text-txt/90 font-medium">~{formatCost(sessionTotal.est_cost_usd)}</span>
+            <span className="text-txt/90 font-medium">~{formatCost(sessionTotal!.est_cost_usd)}</span>
           </span>
         </>
       )}
