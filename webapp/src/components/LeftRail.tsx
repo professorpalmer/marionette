@@ -26,6 +26,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   } | null>(null);
   const [confirmForgetPath, setConfirmForgetPath] = useState<string | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [sessionJobsCollapsed, setSessionJobsCollapsed] = useState(
+    () => localStorage.getItem(SESSION_JOBS_COLLAPSED_KEY) === "1",
+  );
+  const [hiddenJobIds, setHiddenJobIds] = useState<Set<string>>(loadHiddenSessionJobs);
+  const [confirmClearJobs, setConfirmClearJobs] = useState(false);
+  const [showAllJobs, setShowAllJobs] = useState(false);
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
   // /api/jobs only carries an artifact COUNT per job; the full artifact list is
   // fetched lazily the first time a card is expanded and cached here.
@@ -296,6 +302,41 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   useEffect(() => { loadJobs(); }, [jobsRefresh, selectedProjectPath]);
+
+  useEffect(() => { saveHiddenSessionJobs(hiddenJobIds); }, [hiddenJobIds]);
+
+  const toggleSessionJobsCollapsed = () => {
+    setSessionJobsCollapsed((v) => {
+      const next = !v;
+      localStorage.setItem(SESSION_JOBS_COLLAPSED_KEY, next ? "1" : "0");
+      return next;
+    });
+  };
+
+  const sortedJobs = jobs.slice().reverse();
+  const visibleJobs = sortedJobs.filter(
+    (j) => !hiddenJobIds.has(j.id) || !isTerminalJob(j),
+  );
+  const hiddenJobCount = sortedJobs.filter(
+    (j) => hiddenJobIds.has(j.id) && isTerminalJob(j),
+  ).length;
+  const terminalVisibleJobs = visibleJobs.filter((j) => isTerminalJob(j));
+
+  const clearFinishedJobs = () => {
+    setHiddenJobIds((prev) => {
+      const next = new Set(prev);
+      for (const j of terminalVisibleJobs) next.add(j.id);
+      return next;
+    });
+    setConfirmClearJobs(false);
+  };
+
+  const restoreHiddenJobs = () => setHiddenJobIds(new Set());
+
+  const displayedJobs = showAllJobs
+    ? visibleJobs
+    : visibleJobs.slice(0, SESSION_JOBS_DISPLAY_CAP);
+  const hasMoreJobs = visibleJobs.length > SESSION_JOBS_DISPLAY_CAP;
 
   const handleProjectContextMenu = (e: React.MouseEvent, path: string) => {
     e.preventDefault();
@@ -590,79 +631,155 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       {/* JOBS -- clean task-list styling (mirrors the composer TaskStack): a
           slim status row per job, click to expand a card with richer detail
           (adapter/role, tokens/cost, artifact headlines) instead of a lone
-          line of truncated text. */}
-      <Section title="Session Jobs" grow>
-        {jobs.length === 0 && <Empty>No jobs yet</Empty>}
-        {jobs.slice().reverse().map((j) => {
-          const st = jobStatus(j);
-          const isOpen = !!expandedJobs[j.id];
-          const detail = jobDetailBits(j);
-          const loadedArts = artifactsByJob[j.id];
-          const arts = (loadedArts || []).filter((a) => a && a.headline);
-          const diff = jobDiffstat(loadedArts || []);
-          return (
-            <div key={j.id} className="rounded mb-0.5 bg-panel2 border border-edge overflow-hidden">
-              <button
-                onClick={() => toggleJobCard(j)}
-                className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left hover:bg-panel2/60 transition-colors focus:outline-none"
-              >
-                <JobStatusIcon status={st} />
-                <span
-                  className={`flex-1 truncate text-[12px] ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}
-                  title={j.goal}
+          line of truncated text. Bounded height + collapsible header so a long
+          session doesn't swallow the left rail. */}
+      <div className="px-2 pt-4 mt-auto shrink-0 border-t border-edge/40 min-w-0">
+        <div className="flex items-center justify-between px-2 mb-1.5 mt-0.5 gap-2 min-w-0">
+          <button
+            onClick={toggleSessionJobsCollapsed}
+            className="flex items-center gap-1 min-w-0 text-[11px] uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
+          >
+            {sessionJobsCollapsed ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
+            <span className="truncate">Session Jobs</span>
+            {visibleJobs.length > 0 && (
+              <span className="text-faint/70 normal-case tracking-normal shrink-0">({visibleJobs.length})</span>
+            )}
+          </button>
+          {!sessionJobsCollapsed && terminalVisibleJobs.length > 0 && (
+            confirmClearJobs ? (
+              <div className="flex items-center gap-2 text-[10px] shrink-0">
+                <span className="text-muted">Clear all?</span>
+                <button
+                  onClick={clearFinishedJobs}
+                  className="text-red-400 font-semibold hover:underline"
                 >
-                  {j.goal}
-                </span>
-                {diff && (
-                  <span
-                    className="shrink-0 flex items-center gap-1 text-[10px] tabular-nums font-medium"
-                    title={`${diff.files} file${diff.files === 1 ? "" : "s"} changed, ${diff.insertions} insertion${diff.insertions === 1 ? "" : "s"}, ${diff.deletions} deletion${diff.deletions === 1 ? "" : "s"}`}
-                  >
-                    {diff.insertions > 0 && <span className="text-good">+{diff.insertions}</span>}
-                    {diff.deletions > 0 && <span className="text-red-400/90">-{diff.deletions}</span>}
-                  </span>
-                )}
-                <ChevronDown size={11} className={`text-faint shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                  Yes
+                </button>
+                <button
+                  onClick={() => setConfirmClearJobs(false)}
+                  className="text-muted hover:underline"
+                >
+                  No
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmClearJobs(true)}
+                className="text-[10px] text-faint hover:text-red-400 transition-colors shrink-0"
+              >
+                Clear jobs
               </button>
-              {isOpen && (
-                <div className="px-2 pb-1.5 pt-0.5 border-t border-edge/50 space-y-1">
-                  {detail.length > 0 && (
-                    <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-faint">
-                      {detail.map((d, i) => (
-                        <span key={i} className="tabular-nums">{d}</span>
-                      ))}
-                    </div>
-                  )}
-                  {diff && (
-                    <div className="flex items-center gap-2 text-[10px] tabular-nums text-faint">
-                      <span>{diff.files} file{diff.files === 1 ? "" : "s"} changed</span>
-                      {diff.insertions > 0 && <span className="text-good">+{diff.insertions}</span>}
-                      {diff.deletions > 0 && <span className="text-red-400/90">-{diff.deletions}</span>}
-                    </div>
-                  )}
-                  {arts.length > 0 ? (
-                    <div className="space-y-0.5">
-                      {arts.slice(0, 4).map((a, i) => (
-                        <div key={a.id || i} className="text-[11px] text-txt/90 flex items-start gap-1.5 leading-snug">
-                          <span className="text-good mt-[3px] shrink-0">·</span>
-                          <span className="flex-1">{a.headline}</span>
+            )
+          )}
+        </div>
+        {!sessionJobsCollapsed && (
+          <div className="max-h-[min(280px,35vh)] min-h-0 overflow-y-auto overflow-x-hidden min-w-0">
+            {visibleJobs.length === 0 ? (
+              <div className="px-1 py-1">
+                <Empty>
+                  {hiddenJobCount > 0 ? "All session jobs cleared" : "No jobs yet"}
+                </Empty>
+                {hiddenJobCount > 0 && (
+                  <button
+                    onClick={restoreHiddenJobs}
+                    className="mt-1 px-1 text-[10px] text-accent hover:underline focus:outline-none"
+                  >
+                    Show {hiddenJobCount} hidden job{hiddenJobCount === 1 ? "" : "s"}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                {displayedJobs.map((j) => {
+                  const st = jobStatus(j);
+                  const isOpen = !!expandedJobs[j.id];
+                  const detail = jobDetailBits(j);
+                  const loadedArts = artifactsByJob[j.id];
+                  const arts = (loadedArts || []).filter((a) => a && a.headline);
+                  const diff = jobDiffstat(loadedArts || []);
+                  return (
+                    <div key={j.id} className="rounded mb-0.5 bg-panel2 border border-edge overflow-hidden min-w-0">
+                      <button
+                        onClick={() => toggleJobCard(j)}
+                        className="w-full min-w-0 flex items-center gap-1.5 px-2 py-1.5 text-left hover:bg-panel2/60 transition-colors focus:outline-none"
+                      >
+                        <JobStatusIcon status={st} />
+                        <span
+                          className={`flex-1 min-w-0 truncate text-[12px] ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}
+                          title={j.goal}
+                        >
+                          {j.goal}
+                        </span>
+                        {diff && (
+                          <span
+                            className="shrink-0 flex items-center gap-1 text-[10px] tabular-nums font-medium"
+                            title={`${diff.files} file${diff.files === 1 ? "" : "s"} changed, ${diff.insertions} insertion${diff.insertions === 1 ? "" : "s"}, ${diff.deletions} deletion${diff.deletions === 1 ? "" : "s"}`}
+                          >
+                            {diff.insertions > 0 && <span className="text-good">+{diff.insertions}</span>}
+                            {diff.deletions > 0 && <span className="text-red-400/90">-{diff.deletions}</span>}
+                          </span>
+                        )}
+                        <ChevronDown size={11} className={`text-faint shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                      </button>
+                      {isOpen && (
+                        <div className="px-2 pb-1.5 pt-0.5 border-t border-edge/50 space-y-1 min-w-0 overflow-hidden">
+                          {detail.length > 0 && (
+                            <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-faint">
+                              {detail.map((d, i) => (
+                                <span key={i} className="tabular-nums">{d}</span>
+                              ))}
+                            </div>
+                          )}
+                          {diff && (
+                            <div className="flex items-center gap-2 text-[10px] tabular-nums text-faint">
+                              <span>{diff.files} file{diff.files === 1 ? "" : "s"} changed</span>
+                              {diff.insertions > 0 && <span className="text-good">+{diff.insertions}</span>}
+                              {diff.deletions > 0 && <span className="text-red-400/90">-{diff.deletions}</span>}
+                            </div>
+                          )}
+                          {arts.length > 0 ? (
+                            <div className="space-y-0.5">
+                              {arts.slice(0, 4).map((a, i) => (
+                                <div key={a.id || i} className="text-[11px] text-txt/90 flex items-start gap-1.5 leading-snug min-w-0">
+                                  <span className="text-good mt-[3px] shrink-0">·</span>
+                                  <span className="flex-1 min-w-0 truncate">{a.headline}</span>
+                                </div>
+                              ))}
+                              {arts.length > 4 && (
+                                <div className="text-[10px] text-faint pl-3">+{arts.length - 4} more</div>
+                              )}
+                            </div>
+                          ) : loadedArts === undefined ? (
+                            <div className="text-[10px] text-faint italic">Loading artifacts...</div>
+                          ) : (
+                            <div className="text-[10px] text-faint italic">No artifacts recorded</div>
+                          )}
                         </div>
-                      ))}
-                      {arts.length > 4 && (
-                        <div className="text-[10px] text-faint pl-3">+{arts.length - 4} more</div>
                       )}
                     </div>
-                  ) : loadedArts === undefined ? (
-                    <div className="text-[10px] text-faint italic">Loading artifacts...</div>
-                  ) : (
-                    <div className="text-[10px] text-faint italic">No artifacts recorded</div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </Section>
+                  );
+                })}
+                {hasMoreJobs && !showAllJobs && (
+                  <button
+                    onClick={() => setShowAllJobs(true)}
+                    className="w-full px-2 py-1 text-[10px] text-accent hover:underline focus:outline-none"
+                  >
+                    Show all ({visibleJobs.length})
+                  </button>
+                )}
+                {hiddenJobCount > 0 && (
+                  <button
+                    onClick={restoreHiddenJobs}
+                    className="w-full px-2 py-1 text-[10px] text-faint hover:text-accent hover:underline focus:outline-none"
+                  >
+                    Show {hiddenJobCount} hidden job{hiddenJobCount === 1 ? "" : "s"}
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* CONTEXT MENU */}
       {contextMenu && (
@@ -783,6 +900,33 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
 type JobStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
+const SESSION_JOBS_COLLAPSED_KEY = "pmharness.leftRail.sessionJobsCollapsed";
+const SESSION_JOBS_HIDDEN_KEY = "pmharness.leftRail.hiddenSessionJobs.v1";
+const SESSION_JOBS_DISPLAY_CAP = 20;
+
+function loadHiddenSessionJobs(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SESSION_JOBS_HIDDEN_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveHiddenSessionJobs(ids: Set<string>): void {
+  try {
+    localStorage.setItem(SESSION_JOBS_HIDDEN_KEY, JSON.stringify([...ids].slice(-2000)));
+  } catch {
+    // localStorage full/unavailable -- hide state still works for this session.
+  }
+}
+
+function isTerminalJob(j: Job): boolean {
+  const st = jobStatus(j);
+  return st === "completed" || st === "cancelled";
+}
+
 function jobStatus(j: Job): JobStatus {
   const s = (j.status || "").toLowerCase();
   if (s.includes("complete") || s.includes("done")) return "completed";
@@ -831,9 +975,9 @@ function JobStatusIcon({ status }: { status: JobStatus }) {
   return <Circle size={12} className="text-muted shrink-0" />;
 }
 
-function Section({ title, action, children, grow }: any) {
+function Section({ title, action, children }: any) {
   return (
-    <div className={`px-2 pt-4 ${grow ? "flex-1 overflow-y-auto" : ""}`}>
+    <div className="px-2 pt-4 shrink-0 min-w-0">
       <div className="flex items-center justify-between px-2 mb-2 mt-0.5">
         <span className="text-[11px] uppercase tracking-wider text-muted font-semibold">{title}</span>
         {action}
