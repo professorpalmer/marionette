@@ -21,8 +21,10 @@ def test_resolve_live_price_fuzzy_prefers_base(monkeypatch):
     assert pair == (5.0, 25.0)
 
 
-def test_resolve_price_uses_catalog_first():
+def test_resolve_price_uses_catalog_when_live_unavailable(monkeypatch):
     # claude-frontier is in the eval catalog at native 5.0/25.0.
+    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "0")
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
     pin, pout = reg.resolve_price("claude-frontier")
     assert (pin, pout) == (5.0, 25.0)
 

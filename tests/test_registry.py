@@ -26,7 +26,9 @@ def test_tiers_populated():
     assert reg.model_names("frontier_control")
 
 
-def test_price_lookup():
+def test_price_lookup(monkeypatch):
+    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "0")
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
     pin, pout = reg.price("glm-5.2")
     assert pin == 1.40 and pout == 4.40
 

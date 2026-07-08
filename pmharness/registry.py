@@ -48,11 +48,14 @@ def model_names(tier: Optional[str] = None) -> list:
 
 
 def price(name: str) -> tuple:
-    """Native (price_in, price_out) per Mtok for the cost column. Tries the eval
-    catalog first (exact native rates for benchmarked models); for everything
-    else -- including provider:model picker specs like 'anthropic:claude-opus-4-8'
-    -- falls back to the live OpenRouter price map so the estimate reflects the
-    real published rate (Opus 4.8 = $5/$25) instead of a placeholder."""
+    """Native (price_in, price_out) per Mtok for the cost column. Tries the live
+    OpenRouter rate first (reflects what the user is actually billed); falls back
+    to the eval catalog (exact native rates for benchmarked models); otherwise
+    (None, None). For provider:model picker specs like 'anthropic:claude-opus-4-8'
+    the live map supplies real published rates when the catalog has no entry."""
+    live = _resolve_live_price(name)
+    if live is not None:
+        return live
     try:
         m = _entry(name)
         pin, pout = m.get("price_in"), m.get("price_out")
@@ -60,9 +63,6 @@ def price(name: str) -> tuple:
             return (pin, pout)
     except Exception:
         pass
-    live = _resolve_live_price(name)
-    if live is not None:
-        return live
     return (None, None)
 
 
