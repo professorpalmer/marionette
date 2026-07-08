@@ -50,8 +50,21 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     const top = topChromeRef.current;
     const upper = upperSectionsRef.current;
     if (!rail || !top || !upper) return sessionJobsMinHeight();
+    // Measure the upper content's NATURAL height by summing its children --
+    // not upper.scrollHeight. The upper div is a flex-1 scroll container, and
+    // a scroll container's scrollHeight is never less than its rendered
+    // height, so with a short projects list the computed max collapsed to
+    // "whatever the jobs panel already has": dragging up crawled at the ~1px
+    // of layout rounding slack per event while dragging down ran free.
+    // Children inside an overflow container keep their natural height, so
+    // their sum is the true content bound in both the short and overflowing
+    // cases.
+    const upperContent = Array.from(upper.children).reduce(
+      (sum, el) => sum + (el as HTMLElement).offsetHeight,
+      0,
+    );
     const available = rail.clientHeight - top.offsetHeight;
-    return Math.max(sessionJobsMinHeight(), available - upper.scrollHeight);
+    return Math.max(sessionJobsMinHeight(), available - upperContent);
   };
 
   const clampSessionJobsHeight = (height: number) =>
