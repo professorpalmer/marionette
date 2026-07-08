@@ -59,10 +59,21 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
     const interval = window.setInterval(() => check(true), 30 * 60 * 1000);
     const onFocus = () => check();
     window.addEventListener("focus", onFocus);
+    // PUSH path: the main-process update watcher notifies the moment its
+    // background fetch sees new commits, so the pill appears without waiting
+    // for the next renderer poll tick.
+    const offAvailable = ipc.updates.onAvailable
+      ? ipc.updates.onAvailable((res: any) => {
+          if (!cancelled && res && res.available) {
+            setUpdate({ behind: res.behind || 0, branch: res.branch || "main", version: res.current || "" });
+          }
+        })
+      : null;
     return () => {
       cancelled = true;
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
+      if (offAvailable) offAvailable();
     };
   }, []);
 

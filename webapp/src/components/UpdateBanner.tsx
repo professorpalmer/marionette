@@ -75,6 +75,19 @@ export default function UpdateBanner() {
     const onFocus = () => check();
     window.addEventListener("focus", onFocus);
 
+    // PUSH path: the Electron main process runs its own update watcher and
+    // notifies us the moment a background fetch finds new commits -- no need to
+    // wait for the next renderer poll tick (which historically meant the banner
+    // only appeared after a full app restart).
+    const offAvailable = ipc.updates.onAvailable
+      ? ipc.updates.onAvailable((res: any) => {
+          if (cancelled || !res || committedRef.current) return;
+          setLatest(res.latest || "");
+          readyRef.current = true;
+          setReady(true);
+        })
+      : null;
+
     // React to live updater events. Every payload carries `version`, so we label
     // the banner from the event alone -- deliberately NOT calling updates:check
     // here, which used to re-trigger checkForUpdates -> another "available" event
@@ -122,6 +135,7 @@ export default function UpdateBanner() {
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
       if (off) off();
+      if (offAvailable) offAvailable();
     };
   }, []);
 

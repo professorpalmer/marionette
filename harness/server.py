@@ -13,9 +13,11 @@ import os
 import time
 import threading
 import queue
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import secrets as _secrets
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse, parse_qs
 import tempfile
 import uuid
@@ -91,6 +93,28 @@ def _cache_savings(cached: float, price_in: float) -> float:
     """USD saved by billing ``cached`` prompt tokens at the cache-read discount
     instead of the full input price."""
     return (float(cached) / 1.0e6) * price_in * (1.0 - CACHE_READ_MULTIPLIER)
+
+
+# Cost epoch for THIS app run. The swarm store (SQLite) persists across
+# launches, so /api/usage must not bill the "session" for every job ever run
+# in the state dir -- only jobs created after this process started, matching
+# the pilot token meters (which also reset per process).
+_COST_EPOCH = datetime.now(timezone.utc)
+
+
+def _job_in_cost_window(created_at: Any) -> bool:
+    """True when a swarm-store job belongs to this app run's cost window.
+    Unknown/unparseable timestamps are kept (better to overshow live work than
+    silently drop a job that is really spending)."""
+    if not created_at:
+        return True
+    try:
+        stamp = datetime.fromisoformat(str(created_at))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp >= _COST_EPOCH
+    except Exception:
+        return True
 
 
 def _sync_pilot_session_id() -> None:
@@ -3373,7 +3397,11 @@ class Handler(BaseHTTPRequestHandler):
             _cache_savings_usd = _cache_savings(_t_cached, price_in)
             jobs_list = []
             try:
-                jobs = _jobs_snapshot()
+                # Only jobs created during THIS app run: the swarm store
+                # persists across launches, so an unfiltered sum quietly billed
+                # the "session" for every job ever run in the state dir.
+                jobs = [j for j in _jobs_snapshot()
+                        if _job_in_cost_window(j.get("created_at"))]
                 store = _session.state().store
                 registry = _swarm_registry()
                 jids = [j.get("id") for j in jobs if j.get("id")]
@@ -3400,9 +3428,11 @@ class Handler(BaseHTTPRequestHandler):
                         _diag("server.usage_job_cost", e, msg=f"job={jid}")
             except Exception as e:
                 _diag("server.usage_jobs_aggregate", e)
-            # Swarm store jobs bill on their own adapters/keys and are not part
-            # of the pilot meters (unlike local provider workers, folded in via
-            # _worker_cost_usd) -- add them so the session total is real spend.
+            # Swarm store jobs: dollars come ONLY from here (usage artifacts x
+            # registry). Their tokens are folded into the pilot meters for
+            # display but carried in _worker_tokens_* so _session_cost_split
+            # excludes them from the pilot-priced portion -- local provider
+            # workers are the ones folded in as dollars via _worker_cost_usd.
             swarm_cost = sum(float(j.get("est_cost_usd") or 0.0) for j in jobs_list)
             est_session_cost += swarm_cost
             response_data = {

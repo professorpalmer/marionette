@@ -381,6 +381,8 @@ export default function SwarmPane() {
       for (const j of finished) next.add(j.id);
       return next;
     });
+  const restoreDismissed = () => setDismissed(new Set());
+  const hiddenCount = allJobs.length - visibleJobs.length;
 
   // One card renderer, reused by both the running list and the Finished
   // accordion. Defined in-scope so it closes over the expand/dismiss state
@@ -781,12 +783,26 @@ export default function SwarmPane() {
         {visibleJobs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-center px-6 gap-2">
             <Network size={20} className="text-faint/50" />
-            <span className="text-[12px] text-muted font-medium">No swarm jobs yet</span>
-            <span className="text-[10.5px] text-faint leading-relaxed">
-              Every dispatched worker lands here -- run_implement, run_parallel,
-              and run_swarm alike -- with its phase, router choice, live workers,
-              and streamed findings. Inline tool calls stay in the chat.
+            <span className="text-[12px] text-muted font-medium">
+              {hiddenCount > 0 ? "All swarm jobs cleared" : "No swarm jobs yet"}
             </span>
+            {hiddenCount > 0 ? (
+              // "Clear" hid every job. Without this affordance the pane read as
+              // "No swarm jobs yet" even though the backend had a full history --
+              // indistinguishable from a broken tracker.
+              <button
+                onClick={restoreDismissed}
+                className="text-[10.5px] text-accent hover:underline focus:outline-none"
+              >
+                Show {hiddenCount} hidden job{hiddenCount === 1 ? "" : "s"}
+              </button>
+            ) : (
+              <span className="text-[10.5px] text-faint leading-relaxed">
+                Every dispatched worker lands here -- run_implement, run_parallel,
+                and run_swarm alike -- with its phase, router choice, live workers,
+                and streamed findings. Inline tool calls stay in the chat.
+              </span>
+            )}
           </div>
         ) : (
           <>

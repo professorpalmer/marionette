@@ -462,13 +462,51 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   // a Finder/Dock launch with a stripped launchd PATH can still find them. Omit
   // to inherit process.env (dev/CLI runs already have a full env).
   const getEnv = opts.getEnv || (() => process.env);
+  // Broadcast to every window: the update watcher is a main-process concern, so
+  // it must not depend on which renderer happened to invoke something last.
+  const broadcast = opts.broadcast || ((channel, payload) => {
+    try {
+      const { BrowserWindow } = require("electron");
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(channel, payload);
+      }
+    } catch { /* window gone mid-send */ }
+  });
   let applying = false;
 
-  ipcMain.handle("updates:check", async () => {
+  const doCheck = async () => {
     const currentVersion = app.getVersion();
     const res = await checkForUpdate({ repoRoot: getRepoRoot(), currentVersion, env: getEnv() });
     return { current: currentVersion, ...res };
-  });
+  };
+
+  // PUSH model: the main process owns the update watcher and notifies every
+  // renderer the moment a fetch sees new commits. Renderer-side polling proved
+  // unreliable (mount-once effects, throttles, and a hidden window meant the
+  // pill often appeared only after a full app restart). One timer here survives
+  // renderer reloads and never depends on window focus. Silent by design: a
+  // failed background check must not nag.
+  const WATCH_INTERVAL_MS = 15 * 60 * 1000;
+  const FIRST_CHECK_DELAY_MS = 15 * 1000; // let startup I/O settle first
+  let watching = false;
+  const watchTick = async () => {
+    if (applying) return; // never fetch mid-apply; the relaunch re-arms us
+    try {
+      const res = await doCheck();
+      if (res && res.available) broadcast("updates:available", res);
+    } catch { /* silent */ }
+  };
+  const startWatcher = () => {
+    if (watching || process.env.MARIONETTE_UPDATE_WATCH === "0") return;
+    watching = true;
+    const first = setTimeout(watchTick, FIRST_CHECK_DELAY_MS);
+    const interval = setInterval(watchTick, WATCH_INTERVAL_MS);
+    first.unref?.();
+    interval.unref?.();
+  };
+  startWatcher();
+
+  ipcMain.handle("updates:check", doCheck);
 
   ipcMain.handle("updates:apply", async (event, arg) => {
     if (applying) return { ok: false, error: "an update is already in progress" };

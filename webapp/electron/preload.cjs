@@ -61,6 +61,13 @@ contextBridge.exposeInMainWorld("harnessIPC", {
       ipcRenderer.on("updates:progress", handler);
       return () => ipcRenderer.removeListener("updates:progress", handler);
     },
+    // Push notification from the main-process update watcher: fires with the
+    // check result whenever a background fetch finds the checkout behind.
+    onAvailable: (cb) => {
+      const handler = (_e, payload) => cb(payload);
+      ipcRenderer.on("updates:available", handler);
+      return () => ipcRenderer.removeListener("updates:available", handler);
+    },
   },
   // Live self-editing (Hermes-style): toggle running the backend from the
   // editable source checkout, and restart it to apply self-edits without a

@@ -4473,7 +4473,8 @@ class ConversationalSession(ToolDispatchMixin):
 
     def _attribute_worker_cost(self, tokens_in: int, tokens_out: int,
                                real_cost_usd: float = 0.0,
-                               model_spec: str = "") -> None:
+                               model_spec: str = "",
+                               count_dollars: bool = True) -> None:
         """Record a delegated worker's spend as DOLLARS at the worker's OWN model
         rate (plus a parallel token split), so the session cost is correct even
         when the worker ran on a pricier/cheaper model than the pilot.
@@ -4483,12 +4484,19 @@ class ConversationalSession(ToolDispatchMixin):
         worker's own model rate via resolve_price(model_spec), falling back to
         the pilot's driver rate if that model is unknown. Never raises. Always
         records the token split so server.py can subtract worker tokens from the
-        pilot-priced portion (no double counting)."""
+        pilot-priced portion (no double counting).
+
+        ``count_dollars=False`` records ONLY the token split. Use it for
+        swarm-store jobs, whose dollars /api/usage already computes
+        authoritatively from the job's own usage artifacts x the model
+        registry -- adding dollars here too would bill the same job twice."""
         try:
             ti = int(tokens_in or 0)
             to = int(tokens_out or 0)
             self._worker_tokens_in += ti
             self._worker_tokens_out += to
+            if not count_dollars:
+                return
             cost = float(real_cost_usd or 0.0)
             if cost <= 0.0:
                 spec = model_spec or getattr(self.config, "swarm_adapter", "") \
@@ -4601,9 +4609,14 @@ class ConversationalSession(ToolDispatchMixin):
         # tokens_cached is a subset of tokens_in already counted above; only
         # feed the cache-savings meter, do NOT add to _tokens_used.
         self._tokens_cached += sum_cached
-        # Attribute these worker tokens as dollars at the worker's OWN model rate
-        # so server.py does not reprice them at the (cheaper) pilot rate.
-        self._attribute_worker_cost(sum_in, sum_out)
+        # Record the worker token split so server.py excludes these tokens from
+        # the pilot-priced portion -- but attribute NO dollars. These artifacts
+        # come from swarm-store jobs, which /api/usage prices authoritatively
+        # from their own usage artifacts x the model registry (swarm_cost).
+        # Attributing dollars here too billed every awaited swarm twice, and at
+        # the PILOT's model rate (resolve_price cannot price adapter names like
+        # 'agentic'), so cheap-model workers were charged at e.g. opus rates.
+        self._attribute_worker_cost(sum_in, sum_out, count_dollars=False)
         return (sum_in, sum_out, sum_cached)
 
     def _apply_worker_patch(self, artifacts: list, job_id: str = "") -> tuple[bool, list[str], str]:
