@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpCircle, RefreshCw, X } from "lucide-react";
+import { sanitizeUpdateMessage } from "../lib/updateMessages";
 
 // The loud counterpart to the StatusBar's small "update" pill. When the tracked
 // branch has moved ahead of this checkout, this slides a prominent bar across the
@@ -39,7 +40,9 @@ export default function UpdateBanner() {
     // otherwise you get "... 72% 72%".
     const showProgress = (p: any) => {
       setApplying(true);
-      const base = p.message || "Updating";
+      // An older bundled updater streams raw npm/git/pip output as the
+      // message; sanitize so deprecation warnings never render as progress.
+      const base = sanitizeUpdateMessage(p.stage || "", p.message || "");
       const hasPct = /\d%\s*$/.test(base);
       setProgress(base + (p.percent != null && !hasPct ? ` ${p.percent}%` : ""));
     };

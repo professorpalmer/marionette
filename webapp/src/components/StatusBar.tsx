@@ -3,6 +3,7 @@ import { Circle, GitBranch, Boxes, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCir
 import { api, type Config, type UsageData } from "../lib/api";
 import { isDesktop } from "../lib/transport";
 import CostBreakdown from "./CostBreakdown";
+import { sanitizeUpdateMessage } from "../lib/updateMessages";
 
 // Bottom status strip (Hermes shell/statusbar pattern): runtime health, active
 // workspace branch, job count, pilot model, build mode, and panel toggles.
@@ -105,7 +106,7 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
       off = ipc.updates.onProgress((p: any) => {
         if (!p || !p.stage) return;
         if (p.stage === "error") { setApply(null); return; }
-        setApply((prev) => (prev ? { stage: p.stage, message: p.message || "Updating", percent: p.percent ?? null } : prev));
+        setApply((prev) => (prev ? { stage: p.stage, message: sanitizeUpdateMessage(p.stage, p.message || ""), percent: p.percent ?? null } : prev));
       });
     }
     return () => {
