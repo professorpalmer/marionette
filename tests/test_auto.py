@@ -156,7 +156,7 @@ def test_auto_cancel_halts(tmp_path):
             self.n += 1
             if self.n == 1:
                 return DriverResponse(text='{"say":"x","actions":[{"kind":"run_swarm","goal":"g"}]}', tokens_out=5, latency_ms=1.0)
-            # cancel arrives (simulating client disconnect) before the next turn
+            # cancel arrives (simulating explicit Stop / interrupt) before the next turn
             self.sess.cancel()
             return DriverResponse(text='{"say":"more","actions":[{"kind":"run_swarm","goal":"g2"}]}', tokens_out=5, latency_ms=1.0)
 

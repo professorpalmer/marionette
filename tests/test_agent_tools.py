@@ -130,12 +130,12 @@ def test_agent_tools_execution():
 def test_run_command_survives_cancel_poisoned_after_action_start():
     """Regression for the "every shell command dies but reads work" bug.
 
-    In autopilot the action_start SSE write can detect a transient client
-    disconnect and call _pilot.cancel(), which sets the shared _cancel flag. The
-    very next run_command then launched with that flag already set and was killed
-    on the spot -- exit 130, "[interrupted by user]" -- even though nothing was
-    stopping THIS command. read_file/list_dir never consult the flag, which is why
-    they kept working while every run_command died.
+    A shared _cancel flag set mid-turn (e.g. explicit Stop / interrupt, or the
+    historical autopilot path that cancelled on SSE disconnect) used to poison
+    the next run_command: the runner launched with the flag already set and was
+    killed on the spot -- exit 130, "[interrupted by user]" -- even though nothing
+    was stopping THIS command. read_file/list_dir never consult the flag, which is
+    why they kept working while every run_command died.
 
     We reproduce it deterministically: consume the generator and set _cancel the
     instant the run_command action_start is emitted (i.e. right before the runner

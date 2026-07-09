@@ -498,7 +498,8 @@ class ConversationalSession(ToolDispatchMixin):
         # guards these two fields and the release decision.
         self._busy_gen = 0
         self._busy_meta = threading.Lock()
-        # cooperative cancel: set by the server when the SSE client disconnects
+        # cooperative cancel: set by explicit Stop (/api/session/interrupt), not
+        # by SSE view detach (Phase A: detach drains; only interrupt cancels)
         # so run_auto halts promptly instead of burning budget for a gone client.
         self._cancel = threading.Event()
         # auto-distill: when on, run_auto proposes PENDING skill/rule candidates on
@@ -6424,7 +6425,7 @@ class ConversationalSession(ToolDispatchMixin):
         self._cancel.clear()
         while True:
             if self._cancel.is_set():
-                yield ConvEvent("auto_halt", {"reason": "cancelled (client disconnect)",
+                yield ConvEvent("auto_halt", {"reason": "cancelled",
                                               "snapshot": budget.snapshot()})
                 return
             halt = budget.check()
@@ -6463,7 +6464,7 @@ class ConversationalSession(ToolDispatchMixin):
                 # inside one send() call; without this the governor only catches it
                 # between cycles and burns the whole inner budget first.
                 if self._cancel.is_set():
-                    tripped = "cancelled (client disconnect)"
+                    tripped = "cancelled"
                     break
                 # Feed token delta to the governor mid-stream so a token ceiling
                 # trips inside a single send() call (not just between cycles).

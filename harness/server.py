@@ -4463,6 +4463,54 @@ class Handler(BaseHTTPRequestHandler):
             return self._stream_auto(objective)
         return self._send(404, json.dumps({"error": "not found"}))
 
+    def _sse_write(self, payload: bytes) -> bool:
+        """Write one SSE frame. Returns False if the client has detached.
+
+        View detach (EventSource close / navigate away) must NOT cancel the
+        in-flight turn -- only /api/session/interrupt does. Callers drain the
+        generator after a False return so _busy still releases via the
+        generator's own finally.
+        """
+        try:
+            self.wfile.write(payload)
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # ConnectionAbortedError is the common Windows EventSource/nav-close
+            # path; it is not a subclass of BrokenPipe/Reset. Treat it as detach
+            # so the pump can keep draining instead of gen.close()-aborting mid-yield.
+            return False
+
+    def _sse_pump(self, gen, frame_for_event, *, on_event=None, write_done: bool = True) -> bool:
+        """Pump a turn generator over SSE with Hermes-style detach semantics.
+
+        While the UI is attached, each event is written. On client disconnect we
+        keep consuming the generator (dropping frames) so the pilot turn finishes
+        and releases _busy -- we never call _pilot.cancel() here. Explicit Stop
+        still goes through /api/session/interrupt.
+
+        Returns True if the client detached mid-stream.
+        """
+        detached = False
+        try:
+            for ev in gen:
+                if on_event is not None:
+                    on_event(ev)
+                if detached:
+                    continue
+                if not self._sse_write(frame_for_event(ev)):
+                    detached = True
+            if write_done and not detached:
+                self._sse_write(b"data: {\"kind\": \"done\"}\n\n")
+        finally:
+            # Exhausted generators are a no-op; if the turn raised, close still
+            # runs the generator finally so the session lock cannot leak.
+            try:
+                gen.close()
+            except Exception:
+                pass
+        return detached
+
     def _stream_run(self, prompt: str, images=None):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -4489,22 +4537,13 @@ class Handler(BaseHTTPRequestHandler):
         run_hooks("preRun", ctx)
         gen = _session.run(prompt, images=images or None)
         try:
-            for ev in gen:
-                payload = json.dumps({"kind": ev.kind, "turn": ev.turn, "data": ev.data})
-                self.wfile.write(f"data: {payload}\n\n".encode())
-                self.wfile.flush()
-            self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
-            self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+            self._sse_pump(
+                gen,
+                lambda ev: (
+                    f"data: {json.dumps({'kind': ev.kind, 'turn': ev.turn, 'data': ev.data})}\n\n"
+                ).encode(),
+            )
         finally:
-            # Close the generator so its finally (the _busy release) runs even on
-            # client disconnect -- otherwise the session lock leaks and every later
-            # message silently fails with "session busy".
-            try:
-                gen.close()
-            except Exception:
-                pass
             run_hooks("postRun", ctx)
 
     def _stream_auto(self, objective: str):
@@ -4527,35 +4566,29 @@ class Handler(BaseHTTPRequestHandler):
         run_hooks("preRun", ctx)
         budget = AutoBudget.from_env()
         gen = _pilot.run_auto(objective, budget)
+        last_ckpt = time.monotonic()
+
+        def _maybe_checkpoint(ev):
+            nonlocal last_ckpt
+            # Incremental checkpoint: flush immediately after an appended action
+            # result, else on a 2s throttle, so a crash mid governor-loop can't
+            # lose the last chunk of transcript before _finalize_turn runs.
+            if ev.kind in _CHECKPOINT_KINDS:
+                _checkpoint_transcript()
+                last_ckpt = time.monotonic()
+            elif time.monotonic() - last_ckpt >= 2.0:
+                _checkpoint_transcript()
+                last_ckpt = time.monotonic()
+
         try:
-            last_ckpt = time.monotonic()
-            for ev in gen:
-                payload = json.dumps({"kind": ev.kind, "data": ev.data})
-                self.wfile.write(f"data: {payload}\n\n".encode())
-                self.wfile.flush()
-                # Incremental checkpoint: flush immediately after an appended action
-                # result, else on a 2s throttle, so a crash mid governor-loop can't
-                # lose the last chunk of transcript before _finalize_turn runs.
-                if ev.kind in _CHECKPOINT_KINDS:
-                    _checkpoint_transcript()
-                    last_ckpt = time.monotonic()
-                elif time.monotonic() - last_ckpt >= 2.0:
-                    _checkpoint_transcript()
-                    last_ckpt = time.monotonic()
-            self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
-            self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            # client (browser tab) went away -> stop the governor loop promptly
-            # instead of burning budget for a gone client.
-            _pilot.cancel()
+            # Detach != cancel: closing the EventSource must not stop the
+            # governor. Explicit Stop uses /api/session/interrupt -> cancel().
+            self._sse_pump(
+                gen,
+                lambda ev: f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode(),
+                on_event=_maybe_checkpoint,
+            )
         finally:
-            # Close the generator so its finally (the _busy release) runs even on
-            # disconnect -- otherwise the session lock leaks and later messages
-            # silently fail with "session busy".
-            try:
-                gen.close()
-            except Exception:
-                pass
             _finalize_turn(ctx)
 
     def _swap_pilot(self, model: str):
@@ -4771,54 +4804,46 @@ class Handler(BaseHTTPRequestHandler):
         from .hooks import run_hooks
         ctx = {"session_id": _sessions.active or "", "message": message}
         run_hooks("preRun", ctx)
-        # Hold the generator so we can ALWAYS close it -- closing runs send()'s
-        # finally block, which releases the per-session _busy lock. If the client
-        # disconnects mid-stream (BrokenPipeError below) and we merely abandon the
-        # loop, that finally never runs and the lock LEAKS -- after which every
-        # subsequent message silently fails with "session busy" and the pilot
-        # appears to "stop doing anything." Closing the generator in finally is
-        # the fix.
+        # Detach != cancel: if the client closes the EventSource mid-turn we keep
+        # draining send() so its finally releases _busy. Closing the generator
+        # early (old behavior) aborted the turn via GeneratorExit; cancel() on
+        # BrokenPipe (auto path) stopped the governor for a mere view switch.
+        # Explicit Stop still uses /api/session/interrupt.
         gen = _pilot.send(message, images=images or None, plan=plan, resume=resume)
-        try:
-            last_ckpt = time.monotonic()
-            for ev in gen:
-                payload = json.dumps({"kind": ev.kind, "data": ev.data})
-                self.wfile.write(f"data: {payload}\n\n".encode())
-                self.wfile.flush()
-                # Incremental checkpoint: flush the transcript immediately when an
-                # action result was just appended to history, else on a 2s throttle
-                # so a mid-turn crash can't lose the last chunk of transcript.
-                if ev.kind in _CHECKPOINT_KINDS:
-                    _checkpoint_transcript()
-                    last_ckpt = time.monotonic()
-                elif time.monotonic() - last_ckpt >= 2.0:
-                    _checkpoint_transcript()
-                    last_ckpt = time.monotonic()
-            
-            # After a chat turn streams its events, also drain ready swarm results:
-            for ev in _pilot.drain_swarm_results():
-                payload = json.dumps({"kind": ev.kind, "data": ev.data})
-                self.wfile.write(f"data: {payload}\n\n".encode())
-                self.wfile.flush()
-                if ev.kind in _CHECKPOINT_KINDS:
-                    _checkpoint_transcript()
-                    last_ckpt = time.monotonic()
-                elif time.monotonic() - last_ckpt >= 2.0:
-                    _checkpoint_transcript()
-                    last_ckpt = time.monotonic()
+        last_ckpt = time.monotonic()
 
-            self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
-            self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        def _maybe_checkpoint(ev):
+            nonlocal last_ckpt
+            # Incremental checkpoint: flush the transcript immediately when an
+            # action result was just appended to history, else on a 2s throttle
+            # so a mid-turn crash can't lose the last chunk of transcript.
+            if ev.kind in _CHECKPOINT_KINDS:
+                _checkpoint_transcript()
+                last_ckpt = time.monotonic()
+            elif time.monotonic() - last_ckpt >= 2.0:
+                _checkpoint_transcript()
+                last_ckpt = time.monotonic()
+
+        try:
+            detached = self._sse_pump(
+                gen,
+                lambda ev: f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode(),
+                on_event=_maybe_checkpoint,
+                write_done=False,
+            )
+            # After a chat turn streams its events, also drain ready swarm results
+            # (drop frames if the UI already detached).
+            for ev in _pilot.drain_swarm_results():
+                _maybe_checkpoint(ev)
+                if detached:
+                    continue
+                if not self._sse_write(
+                    f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode()
+                ):
+                    detached = True
+            if not detached:
+                self._sse_write(b"data: {\"kind\": \"done\"}\n\n")
         finally:
-            # Close the generator so send()'s finally (the _busy release) always
-            # runs, even on client disconnect. GeneratorExit from close() is
-            # swallowed by the generator's own finally; guard just in case.
-            try:
-                gen.close()
-            except Exception:
-                pass
             _finalize_turn(ctx)
 
 
