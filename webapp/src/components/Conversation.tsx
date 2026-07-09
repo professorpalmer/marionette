@@ -80,8 +80,82 @@ const SLASH_COMMANDS = [
   { cmd: "/help", desc: "Render a small help note" }
 ];
 
+// Per-session transcript warm cache (Hermes-style sessionStateByRuntimeIdRef).
+// Survives activeSessionId switches so the UI hydrates instantly and a background
+// sessionTranscript refresh can land without blanking a cache hit. Module-level
+// so the map outlives a single Conversation mount within the SPA lifetime.
+type CachedTranscript = { items: Item[] };
+const transcriptCacheBySessionId = new Map<string, CachedTranscript>();
 
+/** Test helper: drop all warm-cache entries. */
+export function clearTranscriptCache() {
+  transcriptCacheBySessionId.clear();
+}
 
+/** Test helper: read cached items for a session (undefined on miss). */
+export function peekTranscriptCache(sessionId: string): Item[] | undefined {
+  return transcriptCacheBySessionId.get(sessionId)?.items;
+}
+
+/** Seed or overwrite the warm cache for a session. */
+export function writeTranscriptCache(sessionId: string, items: Item[]) {
+  transcriptCacheBySessionId.set(sessionId, { items: [...items] });
+}
+
+/** Map /api/sessions/transcript payload into transcript Item rows. */
+export function transcriptResponseToItems(res: {
+  history?: any[];
+  display?: any[];
+}): Item[] {
+  let loadedItems: Item[] = [];
+  if (res.display && res.display.length > 0) {
+    loadedItems = res.display.map((m: any) => {
+      if (m.type === "card") {
+        return {
+          kind: "card" as const,
+          card: {
+            id: m.id,
+            goal: m.goal,
+            cwd: m.cwd || null,
+            kind: m.kind,
+            running: false,
+            open: false,
+            result: m.result || undefined
+          }
+        };
+      } else if (m.type === "swarm_result") {
+        return {
+          kind: "swarm_result" as const,
+          job_id: m.job_id || "",
+          applied: !!m.applied,
+          files: Array.isArray(m.files) ? m.files : [],
+          summary: m.summary || "",
+          error: m.error || null,
+          objective: m.objective || ""
+        };
+      } else {
+        return {
+          kind: "msg" as const,
+          msg: {
+            role: m.role as "user" | "assistant",
+            text: m.text || ""
+          }
+        };
+      }
+    });
+  } else {
+    loadedItems = (res.history || [])
+      .filter((m: any) => m.role === "assistant" || (m.role === "user" && m.content && !m.content.startsWith("(")))
+      .map((m: any) => ({
+        kind: "msg" as const,
+        msg: {
+          role: m.role as "user" | "assistant",
+          text: m.content || ""
+        }
+      }));
+  }
+  return deduplicateConsecutiveAssistantMessages(loadedItems);
+}
 
 export default function Conversation({ config, activeSessionId, onArtifacts, onJobChange }: {
   config: Config | null;
@@ -90,6 +164,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   onJobChange: () => void;
 }) {
   const [items, setItems] = useState<Item[]>([]);
+  // Mirror of items for session-switch cache writes without stale closures.
+  const itemsRef = useRef<Item[]>([]);
+  useEffect(() => { itemsRef.current = items; }, [items]);
+  // Tracks which session the visible transcript belongs to (for warm-cache save).
+  const cachedSessionIdRef = useRef<string | null>(null);
+  // Monotonic id so a slow sessionTranscript response for a prior switch is ignored.
+  const transcriptLoadGenRef = useRef(0);
 
   const [openTabs, setOpenTabs] = useState<{ path: string; isDirty: boolean }[]>([]);
   const [activeTab, setActiveTab] = useState<string>("chat");
@@ -562,118 +643,122 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
   usePolling(fetchContextUsage, 5000, { enabled: showContextPanel && !!activeSessionId });
 
+  // Warm-cache session switch: save outgoing transcript, hydrate incoming from
+  // cache immediately, detach any open EventSource (backend keeps the turn
+  // alive -- do NOT interrupt/stop), then refresh from sessionTranscript in the
+  // background without blanking a cache hit.
   useEffect(() => {
-    if (activeSessionId) {
-      api.sessionTranscript(activeSessionId)
-        .then((res) => {
-          let loadedItems: any[] = [];
-          if (res.display && res.display.length > 0) {
-            loadedItems = res.display.map((m: any) => {
-              if (m.type === "card") {
-                return {
-                  kind: "card" as const,
-                  card: {
-                    id: m.id,
-                    goal: m.goal,
-                    cwd: m.cwd || null,
-                    kind: m.kind,
-                    running: false,
-                    open: false,
-                    result: m.result || undefined
-                  }
-                };
-              } else if (m.type === "swarm_result") {
-                // Persisted swarm outcome badge (green "swarm done" / red
-                // "swarm failed") -- restored so it survives app restarts.
-                return {
-                  kind: "swarm_result" as const,
-                  job_id: m.job_id || "",
-                  applied: !!m.applied,
-                  files: Array.isArray(m.files) ? m.files : [],
-                  summary: m.summary || "",
-                  error: m.error || null,
-                  objective: m.objective || ""
-                };
-              } else {
-                return {
-                  kind: "msg" as const,
-                  msg: {
-                    role: m.role as "user" | "assistant",
-                    text: m.text || ""
-                  }
-                };
-              }
-            });
-          } else {
-            loadedItems = (res.history || [])
-              .filter((m: any) => m.role === "assistant" || (m.role === "user" && m.content && !m.content.startsWith("(")))
-              .map((m: any) => ({
-                kind: "msg" as const,
-                msg: {
-                  role: m.role as "user" | "assistant",
-                  text: m.content || ""
-                }
-              }));
-          }
-          setItems(deduplicateConsecutiveAssistantMessages(loadedItems));
-
-          // Gather all artifacts from (a) card entries in res.display
-          const displayArtifacts: { type: string; headline: string }[] = [];
-          if (res.display && res.display.length > 0) {
-            res.display.forEach((m: any) => {
-              if (m.type === "card" && m.result && Array.isArray(m.result.artifacts)) {
-                m.result.artifacts.forEach((art: any) => {
-                  if (art && art.type && art.headline) {
-                    displayArtifacts.push({ type: art.type, headline: art.headline });
-                  }
-                });
-              }
-            });
-          }
-
-          // Merge helper to deduplicate by type+headline
-          const mergeAndEmit = (fetchedArts: { type: string; headline: string }[]) => {
-            const seen = new Set<string>();
-            const unique: { type: string; headline: string }[] = [];
-            
-            displayArtifacts.concat(fetchedArts).forEach((art) => {
-              const key = `${art.type}::${art.headline}`;
-              if (!seen.has(key)) {
-                seen.add(key);
-                unique.push(art);
-              }
-            });
-
-            if (unique.length > 0) {
-              onArtifacts(unique);
-            }
-          };
-
-          // Fetch artifacts from (b) res.job_ids
-          if (res.job_ids && res.job_ids.length > 0) {
-            Promise.all(
-              res.job_ids.map((jid: string) =>
-                api.artifacts(jid)
-                  .then((arts) => (Array.isArray(arts) ? arts : []))
-                  .catch((err) => {
-                    console.error("Failed to fetch artifacts for job", jid, err);
-                    return [];
-                  })
-              )
-            ).then((allJobArts) => {
-              const flattened = allJobArts.flat();
-              mergeAndEmit(flattened);
-            });
-          } else {
-            mergeAndEmit([]);
-          }
-        })
-        .catch(() => {
-          setItems([]);
-        });
-    } else {
-      setItems([]);
+    const prevId = cachedSessionIdRef.current;
+    if (prevId && prevId !== activeSessionId) {
+      transcriptCacheBySessionId.set(prevId, { items: [...itemsRef.current] });
     }
+
+    // Detach SSE only -- closing EventSource is OK; interrupt would kill the turn.
+    if (cancelRef.current) {
+      cancelRef.current();
+      cancelRef.current = null;
+    }
+    // Drop the typewriter loop without flushing into items (would race the
+    // cache hydrate below). Authoritative text comes back via sessionTranscript.
+    if (typeRafRef.current != null) {
+      cancelAnimationFrame(typeRafRef.current);
+      typeRafRef.current = null;
+    }
+    typeBufRef.current = "";
+    typeDoneRef.current = false;
+    if (prevId !== activeSessionId) {
+      setStatus("idle");
+      setCompactingStatus(null);
+    }
+
+    const loadGen = ++transcriptLoadGenRef.current;
+    cachedSessionIdRef.current = activeSessionId;
+
+    if (!activeSessionId) {
+      setItems([]);
+      return;
+    }
+
+    const cached = transcriptCacheBySessionId.get(activeSessionId);
+    const hadCache = !!cached;
+    if (cached) {
+      setItems(cached.items);
+      itemsRef.current = cached.items;
+    } else {
+      // Miss: leave prior items briefly only if we had no previous session;
+      // otherwise clear so we don't flash the wrong session's transcript.
+      if (prevId && prevId !== activeSessionId) {
+        setItems([]);
+        itemsRef.current = [];
+      }
+    }
+
+    api.sessionTranscript(activeSessionId)
+      .then((res) => {
+        if (loadGen !== transcriptLoadGenRef.current) return;
+        if (cachedSessionIdRef.current !== activeSessionId) return;
+
+        const loadedItems = transcriptResponseToItems(res);
+        setItems(loadedItems);
+        itemsRef.current = loadedItems;
+        transcriptCacheBySessionId.set(activeSessionId, { items: [...loadedItems] });
+
+        // Gather all artifacts from (a) card entries in res.display
+        const displayArtifacts: { type: string; headline: string }[] = [];
+        if (res.display && res.display.length > 0) {
+          res.display.forEach((m: any) => {
+            if (m.type === "card" && m.result && Array.isArray(m.result.artifacts)) {
+              m.result.artifacts.forEach((art: any) => {
+                if (art && art.type && art.headline) {
+                  displayArtifacts.push({ type: art.type, headline: art.headline });
+                }
+              });
+            }
+          });
+        }
+
+        const mergeAndEmit = (fetchedArts: { type: string; headline: string }[]) => {
+          const seen = new Set<string>();
+          const unique: { type: string; headline: string }[] = [];
+          displayArtifacts.concat(fetchedArts).forEach((art) => {
+            const key = `${art.type}::${art.headline}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              unique.push(art);
+            }
+          });
+          if (unique.length > 0) {
+            onArtifacts(unique);
+          }
+        };
+
+        if (res.job_ids && res.job_ids.length > 0) {
+          Promise.all(
+            res.job_ids.map((jid: string) =>
+              api.artifacts(jid)
+                .then((arts) => (Array.isArray(arts) ? arts : []))
+                .catch((err) => {
+                  console.error("Failed to fetch artifacts for job", jid, err);
+                  return [];
+                })
+            )
+          ).then((allJobArts) => {
+            if (loadGen !== transcriptLoadGenRef.current) return;
+            mergeAndEmit(allJobArts.flat());
+          });
+        } else {
+          mergeAndEmit([]);
+        }
+      })
+      .catch(() => {
+        if (loadGen !== transcriptLoadGenRef.current) return;
+        if (cachedSessionIdRef.current !== activeSessionId) return;
+        // Cache hit: keep showing cached rows on refresh failure.
+        if (!hadCache) {
+          setItems([]);
+          itemsRef.current = [];
+        }
+      });
   }, [activeSessionId]);
 
   useEffect(() => {

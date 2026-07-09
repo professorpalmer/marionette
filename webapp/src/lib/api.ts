@@ -130,6 +130,8 @@ export type SessionState = {
   // Set when the transcript ends on an unanswered user turn while idle -- the
   // signal to auto-continue after a backend restart (self-edit apply).
   resume_pending?: boolean;
+  // Per-session runner liveness from SessionRunnerRegistry (multi-session Phase B).
+  runners?: Record<string, "running" | "idle">;
 };
 
 export type SwarmResultData = {
