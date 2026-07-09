@@ -38,6 +38,11 @@ const isPackaged = app.isPackaged;
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
+// Google OAuth ("This browser or app may not be secure") keys off Chromium's
+// AutomationControlled blink feature, which sets navigator.webdriver=true in
+// Electron. Disable it process-wide before any BrowserWindow/webview is born.
+// Must run before app `ready`.
+app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
 
 function pmharnessHome() {
   return path.join(os.homedir(), ".pmharness");
@@ -801,8 +806,10 @@ function createWindow() {
   });
   // Lock down dynamically created <webview> tags: a compromised renderer
   // could otherwise attach one with nodeIntegration:true / no isolation.
+  // Force OUR browser-preload (strips any attacker-supplied preload path)
+  // so Google/OAuth bot signals are cleared before page scripts run.
   win.webContents.on("will-attach-webview", (_e, webPreferences) => {
-    delete webPreferences.preload;
+    webPreferences.preload = path.join(__dirname, "browser-preload.cjs");
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;
   });
@@ -829,6 +836,27 @@ function createWindow() {
   });
 }
 
+// Build a desktop Chrome UA that MATCHES this Electron's Chromium build.
+// Hardcoding a newer Chrome version (e.g. 132) while Electron 33 ships ~130
+// makes Sec-CH-UA Client Hints disagree with the UA string -- Google's
+// "This browser or app may not be secure" reject is much more common on
+// Windows when those disagree. process.versions.chrome is the ground truth.
+function browserUserAgent() {
+  const chrome = (process.versions && process.versions.chrome) || "130.0.0.0";
+  let platformBit;
+  if (process.platform === "darwin") {
+    platformBit = "Macintosh; Intel Mac OS X 10_15_7";
+  } else if (process.platform === "linux") {
+    platformBit = "X11; Linux x86_64";
+  } else {
+    platformBit = "Windows NT 10.0; Win64; x64";
+  }
+  return (
+    `Mozilla/5.0 (${platformBit}) AppleWebKit/537.36 ` +
+    `(KHTML, like Gecko) Chrome/${chrome} Safari/537.36`
+  );
+}
+
 // Configure the in-app browser's PERSISTENT session partition. The <webview>
 // uses partition="persist:browser"; here we give that session a realistic
 // desktop user-agent (some sites -- X/Twitter included -- refuse to keep a
@@ -838,12 +866,9 @@ function createWindow() {
 function configureBrowserSession() {
   try {
     const ses = session.fromPartition("persist:browser");
-    // A mainstream Chrome UA so login flows behave like a normal browser.
-    // Chrome 120 is too old for Google's security checks; use a recent stable.
-    const chromeUA =
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-      "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
+    const chromeUA = browserUserAgent();
     try { ses.setUserAgent(chromeUA); } catch {}
+    _dbg2(`browser session UA: ${chromeUA}`);
   } catch (e) {
     _dbg2(`browser session config failed: ${e}`);
   }
@@ -967,6 +992,9 @@ function injectPopoutClickCatcher(contents) {
 
 app.on("web-contents-created", (_e, contents) => {
   if (contents.getType() === "webview") {
+    // Align the webview's own UA with the session (and real Chromium build).
+    // Session-level setUserAgent alone is not always inherited on Windows.
+    try { contents.setUserAgent(browserUserAgent()); } catch {}
     contents.setWindowOpenHandler(() => {
       return {
         action: "allow",
@@ -983,19 +1011,26 @@ app.on("web-contents-created", (_e, contents) => {
     // Attach persistence + pin toggle to the freshly created pop-out window.
     contents.on("did-create-window", (childWindow) => {
       try { childWindow.setAlwaysOnTop(true, "floating"); } catch {}
+      try { childWindow.webContents.setUserAgent(browserUserAgent()); } catch {}
       wirePopoutWindow(childWindow);
     });
-    // Hide automation signals on every navigation so Google/Gmail login
-    // doesn't flag the in-app browser as "unsafe". Electron's <webview>
-    // leaks navigator.webdriver=true, zero plugins, and absence of
-    // navigator.languages -- all of which trigger bot-detection.
+    // Hide residual automation signals. Primary fix is the process-level
+    // AutomationControlled blink disable + matching Chrome UA; this is the
+    // late-path belt for plugins/languages/mimeTypes Google also sniffs.
     const hideAutomation = () => {
       try {
         contents.executeJavaScript(`(() => {
           try {
             if (window.__pmAutomationHidden) return;
             window.__pmAutomationHidden = true;
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            Object.defineProperty(navigator, 'webdriver', {
+              get: () => undefined,
+              configurable: true,
+            });
+            try {
+              if (!window.chrome) window.chrome = { runtime: {} };
+              else if (!window.chrome.runtime) window.chrome.runtime = {};
+            } catch (_) {}
             const opl = navigator.plugins;
             Object.defineProperty(navigator, 'plugins', {
               get: () => opl.length > 0 ? opl : [
@@ -1015,6 +1050,9 @@ app.on("web-contents-created", (_e, contents) => {
         })();`).catch(() => {});
       } catch (_) {}
     };
+    // dom-ready is earlier than did-finish-load -- Google's reject page often
+    // decides before full load completes.
+    contents.on("dom-ready", hideAutomation);
     contents.on("did-finish-load", () => { hideAutomation(); injectPopoutClickCatcher(contents); });
     contents.on("console-message", (_evt, _level, message) => {
       if (typeof message === "string" && message.startsWith(POPOUT_CLICK_SENTINEL)) {
@@ -1043,9 +1081,11 @@ function openPopoutWindow(url) {
       partition: "persist:browser",
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, "browser-preload.cjs"),
     },
   });
   try { win.setAlwaysOnTop(true, "floating"); } catch {}
+  try { win.webContents.setUserAgent(browserUserAgent()); } catch {}
   wirePopoutWindow(win);
   win.loadURL(target);
   return win;
