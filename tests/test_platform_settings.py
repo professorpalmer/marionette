@@ -72,6 +72,28 @@ def test_first_run_sensible_default(temp_platform_json):
     assert "openai" in data["disabled"]
 
 
+def test_init_respects_foreign_writer_without_marker(temp_platform_json):
+    # Puppetmaster's CLI (`platform enable cursor`) historically rewrote
+    # platform.json with only {"disabled": [...]}, stripping the
+    # harness_initialized marker. Re-init must NOT re-apply standalone
+    # defaults over a file that already carries adapter configuration --
+    # that silently disabled adapters the operator just enabled, on every
+    # Marionette boot.
+    foreign = {"disabled": ["claude-code", "codex", "hermes", "openai"]}
+    with open(temp_platform_json, "w", encoding="utf-8") as f:
+        json.dump(foreign, f)
+
+    import harness.server as srv
+    srv._init_platform_lock()
+
+    with open(temp_platform_json, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    # cursor was enabled by the foreign writer (absent from disabled):
+    # it must STAY enabled.
+    assert "cursor" not in data["disabled"]
+    assert set(data["disabled"]) == {"claude-code", "codex", "hermes", "openai"}
+
+
 def test_get_platform_adapters(temp_platform_json):
     # Set up mock platform.json with specific disabled state
     mock_data = {

@@ -543,7 +543,17 @@ def _init_platform_lock() -> None:
     if not isinstance(pdata, dict):
         pdata = {}
     
-    if not os.path.exists(path) or "harness_initialized" not in pdata:
+    # A file with a well-formed "disabled" list is a configured install even
+    # without our marker: Puppetmaster's CLI historically rewrote platform.json
+    # with only its own keys, stripping "harness_initialized" -- re-applying
+    # standalone defaults here would silently disable adapters the operator
+    # just enabled (`puppetmaster platform enable cursor` undone on every
+    # Marionette boot). Only seed defaults when the file is truly absent or
+    # carries no adapter configuration at all.
+    already_configured = isinstance(pdata.get("disabled"), list)
+    if not already_configured and (
+        not os.path.exists(path) or "harness_initialized" not in pdata
+    ):
         # Standalone default: out of the box only the built-in ``agentic`` adapter
         # is enabled. It runs its own tool-use loop directly against whatever
         # provider API the user has a key for (Anthropic, OpenAI, Gemini,
