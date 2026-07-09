@@ -298,3 +298,40 @@ def test_pinned_ipv6(monkeypatch):
     ok, reason, pinned = is_safe_url_pinned("https://example.com/")
     assert ok, reason
     assert pinned == "2606:2800:220:1:248:1893:25c8:1946"
+
+
+# -- RFC 6598 CGNAT (100.64.0.0/10) ------------------------------------------
+
+def test_cgnat_blocked(monkeypatch):
+    _patch_resolve(monkeypatch, "100.64.0.1")
+    ok, reason = is_safe_url("http://100.64.0.1/")
+    assert not ok
+    assert "100.64.0.1" in reason
+
+
+def test_cgnat_boundary_below_not_cgnat(monkeypatch):
+    """100.63.255.255 is outside 100.64.0.0/10 — not blocked by the CGNAT rule."""
+    _patch_resolve(monkeypatch, "100.63.255.255")
+    ok, reason = is_safe_url("http://100.63.255.255/")
+    assert ok, reason
+
+
+def test_cgnat_boundary_above_not_cgnat(monkeypatch):
+    """100.128.0.0 is outside 100.64.0.0/10 — not blocked by the CGNAT rule."""
+    _patch_resolve(monkeypatch, "100.128.0.0")
+    ok, reason = is_safe_url("http://100.128.0.0/")
+    assert ok, reason
+
+
+def test_cgnat_ipv6_mapped_blocked(monkeypatch):
+    mapped = "::ffff:100.64.0.1"
+    _patch_resolve(monkeypatch, mapped)
+    ok, reason = is_safe_url(f"http://[{mapped}]/")
+    assert not ok
+
+
+def test_cgnat_allowed_with_private_hatch(monkeypatch):
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
+    _patch_resolve(monkeypatch, "100.64.0.1")
+    ok, reason = is_safe_url("http://100.64.0.1/")
+    assert ok, reason

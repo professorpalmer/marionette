@@ -95,6 +95,30 @@ class _PinnedIPHTTPSHandler(urllib.request.HTTPSHandler):
         )
 
 
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every 3xx Location through the SSRF gate before following.
+
+    urllib follows redirects by default without re-checking the target, so a
+    malicious MCP server can 302 to metadata or an internal host after the
+    initial URL passed validation. Cap at urllib's default max_redirections.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        from .url_safety import allow_private_urls, is_safe_url_pinned
+
+        mcp_hatch = os.environ.get("PMHARNESS_MCP_ALLOW_PRIVATE", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        ok, reason, _ = is_safe_url_pinned(
+            newurl, allow_private=mcp_hatch or allow_private_urls(),
+        )
+        if not ok:
+            raise urllib.error.HTTPError(
+                newurl, code, f"redirect blocked: {reason}", headers, fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class HttpMcpClient:
     """One hosted MCP server, spoken to over HTTP JSON-RPC POST."""
 
@@ -109,7 +133,13 @@ class HttpMcpClient:
         self._session_id: Optional[str] = None
         self._initialized = False
         self._server_info: dict = {}
-        self._opener = self._make_pinned_opener(self._pinned_ip) if self._pinned_ip else None
+        # Always install SafeRedirectHandler so 3xx targets are re-validated,
+        # including the unresolvable-hostname path that has no pinned IP.
+        self._opener = (
+            self._make_pinned_opener(self._pinned_ip)
+            if self._pinned_ip
+            else urllib.request.build_opener(SafeRedirectHandler)
+        )
 
     def validate_url(self, url: str) -> Optional[str]:
         """Validate the URL for SSRF safety and return a pinned IP address.
@@ -144,8 +174,10 @@ class HttpMcpClient:
     def _make_pinned_opener(pinned_ip: str):
         """Build an opener that connects to *pinned_ip* while preserving the
         original hostname in HTTP Host headers and HTTPS SNI / certificate
-        verification."""
+        verification. Includes SafeRedirectHandler so redirect targets are
+        re-validated through the SSRF gate."""
         return urllib.request.build_opener(
+            SafeRedirectHandler,
             _PinnedIPHTTPHandler(pinned_ip=pinned_ip),
             _PinnedIPHTTPSHandler(pinned_ip=pinned_ip),
         )
@@ -190,10 +222,7 @@ class HttpMcpClient:
             headers["Mcp-Session-Id"] = self._session_id
         req = urllib.request.Request(self.url, data=body, headers=headers, method="POST")
         try:
-            if self._opener:
-                r = self._opener.open(req, timeout=timeout)
-            else:
-                r = urllib.request.urlopen(req, timeout=timeout)
+            r = self._opener.open(req, timeout=timeout)
             with r:
                 # capture a session id if the server issued one
                 sid = r.headers.get("Mcp-Session-Id")

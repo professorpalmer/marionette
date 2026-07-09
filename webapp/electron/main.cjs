@@ -799,6 +799,13 @@ function createWindow() {
       backgroundThrottling: false,
     },
   });
+  // Lock down dynamically created <webview> tags: a compromised renderer
+  // could otherwise attach one with nodeIntegration:true / no isolation.
+  win.webContents.on("will-attach-webview", (_e, webPreferences) => {
+    delete webPreferences.preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+  });
   // expose the backend port to the renderer for any direct needs
   win.webContents.on("did-finish-load", () => {
     win.webContents.executeJavaScript(

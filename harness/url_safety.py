@@ -49,6 +49,11 @@ METADATA_IPS = {
     "fd00:ec2::254",
 }
 
+# RFC 6598 Carrier-Grade NAT. Python's ipaddress does not classify this as
+# private/reserved/loopback (is_private=False for 100.64.0.1), so SSRF
+# checks that rely only on those flags miss it.
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
 # Query parameter names that may carry secrets and should be redacted when a
 # URL is logged or echoed back.
 _SENSITIVE_PARAM_RE = re.compile(
@@ -80,6 +85,17 @@ def _ip_is_metadata(ip: ipaddress._BaseAddress) -> bool:
     return str(ip) in METADATA_IPS
 
 
+def _ip_is_cgnat(ip: ipaddress._BaseAddress) -> bool:
+    """True when *ip* is in RFC 6598 CGNAT space (100.64.0.0/10)."""
+    check = ip
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        check = ip.ipv4_mapped
+    try:
+        return check in _CGNAT_NETWORK
+    except TypeError:
+        return False
+
+
 def _ip_is_blocked_range(ip: ipaddress._BaseAddress) -> bool:
     return bool(
         ip.is_private
@@ -88,6 +104,7 @@ def _ip_is_blocked_range(ip: ipaddress._BaseAddress) -> bool:
         or ip.is_reserved
         or ip.is_multicast
         or ip.is_unspecified
+        or _ip_is_cgnat(ip)
     )
 
 
