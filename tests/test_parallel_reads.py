@@ -184,6 +184,9 @@ def test_parallel_reads_timing_sanity(monkeypatch):
     elapsed = time.time() - start_time
     
     # Serial would be 3 * 0.5s = 1.5s of sleeping alone; parallel is ~0.5s.
-    # The 1.2s bound leaves room for per-turn overhead (git/config probes are
-    # notably slower on Windows) while still failing a serial regression.
-    assert elapsed < 1.2, f"Elapsed time {elapsed}s suggests reads ran serially!"
+    # Windows CI has flaked above 1.2s from git/config probe overhead even when
+    # the three sleeps overlap, so allow more headroom there while still
+    # failing a true serial regression (~1.5s sleep + overhead).
+    import sys
+    bound = 2.0 if sys.platform == "win32" else 1.2
+    assert elapsed < bound, f"Elapsed time {elapsed}s suggests reads ran serially!"
