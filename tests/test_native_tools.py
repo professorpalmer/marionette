@@ -238,8 +238,8 @@ def test_conversation_smoke_native_turn(monkeypatch):
     events = list(s.send("Please read AGENTS.md for me."))
     kinds = [e.kind for e in events]
     
-    # Assert events emitted
-    assert "thinking" in kinds
+    # Assert events emitted (no post-answer thinking/reasoning ConvEvent)
+    assert "thinking" not in kinds
     assert "action_start" in kinds
     assert "action_result" in kinds
     assert "message" in kinds
@@ -266,7 +266,7 @@ def test_conversation_inline_fallback_turn():
     events = list(s.send("Please read AGENTS.md."))
     kinds = [e.kind for e in events]
     
-    assert "thinking" in kinds
+    assert "thinking" not in kinds
     assert "action_start" in kinds
     assert "action_result" in kinds
     assert "message" in kinds
