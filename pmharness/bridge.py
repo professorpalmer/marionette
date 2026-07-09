@@ -473,6 +473,16 @@ def execute_intent(
                         "read_only": True, "no_edit": True, "dry_run": True,
                         "cwd": repo_cwd, "prompt": intent.goal,
                         "auto_route": True,
+                        # Stay on the agentic adapter for BOTH the first pick
+                        # and router-fallback. Without this, prefer_plan_billed
+                        # first-picks Cursor GPT ($0 plan) then fallback lands
+                        # on openai/gpt-* even when the user's Models toggles
+                        # only enabled OpenRouter pilots -- the tracker then
+                        # shows a GPT model the picker never offered.
+                        "allowed_adapters": ["agentic"],
+                        # Agentic path is API-billed OpenRouter (or other keyed
+                        # providers); do not prefer plan-billed Cursor/Codex.
+                        "prefer_plan_billed": False,
                         # Opt this worker into the CDP browser toolset. The
                         # agentic adapter's _browser_enabled gate reads this flag
                         # and registers/dispatches the browser_* tools; without
