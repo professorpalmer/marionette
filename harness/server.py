@@ -37,6 +37,7 @@ from .sessions import (
     load_transcript,
     session_visible_for_workspace,
 )
+from .session_runners import SessionRunnerRegistry, LeaseExhaustedError
 from .autobudget import AutoBudget
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd, _ensure_node_on_path
 from .diag import note as _diag
@@ -1093,6 +1094,9 @@ _pilot = ConversationalSession(_cfg)
 _session.state_dir = _pilot.state_dir
 import tempfile as _tf
 _sessions = SessionStore(os.path.join(_cfg.state_dir or _tf.gettempdir(), "harness_sessions.json"))
+# Per-session runners: active VIEW is which session the UI attaches to; other
+# sessions may keep executing under the concurrent-session lease.
+_runners = SessionRunnerRegistry()
 _mcp = McpManager()
 # Serialize pilot rebinds so a /api/pilot swap and a workspace-switch rebuild
 # cannot interleave their history-copy/rebind steps and leave a torn _pilot.
@@ -1186,6 +1190,83 @@ def _copy_pilot_meters(old_pilot: Any, new_pilot: Any) -> None:
             pass
 
 
+def _bind_pilot_services(pilot: Any) -> None:
+    """Attach shared MCP / session-store handles to a runner."""
+    pilot._mcp = _mcp
+    pilot._session_store = _sessions
+
+
+def _build_conversational_pilot(*, copy_meters_from: Any = None) -> ConversationalSession:
+    """Construct a ConversationalSession for the current ``_cfg`` (lease factory)."""
+    new_pilot = ConversationalSession(_cfg)
+    _bind_pilot_services(new_pilot)
+    if copy_meters_from is not None:
+        _copy_pilot_meters(copy_meters_from, new_pilot)
+        try:
+            new_pilot._auto_distill = getattr(
+                copy_meters_from, "_auto_distill", getattr(new_pilot, "_auto_distill", False)
+            )
+        except Exception:
+            pass
+    return new_pilot
+
+
+def _active_pilot() -> Any:
+    """Return the runner for the current active view (compat: same as ``_pilot``)."""
+    return _pilot
+
+
+def _attach_view(session_id: str, *, factory=None, load_transcript_on_create: bool = True) -> Any:
+    """Point the UI at ``session_id`` via the runner registry.
+
+    get_or_create under the lease; set_active_view; assign global ``_pilot``
+    (and pin ``_session.state_dir``). Loads the session transcript when the
+    runner is newly created or when switching to a different view.
+    Raises ``LeaseExhaustedError`` when a new runner is required but every
+    lease slot holds a busy runner.
+    """
+    global _pilot, _session
+    if not session_id:
+        raise ValueError("session_id required to attach view")
+
+    prev_view = _runners.active_view_id
+    created = _runners.get(session_id) is None
+    meter_src = _pilot
+
+    def _factory():
+        if factory is not None:
+            return factory()
+        return _build_conversational_pilot(copy_meters_from=meter_src)
+
+    runner = _runners.get_or_create(session_id, _factory)
+    _runners.set_active_view(session_id)
+    with _pilot_swap_lock:
+        _pilot = runner
+        # Keep tracker/jobs pointed at the store this runner writes to.
+        try:
+            _session.state_dir = _pilot.state_dir
+        except Exception:
+            pass
+        _bind_pilot_services(_pilot)
+        # Existing runners already hold live history (including in-flight turns).
+        # Only hydrate from disk when the runner was just created.
+        if created and load_transcript_on_create:
+            history = load_transcript(_sessions_state_dir(), session_id)
+            _pilot.load_history(history)
+        _sync_pilot_session_id()
+    return _pilot
+
+
+def _save_active_transcript() -> None:
+    """Persist the current active view's transcript (if any)."""
+    if _sessions.active:
+        save_transcript(
+            _sessions_state_dir(),
+            _sessions.active,
+            _pilot.export_transcript_data(),
+        )
+
+
 _load_resume_latch()
 
 
@@ -1254,12 +1335,22 @@ def _handle_session_delete(sid: str) -> tuple[int, dict]:
     run_hooks("sessionEnd", {"session_id": sid})
     new_active = _sessions.delete(sid)
     _remove_session_transcript(sid)
+    try:
+        _runners.drop(sid)
+    except Exception as e:
+        _diag("server.session_delete_drop_runner", e)
     if is_active:
         if new_active:
-            history = load_transcript(_sessions_state_dir(), new_active)
-            _pilot.load_history(history)
+            try:
+                _attach_view(new_active)
+            except LeaseExhaustedError:
+                # Fall back to loading into the current global pilot pointer.
+                history = load_transcript(_sessions_state_dir(), new_active)
+                _pilot.load_history(history)
+                _sync_pilot_session_id()
         else:
             _pilot.load_history([])
+            _sync_pilot_session_id()
     return 200, {"ok": True, "active": new_active}
 
 
@@ -1277,7 +1368,11 @@ def _apply_model_context_window():
 
 
 def _rebuild_pilot_and_session():
-    """Rebuild the session + pilot for the active driver, preserving history.
+    """Rebuild the ACTIVE view's runner for the current driver, preserving history.
+
+    Only replaces the active view's entry in the registry -- never wipes other
+    busy runners. If the active runner is mid-turn, refuse (callers that need
+    a hard swap should 409 first).
 
     Defensive: if the configured driver cannot be built (e.g. a stale saved
     spec the catalog no longer knows), do NOT let the exception escape and
@@ -1286,6 +1381,15 @@ def _rebuild_pilot_and_session():
     error to the caller to show, instead of taking down the process.
     """
     global _session, _pilot, _cfg
+    active_id = _sessions.active or _runners.active_view_id
+    if active_id:
+        existing = _runners.get(active_id)
+        if existing is not None:
+            busy = getattr(existing, "_busy", None)
+            locked = getattr(busy, "locked", None) if busy is not None else None
+            if callable(locked) and locked():
+                raise RuntimeError("pilot busy -- finish or stop the current turn before rebuilding")
+
     prev_driver = _cfg.driver
     _apply_model_context_window()
     try:
@@ -1311,15 +1415,23 @@ def _rebuild_pilot_and_session():
         _pilot._history = old_history
         _pilot._auto_distill = old_auto_distill
         _copy_pilot_meters(old_pilot, _pilot)
-        _pilot._mcp = _mcp
-        _pilot._session_store = _sessions
+        _bind_pilot_services(_pilot)
         _sync_pilot_session_id()
+        if active_id:
+            # Replace only this view's registry entry; leave other runners alone.
+            _runners.drop(active_id)
+            _runners.get_or_create(active_id, lambda: _pilot)
+            _runners.set_active_view(active_id)
+
 
 # Startup: Restore the active/most-recent session's transcript into _pilot
+# and register it as the active view in the runner registry.
 if _sessions.active:
     _startup_history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
     if _startup_history:
         _pilot.load_history(_startup_history)
+    _runners.get_or_create(_sessions.active, lambda: _pilot)
+    _runners.set_active_view(_sessions.active)
 _sync_pilot_session_id()
 
 _skills = SkillStore()
@@ -2157,9 +2269,15 @@ class Handler(BaseHTTPRequestHandler):
             if not target_repo or not os.path.isdir(target_repo):
                 return self._send(400, json.dumps({"error": "Path is not an existing directory"}))
 
-            # Save outgoing conversation transcript
-            if _sessions.active:
-                save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
+            # Save outgoing conversation transcript for the current active runner
+            _save_active_transcript()
+
+            # Snapshot so a lease-exhausted attach can roll back without leaving
+            # the process pointed at the target repo / session.
+            prev_repo = _cfg.repo
+            prev_driver = _cfg.driver
+            prev_active = _sessions.active
+            prev_env_repo = os.environ.get("HARNESS_REPO")
 
             _cfg.repo = target_repo
             os.environ["HARNESS_REPO"] = target_repo
@@ -2200,7 +2318,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-            # Select the target project's session instead of carrying the current one
+            # Select/create the target project's session, then attach via registry
+            # (do not rebuild in a way that orphans busy runners).
             target_sessions = [
                 s for s in _sessions.list()
                 if session_visible_for_workspace(s, target_repo, _sessions_state_dir())
@@ -2212,13 +2331,26 @@ class Handler(BaseHTTPRequestHandler):
                 basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
                 _sessions.create(title=basename, repo=target_repo, branch=branch)
 
-            _rebuild_pilot_and_session()
-            _sync_pilot_session_id()
-
-            # Explicitly load target session's transcript to replace the preserved history
             if _sessions.active:
-                target_history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
-                _pilot.load_history(target_history)
+                try:
+                    _attach_view(_sessions.active)
+                except LeaseExhaustedError as e:
+                    _cfg.repo = prev_repo
+                    _cfg.driver = prev_driver
+                    _apply_model_context_window()
+                    if prev_env_repo is None:
+                        os.environ.pop("HARNESS_REPO", None)
+                    else:
+                        os.environ["HARNESS_REPO"] = prev_env_repo
+                    if prev_active:
+                        try:
+                            _sessions.switch(prev_active)
+                        except Exception as roll_e:
+                            _diag("server.workspace_open_lease_rollback", roll_e)
+                    return self._send(409, json.dumps({
+                        "error": str(e) or "session runner lease exhausted",
+                        "code": "lease_exhausted",
+                    }))
 
             has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
             if not has_codegraph:
@@ -2415,8 +2547,7 @@ class Handler(BaseHTTPRequestHandler):
             ok = _memory.remove(entry_id)
             return self._send(200, json.dumps({"ok": ok}))
         if path == "/api/sessions/create":
-            if _sessions.active:
-                save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
+            _save_active_transcript()
             title = body.get("title") or "New session"
             repo = _cfg.repo or ""
             branch = ""
@@ -2437,24 +2568,33 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             res = _sessions.create(title, repo=repo, branch=branch, workspace_root=repo)
-            _pilot.load_history([])
-            
+            sid = res.get("id", "")
+            if sid:
+                meter_src = _pilot
+                try:
+                    _attach_view(
+                        sid,
+                        factory=lambda: _build_conversational_pilot(copy_meters_from=meter_src),
+                        load_transcript_on_create=False,
+                    )
+                    _pilot.load_history([])
+                except LeaseExhaustedError as e:
+                    return self._send(409, json.dumps({
+                        "error": str(e) or "session runner lease exhausted",
+                        "code": "lease_exhausted",
+                    }))
+
             from .hooks import run_hooks
-            run_hooks("sessionStart", {"session_id": res.get("id", ""), "title": title})
-            
+            run_hooks("sessionStart", {"session_id": sid, "title": title})
+
             return self._send(200, json.dumps(res))
         if path == "/api/sessions/switch":
-            # Guard against swapping history out from under a live turn: if a
-            # turn is in flight the in-flight generator would write into the
-            # newly-loaded session's history (the "messages continued in the
-            # other session" bleed), and we'd save a mid-spree transcript with a
-            # dangling tool_use. Reject fast if _pilot is busy.
-            if not _pilot._busy.acquire(blocking=False):
-                return self._send(409, json.dumps({"error": "pilot busy -- finish or stop the current turn before switching sessions"}))
-            _pilot._busy.release()
-            if _sessions.active:
-                save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
-            res = _sessions.switch(body.get("id",""))
+            # Multi-session: switching VIEW must not 409 just because the
+            # outgoing (or another) runner is busy -- other sessions keep
+            # executing under the lease. Only LeaseExhaustedError blocks.
+            target_id = (body.get("id") or "").strip()
+            _save_active_transcript()
+            res = _sessions.switch(target_id)
             if res.get("ok") and _sessions.active:
                 target_sess = None
                 for s in _sessions.list():
@@ -2462,7 +2602,7 @@ class Handler(BaseHTTPRequestHandler):
                         target_sess = s
                         break
                 target_repo = target_sess.get("repo", "").strip() if target_sess else ""
-                
+
                 if target_repo and os.path.isdir(target_repo) and target_repo != _cfg.repo:
                     _cfg.repo = target_repo
                     os.environ["HARNESS_REPO"] = target_repo
@@ -2473,11 +2613,7 @@ class Handler(BaseHTTPRequestHandler):
                         _record_recent_workspace(target_repo)
                     except Exception as e:
                         _diag("server.session_switch_record_recent", e)
-                    _rebuild_pilot_and_session()
-                    
-                    history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
-                    _pilot.load_history(history)
-                    
+
                     has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
                     if not has_codegraph:
                         _index_codegraph_bg(target_repo)
@@ -2487,15 +2623,18 @@ class Handler(BaseHTTPRequestHandler):
                             _maybe_refresh_codegraph(target_repo)
                         else:
                             _codegraph_status = "unsupported"
-                else:
-                    history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
-                    _pilot.load_history(history)
 
-                _sync_pilot_session_id()
-                    
+                try:
+                    _attach_view(_sessions.active)
+                except LeaseExhaustedError as e:
+                    return self._send(409, json.dumps({
+                        "error": str(e) or "session runner lease exhausted",
+                        "code": "lease_exhausted",
+                    }))
+
                 res["repo"] = _cfg.repo
                 res["codegraph"] = _get_codegraph_status(_cfg.repo) if _cfg.repo else "unsupported"
-                
+
             return self._send(200, json.dumps(res))
         if path == "/api/sessions/delete":
             sid = body.get("session") or body.get("id") or ""
@@ -2510,12 +2649,21 @@ class Handler(BaseHTTPRequestHandler):
             for sid in deleted_ids:
                 run_hooks("sessionEnd", {"session_id": sid})
                 _remove_session_transcript(sid)
+                try:
+                    _runners.drop(sid)
+                except Exception as e:
+                    _diag("server.session_clear_drop_runner", e)
             if prior_active in deleted_ids:
                 if new_active:
-                    history = load_transcript(state_dir, new_active)
-                    _pilot.load_history(history)
+                    try:
+                        _attach_view(new_active)
+                    except LeaseExhaustedError:
+                        history = load_transcript(state_dir, new_active)
+                        _pilot.load_history(history)
+                        _sync_pilot_session_id()
                 else:
                     _pilot.load_history([])
+                    _sync_pilot_session_id()
             return self._send(200, json.dumps({
                 "ok": True,
                 "deleted": len(deleted_ids),
@@ -3256,6 +3404,7 @@ class Handler(BaseHTTPRequestHandler):
                 "state": _state,
                 "pending_swarms": _pilot.has_pending_swarms(),
                 "resume_pending": _consume_resume_pending(_state == "idle"),
+                "runners": _runners.statuses(),
             }))
         if u.path == "/api/session/context_at":
             if self._guard():
