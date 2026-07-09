@@ -89,7 +89,8 @@ PROVIDERS = (
         api_mode="chat_completions", display_name="OpenRouter",
         pilot_models=("qwen/qwen3-coder-30b-a3b-instruct", "z-ai/glm-5.2",
                       "deepseek/deepseek-v4-pro", "moonshotai/kimi-k2.6",
-                      "anthropic/claude-opus-4.8", "openai/gpt-5.4"),
+                      "anthropic/claude-opus-4.8", "openai/gpt-5.6-sol",
+                      "openai/gpt-5.6-terra", "openai/gpt-5.5"),
         vision_model="qwen/qwen3-vl-30b-a3b-instruct",
     ),
     Provider(
@@ -105,8 +106,18 @@ PROVIDERS = (
         env_vars=("OPENAI_API_KEY",),
         base_url="https://api.openai.com/v1",
         api_mode="chat_completions", display_name="OpenAI",
-        pilot_models=("gpt-5.4", "gpt-5.4-mini"),
-        vision_model="gpt-5.4-mini",
+        # GPT-5.6 Sol/Terra/Luna (GA 2026-07-09). Some accounts still see
+        # limited-preview 404 until OpenAI finishes rollout; live probe
+        # via model_fetch still wins when /v1/models lists them.
+        pilot_models=(
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+        ),
+        vision_model="gpt-5.6-luna",
     ),
     Provider(
         name="gemini", aliases=("google", "google-gemini"),

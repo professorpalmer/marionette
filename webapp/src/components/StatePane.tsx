@@ -350,20 +350,34 @@ export default function StatePane({ artifacts }: {
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted">
-                    <strong className="text-txt tabular-nums">{wiki?.page_count ?? 0}</strong> pages,{" "}
-                    <strong className="text-txt tabular-nums">{wiki?.link_count ?? 0}</strong> links
-                    {wiki?.base_url && <span className="text-faint ml-1.5 truncate">{wiki.base_url}</span>}
-                  </span>
-                  <button
-                    onClick={() => void revalidateWiki()}
-                    disabled={wikiValidating}
-                    className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
-                    title="Refresh Wiki Stats"
-                  >
-                    <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
-                  </button>
+                <div className="flex flex-col gap-2">
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div>
+                      <div className="text-faint text-[9px] uppercase tracking-wide">Pages</div>
+                      <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                        {(wiki?.page_count ?? 0).toLocaleString()}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-faint text-[9px] uppercase tracking-wide">Links</div>
+                      <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                        {(wiki?.link_count ?? 0).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    {wiki?.base_url
+                      ? <span className="text-[8px] text-faint truncate">{wiki.base_url}</span>
+                      : <span />}
+                    <button
+                      onClick={() => void revalidateWiki()}
+                      disabled={wikiValidating}
+                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
+                      title="Refresh Wiki Stats"
+                    >
+                      <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

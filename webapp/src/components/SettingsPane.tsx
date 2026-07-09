@@ -343,6 +343,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       const updated = await api.updateSettings(partial);
       setSettings(updated);
       setStatus("saved");
+      // Mirror PilotPicker swap: settings can change driver / reach / keys, so
+      // the picker and other listeners must refetch without a full reload.
+      window.dispatchEvent(new Event("harness-config-changed"));
       const timer = setTimeout(() => setStatus(""), 2000);
       return () => clearTimeout(timer);
     } catch (err: any) {

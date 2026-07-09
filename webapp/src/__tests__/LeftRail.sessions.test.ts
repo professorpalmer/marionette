@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, purgeSessionFromRootCaches, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -11,6 +11,29 @@ import type { Session } from "../lib/api";
 describe("LeftRail session list contracts", () => {
   afterEach(() => {
     clearSWRCache();
+  });
+
+  it("purgeSessionFromRootCaches removes id from every root cache", () => {
+    const marionette = "C:\\Projects\\marionette";
+    const dugout = "C:\\Projects\\dugout";
+    const shared: Session = {
+      id: "sess-dugout",
+      title: "dugout",
+      created: 1,
+      repo: dugout,
+      workspace_root: dugout,
+    };
+    // Stale bug: same session id cached under the wrong project too.
+    writeSWRCache(`sessions:${marionette}`, [
+      { id: "sess-m", title: "New session", created: 2, repo: marionette, workspace_root: marionette },
+      shared,
+    ]);
+    writeSWRCache(`sessions:${dugout}`, [shared]);
+
+    const touched = purgeSessionFromRootCaches([marionette, dugout], "sess-dugout");
+    expect(touched).toBe(2);
+    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.map((s) => s.id)).toEqual(["sess-m"]);
+    expect(readSWRCache<Session[]>(`sessions:${dugout}`)).toEqual([]);
   });
 
   it("reads cached sessions for a non-active root from sessions:${path}", () => {

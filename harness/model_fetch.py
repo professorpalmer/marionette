@@ -1,8 +1,9 @@
 """Live per-provider model discovery.
 
 The curated ``pilot_models`` tuples in providers.py are a hardcoded fallback that
-drifts (Anthropic ships 9 models but the list shows 3; OpenAI has gpt-5.5 but the
-list stopped at 5.4). This module fetches each KEYED provider's REAL model catalog
+drifts (Anthropic ships 9 models but the list shows 3; OpenAI ships gpt-5.6
+Sol/Terra/Luna while static fallbacks may still list 5.5/5.4). This module
+fetches each KEYED provider's REAL model catalog
 from its own listing endpoint, caches it on disk with a TTL, and merges it with the
 curated fallback so the picker reflects what the account can actually use.
 

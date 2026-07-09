@@ -25,6 +25,29 @@ export function buildProjectsList(currentRepo: string, rawRecents: string[]): st
   return out;
 }
 
+/** Drop a session id from every per-root sessions SWR cache. Returns how many
+ *  caches were rewritten. Used on delete so inactive projects do not keep
+ *  phantom titles (the "merged dir" ghost). */
+export function purgeSessionFromRootCaches(
+  roots: string[],
+  sessionId: string,
+  read: (key: string) => Session[] | undefined = readSWRCache,
+  write: (key: string, data: Session[]) => void = writeSWRCache,
+): number {
+  let touched = 0;
+  for (const root of roots) {
+    if (!root) continue;
+    const key = `sessions:${root}`;
+    const cached = read(key);
+    if (!cached) continue;
+    const next = cached.filter((s) => s.id !== sessionId);
+    if (next.length === cached.length) continue;
+    write(key, next);
+    touched += 1;
+  }
+  return touched;
+}
+
 /** SWR cache key for the Branches list -- keyed by repo so project switches
  *  do not flash another project's branches, and revisits stay warm. */
 export function workspacesCacheKey(repo: string): string {
@@ -147,7 +170,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
     try {
       await api.renameSession(id, renamingTitle.trim());
-      await revalidateSessions();
+      await refreshSessionsRef.current();
     } catch (err) {
       console.error(err);
     } finally {
@@ -159,10 +182,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const codegraphByRepoRef = useRef<Record<string, string>>({});
 
   const currentRepoRef = useRef("");
+  // Assigned after projects + SWR hooks exist; early handlers (rename) call through this.
+  const refreshSessionsRef = useRef<() => Promise<void>>(async () => {});
+  // Kept current each render so delete can optimistically purge every root's cache.
+  const projectsRef = useRef<string[]>([]);
   // Roots whose per-repo sessions fetch has resolved at least once this boot
   // (or was seeded from cache). Used so we never flash "No sessions" for a
   // row whose list has not arrived yet.
   const [sessionsResolvedRoots, setSessionsResolvedRoots] = useState<Record<string, true>>({});
+  // Bumped whenever per-root session caches are rewritten outside the active
+  // SWR hook so projectSessionsFor re-reads (writeSWRCache alone does not
+  // re-render). Without this, deleting a session under an inactive project
+  // left phantom titles until a full reload.
+  const [sessionsCacheEpoch, setSessionsCacheEpoch] = useState(0);
 
   const onSessionsLoaded = useCallback((sess: Session[], forRepo?: string) => {
     // Stale-response guard: a late payload for a different root must not
@@ -278,7 +310,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       // Background revalidate only -- SWR keeps the last branch list visible
       // so Branches does not blank for a second on every session switch.
       void revalidateWorkspaces();
-      void revalidateSessions();
+      void refreshSessionsRef.current();
       void revalidateWorkspace();
       void revalidateJobs();
     };
@@ -286,7 +318,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return () => {
       window.removeEventListener("harness-config-changed", handleConfigChanged);
     };
-  }, [revalidateSessions, revalidateWorkspace, revalidateJobs, revalidateWorkspaces]);
+  }, [revalidateWorkspace, revalidateJobs, revalidateWorkspaces]);
 
   // Poll workspace status while CodeGraph indexes so the badge flips to READY
   // without opening a session or switching directories.
@@ -421,7 +453,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
   const switchSession = async (id: string) => {
     await api.switchSession(id);
-    await revalidateSessions();
+    await refreshSessionsRef.current();
     // Session switch can repoint the active repo (and thus the codegraph) on the
     // backend. Fire the same event the dir-open path uses so the codegraph/state
     // panel refetches -- without this, clicking a session leaves the old graph
@@ -438,7 +470,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       await handleOpenProject(target);
     }
     await api.createSession();
-    await revalidateSessions();
+    await refreshSessionsRef.current();
   };
   useEffect(() => {
     const onNew = () => { void newSession(); };
@@ -446,10 +478,22 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return () => window.removeEventListener("harness-new-session", onNew);
   }, []);
   const handleDeleteSession = async (id: string) => {
-    const res = await api.deleteSession(id);
-    await revalidateSessions();
-    if (res.active) {
-      await switchSession(res.active);
+    // Optimistic: drop the id from every per-root cache immediately so phantom
+    // titles cannot linger under a non-active project while the network round
+    // trip completes (the bug that produced "merged dir" ghosts).
+    purgeSessionFromRootCaches(projectsRef.current, id);
+    setSessionsCacheEpoch((n) => n + 1);
+
+    try {
+      const res = await api.deleteSession(id);
+      await refreshSessionsRef.current();
+      if (res.active) {
+        await switchSession(res.active);
+      }
+    } catch (err) {
+      // Restore caches from the server if delete failed after the optimistic purge.
+      await refreshSessionsRef.current();
+      console.error(err);
     }
   };
 
@@ -481,6 +525,29 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   // Do NOT put currentRepo first -- that snapped the opened dir to the top
   // on every workspace open and blinked the rail.
   const projects = buildProjectsList(currentRepo, rawRecents);
+  projectsRef.current = projects;
+
+  // Refresh EVERY project's sessions:${root} cache (not just the active SWR
+  // key). Delete/create/rename under an inactive root otherwise left phantom
+  // titles that, when clicked, looked like a "merged" project tree.
+  const refreshAllProjectSessions = useCallback(async () => {
+    const roots = projectsRef.current.filter(Boolean);
+    await Promise.all(
+      roots.map(async (root) => {
+        try {
+          const rows = await api.sessions(root);
+          writeSWRCache(`sessions:${root}`, rows);
+          setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
+        } catch {
+          setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
+        }
+      }),
+    );
+    setSessionsCacheEpoch((n) => n + 1);
+    // Keep the active-repo SWR hook in sync (promotes active id, etc.).
+    await revalidateSessions();
+  }, [revalidateSessions]);
+  refreshSessionsRef.current = refreshAllProjectSessions;
 
   // Eager per-root lists: prefetch sessions for EVERY project in the rail so
   // non-active dirs show their rows without waiting for a click. Seeds the
@@ -503,13 +570,17 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           }
         }
       }),
-    );
+    ).then(() => {
+      if (!cancelled) setSessionsCacheEpoch((n) => n + 1);
+    });
     return () => { cancelled = true; };
     // projects is rebuilt each render from workspaceInfo; join for stable dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects.join("\0")]);
 
   const projectSessionsFor = (projectPath: string): Session[] => {
+    // sessionsCacheEpoch: force re-read after writeSWRCache from delete/refresh.
+    void sessionsCacheEpoch;
     // Always prefer the per-root cache -- never derive other rows from the
     // active-repo list (that caused empty/wrong lists under slash/case drift).
     // Trust cache contents: they were fetched with ?repo= for this root, so
@@ -1107,7 +1178,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           <button
             onClick={async () => {
               await api.archiveSession(contextMenu.sessionId, !contextMenu.archived);
-              await revalidateSessions();
+              await refreshSessionsRef.current();
               setContextMenu(null);
             }}
             className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"

@@ -802,6 +802,12 @@ _WEB = Path(__file__).resolve().parent / "web"
 # One shared session per server process (single-user local app).
 _state_dir = os.environ.get("HARNESS_STATE_DIR", "")
 _cfg = HarnessConfig.from_env()
+def _pmharness_root() -> str:
+    """Install root (~/.pmharness). models.json and caches stay here; durable
+    session files live under ``state/`` once HARNESS_STATE_DIR is anchored."""
+    return os.path.expanduser("~/.pmharness")
+
+
 def _state_home() -> str:
     """Base dir for app state files (workspace.json, token, drivers, markers).
 
@@ -812,8 +818,21 @@ def _state_home() -> str:
     leaked live state: a dead pytest temp repo in workspace.json and, worse, a
     rewritten auth token. A respawned backend then held a token the renderer no
     longer knew, every request 403'd, and it read as "the backend died."
+
+    When HARNESS_STATE_DIR is unset, prefer ``~/.pmharness/state`` if that dir
+    already exists (where live Saves write after the stable-state anchor). Fall
+    back to the legacy flat ``~/.pmharness`` root so older installs still restore
+    workspace_drivers.json / workspace.json written before the state/ split.
+    Matches Electron ``readPmHarnessStateFile`` (state first, then legacy).
     """
-    return os.environ.get("HARNESS_STATE_DIR") or os.path.expanduser("~/.pmharness")
+    explicit = os.environ.get("HARNESS_STATE_DIR")
+    if explicit:
+        return explicit
+    root = _pmharness_root()
+    durable = os.path.join(root, "state")
+    if os.path.isdir(durable):
+        return durable
+    return root
 
 
 def _env_settings_path() -> str:
@@ -861,11 +880,42 @@ def _load_env_settings() -> None:
         _diag("server.load_env_settings", e)
 
 
+def _resolve_existing_state_file(name: str) -> str:
+    """Prefer the current write path for ``name``; fall back to ``~/.pmharness/<name>``.
+
+    After the stable HARNESS_STATE_DIR anchor (~/.pmharness/state), saves land
+    under state/ while older installs still have workspace.json /
+    workspace_drivers.json at the legacy root. Only fall back when state home
+    IS that stable anchor — never when tests point HARNESS_STATE_DIR at an
+    isolated temp dir (that would leak the developer's real drivers into tests).
+
+    Known names route through ``_workspace_json_path`` /
+    ``_workspace_drivers_path`` so test monkeypatches of those helpers still
+    cover both reads and writes.
+    """
+    if name == "workspace.json":
+        primary = _workspace_json_path()
+    elif name == "workspace_drivers.json":
+        primary = _workspace_drivers_path()
+    else:
+        primary = os.path.join(_state_home(), name)
+    if os.path.exists(primary):
+        return primary
+    legacy_root = _pmharness_root()
+    if os.path.realpath(_state_home()) == os.path.realpath(os.path.join(legacy_root, "state")):
+        legacy = os.path.join(legacy_root, name)
+        if os.path.exists(legacy):
+            return legacy
+    return primary
+
+
 def _workspace_json_path() -> str:
+    """Write path for workspace.json (always under current state home)."""
     return os.path.join(_state_home(), "workspace.json")
 
 
 def _workspace_drivers_path() -> str:
+    """Write path for workspace_drivers.json (always under current state home)."""
     return os.path.join(_state_home(), "workspace_drivers.json")
 
 
@@ -889,9 +939,12 @@ def _save_workspace_driver(repo: str, driver: str) -> None:
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         data = {}
-        if os.path.exists(path):
+        # Seed from the readable copy (state/ or legacy) so a first save after
+        # the state-dir move does not drop other workspaces' remembered drivers.
+        read_path = _resolve_existing_state_file("workspace_drivers.json")
+        if os.path.exists(read_path):
             try:
-                with open(path, encoding="utf-8", errors="replace") as f:
+                with open(read_path, encoding="utf-8", errors="replace") as f:
                     data = json.load(f)
             except Exception:
                 data = {}
@@ -910,7 +963,7 @@ def _get_workspace_driver(repo: str):
     """The model last used in this workspace, falling back to the last driver
     chosen anywhere (so a fresh/unknown workspace still boots on the user's
     pick, not the compiled-in default). None if nothing was ever saved."""
-    path = _workspace_drivers_path()
+    path = _resolve_existing_state_file("workspace_drivers.json")
     if not os.path.exists(path):
         return None
     try:
@@ -929,13 +982,14 @@ def _record_recent_workspace(target_repo: str) -> list:
     import os
     import tempfile as _tf
     ws_json_path = _workspace_json_path()
+    ws_read_path = _resolve_existing_state_file("workspace.json")
     try:
         os.makedirs(os.path.dirname(ws_json_path), exist_ok=True)
         recents = []
         prior_repo = ""
-        if os.path.exists(ws_json_path):
+        if os.path.exists(ws_read_path):
             try:
-                with open(ws_json_path, encoding="utf-8", errors="replace") as f:
+                with open(ws_read_path, encoding="utf-8", errors="replace") as f:
                     _ws_data = json.load(f)
                     recents = _ws_data.get("recents", []) or []
                     prior_repo = _ws_data.get("repo", "") or ""
@@ -998,13 +1052,14 @@ def _forget_recent_workspace(forget_path: str) -> list:
     import os
     import tempfile as _tf
     ws_json_path = _workspace_json_path()
+    ws_read_path = _resolve_existing_state_file("workspace.json")
     try:
         os.makedirs(os.path.dirname(ws_json_path), exist_ok=True)
         recents = []
         repo = ""
-        if os.path.exists(ws_json_path):
+        if os.path.exists(ws_read_path):
             try:
-                with open(ws_json_path, encoding="utf-8", errors="replace") as f:
+                with open(ws_read_path, encoding="utf-8", errors="replace") as f:
                     data = json.load(f)
                     recents = data.get("recents", []) or []
                     repo = data.get("repo", "")
@@ -1054,7 +1109,29 @@ def _forget_recent_workspace(forget_path: str) -> list:
             pass
         return []
 
-_ws_boot_path = _workspace_json_path()
+# DURABLE STATE must be anchored BEFORE workspace.json / workspace_drivers
+# restore. Saves write under ~/.pmharness/state/; if we restore first,
+# _state_home() still points at ~/.pmharness and boot misses the saved
+# driver — falling through to enabled_pilots()[0] (often glm-5.2).
+# Always join under _pmharness_root() — never _state_home()/state, which
+# would nest state/state once _state_home already prefers the durable dir.
+if _state_dir:
+    _cfg.state_dir = _state_dir
+elif not _cfg.state_dir:
+    # With no explicit HARNESS_STATE_DIR and no config value, state_dir was
+    # left blank -- so the session and pilot each fell back to their OWN
+    # throwaway mkdtemp(), landing swarm history / transcripts / job stores
+    # in a fresh temp dir every launch that nothing ever reads again. Anchor
+    # to a stable per-install dir so history survives close/reopen.
+    _stable = os.path.join(_pmharness_root(), "state")
+    try:
+        os.makedirs(_stable, exist_ok=True)
+        _cfg.state_dir = _stable
+        os.environ.setdefault("HARNESS_STATE_DIR", _stable)
+    except Exception as e:
+        _diag("server.stable_state_dir", e)
+
+_ws_boot_path = _resolve_existing_state_file("workspace.json")
 if not os.environ.get("HARNESS_REPO") and os.path.exists(_ws_boot_path):
     try:
         with open(_ws_boot_path, "r", encoding="utf-8", errors="replace") as _ws_f:
@@ -1084,24 +1161,6 @@ if "HARNESS_DRIVER" not in os.environ:
                     _diag("server.boot_driver_context_window", e)
     except Exception as e:
         _diag("server.boot_restore_workspace_driver", e)
-
-if _state_dir:
-    _cfg.state_dir = _state_dir
-elif not _cfg.state_dir:
-    # DURABLE STATE (fixes swarm-history loss across restart): with no explicit
-    # HARNESS_STATE_DIR and no config value, state_dir was left blank -- so the
-    # session and pilot each fell back to their OWN throwaway mkdtemp(), landing
-    # swarm history / transcripts / job stores in a fresh temp dir every launch
-    # that nothing ever reads again. Anchor to a stable per-install dir under the
-    # state home so history (swarm_local_jobs.json, transcripts, sqlite job
-    # stores) survives close/reopen and backend restarts, tied to the install.
-    _stable = os.path.join(_state_home(), "state")
-    try:
-        os.makedirs(_stable, exist_ok=True)
-        _cfg.state_dir = _stable
-        os.environ.setdefault("HARNESS_STATE_DIR", _stable)
-    except Exception as e:
-        _diag("server.stable_state_dir", e)
 
 # Replay persisted Settings-page values into the environment BEFORE the pilot
 # is constructed (it snapshots several of these at build time). setdefault
