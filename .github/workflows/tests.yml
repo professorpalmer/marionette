@@ -43,7 +43,10 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" puppetmaster-ai
+          # Floor matches the accounting/routing fixes this release needs.
+          # Unpinned `puppetmaster-ai` + pip cache can leave CI on an older
+          # wheel (e.g. 1.14.0) and fail fallback-pricing regressions.
+          pip install -e ".[dev]" "puppetmaster-ai>=1.14.1"
 
       - name: Run the offline test suite
         run: python -m pytest -q -p no:cacheprovider
