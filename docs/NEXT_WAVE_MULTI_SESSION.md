@@ -3,6 +3,7 @@
 **Status:** OPEN — deferred after Marionette **v0.9.17** and Puppetmaster **v1.13.0** (both shipped; PM on PyPI as `puppetmaster-ai==1.13.0`).  
 **Audience:** fresh agent session with a clean context window.  
 **Handoff path:** `docs/NEXT_WAVE_MULTI_SESSION.md` (this file) on Marionette `main` (`bff3617+`).  
+**Companion thrift wave:** `docs/NEXT_WAVE_WORKER_THRIFT.md` (Puppetmaster worker compaction/offload) — orthogonal; can ship in parallel.  
 **Goal:** Cursor/Hermes-grade: instant workspace swap, sessions always listed, agents keep running in background, zero ghost resumes, no blink/reload.
 
 This doc is the handoff. Do not re-audit from scratch — the findings below are already file:line verified.
