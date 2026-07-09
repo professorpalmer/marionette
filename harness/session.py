@@ -186,8 +186,12 @@ class Session:
 
             yield SessionEvent("executing", i, {"goal": intent.goal})
             try:
-                result: BridgeResult = execute_intent(intent, state_dir=self.state_dir,
-                                                      worker_mode=self.config.worker_mode)
+                result: BridgeResult = execute_intent(
+                    intent,
+                    state_dir=self.state_dir,
+                    worker_mode=self.config.worker_mode,
+                    cwd=self.config.repo or None,
+                )
             except Exception as e:
                 yield SessionEvent("error", i, {"error": f"execute: {e}"})
                 return

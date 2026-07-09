@@ -275,16 +275,37 @@ export default function RightPane({ artifacts, onOpenWizard }: {
   // Compute label visibility based on sub-pane widths
 
 
-  const renderTabContent = (tabName: Tab) => (
-    <ErrorBoundary key={tabName} label={TAB_CONFIG[tabName]?.label || tabName} inline>
-      {renderTabInner(tabName)}
-    </ErrorBoundary>
+  // StatePane stays mounted in the primary pane (CSS-hidden when inactive) so
+  // Codegraph/Wiki SWR caches stay warm across right-rail tab swaps. Secondary
+  // split still mounts on demand (rare). Other tabs still unmount.
+  const renderPaneBody = (activeTab: Tab, keepStateWarm: boolean) => (
+    <div className="relative h-full min-h-0">
+      {keepStateWarm ? (
+        <div
+          className={activeTab === "state" ? "h-full" : "hidden"}
+          aria-hidden={activeTab !== "state"}
+        >
+          <ErrorBoundary label="State" inline>
+            <StatePane artifacts={artifacts} embedded />
+          </ErrorBoundary>
+        </div>
+      ) : (
+        activeTab === "state" && (
+          <ErrorBoundary label="State" inline>
+            <StatePane artifacts={artifacts} embedded />
+          </ErrorBoundary>
+        )
+      )}
+      {activeTab !== "state" && (
+        <ErrorBoundary key={activeTab} label={TAB_CONFIG[activeTab]?.label || activeTab} inline>
+          {renderTabInner(activeTab)}
+        </ErrorBoundary>
+      )}
+    </div>
   );
 
   const renderTabInner = (tabName: Tab) => {
     switch (tabName) {
-      case "state":
-        return <StatePane artifacts={artifacts} embedded />;
       case "browser":
         return <BrowserPane />;
       case "files":
@@ -404,7 +425,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
 
           {/* Primary Pane Content */}
           <div className="flex-1 overflow-hidden min-h-0">
-            {renderTabContent(splitState.primaryTab)}
+            {renderPaneBody(splitState.primaryTab, true)}
           </div>
         </div>
 
@@ -482,7 +503,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
 
             {/* Secondary Pane Content */}
             <div className="flex-1 overflow-hidden min-h-0">
-              {renderTabContent(splitState.secondaryTab)}
+              {renderPaneBody(splitState.secondaryTab, false)}
             </div>
           </div>
         )}

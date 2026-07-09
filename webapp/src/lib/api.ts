@@ -82,6 +82,9 @@ export type Artifact = {
   headline: string;
   confidence?: number;
   created_by?: string;
+  // Present on ROUTING (and some worker) artifacts so the GUI can group
+  // router + router-fallback pairs into one display row per task.
+  task_id?: string;
   model?: string;
   est_cost_usd?: number;
   role?: string;
@@ -361,6 +364,17 @@ export type WikiGraphData = {
   base_url?: string;
 };
 
+/** Lightweight wiki strip payload (counts only; no full graph). */
+export type WikiStatusData = {
+  configured: boolean;
+  status: "ok" | "not_configured" | "error";
+  page_count: number;
+  link_count: number;
+  error?: string;
+  retryable?: boolean;
+  base_url?: string;
+};
+
 export type ContextCategory = {
   name: string;
   tokens: number;
@@ -420,9 +434,16 @@ export const api = {
     postJSON<{ ok: boolean; job_id?: string; error?: string }>(withToken("/api/swarm/cancel"), { job_id: jobId }),
   artifacts: (jobId: string) => getJSON<Artifact[]>(`/api/artifacts?job_id=${encodeURIComponent(jobId)}`),
   workspaces: () => getJSON<Workspace[]>("/api/workspaces"),
-  switchWorkspace: (name: string) => postJSON("/api/workspaces/switch", { name }),
+  switchWorkspace: (name: string, opts?: { allow_dirty?: boolean }) =>
+    postJSON<{ ok: boolean; active?: string; error?: string; dirty?: boolean }>(
+      "/api/workspaces/switch",
+      { name, allow_dirty: !!opts?.allow_dirty },
+    ),
   createWorkspace: (name: string, branch?: string) =>
-    postJSON("/api/workspaces/create", { name, branch }),
+    postJSON<{ ok: boolean; active?: string; error?: string }>(
+      "/api/workspaces/create",
+      { name, branch },
+    ),
   sessions: (repoRoot?: string) => {
     const path = repoRoot
       ? `/api/sessions?repo=${encodeURIComponent(repoRoot)}`
@@ -554,6 +575,13 @@ export const api = {
   memory: () => getJSON<{ memory: { id: string; text: string; category: string; created_at: number; source: string }[]; total_chars: number; limit: number }>("/api/memory"),
   memoryAdd: (text: string, category?: string) => postJSON<{ id: string; text: string; category: string }>("/api/memory/add", { text, category }),
   memoryRemove: (id: string) => postJSON<{ ok: boolean }>("/api/memory/remove", { id }),
+  memoryProposeAccept: (id: string) =>
+    postJSON<{ ok: boolean; id?: string; text?: string; category?: string; error?: string }>(
+      "/api/memory/propose/accept",
+      { id },
+    ),
+  memoryProposeDismiss: (id: string) =>
+    postJSON<{ ok: boolean; error?: string }>("/api/memory/propose/dismiss", { id }),
   auto: (objective: string, onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void) => {
     // Same URL-length hazard as chat() (autopilot objective can be a large
     // pasted brief) -- route big ones through the stash, small ones inline.
@@ -617,6 +645,7 @@ export const api = {
   getCodegraph: () => getJSON<CodegraphStatus>("/api/codegraph"),
   reindexCodegraph: () => postJSON<{ ok: boolean; status: string }>("/api/codegraph/reindex", {}),
   getWikiGraph: () => getJSON<WikiGraphData>("/api/wiki/graph"),
+  getWikiStatus: () => getJSON<WikiStatusData>("/api/wiki/status"),
   getWikiConfig: () => getJSON<{ api_base: string; has_token: boolean }>("/api/wiki/config"),
   setWikiConfig: (api_base?: string, owner_token?: string) =>
     postJSON<{ api_base: string; has_token: boolean }>("/api/wiki/config", { api_base, owner_token }),

@@ -52,6 +52,70 @@ def test_wiki_graph_endpoint_graceful_not_configured():
         httpd.shutdown()
 
 
+def test_wiki_status_endpoint_counts_only_not_configured():
+    """State pane uses /api/wiki/status for counts -- no nodes/edges arrays."""
+    httpd, port, srv = _server()
+    orig_url = srv._cfg.wiki_url
+    srv._cfg.wiki_url = ""
+    try:
+        resp = _get(port, "/api/wiki/status", {"X-Harness-Token": srv._TOKEN})
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+        assert data["configured"] is False
+        assert data["status"] == "not_configured"
+        assert data["page_count"] == 0
+        assert data["link_count"] == 0
+        assert "nodes" not in data
+        assert "edges" not in data
+    finally:
+        srv._cfg.wiki_url = orig_url
+        httpd.shutdown()
+
+
+def test_wiki_status_reuses_graph_cache_counts():
+    httpd, port, srv = _server()
+    # Seed the shared graph cache as if /api/wiki/graph already ran.
+    fake_url = "https://wiki-status-test.example"
+    srv._wiki_graph_cache[fake_url] = (
+        __import__("time").monotonic() + 60.0,
+        {
+            "configured": True,
+            "status": "ok",
+            "nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+            "edges": [{"source": "a", "target": "b"}],
+            "base_url": fake_url,
+        },
+    )
+    orig_url = srv._cfg.wiki_url
+    # Point config at the cached base so the handler hits the cache path.
+    # WikiClient may still construct; monkeypatch by setting wiki_url and
+    # ensuring cache key matches client.base_url.
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            self.base_url = fake_url
+        def graph(self):
+            raise AssertionError("should use cache, not fetch")
+
+    import harness.wiki as wiki_mod
+    orig_cls = wiki_mod.WikiClient
+    wiki_mod.WikiClient = _FakeClient
+    srv._cfg.wiki_url = fake_url
+    try:
+        resp = _get(port, "/api/wiki/status", {"X-Harness-Token": srv._TOKEN})
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+        assert data["status"] == "ok"
+        assert data["page_count"] == 3
+        assert data["link_count"] == 1
+        assert "nodes" not in data
+        assert "edges" not in data
+    finally:
+        wiki_mod.WikiClient = orig_cls
+        srv._cfg.wiki_url = orig_url
+        srv._wiki_graph_cache.pop(fake_url, None)
+        httpd.shutdown()
+
+
 def test_wiki_client_parse_already_normalized():
     data = {
         "nodes": [

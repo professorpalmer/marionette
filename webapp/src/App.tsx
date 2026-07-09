@@ -3,7 +3,6 @@ import { api, type Config } from "./lib/api";
 import LeftRail from "./components/LeftRail";
 import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
-import TaskStack from "./components/TaskStack";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner from "./components/UpdateBanner";
 import ProviderKeyBanner from "./components/ProviderKeyBanner";
@@ -24,7 +23,6 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<{ type: string; headline: string; confidence?: number }[]>([]);
   const [jobsRefresh, setJobsRefresh] = useState(0);
-  const [jobCount, setJobCount] = useState(0);
 
   useEffect(() => {
     setArtifacts([]);
@@ -66,8 +64,6 @@ export default function App() {
       window.removeEventListener("harness-config-changed", fetchConfig);
     };
   }, []);
-
-  useEffect(() => { api.jobs().then((j) => setJobCount(j.length)).catch(() => {}); }, [jobsRefresh]);
 
   // First-run behavior checking
   useEffect(() => {
@@ -195,7 +191,6 @@ export default function App() {
           </>
         )}
         <div className="flex-1 min-w-0 h-full flex flex-col">
-          <TaskStack refresh={jobsRefresh} />
           <div className="flex-1 min-h-0">
             <ErrorBoundary label="Chat">
               <Conversation
@@ -218,7 +213,7 @@ export default function App() {
           </>
         )}
       </div>
-      <StatusBar config={config} jobCount={jobCount}
+      <StatusBar config={config}
         leftOpen={leftOpen} rightOpen={rightOpen}
         onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={() => setRightOpen((v) => !v)} />
 

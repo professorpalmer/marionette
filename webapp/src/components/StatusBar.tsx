@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Circle, GitBranch, Boxes, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle, RefreshCw, Zap } from "lucide-react";
+import { Circle, GitBranch, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle, RefreshCw, Zap } from "lucide-react";
 import { api, type Config, type UsageData } from "../lib/api";
 import { isDesktop } from "../lib/transport";
 import CostBreakdown from "./CostBreakdown";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
 
 // Bottom status strip (Hermes shell/statusbar pattern): runtime health, active
-// workspace branch, job count, pilot model, build mode, and panel toggles.
-export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onToggleLeft, onToggleRight }: {
-  config: Config | null; jobCount: number;
+// workspace branch, pilot model, spend, and panel toggles. Job inventory lives
+// in LeftRail SESSION JOBS -- a footer total was stale across dir swaps and
+// disagreed with the scoped list, so it was removed.
+export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, onToggleRight }: {
+  config: Config | null;
   leftOpen: boolean; rightOpen: boolean;
   onToggleLeft: () => void; onToggleRight: () => void;
 }) {
@@ -155,8 +157,17 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
   useEffect(() => {
     fetchUsage();
     const interval = setInterval(fetchUsage, 10000);
-    return () => clearInterval(interval);
-  }, [jobCount]);
+    const onRefresh = () => fetchUsage();
+    window.addEventListener("harness-config-changed", onRefresh);
+    window.addEventListener("harness-project-selected", onRefresh);
+    window.addEventListener("harness-new-session", onRefresh);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("harness-config-changed", onRefresh);
+      window.removeEventListener("harness-project-selected", onRefresh);
+      window.removeEventListener("harness-new-session", onRefresh);
+    };
+  }, []);
 
   // Dismiss the cost breakdown popover on outside click or Escape, matching the
   // PilotPicker dropdown behavior so the status bar has one consistent pattern.
@@ -206,7 +217,6 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
       <span className="w-px h-3 bg-edge" />
       <span className="flex items-center gap-1 text-good"><Circle size={7} className="fill-good text-good" /> ready</span>
       {branch && <span className="flex items-center gap-1"><GitBranch size={10} />{branch}</span>}
-      <span className="flex items-center gap-1"><Boxes size={10} />{jobCount} job{jobCount === 1 ? "" : "s"}</span>
       {showUsage && (
         <>
           <span className="w-px h-3 bg-edge/40" />

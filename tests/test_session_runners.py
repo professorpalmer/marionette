@@ -78,4 +78,24 @@ def test_drop_removes_runner():
     assert "x" not in reg.ids()
     assert len(reg) == 0
     assert reg.status("x") == "missing"
+
+
+def test_drop_on_drop_callback_and_notify_false():
+    seen = []
+
+    def on_drop(sid, runner):
+        seen.append((sid, runner))
+
+    reg = SessionRunnerRegistry(max_concurrent_sessions=3, on_drop=on_drop)
+    r = reg.get_or_create("x", _idle_runner)
+    dropped = reg.drop("x")
+    assert dropped is r
+    assert seen == [("x", r)]
+
+    seen.clear()
+    r2 = reg.get_or_create("y", _idle_runner)
+    reg.drop("y", notify=False)
+    assert seen == []
+    assert reg.get("y") is None
+    assert r2 is not None
     assert reg.active_view_id is None

@@ -19,7 +19,6 @@ const mockWorkspaces = vi.mocked(api.workspaces);
 
 const statusBarProps = {
   config: null,
-  jobCount: 0,
   leftOpen: true,
   rightOpen: false,
   onToggleLeft: vi.fn(),
@@ -190,14 +189,15 @@ describe("StatusBar usage pills", () => {
         jobs: [],
       });
 
-    const { rerender } = render(<StatusBar {...statusBarProps} jobCount={0} />);
+    render(<StatusBar {...statusBarProps} />);
 
     await waitFor(() => {
       expect(screen.getByText("~$0.05")).toBeInTheDocument();
     });
 
-    // Bump jobCount to re-trigger the usage effect (same as a workspace event).
-    rerender(<StatusBar {...statusBarProps} jobCount={1} />);
+    // Workspace/project events re-trigger usage fetch (replaces the old
+    // jobCount bump that also drove a confusing footer job total).
+    window.dispatchEvent(new Event("harness-config-changed"));
 
     await waitFor(() => {
       expect(mockGetUsage.mock.calls.length).toBeGreaterThanOrEqual(2);

@@ -48,6 +48,7 @@ class SessionRunnerRegistry:
     def __init__(
         self,
         max_concurrent_sessions: Optional[int] = None,
+        on_drop: Optional[Callable[[str, Any], None]] = None,
     ) -> None:
         self._max = (
             max_concurrent_sessions
@@ -57,6 +58,9 @@ class SessionRunnerRegistry:
         self._runners: dict[str, Any] = {}
         self._order: list[str] = []
         self._active_view_id: Optional[str] = None
+        # Optional hook (e.g. fold boot cost meters) when a runner leaves the
+        # registry via drop/evict. Rebuild/swap pass notify=False to skip it.
+        self._on_drop = on_drop
 
     @property
     def max_concurrent_sessions(self) -> int:
@@ -97,16 +101,29 @@ class SessionRunnerRegistry:
         self._order.append(session_id)
         return runner
 
-    def drop(self, session_id: str) -> None:
-        if session_id not in self._runners:
-            return
-        del self._runners[session_id]
+    def drop(self, session_id: str, *, notify: bool = True) -> Optional[Any]:
+        """Remove ``session_id`` from the registry.
+
+        When ``notify`` is True (default), invoke ``on_drop`` with the removed
+        runner so callers can fold process-lifetime meters. Rebuild/swap that
+        replace the SAME view's runner and copy meters must pass
+        ``notify=False`` to avoid double-counting.
+        """
+        runner = self._runners.pop(session_id, None)
+        if runner is None:
+            return None
         try:
             self._order.remove(session_id)
         except ValueError:
             pass
         if self._active_view_id == session_id:
             self._active_view_id = None
+        if notify and self._on_drop is not None:
+            try:
+                self._on_drop(session_id, runner)
+            except Exception:
+                pass
+        return runner
 
     def set_active_view(self, session_id: str) -> None:
         self._active_view_id = session_id
@@ -122,6 +139,10 @@ class SessionRunnerRegistry:
 
     def ids(self) -> list[str]:
         return list(self._order)
+
+    def runners(self) -> list[Any]:
+        """Live runners in insertion order (for process-lifetime boot meters)."""
+        return [self._runners[sid] for sid in self._order if sid in self._runners]
 
     def __len__(self) -> int:
         return len(self._runners)

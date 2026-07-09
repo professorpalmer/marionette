@@ -4,6 +4,7 @@ import {
   peekTranscriptCache,
   transcriptResponseToItems,
   writeTranscriptCache,
+  composerStatusFromRunner,
 } from "../components/Conversation";
 import type { Item } from "../components/TranscriptList";
 
@@ -125,6 +126,36 @@ describe("session switch detach (non-destructive)", () => {
     expect(closeEventSource).toHaveBeenCalledTimes(1);
     expect(interruptSession).not.toHaveBeenCalled();
     expect(cancelRef).toBeNull();
+  });
+});
+
+describe("busy runners keep Stop not Send", () => {
+  it("sets thinking when active session runner is running after SSE detach", () => {
+    const runners = { "sess-a": "idle" as const, "sess-b": "running" as const };
+    // Switch TO sess-b which is still running -- composer must show Stop.
+    expect(composerStatusFromRunner("sess-b", runners, false)).toBe("thinking");
+    expect(composerStatusFromRunner("sess-a", runners, false)).toBe("idle");
+  });
+
+  it("does not override local SSE stream with runner poll", () => {
+    const runners = { "sess-a": "running" as const };
+    expect(composerStatusFromRunner("sess-a", runners, true)).toBeNull();
+  });
+
+  it("returns to idle/Send when runner flips idle", () => {
+    let runners: Record<string, "running" | "idle"> = { "sess-b": "running" };
+    expect(composerStatusFromRunner("sess-b", runners, false)).toBe("thinking");
+    runners = { "sess-b": "idle" };
+    expect(composerStatusFromRunner("sess-b", runners, false)).toBe("idle");
+  });
+
+  it("on switch to running session: hydrate warm cache and keep busy chrome", () => {
+    writeTranscriptCache("sess-busy", [makeMsg("user", "in flight")]);
+    const runners = { "sess-busy": "running" as const };
+    const status = composerStatusFromRunner("sess-busy", runners, false);
+    expect(status).toBe("thinking");
+    expect(peekTranscriptCache("sess-busy")).toEqual([makeMsg("user", "in flight")]);
+    clearTranscriptCache();
   });
 });
 

@@ -704,7 +704,7 @@ def build_tools_schema(
         "type": "function",
         "function": {
             "name": "memory",
-            "description": "Save or update a durable fact or preference that should persist across ALL future sessions (user preferences, environment details, stable conventions). Use when the user states a preference, corrects you, or reveals a stable fact about their setup. Keep entries compact and high-signal. Do NOT save ephemeral task state or secrets.",
+            "description": "Queue or manage durable facts/preferences that persist across sessions (user preferences, environment details, stable conventions). On 'add', the fact is QUEUED for an end-of-turn Save/Skip card -- it is NOT persisted mid-turn; the user confirms after the answer. Autopilot ignores adds. Use list/update/remove for already-saved entries. Keep entries compact and high-signal. Do NOT save ephemeral task state or secrets.",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -68,6 +68,63 @@ describe("SwarmPane model badge", () => {
   });
 });
 
+describe("SwarmPane routing dedupe", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it("shows one routing model row per task when router and router-fallback both exist", async () => {
+    // Ground truth: a 5-worker swarm stores 10 ROUTING artifacts (router +
+    // router-fallback per task). Display must show the final choice only.
+    const artifacts = Array.from({ length: 5 }, (_, i) => [
+      {
+        type: "ROUTING",
+        headline: "",
+        task_id: `task-${i}`,
+        model: `initial-model-${i}`,
+        created_by: "router",
+        est_cost_usd: 0.01,
+      },
+      {
+        type: "ROUTING",
+        headline: "",
+        task_id: `task-${i}`,
+        model: `final-model-${i}`,
+        created_by: "router-fallback",
+        est_cost_usd: 0.02,
+      },
+    ]).flat();
+
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        model: "final-model-0",
+        adapter: "agentic",
+        tasks: Array.from({ length: 5 }, (_, i) => ({
+          id: `task-${i}`,
+          status: "running",
+          adapter: "agentic",
+          role: "Worker",
+          instruction: `work ${i}`,
+        })),
+        artifacts,
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      // Routing rows use title={art.model}; the job badge uses "Model: …",
+      // so exact title match isolates the five routing cards.
+      for (let i = 0; i < 5; i++) {
+        expect(screen.getByTitle(`final-model-${i}`)).toBeInTheDocument();
+        expect(screen.queryByTitle(`initial-model-${i}`)).not.toBeInTheDocument();
+      }
+    });
+  });
+});
+
 describe("SwarmPane dead-run detection", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -328,3 +328,37 @@ def test_session_state_exposes_runner_statuses():
         srv._runners = old_runners
         srv._pilot = old_pilot
         httpd.shutdown()
+
+
+def test_pilot_config_repo_frozen_when_workspace_view_mutates(tmp_path):
+    """Mutating _cfg.repo / HARNESS_REPO must not retarget a busy runner's config."""
+    srv, httpd, port = _spin_server()
+    old_repo = srv._cfg.repo
+    old_env = os.environ.get("HARNESS_REPO")
+    old_pilot = srv._pilot
+    try:
+        repo_a = tmp_path / "frozen-a"
+        repo_b = tmp_path / "view-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+
+        srv._cfg.repo = str(repo_a)
+        os.environ["HARNESS_REPO"] = str(repo_a)
+        pilot = srv._build_conversational_pilot()
+        assert pilot.config is not srv._cfg
+        assert pilot.config.repo == str(repo_a)
+
+        # Simulate /api/workspace/open mutating the active-VIEW pointers only.
+        srv._cfg.repo = str(repo_b)
+        os.environ["HARNESS_REPO"] = str(repo_b)
+
+        assert pilot.config.repo == str(repo_a)
+        assert srv._cfg.repo == str(repo_b)
+    finally:
+        srv._pilot = old_pilot
+        srv._cfg.repo = old_repo
+        if old_env is None:
+            os.environ.pop("HARNESS_REPO", None)
+        else:
+            os.environ["HARNESS_REPO"] = old_env
+        httpd.shutdown()

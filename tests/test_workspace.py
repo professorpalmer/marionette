@@ -120,19 +120,29 @@ def test_forget_recent_workspace(monkeypatch, tmp_path):
     # We want these directories to be considered persistable, so let's mock the tempdir check
     monkeypatch.setattr(tempfile, "gettempdir", lambda: "/some/other/dummy/path")
     
-    # Record them
+    # Record them -- append-if-new; re-open must NOT move to front.
     recents = srv._record_recent_workspace(str(dir1))
-    assert str(dir1) in recents
-    
+    assert recents == [str(dir1)]
+
     recents = srv._record_recent_workspace(str(dir2))
-    assert str(dir2) in recents
-    assert str(dir1) in recents
-    
+    assert recents == [str(dir1), str(dir2)]
+
+    # Re-open dir1: position stays; active repo key still updates.
+    recents = srv._record_recent_workspace(str(dir1))
+    assert recents == [str(dir1), str(dir2)]
+    with open(ws_file) as f:
+        data = json.load(f)
+        assert data["repo"] == str(dir1)
+        assert data["recents"] == [str(dir1), str(dir2)]
+
+    # Switch active back to dir2 before forget (forget does not rewrite repo).
+    srv._record_recent_workspace(str(dir2))
+
     # Now forget dir1
     recents = srv._forget_recent_workspace(str(dir1))
     assert str(dir1) not in recents
     assert str(dir2) in recents
-    
+
     # Check that file actually wrote the correct JSON
     with open(ws_file) as f:
         data = json.load(f)

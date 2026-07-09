@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "lucide-react";
-import { api, type CodegraphStatus, type WikiGraphData } from "../lib/api";
+import { api, type CodegraphStatus, type WikiStatusData } from "../lib/api";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
@@ -35,9 +35,9 @@ export default function StatePane({ artifacts }: {
     isTransitioning: wikiTransitioning,
     isShowingStale: wikiStale,
     revalidate: revalidateWiki,
-  } = useStaleWhileRevalidate<WikiGraphData>(
-    `wiki:${projectRoot || "__none__"}`,
-    () => api.getWikiGraph(),
+  } = useStaleWhileRevalidate<WikiStatusData>(
+    `wiki-status:${projectRoot || "__none__"}`,
+    () => api.getWikiStatus(),
     { enabled: !!projectRoot },
   );
 
@@ -223,7 +223,7 @@ export default function StatePane({ artifacts }: {
   const wikiErr = wiki?.status === "error";
   const wikiDot = wikiOk ? "bg-good" : wikiErr ? "bg-risk" : "bg-faint";
   const wikiWord = wikiOk ? "connected" : wikiErr ? "error" : "off";
-  const wikiMetric = wikiOk ? `${(wiki?.nodes || []).length} pages` : "";
+  const wikiMetric = wikiOk ? `${wiki?.page_count ?? 0} pages` : "";
 
   const statusDimmed = projectSwitching || cgTransitioning || wikiTransitioning;
 
@@ -352,8 +352,8 @@ export default function StatePane({ artifacts }: {
               ) : (
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-muted">
-                    <strong className="text-txt tabular-nums">{(wiki?.nodes || []).length}</strong> pages,{" "}
-                    <strong className="text-txt tabular-nums">{(wiki?.edges || []).length}</strong> links
+                    <strong className="text-txt tabular-nums">{wiki?.page_count ?? 0}</strong> pages,{" "}
+                    <strong className="text-txt tabular-nums">{wiki?.link_count ?? 0}</strong> links
                     {wiki?.base_url && <span className="text-faint ml-1.5 truncate">{wiki.base_url}</span>}
                   </span>
                   <button

@@ -7,11 +7,34 @@ import { repoPathsEqual } from "../lib/pathNormalize";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
+/**
+ * Stable PROJECTS rail order: keep recents as-is, append currentRepo only when
+ * it is not already present. Never force the active path to index 0.
+ */
+export function buildProjectsList(currentRepo: string, rawRecents: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of rawRecents) {
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  if (currentRepo && !seen.has(currentRepo)) {
+    out.push(currentRepo);
+  }
+  return out;
+}
+
+/** SWR cache key for the Branches list -- keyed by repo so project switches
+ *  do not flash another project's branches, and revisits stay warm. */
+export function workspacesCacheKey(repo: string): string {
+  return `workspaces:${repo || "__none__"}`;
+}
+
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
   jobsRefresh: number;
   onSessionChange?: (id: string) => void;
 }) {
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [swapping, setSwapping] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -173,6 +196,17 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const currentRepo = workspaceInfo?.repo || "";
   currentRepoRef.current = currentRepo;
 
+  // Branches list: SWR keyed by repo so the first fetch stays warm across
+  // session switches / config-changed events (no blank-then-refill lag).
+  const {
+    data: workspaces = [],
+    revalidate: revalidateWorkspaces,
+  } = useStaleWhileRevalidate<Workspace[]>(
+    workspacesCacheKey(currentRepo),
+    () => api.workspaces(),
+    { enabled: !!currentRepo && !!workspaceInfo?.is_git },
+  );
+
   const {
     data: sessions = [],
     isValidating: sessionsValidating,
@@ -234,11 +268,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
   };
 
-  const loadWs = () => api.workspaces().then(setWorkspaces).catch(() => {});
   useEffect(() => {
-    loadWs();
     const handleConfigChanged = () => {
-      loadWs();
+      // Background revalidate only -- SWR keeps the last branch list visible
+      // so Branches does not blank for a second on every session switch.
+      void revalidateWorkspaces();
       void revalidateSessions();
       void revalidateWorkspace();
       void revalidateJobs();
@@ -247,7 +281,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return () => {
       window.removeEventListener("harness-config-changed", handleConfigChanged);
     };
-  }, [revalidateSessions, revalidateWorkspace, revalidateJobs]);
+  }, [revalidateSessions, revalidateWorkspace, revalidateJobs, revalidateWorkspaces]);
 
   // Poll workspace status while CodeGraph indexes so the badge flips to READY
   // without opening a session or switching directories.
@@ -279,7 +313,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           codegraph_status: res.codegraph,
           recents: workspaceInfo?.recents,
         });
-        await Promise.all([revalidateWorkspace(), loadWs(), revalidateSessions()]);
+        await Promise.all([revalidateWorkspace(), revalidateWorkspaces(), revalidateSessions()]);
         window.dispatchEvent(new Event("harness-config-changed"));
       } else {
         alert("Failed to open directory: " + (res as any).error);
@@ -337,14 +371,48 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     };
   }, [projectContextMenu]);
 
+  const toast = (msg: string) => {
+    window.dispatchEvent(new CustomEvent("harness-toast", { detail: msg }));
+  };
+
   const switchWs = async (name: string) => {
+    if (workspaces.some((w) => w.name === name && w.active)) return;
     setSwapping(name);
-    try { await api.switchWorkspace(name); await loadWs(); } finally { setSwapping(null); }
+    try {
+      let res = await api.switchWorkspace(name);
+      if (!res.ok && res.dirty) {
+        const proceed = window.confirm(
+          "Uncommitted changes in this repo. Switch branch anyway? (may fail if checkout would overwrite files)",
+        );
+        if (!proceed) return;
+        res = await api.switchWorkspace(name, { allow_dirty: true });
+      }
+      if (!res.ok) {
+        toast(res.error || `Could not switch to ${name}`);
+        return;
+      }
+      await Promise.all([revalidateWorkspaces(), revalidateWorkspace()]);
+      window.dispatchEvent(new Event("harness-config-changed"));
+    } catch (err: any) {
+      toast(err?.error || err?.message || `Could not switch to ${name}`);
+    } finally {
+      setSwapping(null);
+    }
   };
   const newWs = async () => {
     const name = prompt("New workspace name (creates a git branch):");
     if (!name) return;
-    await api.createWorkspace(name); await loadWs();
+    try {
+      const res = await api.createWorkspace(name);
+      if (!res.ok) {
+        toast(res.error || `Could not create branch ${name}`);
+        return;
+      }
+      await Promise.all([revalidateWorkspaces(), revalidateWorkspace()]);
+      window.dispatchEvent(new Event("harness-config-changed"));
+    } catch (err: any) {
+      toast(err?.error || err?.message || `Could not create branch ${name}`);
+    }
   };
   const switchSession = async (id: string) => {
     await api.switchSession(id);
@@ -355,9 +423,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     // shown even though the backend already swapped repos.
     window.dispatchEvent(new Event("harness-config-changed"));
   };
-  const newSession = async () => { await api.createSession(); await revalidateSessions(); };
+  const newSession = async (inProjectPath?: string) => {
+    // createSession always uses the active _cfg.repo. When the user has
+    // selected a different (often empty) project, open that workspace first
+    // so the new session lands there instead of the current active root.
+    const target = (inProjectPath || selectedProjectPath || "").trim();
+    const current = (workspaceInfo?.repo || "").trim();
+    if (target && (!current || !repoPathsEqual(target, current))) {
+      await handleOpenProject(target);
+    }
+    await api.createSession();
+    await revalidateSessions();
+  };
   useEffect(() => {
-    const onNew = () => { newSession(); };
+    const onNew = () => { void newSession(); };
     window.addEventListener("harness-new-session", onNew);
     return () => window.removeEventListener("harness-new-session", onNew);
   }, []);
@@ -393,7 +472,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const archivedSessions = sessions.filter((s) => s.archived);
 
   const rawRecents = workspaceInfo?.recents || [];
-  const projects = Array.from(new Set([currentRepo, ...rawRecents])).filter(Boolean);
+  // Stable PROJECTS order: recents as-is, append current only if missing.
+  // Do NOT put currentRepo first -- that snapped the opened dir to the top
+  // on every workspace open and blinked the rail.
+  const projects = buildProjectsList(currentRepo, rawRecents);
 
   // Eager per-root lists: prefetch sessions for EVERY project in the rail so
   // non-active dirs show their rows without waiting for a click. Seeds the
@@ -546,7 +628,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       
       <div className="px-3 pb-2 border-b border-edge flex flex-col gap-1.5">
         <button
-          onClick={newSession}
+          onClick={() => { void newSession(); }}
           className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] font-medium text-txt bg-panel2/60 hover:bg-panel2 border border-edge/60 transition">
           <SquarePen size={14} className="text-accent" />
           New session
@@ -570,9 +652,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             const basename = getWorkspaceBasename(projectPath) || "Untitled Project";
             const isCurrentActive = !!(workspaceInfo?.repo && repoPathsEqual(projectPath, workspaceInfo.repo));
             const isSelected = repoPathsEqual(projectPath, selectedProjectPath);
-            const isExpanded = expandedProjects[projectPath] !== undefined 
-              ? expandedProjects[projectPath] 
-              : isCurrentActive;
+            // Expand is user-driven only: missing key means collapsed. Do not
+            // mirror isCurrentActive — session switch / open folder must not
+            // auto-expand the new root or collapse the previous one.
+            const isExpanded = !!expandedProjects[projectPath];
             
             const projectSessions = projectSessionsFor(projectPath);
             projectSessions.sort((a, b) => b.created - a.created);
@@ -650,7 +733,17 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                           </div>
                         ) : null
                       ) : (
-                        <div className="text-[11px] text-faint italic px-2 py-1">No sessions</div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void newSession(projectPath);
+                          }}
+                          className="w-full text-left text-[11px] text-accent hover:text-accent/80 px-2 py-1 rounded hover:bg-accent/10 transition"
+                          title={`Open ${basename} and start a session`}
+                        >
+                          New session
+                        </button>
                       )
                     ) : (
                       projectSessions.map((s) => (
@@ -799,7 +892,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
       </div>
 
-      {/* JOBS -- clean task-list styling (mirrors the composer TaskStack): a
+      {/* JOBS -- clean task-list styling: a
           slim status row per job, click to expand a card with richer detail
           (adapter/role, tokens/cost, artifact headlines) instead of a lone
           line of truncated text. Bounded height + collapsible header so a long

@@ -395,6 +395,8 @@ def execute_intent(
     worker_mode: Optional[str] = None,
     on_delta: Optional[Callable[[str, str, str], None]] = None,
     session_id: Optional[str] = None,
+    cwd: Optional[str] = None,
+    repo: Optional[str] = None,
 ) -> Optional[BridgeResult]:
     """Run a run_swarm intent against Puppetmaster. Returns None for non-swarm
     actions (answer/stop) since there is nothing to execute.
@@ -406,6 +408,11 @@ def execute_intent(
     agentic workers stream their token deltas to it live via Puppetmaster's
     delta bus. The bus registration is guarded so an older bundled puppetmaster
     without streaming support simply runs blocking, as before.
+
+    ``cwd`` / ``repo`` (aliases) pin the analysis workspace for this call.
+    Prefer these over the live ``HARNESS_REPO`` env so a mid-turn workspace
+    switch cannot retarget a busy runner's swarm. When set, ``HARNESS_REPO``
+    is temporarily aligned for the duration of the call and restored after.
     """
     if intent.action != "run_swarm":
         return None
@@ -422,6 +429,14 @@ def execute_intent(
     store = create_store("sqlite", tmp)
     job_label = job_label_for_session(session_id or "")
 
+    # Explicit per-runner cwd wins over the process-wide HARNESS_REPO view pointer.
+    explicit_cwd = (cwd or repo or "").strip()
+    prev_harness_repo = _os.environ.get("HARNESS_REPO")
+    env_patched = False
+    if explicit_cwd:
+        _os.environ["HARNESS_REPO"] = explicit_cwd
+        env_patched = True
+
     try:
         # Swarm adapter selection (safety-first):
         #   demo (default)  -> built-in local demo adapter: deterministic, free, no
@@ -433,7 +448,7 @@ def execute_intent(
         #                      stamp read_only=True -- a triple guard so a real run
         #                      can NEVER edit a target repo (safe even on live repos).
         swarm_adapter = (_os.environ.get("HARNESS_SWARM_ADAPTER", "demo") or "demo").lower()
-        repo_cwd = _os.environ.get("HARNESS_REPO", "").strip()
+        repo_cwd = explicit_cwd or _os.environ.get("HARNESS_REPO", "").strip()
 
         if swarm_adapter == "agentic" and repo_cwd:
             # Standalone path: run READ-ONLY analysis workers on the built-in
@@ -546,3 +561,8 @@ def execute_intent(
         )
     finally:
         _clear_delta_sink()
+        if env_patched:
+            if prev_harness_repo is None:
+                _os.environ.pop("HARNESS_REPO", None)
+            else:
+                _os.environ["HARNESS_REPO"] = prev_harness_repo

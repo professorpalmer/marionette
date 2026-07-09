@@ -22,6 +22,8 @@ from urllib.parse import urlparse, parse_qs
 import tempfile
 import uuid
 
+from dataclasses import replace as _dc_replace
+
 from .config import HarnessConfig
 from .session import Session
 from .conversation import ConversationalSession
@@ -107,6 +109,25 @@ def _cache_savings(cached: float, price_in: float) -> float:
 # the pilot token meters (which also reset per process).
 _COST_EPOCH = datetime.now(timezone.utc)
 
+# Process-lifetime boot meters for the status-bar spend pill. Live runners keep
+# their own counters; on drop/evict those meters fold into this carry so the
+# pill never resets when the UI attaches a different session. New runners start
+# at zero -- do NOT snapshot meters into them on attach/create (that would
+# double-count once /api/usage sums carry + all live runners).
+_BOOT_METER_ATTRS = (
+    "_tokens_used",
+    "_tokens_in",
+    "_tokens_out",
+    "_tokens_cached",
+    "_worker_cost_usd",
+    "_worker_tokens_in",
+    "_worker_tokens_out",
+)
+_BOOT_METER_CARRY: dict[str, float] = {attr: 0.0 for attr in _BOOT_METER_ATTRS}
+# Every workspace opened this process -- boot-pill swarm dollars merge
+# epoch-windowed jobs across these repos, not only the active _cfg.repo.
+_BOOT_REPOS: set[str] = set()
+
 
 def _job_in_cost_window(created_at: Any) -> bool:
     """True when a swarm-store job belongs to this app run's cost window.
@@ -168,14 +189,21 @@ def _sync_pilot_session_id() -> None:
         pass
 
 
-def _tool_output_savings_fields(price_in: float) -> dict:
-    """Compact tool-output savings for session payloads."""
+def _tool_output_savings_fields(price_in: float, *, process_wide: bool = False) -> dict:
+    """Compact tool-output savings for session payloads.
+
+    When ``process_wide`` is True (boot /api/usage pill), aggregate across the
+    whole state-dir ledger for this process epoch rather than the active
+    harness_session_id -- so dir/session swaps do not zero the saved meter.
+    """
+    # Empty session_id => ledger summarize() aggregates all sessions.
+    sid = "" if process_wide else (getattr(_pilot, "harness_session_id", "") or "")
     try:
         from .tool_output_savings import session_savings_payload
 
         payload = session_savings_payload(
             _pilot.state_dir,
-            getattr(_pilot, "harness_session_id", "") or "",
+            sid,
             price_in,
         )
     except Exception:
@@ -187,10 +215,11 @@ def _tool_output_savings_fields(price_in: float) -> dict:
     try:
         from .history_compaction_journal import history_compaction_payload
 
+        # history_compaction_payload("") scopes to all sessions (falsy sid).
         payload.update(
             history_compaction_payload(
                 _pilot.state_dir,
-                getattr(_pilot, "harness_session_id", "") or "default",
+                sid if process_wide else (sid or "default"),
             )
         )
     except Exception:
@@ -202,7 +231,7 @@ def _tool_output_savings_fields(price_in: float) -> dict:
         payload.update(
             spill_usage_payload(
                 _pilot.state_dir,
-                getattr(_pilot, "harness_session_id", "") or "default",
+                sid if process_wide else (sid or "default"),
             )
         )
     except Exception:
@@ -830,8 +859,12 @@ def _record_recent_workspace(target_repo: str) -> list:
                 if _rp.startswith(_tmproot) or "/var/folders/" in _rp or "/T/tmp" in _pth:
                     return False
             return os.path.isdir(_pth)
-        # prepend, dedupe (keep first occurrence), drop temp/dead dirs, cap 8
-        recents = [target_repo] + [r for r in recents if r != target_repo]
+        # Stable order: if path already in recents, leave its position; if new,
+        # append. Do NOT prepend-to-front on every open (that snapped the rail).
+        # Still persist active "repo" below for boot restore. Cap 8 + ephemeral
+        # guards unchanged.
+        if target_repo and target_repo not in recents:
+            recents = list(recents) + [target_repo]
         recents = [r for r in recents if _persistable(r)]
         recents = recents[:8]
 
@@ -1083,8 +1116,11 @@ def _resolve_available_driver():
 
 
 _resolve_available_driver()
+# Tracker Session may share the global view config; each ConversationalSession
+# runner gets its OWN HarnessConfig copy so mutating _cfg.repo (workspace open /
+# cross-repo switch) cannot retarget a busy turn's tools/cwd.
 _session = Session(_cfg)
-_pilot = ConversationalSession(_cfg)
+_pilot = ConversationalSession(_dc_replace(_cfg))
 # Session and pilot each fall back to their OWN mkdtemp() when config.state_dir
 # is blank (the default), landing run_swarm's job store (pilot's state_dir) and
 # the tracker's read store (session's state_dir) in two DIFFERENT temp dirs. The
@@ -1095,7 +1131,8 @@ _session.state_dir = _pilot.state_dir
 import tempfile as _tf
 _sessions = SessionStore(os.path.join(_cfg.state_dir or _tf.gettempdir(), "harness_sessions.json"))
 # Per-session runners: active VIEW is which session the UI attaches to; other
-# sessions may keep executing under the concurrent-session lease.
+# sessions may keep executing under the concurrent-session lease. on_drop is
+# wired below once _fold_runner_meters_into_boot_carry is defined.
 _runners = SessionRunnerRegistry()
 _mcp = McpManager()
 # Serialize pilot rebinds so a /api/pilot swap and a workspace-switch rebuild
@@ -1112,6 +1149,9 @@ _pilot._mcp = _mcp
 _pilot._session_store = _sessions
 _init_platform_lock()
 _seed_agentic_catalog()
+# Seed boot-pill swarm aggregation with the workspace adopted at process start.
+if _cfg.repo and os.path.isdir(_cfg.repo):
+    _BOOT_REPOS.add(os.path.abspath(_cfg.repo))
 
 
 def _resume_latch_path() -> str:
@@ -1168,26 +1208,105 @@ def _consume_resume_pending(idle: bool) -> bool:
 
 
 def _copy_pilot_meters(old_pilot: Any, new_pilot: Any) -> None:
-    """Carry process-lifetime cost meters across a pilot rebuild/swap.
+    """Carry process-lifetime cost meters across a SAME-view pilot rebuild/swap.
 
-    /api/usage reads these off the live singleton; workspace open and model
-    swap rebuild ConversationalSession and would otherwise zero the status-bar
-    spend cluster. Intent is 'since last open' for this process -- not per
-    workspace. Best-effort: missing attrs never raise.
+    Used only when a rebuild replaces the active view's runner in place
+    (``_rebuild_pilot_and_session`` / model swap). New runners created on
+    attach/create must start at zero -- boot-pill totals come from
+    ``_BOOT_METER_CARRY`` + sum of live runners, not from copying meters.
     """
-    for attr in (
-        "_tokens_used",
-        "_tokens_in",
-        "_tokens_out",
-        "_tokens_cached",
-        "_worker_cost_usd",
-        "_worker_tokens_in",
-        "_worker_tokens_out",
-    ):
+    for attr in _BOOT_METER_ATTRS:
         try:
             setattr(new_pilot, attr, getattr(old_pilot, attr, getattr(new_pilot, attr, 0)))
         except Exception:
             pass
+
+
+def _fold_runner_meters_into_boot_carry(session_id: str, runner: Any) -> None:
+    """Add a dropped/evicted runner's meters into the process-lifetime carry.
+
+    Zeros the runner's meters after folding so a lingering ``_pilot`` pointer
+    cannot double-count with carry in ``_boot_usage_meters``.
+    """
+    del session_id  # reserved for diagnostics; meters are process-scoped
+    for attr in _BOOT_METER_ATTRS:
+        try:
+            add = float(getattr(runner, attr, 0) or 0)
+            _BOOT_METER_CARRY[attr] = float(_BOOT_METER_CARRY.get(attr, 0.0) or 0.0) + add
+            if attr == "_worker_cost_usd":
+                setattr(runner, attr, 0.0)
+            else:
+                setattr(runner, attr, 0)
+        except Exception:
+            pass
+
+
+# Wire after definition so boot construction above can create the registry first.
+_runners._on_drop = _fold_runner_meters_into_boot_carry
+
+
+def _note_boot_repo(repo: str) -> None:
+    """Record a workspace opened this process for boot-pill swarm aggregation."""
+    path = (repo or "").strip()
+    if path and os.path.isdir(path):
+        _BOOT_REPOS.add(os.path.abspath(path))
+
+
+def _runner_config_snapshot() -> HarnessConfig:
+    """Per-runner HarnessConfig copy so mutating ``_cfg.repo`` cannot retarget a busy turn."""
+    return _dc_replace(_cfg)
+
+
+def _boot_usage_meters() -> dict[str, float]:
+    """Process-lifetime meters: carry + sum across all live runners.
+
+    Includes the active ``_pilot`` when it is not already in the registry
+    (early boot / tests). Dropped runners are zeroed after fold so a stale
+    ``_pilot`` pointer cannot double-count with carry.
+    """
+    totals = {attr: float(_BOOT_METER_CARRY.get(attr, 0.0) or 0.0) for attr in _BOOT_METER_ATTRS}
+    try:
+        live = list(_runners.runners())
+    except Exception:
+        live = []
+    seen = {id(r) for r in live}
+    if _pilot is not None and id(_pilot) not in seen:
+        live.append(_pilot)
+    for runner in live:
+        for attr in _BOOT_METER_ATTRS:
+            try:
+                totals[attr] = float(totals[attr]) + float(getattr(runner, attr, 0) or 0)
+            except Exception:
+                pass
+    return totals
+
+
+def _boot_session_cost(price_in: float, price_out: float) -> float:
+    """Sum per-pilot ``_session_cost_split`` over carry (as a virtual pilot) + live runners.
+
+    Pricing each live runner separately keeps worker dollars at each worker's
+    own model rate. Carry is priced as a synthetic pilot at the active rate
+    (same approximation as a single-runner process after eviction).
+    """
+    from types import SimpleNamespace
+
+    carry_pilot = SimpleNamespace(**{
+        attr: _BOOT_METER_CARRY.get(attr, 0.0) for attr in _BOOT_METER_ATTRS
+    })
+    total = float(_session_cost_split(carry_pilot, price_in, price_out))
+    try:
+        live = list(_runners.runners())
+    except Exception:
+        live = []
+    seen = {id(r) for r in live}
+    if _pilot is not None and id(_pilot) not in seen:
+        live.append(_pilot)
+    for runner in live:
+        try:
+            total += float(_session_cost_split(runner, price_in, price_out))
+        except Exception:
+            pass
+    return total
 
 
 def _bind_pilot_services(pilot: Any) -> None:
@@ -1197,8 +1316,12 @@ def _bind_pilot_services(pilot: Any) -> None:
 
 
 def _build_conversational_pilot(*, copy_meters_from: Any = None) -> ConversationalSession:
-    """Construct a ConversationalSession for the current ``_cfg`` (lease factory)."""
-    new_pilot = ConversationalSession(_cfg)
+    """Construct a ConversationalSession with a frozen per-runner config copy.
+
+    ``copy_meters_from`` is only for SAME-view rebuild/swap. Attach/create must
+    omit it so new runners start at zero for boot-pill accounting.
+    """
+    new_pilot = ConversationalSession(_runner_config_snapshot())
     _bind_pilot_services(new_pilot)
     if copy_meters_from is not None:
         _copy_pilot_meters(copy_meters_from, new_pilot)
@@ -1231,12 +1354,12 @@ def _attach_view(session_id: str, *, factory=None, load_transcript_on_create: bo
 
     prev_view = _runners.active_view_id
     created = _runners.get(session_id) is None
-    meter_src = _pilot
 
     def _factory():
         if factory is not None:
             return factory()
-        return _build_conversational_pilot(copy_meters_from=meter_src)
+        # New runners start at zero meters -- boot pill sums carry + live.
+        return _build_conversational_pilot()
 
     runner = _runners.get_or_create(session_id, _factory)
     _runners.set_active_view(session_id)
@@ -1393,8 +1516,9 @@ def _rebuild_pilot_and_session():
     prev_driver = _cfg.driver
     _apply_model_context_window()
     try:
+        # Tracker Session may share the view config; the runner gets a frozen copy.
         new_session = Session(_cfg)
-        new_pilot = ConversationalSession(_cfg)
+        new_pilot = ConversationalSession(_runner_config_snapshot())
     except Exception as e:
         # Roll back to the last driver that built successfully.
         _cfg.driver = prev_driver
@@ -1419,7 +1543,9 @@ def _rebuild_pilot_and_session():
         _sync_pilot_session_id()
         if active_id:
             # Replace only this view's registry entry; leave other runners alone.
-            _runners.drop(active_id)
+            # notify=False: meters were copied onto the replacement, so folding
+            # the old runner into boot carry would double-count.
+            _runners.drop(active_id, notify=False)
             _runners.get_or_create(active_id, lambda: _pilot)
             _runners.set_active_view(active_id)
 
@@ -1921,6 +2047,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/rules/approve", "/api/rules/reject",
                       "/api/rules/add", "/api/rules/update", "/api/rules/remove",
                       "/api/memory/add", "/api/memory/remove",
+                      "/api/memory/propose/accept", "/api/memory/propose/dismiss",
                       "/api/settings", "/api/providers/probe", "/api/providers/key", "/api/wiki/config",
                       "/api/platform", "/api/reviews/apply", "/api/reviews/dismiss",
                       "/api/registry", "/api/roles", "/api/pilot/validate",
@@ -2281,6 +2408,7 @@ class Handler(BaseHTTPRequestHandler):
 
             _cfg.repo = target_repo
             os.environ["HARNESS_REPO"] = target_repo
+            _note_boot_repo(target_repo)
 
             # Restore the model last used in this workspace (if any + still
             # available), so each dir remembers its model across switches.
@@ -2546,6 +2674,20 @@ class Handler(BaseHTTPRequestHandler):
             entry_id = body.get("id", "")
             ok = _memory.remove(entry_id)
             return self._send(200, json.dumps({"ok": ok}))
+        if path == "/api/memory/propose/accept":
+            proposal_id = (body.get("id") or "").strip()
+            if not proposal_id:
+                return self._send(400, json.dumps({"ok": False, "error": "missing id"}))
+            result = _pilot.accept_memory_proposal(proposal_id)
+            code = 200 if result.get("ok") else 404
+            return self._send(code, json.dumps(result))
+        if path == "/api/memory/propose/dismiss":
+            proposal_id = (body.get("id") or "").strip()
+            if not proposal_id:
+                return self._send(400, json.dumps({"ok": False, "error": "missing id"}))
+            result = _pilot.dismiss_memory_proposal(proposal_id)
+            code = 200 if result.get("ok") else 404
+            return self._send(code, json.dumps(result))
         if path == "/api/sessions/create":
             _save_active_transcript()
             # Snapshot so a lease-exhausted attach can roll back without leaving
@@ -2573,11 +2715,11 @@ class Handler(BaseHTTPRequestHandler):
             res = _sessions.create(title, repo=repo, branch=branch, workspace_root=repo)
             sid = res.get("id", "")
             if sid:
-                meter_src = _pilot
                 try:
+                    # New session runner starts at zero meters (boot pill sums
+                    # carry + all live runners -- do not snapshot from active).
                     _attach_view(
                         sid,
-                        factory=lambda: _build_conversational_pilot(copy_meters_from=meter_src),
                         load_transcript_on_create=False,
                     )
                     _pilot.load_history([])
@@ -2622,6 +2764,7 @@ class Handler(BaseHTTPRequestHandler):
                 if target_repo and os.path.isdir(target_repo) and target_repo != _cfg.repo:
                     _cfg.repo = target_repo
                     os.environ["HARNESS_REPO"] = target_repo
+                    _note_boot_repo(target_repo)
                     # Session-switch repoints must land in recents too, or the
                     # dir only exists in the projects list while it is current
                     # and vanishes the moment the workspace moves elsewhere.
@@ -4051,6 +4194,90 @@ class Handler(BaseHTTPRequestHandler):
             _wiki_graph_cache[client.base_url] = (
                 _time.monotonic() + _WIKI_GRAPH_TTL, _wiki_payload)
             return self._send(200, json.dumps(_wiki_payload))
+        if u.path == "/api/wiki/status":
+            # Lightweight summary for the State pane strip -- counts only, no
+            # full node/edge arrays. Reuses the same graph cache as /api/wiki/graph.
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            from .wiki import WikiClient
+            try:
+                client = WikiClient(base_url=_cfg.wiki_url or "", timeout=8)
+            except Exception:
+                client = None
+            if client is None or not client.base_url:
+                return self._send(200, json.dumps({
+                    "configured": False,
+                    "status": "not_configured",
+                    "page_count": 0,
+                    "link_count": 0,
+                    "base_url": ""
+                }))
+            import time as _time
+            _wiki_cached = _wiki_graph_cache.get(client.base_url)
+            if _wiki_cached and _wiki_cached[0] > _time.monotonic():
+                cached = _wiki_cached[1]
+                return self._send(200, json.dumps({
+                    "configured": cached.get("configured", True),
+                    "status": cached.get("status", "ok"),
+                    "page_count": len(cached.get("nodes") or []),
+                    "link_count": len(cached.get("edges") or []),
+                    "error": cached.get("error"),
+                    "retryable": cached.get("retryable"),
+                    "base_url": cached.get("base_url") or client.base_url,
+                }))
+            try:
+                res = client.graph()
+            except Exception as e:
+                res = {"error": f"Unexpected error: {str(e)}", "nodes": [], "edges": []}
+            if res.get("error"):
+                _err_l = str(res.get("error", "")).lower()
+                _unreachable = any(t in _err_l for t in (
+                    "connection refused", "refused", "timed out", "timeout",
+                    "name or service not known", "nodename nor servname",
+                    "failed to establish", "max retries", "cannot connect",
+                    "connection error", "urlopen error", "getaddrinfo",
+                    "no route to host", "network is unreachable", "[errno",
+                ))
+                _is_configured = bool(client.base_url)
+                if _unreachable and not _is_configured:
+                    return self._send(200, json.dumps({
+                        "configured": False,
+                        "status": "not_configured",
+                        "page_count": 0,
+                        "link_count": 0,
+                        "base_url": ""
+                    }))
+                return self._send(200, json.dumps({
+                    "configured": True,
+                    "status": "error",
+                    "page_count": 0,
+                    "link_count": 0,
+                    "error": ("Wiki temporarily unreachable -- click Refresh to retry."
+                              if _unreachable else res["error"]),
+                    "retryable": True,
+                    "base_url": client.base_url
+                }))
+            nodes = res.get("nodes") or []
+            edges = res.get("edges") or []
+            _wiki_payload = {
+                "configured": True,
+                "status": "ok",
+                "nodes": nodes,
+                "edges": edges,
+                "base_url": client.base_url
+            }
+            _wiki_graph_cache[client.base_url] = (
+                _time.monotonic() + _WIKI_GRAPH_TTL, _wiki_payload)
+            return self._send(200, json.dumps({
+                "configured": True,
+                "status": "ok",
+                "page_count": len(nodes),
+                "link_count": len(edges),
+                "base_url": client.base_url
+            }))
         if u.path == "/api/settings":
             return self._send(200, json.dumps(_get_settings_dict()))
         if u.path == "/api/reviews":
@@ -4083,17 +4310,17 @@ class Handler(BaseHTTPRequestHandler):
                 price_in, price_out = resolve_price(_cfg.driver)
             except Exception:
                 price_in, price_out = 0.5, 2.0
-            tokens_used = getattr(_pilot, "_tokens_used", 0)
-            # Accurate split: input tokens at price_in, output at price_out, with
-            # cached prompt tokens re-billed at the cache-read discount. Falls
-            # back to a single-rate estimate if the in/out split isn't tracked.
-            _t_in = getattr(_pilot, "_tokens_in", 0)
-            _t_out = getattr(_pilot, "_tokens_out", 0)
-            _t_cached = int(getattr(_pilot, "_tokens_cached", 0) or 0)
-            # Price pilot tokens at the pilot rate and ADD worker dollars (priced
-            # at each worker's own model rate) so a worker on a pricier model is
-            # not under-reported by repricing its tokens at the cheap pilot rate.
-            est_session_cost = _session_cost_split(_pilot, price_in, price_out)
+            # Boot pill: process-lifetime meters (carry + ALL live runners), not
+            # just the active view -- so attaching another session never drops
+            # spend that already happened on a background runner.
+            _boot_meters = _boot_usage_meters()
+            tokens_used = int(_boot_meters.get("_tokens_used", 0) or 0)
+            _t_in = int(_boot_meters.get("_tokens_in", 0) or 0)
+            _t_out = int(_boot_meters.get("_tokens_out", 0) or 0)
+            _t_cached = int(_boot_meters.get("_tokens_cached", 0) or 0)
+            # Price each live runner (and carry) via _session_cost_split so
+            # worker dollars stay at each worker's own model rate.
+            est_session_cost = _boot_session_cost(price_in, price_out)
             _cache_savings_usd = _cache_savings(_t_cached, price_in)
             jobs_list = []
             session_total = None
@@ -4109,15 +4336,55 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
                 repo_override = parse_qs(u.query).get("repo", [""])[0]
-                all_jobs, store, cli_store = _scoped_jobs_with_stores(
+                # Boot-pill swarm dollars: merge epoch-windowed jobs across every
+                # workspace opened this process (not only active _cfg.repo).
+                # session_total below still uses the active-workspace set.
+                boot_repos = set(_BOOT_REPOS)
+                active_repo = (repo_override or "").strip() or (_cfg.repo or "")
+                if active_repo:
+                    boot_repos.add(os.path.abspath(active_repo) if os.path.isdir(active_repo) else active_repo)
+                if not boot_repos and active_repo:
+                    boot_repos.add(active_repo)
+
+                all_jobs_by_id: dict = {}
+                store = None
+                cli_store = None
+                for repo_path in sorted(boot_repos) or [active_repo or None]:
+                    scoped, st, cli_st = _scoped_jobs_with_stores(
+                        repo_root=repo_path or None
+                    )
+                    if store is None:
+                        store = st
+                    if cli_store is None and cli_st is not None:
+                        cli_store = cli_st
+                    for j in scoped:
+                        jid = j.get("id")
+                        if jid and jid not in all_jobs_by_id:
+                            all_jobs_by_id[jid] = j
+                all_jobs = list(all_jobs_by_id.values())
+
+                # Active-workspace set for session_total (unchanged semantics).
+                active_jobs, active_store, active_cli = _scoped_jobs_with_stores(
                     repo_root=repo_override or None
                 )
+                if store is None:
+                    store = active_store
+                if cli_store is None:
+                    cli_store = active_cli
+
                 # Boot pill: only jobs created during THIS app run (epoch window).
                 jobs = [j for j in all_jobs
                         if _job_in_cost_window(j.get("created_at"))]
                 registry = _swarm_registry()
                 jids = [j.get("id") for j in jobs if j.get("id")]
-                harness_jids, cli_jids = partition_jobs_by_store(all_jobs)
+                # Artifacts may live in harness or CLI stores; load from the
+                # union of boot-scoped + active-scoped job ids.
+                arts_source_jobs = list(all_jobs_by_id.values())
+                for j in active_jobs:
+                    jid = j.get("id")
+                    if jid and jid not in all_jobs_by_id:
+                        arts_source_jobs.append(j)
+                harness_jids, cli_jids = partition_jobs_by_store(arts_source_jobs)
 
                 arts_by_job: dict = {}
                 try:
@@ -4128,7 +4395,7 @@ class Handler(BaseHTTPRequestHandler):
                     arts_by_job = None  # fall back to per-job reads
 
                 # Owning-store lookup: each job is priced from its own store.
-                job_by_id = {j.get("id"): j for j in all_jobs if j.get("id")}
+                job_by_id = {j.get("id"): j for j in arts_source_jobs if j.get("id")}
 
                 def _owning_store(jid):
                     job = job_by_id.get(jid) or {}
@@ -4147,14 +4414,12 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         return []
 
-                # Lifetime session_total: the merged workspace-visible set
-                # (filter_store_jobs + CLI merge) already includes stamped jobs
-                # (label OR task-payload session_id via parse_job_session_id) and
-                # unstamped cwd-visible swarm jobs. Dedupe by job id; harness
+                # Lifetime session_total: active-workspace visible set only
+                # (filter_store_jobs + CLI merge). Dedupe by job id; harness
                 # wins via merge_scoped_cli_jobs order.
                 session_jids: list = []
                 seen_session: set = set()
-                for j in all_jobs:
+                for j in active_jobs:
                     jid = j.get("id")
                     if not jid or jid in seen_session:
                         continue
@@ -4177,8 +4442,11 @@ class Handler(BaseHTTPRequestHandler):
                 session_total = _active_session_total(
                     session_jids, _job_arts, registry
                 )
+                # Boot-pill savings: epoch job set across boot repos (jids), not
+                # active-workspace-only session_jids -- so dir/session swaps keep
+                # routing/cache saved meters process-lifetime.
                 routing_saved_usd, cache_saved_usd_swarm = _sum_job_set_savings(
-                    session_jids, _job_arts, registry
+                    jids, _job_arts, registry
                 )
             except Exception as e:
                 _diag("server.usage_jobs_aggregate", e)
@@ -4200,11 +4468,11 @@ class Handler(BaseHTTPRequestHandler):
                     # the USD that discount saved vs full input price.
                     "tokens_cached": _t_cached,
                     "cache_savings_usd": round(_cache_savings_usd, 6),
-                    # Routing + swarm-cache savings over the merged session job
+                    # Routing + swarm-cache savings over the boot-repo epoch job
                     # set (additive to the pilot cache/compaction figures).
                     "routing_saved_usd": round(routing_saved_usd, 6),
                     "cache_saved_usd_swarm": round(cache_saved_usd_swarm, 6),
-                    **_tool_output_savings_fields(price_in),
+                    **_tool_output_savings_fields(price_in, process_wide=True),
                 },
                 # Lifetime running total for the active chat session
                 # (persisted meters + all-time session-stamped / workspace-
@@ -4795,12 +5063,19 @@ class Handler(BaseHTTPRequestHandler):
                 old_pilot = _pilot
                 _cfg.driver = model
                 _apply_model_context_window()
-                _pilot = ConversationalSession(_cfg)
+                # Frozen per-runner config; meters copied because this replaces
+                # the SAME view's runner (not a new attach).
+                _pilot = ConversationalSession(_runner_config_snapshot())
                 if old_history is not None:
                     _pilot._history = old_history
                 _pilot._auto_distill = old_auto_distill
                 _copy_pilot_meters(old_pilot, _pilot)
                 _pilot._mcp = _mcp
+                active_id = _sessions.active or _runners.active_view_id
+                if active_id:
+                    _runners.drop(active_id, notify=False)
+                    _runners.get_or_create(active_id, lambda: _pilot)
+                    _runners.set_active_view(active_id)
             # Remember this model for the current workspace so switching dirs and
             # coming back restores it.
             _save_workspace_driver(_cfg.repo, model)

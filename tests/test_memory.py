@@ -222,26 +222,111 @@ def test_driving_memory_tool_through_action_loop(tmp_path, monkeypatch):
 
     events = list(session.send("Remember something"))
 
-    # Assert memory actually has the saved entry
-    entries = session._memory.list()
-    assert len(entries) == 1
-    assert entries[0].text == "Test durable fact X"
-    assert entries[0].category == "fact"
+    # Queue-only: store unchanged until accept
+    assert len(session._memory.list()) == 0
 
-    # Check that events have action_start and action_result
     kinds = [e.kind for e in events]
     assert "action_start" in kinds
     assert "action_result" in kinds
+    assert "assistant_done" in kinds
+    assert "memory_propose" in kinds
+
+    # Propose must come AFTER assistant_done (never mid-tool-loop)
+    assert kinds.index("assistant_done") < kinds.index("memory_propose")
+    # And no propose before the turn completes
+    assert kinds.index("memory_propose") > kinds.index("action_result")
+
+    props = [e for e in events if e.kind == "memory_propose"]
+    assert len(props) == 1
+    assert props[0].data["text"] == "Test durable fact X"
+    assert props[0].data["category"] == "fact"
+    prop_id = props[0].data["id"]
 
     action_results = [e for e in events if e.kind == "action_result"]
     assert len(action_results) == 1
     assert "Memory add succeeded" in action_results[0].data.get("artifacts", [{}])[0].get("headline", "")
 
-    # Confirm history has the confirmation message
-    found_confirmation = False
+    # History confirms queue, not persist
+    found_queued = False
     for msg in session._history:
         content = msg.get("content") or ""
-        if "Successfully saved to memory" in content and "Test durable fact X" in content:
-            found_confirmation = True
+        if "Queued for end-of-turn" in content and "Test durable fact X" in content:
+            found_queued = True
             break
-    assert found_confirmation, "Should have appended memory tool output back into history"
+    assert found_queued, "Should have appended queue confirmation into history"
+
+    # Accept persists
+    accepted = session.accept_memory_proposal(prop_id)
+    assert accepted["ok"] is True
+    entries = session._memory.list()
+    assert len(entries) == 1
+    assert entries[0].text == "Test durable fact X"
+    assert entries[0].source == "agent"
+
+
+def test_memory_propose_skipped_in_autopilot(tmp_path, monkeypatch):
+    temp_mem_path = tmp_path / "auto_memory.json"
+    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
+    monkeypatch.setattr("harness.conversation.RuleStore", lambda *args, **kwargs: RuleStore(path=str(tmp_path / "rules.json")))
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    session.pilot = _MemoryToolPilot({
+        "action": "add",
+        "content": "Should not persist in autopilot",
+        "category": "fact",
+    })
+
+    session._auto_mode = True
+    try:
+        events = list(session.send("Remember in auto"))
+    finally:
+        session._auto_mode = False
+
+    assert "memory_propose" not in [e.kind for e in events]
+    assert len(session._memory.list()) == 0
+    assert session._turn_memory_queue == []
+    assert session._pending_memory_proposals == {}
+
+
+def test_memory_propose_accept_dismiss_dedupe(tmp_path, monkeypatch):
+    temp_mem_path = tmp_path / "dedupe_memory.json"
+    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
+    monkeypatch.setattr("harness.conversation.RuleStore", lambda *args, **kwargs: RuleStore(path=str(tmp_path / "rules.json")))
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+
+    session._turn_memory_queue = [
+        {"text": "Same fact", "category": "fact"},
+        {"text": "Same fact", "category": "fact"},
+        {"text": "Other fact", "category": "preference"},
+    ]
+    props = session._flush_turn_memory_proposals()
+    assert len(props) == 2
+    assert {p["text"] for p in props} == {"Same fact", "Other fact"}
+
+    # Dismiss one
+    dismissed = session.dismiss_memory_proposal(props[0]["id"])
+    assert dismissed["ok"] is True
+    assert props[0]["id"] not in session._pending_memory_proposals
+
+    # Accept the other
+    accepted = session.accept_memory_proposal(props[1]["id"])
+    assert accepted["ok"] is True
+    assert len(session._memory.list()) == 1
+
+    # Exact-text dedupe against store on next flush
+    session._turn_memory_queue = [{"text": session._memory.list()[0].text, "category": "fact"}]
+    assert session._flush_turn_memory_proposals() == []
+
+
+def test_memory_propose_accept_missing(tmp_path, monkeypatch):
+    temp_mem_path = tmp_path / "missing_memory.json"
+    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
+    monkeypatch.setattr("harness.conversation.RuleStore", lambda *args, **kwargs: RuleStore(path=str(tmp_path / "rules.json")))
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    session = ConversationalSession(cfg)
+    assert session.accept_memory_proposal("nope")["ok"] is False
+    assert session.dismiss_memory_proposal("nope")["ok"] is False
+

@@ -219,6 +219,9 @@ class DurableState:
                 "headline": str(headline)[:300],
                 "confidence": getattr(a, "confidence", None),
                 "created_by": getattr(a, "created_by", ""),
+                # Surface task_id so the GUI can group ROUTING duplicates
+                # (router + router-fallback per task) into one display row.
+                "task_id": getattr(a, "task_id", "") or None,
                 # Puppetmaster's router stamps the chosen model under "model_id"
                 # (to_artifact_payload); the older keys are kept as fallbacks so
                 # non-router artifacts still resolve a model when they carry one.

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Pencil, FileText, X, Code, Share2, Image as ImageIcon } from "lucide-react";
+import { Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Pencil, FileText, X, Code, Share2, Image as ImageIcon, Brain } from "lucide-react";
 import { api, type Config } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import PilotPicker from "./PilotPicker";
@@ -157,6 +157,21 @@ export function transcriptResponseToItems(res: {
   return deduplicateConsecutiveAssistantMessages(loadedItems);
 }
 
+/**
+ * Composer chrome from runners poll (no local SSE).
+ * When the active session's runner is "running", show Stop/Steer (thinking);
+ * otherwise allow Send (idle). Used by Conversation and mirrored in tests.
+ */
+export function composerStatusFromRunner(
+  activeSessionId: string | null,
+  runners: Record<string, "running" | "idle"> | undefined,
+  localStreamActive: boolean,
+): "thinking" | "idle" | null {
+  if (localStreamActive || !activeSessionId) return null;
+  if (runners?.[activeSessionId] === "running") return "thinking";
+  return "idle";
+}
+
 export default function Conversation({ config, activeSessionId, onArtifacts, onJobChange }: {
   config: Config | null;
   activeSessionId: string | null;
@@ -212,10 +227,22 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   }, []);
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<"idle"|"thinking"|"executing"|"done"|"error"|"streaming">("idle");
+  // True while this Conversation owns a live SSE stream for the active session.
+  // Runner-poll busy chrome must not clobber local streaming status, and must
+  // not force idle while SSE is still attached.
+  const localStreamActiveRef = useRef(false);
+  // When we return to a running session without SSE, poll transcript until the
+  // runner flips idle, then finalize once.
+  const runnerBusyPollGenRef = useRef(0);
+  // True while composer busy chrome is driven by runners poll (no local SSE).
+  const detachedBusyRef = useRef(false);
   const [auto, setAuto] = useState(false);
   const [plan, setPlan] = useState(false);
   const [distillNotice, setDistillNotice] = useState<string | null>(null);
   const [wikiPrepared, setWikiPrepared] = useState<{ pages: any[]; autoIngested: boolean } | null>(null);
+  const [memoryProposals, setMemoryProposals] = useState<
+    { id: string; text: string; category: string }[]
+  >([]);
   const cancelRef = useRef<null | (() => void)>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -647,6 +674,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // cache immediately, detach any open EventSource (backend keeps the turn
   // alive -- do NOT interrupt/stop), then refresh from sessionTranscript in the
   // background without blanking a cache hit.
+  //
+  // Busy chrome: do NOT force idle on switch. If the target session's runner is
+  // still running, keep/show thinking so Stop/Steer stay available (slices B/C/D).
   useEffect(() => {
     const prevId = cachedSessionIdRef.current;
     if (prevId && prevId !== activeSessionId) {
@@ -658,6 +688,8 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       cancelRef.current();
       cancelRef.current = null;
     }
+    localStreamActiveRef.current = false;
+    detachedBusyRef.current = false;
     // Drop the typewriter loop without flushing into items (would race the
     // cache hydrate below). Authoritative text comes back via sessionTranscript.
     if (typeRafRef.current != null) {
@@ -666,16 +698,16 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     }
     typeBufRef.current = "";
     typeDoneRef.current = false;
-    if (prevId !== activeSessionId) {
-      setStatus("idle");
-      setCompactingStatus(null);
-    }
+    // Intentionally do NOT setStatus("idle") here -- runner poll below decides
+    // busy vs idle so a mid-turn session switch keeps Stop/thinking chrome.
 
     const loadGen = ++transcriptLoadGenRef.current;
     cachedSessionIdRef.current = activeSessionId;
 
     if (!activeSessionId) {
       setItems([]);
+      setStatus("idle");
+      setCompactingStatus(null);
       return;
     }
 
@@ -692,6 +724,34 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         itemsRef.current = [];
       }
     }
+
+    // Immediately reflect runner busy state for the session we switched TO
+    // (warm cache + Stop chrome) before the background transcript refresh.
+    let cancelled = false;
+    const applyRunnerBusy = (runners: Record<string, "running" | "idle"> | undefined) => {
+      if (cancelled || localStreamActiveRef.current) return;
+      if (!activeSessionId) return;
+      if (runners?.[activeSessionId] === "running") {
+        detachedBusyRef.current = true;
+        setStatus((prev) =>
+          prev === "thinking" || prev === "executing" || prev === "streaming"
+            ? prev
+            : "thinking"
+        );
+      } else if (prevId !== activeSessionId) {
+        // Switching to an idle session: clear busy chrome from the prior view.
+        detachedBusyRef.current = false;
+        setStatus("idle");
+        setCompactingStatus(null);
+      }
+    };
+
+    api.getSessionState()
+      .then((res) => {
+        if (cancelled) return;
+        applyRunnerBusy(res?.runners);
+      })
+      .catch(() => {});
 
     api.sessionTranscript(activeSessionId)
       .then((res) => {
@@ -759,7 +819,59 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           itemsRef.current = [];
         }
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeSessionId]);
+
+  // Poll runners so composer shows Stop/Steer while the active session's
+  // backend runner is busy -- even after SSE detach on session switch.
+  usePolling(() => {
+    if (!activeSessionId) return;
+    if (localStreamActiveRef.current) return;
+    const sid = activeSessionId;
+    return api.getSessionState().then((res) => {
+      if (cachedSessionIdRef.current !== sid || localStreamActiveRef.current) return;
+      const runners = res?.runners || {};
+      const running = runners[sid] === "running";
+      if (running) {
+        detachedBusyRef.current = true;
+        setStatus((prev) =>
+          prev === "thinking" || prev === "executing" || prev === "streaming"
+            ? prev
+            : "thinking"
+        );
+        // Slice C: while detached-but-busy, refresh transcript so eventual
+        // dump lands without blanking thinking chrome.
+        const pollGen = ++runnerBusyPollGenRef.current;
+        return api.sessionTranscript(sid).then((tres) => {
+          if (pollGen !== runnerBusyPollGenRef.current) return;
+          if (cachedSessionIdRef.current !== sid) return;
+          if (localStreamActiveRef.current) return;
+          const loadedItems = transcriptResponseToItems(tres);
+          setItems(loadedItems);
+          itemsRef.current = loadedItems;
+          transcriptCacheBySessionId.set(sid, { items: [...loadedItems] });
+        }).catch(() => {});
+      } else if (detachedBusyRef.current) {
+        // Runner went idle after a detached busy view -- finalize + refresh.
+        detachedBusyRef.current = false;
+        setStatus("idle");
+        setCompactingStatus(null);
+        return api.sessionTranscript(sid)
+          .then((tres) => {
+            if (cachedSessionIdRef.current !== sid) return;
+            if (localStreamActiveRef.current) return;
+            const loadedItems = transcriptResponseToItems(tres);
+            setItems(loadedItems);
+            itemsRef.current = loadedItems;
+            transcriptCacheBySessionId.set(sid, { items: [...loadedItems] });
+          })
+          .catch(() => {});
+      }
+    });
+  }, 1500, { enabled: !!activeSessionId });
 
   useEffect(() => {
     setPendingJobIds([]);
@@ -1252,6 +1364,17 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                     setWikiPrepared({ pages, autoIngested: false });
                   }
                 }
+              } else if (anyEvt.kind === "memory_propose" && anyEvt.data) {
+                const d = anyEvt.data;
+                const id = d.id || "";
+                const text = (d.text || "").trim();
+                if (id && text) {
+                  setMemoryProposals((prev) => (
+                    prev.some((p) => p.id === id)
+                      ? prev
+                      : [...prev, { id, text, category: d.category || "general" }]
+                  ));
+                }
               }
             });
           }
@@ -1370,6 +1493,8 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       : useAuto
       ? (cb: any, done: any, err: any) => api.auto(msg, cb, done, err)
       : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths);
+    localStreamActiveRef.current = true;
+    detachedBusyRef.current = false;
     cancelRef.current = streamer((ev: any) => {
       const d = ev.data || {};
       if (ev.kind === "compacting") {
@@ -1397,6 +1522,18 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             // Prepare-and-approve: surface the pages for one-click ingest.
             setWikiPrepared({ pages, autoIngested: false });
           }
+        }
+      } else if (ev.kind === "memory_propose") {
+        // Non-blocking Save/Skip after the final answer. Does not affect
+        // composer busy state; ignore/dismiss is fine.
+        const id = d.id || "";
+        const text = (d.text || "").trim();
+        if (id && text) {
+          setMemoryProposals((prev) => (
+            prev.some((p) => p.id === id)
+              ? prev
+              : [...prev, { id, text, category: d.category || "general" }]
+          ));
         }
       } else if (ev.kind === "codegraph_context") {
         setItems((p) => [...p, { kind: "codegraph_context" as const, symbols: d.symbols || 0, query: d.query || "" }]);
@@ -1638,8 +1775,8 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setStatus("error");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
       }
-    }, () => { flushTypewriter(); setStatus("done"); cancelRef.current = null; setCompactingStatus(null); maybeRunQueuedResume(); maybeDrainQueue(); },
-       () => { flushTypewriter(); setStatus("error"); cancelRef.current = null; setCompactingStatus(null); maybeRunQueuedResume(); maybeDrainQueue(); });
+    }, () => { flushTypewriter(); setStatus("done"); cancelRef.current = null; localStreamActiveRef.current = false; setCompactingStatus(null); maybeRunQueuedResume(); maybeDrainQueue(); },
+       () => { flushTypewriter(); setStatus("error"); cancelRef.current = null; localStreamActiveRef.current = false; setCompactingStatus(null); maybeRunQueuedResume(); maybeDrainQueue(); });
   };
 
   // AUTO-QUEUE ("playlist") from idle: the backend auto-drains the server-side
@@ -1854,6 +1991,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const stop = () => {
     cancelRef.current?.();
     cancelRef.current = null;
+    localStreamActiveRef.current = false;
     flushTypewriter();
     setStatus("idle");
     api.interruptSession().catch((e) => console.error("Failed to interrupt session on backend:", e));
@@ -2033,6 +2171,56 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               >
                 x
               </button>
+            </div>
+          )}
+          {memoryProposals.length > 0 && (
+            <div className="mb-2 space-y-1.5">
+              {memoryProposals.map((prop) => (
+                <div
+                  key={prop.id}
+                  className="px-2.5 py-1.5 rounded-lg bg-accent/5 border border-accent/20 flex items-start gap-2 text-[11px] text-txt/85"
+                >
+                  <Brain size={11} className="text-accent shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-faint text-[10px] mb-0.5">
+                      Save to durable memory?
+                      <span className="ml-1 text-muted">({prop.category})</span>
+                    </div>
+                    <div className="truncate italic">&ldquo;{prop.text}&rdquo;</div>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      setMemoryProposals((prev) => prev.filter((p) => p.id !== prop.id));
+                      try {
+                        const res = await api.memoryProposeAccept(prop.id);
+                        if (res.ok) {
+                          const notice = "Memory saved";
+                          setDistillNotice(notice);
+                          setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 4000);
+                        }
+                      } catch {
+                        setDistillNotice("Memory save failed");
+                      }
+                    }}
+                    className="shrink-0 px-2 py-0.5 rounded bg-accent/15 hover:bg-accent/25 text-accent font-medium transition text-[10.5px]"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={async () => {
+                      setMemoryProposals((prev) => prev.filter((p) => p.id !== prop.id));
+                      try {
+                        await api.memoryProposeDismiss(prop.id);
+                      } catch {
+                        /* ignore -- card already dismissed locally */
+                      }
+                    }}
+                    className="shrink-0 px-2 py-0.5 rounded text-faint hover:text-muted transition text-[10.5px]"
+                  >
+                    Skip
+                  </button>
+                </div>
+              ))}
             </div>
           )}
           {distillNotice && (

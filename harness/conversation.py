@@ -533,6 +533,11 @@ class ConversationalSession(ToolDispatchMixin):
         # reachable + timeouts off). Default ON.
         self._auto_command_guard = os.environ.get("HARNESS_AUTO_COMMAND_GUARD", "").strip().lower() not in ("0", "false", "no", "off")
         self._auto_mode = False  # set True only for the duration of run_auto()
+        # End-of-turn memory proposals (interactive only). Agent memory-add queues
+        # here instead of writing; flushed as non-blocking Save/Skip cards after
+        # assistant_done. Never used under Autopilot (_auto_mode).
+        self._pending_memory_proposals: dict = {}
+        self._turn_memory_queue: list = []
         self._pending_command_approvals = {}
         self._approved_commands = set()  # command hashes the user one-click approved
         self._state = "idle"
@@ -809,7 +814,74 @@ class ConversationalSession(ToolDispatchMixin):
                 return True
             return False
 
+    def _flush_turn_memory_proposals(self) -> list:
+        """Move queued mid-turn memory-add hints into pending Save/Skip cards.
 
+        Called only after assistant_done on interactive turns. Caps at 3
+        proposals. Nothing is written to the store until accept_memory_proposal.
+        """
+        queued = list(self._turn_memory_queue or [])
+        self._turn_memory_queue = []
+        if not queued:
+            return []
+        import uuid as _uuid
+        out = []
+        # Exact-text dedupe against already-persisted entries and against
+        # proposals already pending from earlier turns.
+        existing_texts = {
+            (e.text or "").strip().lower() for e in self._memory.list()
+        }
+        for p in self._pending_memory_proposals.values():
+            existing_texts.add((p.get("text") or "").strip().lower())
+        for item in queued:
+            if len(out) >= 3:
+                break
+            text = (item.get("text") or "").strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in existing_texts:
+                continue
+            existing_texts.add(key)
+            prop_id = "memprop_" + _uuid.uuid4().hex[:12]
+            cat = (item.get("category") or "general").strip() or "general"
+            prop = {
+                "id": prop_id,
+                "text": text,
+                "category": cat,
+            }
+            self._pending_memory_proposals[prop_id] = prop
+            out.append(prop)
+        return out
+
+    def accept_memory_proposal(self, proposal_id: str) -> dict:
+        """Persist a pending end-of-turn memory proposal (source=agent)."""
+        prop = self._pending_memory_proposals.pop(proposal_id, None)
+        if not prop:
+            return {"ok": False, "error": "proposal not found"}
+        text = (prop.get("text") or "").strip()
+        if not text:
+            return {"ok": False, "error": "empty proposal"}
+        entry = self._memory.add(
+            text=text,
+            category=(prop.get("category") or "general").strip() or "general",
+            source="agent",
+        )
+        return {
+            "ok": True,
+            "id": entry.id,
+            "text": entry.text,
+            "category": entry.category,
+            "source": entry.source,
+            "created_at": entry.created_at,
+        }
+
+    def dismiss_memory_proposal(self, proposal_id: str) -> dict:
+        """Drop a pending end-of-turn memory proposal without writing."""
+        if proposal_id in self._pending_memory_proposals:
+            self._pending_memory_proposals.pop(proposal_id, None)
+            return {"ok": True}
+        return {"ok": False, "error": "proposal not found"}
 
     @property
     def durable(self) -> DurableState:
@@ -2319,7 +2391,12 @@ class ConversationalSession(ToolDispatchMixin):
                 
                 if ev.kind == "assistant_done":
                     self._turn_count += 1
+                    # Emit assistant_done first so the UI paints the final answer
+                    # before any non-blocking Save/Skip cards.
+                    yield ev
                     if self._auto_mode:
+                        # Full-auto: never propose memory (no human to Save/Skip).
+                        self._turn_memory_queue.clear()
                         # Full-auto mode: run synchronously to ensure sequential consistency
                         if self._auto_distill:
                             d = self._maybe_auto_distill()
@@ -2333,6 +2410,10 @@ class ConversationalSession(ToolDispatchMixin):
                             except Exception:
                                 pass
                     else:
+                        # Interactive: emit non-blocking memory Save/Skip cards
+                        # AFTER the final answer (never mid-tool-loop).
+                        for prop in self._flush_turn_memory_proposals():
+                            yield ConvEvent("memory_propose", prop)
                         # Interactive mode: background the work to keep the UI completely responsive
                         if self._auto_distill or self._wiki_orchestrate:
                             if not self._submit_swarm(self._run_distill_and_wiki_background, user_message):
@@ -2345,7 +2426,8 @@ class ConversationalSession(ToolDispatchMixin):
                                         "skipping background distill/wiki this turn."
                                     )
                                 })
-                yield ev
+                else:
+                    yield ev
         finally:
             self._history[0]["content"] = original_sys
             self._release_busy(busy_gen)
@@ -3795,6 +3877,7 @@ class ConversationalSession(ToolDispatchMixin):
                             r = execute_intent(
                                 _intent, state_dir=self.state_dir,
                                 session_id=self.harness_session_id or "",
+                                cwd=self.config.repo or None,
                                 on_delta=lambda wid, kind, text: _delta_q.put(
                                     ("delta", (wid, kind, text))),
                             )
@@ -4527,15 +4610,39 @@ class ConversationalSession(ToolDispatchMixin):
                     try:
                         op = act.memory_action
                         if op == "add":
-                            entry = self._memory.add(
-                                text=act.memory_content,
-                                category=act.memory_category or "general",
-                                source="agent"
-                            )
-                            warning = ""
-                            if self._memory.over_budget():
-                                warning = " WARNING: Durable memory is over the character budget (4000 chars). Old entries should be pruned."
-                            res_str = f"Successfully saved to memory with ID {entry.id}: '{entry.text}' (category: {entry.category}){warning}"
+                            # Never persist mid-turn. Autopilot: refuse. Interactive:
+                            # queue for a Save/Skip card after assistant_done.
+                            if self._auto_mode:
+                                res_str = (
+                                    "Memory add ignored: durable-memory proposals are "
+                                    "disabled in Autopilot (unattended). Use Settings > "
+                                    "Agent Memory for manual adds, or run interactively."
+                                )
+                            else:
+                                text = (act.memory_content or "").strip()
+                                cat = (act.memory_category or "general").strip() or "general"
+                                if not text:
+                                    raise ValueError("memory add requires content")
+                                # Dedupe against already-queued text this turn.
+                                already = any(
+                                    (q.get("text") or "").strip().lower() == text.lower()
+                                    for q in self._turn_memory_queue
+                                )
+                                if already:
+                                    res_str = (
+                                        f"Already queued for end-of-turn Save/Skip: '{text}' "
+                                        f"(category: {cat}). Not persisted yet."
+                                    )
+                                else:
+                                    self._turn_memory_queue.append({
+                                        "text": text,
+                                        "category": cat,
+                                    })
+                                    res_str = (
+                                        f"Queued for end-of-turn Save/Skip (not persisted yet): "
+                                        f"'{text}' (category: {cat}). The user will confirm after "
+                                        f"this turn finishes."
+                                    )
                         elif op == "remove":
                             ok = self._memory.remove(act.memory_id)
                             if ok:

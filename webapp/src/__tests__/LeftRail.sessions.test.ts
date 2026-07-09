@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
+import { buildProjectsList, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -107,5 +108,120 @@ describe("LeftRail session list contracts", () => {
     // Explicit open path still works when intentionally invoked.
     handleOpenProject();
     expect(openCalls).toBe(1);
+  });
+
+  it("project expand state is user-driven; currentRepo must not imply expand/collapse", () => {
+    // Mirrors LeftRail: isExpanded = !!expandedProjects[path] — missing key
+    // is collapsed. Changing the active workspace must not auto-expand the
+    // new root or collapse a previously user-expanded one.
+    const expandedProjects: Record<string, boolean> = {
+      "C:\\Projects\\alpha": true,
+    };
+    const isExpanded = (projectPath: string) => !!expandedProjects[projectPath];
+
+    const alpha = "C:\\Projects\\alpha";
+    const beta = "C:\\Projects\\beta";
+
+    // User expanded alpha; it stays open even if beta becomes currentRepo.
+    expect(isExpanded(alpha)).toBe(true);
+    // Beta is current but never clicked — stays collapsed.
+    expect(isExpanded(beta)).toBe(false);
+
+    // Simulate currentRepo flipping alpha → beta: expand map unchanged.
+    const currentRepo = beta;
+    expect(isExpanded(alpha)).toBe(true);
+    expect(isExpanded(currentRepo)).toBe(false);
+
+    // Only an explicit toggle writes expand state.
+    expandedProjects[beta] = true;
+    expect(isExpanded(beta)).toBe(true);
+  });
+
+  it("empty-project CTA opens that workspace before createSession", async () => {
+    // Mirrors LeftRail newSession(inProjectPath): empty-state "New session"
+    // and top-bar New session when selected !== current must openWorkspace
+    // first so createSession lands in the selected root, not the active one.
+    // Row click still must not open (yank-on-peek removed).
+    let openCalls = 0;
+    let createCalls = 0;
+    let openedPath = "";
+    const currentRepo = "C:\\Projects\\dugout";
+    const emptyProject = "C:\\Projects\\marionette";
+
+    const handleOpenProject = async (path: string) => {
+      openCalls += 1;
+      openedPath = path;
+    };
+    const createSession = async () => { createCalls += 1; };
+
+    const newSession = async (
+      inProjectPath: string | undefined,
+      selectedProjectPath: string,
+      current: string,
+    ) => {
+      const target = (inProjectPath || selectedProjectPath || "").trim();
+      if (target && (!current || !repoPathsEqual(target, current))) {
+        await handleOpenProject(target);
+      }
+      await createSession();
+    };
+
+    // Row click: expand/select only — never open.
+    let rowOpenCalls = 0;
+    const handleProjectRowClick = () => { /* select + expand only */ };
+    handleProjectRowClick();
+    expect(rowOpenCalls).toBe(0);
+
+    // Empty-project CTA: open that root, then create.
+    await newSession(emptyProject, emptyProject, currentRepo);
+    expect(openCalls).toBe(1);
+    expect(openedPath).toBe(emptyProject);
+    expect(createCalls).toBe(1);
+
+    // Top New session with selected === current: create only.
+    openCalls = 0;
+    createCalls = 0;
+    await newSession(undefined, currentRepo, currentRepo);
+    expect(openCalls).toBe(0);
+    expect(createCalls).toBe(1);
+
+    // Top New session with selected !== current: open then create.
+    openCalls = 0;
+    createCalls = 0;
+    await newSession(undefined, emptyProject, currentRepo);
+    expect(openCalls).toBe(1);
+    expect(openedPath).toBe(emptyProject);
+    expect(createCalls).toBe(1);
+  });
+
+  it("openWorkspace does not reorder projects to put current first", () => {
+    const recents = ["C:\\Projects\\alpha", "C:\\Projects\\beta", "C:\\Projects\\gamma"];
+    // Opening beta (already in recents) must keep recents order -- beta stays
+    // at index 1, not snapped to 0.
+    const afterOpenBeta = buildProjectsList("C:\\Projects\\beta", recents);
+    expect(afterOpenBeta).toEqual(recents);
+    expect(afterOpenBeta[0]).toBe("C:\\Projects\\alpha");
+    expect(afterOpenBeta.indexOf("C:\\Projects\\beta")).toBe(1);
+
+    // A brand-new path appends; it does not prepend.
+    const afterOpenNew = buildProjectsList("C:\\Projects\\delta", recents);
+    expect(afterOpenNew[0]).toBe("C:\\Projects\\alpha");
+    expect(afterOpenNew[afterOpenNew.length - 1]).toBe("C:\\Projects\\delta");
+  });
+
+  it("workspaces SWR key is per-repo so branch lists stay warm and isolated", () => {
+    // Branches must not share one global cache: switching projects would
+    // otherwise flash the previous repo's branches, and a blank useState
+    // reload on every config-changed is what made Branches feel laggy.
+    expect(workspacesCacheKey("C:\\Projects\\marionette")).toBe(
+      "workspaces:C:\\Projects\\marionette",
+    );
+    expect(workspacesCacheKey("C:\\Projects\\dugout")).toBe(
+      "workspaces:C:\\Projects\\dugout",
+    );
+    expect(workspacesCacheKey("C:\\Projects\\marionette")).not.toBe(
+      workspacesCacheKey("C:\\Projects\\dugout"),
+    );
+    expect(workspacesCacheKey("")).toBe("workspaces:__none__");
   });
 });

@@ -170,6 +170,34 @@ function dedupeFindings(arts: Artifact[]): FindingRow[] {
   return [...rows.values()].sort((a, b) => rank(a.art.type) - rank(b.art.type));
 }
 
+// A 5-worker swarm stores two ROUTING artifacts per task (created_by="router"
+// plus "router-fallback", sometimes "router-escalation"). Cost accounting already
+// ignores non-router rows; display should show ONE card per task — the final
+// choice that actually ran. Prefer escalation > fallback > router > other.
+function routingCreatedByRank(createdBy?: string): number {
+  switch (createdBy) {
+    case "router-escalation": return 3;
+    case "router-fallback": return 2;
+    case "router": return 1;
+    default: return 0;
+  }
+}
+
+function dedupeRouting(arts: Artifact[]): Artifact[] {
+  const groups = new Map<string, Artifact>();
+  for (const art of arts) {
+    const taskId = (art.task_id || "").trim();
+    const key = taskId
+      ? `task:${taskId}`
+      : `model:${(art.model || "").trim().toLowerCase()}`;
+    const existing = groups.get(key);
+    if (!existing || routingCreatedByRank(art.created_by) >= routingCreatedByRank(existing.created_by)) {
+      groups.set(key, art);
+    }
+  }
+  return [...groups.values()];
+}
+
 // A "dead run": the job reads complete, but every artifact it produced is a
 // failed verdict -- e.g. all workers fast-failed with no_model before doing any
 // work. Older Puppetmaster versions stitched these into COMPLETE, so the
@@ -459,7 +487,9 @@ export default function SwarmPane() {
       : jobPhase(j);
 
     const artifacts = jobArtifactList(j);
-    const routingArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() === "ROUTING");
+    const routingArts = dedupeRouting(
+      artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() === "ROUTING"),
+    );
     const streamArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() !== "ROUTING");
     const tasks = j.tasks || [];
     const routerModel = j.model || routingArts.find((a: Artifact) => a.model)?.model || "";
