@@ -25,7 +25,9 @@ def _stub_execute_intent(monkeypatch):
     from pmharness.bridge import BridgeResult
     import harness.session as sess
 
-    def fake_execute_intent(intent, *, state_dir=None, worker_mode="subprocess"):
+    def fake_execute_intent(intent, *, state_dir=None, worker_mode="subprocess", **_kwargs):
+        # Accept cwd/repo/session_id/on_delta so per-runner workspace pinning
+        # (and future kwargs) do not break this vision-only stub.
         return BridgeResult(
             job_id="job_fake", status="done", mode="analyze",
             num_artifacts=1, artifact_types=["finding"],
