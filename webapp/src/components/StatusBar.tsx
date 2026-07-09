@@ -126,7 +126,19 @@ export default function StatusBar({ config, jobCount, leftOpen, rightOpen, onTog
     api.getUsage()
       .then((data) => {
         if (data && data.session) {
-          setUsage(data.session);
+          // Belt-and-suspenders: a workspace switch rebuilds the pilot and can
+          // briefly report all-zero meters before the copy lands (or if an older
+          // backend omits the carry). Keep last-good spend rather than blanking
+          // the status-bar cluster on a zeros response.
+          setUsage((prev) => {
+            const next = data.session;
+            const nextZero =
+              (next.tokens_used ?? 0) === 0 && (next.est_cost_usd ?? 0) === 0;
+            const prevHadSpend =
+              !!prev && ((prev.tokens_used ?? 0) > 0 || (prev.est_cost_usd ?? 0) > 0);
+            if (nextZero && prevHadSpend) return prev;
+            return next;
+          });
         }
       })
       .catch((err) => console.error("Failed to load usage in StatusBar", err))

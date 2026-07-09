@@ -3,7 +3,8 @@ import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRig
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job, type Artifact } from "../lib/api";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
-import { readSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
+import { repoPathsEqual } from "../lib/pathNormalize";
+import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
   jobsRefresh: number;
@@ -131,7 +132,18 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [opening, setOpening] = useState(false);
   const codegraphByRepoRef = useRef<Record<string, string>>({});
 
-  const onSessionsLoaded = useCallback((sess: Session[]) => {
+  const currentRepoRef = useRef("");
+  // Roots whose per-repo sessions fetch has resolved at least once this boot
+  // (or was seeded from cache). Used so we never flash "No sessions" for a
+  // row whose list has not arrived yet.
+  const [sessionsResolvedRoots, setSessionsResolvedRoots] = useState<Record<string, true>>({});
+
+  const onSessionsLoaded = useCallback((sess: Session[], forRepo?: string) => {
+    // Stale-response guard: a late payload for a different root must not
+    // promote that root's active id into the conversation pane.
+    if (forRepo && currentRepoRef.current && !repoPathsEqual(forRepo, currentRepoRef.current)) {
+      return;
+    }
     const active = sess.find((s) => s.active);
     onSessionChange?.(active ? active.id : "");
   }, [onSessionChange]);
@@ -156,6 +168,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   );
 
   const currentRepo = workspaceInfo?.repo || "";
+  currentRepoRef.current = currentRepo;
 
   const {
     data: sessions = [],
@@ -165,10 +178,15 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     revalidate: revalidateSessions,
   } = useStaleWhileRevalidate<Session[]>(
     `sessions:${currentRepo || "__none__"}`,
-    () => api.sessions(),
+    () => api.sessions(currentRepo || undefined),
     {
       enabled: !!currentRepo,
-      onSuccess: onSessionsLoaded,
+      onSuccess: (sess) => {
+        if (currentRepo) {
+          setSessionsResolvedRoots((prev) => ({ ...prev, [currentRepo]: true }));
+        }
+        onSessionsLoaded(sess, currentRepo);
+      },
     },
   );
 
@@ -374,15 +392,55 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const rawRecents = workspaceInfo?.recents || [];
   const projects = Array.from(new Set([currentRepo, ...rawRecents])).filter(Boolean);
 
+  // Eager per-root lists: prefetch sessions for EVERY project in the rail so
+  // non-active dirs show their rows without waiting for a click. Seeds the
+  // SWR cache under sessions:${path}; projectSessionsFor always reads that.
+  useEffect(() => {
+    let cancelled = false;
+    const roots = projects.filter(Boolean);
+    if (roots.length === 0) return;
+    void Promise.all(
+      roots.map(async (root) => {
+        try {
+          const rows = await api.sessions(root);
+          if (cancelled) return;
+          writeSWRCache(`sessions:${root}`, rows);
+          setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
+          // Active-repo hook already owns promotion; only seed cache here.
+        } catch {
+          if (!cancelled) {
+            setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
+          }
+        }
+      }),
+    );
+    return () => { cancelled = true; };
+    // projects is rebuilt each render from workspaceInfo; join for stable dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects.join("\0")]);
+
   const projectSessionsFor = (projectPath: string): Session[] => {
-    const live = activeSessions.filter((s) => s.repo === projectPath);
-    if (live.length > 0) return live;
-    if (projectPath === selectedProjectPath && (panelSwitching || opening)) {
-      const cached = readSWRCache<Session[]>(`sessions:${projectPath}`);
-      if (cached?.length) return cached.filter((s) => !s.archived);
+    // Always prefer the per-root cache -- never derive other rows from the
+    // active-repo list (that caused empty/wrong lists under slash/case drift).
+    // Trust cache contents: they were fetched with ?repo= for this root, so
+    // the backend already applied visibility (including legacy orphans).
+    const cached = readSWRCache<Session[]>(`sessions:${projectPath}`);
+    if (cached) {
+      return cached.filter((s) => !s.archived);
     }
-    return live;
+    // Fallback while the active-repo hook's live data is the only source.
+    if (repoPathsEqual(projectPath, currentRepo)) {
+      return activeSessions.filter((s) => {
+        const root = s.workspace_root || s.repo || "";
+        // Empty root = legacy orphan visible everywhere (backend contract).
+        return !root || repoPathsEqual(root, projectPath);
+      });
+    }
+    return [];
   };
+
+  const sessionsResolvedFor = (projectPath: string): boolean =>
+    !!sessionsResolvedRoots[projectPath] || readSWRCache<Session[]>(`sessions:${projectPath}`) !== undefined;
 
   const codegraphStatusFor = (projectPath: string, isCurrentActive: boolean) => {
     if (isCurrentActive && workspaceInfo?.codegraph_status) return workspaceInfo.codegraph_status;
@@ -458,16 +516,16 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     });
   };
 
-  const handleProjectRowClick = (projectPath: string, isActive: boolean, isExpanded: boolean) => {
+  const handleProjectRowClick = (projectPath: string, isExpanded: boolean) => {
+    // Expand/collapse + highlight only. Never open the workspace from a row
+    // click -- that used to yank the active dir just to peek at another root's
+    // sessions. Activation is session click (switchSession may cross-repo) or
+    // the explicit Open folder control.
     selectProject(projectPath);
-    if (isActive) {
-      setExpandedProjects(prev => ({
-        ...prev,
-        [projectPath]: !isExpanded
-      }));
-    } else {
-      handleOpenProject(projectPath);
-    }
+    setExpandedProjects((prev) => ({
+      ...prev,
+      [projectPath]: !isExpanded,
+    }));
   };
 
   return (
@@ -501,8 +559,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         <div className="space-y-1">
           {projects.map((projectPath) => {
             const basename = getWorkspaceBasename(projectPath) || "Untitled Project";
-            const isCurrentActive = !!(workspaceInfo?.repo && projectPath === workspaceInfo.repo);
-            const isSelected = projectPath === selectedProjectPath;
+            const isCurrentActive = !!(workspaceInfo?.repo && repoPathsEqual(projectPath, workspaceInfo.repo));
+            const isSelected = repoPathsEqual(projectPath, selectedProjectPath);
             const isExpanded = expandedProjects[projectPath] !== undefined 
               ? expandedProjects[projectPath] 
               : isCurrentActive;
@@ -512,12 +570,13 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             const count = projectSessions.length;
             const cgStatus = codegraphStatusFor(projectPath, isCurrentActive);
             const showCgBadge = !!cgStatus && (isCurrentActive || isSelected);
+            const sessionsReady = sessionsResolvedFor(projectPath);
             
             return (
               <div key={projectPath} className={`rounded transition min-w-0 overflow-hidden ${isSelected ? "bg-panel2/50 border-l-2 border-accent" : "hover:bg-panel2/20"}`}>
                 {/* Project Row */}
                 <div
-                  onClick={() => handleProjectRowClick(projectPath, isCurrentActive, isExpanded)}
+                  onClick={() => handleProjectRowClick(projectPath, isExpanded)}
                   onContextMenu={(e) => handleProjectContextMenu(e, projectPath)}
                   className="flex items-center gap-1.5 px-2 py-1.5 cursor-pointer select-none group"
                   title={projectPath}
@@ -569,13 +628,18 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
                 {/* Sessions (Expandable inline) */}
                 {isExpanded && (
-                  <div className="pl-4 pr-1 pb-1.5 space-y-0.5 border-l border-edge/30 ml-3.5 mt-0.5 min-w-0 overflow-hidden">
+                  <div className={`pl-4 pr-1 pb-1.5 space-y-0.5 border-l border-edge/30 ml-3.5 mt-0.5 min-w-0 overflow-hidden ${panelOpacityClass(panelSwitching && isSelected)}`}>
                     {projectSessions.length === 0 ? (
-                      panelSwitching && isSelected ? (
-                        <div className="text-[11px] text-faint italic px-2 py-1 flex items-center gap-1.5">
-                          <Loader2 size={10} className="animate-spin shrink-0" />
-                          Loading sessions...
-                        </div>
+                      !sessionsReady || (panelSwitching && isSelected) ? (
+                        // Never flash "No sessions" before the per-root fetch
+                        // resolves -- show nothing (or a spinner while the
+                        // selected row is mid-transition).
+                        panelSwitching && isSelected ? (
+                          <div className="text-[11px] text-faint italic px-2 py-1 flex items-center gap-1.5">
+                            <Loader2 size={10} className="animate-spin shrink-0" />
+                            Loading sessions...
+                          </div>
+                        ) : null
                       ) : (
                         <div className="text-[11px] text-faint italic px-2 py-1">No sessions</div>
                       )

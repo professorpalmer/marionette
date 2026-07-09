@@ -421,7 +421,12 @@ export const api = {
   switchWorkspace: (name: string) => postJSON("/api/workspaces/switch", { name }),
   createWorkspace: (name: string, branch?: string) =>
     postJSON("/api/workspaces/create", { name, branch }),
-  sessions: () => getJSON<Session[]>("/api/sessions"),
+  sessions: (repoRoot?: string) => {
+    const path = repoRoot
+      ? `/api/sessions?repo=${encodeURIComponent(repoRoot)}`
+      : "/api/sessions";
+    return getJSON<Session[]>(path);
+  },
   sessionTranscript: (session: string) => getJSON<{ history: any[]; display?: any[]; job_ids?: string[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
   getSessionState: () => getJSON<SessionState>(withToken("/api/session/state")),
   interruptSession: () => postJSON<{ ok: boolean }>("/api/session/interrupt", {}),

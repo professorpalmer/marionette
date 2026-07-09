@@ -166,4 +166,44 @@ describe("StatusBar usage pills", () => {
     expect(screen.queryByText("session")).not.toBeInTheDocument();
     expect(screen.queryByText("~$3.17")).not.toBeInTheDocument();
   });
+
+  it("keeps last-good spend when a later poll returns all zeros", async () => {
+    mockGetUsage
+      .mockResolvedValueOnce({
+        session: {
+          tokens_used: 1500,
+          est_cost_usd: 0.05,
+          driver: "anthropic:claude-sonnet",
+          price_in: 3,
+          price_out: 15,
+        },
+        jobs: [],
+      })
+      .mockResolvedValue({
+        session: {
+          tokens_used: 0,
+          est_cost_usd: 0,
+          driver: "anthropic:claude-sonnet",
+          price_in: 3,
+          price_out: 15,
+        },
+        jobs: [],
+      });
+
+    const { rerender } = render(<StatusBar {...statusBarProps} jobCount={0} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("~$0.05")).toBeInTheDocument();
+    });
+
+    // Bump jobCount to re-trigger the usage effect (same as a workspace event).
+    rerender(<StatusBar {...statusBarProps} jobCount={1} />);
+
+    await waitFor(() => {
+      expect(mockGetUsage.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    // Cluster must still show the prior non-zero spend.
+    expect(screen.getByText("~$0.05")).toBeInTheDocument();
+    expect(screen.getByText("1.5k tok")).toBeInTheDocument();
+  });
 });

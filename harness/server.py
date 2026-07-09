@@ -1097,12 +1097,96 @@ _mcp = McpManager()
 # Serialize pilot rebinds so a /api/pilot swap and a workspace-switch rebuild
 # cannot interleave their history-copy/rebind steps and leave a torn _pilot.
 _pilot_swap_lock = threading.Lock()
+# One-shot resume latch for self-edit backend restarts. Set ONLY by
+# /api/session/persist or /api/restart (the explicit restart path); never by a
+# trailing user turn alone. Survives process respawn via a state-dir flag file
+# so the fresh process can report resume_pending exactly once.
+_resume_latch = False
 from .pty_manager import PtyManager
 _pty = PtyManager()
 _pilot._mcp = _mcp
 _pilot._session_store = _sessions
 _init_platform_lock()
 _seed_agentic_catalog()
+
+
+def _resume_latch_path() -> str:
+    return os.path.join(_cfg.state_dir or _tf.gettempdir(), ".resume_latch")
+
+
+def _set_resume_latch() -> None:
+    """Arm the one-shot auto-resume signal for the next process / state poll."""
+    global _resume_latch
+    _resume_latch = True
+    try:
+        p = _resume_latch_path()
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
+            f.write("1\n")
+        restrict_to_owner(p)
+    except Exception as e:
+        _diag("server.resume_latch_set", e)
+
+
+def _clear_resume_latch() -> None:
+    """Consume the latch (in-memory + on disk) so a later view cannot re-fire."""
+    global _resume_latch
+    _resume_latch = False
+    try:
+        p = _resume_latch_path()
+        if os.path.exists(p):
+            os.unlink(p)
+    except Exception as e:
+        _diag("server.resume_latch_clear", e)
+
+
+def _load_resume_latch() -> None:
+    """Adopt a latch left by a prior process (self-edit restart continuity)."""
+    global _resume_latch
+    try:
+        p = _resume_latch_path()
+        if os.path.exists(p):
+            with open(p, encoding="utf-8", errors="replace") as f:
+                _resume_latch = f.read().strip() == "1"
+            if not _resume_latch:
+                _clear_resume_latch()
+    except Exception as e:
+        _diag("server.resume_latch_load", e)
+        _resume_latch = False
+
+
+def _consume_resume_pending(idle: bool) -> bool:
+    """True once when the latch is armed and the pilot is idle; then clear it."""
+    global _resume_latch
+    if not (_resume_latch and idle):
+        return False
+    _clear_resume_latch()
+    return True
+
+
+def _copy_pilot_meters(old_pilot: Any, new_pilot: Any) -> None:
+    """Carry process-lifetime cost meters across a pilot rebuild/swap.
+
+    /api/usage reads these off the live singleton; workspace open and model
+    swap rebuild ConversationalSession and would otherwise zero the status-bar
+    spend cluster. Intent is 'since last open' for this process -- not per
+    workspace. Best-effort: missing attrs never raise.
+    """
+    for attr in (
+        "_tokens_used",
+        "_tokens_in",
+        "_tokens_out",
+        "_tokens_cached",
+        "_worker_cost_usd",
+        "_worker_tokens_in",
+        "_worker_tokens_out",
+    ):
+        try:
+            setattr(new_pilot, attr, getattr(old_pilot, attr, getattr(new_pilot, attr, 0)))
+        except Exception:
+            pass
+
+
+_load_resume_latch()
 
 
 def _reap_stale_swarms_on_boot() -> None:
@@ -1221,10 +1305,12 @@ def _rebuild_pilot_and_session():
     with _pilot_swap_lock:
         old_history = _pilot._history
         old_auto_distill = getattr(_pilot, "_auto_distill", False)
+        old_pilot = _pilot
         _session = new_session
         _pilot = new_pilot
         _pilot._history = old_history
         _pilot._auto_distill = old_auto_distill
+        _copy_pilot_meters(old_pilot, _pilot)
         _pilot._mcp = _mcp
         _pilot._session_store = _sessions
         _sync_pilot_session_id()
@@ -1864,9 +1950,13 @@ class Handler(BaseHTTPRequestHandler):
             # Flush the live transcript to disk on demand. Called right before a
             # backend restart (self-edit apply) so the fresh process restores the
             # exact conversation state, including any unanswered user turn.
+            # Also arms the one-shot resume latch so the post-restart UI can
+            # auto-continue -- without treating every trailing user turn as a
+            # resume signal on mere session view.
             try:
                 if _sessions.active:
                     save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
+                _set_resume_latch()
                 return self._send(200, json.dumps({"ok": True}))
             except Exception as e:
                 return self._send(500, json.dumps({"ok": False, "error": str(e)}))
@@ -1880,6 +1970,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if _sessions.active:
                     save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
+                _set_resume_latch()
             except Exception as e:
                 _diag("server.self_edit_restart_persist", e)
             self._send(200, json.dumps({"ok": True, "restarting": True}))
@@ -3156,15 +3247,15 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            # resume_pending: the transcript ends on an unanswered user turn while
-            # the pilot is idle -- i.e. a reply is owed but no turn is running. This
-            # is the signal a client uses to auto-continue after a backend restart
-            # (self-edit apply) so an in-flight turn is never silently dropped.
+            # resume_pending: explicit one-shot latch armed by the self-edit
+            # restart path (/api/session/persist or /api/restart), AND idle.
+            # NOT merely "transcript ends on a user turn" -- that heuristic
+            # ghost-resumed past sessions on mere open/switch.
             _state = _pilot.state()
             return self._send(200, json.dumps({
                 "state": _state,
                 "pending_swarms": _pilot.has_pending_swarms(),
-                "resume_pending": bool(_state == "idle" and _pilot.has_pending_user_turn()),
+                "resume_pending": _consume_resume_pending(_state == "idle"),
             }))
         if u.path == "/api/session/context_at":
             if self._guard():
@@ -4352,8 +4443,13 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         if u.path == "/api/sessions":
+            # Optional ?repo=<path> lists sessions for that root WITHOUT switching
+            # the active workspace (LeftRail prefetches every project row).
+            q = parse_qs(u.query)
+            repo_override = (q.get("repo", [""])[0] or "").strip()
+            root = repo_override or (_cfg.repo or "")
             return self._send(200, json.dumps(_sessions.list(
-                workspace_root=_cfg.repo or "",
+                workspace_root=root,
                 state_dir=_sessions_state_dir(),
             )))
         if u.path == "/api/auto":
@@ -4481,12 +4577,14 @@ class Handler(BaseHTTPRequestHandler):
             with _pilot_swap_lock:
                 old_history = getattr(_pilot, "_history", None)
                 old_auto_distill = getattr(_pilot, "_auto_distill", False)
+                old_pilot = _pilot
                 _cfg.driver = model
                 _apply_model_context_window()
                 _pilot = ConversationalSession(_cfg)
                 if old_history is not None:
                     _pilot._history = old_history
                 _pilot._auto_distill = old_auto_distill
+                _copy_pilot_meters(old_pilot, _pilot)
                 _pilot._mcp = _mcp
             # Remember this model for the current workspace so switching dirs and
             # coming back restores it.

@@ -685,9 +685,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         .then((res) => {
           if (res) {
             setBackendPendingSwarms(res.pending_swarms);
-            // After a backend restart (self-edit apply), the transcript reloads
-            // with an unanswered user turn. Auto-continue it so the conversation
-            // survives the swap -- the Hermes-style seamless self-edit loop.
+            // resume_pending is an EXPLICIT one-shot latch from the self-edit
+            // restart path (backend /api/session/persist or /api/restart) -- NOT
+            // "transcript ends on a user turn". Only schedule auto-resume when
+            // the freshly-fetched state says so; mere session open/switch must
+            // never ghost-continue a past unanswered message.
             if (res.resume_pending) {
               setSafeTimeout(() => resumeTriggerRef.current(), 300);
             }

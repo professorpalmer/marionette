@@ -86,6 +86,36 @@ def test_sessions_filtered_by_workspace_two_roots(tmp_path):
         httpd.shutdown()
 
 
+def test_sessions_repo_query_lists_without_switching_workspace(tmp_path):
+    """GET /api/sessions?repo= lists that root without changing the active workspace."""
+    from urllib.parse import quote
+
+    httpd, port, srv = _server()
+    repo_a = tmp_path / "repo_a"
+    repo_b = tmp_path / "repo_b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    _setup_server(tmp_path, srv)
+
+    try:
+        meta_a = srv._sessions.create("A", repo=str(repo_a), workspace_root=str(repo_a))
+        meta_b = srv._sessions.create("B", repo=str(repo_b), workspace_root=str(repo_b))
+
+        srv._cfg.repo = str(repo_a)
+        active_before = srv._cfg.repo
+
+        resp = _get(port, f"/api/sessions?repo={quote(str(repo_b))}")
+        sessions = json.loads(resp.read().decode())
+        assert {s["id"] for s in sessions} == {meta_b["id"]}
+        assert meta_a["id"] not in {s["id"] for s in sessions}
+
+        # Active workspace must be unchanged.
+        assert srv._cfg.repo == active_before
+        assert srv._cfg.repo == str(repo_a)
+    finally:
+        httpd.shutdown()
+
+
 def test_legacy_session_without_stored_root_uses_transcript_cwd(tmp_path):
     store = SessionStore(str(tmp_path / "sessions.json"))
     repo_a = tmp_path / "repo_a"

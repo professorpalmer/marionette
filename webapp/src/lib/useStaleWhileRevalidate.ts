@@ -116,3 +116,13 @@ export function readSWRCache<T>(key: string): T | undefined {
   const hit = cache.get(key);
   return hit ? (hit.data as T) : undefined;
 }
+
+/** Seed or overwrite the module cache (prefetch without a hook subscription). */
+export function writeSWRCache<T>(key: string, data: T): void {
+  cache.set(key, { data, key });
+}
+
+/** Test helper: drop all cached entries. */
+export function clearSWRCache(): void {
+  cache.clear();
+}
