@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import urllib.error
 import urllib.request
@@ -13,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from harness.session_runners import LeaseExhaustedError, SessionRunnerRegistry
+from harness.sessions import SessionStore, load_transcript
 
 
 def _busy_runner() -> SimpleNamespace:
@@ -116,16 +118,27 @@ def test_switch_view_succeeds_while_both_runners_busy():
         httpd.shutdown()
 
 
-def test_switch_returns_409_when_lease_exhausted():
-    """Switch to a new session when every lease slot is busy -> 409."""
+def test_switch_returns_409_when_lease_exhausted(tmp_path):
+    """Switch to a new session when every lease slot is busy -> 409.
+
+    Must roll back SessionStore.active and _cfg.repo (unlike a successful
+    switch, which advances both before attach).
+    """
     srv, httpd, port = _spin_server()
     old_runners = srv._runners
     old_pilot = srv._pilot
+    old_repo = srv._cfg.repo
+    old_env_repo = os.environ.get("HARNESS_REPO")
     try:
+        repo_a = tmp_path / "a"
+        repo_c = tmp_path / "c"
+        repo_a.mkdir()
+        repo_c.mkdir()
+
         reg = SessionRunnerRegistry(max_concurrent_sessions=2)
-        a = srv._sessions.create(title="A")
-        b = srv._sessions.create(title="B")
-        c = srv._sessions.create(title="C")
+        a = srv._sessions.create(title="A", repo=str(repo_a), workspace_root=str(repo_a))
+        b = srv._sessions.create(title="B", repo=str(repo_a), workspace_root=str(repo_a))
+        c = srv._sessions.create(title="C", repo=str(repo_c), workspace_root=str(repo_c))
         sid_a, sid_b, sid_c = a["id"], b["id"], c["id"]
 
         runner_a = _busy_runner()
@@ -136,20 +149,119 @@ def test_switch_returns_409_when_lease_exhausted():
         srv._runners = reg
         srv._pilot = runner_a
         srv._sessions.switch(sid_a)
+        srv._cfg.repo = str(repo_a)
+        os.environ["HARNESS_REPO"] = str(repo_a)
 
         # Target C is not in the registry; creating it would need a free slot.
         with pytest.raises(urllib.error.HTTPError) as ei:
             _post(port, "/api/sessions/switch", {"id": sid_c}, srv._TOKEN)
         assert ei.value.code == 409
         err = json.loads(ei.value.read().decode())
-        assert "lease" in (err.get("error") or "").lower() or err.get("code") == "lease_exhausted"
+        assert err.get("code") == "lease_exhausted" or "lease" in (err.get("error") or "").lower()
 
         assert set(reg.ids()) == {sid_a, sid_b}
         assert reg.get(sid_c) is None
+        # Rollback: store + repo must not stay pointed at the failed target.
+        assert srv._sessions.active == sid_a
+        assert srv._cfg.repo == str(repo_a)
+        assert os.environ.get("HARNESS_REPO") == str(repo_a)
+        assert srv._pilot is runner_a
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._cfg.repo = old_repo
+        if old_env_repo is None:
+            os.environ.pop("HARNESS_REPO", None)
+        else:
+            os.environ["HARNESS_REPO"] = old_env_repo
+        httpd.shutdown()
+
+
+def test_create_returns_409_and_rolls_back_when_lease_exhausted():
+    """Create must not leave SessionStore.active on an unattached session."""
+    srv, httpd, port = _spin_server()
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    try:
+        reg = SessionRunnerRegistry(max_concurrent_sessions=2)
+        a = srv._sessions.create(title="A")
+        b = srv._sessions.create(title="B")
+        sid_a, sid_b = a["id"], b["id"]
+
+        runner_a = _busy_runner()
+        runner_b = _busy_runner()
+        reg.get_or_create(sid_a, lambda: runner_a)
+        reg.get_or_create(sid_b, lambda: runner_b)
+        reg.set_active_view(sid_a)
+        srv._runners = reg
+        srv._pilot = runner_a
+        srv._sessions.switch(sid_a)
+
+        before_ids = {s["id"] for s in srv._sessions.list()}
+
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _post(port, "/api/sessions/create", {"title": "C"}, srv._TOKEN)
+        assert ei.value.code == 409
+        err = json.loads(ei.value.read().decode())
+        assert err.get("code") == "lease_exhausted" or "lease" in (err.get("error") or "").lower()
+
+        after_ids = {s["id"] for s in srv._sessions.list()}
+        assert after_ids == before_ids
+        assert srv._sessions.active == sid_a
+        assert set(reg.ids()) == {sid_a, sid_b}
+        assert srv._pilot is runner_a
     finally:
         srv._runners = old_runners
         srv._pilot = old_pilot
         httpd.shutdown()
+
+
+def test_checkpoint_binds_to_turn_session_not_active_view(tmp_path):
+    """Mid-turn checkpoint after a view switch must write A's transcript, not B's."""
+    import harness.server as srv
+
+    old_sessions = srv._sessions
+    old_pilot = srv._pilot
+    old_cfg_state = srv._cfg.state_dir
+    old_cfg_repo = srv._cfg.repo
+    try:
+        state_dir = str(tmp_path)
+        store = SessionStore(str(tmp_path / "harness_sessions.json"))
+        a = store.create(title="A")
+        b = store.create(title="B")
+        sid_a, sid_b = a["id"], b["id"]
+        store.switch(sid_a)
+
+        marker_a = {"history": [{"role": "assistant", "content": "from-A"}], "display": []}
+        marker_b = {"history": [{"role": "assistant", "content": "from-B"}], "display": []}
+
+        pilot_a = SimpleNamespace(
+            harness_session_id=sid_a,
+            export_transcript_data=lambda: marker_a,
+        )
+        pilot_b = SimpleNamespace(
+            harness_session_id=sid_b,
+            export_transcript_data=lambda: marker_b,
+        )
+
+        srv._sessions = store
+        srv._cfg.state_dir = state_dir
+        # Simulate: turn started on A, then UI switched active view to B.
+        turn_ctx = {"session_id": sid_a, "pilot": pilot_a}
+        store.switch(sid_b)
+        srv._pilot = pilot_b
+
+        srv._checkpoint_transcript(turn_ctx)
+
+        loaded_a = load_transcript(state_dir, sid_a)
+        loaded_b = load_transcript(state_dir, sid_b)
+        assert loaded_a == marker_a
+        assert loaded_b == []  # B must not be overwritten by A's checkpoint
+    finally:
+        srv._sessions = old_sessions
+        srv._pilot = old_pilot
+        srv._cfg.state_dir = old_cfg_state
+        srv._cfg.repo = old_cfg_repo
 
 
 def test_workspace_open_returns_409_when_lease_exhausted(tmp_path):

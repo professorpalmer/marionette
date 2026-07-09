@@ -2548,6 +2548,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps({"ok": ok}))
         if path == "/api/sessions/create":
             _save_active_transcript()
+            # Snapshot so a lease-exhausted attach can roll back without leaving
+            # the store pointed at an unattached session.
+            prev_active = _sessions.active
             title = body.get("title") or "New session"
             repo = _cfg.repo or ""
             branch = ""
@@ -2579,6 +2582,15 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     _pilot.load_history([])
                 except LeaseExhaustedError as e:
+                    try:
+                        _sessions.delete(sid)
+                    except Exception as roll_e:
+                        _diag("server.session_create_lease_delete", roll_e)
+                    if prev_active:
+                        try:
+                            _sessions.switch(prev_active)
+                        except Exception as roll_e:
+                            _diag("server.session_create_lease_rollback", roll_e)
                     return self._send(409, json.dumps({
                         "error": str(e) or "session runner lease exhausted",
                         "code": "lease_exhausted",
@@ -2594,6 +2606,10 @@ class Handler(BaseHTTPRequestHandler):
             # executing under the lease. Only LeaseExhaustedError blocks.
             target_id = (body.get("id") or "").strip()
             _save_active_transcript()
+            # Snapshot so a lease-exhausted attach can roll back active + repo.
+            prev_active = _sessions.active
+            prev_repo = _cfg.repo
+            prev_env_repo = os.environ.get("HARNESS_REPO")
             res = _sessions.switch(target_id)
             if res.get("ok") and _sessions.active:
                 target_sess = None
@@ -2627,6 +2643,17 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     _attach_view(_sessions.active)
                 except LeaseExhaustedError as e:
+                    if prev_active:
+                        try:
+                            _sessions.switch(prev_active)
+                        except Exception as roll_e:
+                            _diag("server.session_switch_lease_rollback", roll_e)
+                    if _cfg.repo != prev_repo:
+                        _cfg.repo = prev_repo
+                        if prev_env_repo is None:
+                            os.environ.pop("HARNESS_REPO", None)
+                        else:
+                            os.environ["HARNESS_REPO"] = prev_env_repo
                     return self._send(409, json.dumps({
                         "error": str(e) or "session runner lease exhausted",
                         "code": "lease_exhausted",
@@ -4682,7 +4709,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         from .hooks import run_hooks
-        ctx = {"session_id": _sessions.active or "", "prompt": prompt}
+        # Bind turn identity before any view switch can reassign globals.
+        turn_pilot = _pilot
+        turn_sid = _sessions.active or getattr(turn_pilot, "harness_session_id", "") or ""
+        ctx = {"session_id": turn_sid, "prompt": prompt, "pilot": turn_pilot}
         run_hooks("preRun", ctx)
         gen = _session.run(prompt, images=images or None)
         try:
@@ -4711,10 +4741,13 @@ class Handler(BaseHTTPRequestHandler):
             _maybe_refresh_codegraph(_cfg.repo)
 
         from .hooks import run_hooks
-        ctx = {"session_id": _sessions.active or "", "objective": objective}
+        # Bind turn identity before any view switch can reassign globals.
+        turn_pilot = _pilot
+        turn_sid = _sessions.active or getattr(turn_pilot, "harness_session_id", "") or ""
+        ctx = {"session_id": turn_sid, "objective": objective, "pilot": turn_pilot}
         run_hooks("preRun", ctx)
         budget = AutoBudget.from_env()
-        gen = _pilot.run_auto(objective, budget)
+        gen = turn_pilot.run_auto(objective, budget)
         last_ckpt = time.monotonic()
 
         def _maybe_checkpoint(ev):
@@ -4723,10 +4756,10 @@ class Handler(BaseHTTPRequestHandler):
             # result, else on a 2s throttle, so a crash mid governor-loop can't
             # lose the last chunk of transcript before _finalize_turn runs.
             if ev.kind in _CHECKPOINT_KINDS:
-                _checkpoint_transcript()
+                _checkpoint_transcript(ctx)
                 last_ckpt = time.monotonic()
             elif time.monotonic() - last_ckpt >= 2.0:
-                _checkpoint_transcript()
+                _checkpoint_transcript(ctx)
                 last_ckpt = time.monotonic()
 
         try:
@@ -4951,14 +4984,17 @@ class Handler(BaseHTTPRequestHandler):
             return
  
         from .hooks import run_hooks
-        ctx = {"session_id": _sessions.active or "", "message": message}
+        # Bind turn identity before any view switch can reassign globals.
+        turn_pilot = _pilot
+        turn_sid = _sessions.active or getattr(turn_pilot, "harness_session_id", "") or ""
+        ctx = {"session_id": turn_sid, "message": message, "pilot": turn_pilot}
         run_hooks("preRun", ctx)
         # Detach != cancel: if the client closes the EventSource mid-turn we keep
         # draining send() so its finally releases _busy. Closing the generator
         # early (old behavior) aborted the turn via GeneratorExit; cancel() on
         # BrokenPipe (auto path) stopped the governor for a mere view switch.
         # Explicit Stop still uses /api/session/interrupt.
-        gen = _pilot.send(message, images=images or None, plan=plan, resume=resume)
+        gen = turn_pilot.send(message, images=images or None, plan=plan, resume=resume)
         last_ckpt = time.monotonic()
 
         def _maybe_checkpoint(ev):
@@ -4967,10 +5003,10 @@ class Handler(BaseHTTPRequestHandler):
             # action result was just appended to history, else on a 2s throttle
             # so a mid-turn crash can't lose the last chunk of transcript.
             if ev.kind in _CHECKPOINT_KINDS:
-                _checkpoint_transcript()
+                _checkpoint_transcript(ctx)
                 last_ckpt = time.monotonic()
             elif time.monotonic() - last_ckpt >= 2.0:
-                _checkpoint_transcript()
+                _checkpoint_transcript(ctx)
                 last_ckpt = time.monotonic()
 
         try:
@@ -4982,7 +5018,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             # After a chat turn streams its events, also drain ready swarm results
             # (drop frames if the UI already detached).
-            for ev in _pilot.drain_swarm_results():
+            for ev in turn_pilot.drain_swarm_results():
                 _maybe_checkpoint(ev)
                 if detached:
                     continue
@@ -5002,15 +5038,28 @@ class Handler(BaseHTTPRequestHandler):
 _CHECKPOINT_KINDS = frozenset({"action_result", "swarm_result"})
 
 
-def _checkpoint_transcript() -> None:
-    """Persist the CURRENT transcript mid-stream so a hard crash before
+def _checkpoint_transcript(ctx=None) -> None:
+    """Persist the turn's transcript mid-stream so a hard crash before
     _finalize_turn() doesn't lose the in-flight turn. Mirrors the transcript step
     of _finalize_turn (no postRun hooks) and is fully exception-isolated: it must
-    never break the SSE stream or take the handler thread down."""
+    never break the SSE stream or take the handler thread down.
+
+    Prefer the turn-bound session_id/pilot from ``ctx`` (captured at stream start)
+    so a mid-turn view switch cannot overwrite the newly active session's file.
+    """
     try:
-        if _sessions.active:
+        sid = ""
+        pilot = None
+        if ctx:
+            sid = (ctx.get("session_id") or "") if isinstance(ctx, dict) else ""
+            pilot = ctx.get("pilot") if isinstance(ctx, dict) else None
+        if not pilot:
+            pilot = _pilot
+        if not sid:
+            sid = getattr(pilot, "harness_session_id", "") or (_sessions.active or "")
+        if sid and pilot is not None:
             save_transcript(_cfg.state_dir or _tf.gettempdir(),
-                            _sessions.active, _pilot.export_transcript_data())
+                            sid, pilot.export_transcript_data())
     except Exception as e:
         import sys
         print(f"[transcript checkpoint error] {e!r}", file=sys.stderr)
@@ -5022,7 +5071,11 @@ def _finalize_turn(ctx) -> None:
     request handler thread down. The turn is already over for the client when the
     stream ends; a serialization error in export_transcript_data() or a misbehaving
     hook must be logged, never propagated. This is the finish-path hardening for the
-    "backend dies right when the response finishes" class of failure."""
+    "backend dies right when the response finishes" class of failure.
+
+    Prefer turn-bound session_id/pilot from ``ctx`` so a mid-turn view switch
+    cannot overwrite the newly active session's transcript.
+    """
     try:
         from .hooks import run_hooks
         run_hooks("postRun", ctx)
@@ -5030,9 +5083,18 @@ def _finalize_turn(ctx) -> None:
         import sys
         print(f"[postRun hook error] {e!r}", file=sys.stderr)
     try:
-        if _sessions.active:
+        sid = ""
+        pilot = None
+        if ctx and isinstance(ctx, dict):
+            sid = ctx.get("session_id") or ""
+            pilot = ctx.get("pilot")
+        if not pilot:
+            pilot = _pilot
+        if not sid:
+            sid = getattr(pilot, "harness_session_id", "") or (_sessions.active or "")
+        if sid and pilot is not None:
             save_transcript(_cfg.state_dir or _tf.gettempdir(),
-                            _sessions.active, _pilot.export_transcript_data())
+                            sid, pilot.export_transcript_data())
     except Exception as e:
         import sys
         print(f"[transcript persist error] {e!r}", file=sys.stderr)
