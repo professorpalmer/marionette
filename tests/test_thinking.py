@@ -56,21 +56,21 @@ class _ThinkingScriptedPilot:
         return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
 
 
-def test_conversation_emits_thinking_event_when_present():
+def test_conversation_does_not_emit_thinking_event_when_present():
+    # Post-answer reasoning UI was removed: even when the pilot JSON includes
+    # a thinking field, we never emit a ConvEvent("thinking", ...) -- the
+    # answer is enough and streaming would otherwise paint reasoning after it.
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     s = ConversationalSession(cfg)
     s.pilot = _ThinkingScriptedPilot(with_thinking=True)
     events = list(s.send("Test thinking"))
-    
-    # Find thinking event
+
     thinking_events = [e for e in events if e.kind == "thinking"]
-    assert len(thinking_events) == 1
-    assert thinking_events[0].data["text"] == "I think I should stop."
+    assert len(thinking_events) == 0
 
     # Verify thinking is NOT appended to _history
     for h in s._history:
         if h.get("role") == "assistant":
-            # only "say" should be in the history
             assert h["content"] == "I am stopping."
             assert "I think" not in h["content"]
 
@@ -80,8 +80,7 @@ def test_conversation_does_not_emit_thinking_event_when_absent():
     s = ConversationalSession(cfg)
     s.pilot = _ThinkingScriptedPilot(with_thinking=False)
     events = list(s.send("Test thinking"))
-    
-    # Find thinking event
+
     thinking_events = [e for e in events if e.kind == "thinking"]
     assert len(thinking_events) == 0
 
@@ -90,7 +89,6 @@ def test_openai_compat_reasoning_param(monkeypatch):
     from pmharness.drivers.openai_compat import OpenAICompatDriver
     # Setup mock urllib.request.urlopen
     import urllib.request
-    from io import BytesIO
     import json
 
     requests_made = []
@@ -107,12 +105,10 @@ def test_openai_compat_reasoning_param(monkeypatch):
 
     def mock_urlopen(req, timeout=None):
         nonlocal requests_made
-        # Read the body
         body_data = req.data
         body_dict = json.loads(body_data.decode("utf-8"))
         requests_made.append(body_dict)
-        
-        # Return mock chat completion response
+
         resp_obj = {
             "choices": [{
                 "index": 0,
@@ -129,7 +125,20 @@ def test_openai_compat_reasoning_param(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
     monkeypatch.setenv("MOCK_API_KEY", "sk-mock-key")
 
-    # With reasoning enabled (default)
+    # Default: reasoning disabled (no token spend on unused post-answer traces)
+    driver_default = OpenAICompatDriver(
+        name="mock-driver",
+        model="mock-model",
+        base_url="http://mock-api",
+        api_key_env="MOCK_API_KEY",
+    )
+    assert driver_default.enable_reasoning is False
+    driver_default.chat([{"role": "user", "content": "hi"}])
+    assert len(requests_made) == 1
+    assert "reasoning" not in requests_made[0]
+
+    # Explicit opt-in still sends the OpenRouter-style field
+    requests_made.clear()
     driver_on = OpenAICompatDriver(
         name="mock-driver",
         model="mock-model",
@@ -140,17 +149,4 @@ def test_openai_compat_reasoning_param(monkeypatch):
     driver_on.chat([{"role": "user", "content": "hi"}])
     assert len(requests_made) == 1
     assert requests_made[0]["reasoning"] == {"max_tokens": 1024}
-
-    # With reasoning disabled
-    requests_made.clear()
-    driver_off = OpenAICompatDriver(
-        name="mock-driver",
-        model="mock-model",
-        base_url="http://mock-api",
-        api_key_env="MOCK_API_KEY",
-        enable_reasoning=False,
-    )
-    driver_off.chat([{"role": "user", "content": "hi"}])
-    assert len(requests_made) == 1
-    assert "reasoning" not in requests_made[0]
 

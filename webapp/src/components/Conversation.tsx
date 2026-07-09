@@ -1592,9 +1592,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setItems((p) => [...p, { kind: "compaction" as const, before_tokens: d.before_tokens, after_tokens: d.after_tokens }]);
         window.dispatchEvent(new Event("harness-context-changed"));
       } else if (ev.kind === "thinking") {
+        // Ignore post-answer reasoning events. The answer is already shown;
+        // a trailing REASONING block is redundant and we no longer request
+        // reasoning tokens from OpenAI-compat pilots by default.
         setCompactingStatus(null);
         setStatus("thinking");
-        setItems((p) => [...p, { kind: "thinking", text: d.text || "" }]);
       } else if (ev.kind === "message_delta") {
         setCompactingStatus(null);
         setStatus("streaming");
@@ -1697,12 +1699,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (ev.kind === "action_result") {
         setCompactingStatus(null);
         setStatus("thinking");
-        // The swarm is done: its structured artifacts/summary land below. Retire
-        // the ephemeral, height-capped worker-stream PREVIEW, but don't let the
-        // reasoning vanish -- convert it into a COLLAPSED reasoning row (folded
-        // into the activity group), the way Cursor keeps "Thought for Xs" after
-        // the fact. A non-worker streaming bubble (the pilot's own narration) is
-        // still finalized in place.
+        // The swarm is done: its structured artifacts/summary land below. Drop
+        // the ephemeral worker-stream PREVIEW entirely -- do not convert it into
+        // a trailing "reasoning" row (that duplicated the answer and burned
+        // scroll/attention). A non-worker streaming bubble (the pilot's own
+        // narration) is still finalized in place.
         flushTypewriter();
         setItems((p) => {
           const lastIdx = p.length - 1;
@@ -1711,10 +1712,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
               const finalText = (lastMsg.msg.text || "").trim();
               if (lastMsg.msg.workerStream) {
-                const withoutStream = p.slice(0, lastIdx);
-                return finalText
-                  ? [...withoutStream, { kind: "thinking" as const, text: finalText }]
-                  : withoutStream;
+                return p.slice(0, lastIdx);
               }
               if (!finalText) {
                 return p.slice(0, lastIdx);

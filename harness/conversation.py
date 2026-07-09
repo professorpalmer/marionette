@@ -16,7 +16,7 @@ Transcript model:
   transcript never enters a worker. Conversation and investigation are decoupled.
 
 Events yielded (for GUI/CLI):
-- ("thinking", {text})                         -> pilot reasoning (collapsible/dimmed)
+- ("thinking", {text})                         -> unused (post-answer reasoning suppressed)
 - ("message", {role:"assistant", text})        -> pilot prose (conversation)
 - ("action_start", {id, kind, goal, cwd})      -> a collapsible card opens
 - ("action_result", {id, job_id, num, types,   -> the card's body (artifacts)
@@ -3015,9 +3015,11 @@ class ConversationalSession(ToolDispatchMixin):
                     continue
 
             # 2. Emit the pilot's prose to the user.
-            cleaned_thinking_text = clean_say(turn.thinking) if turn.thinking else ""
-            if cleaned_thinking_text:
-                yield ConvEvent("thinking", {"text": cleaned_thinking_text})
+            # Do not emit a "thinking"/reasoning ConvEvent. Streaming already
+            # paints the answer first; a late reasoning block after the answer
+            # is redundant UI and (when enable_reasoning is on) wasted tokens.
+            # Pilot JSON "thinking" fields are still parsed into turn.thinking
+            # for internal use, but never shown.
 
             cleaned_say_text = clean_say(turn.say) if turn.say else ""
             if cleaned_say_text:

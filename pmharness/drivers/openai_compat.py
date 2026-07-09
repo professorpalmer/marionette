@@ -36,7 +36,7 @@ class OpenAICompatDriver:
         max_tokens: int = 1500,
         timeout: int = 90,
         extra_headers: dict | None = None,
-        enable_reasoning: bool = True,
+        enable_reasoning: bool = False,
     ) -> None:
         self.name = name
         self.model = model
