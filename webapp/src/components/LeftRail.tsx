@@ -4,6 +4,7 @@ import { api, type Workspace, type WorkspaceInfo, type Session, type Job, type A
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
+import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
@@ -107,6 +108,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [selectedProjectPath, setSelectedProjectPath] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
+  // Per-session runner liveness from /api/session/state (multi-session Phase D).
+  const [runners, setRunners] = useState<Record<string, "running" | "idle">>({});
 
   const getWorkspaceBasename = (repoPath: string) => {
     if (!repoPath) return "";
@@ -463,6 +466,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   useEffect(() => { void revalidateJobs(); }, [jobsRefresh, revalidateJobs]);
 
+  // Poll runner statuses so session rows can show running/idle without opening
+  // a conversation. Same endpoint Conversation already uses for resume/swarm.
+  usePolling(() => api.getSessionState().then((res) => {
+    if (res?.runners) setRunners(res.runners);
+  }), 4000);
+
   useEffect(() => { saveHiddenSessionJobs(hiddenJobIds); }, [hiddenJobIds]);
 
   useEffect(() => {
@@ -674,6 +683,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                   ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}`}>
                                 <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />
                                 <span className="flex-1 min-w-0 truncate">{s.title || "Untitled"}</span>
+                                <RunnerStatusDot status={runners[s.id]} />
                               </button>
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
@@ -1196,6 +1206,18 @@ function JobStatusIcon({ status }: { status: JobStatus }) {
   if (status === "in_progress") return <Loader2 size={12} className="animate-spin text-accent shrink-0" />;
   if (status === "cancelled") return <XCircle size={12} className="text-red-400 shrink-0" />;
   return <Circle size={12} className="text-muted shrink-0" />;
+}
+
+/** Compact running/idle indicator for a session row. Hidden when status unknown. */
+function RunnerStatusDot({ status }: { status?: "running" | "idle" }) {
+  if (!status) return null;
+  const running = status === "running";
+  return (
+    <span
+      className={`w-1.5 h-1.5 rounded-full shrink-0 ${running ? "bg-accent" : "bg-muted/50"}`}
+      title={running ? "Running" : "Idle"}
+    />
+  );
 }
 
 function Section({ title, action, headerSpinner, children }: {

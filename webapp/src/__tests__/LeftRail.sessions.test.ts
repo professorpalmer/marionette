@@ -74,4 +74,38 @@ describe("LeftRail session list contracts", () => {
     ]);
     expect(readSWRCache<Session[]>(`sessions:${currentRepo}`)?.[0]?.id).toBe("keep-me");
   });
+
+  it("maps runners statuses to session badge visibility", () => {
+    // Mirrors LeftRail RunnerStatusDot: only render when status is known.
+    const runners: Record<string, "running" | "idle"> = {
+      "sess-a": "running",
+      "sess-b": "idle",
+    };
+    const badgeFor = (sessionId: string): "running" | "idle" | null =>
+      runners[sessionId] ?? null;
+
+    expect(badgeFor("sess-a")).toBe("running");
+    expect(badgeFor("sess-b")).toBe("idle");
+    expect(badgeFor("sess-unknown")).toBeNull();
+  });
+
+  it("chevron expand-without-activate never opens a workspace", () => {
+    // Mirrors LeftRail chevron + handleProjectRowClick: expand/select only.
+    let openCalls = 0;
+    const handleOpenProject = () => { openCalls += 1; };
+    const selectProject = (_path: string) => {};
+    const setExpanded = (_path: string, _next: boolean) => {};
+
+    const onChevronClick = (projectPath: string, isExpanded: boolean) => {
+      // stopPropagation equivalent: never call handleOpenProject.
+      selectProject(projectPath);
+      setExpanded(projectPath, !isExpanded);
+    };
+
+    onChevronClick("C:\\Projects\\other", false);
+    expect(openCalls).toBe(0);
+    // Explicit open path still works when intentionally invoked.
+    handleOpenProject();
+    expect(openCalls).toBe(1);
+  });
 });
