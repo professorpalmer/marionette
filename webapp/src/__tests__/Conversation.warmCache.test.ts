@@ -5,6 +5,7 @@ import {
   transcriptResponseToItems,
   writeTranscriptCache,
   composerStatusFromRunner,
+  resolveSwitchTranscript,
 } from "../components/Conversation";
 import type { Item } from "../components/TranscriptList";
 
@@ -108,6 +109,37 @@ describe("transcript warm cache", () => {
       if (!hit) visible = [];
     }
     expect(visible).toEqual(cached);
+  });
+});
+
+describe("resolveSwitchTranscript keep-stale", () => {
+  it("cache miss keeps prior items and marks stale (no empty flash)", () => {
+    const prior = [makeMsg("user", "from A")];
+    const r = resolveSwitchTranscript({
+      nextId: "sess-b",
+      cached: undefined,
+      priorItems: prior,
+    });
+    expect(r.items).toEqual(prior);
+    expect(r.stale).toBe(true);
+    expect(r.blank).toBe(false);
+  });
+
+  it("cache hit returns cached items and is not stale", () => {
+    const cached = [makeMsg("user", "from B")];
+    const r = resolveSwitchTranscript({
+      nextId: "sess-b",
+      cached,
+      priorItems: [makeMsg("user", "from A")],
+    });
+    expect(r.items).toEqual(cached);
+    expect(r.stale).toBe(false);
+  });
+
+  it("cleared session id blanks only when there is no prior content", () => {
+    expect(
+      resolveSwitchTranscript({ nextId: null, cached: undefined, priorItems: [] }),
+    ).toEqual({ items: [], stale: false, blank: true });
   });
 });
 

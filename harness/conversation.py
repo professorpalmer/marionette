@@ -594,6 +594,10 @@ class ConversationalSession(ToolDispatchMixin):
         self._cg_cache_key = None
         self._cg_cache_section = ""
         self._cg_cache_symbols = 0
+        # Per-message wiki grounding cache (mirrors CodeGraph cache above).
+        self._wiki_cache_key = None
+        self._wiki_cache_section = ""
+        self._wiki_cache_pages = 0
         # Tracks prose already streamed to the client this turn via the
         # StreamingSayExtractor, so the final `message` event can mark itself as
         # already-shown (the frontend finalizes the streaming bubble in place
@@ -1159,6 +1163,7 @@ class ConversationalSession(ToolDispatchMixin):
             "limit": budget,
             "categories": categories,
             **self._tool_output_savings_fields(),
+            **self._wiki_grounding_fields(),
             **self._history_compaction_fields(),
             **self._spill_usage_fields(),
             **self._turn_budget_usage_fields(),
@@ -1260,12 +1265,92 @@ class ConversationalSession(ToolDispatchMixin):
             pass
         return cg_section
 
+    _WIKI_GROUNDING_MAX_CHARS = 8000  # ~2k tokens at chars//4
+
+    def _wiki_grounding_query(self, user_message: str) -> str:
+        """Build a compact wiki search query from the user turn and repo."""
+        parts: list[str] = []
+        repo = str(getattr(self.config, "repo", "") or "").strip()
+        if repo:
+            base = os.path.basename(os.path.normpath(repo))
+            if base and base not in (".", ".."):
+                parts.append(base)
+        msg = (user_message or "").strip()
+        if msg:
+            parts.append(msg[:400])
+        return " ".join(parts).strip()
+
+    def _build_turn_wiki_section(self, user_message: str) -> str:
+        wiki_section = ""
+        if not self._wiki.configured:
+            return wiki_section
+        try:
+            query = self._wiki_grounding_query(user_message)
+            if not query:
+                return wiki_section
+            hits = self._wiki.search_pages(query, limit=5)
+            if not hits:
+                self._wiki_cache_key = user_message
+                self._wiki_cache_section = ""
+                self._wiki_cache_pages = 0
+                return wiki_section
+
+            authoritative = (
+                "WIKI HAS ALREADY BEEN QUERIED FOR THIS TURN. Relevant notes and "
+                "decisions from your durable wiki are provided in the section below. "
+                "USE THIS as your primary source for prior decisions and findings. "
+                "Do NOT call query_wiki to re-fetch what is already here unless the "
+                "question is outside this injected slice.\n"
+            )
+            lines = [authoritative, "### Wiki grounding (auto-injected)"]
+            budget = self._WIKI_GROUNDING_MAX_CHARS - len(authoritative) - 40
+            per_hit = max(120, budget // max(1, len(hits)))
+            for hit in hits:
+                title = str(hit.get("title") or hit.get("slug") or "").strip()
+                slug = str(hit.get("slug") or "").strip()
+                snippet = str(hit.get("snippet") or "").strip()
+                if len(snippet) > per_hit:
+                    snippet = snippet[:per_hit].rstrip() + "…"
+                label = title or slug or "untitled"
+                if slug and slug != label:
+                    label = f"{label} ({slug})"
+                lines.append(f"- {label}: {snippet}" if snippet else f"- {label}")
+
+            wiki_section = "\n".join(lines)
+            if len(wiki_section) > self._WIKI_GROUNDING_MAX_CHARS:
+                wiki_section = wiki_section[: self._WIKI_GROUNDING_MAX_CHARS].rstrip() + "…"
+
+            try:
+                from harness.wiki_grounding_savings import try_record_grounding
+                from pmharness.registry import resolve_price
+
+                price_in, _ = resolve_price(self.config.driver)
+                try_record_grounding(
+                    state_dir=self.state_dir,
+                    session_id=self.harness_session_id or "default",
+                    chars=len(wiki_section),
+                    pages=len(hits),
+                    price_in=price_in,
+                )
+            except Exception:
+                pass
+
+            self._wiki_cache_key = user_message
+            self._wiki_cache_section = wiki_section
+            self._wiki_cache_pages = len(hits)
+        except Exception:
+            pass
+        return wiki_section
+
     def _append_turn_context_trailer(self, message: str, user_message: str) -> str:
         try:
             parts = []
             cg_section = self._build_turn_cg_section(user_message)
             if cg_section:
                 parts.append(cg_section)
+            wiki_section = self._build_turn_wiki_section(user_message)
+            if wiki_section:
+                parts.append(wiki_section)
             turn_note = self._turn_budget_system_note()
             if turn_note:
                 parts.append(turn_note)
@@ -1349,6 +1434,27 @@ class ConversationalSession(ToolDispatchMixin):
             "tool_output_savings_usd": round(savings_usd(summary.tokens_saved, price_in), 6),
             "tool_output_compactions": summary.record_count,
         }
+
+    def _wiki_grounding_fields(self) -> dict:
+        """Compact wiki grounding stats for context/usage APIs."""
+        try:
+            from harness.wiki_grounding_savings import session_grounding_payload
+            from pmharness.registry import resolve_price
+
+            price_in, _ = resolve_price(self.config.driver)
+            return session_grounding_payload(
+                self.state_dir,
+                self.harness_session_id or "default",
+                price_in,
+            )
+        except Exception:
+            return {
+                "wiki_groundings": 0,
+                "wiki_tokens_fed": 0,
+                "wiki_pages_fed": 0,
+                "wiki_estimated_reinference_tokens": 0,
+                "wiki_estimated_savings_usd": 0.0,
+            }
 
     def _tool_output_compaction_callback(self, tool_call_id: str):
         from harness.tool_output_savings import make_compaction_callback
@@ -2684,6 +2790,13 @@ class ConversationalSession(ToolDispatchMixin):
                     except Exception:
                         pass
 
+            wiki_section = ""
+            if self._wiki.configured and not append_only:
+                if self._wiki_cache_key == user_message:
+                    wiki_section = self._wiki_cache_section
+                else:
+                    wiki_section = self._build_turn_wiki_section(user_message)
+
             resp = None
             self._streamed_prose = ""  # reset per step; set if this step streams
             for attempt in range(2):
@@ -2695,6 +2808,8 @@ class ConversationalSession(ToolDispatchMixin):
                     sys_prompt = base_sys
                     if cg_section:
                         sys_prompt += "\n\n" + cg_section
+                    if wiki_section:
+                        sys_prompt += "\n\n" + wiki_section
                     mcp_section = _format_mcp_tools_section(
                         self._mcp,
                         self._tool_catalog,

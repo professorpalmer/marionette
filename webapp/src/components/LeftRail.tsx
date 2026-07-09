@@ -171,7 +171,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       return;
     }
     const active = sess.find((s) => s.active);
-    onSessionChange?.(active ? active.id : "");
+    // Only push a real id. Passing "" during project open briefly clears the
+    // conversation to the empty placeholder before the next root's active
+    // session arrives -- keep the prior id until we know the next one.
+    if (active?.id) {
+      onSessionChange?.(active.id);
+    }
   }, [onSessionChange]);
 
   const {

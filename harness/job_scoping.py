@@ -118,22 +118,41 @@ def job_visible_for_view(
 
 
 def resolve_job_model(raw_arts, raw_tasks, adapter: str = "") -> str:
-    """Model badge: ROUTING artifact model, else task payload model, else adapter."""
+    """Model badge: FINAL routing decision, else task payload model, else adapter.
+
+    A task may emit ``router`` then ``router-fallback`` (or escalation). Prefer
+    the later decision so a failed plan-billed first pick does not badge the
+    job as ``cursor/gpt-5-4`` when workers actually ran on agentic GLM.
+    """
     try:
         from puppetmaster.models import ArtifactType
     except Exception:
         ArtifactType = None  # type: ignore
 
+    rank = {
+        "router-escalation": 3,
+        "router-fallback": 2,
+        "router": 1,
+    }
+    best_model = ""
+    best_rank = 0
     if ArtifactType is not None:
         for art in raw_arts or []:
             if getattr(art, "type", None) != ArtifactType.ROUTING:
                 continue
-            if getattr(art, "created_by", "") != "router":
+            created_by = getattr(art, "created_by", "") or ""
+            r = rank.get(created_by, 0)
+            if r == 0:
                 continue
             payload = getattr(art, "payload", None) or {}
             model = payload.get("model_id") or payload.get("model")
-            if model:
-                return str(model)
+            if not model:
+                continue
+            if r > best_rank:
+                best_rank = r
+                best_model = str(model)
+    if best_model:
+        return best_model
 
     for task in raw_tasks or []:
         payload = getattr(task, "payload", None) or {}

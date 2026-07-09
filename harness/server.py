@@ -304,27 +304,119 @@ def _swarm_registry() -> list:
         return []
 
 
+def _job_status_is_terminal(status: str) -> bool:
+    """Finished swarm rows: complete / fail / cancel / stall (not in-flight)."""
+    s = (status or "").lower()
+    if not s:
+        return False
+    if any(tok in s for tok in ("run", "progress", "active", "pending", "queued", "dispatch")):
+        return False
+    return any(
+        tok in s
+        for tok in ("complete", "done", "fail", "cancel", "error", "stall")
+    )
+
+
+def _slim_swarm_list_artifacts(raw_arts, state_obj) -> list:
+    """Keep only what collapsed Finished cards need: ROUTING + verdict rows.
+
+    Full FINDING/RISK/DECISION streams are fetched on expand via /api/artifacts.
+    With ~20 finished jobs, shipping every finding on each poll was the tracker lag.
+    """
+    try:
+        from puppetmaster.models import ArtifactType
+    except Exception:
+        return state_obj.format_artifacts(raw_arts) if hasattr(state_obj, "format_artifacts") else []
+
+    keep = []
+    for art in raw_arts or []:
+        atype = getattr(art, "type", None)
+        if atype == ArtifactType.ROUTING:
+            keep.append(art)
+            continue
+        if atype == ArtifactType.VERIFICATION:
+            payload = getattr(art, "payload", None) or {}
+            if payload.get("result") or payload.get("failure"):
+                keep.append(art)
+    try:
+        return state_obj.format_artifacts(keep) if hasattr(state_obj, "format_artifacts") else []
+    except Exception:
+        return []
+
+
+def _job_dead_run_failure(raw_arts, status: str):
+    """Mirror SwarmPane dead-run detection against raw store artifacts.
+
+    Computed server-side before the live payload is slimmed -- otherwise a
+    finished job that still has FINDING rows would look like an all-failed
+    dead run once those findings are stripped from the poll response.
+
+    Returns the failure class string, or None when the job is not a dead run.
+    """
+    s = (status or "").lower()
+    if "complete" not in s and "done" not in s:
+        return None
+    if not raw_arts:
+        return None
+    failed = []
+    for art in raw_arts:
+        payload = getattr(art, "payload", None)
+        if not isinstance(payload, dict):
+            # Already-formatted dict rows (local jobs) carry result on the art.
+            if isinstance(art, dict):
+                payload = art
+            else:
+                return None
+        result = str(payload.get("result") or "").lower()
+        if result in ("failed", "blocked"):
+            failed.append(payload)
+        else:
+            return None
+    if not failed:
+        return None
+    for payload in failed:
+        failure = payload.get("failure")
+        if failure:
+            return str(failure)
+    return "workers failed"
+
+
 def _routing_estimate_cost(artifacts) -> float:
-    """Sum router pre-flight estimates; interim fallback before usage lands."""
+    """Sum FINAL router pre-flight estimates; interim fallback before usage lands.
+
+    Prefer escalation / fallback estimates over the initial ``router`` pick so a
+    plan-billed first choice ($0) does not wipe the real fallback estimate.
+    """
     try:
         from puppetmaster.models import ArtifactType
     except Exception:
         return 0.0
-    seen_router_tasks: set = set()
-    total = 0.0
+    rank = {
+        "router-escalation": 3,
+        "router-fallback": 2,
+        "router": 1,
+    }
+    best: dict = {}  # task_id -> (rank, cost)
+    untasked_total = 0.0
     for artifact in artifacts:
-        if artifact.type != ArtifactType.ROUTING or artifact.created_by != "router":
+        if artifact.type != ArtifactType.ROUTING:
             continue
-        task_id = getattr(artifact, "task_id", None)
-        if task_id:
-            if task_id in seen_router_tasks:
-                continue
-            seen_router_tasks.add(task_id)
+        created_by = getattr(artifact, "created_by", "") or ""
+        r = rank.get(created_by, 0)
+        if r == 0:
+            continue
         payload = artifact.payload or {}
-        total += float(
+        cost = float(
             payload.get("estimated_cost_usd") or payload.get("nominal_cost_usd") or 0.0
         )
-    return total
+        task_id = getattr(artifact, "task_id", None)
+        if not task_id:
+            untasked_total += cost
+            continue
+        prev = best.get(task_id)
+        if prev is None or r > prev[0]:
+            best[task_id] = (r, cost)
+    return untasked_total + sum(cost for (_r, cost) in best.values())
 
 
 def _live_price_unpriced_tasks(job_cost) -> float:
@@ -4485,11 +4577,28 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/artifacts":
             q = parse_qs(u.query)
             jid = q.get("job_id", [""])[0]
+            # Resolve harness store first, then the per-project CLI store -- same
+            # dual-store contract as cancel/live (CLI jobs 404 otherwise).
+            artifacts = []
+            state_obj = None
             try:
-                artifacts = _retry_on_locked(
-                    lambda: _session.state().job_artifacts(jid))
+                state_obj = _session.state()
+                artifacts = _retry_on_locked(lambda: state_obj.job_artifacts(jid))
             except Exception:
                 artifacts = []
+            if not artifacts:
+                try:
+                    from .cli_job_merge import open_cli_durable_state
+                    cli_state = open_cli_durable_state(_cfg.repo or "")
+                    if cli_state is not None and hasattr(cli_state, "job_artifacts"):
+                        artifacts = _retry_on_locked(lambda: cli_state.job_artifacts(jid))
+                    elif cli_state is not None and hasattr(cli_state, "store"):
+                        raw = _retry_on_locked(lambda: cli_state.store.list_artifacts(jid))
+                        fmt = state_obj or _session.state()
+                        if hasattr(fmt, "format_artifacts"):
+                            artifacts = fmt.format_artifacts(raw)
+                except Exception:
+                    pass
             return self._send(200, json.dumps(artifacts))
         if u.path == "/api/swarm/live":
             if self._guard():
@@ -4546,12 +4655,24 @@ class Handler(BaseHTTPRequestHandler):
                     job_store = cli_store if j.get("source") == "cli" and cli_store else store
                     raw_arts = (arts_by_job.get(jid, []) if arts_by_job is not None
                                 else _retry_on_locked(lambda: job_store.list_artifacts(jid)))
-                    # job_artifacts() formats the same artifacts for display; build
-                    # it from the batched list when available to avoid a re-read.
+                    # Terminal jobs: slim artifact list (routing + verdicts only).
+                    # Running jobs keep the full stream so findings appear live.
+                    # Expand fetches /api/artifacts for the rest.
+                    job_status = j.get("status", "")
+                    terminal = _job_status_is_terminal(str(job_status))
                     try:
-                        artifacts_list = state_obj.format_artifacts(raw_arts) if hasattr(state_obj, "format_artifacts") else state_obj.job_artifacts(jid)
+                        if terminal:
+                            artifacts_list = _slim_swarm_list_artifacts(raw_arts, state_obj)
+                            artifacts_complete = False
+                        elif hasattr(state_obj, "format_artifacts"):
+                            artifacts_list = state_obj.format_artifacts(raw_arts)
+                            artifacts_complete = True
+                        else:
+                            artifacts_list = state_obj.job_artifacts(jid)
+                            artifacts_complete = True
                     except Exception:
                         artifacts_list = []
+                        artifacts_complete = not terminal
 
                     tokens, est_cost_usd = _job_swarm_accounting(raw_arts, registry)
                     job_model = resolve_job_model(
@@ -4559,16 +4680,20 @@ class Handler(BaseHTTPRequestHandler):
                         (tasks_by_job.get(jid, []) if tasks_by_job is not None else []),
                         j.get("adapter", ""),
                     )
+                    dead_run = _job_dead_run_failure(raw_arts, str(job_status))
 
                     tasks_list = []
                     try:
                         raw_tasks = (tasks_by_job.get(jid, []) if tasks_by_job is not None
                                      else _retry_on_locked(lambda: job_store.list_tasks(jid)))
                         for t in raw_tasks:
+                            # Finished cards only need role/status/adapter for the
+                            # worker strip; skip long instructions until expand.
+                            instr = "" if terminal else (getattr(t, "instruction", "") or "")
                             tasks_list.append({
                                 "id": getattr(t, "id", ""),
                                 "role": getattr(t, "role", ""),
-                                "instruction": getattr(t, "instruction", ""),
+                                "instruction": instr,
                                 "status": str(getattr(t, "status", "")),
                                 "adapter": getattr(t, "adapter", ""),
                                 "completed_at": getattr(t, "completed_at", None),
@@ -4576,10 +4701,10 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
 
-                    res_jobs.append({
+                    row = {
                         "id": jid,
                         "goal": j.get("goal", ""),
-                        "status": j.get("status", ""),
+                        "status": job_status,
                         "role": j.get("role", ""),
                         "adapter": j.get("adapter", ""),
                         "model": job_model,
@@ -4588,10 +4713,14 @@ class Handler(BaseHTTPRequestHandler):
                         "tokens": tokens,
                         "est_cost_usd": est_cost_usd,
                         "artifacts": artifacts_list,
+                        "artifacts_complete": artifacts_complete,
                         "tasks": tasks_list,
                         "source": j.get("source", "harness"),
                         **_job_savings_fields(jid),
-                    })
+                    }
+                    if dead_run:
+                        row["dead_run_failure"] = dead_run
+                    res_jobs.append(row)
             except Exception as e:
                 _diag("server.jobs_list_aggregate", e)
 
@@ -4608,6 +4737,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 for lj in scoped_locals:
                     if lj.get("id") not in existing_ids:
+                        # Local jobs already carry their (tiny) artifact list
+                        # inline; mark complete so the UI never lazy-fetches.
+                        if "artifacts_complete" not in lj:
+                            lj = {**lj, "artifacts_complete": True}
                         res_jobs.append(lj)
             except Exception as e:
                 _diag("server.jobs_list_merge_local", e)

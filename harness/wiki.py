@@ -116,6 +116,48 @@ class WikiClient:
         except Exception as e:
             return WikiResult(False, error=repr(e))
 
+    def search_pages(self, query: str, *, limit: int = 5) -> list[dict]:
+        """Retrieval-only wiki search (GET /wiki/search). No RAG LLM call.
+
+        Returns a list of ``{"title", "slug", "snippet"}`` dicts. Never raises.
+        """
+        if not self.configured:
+            return []
+        q = (query or "").strip()
+        if not q:
+            return []
+        try:
+            url = f"{self.base_url}/wiki/search?q=" + urllib.parse.quote(q)
+            headers = {"Accept": "application/json"}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+            req = urllib.request.Request(url, method="GET", headers=headers)
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                if r.status != 200:
+                    return []
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            results = data.get("results", []) if isinstance(data, dict) else []
+            hits: list[dict] = []
+            for hit in results[: max(1, int(limit))]:
+                if not isinstance(hit, dict):
+                    continue
+                slug = str(hit.get("slug") or "")
+                title = str(hit.get("title") or slug)
+                snippet = (
+                    hit.get("snippet")
+                    or hit.get("description")
+                    or hit.get("body")
+                    or ""
+                )
+                hits.append({
+                    "title": title,
+                    "slug": slug,
+                    "snippet": str(snippet).strip(),
+                })
+            return hits
+        except Exception:
+            return []
+
     def query(self, question: str) -> str:
         """Query the wiki's LLM query/search surface.
 

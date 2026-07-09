@@ -1,11 +1,38 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Pencil, FileText, X, Code, Share2, Image as ImageIcon, Brain } from "lucide-react";
 import { api, type Config } from "../lib/api";
+import { panelOpacityClass } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
 import PilotPicker from "./PilotPicker";
 import { pickFolder } from "../lib/transport";
 import FileEditorPane from "./FileEditorPane";
 import { TranscriptList, type Item, type Msg, type Card } from "./TranscriptList";
+
+/**
+ * Keep-stale session switch: decide what to show while the target transcript
+ * loads. Never blank to [] on a miss between two real sessions -- that paints
+ * the first-run "Message the pilot" placeholder for a frame.
+ *
+ * - cache hit -> show cached items (authoritative for that session)
+ * - cache miss with prior content -> keep prior items, mark stale
+ * - no prior / cleared session id -> empty is correct
+ */
+export function resolveSwitchTranscript(args: {
+  nextId: string | null;
+  cached: Item[] | undefined;
+  priorItems: Item[];
+}): { items: Item[]; stale: boolean; blank: boolean } {
+  if (!args.nextId) {
+    return { items: [], stale: false, blank: true };
+  }
+  if (args.cached) {
+    return { items: args.cached, stale: false, blank: false };
+  }
+  if (args.priorItems.length > 0) {
+    return { items: args.priorItems, stale: true, blank: false };
+  }
+  return { items: [], stale: true, blank: false };
+}
 
 function getSimilarity(s1: string, s2: string): number {
   const norm1 = s1.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -227,6 +254,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   }, []);
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<"idle"|"thinking"|"executing"|"done"|"error"|"streaming">("idle");
+  // True while visible items belong to a prior session (or are awaiting hydrate).
+  // Dims the feed and blocks send so stale A is never treated as B.
+  const [transcriptStale, setTranscriptStale] = useState(false);
   // True while this Conversation owns a live SSE stream for the active session.
   // Runner-poll busy chrome must not clobber local streaming status, and must
   // not force idle while SSE is still attached.
@@ -705,24 +735,36 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     cachedSessionIdRef.current = activeSessionId;
 
     if (!activeSessionId) {
-      setItems([]);
+      // Project/session list may briefly report no active id while the next
+      // root's sessions load. Keep prior transcript dimmed instead of flashing
+      // the first-run empty placeholder; clear only when there was nothing.
+      if (itemsRef.current.length === 0) {
+        setItems([]);
+        setTranscriptStale(false);
+      } else {
+        setTranscriptStale(true);
+      }
       setStatus("idle");
       setCompactingStatus(null);
       return;
     }
 
-    const cached = transcriptCacheBySessionId.get(activeSessionId);
-    const hadCache = !!cached;
-    if (cached) {
-      setItems(cached.items);
-      itemsRef.current = cached.items;
+    const cachedEntry = transcriptCacheBySessionId.get(activeSessionId);
+    const hadCache = !!cachedEntry;
+    const resolved = resolveSwitchTranscript({
+      nextId: activeSessionId,
+      cached: cachedEntry?.items,
+      priorItems: itemsRef.current,
+    });
+    if (cachedEntry) {
+      setItems(resolved.items);
+      itemsRef.current = resolved.items;
+      setTranscriptStale(false);
+    } else if (resolved.stale) {
+      // Keep prior rows visible (dimmed) until sessionTranscript lands.
+      setTranscriptStale(true);
     } else {
-      // Miss: leave prior items briefly only if we had no previous session;
-      // otherwise clear so we don't flash the wrong session's transcript.
-      if (prevId && prevId !== activeSessionId) {
-        setItems([]);
-        itemsRef.current = [];
-      }
+      setTranscriptStale(false);
     }
 
     // Immediately reflect runner busy state for the session we switched TO
@@ -762,6 +804,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setItems(loadedItems);
         itemsRef.current = loadedItems;
         transcriptCacheBySessionId.set(activeSessionId, { items: [...loadedItems] });
+        setTranscriptStale(false);
 
         // Gather all artifacts from (a) card entries in res.display
         const displayArtifacts: { type: string; headline: string }[] = [];
@@ -813,10 +856,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       .catch(() => {
         if (loadGen !== transcriptLoadGenRef.current) return;
         if (cachedSessionIdRef.current !== activeSessionId) return;
-        // Cache hit: keep showing cached rows on refresh failure.
-        if (!hadCache) {
+        // Cache hit or keep-stale miss: never blank to the empty placeholder.
+        // Only clear when we had nothing to show.
+        if (!hadCache && itemsRef.current.length === 0) {
           setItems([]);
           itemsRef.current = [];
+          setTranscriptStale(false);
         }
       });
 
@@ -853,6 +898,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           setItems(loadedItems);
           itemsRef.current = loadedItems;
           transcriptCacheBySessionId.set(sid, { items: [...loadedItems] });
+          setTranscriptStale(false);
         }).catch(() => {});
       } else if (detachedBusyRef.current) {
         // Runner went idle after a detached busy view -- finalize + refresh.
@@ -867,6 +913,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             setItems(loadedItems);
             itemsRef.current = loadedItems;
             transcriptCacheBySessionId.set(sid, { items: [...loadedItems] });
+            setTranscriptStale(false);
           })
           .catch(() => {});
       }
@@ -1475,6 +1522,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   };
 
   const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false, resume: boolean = false, imagesOverride?: { path: string; name: string; previewUrl: string }[]) => {
+    // Stale transcript = prior session still on screen while B hydrates.
+    // Never send into the wrong session.
+    if (transcriptStale && !resume) return;
     planTurnRef.current = usePlan;
     // imagesOverride lets the idle queue-drain path (maybeDrainQueue) carry a
     // queued prompt's image attachments even though they were never placed in
@@ -1835,6 +1885,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   resumeTriggerRef.current = triggerResume;
 
   const send = () => {
+    if (transcriptStale) return;
     const msg = input.trim();
     // Allow a send/steer that is only attached image(s) with no text -- the
     // backend accepts text OR images.
@@ -2105,11 +2156,16 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
       {activeTab === "chat" ? (
         <>
-          <div ref={feedRef} className="flex-1 overflow-y-auto">
+          <div ref={feedRef} className={`flex-1 overflow-y-auto ${panelOpacityClass(transcriptStale)}`}>
         <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1">
-          {items.length === 0 && (
+          {items.length === 0 && !transcriptStale && (
             <div className="text-muted text-[13px] mt-32 text-center leading-relaxed">
               Message the pilot. It plans, investigates via swarms, and explains.
+            </div>
+          )}
+          {transcriptStale && items.length === 0 && (
+            <div className="text-muted text-[13px] mt-32 text-center leading-relaxed">
+              Loading session…
             </div>
           )}
           {/*
@@ -2739,12 +2795,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               {status === "thinking" || status === "executing" || status === "streaming"
                 ? <>
                     <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
-                    <button onClick={send} disabled={!input.trim() && attachedImages.length === 0}
+                    <button onClick={send} disabled={transcriptStale || (!input.trim() && attachedImages.length === 0)}
                       title="Steer: redirect the current turn now (Enter). Cmd/Ctrl+Enter or Queue = run after this turn finishes."
                       className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                       <Send size={9} />Steer</button>
                   </>
-                : <button onClick={send} disabled={!input.trim() && attachedImages.length === 0}
+                : <button onClick={send} disabled={transcriptStale || (!input.trim() && attachedImages.length === 0)}
                     className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                     <Send size={9} />{auto ? "Run" : plan ? "Plan" : "Send"}</button>}
             </div>

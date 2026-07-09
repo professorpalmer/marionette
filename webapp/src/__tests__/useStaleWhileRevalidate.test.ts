@@ -1,10 +1,12 @@
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
+import { clearSWRCache, useStaleWhileRevalidate, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 
 describe("useStaleWhileRevalidate", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    clearSWRCache();
+    sessionStorage.clear();
   });
 
   it("keeps stale data visible while a new key revalidates", async () => {
@@ -62,5 +64,27 @@ describe("useStaleWhileRevalidate", () => {
     });
 
     expect(result.current.data).toBe("fresh");
+  });
+
+  it("rehydrates swarm keys from sessionStorage after cache clear", async () => {
+    writeSWRCache("swarm:/tmp/proj", { session: { tokens_used: 1, est_cost_usd: 0 }, jobs: [] });
+    clearSWRCache();
+    // clearSWRCache wipes sessionStorage too -- seed persist directly.
+    sessionStorage.setItem(
+      "swr.persist.v1:swarm:/tmp/proj",
+      JSON.stringify({ session: { tokens_used: 9, est_cost_usd: 0.1 }, jobs: [{ id: "j1" }] }),
+    );
+
+    const fetcher = vi.fn().mockImplementation(
+      () => new Promise(() => {}), // never resolves -- stay on persisted seed
+    );
+    const { result } = renderHook(() =>
+      useStaleWhileRevalidate("swarm:/tmp/proj", fetcher),
+    );
+
+    expect(result.current.data).toEqual({
+      session: { tokens_used: 9, est_cost_usd: 0.1 },
+      jobs: [{ id: "j1" }],
+    });
   });
 });

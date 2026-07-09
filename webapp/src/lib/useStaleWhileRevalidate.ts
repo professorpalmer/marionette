@@ -5,6 +5,35 @@ type CacheEntry = { data: unknown; key: string };
 /** Module-level cache so revisiting a project can show last-known data instantly. */
 const cache = new Map<string, CacheEntry>();
 
+/** Soft-persist selected SWR keys across remounts (panel close / soft reload). */
+const PERSIST_PREFIX = "swr.persist.v1:";
+const PERSIST_KEYS = new Set<string>();
+
+function shouldPersist(key: string): boolean {
+  return key.startsWith("swarm:");
+}
+
+function readPersisted<T>(key: string): T | undefined {
+  if (!shouldPersist(key)) return undefined;
+  try {
+    const raw = sessionStorage.getItem(PERSIST_PREFIX + key);
+    if (!raw) return undefined;
+    return JSON.parse(raw) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function writePersisted(key: string, data: unknown): void {
+  if (!shouldPersist(key)) return;
+  try {
+    sessionStorage.setItem(PERSIST_PREFIX + key, JSON.stringify(data));
+    PERSIST_KEYS.add(key);
+  } catch {
+    // sessionStorage full/unavailable -- in-memory cache still works.
+  }
+}
+
 export interface UseSWRResult<T> {
   data: T | undefined;
   isValidating: boolean;
@@ -37,7 +66,8 @@ export function useStaleWhileRevalidate<T>(
   const [data, setData] = useState<T | undefined>(() => {
     if (options.initialData !== undefined) return options.initialData;
     const hit = keyStr ? cache.get(keyStr) : undefined;
-    return hit ? (hit.data as T) : undefined;
+    if (hit) return hit.data as T;
+    return keyStr ? readPersisted<T>(keyStr) : undefined;
   });
   const [displayKey, setDisplayKey] = useState(keyStr);
   const [isValidating, setIsValidating] = useState(false);
@@ -53,6 +83,7 @@ export function useStaleWhileRevalidate<T>(
 
   const commit = useCallback((value: T, forKey: string) => {
     cache.set(forKey, { data: value, key: forKey });
+    writePersisted(forKey, value);
     setData(value);
     setDisplayKey(forKey);
     setError(undefined);
@@ -63,6 +94,7 @@ export function useStaleWhileRevalidate<T>(
       setData(value);
       if (value !== undefined && keyStr) {
         cache.set(keyStr, { data: value, key: keyStr });
+        writePersisted(keyStr, value);
         setDisplayKey(keyStr);
       }
     },
@@ -98,6 +130,13 @@ export function useStaleWhileRevalidate<T>(
     if (hit) {
       setData(hit.data as T);
       setDisplayKey(keyStr);
+    } else {
+      const persisted = readPersisted<T>(keyStr);
+      if (persisted !== undefined) {
+        cache.set(keyStr, { data: persisted, key: keyStr });
+        setData(persisted);
+        setDisplayKey(keyStr);
+      }
     }
     void revalidate();
     return () => {
@@ -120,9 +159,18 @@ export function readSWRCache<T>(key: string): T | undefined {
 /** Seed or overwrite the module cache (prefetch without a hook subscription). */
 export function writeSWRCache<T>(key: string, data: T): void {
   cache.set(key, { data, key });
+  writePersisted(key, data);
 }
 
 /** Test helper: drop all cached entries. */
 export function clearSWRCache(): void {
   cache.clear();
+  for (const key of [...PERSIST_KEYS]) {
+    try {
+      sessionStorage.removeItem(PERSIST_PREFIX + key);
+    } catch {
+      // ignore
+    }
+  }
+  PERSIST_KEYS.clear();
 }

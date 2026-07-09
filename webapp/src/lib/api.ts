@@ -75,6 +75,11 @@ export type Job = {
   // /api/jobs sends an artifact COUNT; embedded views may send the full list.
   // Use the /api/artifacts endpoint to fetch details for a job.
   artifacts?: Artifact[] | number;
+  // False on /api/swarm/live for terminal jobs (slim routing+verdicts only).
+  // Expand fetches /api/artifacts and flips this true. Running jobs stay true.
+  artifacts_complete?: boolean;
+  // Server-computed before slim: all workers failed/blocked with no real work.
+  dead_run_failure?: string | null;
 };
 export type Artifact = {
   id?: string;

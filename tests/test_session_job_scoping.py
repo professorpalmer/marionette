@@ -233,6 +233,31 @@ def test_resolve_job_model_prefers_routing_then_task_then_adapter():
     assert resolve_job_model([], [], "agentic") == "agentic"
 
 
+def test_resolve_job_model_prefers_fallback_over_initial_router():
+    """Failed first pick must not badge the job; final fallback wins."""
+    arts = [
+        Artifact(
+            job_id="job-1",
+            task_id="t1",
+            type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"model_id": "cursor/gpt-5-4", "estimated_cost_usd": 0.0},
+            confidence=0.9,
+            evidence=[],
+        ),
+        Artifact(
+            job_id="job-1",
+            task_id="t1",
+            type=ArtifactType.ROUTING,
+            created_by="router-fallback",
+            payload={"model_id": "agentic/z-ai/glm-5.2", "estimated_cost_usd": 0.0048},
+            confidence=0.9,
+            evidence=[],
+        ),
+    ]
+    assert resolve_job_model(arts, [], "cursor") == "agentic/z-ai/glm-5.2"
+
+
 def test_job_swarm_accounting_uses_verification_when_no_routing():
     registry = [
         SimpleNamespace(

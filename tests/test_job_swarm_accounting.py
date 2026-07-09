@@ -73,6 +73,75 @@ def test_routing_estimate_cost_dedupes_per_task():
     assert abs(_routing_estimate_cost(arts) - 0.08) < 1e-9
 
 
+def test_routing_estimate_cost_prefers_fallback_over_plan_zero():
+    """Initial plan-billed router pick is $0; fallback estimate must win."""
+    arts = [
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.0, "model_id": "cursor/gpt-5-4"},
+        ),
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router-fallback",
+            payload={"estimated_cost_usd": 0.0048, "model_id": "agentic/z-ai/glm-5.2"},
+        ),
+    ]
+    assert abs(_routing_estimate_cost(arts) - 0.0048) < 1e-9
+
+
+def test_job_swarm_accounting_prices_fallback_not_failed_first_attempt():
+    """Cursor fails (sdk_not_installed), agentic GLM succeeds with real_cost.
+
+    Regression: badge/cost followed the initial plan-billed router pick ($0)
+    and first-wins usage kept the failed attempt's tiny estimated tokens.
+    """
+    registry = [
+        _registry_spec("cursor/gpt-5-4", billing="plan", input_per_mtok_usd=0.0, output_per_mtok_usd=0.0),
+        _registry_spec("agentic/z-ai/glm-5.2", input_per_mtok_usd=0.4, output_per_mtok_usd=1.6),
+    ]
+    arts = [
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.0, "model_id": "cursor/gpt-5-4", "billing": "plan"},
+        ),
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router-fallback",
+            payload={"estimated_cost_usd": 0.0048, "model_id": "agentic/z-ai/glm-5.2"},
+        ),
+        _artifact(
+            task_id="t1",
+            payload={
+                "model": "gpt-5.4",
+                "result": "failed",
+                "failure": "sdk_not_installed",
+                "tokens_in": 3888,
+                "tokens_out": 0,
+                "tokens_estimated": True,
+            },
+        ),
+        _artifact(
+            task_id="t1",
+            payload={
+                "model": "z-ai/glm-5.2",
+                "result": "passed",
+                "tokens_in": 100_000,
+                "tokens_out": 5_000,
+                "real_cost_usd": 0.048,
+            },
+        ),
+    ]
+    tokens, cost = _job_swarm_accounting(arts, registry)
+    assert tokens == 105_000
+    assert abs(cost - 0.048) < 1e-6
+
+
 def test_job_swarm_accounting_uses_actual_usage_not_routing_estimate():
     registry = [_registry_spec("worker-model", input_per_mtok_usd=1.0, output_per_mtok_usd=2.0)]
     arts = [

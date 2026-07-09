@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X } from "lucide-react";
 import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
@@ -191,7 +191,7 @@ function dedupeRouting(arts: Artifact[]): Artifact[] {
       ? `task:${taskId}`
       : `model:${(art.model || "").trim().toLowerCase()}`;
     const existing = groups.get(key);
-    if (!existing || routingCreatedByRank(art.created_by) >= routingCreatedByRank(existing.created_by)) {
+    if (!existing || routingCreatedByRank(art.created_by) > routingCreatedByRank(existing.created_by)) {
       groups.set(key, art);
     }
   }
@@ -202,15 +202,51 @@ function dedupeRouting(arts: Artifact[]): Artifact[] {
 // failed verdict -- e.g. all workers fast-failed with no_model before doing any
 // work. Older Puppetmaster versions stitched these into COMPLETE, so the
 // tracker painted a fully dead swarm as a healthy green "done" at $0 (the
-// worst failure mode: it looks like success). Detect it from the verdicts and
-// return the failure class so the card can render red with the reason.
+// worst failure mode: it looks like success). Prefer the server stamp
+// (computed before the live payload is slimmed); fall back to client scan
+// when the full artifact list is still present.
 function jobDeadRunFailure(j: Job): string | null {
+  if (typeof j.dead_run_failure === "string" && j.dead_run_failure) {
+    return j.dead_run_failure;
+  }
+  if (j.dead_run_failure === null) return null;
   if (jobStatus(j) !== "completed") return null;
+  // Slim live payloads omit FINDING rows; never infer dead-run from a partial list.
+  if (j.artifacts_complete === false) return null;
   const arts = jobArtifactList(j);
   if (arts.length === 0) return null;
   const failed = arts.filter((a) => (a.result || "").toLowerCase() === "failed" || (a.result || "").toLowerCase() === "blocked");
   if (failed.length !== arts.length) return null;
   return failed.find((a) => a.failure)?.failure || "workers failed";
+}
+
+/** Merge a fresh /swarm/live poll into cached state without wiping expanded full artifacts. */
+function mergeSwarmLive(prev: SwarmLive | null | undefined, next: SwarmLive): SwarmLive {
+  if (!prev?.jobs?.length) return next;
+  const prevById = new Map(prev.jobs.map((j) => [j.id, j]));
+  return {
+    ...next,
+    jobs: (next.jobs || []).map((j) => {
+      const old = prevById.get(j.id);
+      if (!old) return j;
+      // Keep a previously hydrated full artifact list when the poll is slim.
+      if (j.artifacts_complete === false && old.artifacts_complete === true) {
+        return {
+          ...j,
+          artifacts: old.artifacts,
+          artifacts_complete: true,
+          tasks: (j.tasks || []).map((t) => {
+            const ot = (old.tasks || []).find((x) => x.id === t.id);
+            if (ot?.instruction && !t.instruction) {
+              return { ...t, instruction: ot.instruction };
+            }
+            return t;
+          }),
+        };
+      }
+      return j;
+    }),
+  };
 }
 
 function jobCost(j: Job): number {
@@ -302,12 +338,16 @@ export default function SwarmPane() {
   const [expandedAlts, setExpandedAlts] = useState<Record<string, boolean>>({});
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
   const [expandedFindings, setExpandedFindings] = useState<Record<string, boolean>>({});
+  // Findings section open/closed per job. Default open (missing key); user toggle sticks.
+  const [findingsOpen, setFindingsOpen] = useState<Record<string, boolean>>({});
   const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
   const [finishedOpen, setFinishedOpen] = useState(false);
   // Job ids we have asked the backend to cancel. Held in local view state so the
   // row can show a subtle 'cancelling...' affordance immediately, before the next
   // poll reflects the terminal 'cancelled' status from /api/swarm/live.
   const [cancelling, setCancelling] = useState<Set<string>>(new Set());
+  // Job ids currently fetching full artifacts after expand (slim live payload).
+  const [loadingArts, setLoadingArts] = useState<Set<string>>(new Set());
   // Bumped every second so relative "last activity" times re-render while a job
   // runs, making a live worker visibly move rather than freeze between polls.
   const [nowTick, setNowTick] = useState(() => Date.now());
@@ -328,6 +368,10 @@ export default function SwarmPane() {
 
   const scopedRepo = selectedProjectRoot || undefined;
 
+  // Holds latest live payload so the SWR fetcher / poll can merge without
+  // wiping artifacts hydrated via /api/artifacts on expand.
+  const dataRef = useRef<SwarmLive | null | undefined>(undefined);
+
   const {
     data,
     isValidating,
@@ -336,8 +380,49 @@ export default function SwarmPane() {
     mutate,
   } = useStaleWhileRevalidate<SwarmLive | null>(
     `swarm:${scopedRepo || "__default__"}`,
-    () => api.swarmLive(scopedRepo),
+    async () => {
+      const res = await api.swarmLive(scopedRepo);
+      return mergeSwarmLive(dataRef.current ?? undefined, res);
+    },
   );
+  dataRef.current = data;
+
+  const loadingArtsRef = useRef(loadingArts);
+  loadingArtsRef.current = loadingArts;
+
+  const applyLive = useCallback((res: SwarmLive) => {
+    mutate(mergeSwarmLive(dataRef.current ?? undefined, res));
+  }, [mutate]);
+
+  // Hydrate full artifacts when a slim finished card expands.
+  const ensureFullArtifacts = useCallback((job: Job) => {
+    if (job.artifacts_complete !== false) return;
+    if (loadingArtsRef.current.has(job.id)) return;
+    setLoadingArts((prev) => new Set(prev).add(job.id));
+    api.artifacts(job.id)
+      .then((arts) => {
+        const prev = dataRef.current;
+        if (!prev) return;
+        mutate({
+          ...prev,
+          jobs: (prev.jobs || []).map((j) =>
+            j.id === job.id
+              ? { ...j, artifacts: Array.isArray(arts) ? arts : [], artifacts_complete: true }
+              : j,
+          ),
+        });
+      })
+      .catch(() => {
+        // Leave slim payload; user can collapse/re-expand to retry.
+      })
+      .finally(() => {
+        setLoadingArts((prev) => {
+          const next = new Set(prev);
+          next.delete(job.id);
+          return next;
+        });
+      });
+  }, [mutate]);
 
   const lastSigRef = useRef("");
 
@@ -382,7 +467,7 @@ export default function SwarmPane() {
     }
     try {
       const res = await api.swarmLive(scopedRepo);
-      mutate(res);
+      applyLive(res);
     } catch {
       // Ignore; the poll loop will refetch shortly.
     }
@@ -431,7 +516,7 @@ export default function SwarmPane() {
           const sig = swarmSignature(res);
           if (sig !== lastSigRef.current) {
             lastSigRef.current = sig;
-            mutate(res);
+            applyLive(res);
           }
           const hasRunning = (res.jobs || []).some((j) => jobStatus(j) === "in_progress");
           const elapsed = performance.now() - startedAt;
@@ -453,7 +538,7 @@ export default function SwarmPane() {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [scopedRepo, mutate]);
+  }, [scopedRepo, applyLive]);
 
   const allJobs = data?.jobs || [];
   const visibleJobs = allJobs.filter((j) => !dismissed.has(j.id));
@@ -492,13 +577,19 @@ export default function SwarmPane() {
     );
     const streamArts = artifacts.filter((a: Artifact) => (a.type || "").toUpperCase() !== "ROUTING");
     const tasks = j.tasks || [];
-    const routerModel = j.model || routingArts.find((a: Artifact) => a.model)?.model || "";
+    // Prefer the deduped final routing card (fallback/escalation wins) over the
+    // job.model field so a stale initial router pick never badges the header.
+    const routerModel = routingArts.find((a: Artifact) => a.model)?.model || j.model || "";
     const workerCount = tasks.length;
     const adapter = j.adapter || tasks[0]?.adapter || "";
     const displayModel = routerModel || adapter;
     const terminal = isTerminal(j);
 
-    const toggle = () => setExpandedJobs((prev) => ({ ...prev, [j.id]: !isExpanded }));
+    const toggle = () => {
+      const next = !isExpanded;
+      setExpandedJobs((prev) => ({ ...prev, [j.id]: next }));
+      if (next) ensureFullArtifacts(j);
+    };
 
     return (
       <div
@@ -785,14 +876,27 @@ export default function SwarmPane() {
             )}
 
             {/* Findings / artifacts stream -- the substance of an audit, made
-                first-class: type badge, confidence, headline. */}
+                first-class: type badge, confidence, headline. Section collapses
+                so a long finished swarm does not force a wall of rows. */}
             {streamArts.length > 0 && (() => {
               const findingRows = dedupeFindings(streamArts);
+              const sectionOpen = findingsOpen[j.id] !== false;
+              const countLabel = `${findingRows.length}${findingRows.length !== streamArts.length ? ` of ${streamArts.length}` : ""}`;
               return (
               <div className="border-t border-edge/20 pt-1.5 flex flex-col">
-                <div className="text-[9px] uppercase tracking-wider text-faint font-medium mb-1">
-                  Findings ({findingRows.length}{findingRows.length !== streamArts.length ? ` of ${streamArts.length}` : ""})
-                </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFindingsOpen((prev) => ({ ...prev, [j.id]: !sectionOpen }));
+                  }}
+                  className="w-full flex items-center gap-1 text-[9px] uppercase tracking-wider text-faint font-medium mb-1 hover:text-muted focus:outline-none"
+                  title={sectionOpen ? "Collapse findings" : "Expand findings"}
+                >
+                  {sectionOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                  Findings ({countLabel})
+                </button>
+                {sectionOpen && (
                 <div className="pr-1 flex flex-col gap-1 border border-edge/20 rounded p-1.5 bg-panel/30">
                   {findingRows.map(({ art, count }, idx: number) => {
                     const fid = art.id || `f${idx}`;
@@ -840,13 +944,18 @@ export default function SwarmPane() {
                     );
                   })}
                 </div>
+                )}
               </div>
               );
             })()}
 
             {tasks.length === 0 && streamArts.length === 0 && routingArts.length === 0 && (
               <div className="text-[9.5px] text-faint italic px-1 py-0.5">
-                {st === "in_progress" ? "Worker running -- artifacts will stream in as they land." : "No artifacts recorded."}
+                {loadingArts.has(j.id) || (j.artifacts_complete === false)
+                  ? "Loading artifacts..."
+                  : st === "in_progress"
+                    ? "Worker running -- artifacts will stream in as they land."
+                    : "No artifacts recorded."}
               </div>
             )}
           </div>

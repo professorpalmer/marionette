@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SwarmPane from "../components/SwarmPane";
 import { api, type SwarmLive } from "../lib/api";
+import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
@@ -11,11 +12,13 @@ vi.mock("../lib/api", async (importOriginal) => {
       ...actual.api,
       swarmLive: vi.fn(),
       swarmCancel: vi.fn(),
+      artifacts: vi.fn(),
     },
   };
 });
 
 const mockSwarmLive = vi.mocked(api.swarmLive);
+const mockArtifacts = vi.mocked(api.artifacts);
 
 function liveJob(overrides: Partial<SwarmLive["jobs"][number]> = {}): SwarmLive {
   return {
@@ -35,7 +38,10 @@ describe("SwarmPane model badge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
     mockSwarmLive.mockResolvedValue(liveJob());
+    mockArtifacts.mockResolvedValue([]);
   });
 
   it("renders the routed model on the job badge", async () => {
@@ -72,6 +78,9 @@ describe("SwarmPane routing dedupe", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
   });
 
   it("shows one routing model row per task when router and router-fallback both exist", async () => {
@@ -99,29 +108,26 @@ describe("SwarmPane routing dedupe", () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
         status: "running",
-        model: "final-model-0",
-        adapter: "agentic",
+        artifacts,
+        artifacts_complete: true,
         tasks: Array.from({ length: 5 }, (_, i) => ({
           id: `task-${i}`,
           status: "running",
-          adapter: "agentic",
           role: "Worker",
-          instruction: `work ${i}`,
+          instruction: "",
+          adapter: "agentic",
         })),
-        artifacts,
       }),
     );
 
     render(<SwarmPane />);
 
     await waitFor(() => {
-      // Routing rows use title={art.model}; the job badge uses "Model: …",
-      // so exact title match isolates the five routing cards.
-      for (let i = 0; i < 5; i++) {
-        expect(screen.getByTitle(`final-model-${i}`)).toBeInTheDocument();
-        expect(screen.queryByTitle(`initial-model-${i}`)).not.toBeInTheDocument();
-      }
+      expect(screen.getByTitle("Model: final-model-0")).toBeInTheDocument();
     });
+    expect(screen.queryByText("initial-model-0")).not.toBeInTheDocument();
+    // One expanded routing card per task (5), not 10 router+fallback pairs.
+    expect(screen.getAllByTitle(/^final-model-\d$/)).toHaveLength(5);
   });
 });
 
@@ -129,6 +135,9 @@ describe("SwarmPane dead-run detection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
   });
 
   it("renders a complete job whose every artifact failed as a failed run with the reason", async () => {
@@ -156,6 +165,28 @@ describe("SwarmPane dead-run detection", () => {
     });
   });
 
+  it("uses server dead_run_failure when the live payload is slim", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "complete",
+        adapter: "agentic",
+        artifacts_complete: false,
+        dead_run_failure: "no_model",
+        artifacts: [
+          { type: "verification", headline: "audit", result: "failed", failure: "no_model" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+
+    await waitFor(() => {
+      expect(screen.getByText(/all workers failed: no model/)).toBeInTheDocument();
+    });
+  });
+
   it("keeps a complete job with real findings rendered as done", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
@@ -176,6 +207,85 @@ describe("SwarmPane dead-run detection", () => {
     await waitFor(() => {
       expect(screen.getByText("done")).toBeInTheDocument();
       expect(screen.queryByText(/all workers failed/)).not.toBeInTheDocument();
+    });
+  });
+});
+
+describe("SwarmPane findings section collapse", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("collapses and expands the Findings section from the header", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-findings",
+        status: "complete",
+        goal: "Audit findings collapse",
+        adapter: "agentic",
+        model: "agentic/z-ai/glm-5.2",
+        artifacts_complete: true,
+        artifacts: [
+          { type: "FINDING", headline: "dead runner modules", confidence: 0.8 },
+          { type: "RISK", headline: "thread-local budget", confidence: 0.7 },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+
+    // Terminal jobs start collapsed; open the card so Findings is reachable.
+    const goal = await screen.findByText("Audit findings collapse");
+    fireEvent.click(goal);
+
+    const findingsHeader = await screen.findByRole("button", { name: /Findings \(2\)/i });
+    expect(screen.getByText("dead runner modules")).toBeInTheDocument();
+
+    fireEvent.click(findingsHeader);
+    await waitFor(() => {
+      expect(screen.queryByText("dead runner modules")).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Findings \(2\)/i }));
+    await waitFor(() => {
+      expect(screen.getByText("dead runner modules")).toBeInTheDocument();
+    });
+  });
+
+  it("lazy-loads full artifacts when expanding a slim finished job", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-slim",
+        status: "complete",
+        goal: "Slim finished swarm",
+        adapter: "agentic",
+        artifacts_complete: false,
+        artifacts: [
+          { type: "ROUTING", headline: "", model: "glm-5.2", created_by: "router" },
+        ],
+      }),
+    );
+    mockArtifacts.mockResolvedValue([
+      { type: "ROUTING", headline: "", model: "glm-5.2", created_by: "router" },
+      { type: "FINDING", headline: "lazy finding landed", confidence: 0.9 },
+    ]);
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+
+    const goal = await screen.findByText("Slim finished swarm");
+    fireEvent.click(goal);
+
+    await waitFor(() => {
+      expect(mockArtifacts).toHaveBeenCalledWith("job-slim");
+      expect(screen.getByText("lazy finding landed")).toBeInTheDocument();
     });
   });
 });
