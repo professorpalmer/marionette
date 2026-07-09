@@ -1,7 +1,8 @@
 # Next wave: Marionette multi-session / Hermes-grade workspace UX
 
-**Status:** OPEN — deferred after Marionette **v0.9.17** and Puppetmaster **v1.13.0**.  
+**Status:** OPEN — deferred after Marionette **v0.9.17** and Puppetmaster **v1.13.0** (both shipped; PM on PyPI as `puppetmaster-ai==1.13.0`).  
 **Audience:** fresh agent session with a clean context window.  
+**Handoff path:** `docs/NEXT_WAVE_MULTI_SESSION.md` (this file) on Marionette `main` (`bff3617+`).  
 **Goal:** Cursor/Hermes-grade: instant workspace swap, sessions always listed, agents keep running in background, zero ghost resumes, no blink/reload.
 
 This doc is the handoff. Do not re-audit from scratch — the findings below are already file:line verified.
@@ -20,7 +21,9 @@ This doc is the handoff. Do not re-audit from scratch — the findings below are
 | **SSRF / Electron** | CGNAT `100.64.0.0/10` blocked; MCP HTTP `SafeRedirectHandler`; `will-attach-webview` locks prefs. |
 | **Platform lock (Marionette half)** | `_init_platform_lock` treats a well-formed `disabled` list as configured even without `harness_initialized`. |
 
-### Puppetmaster v1.13.0 (platform lock root cause + cache lifts)
+### Puppetmaster v1.13.0 (platform lock root cause + cache lifts) — SHIPPED
+
+Tag `v1.13.0` on `60810db`; GitHub release; PyPI [`puppetmaster-ai 1.13.0`](https://pypi.org/project/puppetmaster-ai/1.13.0/).
 
 | Fix | What it did |
 |-----|-------------|
