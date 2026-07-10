@@ -14,17 +14,22 @@ export function dispatchProjectSwitching(switching: boolean): void {
   );
 }
 
-const PROJECT_ROOT_KEY = "pmharness.lastProjectRoot";
+// Ephemeral mirror for panes that mount after the selection event. The backend
+// workspace endpoint (persisted in workspace.json) is the sole durable owner.
+// Do not put project roots in localStorage: a stale app-checkout value survived
+// process restarts and made Files/State/Swarm/Checkpoints initialize against
+// Marionette even while /api/workspace correctly restored the user's project.
+let selectedProjectRoot = "";
 
-/** Announce the selected project root and remember it for late-mounting panes. */
+/** Announce the selected project root and remember it for this renderer only. */
 export function dispatchProjectSelected(root: string): void {
-  try { localStorage.setItem(PROJECT_ROOT_KEY, root); } catch { /* storage full */ }
+  selectedProjectRoot = root;
   window.dispatchEvent(new CustomEvent("harness-project-selected", { detail: root }));
 }
 
-/** Last announced project root -- panes that mount after the event use this seed. */
+/** Last selection in this renderer -- never restored across app launches. */
 export function lastSelectedProjectRoot(): string {
-  try { return localStorage.getItem(PROJECT_ROOT_KEY) || ""; } catch { return ""; }
+  return selectedProjectRoot;
 }
 
 /** Subscribe to coordinated project-switch transitions from LeftRail. */
