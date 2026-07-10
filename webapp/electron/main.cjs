@@ -915,19 +915,31 @@ function browserClientHintHeaders() {
   const secChUa =
     `"Not_A Brand";v="8", "Chromium";v="${major}", "Google Chrome";v="${major}"`;
   return {
-    "User-Agent": browserUserAgent(),
-    "Sec-CH-UA": secChUa,
-    "Sec-CH-UA-Mobile": "?0",
-    "Sec-CH-UA-Platform": `"${platform}"`,
-    "Sec-CH-UA-Full-Version": `"${chrome}"`,
-    "Sec-CH-UA-Full-Version-List":
-      `"Not_A Brand";v="10.0.0.0", "Chromium";v="${chrome}", "Google Chrome";v="${chrome}"`,
-    "Sec-CH-UA-Arch": `"x86"`,
-    "Sec-CH-UA-Bitness": `"64"`,
-    "Sec-CH-UA-Model": `""`,
-    "Sec-CH-UA-Platform-Version":
-      platform === "Windows" ? `"15.0.0"` : platform === "macOS" ? `"13.0.0"` : `"6.5.0"`,
-    "Sec-CH-UA-WoW64": "?0",
+    // LOW-ENTROPY hints + UA: real Chrome sends these on EVERY request, so we
+    // may force them unconditionally.
+    low: {
+      "User-Agent": browserUserAgent(),
+      "Sec-CH-UA": secChUa,
+      "Sec-CH-UA-Mobile": "?0",
+      "Sec-CH-UA-Platform": `"${platform}"`,
+    },
+    // HIGH-ENTROPY hints: real Chrome only sends these AFTER the server opts
+    // in via Accept-CH. Injecting them unsolicited on the first request is
+    // itself a bot signal (Windows Google OAuth rejects on it), so these are
+    // only used to OVERWRITE a header Chromium already decided to send.
+    // Grease version pairs with the low-entropy grease ("8" <-> "8.0.0.0");
+    // a mismatched grease pair is another detectable inconsistency.
+    high: {
+      "Sec-CH-UA-Full-Version": `"${chrome}"`,
+      "Sec-CH-UA-Full-Version-List":
+        `"Not_A Brand";v="8.0.0.0", "Chromium";v="${chrome}", "Google Chrome";v="${chrome}"`,
+      "Sec-CH-UA-Arch": `"x86"`,
+      "Sec-CH-UA-Bitness": `"64"`,
+      "Sec-CH-UA-Model": `""`,
+      "Sec-CH-UA-Platform-Version":
+        platform === "Windows" ? `"15.0.0"` : platform === "macOS" ? `"13.0.0"` : `"6.5.0"`,
+      "Sec-CH-UA-WoW64": "?0",
+    },
   };
 }
 
@@ -1027,18 +1039,24 @@ function configureBrowserSession() {
     try {
       ses.webRequest.onBeforeSendHeaders((details, callback) => {
         const headers = { ...(details.requestHeaders || {}) };
-        for (const [k, v] of Object.entries(hints)) {
-          // Preserve whatever casing Chromium already used for the key.
-          const existing = Object.keys(headers).find(
-            (hk) => hk.toLowerCase() === k.toLowerCase()
-          );
-          headers[existing || k] = v;
+        const findKey = (k) =>
+          Object.keys(headers).find((hk) => hk.toLowerCase() === k.toLowerCase());
+        // Low-entropy hints + UA: force on every request (real Chrome always sends them).
+        for (const [k, v] of Object.entries(hints.low)) {
+          headers[findKey(k) || k] = v;
+        }
+        // High-entropy hints: only align a header Chromium ALREADY chose to send
+        // (i.e. after the server's Accept-CH opt-in). Adding them unsolicited is
+        // a bot signal Google's Windows OAuth checks catch.
+        for (const [k, v] of Object.entries(hints.high)) {
+          const existing = findKey(k);
+          if (existing) headers[existing] = v;
         }
         callback({ cancel: false, requestHeaders: headers });
       });
       logMain(
-        `[browser] client-hints aligned Sec-CH-UA=${hints["Sec-CH-UA"]} ` +
-        `platform=${hints["Sec-CH-UA-Platform"]}`
+        `[browser] client-hints aligned Sec-CH-UA=${hints.low["Sec-CH-UA"]} ` +
+        `platform=${hints.low["Sec-CH-UA-Platform"]}`
       );
     } catch (hintErr) {
       logMain(

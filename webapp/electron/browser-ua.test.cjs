@@ -115,6 +115,30 @@ describe("browserUserAgent", () => {
     assert.match(preload, /__pmAutomationHidden/);
   });
 
+  it("main.cjs never injects unsolicited high-entropy Client Hints", () => {
+    const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+    // High-entropy hints must only OVERWRITE headers Chromium already sends
+    // (post Accept-CH). Unsolicited injection is itself a bot signal.
+    assert.match(main, /hints\.low/);
+    assert.match(main, /hints\.high/);
+    assert.match(main, /if \(existing\) headers\[existing\] = v;/);
+    // Grease version pair must be consistent between low/high entropy lists.
+    assert.match(main, /"Not_A Brand";v="8\.0\.0\.0"/);
+    assert.doesNotMatch(main, /"Not_A Brand";v="10\.0\.0\.0"/);
+  });
+
+  it("browser-preload.cjs overrides userAgentData when Google Chrome brand missing", () => {
+    const preload = fs.readFileSync(
+      path.join(__dirname, "browser-preload.cjs"),
+      "utf8"
+    );
+    // Electron 33 ships non-empty Chromium-only brands; headers claim Google
+    // Chrome, so navigator.userAgentData must agree or Google rejects.
+    assert.match(preload, /b\.brand === "Google Chrome"/);
+    assert.match(preload, /version: "8\.0\.0\.0"/);
+    assert.doesNotMatch(preload, /version: "10\.0\.0\.0"/);
+  });
+
   it("renderer preload exposes openExternal escape hatch", () => {
     const preload = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
     assert.match(preload, /openExternal/);

@@ -122,7 +122,7 @@ try {
           { brand: "Google Chrome", version: major },
         ];
         const fullVersionList = [
-          { brand: "Not_A Brand", version: "10.0.0.0" },
+          { brand: "Not_A Brand", version: "8.0.0.0" },
           { brand: "Chromium", version: full },
           { brand: "Google Chrome", version: full },
         ];
@@ -155,11 +155,17 @@ try {
           toJSON: () => ({ brands, mobile: false, platform }),
         };
         const existing = navigator.userAgentData;
-        const brandsEmpty =
+        // Override not only when brands are EMPTY (old Electron), but also when
+        // "Google Chrome" is missing from them (Electron 33 ships Chromium-only
+        // brands). Headers claim Google Chrome, so JS must agree -- a brands
+        // mismatch between Sec-CH-UA and navigator.userAgentData is exactly the
+        // inconsistency Google's Windows sign-in check rejects on.
+        const needsOverride =
           !existing ||
           !Array.isArray(existing.brands) ||
-          existing.brands.length === 0;
-        if (brandsEmpty) {
+          existing.brands.length === 0 ||
+          !existing.brands.some((b) => b && b.brand === "Google Chrome");
+        if (needsOverride) {
           Object.defineProperty(Navigator.prototype, "userAgentData", {
             get: () => uaData,
             configurable: true,

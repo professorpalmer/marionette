@@ -18,6 +18,21 @@ function looksLikeGoogleAuth(url: string): boolean {
   }
 }
 
+// Google's "Couldn't sign you in / This browser or app may not be secure"
+// rejection page. When we land here, spoofing already lost this round --
+// surface the system-browser fallback prominently instead of a dead end.
+function isGoogleSigninReject(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (!u.hostname.toLowerCase().endsWith("google.com")) return false;
+    const s = (u.pathname + u.search).toLowerCase();
+    return s.includes("/signin/rejected") || s.includes("deniedsigninrejected") ||
+      s.includes("disallowed_useragent");
+  } catch {
+    return false;
+  }
+}
+
 interface Tab {
   id: string;
   url: string;
@@ -416,6 +431,21 @@ export default function BrowserPane() {
             </div>
           );
         })}
+
+        {isDesktop && isGoogleSigninReject(url) && (
+          <div className="absolute bottom-0 inset-x-0 bg-panel/95 border-t border-edge px-3 py-2 text-[11px] text-txt z-10 flex items-center gap-3">
+            <span className="text-muted">
+              Google blocked the embedded browser for sign-in. Finish signing in
+              with your system browser, then come back.
+            </span>
+            <button
+              onClick={() => openInSystemBrowser("https://accounts.google.com/")}
+              className="shrink-0 px-2 py-1 rounded-md bg-accent/20 border border-accent text-accent hover:bg-accent/30 transition"
+            >
+              Open in system browser
+            </button>
+          </div>
+        )}
 
         {!isDesktop && (
           <div className="absolute bottom-0 inset-x-0 bg-panel/95 border-t border-edge px-3 py-1.5 text-[10px] text-muted z-10">
