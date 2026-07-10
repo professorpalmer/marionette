@@ -65,6 +65,38 @@ function readPmHarnessStateFile(name) {
   return null;
 }
 
+const { decideBackendPortRefresh } = require("./backend-marker.cjs");
+
+/** Re-point renderer globals + notify panels after backendPort/token change. */
+function reinjectBackendIntoRenderer() {
+  try {
+    if (win && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.executeJavaScript(
+        `window.__HARNESS_PORT__=${backendPort};window.__HARNESS_TOKEN__=${JSON.stringify(harnessToken)};`
+      ).catch(() => {});
+      win.webContents.send("backend:respawned", backendPort);
+    }
+  } catch { /* window gone */ }
+}
+
+/**
+ * If backend.json already points at a different port than our in-memory
+ * backendPort (typical after an unexpected respawn or second-window reuse),
+ * adopt it so IPC retries stop hammering the dead port.
+ */
+function tryRefreshBackendPortFromMarker() {
+  const decision = decideBackendPortRefresh(
+    readPmHarnessStateFile("backend.json"),
+    backendPort,
+  );
+  if (!decision.adopt) return false;
+  backendPort = decision.port;
+  const t = readPmHarnessStateFile("token");
+  if (t && t.trim()) harnessToken = t.trim();
+  reinjectBackendIntoRenderer();
+  return true;
+}
+
 // Persistent main-process log, shared with the backend [out]/[err] lines under
 // ~/.pmharness/electron.log so a death is always diagnosable after the fact.
 function logMain(msg) {
@@ -183,15 +215,17 @@ let startInFlight = null;
 
 // The source checkout the app runs from. Marionette always runs from source
 // (Hermes model): the backend is `harness.cli` under this root, and the updater
-// pulls + rebuilds it in place. HARNESS_REPO wins; in a packaged thin shell the
-// checkout lives at ~/.marionette/marionette (bootstrapped on first launch); in
-// dev the repo is two levels up from webapp/electron/.
+// pulls + rebuilds it in place. Optional MARIONETTE_CHECKOUT / legacy
+// HARNESS_CHECKOUT overrides the checkout path only -- do not use HARNESS_REPO
+// here (that env is the user's open project). Packaged thin shell: checkout at
+// ~/.marionette/marionette; dev: two levels up from webapp/electron/.
 function packagedRepoRoot() {
   return path.join(os.homedir(), ".marionette", "marionette");
 }
 
 function resolveRepoRoot() {
-  if (process.env.HARNESS_REPO) return process.env.HARNESS_REPO;
+  const checkout = process.env.MARIONETTE_CHECKOUT || process.env.HARNESS_CHECKOUT;
+  if (checkout) return checkout;
   if (isPackaged) return packagedRepoRoot();
   return path.resolve(__dirname, "..", "..");
 }
@@ -455,14 +489,20 @@ async function _startBackendOnce() {
   // PYTHONUNBUFFERED: stream backend stdout/stderr to the log immediately instead
   // of sitting in a pipe buffer (that buffering hid the real startup/crash lines
   // and left a ~20-min gap between "spawning" and "GUI on" in the log).
+  // Do NOT default HARNESS_REPO to repoRoot (the Marionette checkout). That env
+  // is the user's open project: when unset, the backend restores the last
+  // project from workspace.json, or opens nothing on first launch. Forcing the
+  // checkout here made every launch look like "Marionette" was the project.
   const customEnv = {
     ..._shellEnv,
     ...process.env,
     PYTHONUNBUFFERED: "1",
-    HARNESS_REPO: process.env.HARNESS_REPO || repoRoot,
     HARNESS_TOKEN: harnessToken,
     HARNESS_APP_RUN_ID: harnessAppRunId,
   };
+  if (!process.env.HARNESS_REPO) {
+    delete customEnv.HARNESS_REPO;
+  }
 
   // Point PMHARNESS_PYTHON at the checkout's venv interpreter for dispatching
   // Puppetmaster / implement workers. The venv has editable harness + puppetmaster
@@ -514,17 +554,8 @@ async function _startBackendOnce() {
     startBackend()
       .then(() => {
         _dbg(`[backend] respawned on ${backendPort}`);
-        try {
-          if (win && win.webContents && !win.webContents.isDestroyed()) {
-            // Re-point the renderer at the new port. The main-process IPC bridge
-            // (backendRequest + harness:stream) already reads the updated
-            // backendPort, but any direct window.__HARNESS_PORT__ consumer would
-            // otherwise stay bound to the dead port -- that is the "UI goes dark at
-            // finish-time" stranding. Re-inject it and signal panels to re-fetch.
-            win.webContents.executeJavaScript(`window.__HARNESS_PORT__=${backendPort};window.__HARNESS_TOKEN__=${JSON.stringify(harnessToken)};`).catch(() => {});
-            win.webContents.send("backend:respawned", backendPort);
-          }
-        } catch { /* window gone */ }
+        // Re-point the renderer at the new port and signal panels to re-fetch.
+        reinjectBackendIntoRenderer();
       })
       .catch((e) => _dbg(`[backend] respawn failed: ${e && e.message}`));
   });
@@ -580,10 +611,14 @@ async function backendRequest(method, apiPath, body, { retries = 5, delayMs = 20
     } catch (err) {
       lastErr = err;
       if (!_isTransientBackendConnError(err) || attempt === retries) break;
+      // Marker may already list a new port (respawn / other window) while our
+      // in-memory backendPort is still the dead one -- adopt before retrying.
+      tryRefreshBackendPortFromMarker();
       // If a start is already in flight, wait for it before the next try so we
       // hit the new port instead of spinning on the dead one.
       if (startInFlight) {
         try { await startInFlight; } catch { /* start failed; still retry once */ }
+        tryRefreshBackendPortFromMarker();
       } else {
         await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
       }
@@ -815,15 +850,16 @@ function sendBootstrapProgress(win, msg, pct) {
 async function ensurePackagedCheckout() {
   if (!isPackaged) return resolveRepoRoot();
   const repoRoot = packagedRepoRoot();
+  // Do not set HARNESS_REPO to the Marionette checkout. resolveRepoRoot() already
+  // uses packagedRepoRoot() when HARNESS_REPO is unset; HARNESS_REPO is reserved
+  // for the user's open project (restored from workspace.json by the backend).
   if (isInstallComplete(repoRoot)) {
-    process.env.HARNESS_REPO = repoRoot;
     return repoRoot;
   }
   const win = createBootstrapWindow();
   const send = (msg, pct) => sendBootstrapProgress(win, msg, pct);
   try {
     await runBootstrap(repoRoot, send);
-    process.env.HARNESS_REPO = repoRoot;
     return repoRoot;
   } finally {
     try { if (bootstrapWin) bootstrapWin.close(); } catch {}

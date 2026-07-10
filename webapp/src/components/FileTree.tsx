@@ -158,11 +158,18 @@ export default function FileTree() {
     window.addEventListener("harness-config-changed", handleRefresh);
     window.addEventListener("harness-file-saved", handleRefresh);
     window.addEventListener("harness-file-edited", handleRefresh);
+    // Electron: main fires this after backend respawn / port refresh so a
+    // transient ECONNREFUSED does not stick in the Files panel.
+    const ipc: any = (typeof window !== "undefined" && (window as any).harnessIPC) || null;
+    const unsubRespawn = typeof ipc?.onBackendRespawned === "function"
+      ? ipc.onBackendRespawned(() => { void loadFiles(); })
+      : null;
 
     return () => {
       window.removeEventListener("harness-config-changed", handleRefresh);
       window.removeEventListener("harness-file-saved", handleRefresh);
       window.removeEventListener("harness-file-edited", handleRefresh);
+      try { unsubRespawn?.(); } catch { /* ignore */ }
     };
   }, []);
 
