@@ -26,11 +26,14 @@ def _fake_backend(home: str, *, with_uvicorn: bool = True, env_body: str | None 
         venv_bin = os.path.dirname(wiki_backend._venv_bin(os.path.join(backend, ".venv"), "uvicorn"))
         os.makedirs(venv_bin, exist_ok=True)
         open(wiki_backend._venv_bin(os.path.join(backend, ".venv"), "uvicorn"), "w").close()
-    if env_body is not None:
+    # a bundled demo dir so WIKI_ROOT points somewhere real
+    demo = os.path.join(home, "wiki-demo")
+    os.makedirs(demo, exist_ok=True)
+    if env_body is None:
+        env_body = f"WIKI_ROOT={demo}\nOWNER_TOKEN=test-token\n"
+    if env_body != "":
         with open(os.path.join(backend, ".env"), "w") as f:
             f.write(env_body)
-    # a bundled demo dir so WIKI_ROOT points somewhere real
-    os.makedirs(os.path.join(home, "wiki-demo"), exist_ok=True)
     return backend
 
 
@@ -51,7 +54,7 @@ def isolated_state(tmp_path, monkeypatch):
 
 def test_provision_generates_env_and_registers_owner_token(isolated_state, monkeypatch):
     home, _ = isolated_state
-    _fake_backend(str(home))  # pretend the repo is already cloned + venv set up
+    _fake_backend(str(home), env_body="")  # cloned + venv, but no .env yet
 
     backend_dir = wiki_backend._provision_wiki(log=open(os.devnull, "ab"))
 
@@ -103,8 +106,59 @@ def test_find_existing_backend_dir_prefers_override(isolated_state, tmp_path, mo
     override = tmp_path / "custom"
     os.makedirs(os.path.join(str(override), "app"))
     open(os.path.join(str(override), "app", "main.py"), "w").close()
+    (override / ".env").write_text("WIKI_ROOT=/tmp/wiki\n", encoding="utf-8")
     monkeypatch.setenv("MARIONETTE_WIKI_DIR", str(override))
     assert wiki_backend._find_existing_backend_dir() == str(override)
+
+
+def test_backend_env_ready_requires_wiki_root(tmp_path):
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    assert wiki_backend._backend_env_ready(str(backend)) is False
+    (backend / ".env").write_text("# empty\nOWNER_TOKEN=x\n", encoding="utf-8")
+    assert wiki_backend._backend_env_ready(str(backend)) is False
+    (backend / ".env").write_text("WIKI_ROOT=C:/wiki\nOWNER_TOKEN=x\n", encoding="utf-8")
+    assert wiki_backend._backend_env_ready(str(backend)) is True
+
+
+def test_find_existing_skips_dev_checkout_without_env(tmp_path, monkeypatch):
+    """Bare ~/portable-llm-wiki/backend must not beat a ready managed checkout."""
+    home = tmp_path / "home"
+    managed = home / ".marionette" / "wiki" / "backend"
+    os.makedirs(managed / "app")
+    (managed / "app" / "main.py").write_text("# app\n", encoding="utf-8")
+    (managed / ".env").write_text("WIKI_ROOT=/managed\n", encoding="utf-8")
+
+    dev = home / "portable-llm-wiki" / "backend"
+    os.makedirs(dev / "app")
+    (dev / "app" / "main.py").write_text("# app\n", encoding="utf-8")
+    # no .env on the developer checkout
+
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("MARIONETTE_WIKI_DIR", raising=False)
+    monkeypatch.delenv("MARIONETTE_WIKI_HOME", raising=False)
+    # Force expanduser to our fake home
+    monkeypatch.setattr(
+        wiki_backend.os.path, "expanduser",
+        lambda p: p.replace("~", str(home)).replace("/", os.sep) if isinstance(p, str) else p,
+    )
+    found = wiki_backend._find_existing_backend_dir()
+    assert found == str(managed)
+
+
+def test_find_existing_skips_unready_only_candidate(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    dev = home / "portable-llm-wiki" / "backend"
+    os.makedirs(dev / "app")
+    (dev / "app" / "main.py").write_text("# app\n", encoding="utf-8")
+    monkeypatch.delenv("MARIONETTE_WIKI_DIR", raising=False)
+    monkeypatch.setenv("MARIONETTE_WIKI_HOME", str(home / ".marionette" / "wiki"))
+    monkeypatch.setattr(
+        wiki_backend.os.path, "expanduser",
+        lambda p: p.replace("~", str(home)).replace("/", os.sep) if isinstance(p, str) else p,
+    )
+    assert wiki_backend._find_existing_backend_dir() is None
 
 
 def test_spawn_uses_platform_process_group_kwargs(monkeypatch):

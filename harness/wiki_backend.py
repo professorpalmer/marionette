@@ -20,8 +20,12 @@ comes for free with no per-OS installer surgery.
 
 Discovery order for an existing backend dir:
   1. $MARIONETTE_WIKI_DIR (explicit override)
-  2. ~/portable-llm-wiki/backend (a developer checkout)
-  3. the managed clone under $MARIONETTE_WIKI_HOME (default ~/.marionette/wiki)
+  2. the managed clone under $MARIONETTE_WIKI_HOME (default ~/.marionette/wiki)
+  3. ~/portable-llm-wiki/backend (a developer checkout)
+
+Only candidates with a usable backend/.env (WIKI_ROOT set) are selected.
+A bare protocol checkout without .env is skipped so we do not spawn a
+process that immediately dies with "WIKI_ROOT is not set".
 
 Opt out entirely with MARIONETTE_NO_WIKI=1. The backend is spawned detached so
 it survives Marionette backend respawns and stays available to other clients
@@ -98,15 +102,44 @@ def _is_backend_dir(path: str) -> bool:
     return bool(path) and os.path.isfile(os.path.join(path, "app", "main.py"))
 
 
+def _backend_env_ready(path: str) -> bool:
+    """True when backend/.env exists and declares a non-empty WIKI_ROOT.
+
+    Without this, a developer checkout of portable-llm-wiki (app/ present,
+    no .env) wins discovery and uvicorn dies immediately on import with
+    RuntimeError: WIKI_ROOT is not set -- leaving the panel unreachable.
+    """
+    if not path:
+        return False
+    env_file = os.path.join(path, ".env")
+    if not os.path.isfile(env_file):
+        return False
+    try:
+        with open(env_file, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                if key.strip() == "WIKI_ROOT" and val.strip():
+                    return True
+    except Exception:
+        return False
+    return False
+
+
 def _find_existing_backend_dir() -> str | None:
     candidates = []
     override = os.environ.get("MARIONETTE_WIKI_DIR", "").strip()
     if override:
         candidates.append(override)
-    candidates.append(os.path.expanduser(os.path.join("~", "portable-llm-wiki", "backend")))
+    # Managed provisioned checkout first: it always has a generated .env.
+    # Developer ~/portable-llm-wiki/backend is second so a bare clone without
+    # .env cannot shadow the working managed backend.
     candidates.append(os.path.join(_managed_home(), "backend"))
+    candidates.append(os.path.expanduser(os.path.join("~", "portable-llm-wiki", "backend")))
     for path in candidates:
-        if _is_backend_dir(path):
+        if _is_backend_dir(path) and _backend_env_ready(path):
             return path
     return None
 
