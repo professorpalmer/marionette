@@ -44,7 +44,12 @@ export default function CheckpointsPane() {
       setCheckpoints(sorted);
     } catch (err: any) {
       if (gen !== fetchGenRef.current) return;
-      setError(err?.message || "Failed to fetch checkpoints");
+      const raw = err?.message || "Failed to fetch checkpoints";
+      // Soften the common boot/respawn race (backend briefly not listening).
+      const soft = /ECONNREFUSED|ECONNRESET|socket hang up/i.test(raw)
+        ? "Harness is starting up — retrying…"
+        : raw;
+      setError(soft);
     } finally {
       if (gen === fetchGenRef.current) setIsLoading(false);
     }
@@ -117,6 +122,12 @@ export default function CheckpointsPane() {
     };
     const onMutated = () => fetchCheckpoints();
     const onVisible = () => { if (!document.hidden) fetchCheckpoints(); };
+    // Electron: main fires this after an unexpected backend respawn on a new
+    // port. Re-fetch so a transient ECONNREFUSED doesn't stick in the panel.
+    const ipc: any = (typeof window !== "undefined" && (window as any).harnessIPC) || null;
+    const unsubRespawn = typeof ipc?.onBackendRespawned === "function"
+      ? ipc.onBackendRespawned(() => { void fetchCheckpoints(); })
+      : null;
 
     window.addEventListener("harness-project-selected", onProject);
     window.addEventListener("harness-config-changed", onSessionOrConfig);
@@ -131,6 +142,7 @@ export default function CheckpointsPane() {
       window.removeEventListener("harness-repo-mutated", onMutated);
       window.removeEventListener("focus", onVisible);
       document.removeEventListener("visibilitychange", onVisible);
+      try { unsubRespawn?.(); } catch { /* ignore */ }
     };
   }, [clearLocalState, fetchCheckpoints, refreshScope]);
 

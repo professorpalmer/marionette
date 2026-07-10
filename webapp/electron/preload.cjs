@@ -80,5 +80,12 @@ contextBridge.exposeInMainWorld("harnessIPC", {
     set: (enabled) => ipcRenderer.invoke("harness:selfDev:set", enabled),
   },
   restart: () => ipcRenderer.invoke("harness:restart"),
+  // Fired when main respawns the Python backend on a new port. Panels that
+  // painted a transient ECONNREFUSED can re-fetch without a full window reload.
+  onBackendRespawned: (cb) => {
+    const handler = (_e, port) => { try { cb(port); } catch (_) {} };
+    ipcRenderer.on("backend:respawned", handler);
+    return () => ipcRenderer.removeListener("backend:respawned", handler);
+  },
   isDesktop: true,
 });

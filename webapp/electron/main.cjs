@@ -531,7 +531,7 @@ function authToken() {
   return harnessToken || "";
 }
 
-function backendRequest(method, apiPath, body) {
+function _backendRequestOnce(method, apiPath, body) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
     const req = http.request({
@@ -546,6 +546,39 @@ function backendRequest(method, apiPath, body) {
     if (data) req.write(data);
     req.end();
   });
+}
+
+function _isTransientBackendConnError(err) {
+  const code = err && (err.code || err.errno);
+  if (code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EPIPE" || code === "ETIMEDOUT") {
+    return true;
+  }
+  const msg = String((err && err.message) || err || "");
+  return /ECONNREFUSED|ECONNRESET|socket hang up/i.test(msg);
+}
+
+// Retry transient loopback refusals. History/wiki/etc. often fetch while the
+// backend is mid-respawn on a new port (exit handler -> startBackend); without
+// this the renderer paints a raw "harness:getJSON ECONNREFUSED" that clears on
+// the next manual refresh. A few short retries cover the usual gap.
+async function backendRequest(method, apiPath, body, { retries = 5, delayMs = 200 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await _backendRequestOnce(method, apiPath, body);
+    } catch (err) {
+      lastErr = err;
+      if (!_isTransientBackendConnError(err) || attempt === retries) break;
+      // If a start is already in flight, wait for it before the next try so we
+      // hit the new port instead of spinning on the dead one.
+      if (startInFlight) {
+        try { await startInFlight; } catch { /* start failed; still retry once */ }
+      } else {
+        await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 ipcMain.on("harness:rendererError", (_e, payload) => {
