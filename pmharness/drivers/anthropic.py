@@ -12,28 +12,9 @@ import urllib.request
 import urllib.error
 
 from .base import DriverResponse, SYSTEM_PROMPT
+from .prompt_cache import cache_control as _cache_control, prompt_cache_enabled
 from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
-
-
-def _cache_control(*, stable: bool) -> dict:
-    """Build an Anthropic cache_control breakpoint.
-
-    Stable prefixes (system + last tool schema) default to a 1h TTL so repeats
-    across long sessions keep paying the cheaper cache read. Moving history
-    breakpoints stay on the default 5m window (no ttl key) because they shift
-    every turn and a 2.0x 1h write would be wasted. Override via
-    HARNESS_ANTHROPIC_CACHE_TTL=1h|5m; 5m/off drops ttl on stable markers too.
-    """
-    marker = {"type": "ephemeral"}
-    if not stable:
-        return marker
-    ttl = (os.environ.get("HARNESS_ANTHROPIC_CACHE_TTL") or "1h").strip().lower()
-    if ttl in ("5m", "5min", "off", "0", "false", "no"):
-        return marker
-    # Default and explicit 1h (or any unrecognized value) keep the extended TTL.
-    marker["ttl"] = "1h"
-    return marker
 
 
 class AnthropicDriver:
@@ -57,6 +38,9 @@ class AnthropicDriver:
         self.timeout = timeout
         self.enable_prompt_cache = enable_prompt_cache
 
+    def _prompt_cache_on(self) -> bool:
+        return bool(self.enable_prompt_cache) and prompt_cache_enabled()
+
     def _key(self) -> str:
         key = os.environ.get(self.api_key_env, "").strip()
         if not key:
@@ -70,7 +54,7 @@ class AnthropicDriver:
             "max_tokens": self.max_tokens,
             "messages": [{"role": "user", "content": task_prompt}],
         }
-        if self.enable_prompt_cache:
+        if self._prompt_cache_on():
             body["system"] = [{"type": "text", "text": system,
                                "cache_control": _cache_control(stable=True)}]
         else:
@@ -85,7 +69,7 @@ class AnthropicDriver:
             "x-api-key": self._key(),
             "anthropic-version": self.version,
         }
-        if self.enable_prompt_cache:
+        if self._prompt_cache_on():
             headers["anthropic-beta"] = "prompt-caching-2024-07-31"
 
         def _call() -> DriverResponse:
@@ -213,7 +197,7 @@ class AnthropicDriver:
         }
 
         if system:
-            if self.enable_prompt_cache:
+            if self._prompt_cache_on():
                 body["system"] = [{"type": "text", "text": system,
                                    "cache_control": _cache_control(stable=True)}]
             else:
@@ -228,7 +212,7 @@ class AnthropicDriver:
             # whole schema on every call. Anthropic caches the prefix up to the
             # LAST cache_control marker, so marking the final tool caches
             # system + tools together -- the big-dog multi-turn cost win.
-            if self.enable_prompt_cache and anthropic_tools:
+            if self._prompt_cache_on() and anthropic_tools:
                 anthropic_tools[-1] = {**anthropic_tools[-1],
                                        "cache_control": _cache_control(stable=True)}
             body["tools"] = anthropic_tools
@@ -253,7 +237,7 @@ class AnthropicDriver:
         #
         # History markers intentionally omit ttl (default 5m write). Only the
         # stable system/tool breakpoints pay for the extended 1h TTL.
-        if self.enable_prompt_cache and anthropic_msgs:
+        if self._prompt_cache_on() and anthropic_msgs:
             history_cc = _cache_control(stable=False)
 
             def _mark(msg: dict) -> None:
@@ -292,7 +276,7 @@ class AnthropicDriver:
             "x-api-key": self._key(),
             "anthropic-version": self.version,
         }
-        if self.enable_prompt_cache:
+        if self._prompt_cache_on():
             headers["anthropic-beta"] = "prompt-caching-2024-07-31"
         return headers
 

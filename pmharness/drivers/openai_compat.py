@@ -16,6 +16,10 @@ import urllib.error
 from typing import Callable
 
 from .base import DriverResponse, SYSTEM_PROMPT
+from .prompt_cache import (
+    apply_openai_compat_cache_control,
+    maybe_attach_openrouter_session_id,
+)
 from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
 
@@ -37,6 +41,7 @@ class OpenAICompatDriver:
         timeout: int = 90,
         extra_headers: dict | None = None,
         enable_reasoning: bool = False,
+        session_id: str | None = None,
     ) -> None:
         self.name = name
         self.model = model
@@ -47,6 +52,7 @@ class OpenAICompatDriver:
         self.timeout = timeout
         self.extra_headers = extra_headers or {}
         self.enable_reasoning = enable_reasoning
+        self.session_id = session_id
 
     def _key(self) -> str:
         key = os.environ.get(self.api_key_env, "").strip()
@@ -70,7 +76,38 @@ class OpenAICompatDriver:
                                      or "invalid_request" in d or "not supported" in d
                                      or "unexpected" in d)
 
-    def complete(self, task_prompt: str, *, system: str = SYSTEM_PROMPT) -> DriverResponse:
+    def _prepare_body(
+        self,
+        body: dict,
+        *,
+        messages: list | None = None,
+        system: str | None = None,
+        session_id: str | None = None,
+    ) -> dict:
+        """Stamp explicit cache_control (Claude/Qwen) and OpenRouter session_id.
+
+        Best-effort: never raises; automatic-cache models are left untouched.
+        """
+        try:
+            apply_openai_compat_cache_control(body, model=self.model)
+            maybe_attach_openrouter_session_id(
+                body,
+                base_url=self.base_url,
+                session_id=session_id if session_id is not None else self.session_id,
+                messages=messages if messages is not None else body.get("messages"),
+                system=system,
+            )
+        except Exception:
+            pass
+        return body
+
+    def complete(
+        self,
+        task_prompt: str,
+        *,
+        system: str = SYSTEM_PROMPT,
+        session_id: str | None = None,
+    ) -> DriverResponse:
         url = f"{self.base_url}/chat/completions"
         body = {
             "model": self.model,
@@ -81,6 +118,12 @@ class OpenAICompatDriver:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
+        self._prepare_body(
+            body,
+            messages=body["messages"],
+            system=system,
+            session_id=session_id,
+        )
         data = json.dumps(body).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -131,7 +174,14 @@ class OpenAICompatDriver:
 
         return with_retry(_call)
 
-    def chat(self, messages: list, *, tools: list | None = None, system: str | None = None) -> DriverResponse:
+    def chat(
+        self,
+        messages: list,
+        *,
+        tools: list | None = None,
+        system: str | None = None,
+        session_id: str | None = None,
+    ) -> DriverResponse:
         url = f"{self.base_url}/chat/completions"
         full_messages = []
         if system:
@@ -149,6 +199,12 @@ class OpenAICompatDriver:
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+        self._prepare_body(
+            body,
+            messages=full_messages,
+            system=system,
+            session_id=session_id,
+        )
 
         data = json.dumps(body).encode("utf-8")
         headers = {
@@ -237,6 +293,7 @@ class OpenAICompatDriver:
         tools: list | None = None,
         system: str | None = None,
         on_delta: Callable[[str], None],
+        session_id: str | None = None,
     ) -> DriverResponse:
         url = f"{self.base_url}/chat/completions"
         full_messages = []
@@ -257,6 +314,12 @@ class OpenAICompatDriver:
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+        self._prepare_body(
+            body,
+            messages=full_messages,
+            system=system,
+            session_id=session_id,
+        )
 
         data = json.dumps(body).encode("utf-8")
         headers = {
@@ -358,7 +421,9 @@ class OpenAICompatDriver:
                 if (not stream_started and self._reasoning_unsupported(e.code, detail)
                         and body.get("reasoning") is not None):
                     self.enable_reasoning = False
-                    return self.chat(messages, tools=tools, system=system)
+                    return self.chat(
+                        messages, tools=tools, system=system, session_id=session_id,
+                    )
                 return DriverResponse(
                     text="", model=self.name, error=f"HTTP {e.code}: {detail}",
                     latency_ms=(time.time() - t0) * 1000.0,
