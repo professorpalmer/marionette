@@ -16,6 +16,26 @@ from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
 
 
+def _cache_control(*, stable: bool) -> dict:
+    """Build an Anthropic cache_control breakpoint.
+
+    Stable prefixes (system + last tool schema) default to a 1h TTL so repeats
+    across long sessions keep paying the cheaper cache read. Moving history
+    breakpoints stay on the default 5m window (no ttl key) because they shift
+    every turn and a 2.0x 1h write would be wasted. Override via
+    HARNESS_ANTHROPIC_CACHE_TTL=1h|5m; 5m/off drops ttl on stable markers too.
+    """
+    marker = {"type": "ephemeral"}
+    if not stable:
+        return marker
+    ttl = (os.environ.get("HARNESS_ANTHROPIC_CACHE_TTL") or "1h").strip().lower()
+    if ttl in ("5m", "5min", "off", "0", "false", "no"):
+        return marker
+    # Default and explicit 1h (or any unrecognized value) keep the extended TTL.
+    marker["ttl"] = "1h"
+    return marker
+
+
 class AnthropicDriver:
     supports_streaming = True
 
@@ -51,7 +71,8 @@ class AnthropicDriver:
             "messages": [{"role": "user", "content": task_prompt}],
         }
         if self.enable_prompt_cache:
-            body["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+            body["system"] = [{"type": "text", "text": system,
+                               "cache_control": _cache_control(stable=True)}]
         else:
             body["system"] = system
 
@@ -193,7 +214,8 @@ class AnthropicDriver:
 
         if system:
             if self.enable_prompt_cache:
-                body["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+                body["system"] = [{"type": "text", "text": system,
+                                   "cache_control": _cache_control(stable=True)}]
             else:
                 body["system"] = system
 
@@ -208,7 +230,7 @@ class AnthropicDriver:
             # system + tools together -- the big-dog multi-turn cost win.
             if self.enable_prompt_cache and anthropic_tools:
                 anthropic_tools[-1] = {**anthropic_tools[-1],
-                                       "cache_control": {"type": "ephemeral"}}
+                                       "cache_control": _cache_control(stable=True)}
             body["tools"] = anthropic_tools
             body["tool_choice"] = {"type": "auto"}
 
@@ -228,7 +250,12 @@ class AnthropicDriver:
         # the newest suffix for next turn. This is the multi-turn cache pattern
         # top agents (Cursor/Claude Code) rely on to keep input cost near-flat as
         # the conversation grows.
+        #
+        # History markers intentionally omit ttl (default 5m write). Only the
+        # stable system/tool breakpoints pay for the extended 1h TTL.
         if self.enable_prompt_cache and anthropic_msgs:
+            history_cc = _cache_control(stable=False)
+
             def _mark(msg: dict) -> None:
                 # Anthropic rejects cache_control on EMPTY text blocks (400
                 # "cache_control cannot be set for empty text blocks"). Only mark
@@ -242,12 +269,12 @@ class AnthropicDriver:
                         # (tool_use / tool_result / image) can carry the marker.
                         if last.get("type") == "text" and not str(last.get("text") or "").strip():
                             return
-                        content[-1] = {**last, "cache_control": {"type": "ephemeral"}}
+                        content[-1] = {**last, "cache_control": dict(history_cc)}
                 elif isinstance(content, str):
                     if not content.strip():
                         return  # never mark an empty string block
                     msg["content"] = [{"type": "text", "text": content,
-                                       "cache_control": {"type": "ephemeral"}}]
+                                       "cache_control": dict(history_cc)}]
             # Stable prefix breakpoint (second-to-last message): this position was
             # the moving marker last turn, so its prefix is already cached and
             # reused as a READ this turn.

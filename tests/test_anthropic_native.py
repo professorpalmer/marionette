@@ -86,14 +86,19 @@ def test_anthropic_chat_tools_and_system(monkeypatch):
     # Verify body
     body_data = json.loads(req.data.decode("utf-8"))
     
-    # Assert system cached ephemeral block shape
+    # Assert system cached ephemeral block shape (stable = 1h TTL by default)
     assert body_data["system"] == [
         {
             "type": "text",
             "text": "my system prompt",
-            "cache_control": {"type": "ephemeral"}
+            "cache_control": {"type": "ephemeral", "ttl": "1h"}
         }
     ]
+    # Last tool is the other stable breakpoint; history (single user msg) stays 5m
+    assert body_data["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    hist = body_data["messages"][-1]["content"][-1]["cache_control"]
+    assert hist == {"type": "ephemeral"}
+    assert "ttl" not in hist
 
     # Assert tools conversion schema shape {name, description, input_schema}
     assert len(body_data["tools"]) == 1

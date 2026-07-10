@@ -62,13 +62,13 @@ def test_anthropic_prompt_caching_enabled(monkeypatch):
     # Check Headers
     assert req.headers.get("Anthropic-beta") == "prompt-caching-2024-07-31"
 
-    # Check Body
+    # Check Body -- stable system breakpoint defaults to extended 1h TTL
     body_data = json.loads(req.data.decode("utf-8"))
     assert body_data["system"] == [
         {
             "type": "text",
             "text": "my custom system prompt",
-            "cache_control": {"type": "ephemeral"}
+            "cache_control": {"type": "ephemeral", "ttl": "1h"}
         }
     ]
 
@@ -295,6 +295,26 @@ def _mk_driver():
     )
 
 
+def _openai_tool(name: str = "x"):
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": "desc",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    }
+
+
+def _marker_on(msg):
+    c = msg.get("content")
+    if isinstance(c, list):
+        for b in c:
+            if isinstance(b, dict) and b.get("cache_control"):
+                return b["cache_control"]
+    return None
+
+
 def test_history_uses_two_stable_breakpoints():
     # A multi-message history must carry a breakpoint on BOTH the last and the
     # second-to-last message so the growing prefix is reused as a cache READ next
@@ -305,13 +325,49 @@ def test_history_uses_two_stable_breakpoints():
         {"role": "assistant", "content": "second"},
         {"role": "user", "content": "third"},
     ]
-    body = d._build_body(msgs, tools=[{"name": "x", "description": "y", "input_schema": {}}], system="sys")
+    body = d._build_body(msgs, tools=[_openai_tool()], system="sys")
     out = body["messages"]
-    def _has_marker(m):
-        c = m.get("content")
-        return isinstance(c, list) and any(isinstance(b, dict) and b.get("cache_control") for b in c)
-    assert _has_marker(out[-1]), "last message must be cache-marked"
-    assert _has_marker(out[-2]), "second-to-last message must be cache-marked (stable prefix)"
+    assert _marker_on(out[-1]) is not None, "last message must be cache-marked"
+    assert _marker_on(out[-2]) is not None, "second-to-last message must be cache-marked (stable prefix)"
+
+
+def test_stable_markers_default_to_1h_history_omits_ttl():
+    # Smart policy: system + last-tool pay for 1h; moving history markers stay
+    # on the default 5m window (no ttl key) so we do not burn a 2.0x write on
+    # breakpoints that shift every turn.
+    d = _mk_driver()
+    msgs = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "second"},
+        {"role": "user", "content": "third"},
+    ]
+    body = d._build_body(msgs, tools=[_openai_tool("read_file")], system="sys")
+
+    assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+    hist_last = _marker_on(body["messages"][-1])
+    hist_prev = _marker_on(body["messages"][-2])
+    assert hist_last == {"type": "ephemeral"}
+    assert hist_prev == {"type": "ephemeral"}
+    assert "ttl" not in hist_last and "ttl" not in hist_prev
+
+
+def test_env_5m_drops_ttl_on_stable_markers(monkeypatch):
+    monkeypatch.setenv("HARNESS_ANTHROPIC_CACHE_TTL", "5m")
+    d = _mk_driver()
+    msgs = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "second"},
+    ]
+    body = d._build_body(msgs, tools=[_openai_tool()], system="sys")
+
+    assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert "ttl" not in body["system"][0]["cache_control"]
+    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "ttl" not in body["tools"][-1]["cache_control"]
+    # History markers remain ttl-less either way.
+    assert _marker_on(body["messages"][-1]) == {"type": "ephemeral"}
 
 
 def test_total_cache_breakpoints_within_anthropic_limit():
@@ -319,8 +375,10 @@ def test_total_cache_breakpoints_within_anthropic_limit():
     # two history markers = 4 exactly; never more.
     d = _mk_driver()
     msgs = [{"role": "user", "content": f"m{i}"} for i in range(6)]
-    body = d._build_body(msgs, tools=[{"name": "a", "description": "b", "input_schema": {}}], system="sys")
+    body = d._build_body(msgs, tools=[_openai_tool("a")], system="sys")
     assert _count_cache_markers(body) <= 4
+    assert body["system"][0]["cache_control"].get("ttl") == "1h"
+    assert body["tools"][-1]["cache_control"].get("ttl") == "1h"
 
 
 def test_single_message_history_still_valid():
@@ -328,3 +386,5 @@ def test_single_message_history_still_valid():
     d = _mk_driver()
     body = d._build_body([{"role": "user", "content": "only"}], tools=None, system="sys")
     assert _count_cache_markers(body) <= 4
+    assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert _marker_on(body["messages"][-1]) == {"type": "ephemeral"}
