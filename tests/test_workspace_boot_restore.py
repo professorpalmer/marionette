@@ -101,6 +101,125 @@ def test_boot_skips_app_install_root_and_scrubs_recents(reload_server, tmp_path,
     assert str(user_proj) in data["recents"]
 
 
+def _mixed_case_spelling(path: str) -> str:
+    """A differently-cased spelling of the same directory.
+
+    On win32 ``os.path.normcase`` folds case, so the swapped spelling still
+    denotes the same path and exercises the case-insensitive guard. On POSIX
+    paths are case-sensitive, so return the original (the test degenerates to
+    an exact match but still passes).
+    """
+    swapped = path.swapcase()
+    if os.path.normcase(swapped) == os.path.normcase(path):
+        return swapped
+    return path
+
+
+def test_app_root_guard_matches_mixed_case(tmp_path, monkeypatch):
+    """Windows surfaces the same dir with mixed casing; the guard must still hit."""
+    import harness.server as srv
+    app = tmp_path / "App-Checkout"
+    app.mkdir()
+    monkeypatch.setenv("MARIONETTE_APP_ROOT", _mixed_case_spelling(str(app)))
+    assert srv._is_app_install_root(str(app))
+    assert srv._is_app_install_root(_mixed_case_spelling(str(app)))
+    assert not srv._is_app_install_root(str(tmp_path))
+
+
+def test_record_recent_refuses_mixed_case_app_root(tmp_path, monkeypatch):
+    """_record_recent_workspace must refuse the app root in any spelling."""
+    import harness.server as srv
+    user = tmp_path / "user-proj"
+    user.mkdir()
+    app = tmp_path / "App-Checkout"
+    app.mkdir()
+    monkeypatch.setenv("MARIONETTE_APP_ROOT", _mixed_case_spelling(str(app)))
+    monkeypatch.setattr(srv, "_workspace_json_path", lambda: str(tmp_path / "workspace.json"))
+    monkeypatch.setattr(srv, "_resolve_existing_state_file", lambda name: str(tmp_path / name))
+    srv._record_recent_workspace(str(user))
+    srv._record_recent_workspace(str(app))
+    srv._record_recent_workspace(_mixed_case_spelling(str(app)))
+    data = json.loads((tmp_path / "workspace.json").read_text(encoding="utf-8"))
+    assert data["repo"] == str(user)
+    assert str(app) not in data["recents"]
+    assert _mixed_case_spelling(str(app)) not in data["recents"]
+    assert str(user) in data["recents"]
+
+
+def test_boot_app_root_active_session_promotes_user_repo_session(reload_server, tmp_path, monkeypatch):
+    """Stale active session rooted at the app checkout must not re-point the
+    workspace: boot keeps the restored user repo and activates the newest
+    session under it instead (same-workspace promotion)."""
+    user_proj = tmp_path / "dugout"
+    user_proj.mkdir()
+    app_root = tmp_path / "App-Checkout"
+    app_root.mkdir()
+    (tmp_path / "workspace.json").write_text(
+        json.dumps({"repo": str(user_proj), "recents": [str(user_proj)]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "harness_sessions.json").write_text(json.dumps({
+        "sessions": [
+            {"id": "user-old", "title": "Old", "created": 1.0,
+             "workspace_root": str(user_proj), "input_tokens": 5},
+            {"id": "user-new", "title": "New", "created": 2.0,
+             "workspace_root": str(user_proj), "input_tokens": 5},
+            {"id": "approot1", "title": "App work", "created": 3.0,
+             "workspace_root": str(app_root), "input_tokens": 7},
+        ],
+        "active": "approot1",
+    }), encoding="utf-8")
+    monkeypatch.setenv("MARIONETTE_APP_ROOT", _mixed_case_spelling(str(app_root)))
+    srv = reload_server(HARNESS_REPO=None)
+    assert srv._cfg.repo == str(user_proj)
+    assert srv._sessions.active == "user-new"
+    # Non-empty app-root rows survive; they just must not drive selection.
+    assert "approot1" in {s["id"] for s in srv._sessions.rows()}
+
+
+def test_boot_purges_empty_app_root_session_rows(reload_server, tmp_path, monkeypatch):
+    """Empty app-root rows (zero tokens, no transcript body) are deleted at
+    boot together with their transcript files; non-empty rows are kept."""
+    user_proj = tmp_path / "proj"
+    user_proj.mkdir()
+    app_root = tmp_path / "App-Checkout"
+    app_root.mkdir()
+    (tmp_path / "workspace.json").write_text(
+        json.dumps({"repo": str(user_proj)}),
+        encoding="utf-8",
+    )
+    trans_dir = tmp_path / "transcripts"
+    trans_dir.mkdir()
+    (trans_dir / "empty1.json").write_text(
+        json.dumps({"history": [], "display": []}), encoding="utf-8"
+    )
+    (trans_dir / "busy1.json").write_text(
+        json.dumps({"history": [{"role": "user", "content": "hi"}], "display": []}),
+        encoding="utf-8",
+    )
+    (tmp_path / "harness_sessions.json").write_text(json.dumps({
+        "sessions": [
+            {"id": "empty1", "title": "New session", "created": 1.0,
+             "workspace_root": str(app_root)},
+            {"id": "busy1", "title": "Real work", "created": 2.0,
+             "workspace_root": str(app_root)},
+            {"id": "user1", "title": "User", "created": 3.0,
+             "workspace_root": str(user_proj)},
+        ],
+        "active": "empty1",
+    }), encoding="utf-8")
+    monkeypatch.setenv("MARIONETTE_APP_ROOT", str(app_root))
+    srv = reload_server(HARNESS_REPO=None)
+    ids = {s["id"] for s in srv._sessions.rows()}
+    assert "empty1" not in ids
+    assert "busy1" in ids
+    assert "user1" in ids
+    assert not (trans_dir / "empty1.json").exists()
+    assert (trans_dir / "busy1.json").exists()
+    # Active was the purged empty row; promotion lands on the restored repo.
+    assert srv._sessions.active == "user1"
+
+
 def test_pick_boot_workspace_prefers_repo_then_recents(tmp_path, monkeypatch):
     import harness.server as srv
     app = tmp_path / "marionette-app"

@@ -37,6 +37,7 @@ from .sessions import (
     SessionStore,
     save_transcript,
     load_transcript,
+    session_stored_root,
     session_visible_for_workspace,
 )
 from .session_runners import SessionRunnerRegistry, LeaseExhaustedError
@@ -1274,26 +1275,37 @@ def _get_workspace_driver(repo: str):
     except Exception:
         return None
 
+def _norm_realpath(path: str) -> str:
+    """Canonical form for path comparisons: realpath + normcase.
+
+    On Windows the same directory surfaces with mixed drive-letter / component
+    casing (env-var spelling, 8.3 short names), so raw realpath strings are
+    not comparable with ``==``. Mirrors ``_norm_path`` in job_scoping/sessions.
+    """
+    return os.path.normcase(os.path.realpath(path))
+
+
 def _app_install_roots() -> list:
     """Paths that are the Marionette app itself, not user projects.
 
     The packaged checkout (~/.marionette/marionette) and the live source root
     Electron passes as MARIONETTE_APP_ROOT must never auto-appear as the open
     workspace or in PROJECTS recents -- users only see them if they open that
-    folder manually for the current session.
+    folder manually for the current session. Entries are ``_norm_realpath``
+    canonical so comparisons stay case-insensitive on Windows.
     """
     roots = []
     for key in ("MARIONETTE_APP_ROOT", "HARNESS_APP_ROOT"):
         raw = (os.environ.get(key) or "").strip()
         if raw:
             try:
-                roots.append(os.path.realpath(raw))
+                roots.append(_norm_realpath(raw))
             except OSError:
                 pass
     packaged = os.path.join(os.path.expanduser("~"), ".marionette", "marionette")
     try:
         if os.path.isdir(packaged):
-            roots.append(os.path.realpath(packaged))
+            roots.append(_norm_realpath(packaged))
     except OSError:
         pass
     # Dedupe while preserving order.
@@ -1311,7 +1323,7 @@ def _is_app_install_root(path: str) -> bool:
     if not path:
         return False
     try:
-        rp = os.path.realpath(path)
+        rp = _norm_realpath(path)
     except OSError:
         return False
     return rp in set(_app_install_roots())
@@ -2107,6 +2119,70 @@ def _rebuild_pilot_and_session():
             _runners.get_or_create(active_id, lambda: _pilot)
             _runners.set_active_view(active_id)
 
+
+def _session_row_is_empty(row: dict) -> bool:
+    """True for a never-used session: zero token meters and no transcript body."""
+    tokens = 0
+    for key in ("input_tokens", "output_tokens", "cache_read_tokens"):
+        try:
+            tokens += int(row.get(key, 0) or 0)
+        except Exception:
+            pass
+    if tokens:
+        return False
+    transcript = load_transcript(_sessions_state_dir(), row.get("id") or "")
+    if isinstance(transcript, dict):
+        return not (transcript.get("history") or transcript.get("display"))
+    return not transcript
+
+
+def _scrub_app_root_sessions_on_boot() -> None:
+    """Boot hygiene for session rows rooted at the Marionette app checkout.
+
+    Rows persisted by pre-v0.9.36 builds still carry repo/workspace_root =
+    the app install root; the boot active-session attach and
+    /api/sessions/switch then re-point the workspace back at the checkout
+    (the "snaps back to marionette" bug). Best-effort, never raises:
+
+    - Purge EMPTY app-root rows (zero tokens, no transcript) including their
+      transcript files (state-scoping invariant #5). Non-empty rows survive
+      but must not drive workspace selection.
+    - If the active session is still rooted at the app checkout while the
+      restored workspace repo differs, activate the newest session under the
+      restored repo instead (same-workspace promotion, invariant #2).
+    """
+    try:
+        app_rows = [
+            s for s in _sessions.rows()
+            if _is_app_install_root(session_stored_root(s))
+        ]
+        if not app_rows:
+            return
+        prior_active = _sessions.active
+        empty_ids = [s["id"] for s in app_rows if _session_row_is_empty(s)]
+        removed = _sessions.remove_rows(empty_ids) if empty_ids else []
+        for sid in removed:
+            _remove_session_transcript(sid)
+
+        restored_repo = (_cfg.repo or "").strip()
+        if not restored_repo or _is_app_install_root(restored_repo):
+            # The user really is working in the checkout (or nothing was
+            # restored): leave the active session alone.
+            return
+        active_row = next(
+            (s for s in _sessions.rows() if s.get("id") == _sessions.active),
+            None,
+        )
+        active_on_app_root = active_row is not None and _is_app_install_root(
+            session_stored_root(active_row)
+        )
+        if active_on_app_root or (prior_active in removed):
+            _sessions.activate_newest_for_root(restored_repo)
+    except Exception as e:
+        _diag("server.boot_app_root_sessions", e)
+
+
+_scrub_app_root_sessions_on_boot()
 
 # Startup: Restore the active/most-recent session's transcript into _pilot
 # and register it as the active view in the runner registry.

@@ -190,6 +190,50 @@ class SessionStore:
             self._save()
             return self._active
 
+    def rows(self) -> list[dict]:
+        """Snapshot of the raw session rows (copies; safe to inspect freely)."""
+        with self._lock:
+            return [dict(s) for s in self._sessions]
+
+    def remove_rows(self, sids: list) -> list[str]:
+        """Delete several session rows in one pass (boot-migration path).
+
+        If the active session is removed, promote a same-workspace sibling via
+        ``_pick_next_active`` -- never a session from another workspace.
+        Callers own transcript-file cleanup for the returned ids.
+        """
+        with self._lock:
+            doomed = {sid for sid in sids if sid}
+            removed = [s["id"] for s in self._sessions if s["id"] in doomed]
+            if not removed:
+                return []
+            active_root = ""
+            if self._active in doomed:
+                for s in self._sessions:
+                    if s["id"] == self._active:
+                        active_root = session_stored_root(s)
+                        break
+            self._sessions = [s for s in self._sessions if s["id"] not in doomed]
+            if self._active in doomed:
+                self._active = self._pick_next_active(active_root)
+            self._save()
+            return removed
+
+    def activate_newest_for_root(self, workspace_root: str) -> Optional[str]:
+        """Point the active session at the newest one under ``workspace_root``.
+
+        Boot same-workspace promotion: when the persisted active session would
+        yank the workspace elsewhere (e.g. a stale app-checkout row), activate
+        the newest session that actually belongs to the restored workspace --
+        or nothing, never a session from a third workspace.
+        """
+        with self._lock:
+            candidate = self._pick_next_active(workspace_root)
+            if candidate != self._active:
+                self._active = candidate
+                self._save()
+            return candidate
+
     def _pick_next_active(self, preferred_root: str) -> Optional[str]:
         """Most recent session in the same workspace as the one just deleted,
         or None. Never promotes a session from another workspace: doing so made

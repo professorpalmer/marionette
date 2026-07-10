@@ -125,3 +125,178 @@ def test_spawn_uses_platform_process_group_kwargs(monkeypatch):
     else:
         assert "start_new_session" not in kwargs
         assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+
+
+# --- interpreter validation (Windows Store alias stubs, dead pythons) ---
+
+
+def test_windowsapps_python_is_rejected_without_running_it(monkeypatch):
+    def forbid_run(*args, **kwargs):
+        raise AssertionError("a WindowsApps stub must be rejected by path, not executed")
+
+    monkeypatch.setattr(wiki_backend.subprocess, "run", forbid_run)
+    stub = r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\python.exe"
+    assert wiki_backend._python_is_usable(stub) is False
+
+
+def test_python_failing_version_check_is_rejected(monkeypatch):
+    monkeypatch.setattr(
+        wiki_backend.subprocess, "run",
+        lambda *args, **kwargs: MagicMock(returncode=9009))
+    assert wiki_backend._python_is_usable("/usr/bin/python-stub") is False
+
+
+def test_python_passing_version_check_is_accepted(monkeypatch):
+    monkeypatch.setattr(
+        wiki_backend.subprocess, "run",
+        lambda *args, **kwargs: MagicMock(returncode=0))
+    assert wiki_backend._python_is_usable("/usr/bin/python3") is True
+
+
+def test_uvicorn_cmd_refuses_windowsapps_stub_from_path(tmp_path, monkeypatch):
+    backend = str(tmp_path / "backend")
+    os.makedirs(backend)
+    monkeypatch.setattr(wiki_backend, "_uvicorn_importable", lambda: False)
+    monkeypatch.setattr(
+        wiki_backend.shutil, "which",
+        lambda name: r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\python.exe")
+    assert wiki_backend._uvicorn_cmd(backend, 8000) is None
+
+
+def test_uvicorn_cmd_prefers_current_interpreter_when_uvicorn_importable(tmp_path, monkeypatch):
+    backend = str(tmp_path / "backend")
+    os.makedirs(backend)
+    monkeypatch.setattr(wiki_backend, "_uvicorn_importable", lambda: True)
+    cmd = wiki_backend._uvicorn_cmd(backend, 8123)
+    assert cmd[:3] == [wiki_backend.sys.executable, "-m", "uvicorn"]
+    assert cmd[-1] == "8123"
+
+
+def test_ensure_reports_no_usable_python(isolated_state, monkeypatch):
+    home, _ = isolated_state
+    backend = _fake_backend(str(home), with_uvicorn=False)
+    monkeypatch.setenv("MARIONETTE_WIKI_DIR", backend)
+    monkeypatch.delenv("MARIONETTE_NO_WIKI", raising=False)
+    monkeypatch.setattr(wiki_backend, "_healthz", lambda *args, **kwargs: False)
+    monkeypatch.setattr(wiki_backend, "_uvicorn_importable", lambda: False)
+    monkeypatch.setattr(wiki_backend.shutil, "which", lambda name: None)
+    monkeypatch.setattr(wiki_backend, "_venv_repair_attempted", True)
+
+    result = wiki_backend.ensure_wiki_backend_running(wait_secs=0.1)
+
+    assert result["started"] is False
+    assert result["reason"] == "no usable python for uvicorn"
+
+
+# --- venv repair (missing/broken venv on an existing checkout) ---
+
+
+def test_missing_venv_triggers_repair_at_most_once(isolated_state, monkeypatch):
+    home, _ = isolated_state
+    backend = _fake_backend(str(home), with_uvicorn=False)
+    monkeypatch.setenv("MARIONETTE_WIKI_DIR", backend)
+    monkeypatch.delenv("MARIONETTE_NO_WIKI", raising=False)
+    monkeypatch.setattr(wiki_backend, "_healthz", lambda *args, **kwargs: False)
+    monkeypatch.setattr(wiki_backend, "_uvicorn_importable", lambda: False)
+    monkeypatch.setattr(wiki_backend.shutil, "which", lambda name: None)
+    wiki_backend._venv_repair_attempted = False
+    repairs = []
+    monkeypatch.setattr(
+        wiki_backend, "_ensure_backend_venv",
+        lambda backend_dir, log: repairs.append(backend_dir))
+
+    wiki_backend.ensure_wiki_backend_running(wait_secs=0.1)
+    wiki_backend.ensure_wiki_backend_running(wait_secs=0.1)
+
+    assert repairs == [backend]  # second call is throttled
+
+
+def test_venv_repair_builds_with_validated_base_python(tmp_path, monkeypatch):
+    backend = str(tmp_path / "backend")
+    os.makedirs(backend)
+    with open(os.path.join(backend, "requirements.txt"), "w") as f:
+        f.write("fastapi\n")
+    run_calls = []
+    monkeypatch.setattr(
+        wiki_backend, "_run",
+        lambda cmd, cwd, log: run_calls.append(cmd) or True)
+    monkeypatch.setattr(wiki_backend.shutil, "which", lambda name: None)  # no uv
+    monkeypatch.setattr(wiki_backend, "_python_is_usable", lambda exe: True)
+
+    wiki_backend._ensure_backend_venv(backend, log=open(os.devnull, "ab"))
+
+    assert run_calls[0][:3] == [wiki_backend.sys.executable, "-m", "venv"]
+
+
+# --- delayed background retry after a failed spawn/health-wait ---
+
+
+def test_failed_startup_schedules_retry(isolated_state, monkeypatch):
+    home, _ = isolated_state
+    backend = _fake_backend(str(home), with_uvicorn=True)
+    monkeypatch.setenv("MARIONETTE_WIKI_DIR", backend)
+    monkeypatch.delenv("MARIONETTE_NO_WIKI", raising=False)
+    monkeypatch.setattr(wiki_backend, "_healthz", lambda *args, **kwargs: False)
+    monkeypatch.setattr(wiki_backend, "_venv_repair_attempted", True)
+    dead_proc = MagicMock()
+    dead_proc.poll.return_value = 1
+    monkeypatch.setattr(wiki_backend, "_spawn", lambda *args, **kwargs: dead_proc)
+    scheduled = []
+    monkeypatch.setattr(wiki_backend, "_schedule_retry", lambda log: scheduled.append(1))
+
+    result = wiki_backend.ensure_wiki_backend_running(wait_secs=1.0)
+
+    assert result["reason"] == "backend exited during startup"
+    assert scheduled == [1]
+
+
+def test_retry_throttle_caps_attempts(monkeypatch):
+    created_timers = []
+
+    class FakeTimer:
+        def __init__(self, interval, fn):
+            self.interval = interval
+            self.fn = fn
+            self.daemon = False
+            created_timers.append(self)
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return False  # pretend each prior retry already fired
+
+    monkeypatch.setattr(wiki_backend.threading, "Timer", FakeTimer)
+    monkeypatch.setattr(wiki_backend, "_retry_count", 0)
+    monkeypatch.setattr(wiki_backend, "_retry_timer", None)
+
+    for _ in range(10):
+        wiki_backend._schedule_retry(log=open(os.devnull, "ab"))
+
+    assert len(created_timers) == wiki_backend._MAX_RETRIES
+    assert all(t.daemon for t in created_timers)
+    assert all(t.interval == 30.0 for t in created_timers)
+
+
+def test_pending_retry_timer_is_not_duplicated(monkeypatch):
+    created_timers = []
+
+    class FakeTimer:
+        def __init__(self, interval, fn):
+            self.daemon = False
+            created_timers.append(self)
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return True  # a retry is already pending
+
+    monkeypatch.setattr(wiki_backend.threading, "Timer", FakeTimer)
+    monkeypatch.setattr(wiki_backend, "_retry_count", 0)
+    monkeypatch.setattr(wiki_backend, "_retry_timer", None)
+
+    for _ in range(5):
+        wiki_backend._schedule_retry(log=open(os.devnull, "ab"))
+
+    assert len(created_timers) == 1

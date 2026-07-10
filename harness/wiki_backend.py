@@ -30,6 +30,7 @@ never double-start.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 import secrets
 import shutil
@@ -47,6 +48,14 @@ _IS_WINDOWS = os.name == "nt"
 
 _started_proc = None
 _ensure_lock = threading.Lock()
+
+# Best-effort self-healing is throttled per process: the venv repair runs at
+# most once, and a failed spawn/health-wait schedules at most _MAX_RETRIES
+# delayed retries so a broken environment never spins forever.
+_MAX_RETRIES = 3
+_retry_count = 0
+_retry_timer = None
+_venv_repair_attempted = False
 
 
 def _opted_out() -> bool:
@@ -118,6 +127,54 @@ def _log_handle():
         return subprocess.DEVNULL
 
 
+def _log_line(log, message: str) -> None:
+    """Best-effort line to the wiki-backend log; log may be DEVNULL (an int)."""
+    try:
+        if hasattr(log, "write"):
+            log.write(("[marionette] " + message.rstrip() + "\n").encode("utf-8", "replace"))
+    except Exception:
+        pass
+
+
+def _python_is_usable(exe: str) -> bool:
+    """Reject interpreters that cannot actually run.
+
+    On Windows, `shutil.which('python')` often resolves to the WindowsApps
+    execution-alias stub, which prints "Python was not found; run without
+    arguments to install from the Microsoft Store" and exits immediately --
+    spawning uvicorn with it produces an endlessly dead backend. Filter those
+    out by path, then confirm the interpreter answers `--version`.
+    """
+    if not exe:
+        return False
+    if "windowsapps" in exe.lower():
+        return False
+    try:
+        result = subprocess.run(
+            [exe, "--version"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _validated_which_python() -> str | None:
+    for name in ("python3", "python"):
+        exe = shutil.which(name)
+        if exe and _python_is_usable(exe):
+            return exe
+    return None
+
+
+def _uvicorn_importable() -> bool:
+    try:
+        return importlib.util.find_spec("uvicorn") is not None
+    except Exception:
+        return False
+
+
 def _run(cmd: list[str], cwd: str | None, log) -> bool:
     try:
         subprocess.run(
@@ -139,6 +196,48 @@ def _read_env_token(env_file: str) -> str:
     except Exception:
         pass
     return ""
+
+
+def _ensure_backend_venv(backend_dir: str, log) -> None:
+    """Create the backend venv and install its deps (uv preferred, stdlib venv
+    fallback). Idempotent and best-effort: shared by first-time provisioning
+    and by the repair path when an existing checkout's venv is missing/broken."""
+    venv_dir = os.path.join(backend_dir, ".venv")
+    venv_py = _venv_bin(venv_dir, "python")
+    requirements = os.path.join(backend_dir, "requirements.txt")
+    uv = shutil.which("uv")
+    if os.path.isfile(_venv_bin(venv_dir, "uvicorn")):
+        return
+    if uv:
+        _run([uv, "venv", venv_dir], backend_dir, log)
+    if not os.path.isfile(venv_py):
+        base_py = sys.executable if _python_is_usable(sys.executable) else _validated_which_python()
+        if base_py:
+            _run([base_py, "-m", "venv", venv_dir], backend_dir, log)
+    if os.path.isfile(requirements):
+        installed = False
+        if uv and os.path.isfile(venv_py):
+            installed = _run(
+                [uv, "pip", "install", "--python", venv_py, "-r", requirements],
+                backend_dir, log)
+        if not installed:
+            pip = _venv_bin(venv_dir, "pip")
+            if os.path.isfile(pip):
+                _run([pip, "install", "-r", requirements], backend_dir, log)
+
+
+def _repair_backend_venv_once(backend_dir: str, log) -> None:
+    """Best-effort rebuild of a missing/broken backend venv, at most once per
+    process so a hopeless environment doesn't reinstall on every ensure call."""
+    global _venv_repair_attempted
+    if _venv_repair_attempted:
+        return
+    _venv_repair_attempted = True
+    _log_line(log, f"wiki backend venv missing/broken in {backend_dir}; attempting repair")
+    try:
+        _ensure_backend_venv(backend_dir, log)
+    except Exception as exc:
+        _log_line(log, f"wiki backend venv repair failed: {exc}")
 
 
 def _provision_wiki(log) -> str | None:
@@ -168,25 +267,7 @@ def _provision_wiki(log) -> str | None:
             return None
 
     # 2. venv + backend deps (uv preferred, stdlib venv fallback). Idempotent.
-    venv_dir = os.path.join(backend_dir, ".venv")
-    venv_py = _venv_bin(venv_dir, "python")
-    requirements = os.path.join(backend_dir, "requirements.txt")
-    uv = shutil.which("uv")
-    if not os.path.isfile(_venv_bin(venv_dir, "uvicorn")):
-        if uv:
-            _run([uv, "venv", venv_dir], backend_dir, log)
-        if not os.path.isfile(venv_py):
-            _run([sys.executable, "-m", "venv", venv_dir], backend_dir, log)
-        if os.path.isfile(requirements):
-            installed = False
-            if uv and os.path.isfile(venv_py):
-                installed = _run(
-                    [uv, "pip", "install", "--python", venv_py, "-r", requirements],
-                    backend_dir, log)
-            if not installed:
-                pip = _venv_bin(venv_dir, "pip")
-                if os.path.isfile(pip):
-                    _run([pip, "install", "-r", requirements], backend_dir, log)
+    _ensure_backend_venv(backend_dir, log)
 
     # 3. backend/.env with a generated OWNER_TOKEN, pointed at the bundled demo.
     env_file = os.path.join(backend_dir, ".env")
@@ -221,17 +302,29 @@ def _provision_wiki(log) -> str | None:
 
 
 def _uvicorn_cmd(backend_dir: str, port: int) -> list[str] | None:
-    venv_uvicorn = _venv_bin(os.path.join(backend_dir, ".venv"), "uvicorn")
+    """Pick the best way to launch uvicorn, most-reliable first:
+
+      1. the backend venv's uvicorn executable
+      2. the backend venv's python -m uvicorn
+      3. this process's interpreter, if uvicorn is importable here
+      4. a validated python3/python from PATH (WindowsApps stubs rejected)
+
+    Returns None when nothing usable exists rather than spawning a dead stub.
+    """
+    args = ["app.main:app", "--host", "127.0.0.1", "--port", str(port)]
+    venv_dir = os.path.join(backend_dir, ".venv")
+    venv_uvicorn = _venv_bin(venv_dir, "uvicorn")
     if os.path.isfile(venv_uvicorn):
-        prefix = [venv_uvicorn]
-    else:
-        venv_py = _venv_bin(os.path.join(backend_dir, ".venv"), "python")
-        py = venv_py if os.path.isfile(venv_py) else (
-            shutil.which("python3") or shutil.which("python"))
-        if not py:
-            return None
-        prefix = [py, "-m", "uvicorn"]
-    return prefix + ["app.main:app", "--host", "127.0.0.1", "--port", str(port)]
+        return [venv_uvicorn] + args
+    venv_py = _venv_bin(venv_dir, "python")
+    if os.path.isfile(venv_py) and _python_is_usable(venv_py):
+        return [venv_py, "-m", "uvicorn"] + args
+    if _uvicorn_importable() and _python_is_usable(sys.executable):
+        return [sys.executable, "-m", "uvicorn"] + args
+    which_py = _validated_which_python()
+    if which_py:
+        return [which_py, "-m", "uvicorn"] + args
+    return None
 
 
 def _spawn(cmd: list[str], cwd: str, log):
@@ -252,6 +345,25 @@ def _spawn(cmd: list[str], cwd: str, log):
     kwargs.setdefault("encoding", "utf-8")
     kwargs.setdefault("errors", "replace")
     return subprocess.Popen(cmd, **kwargs)
+
+
+def _schedule_retry(log) -> None:
+    """After a failed spawn/health-wait, retry once in the background.
+
+    A single delayed daemon Timer (30s), capped at _MAX_RETRIES per process, so
+    a transiently broken environment (e.g. venv mid-repair) self-heals without
+    ever spinning forever.
+    """
+    global _retry_count, _retry_timer
+    if _retry_count >= _MAX_RETRIES:
+        return
+    if _retry_timer is not None and _retry_timer.is_alive():
+        return
+    _retry_count += 1
+    _log_line(log, f"wiki backend start failed; retry {_retry_count}/{_MAX_RETRIES} in 30s")
+    _retry_timer = threading.Timer(30.0, lambda: ensure_wiki_backend_running())
+    _retry_timer.daemon = True
+    _retry_timer.start()
 
 
 def ensure_wiki_backend_running(wait_secs: float = 90.0, allow_provision: bool = True) -> dict:
@@ -278,14 +390,19 @@ def ensure_wiki_backend_running(wait_secs: float = 90.0, allow_provision: bool =
         if not backend_dir:
             return {"started": False, "reason": "no wiki backend available"}
 
+        if not os.path.isfile(_venv_bin(os.path.join(backend_dir, ".venv"), "python")):
+            _repair_backend_venv_once(backend_dir, log)
+
         port = urlparse(base).port or 8000
         cmd = _uvicorn_cmd(backend_dir, port)
         if not cmd:
-            return {"started": False, "reason": "uvicorn/python not found"}
+            _log_line(log, "no usable python for uvicorn; not spawning")
+            return {"started": False, "reason": "no usable python for uvicorn"}
 
         try:
             _started_proc = _spawn(cmd, backend_dir, log)
         except Exception as exc:
+            _schedule_retry(log)
             return {"started": False, "reason": f"spawn failed: {exc}"}
 
         deadline = time.monotonic() + wait_secs
@@ -294,8 +411,10 @@ def ensure_wiki_backend_running(wait_secs: float = 90.0, allow_provision: bool =
                 return {"started": True, "reason": "backend up",
                         "dir": backend_dir, "port": port}
             if _started_proc.poll() is not None:
+                _schedule_retry(log)
                 return {"started": False, "reason": "backend exited during startup"}
             time.sleep(0.5)
+        _schedule_retry(log)
         return {"started": False, "reason": "timeout waiting for /healthz"}
 
 
