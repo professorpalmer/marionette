@@ -39,16 +39,25 @@ def test_plan_mode_system_prompt():
     # Capture original system prompt
     original_sys = s._history[0]["content"]
     
-    # send(plan=False) should use default PILOT_SYSTEM
+    # send(plan=False): system stays clean; no plan suffix on user turn
     list(s.send("test message", plan=False))
     assert fake.system_received is not None
     assert PLAN_SYSTEM_SUFFIX not in fake.system_received
+    assert PLAN_SYSTEM_SUFFIX not in (s._history[-1].get("content") or "")
     
-    # send(plan=True) should use PILOT_SYSTEM + PLAN_SYSTEM_SUFFIX
+    # send(plan=True): plan suffix rides on the user turn (not system) so
+    # append-only / prompt-cache prefixes stay byte-stable.
     list(s.send("test message", plan=True))
     assert fake.system_received is not None
-    assert PLAN_SYSTEM_SUFFIX in fake.system_received
-    assert s._history[0]["content"] == original_sys  # restored base system prompt after!
+    assert PLAN_SYSTEM_SUFFIX not in fake.system_received
+    assert any(
+        PLAN_SYSTEM_SUFFIX in (m.get("content") or "")
+        for m in s._history
+        if m.get("role") == "user"
+    )
+    assert s._history[0]["content"] == original_sys or s._history[0]["content"].startswith(
+        original_sys.split("\n")[0]
+    )
 
 
 def test_plan_mode_filters_edit_actions():

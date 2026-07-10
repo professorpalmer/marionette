@@ -2447,9 +2447,10 @@ class ConversationalSession(ToolDispatchMixin):
         if not resume and self._is_correction(user_message):
             self._corrections.append(user_message)
         original_sys = self._history[0]["content"]
-        if plan:
-            from .pilot import PILOT_SYSTEM, PLAN_SYSTEM_SUFFIX
-            self._history[0]["content"] = PILOT_SYSTEM + "\n\n" + PLAN_SYSTEM_SUFFIX
+        # Plan mode must NOT mutate the system prefix (busts prompt cache for
+        # every provider under append-only). PLAN_SYSTEM_SUFFIX rides on the
+        # user turn in _send_locked_inner instead; action filtering still uses
+        # the plan= flag.
         try:
             import time
             action_starts = {}
@@ -2661,6 +2662,12 @@ class ConversationalSession(ToolDispatchMixin):
             if self._resolve_append_only():
                 processed_message = self._append_turn_context_trailer(
                     processed_message, user_message
+                )
+
+            if plan:
+                from .pilot import PLAN_SYSTEM_SUFFIX
+                processed_message = (
+                    processed_message.rstrip() + "\n\n" + PLAN_SYSTEM_SUFFIX
                 )
 
             # Preserve strict user/assistant alternation in _history: if the last

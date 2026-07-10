@@ -61,6 +61,18 @@ class _BudgetPilot:
         self.tokens_out = tokens_out
         self.step = 0
         self.system_prompts: list[str] = []
+        self.user_contents: list[str] = []
+
+    def chat(self, messages, tools=None, system=None):
+        from pmharness.drivers.openai_compat import DriverResponse
+
+        self.system_prompts.append(system or "")
+        for m in messages or []:
+            if isinstance(m, dict) and m.get("role") == "user":
+                self.user_contents.append(str(m.get("content") or ""))
+        txt = self.turns[min(self.step, len(self.turns) - 1)]
+        self.step += 1
+        return DriverResponse(text=txt, tokens_out=self.tokens_out, latency_ms=1.0)
 
     def complete(self, prompt, *, system=None):
         from pmharness.drivers.openai_compat import DriverResponse
@@ -96,6 +108,7 @@ def test_hard_turn_budget_stops_loop_early():
 
 
 def test_advisory_budget_note_in_system_prompt():
+    """Budget note rides the user trailer under append-only (default auto)."""
     temp_dir = tempfile.mkdtemp()
     try:
         cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=temp_dir)
@@ -108,9 +121,9 @@ def test_advisory_budget_note_in_system_prompt():
         session.pilot = pilot
         list(session.send("Summarize +50k"))
         assert pilot.step == 1
-        assert any(
-            "output budget for this turn: 50000 tokens" in system
-            for system in pilot.system_prompts
-        )
+        needle = "output budget for this turn: 50000 tokens"
+        # Append-only keeps system frozen; note is on the user turn trailer.
+        assert not any(needle in system for system in pilot.system_prompts)
+        assert any(needle in content for content in pilot.user_contents)
     finally:
         shutil.rmtree(temp_dir)
