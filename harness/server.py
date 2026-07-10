@@ -1274,6 +1274,74 @@ def _get_workspace_driver(repo: str):
     except Exception:
         return None
 
+def _app_install_roots() -> list:
+    """Paths that are the Marionette app itself, not user projects.
+
+    The packaged checkout (~/.marionette/marionette) and the live source root
+    Electron passes as MARIONETTE_APP_ROOT must never auto-appear as the open
+    workspace or in PROJECTS recents -- users only see them if they open that
+    folder manually for the current session.
+    """
+    roots = []
+    for key in ("MARIONETTE_APP_ROOT", "HARNESS_APP_ROOT"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw:
+            try:
+                roots.append(os.path.realpath(raw))
+            except OSError:
+                pass
+    packaged = os.path.join(os.path.expanduser("~"), ".marionette", "marionette")
+    try:
+        if os.path.isdir(packaged):
+            roots.append(os.path.realpath(packaged))
+    except OSError:
+        pass
+    # Dedupe while preserving order.
+    out = []
+    seen = set()
+    for r in roots:
+        if r and r not in seen:
+            seen.add(r)
+            out.append(r)
+    return out
+
+
+def _is_app_install_root(path: str) -> bool:
+    """True when path is the Marionette app checkout (not a user project)."""
+    if not path:
+        return False
+    try:
+        rp = os.path.realpath(path)
+    except OSError:
+        return False
+    return rp in set(_app_install_roots())
+
+
+def _pick_boot_workspace(ws_data: dict) -> str:
+    """Choose the workspace to restore on launch.
+
+    Prefer the persisted ``repo`` key, then recents, skipping the app install
+    root and vanished dirs. Empty string = open nothing (first-launch / scrubbed).
+    """
+    if not isinstance(ws_data, dict):
+        return ""
+    candidates = []
+    repo = (ws_data.get("repo") or "").strip()
+    if repo:
+        candidates.append(repo)
+    for r in (ws_data.get("recents") or []):
+        r = (r or "").strip()
+        if r and r not in candidates:
+            candidates.append(r)
+    for c in candidates:
+        try:
+            if c and os.path.isdir(c) and not _is_app_install_root(c):
+                return c
+        except OSError:
+            continue
+    return ""
+
+
 def _record_recent_workspace(target_repo: str) -> list:
     import json
     import os
@@ -1293,6 +1361,7 @@ def _record_recent_workspace(target_repo: str) -> list:
             except Exception:
                 recents = []
         # never persist temp dirs (test/ephemeral state_dirs leak otherwise)
+        # and never persist the Marionette app checkout as a user project.
         _tmproot = os.path.realpath(_tf.gettempdir())
         def _persistable(_pth):
             if not _pth:
@@ -1301,20 +1370,29 @@ def _record_recent_workspace(target_repo: str) -> list:
             if "PYTEST_CURRENT_TEST" not in os.environ:
                 if _rp.startswith(_tmproot) or "/var/folders/" in _rp or "/T/tmp" in _pth:
                     return False
+            if _is_app_install_root(_pth):
+                return False
             return os.path.isdir(_pth)
         # Stable order: if path already in recents, leave its position; if new,
         # append. Do NOT prepend-to-front on every open (that snapped the rail).
         # Still persist active "repo" below for boot restore. Cap 8 + ephemeral
-        # guards unchanged.
-        if target_repo and target_repo not in recents:
+        # guards unchanged. App install root is never added (manual open stays
+        # process-local only).
+        if target_repo and target_repo not in recents and _persistable(target_repo):
             recents = list(recents) + [target_repo]
         recents = [r for r in recents if _persistable(r)]
         recents = recents[:8]
 
         # The "repo" key is what boot restores as the active workspace, so a
-        # temp dir here resurrects as a phantom project on next launch. Keep
-        # the prior persisted repo when the new target is ephemeral.
-        persisted_repo = target_repo if _persistable(target_repo) else prior_repo
+        # temp dir / app checkout here resurrects as a phantom project on next
+        # launch. Keep the prior persisted repo when the new target is not a
+        # user project.
+        if _persistable(target_repo):
+            persisted_repo = target_repo
+        elif prior_repo and _persistable(prior_repo):
+            persisted_repo = prior_repo
+        else:
+            persisted_repo = ""
 
         # Use atomic-write
         target_dir = os.path.dirname(ws_json_path)
@@ -1371,10 +1449,9 @@ def _forget_recent_workspace(forget_path: str) -> list:
             if "PYTEST_CURRENT_TEST" not in os.environ:
                 if _rp.startswith(_tmproot) or "/var/folders/" in _rp or "/T/tmp" in _pth:
                     return False
+            if _is_app_install_root(_pth):
+                return False
             return os.path.isdir(_pth)
-
-        # remove forget_path
-        recents = [r for r in recents if r != forget_path]
         recents = [r for r in recents if _persistable(r)]
         recents = recents[:8]
 
@@ -1439,11 +1516,31 @@ if not os.environ.get("HARNESS_REPO") and os.path.exists(_ws_boot_path):
     try:
         with open(_ws_boot_path, "r", encoding="utf-8", errors="replace") as _ws_f:
             _ws_data = json.load(_ws_f)
-            # Only adopt a persisted repo that still exists on disk. A stale or
-            # corrupted workspace.json (e.g. a vanished dir) must not wedge boot.
-            if _ws_data.get("repo") and os.path.isdir(_ws_data["repo"]):
-                _cfg.repo = _ws_data["repo"]
-                os.environ["HARNESS_REPO"] = _ws_data["repo"]
+        if not isinstance(_ws_data, dict):
+            _ws_data = {}
+        # Prefer last user project; never boot into the Marionette app
+        # checkout even if an older build wrote it into workspace.json.
+        _boot_repo = _pick_boot_workspace(_ws_data)
+        if _boot_repo:
+            _cfg.repo = _boot_repo
+            os.environ["HARNESS_REPO"] = _boot_repo
+        # Scrub app-install paths left in recents by older builds so the
+        # PROJECTS rail does not keep surfacing Marionette itself. Close the
+        # read handle first -- Windows cannot replace an open file.
+        try:
+            _scrubbed = [
+                r for r in (_ws_data.get("recents") or [])
+                if r and os.path.isdir(r) and not _is_app_install_root(r)
+            ]
+            _prior = (_ws_data.get("repo") or "").strip()
+            _persist_repo = _boot_repo or (
+                _prior if _prior and not _is_app_install_root(_prior) and os.path.isdir(_prior) else ""
+            )
+            if _scrubbed != list(_ws_data.get("recents") or []) or _persist_repo != _prior:
+                from .registry_wizard import write_json_atomic as _ws_atomic
+                _ws_atomic(_workspace_json_path(), {"repo": _persist_repo, "recents": _scrubbed[:8]})
+        except Exception as _scrub_e:
+            _diag("server.workspace_boot_scrub", _scrub_e)
     except Exception as e:
         _diag("server.workspace_boot_load", e)
 
@@ -4391,6 +4488,7 @@ class Handler(BaseHTTPRequestHandler):
                 if r and os.path.isdir(r)
                 and not os.path.realpath(r).startswith(_tmproot)
                 and "/var/folders/" not in os.path.realpath(r)
+                and not _is_app_install_root(r)
             ]
             return self._send(200, json.dumps({
                 "repo": repo,

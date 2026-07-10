@@ -499,6 +499,9 @@ async function _startBackendOnce() {
     PYTHONUNBUFFERED: "1",
     HARNESS_TOKEN: harnessToken,
     HARNESS_APP_RUN_ID: harnessAppRunId,
+    // App source root (not the user's project). Backend excludes this path
+    // from boot restore + PROJECTS recents so Marionette never auto-opens itself.
+    MARIONETTE_APP_ROOT: repoRoot,
   };
   if (!process.env.HARNESS_REPO) {
     delete customEnv.HARNESS_REPO;
