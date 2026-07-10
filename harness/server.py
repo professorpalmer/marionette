@@ -1452,6 +1452,9 @@ def _forget_recent_workspace(forget_path: str) -> list:
             if _is_app_install_root(_pth):
                 return False
             return os.path.isdir(_pth)
+
+        # remove forget_path
+        recents = [r for r in recents if r != forget_path]
         recents = [r for r in recents if _persistable(r)]
         recents = recents[:8]
 
