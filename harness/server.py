@@ -2203,7 +2203,8 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/platform", "/api/reviews/apply", "/api/reviews/dismiss",
                       "/api/registry", "/api/roles", "/api/pilot/validate",
                       "/api/worktrees/add", "/api/worktrees/remove",
-                      "/api/worktrees/prune", "/api/worktrees/max",
+                      "/api/worktrees/prune", "/api/worktrees/prune-edit-branches",
+                      "/api/worktrees/max",
                       "/api/hooks/add", "/api/hooks/update", "/api/hooks/remove",
                       "/api/workspace/open", "/api/workspace/forget", "/api/codegraph/reindex",
                       "/api/file/write",
@@ -2401,8 +2402,13 @@ class Handler(BaseHTTPRequestHandler):
             if not checkpoint_id:
                 return self._send(400, json.dumps({"error": "Missing checkpoint id"}))
             from .checkpoints import CheckpointStore
-            store = CheckpointStore(repo)
-            result = store.restore(checkpoint_id)
+            active_sid = _sessions.active or ""
+            store = CheckpointStore(repo, session_id=active_sid or None)
+            result = store.restore(
+                checkpoint_id,
+                session_id=active_sid or None,
+                expected_repo=repo,
+            )
             if result.get("ok"):
                 return self._send(200, json.dumps(result))
             else:
@@ -2413,8 +2419,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "No open workspace"}))
             label = body.get("label", "").strip() or "Manual checkpoint"
             from .checkpoints import CheckpointStore
-            store = CheckpointStore(repo)
-            checkpoint_id = store.snapshot(label=label, trigger="manual")
+            active_sid = _sessions.active or ""
+            store = CheckpointStore(repo, session_id=active_sid or None)
+            checkpoint_id = store.snapshot(
+                label=label, trigger="manual", session_id=active_sid or None
+            )
             if checkpoint_id:
                 return self._send(200, json.dumps({"ok": True, "id": checkpoint_id}))
             else:
@@ -2513,10 +2522,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 try:
                     from .checkpoints import CheckpointStore
-                    store = CheckpointStore(repo)
+                    active_sid = _sessions.active or ""
+                    store = CheckpointStore(repo, session_id=active_sid or None)
                     store.snapshot(
                         label=f"before manual edit {rel_path}",
-                        trigger="manual_edit"
+                        trigger="manual_edit",
+                        session_id=active_sid or None,
                     )
                 except Exception as cp_err:
                     import sys
@@ -3573,6 +3584,20 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(400, json.dumps({"error": f"Failed to prune worktrees: {str(e)}"}))
 
+        if path == "/api/worktrees/prune-edit-branches":
+            from . import worktrees as _wt
+            try:
+                result = _wt.prune_orphan_edit_branches(_cfg.repo)
+                return self._send(200, json.dumps({
+                    "ok": True,
+                    "deleted": result.get("deleted", []),
+                    "count": int(result.get("count", 0) or 0),
+                }))
+            except Exception as e:
+                return self._send(400, json.dumps({
+                    "error": f"Failed to prune edit branches: {str(e)}",
+                }))
+
         if path == "/api/worktrees/max":
             from . import worktrees as _wt
             try:
@@ -3787,8 +3812,9 @@ class Handler(BaseHTTPRequestHandler):
             if not repo or not os.path.exists(repo):
                 return self._send(200, json.dumps([]))
             from .checkpoints import CheckpointStore
-            store = CheckpointStore(repo)
-            return self._send(200, json.dumps(store.list()))
+            active_sid = _sessions.active or ""
+            store = CheckpointStore(repo, session_id=active_sid or None)
+            return self._send(200, json.dumps(store.list(session_id=active_sid or None)))
         if u.path == "/api/checkpoints/diff":
             if self._guard():
                 return
@@ -3802,8 +3828,13 @@ class Handler(BaseHTTPRequestHandler):
             if not checkpoint_id:
                 return self._send(400, json.dumps({"error": "Missing checkpoint id"}))
             from .checkpoints import CheckpointStore
-            store = CheckpointStore(repo)
-            result = store.diff(checkpoint_id)
+            active_sid = _sessions.active or ""
+            store = CheckpointStore(repo, session_id=active_sid or None)
+            result = store.diff(
+                checkpoint_id,
+                session_id=active_sid or None,
+                expected_repo=repo,
+            )
             if result.get("ok"):
                 return self._send(200, json.dumps(result))
             else:

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, XCircle, Trash2 } from "lucide-react";
+import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, XCircle, Trash2, Brush } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job, type Artifact } from "../lib/api";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
@@ -81,6 +81,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [showAllJobs, setShowAllJobs] = useState(false);
   const [expandedJobs, setExpandedJobs] = useState<Record<string, boolean>>({});
   const [sessionJobsHeight, setSessionJobsHeight] = useState(loadSessionJobsHeight);
+  const [branchesHeight, setBranchesHeight] = useState(loadBranchesHeight);
+  const [pruningBranches, setPruningBranches] = useState(false);
   // /api/jobs only carries an artifact COUNT per job; the full artifact list is
   // fetched lazily the first time a card is expanded and cached here.
   const [artifactsByJob, setArtifactsByJob] = useState<Record<string, Artifact[]>>({});
@@ -88,10 +90,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const railRef = useRef<HTMLElement>(null);
   const topChromeRef = useRef<HTMLDivElement>(null);
   const upperSectionsRef = useRef<HTMLDivElement>(null);
+  const projectsSectionRef = useRef<HTMLDivElement>(null);
   const sessionJobsHeightRef = useRef(sessionJobsHeight);
+  const branchesHeightRef = useRef(branchesHeight);
   const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
+  const branchesResizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
 
   sessionJobsHeightRef.current = sessionJobsHeight;
+  branchesHeightRef.current = branchesHeight;
 
   const getMaxSessionJobsHeight = () => {
     const rail = railRef.current;
@@ -118,6 +124,26 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const clampSessionJobsHeight = (height: number) =>
     Math.min(getMaxSessionJobsHeight(), Math.max(sessionJobsMinHeight(), height));
 
+  const getMaxBranchesHeight = () => {
+    const rail = railRef.current;
+    const top = topChromeRef.current;
+    if (!rail || !top) return BRANCHES_DEFAULT_HEIGHT;
+    const jobsOccupied = sessionJobsCollapsed
+      ? 48
+      : sessionJobsHeightRef.current;
+    // Keep Projects (and a little archived chrome) from being crushed out
+    // of the upper rail when Branches is dragged tall.
+    const projectsOccupied = projectsSectionRef.current?.offsetHeight
+      ?? BRANCHES_PROJECTS_RESERVE;
+    const reserved = Math.max(BRANCHES_PROJECTS_RESERVE, projectsOccupied);
+    const available =
+      rail.clientHeight - top.offsetHeight - jobsOccupied - reserved;
+    return Math.max(BRANCHES_MIN_HEIGHT, available);
+  };
+
+  const clampBranchesHeight = (height: number) =>
+    Math.min(getMaxBranchesHeight(), Math.max(BRANCHES_MIN_HEIGHT, height));
+
   const onSessionJobsResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (sessionJobsCollapsed) return;
     e.preventDefault();
@@ -138,6 +164,27 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
     saveSessionJobsHeight(sessionJobsHeightRef.current);
+  };
+
+  const onBranchesResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    branchesResizeDragRef.current = { startY: e.clientY, startH: branchesHeightRef.current };
+  };
+
+  const onBranchesResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!branchesResizeDragRef.current) return;
+    const delta = e.clientY - branchesResizeDragRef.current.startY;
+    setBranchesHeight(clampBranchesHeight(branchesResizeDragRef.current.startH + delta));
+  };
+
+  const finishBranchesResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!branchesResizeDragRef.current) return;
+    branchesResizeDragRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    saveBranchesHeight(branchesHeightRef.current);
   };
 
   const toggleJobCard = (j: Job) => {
@@ -451,6 +498,27 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       toast(err?.error || err?.message || `Could not create branch ${name}`);
     }
   };
+
+  const pruneEditBranches = async () => {
+    if (pruningBranches) return;
+    const proceed = window.confirm(
+      "Delete unused local edit/worker branches (pmedit-*, pmworker-*)? Active checkout and worktree-attached branches are kept.",
+    );
+    if (!proceed) return;
+    setPruningBranches(true);
+    try {
+      const res = await api.pruneEditBranches();
+      await revalidateWorkspaces();
+      const count = typeof res.count === "number" ? res.count : (res.deleted?.length ?? 0);
+      toast(count > 0
+        ? `Pruned ${count} unused edit branch${count === 1 ? "" : "es"}`
+        : "No unused edit branches to prune");
+    } catch (err: any) {
+      toast(err?.error || err?.message || "Could not prune edit branches");
+    } finally {
+      setPruningBranches(false);
+    }
+  };
   const switchSession = async (id: string) => {
     await api.switchSession(id);
     await refreshSessionsRef.current();
@@ -635,11 +703,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   useEffect(() => {
     const clampToViewport = () => {
       setSessionJobsHeight((h) => clampSessionJobsHeight(h));
+      setBranchesHeight((h) => clampBranchesHeight(h));
     };
     clampToViewport();
     window.addEventListener("resize", clampToViewport);
     return () => window.removeEventListener("resize", clampToViewport);
-  }, [archivedExpanded, archivedSessions.length, workspaceInfo?.is_git, projects.length, sessionJobsCollapsed]);
+  }, [archivedExpanded, archivedSessions.length, workspaceInfo?.is_git, projects.length, sessionJobsCollapsed, sessionJobsHeight, workspaces.length]);
 
   const toggleSessionJobsCollapsed = () => {
     setSessionJobsCollapsed((v) => {
@@ -721,6 +790,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
       <div ref={upperSectionsRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0 ${panelOpacityClass(panelSwitching, sessionsStale || workspaceStale)}`}>
       {/* PROJECTS SECTION */}
+      <div ref={projectsSectionRef}>
       <Section title="Projects" headerSpinner={panelSwitching && (sessionsValidating || workspaceValidating)}>
         {projects.length === 0 && !panelSwitching && <Empty>No projects</Empty>}
         <div className="space-y-1">
@@ -896,12 +966,27 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           })}
         </div>
       </Section>
+      </div>
 
       {/* BRANCH SWITCHING / WORKSPACES */}
       {workspaceInfo?.is_git && (
-        <Section title="Branches" action={<IconBtn onClick={newWs}><Plus size={13} /></IconBtn>}>
+        <Section
+          title="Branches"
+          action={
+            <div className="flex items-center gap-0.5">
+              <IconBtn
+                onClick={() => { void pruneEditBranches(); }}
+                title="Prune unused edit/worker branches"
+                disabled={pruningBranches}
+              >
+                {pruningBranches ? <Loader2 size={13} className="animate-spin" /> : <Brush size={13} />}
+              </IconBtn>
+              <IconBtn onClick={newWs} title="New branch"><Plus size={13} /></IconBtn>
+            </div>
+          }
+        >
           {workspaces.length === 0 && <Empty>No branches</Empty>}
-          <div className="space-y-0.5 max-h-[140px] overflow-y-auto">
+          <div className="space-y-0.5 overflow-y-auto" style={{ height: branchesHeight }}>
             {workspaces.map((w) => (
               <button key={w.name} onClick={() => switchWs(w.name)}
                 className={`w-full text-left rounded px-2 py-1 mb-0.5 flex items-center gap-2 text-[12px] transition
@@ -912,6 +997,18 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                 {w.active && <Check size={11} className="text-accent" />}
               </button>
             ))}
+          </div>
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize branches list"
+            onPointerDown={onBranchesResizePointerDown}
+            onPointerMove={onBranchesResizePointerMove}
+            onPointerUp={finishBranchesResize}
+            onPointerCancel={finishBranchesResize}
+            className="h-1.5 mt-0.5 cursor-row-resize touch-none flex items-center justify-center group shrink-0"
+          >
+            <div className="w-8 h-0.5 rounded-full bg-edge/80 group-hover:bg-muted/80 transition-colors" />
           </div>
         </Section>
       )}
@@ -1273,6 +1370,11 @@ const SESSION_JOBS_HEIGHT_KEY = "pmharness.leftRail.sessionJobsHeight.v1";
 const SESSION_JOBS_HIDDEN_KEY = "pmharness.leftRail.hiddenSessionJobs.v1";
 const SESSION_JOBS_DISPLAY_CAP = 20;
 
+const BRANCHES_HEIGHT_KEY = "pmharness.leftRail.branchesHeight.v1";
+const BRANCHES_MIN_HEIGHT = 90;
+const BRANCHES_DEFAULT_HEIGHT = 140;
+const BRANCHES_PROJECTS_RESERVE = 160;
+
 function sessionJobsMinHeight(): number {
   if (typeof window === "undefined") return 280;
   return Math.min(280, Math.round(window.innerHeight * 0.35));
@@ -1301,6 +1403,29 @@ function loadSessionJobsHeight(): number {
 function saveSessionJobsHeight(height: number): void {
   try {
     localStorage.setItem(SESSION_JOBS_HEIGHT_KEY, String(Math.round(height)));
+  } catch {
+    // localStorage full/unavailable -- height still works for this session.
+  }
+}
+
+function loadBranchesHeight(): number {
+  try {
+    const raw = localStorage.getItem(BRANCHES_HEIGHT_KEY);
+    if (!raw) return BRANCHES_DEFAULT_HEIGHT;
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) return BRANCHES_DEFAULT_HEIGHT;
+    const conservativeMax = typeof window === "undefined"
+      ? n
+      : Math.max(BRANCHES_MIN_HEIGHT, Math.round(window.innerHeight * 0.4));
+    return Math.min(conservativeMax, Math.max(BRANCHES_MIN_HEIGHT, n));
+  } catch {
+    return BRANCHES_DEFAULT_HEIGHT;
+  }
+}
+
+function saveBranchesHeight(height: number): void {
+  try {
+    localStorage.setItem(BRANCHES_HEIGHT_KEY, String(Math.round(height)));
   } catch {
     // localStorage full/unavailable -- height still works for this session.
   }
@@ -1408,7 +1533,19 @@ function Section({ title, action, headerSpinner, children }: {
     </div>
   );
 }
-const IconBtn = ({ onClick, children }: any) => (
-  <button onClick={onClick} className="text-muted hover:text-txt p-0.5 rounded hover:bg-panel2">{children}</button>
+const IconBtn = ({ onClick, children, title, disabled }: {
+  onClick?: () => void;
+  children?: React.ReactNode;
+  title?: string;
+  disabled?: boolean;
+}) => (
+  <button
+    onClick={onClick}
+    title={title}
+    disabled={disabled}
+    className="text-muted hover:text-txt p-0.5 rounded hover:bg-panel2 disabled:opacity-50 disabled:pointer-events-none"
+  >
+    {children}
+  </button>
 );
 const Empty = ({ children }: any) => <div className="text-[11px] text-muted italic px-1 py-1">{children}</div>;

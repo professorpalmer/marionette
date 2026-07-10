@@ -318,6 +318,8 @@ export type Checkpoint = {
   trigger: string;
   timestamp: number;
   head: string | null;
+  session_id?: string;
+  repo_hash?: string;
 };
 
 export type CheckpointDiffFile = {
@@ -613,6 +615,8 @@ export const api = {
   addWorktree: (branch: string, base?: string) => postJSON<Worktree>("/api/worktrees/add", { branch, base }),
   removeWorktree: (path: string, force?: boolean) => postJSON<{ ok: boolean }>("/api/worktrees/remove", { path, force }),
   pruneWorktrees: () => postJSON<{ ok: boolean }>("/api/worktrees/prune", {}),
+  pruneEditBranches: () =>
+    postJSON<{ ok: boolean; deleted: string[]; count: number }>("/api/worktrees/prune-edit-branches", {}),
   setWorktreeMax: (max: number) => postJSON<{ ok: boolean }>("/api/worktrees/max", { max }),
 
   openWorkspace: (path: string) => postJSON<{ ok: boolean; repo: string; branch: string; is_git: boolean; codegraph: "indexing" | "ready" | "unsupported"; active_session?: string }>("/api/workspace/open", { path }),

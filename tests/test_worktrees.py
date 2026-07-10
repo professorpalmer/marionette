@@ -148,3 +148,112 @@ def test_worktrees_module_and_endpoints():
         # Check if there are other worktree paths to clean
         managed_dir = os.path.abspath(os.path.join(repo_path, "..", ".pmharness-worktrees"))
         shutil.rmtree(managed_dir, ignore_errors=True)
+
+
+def _create_branch(repo: str, name: str) -> None:
+    subprocess.run(
+        ["git", "-C", repo, "branch", name],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _branch_list(repo: str) -> set[str]:
+    out = subprocess.run(
+        ["git", "-C", repo, "branch", "--format=%(refname:short)"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def test_delete_branch_allows_pmedit_and_refuses_unrelated():
+    repo = create_temp_git_repo()
+    try:
+        _create_branch(repo, "pmedit-deadbeef")
+        _create_branch(repo, "pmworker-cafef00d")
+        _create_branch(repo, "feature-keep")
+
+        _wt.delete_branch(repo, "pmedit-deadbeef")
+        _wt.delete_branch(repo, "pmworker-cafef00d")
+        _wt.delete_branch(repo, "feature-keep")
+        _wt.delete_branch(repo, "main")
+
+        branches = _branch_list(repo)
+        assert "pmedit-deadbeef" not in branches
+        assert "pmworker-cafef00d" not in branches
+        assert "feature-keep" in branches
+        assert "main" in branches
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+
+
+def test_delete_branch_refuses_current_checkout():
+    repo = create_temp_git_repo()
+    try:
+        _create_branch(repo, "pmedit-active01")
+        subprocess.run(
+            ["git", "-C", repo, "checkout", "pmedit-active01"],
+            check=True,
+            capture_output=True,
+        )
+        _wt.delete_branch(repo, "pmedit-active01")
+        assert "pmedit-active01" in _branch_list(repo)
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+
+
+def test_prune_orphan_edit_branches_skips_active_and_attached_worktree():
+    repo = create_temp_git_repo()
+    managed_dir = os.path.abspath(os.path.join(repo, "..", ".pmharness-worktrees"))
+    try:
+        _create_branch(repo, "pmedit-orphan1")
+        _create_branch(repo, "pmworker-orphan2")
+        _create_branch(repo, "feature-keep")
+
+        attached = _wt.add_worktree(repo, "pmedit-attached")
+        assert attached["branch"] == "pmedit-attached"
+
+        _create_branch(repo, "pmedit-current")
+        subprocess.run(
+            ["git", "-C", repo, "checkout", "pmedit-current"],
+            check=True,
+            capture_output=True,
+        )
+
+        result = _wt.prune_orphan_edit_branches(repo)
+        deleted = set(result["deleted"])
+        assert result["count"] == len(deleted)
+        assert "pmedit-orphan1" in deleted
+        assert "pmworker-orphan2" in deleted
+        assert "pmedit-attached" not in deleted
+
+        branches = _branch_list(repo)
+        assert "pmedit-orphan1" not in branches
+        assert "pmworker-orphan2" not in branches
+        assert "pmedit-attached" in branches
+        assert "pmedit-current" in branches
+        assert "feature-keep" in branches
+        assert "main" in branches
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+        shutil.rmtree(managed_dir, ignore_errors=True)
+
+
+def test_prune_edit_branches_endpoint():
+    repo = create_temp_git_repo()
+    httpd, port, srv = _server(repo)
+    try:
+        _create_branch(repo, "pmedit-stale99")
+        post_headers = {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN}
+        resp = _post(port, "/api/worktrees/prune-edit-branches", {}, post_headers)
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+        assert data["ok"] is True
+        assert "pmedit-stale99" in data["deleted"]
+        assert data["count"] >= 1
+        assert "pmedit-stale99" not in _branch_list(repo)
+    finally:
+        httpd.shutdown()
+        shutil.rmtree(repo, ignore_errors=True)

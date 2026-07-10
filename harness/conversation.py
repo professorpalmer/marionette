@@ -3458,7 +3458,8 @@ class ConversationalSession(ToolDispatchMixin):
                         try:
                             cp_id = self._checkpoints.snapshot(
                                 label=f"Before writing {act.path}",
-                                trigger="write_file"
+                                trigger="write_file",
+                                session_id=self.harness_session_id or None,
                             )
                             if cp_id:
                                 yield ConvEvent("checkpoint", {
@@ -3544,7 +3545,8 @@ class ConversationalSession(ToolDispatchMixin):
                         try:
                             cp_id = self._checkpoints.snapshot(
                                 label=f"Before editing {act.path}",
-                                trigger="edit_file"
+                                trigger="edit_file",
+                                session_id=self.harness_session_id or None,
                             )
                             if cp_id:
                                 yield ConvEvent("checkpoint", {
@@ -3606,7 +3608,8 @@ class ConversationalSession(ToolDispatchMixin):
                         try:
                             cp_id = self._checkpoints.snapshot(
                                 label=f"Before hash_edit {act.path}",
-                                trigger="hash_edit"
+                                trigger="hash_edit",
+                                session_id=self.harness_session_id or None,
                             )
                             if cp_id:
                                 yield ConvEvent("checkpoint", {
@@ -5135,7 +5138,8 @@ class ConversationalSession(ToolDispatchMixin):
                 label_suffix = f" {job_id}" if job_id else ""
                 checkpoint_id = self._checkpoints.snapshot(
                     label=f"Before swarm patch{label_suffix}".strip(),
-                    trigger="swarm_patch"
+                    trigger="swarm_patch",
+                    session_id=self.harness_session_id or None,
                 )
             except Exception as cp_err:
                 import sys

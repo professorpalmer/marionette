@@ -35,7 +35,7 @@ def temp_git_repo():
 
 def test_checkpoint_lifecycle(temp_git_repo):
     repo = temp_git_repo
-    store = CheckpointStore(repo)
+    store = CheckpointStore(repo, session_id="sess-lifecycle")
     assert store._enabled is True
 
     # 1. Take snapshot of base state
@@ -48,6 +48,8 @@ def test_checkpoint_lifecycle(temp_git_repo):
     assert lst[0]["id"] == c1
     assert lst[0]["label"] == "Base state"
     assert lst[0]["trigger"] == "test"
+    assert lst[0]["session_id"] == "sess-lifecycle"
+    assert lst[0].get("repo_hash")
 
     # Save HEAD before modifications
     head_proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True)
@@ -87,6 +89,109 @@ def test_checkpoint_lifecycle(temp_git_repo):
         assert f.read() == "modified content"
     with open(file2, "r") as f:
         assert f.read() == "untracked file content"
+
+
+def test_checkpoint_session_list_isolation(temp_git_repo):
+    """Two sessions in the same repo must not see each other's checkpoints."""
+    repo = temp_git_repo
+    store_a = CheckpointStore(repo, session_id="session-a")
+    store_b = CheckpointStore(repo, session_id="session-b")
+
+    id_a = store_a.snapshot(label="A only", trigger="test")
+    id_b = store_b.snapshot(label="B only", trigger="test")
+    assert id_a and id_b and id_a != id_b
+
+    list_a = store_a.list()
+    list_b = store_b.list()
+    assert {c["id"] for c in list_a} == {id_a}
+    assert {c["id"] for c in list_b} == {id_b}
+    assert all(c["session_id"] == "session-a" for c in list_a)
+    assert all(c["session_id"] == "session-b" for c in list_b)
+
+    # No active session: stamped rows stay hidden (legacy-only list).
+    open_store = CheckpointStore(repo, session_id=None)
+    open_ids = {c["id"] for c in open_store.list()}
+    assert id_a not in open_ids
+    assert id_b not in open_ids
+
+
+def test_checkpoint_restore_wrong_session_refused(temp_git_repo):
+    repo = temp_git_repo
+    store_a = CheckpointStore(repo, session_id="session-a")
+    id_a = store_a.snapshot(label="owned by A", trigger="test")
+    assert id_a
+
+    store_b = CheckpointStore(repo, session_id="session-b")
+    res = store_b.restore(id_a)
+    assert res["ok"] is False
+    assert "session" in res["error"].lower()
+
+    diff = store_b.diff(id_a)
+    assert diff["ok"] is False
+    assert "session" in diff["error"].lower()
+
+    # Same-session restore still works
+    ok = store_a.restore(id_a)
+    assert ok["ok"] is True
+
+
+def test_checkpoint_different_repos_do_not_share_entries():
+    """Distinct repo stores use distinct metadata files (repo_hash binding)."""
+    dir_a = tempfile.mkdtemp()
+    dir_b = tempfile.mkdtemp()
+    try:
+        for d in (dir_a, dir_b):
+            subprocess.run(["git", "init"], cwd=d, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=d, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=d, check=True)
+            path = os.path.join(d, "file1.txt")
+            with open(path, "w") as f:
+                f.write("initial")
+            subprocess.run(["git", "add", "file1.txt"], cwd=d, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=d, check=True)
+
+        store_a = CheckpointStore(dir_a, session_id="shared-session-name")
+        store_b = CheckpointStore(dir_b, session_id="shared-session-name")
+        assert store_a._meta_file != store_b._meta_file
+        assert store_a._repo_hash != store_b._repo_hash
+
+        id_a = store_a.snapshot(label="in A", trigger="test")
+        assert id_a
+        assert store_a.list()[0]["id"] == id_a
+        assert store_b.list() == []
+
+        # Wrong expected_repo refuses restore/diff
+        bad = store_a.restore(id_a, expected_repo=dir_b)
+        assert bad["ok"] is False
+        assert "repo" in bad["error"].lower() or "workspace" in bad["error"].lower()
+    finally:
+        shutil.rmtree(dir_a, ignore_errors=True)
+        shutil.rmtree(dir_b, ignore_errors=True)
+
+
+def test_checkpoint_legacy_entries_repo_only(temp_git_repo):
+    """Legacy metadata without session_id stays repo-bound and is listable."""
+    repo = temp_git_repo
+    store = CheckpointStore(repo, session_id="session-a")
+    # Simulate a legacy entry by writing metadata without session_id
+    legacy_id = store.snapshot(label="will strip", trigger="test", session_id=None)
+    assert legacy_id
+    # Force-remove session_id from the saved entry
+    with open(store._meta_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    for entry in data:
+        entry.pop("session_id", None)
+    with open(store._meta_file, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    # Same-repo session can still see legacy
+    listed = store.list(session_id="session-a")
+    assert any(c["id"] == legacy_id for c in listed)
+
+    # restore of legacy (no stamped session) is allowed for matching store
+    res = store.restore(legacy_id, session_id="session-b")
+    assert res["ok"] is True
+
 
 
 def test_checkpoint_non_git():

@@ -447,10 +447,87 @@ def cleanup_old_worktrees(repo: str, max_count: int = 25) -> None:
         except Exception as exc:
             logger.warning("failed to remove stale worktree %s: %s", wt["path"], exc)
 
+_MANAGED_BRANCH_PREFIXES = ("pmedit-", "pmworker-")
+_PROTECTED_BRANCHES = frozenset({"main", "master"})
+
+
+def _is_managed_branch_name(branch: str) -> bool:
+    return bool(branch) and branch.startswith(_MANAGED_BRANCH_PREFIXES)
+
+
+def _current_branch(repo: str) -> str:
+    rc, out, _ = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if rc != 0:
+        return ""
+    name = (out or "").strip()
+    return "" if name == "HEAD" else name
+
+
 def delete_branch(repo: str, branch: str) -> None:
-    if not branch.startswith("pmworker-"):
+    """Force-delete a managed edit/worker branch.
+
+    Only ``pmedit-*`` and ``pmworker-*`` names are eligible. Current checkout,
+    ``main``, and ``master`` are never deleted; unrelated names are refused
+    (no-op) so callers cannot scrub arbitrary local branches.
+    """
+    if not branch or not _is_managed_branch_name(branch):
+        return
+    if branch in _PROTECTED_BRANCHES:
         return
     if not repo or not _is_repo(repo):
         return
-    subprocess.run(["git", "-C", repo, "branch", "-D", branch], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+    if branch == _current_branch(repo):
+        return
+    subprocess.run(
+        ["git", "-C", repo, "branch", "-D", branch],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+    )
+
+
+def prune_orphan_edit_branches(repo: str) -> dict:
+    """Delete local ``pmedit-*`` / ``pmworker-*`` branches that are not in use.
+
+    Skips the current checkout and any branch still attached to a worktree.
+    Returns ``{"deleted": [...], "count": N}``.
+    """
+    if not repo or not _is_repo(repo):
+        return {"deleted": [], "count": 0}
+
+    rc, out, _ = _git(repo, "branch", "--format=%(refname:short)")
+    if rc != 0:
+        return {"deleted": [], "count": 0}
+
+    candidates = [
+        line.strip()
+        for line in (out or "").splitlines()
+        if _is_managed_branch_name(line.strip())
+    ]
+    if not candidates:
+        return {"deleted": [], "count": 0}
+
+    current = _current_branch(repo)
+    attached = {
+        (wt.get("branch") or "").strip()
+        for wt in list_worktrees(repo)
+        if (wt.get("branch") or "").strip()
+    }
+
+    deleted: list[str] = []
+    for branch in candidates:
+        if branch in _PROTECTED_BRANCHES:
+            continue
+        if branch == current or branch in attached:
+            continue
+        before = _branch_exists(repo, branch)
+        if not before:
+            continue
+        delete_branch(repo, branch)
+        if not _branch_exists(repo, branch):
+            deleted.append(branch)
+
+    return {"deleted": deleted, "count": len(deleted)}
 

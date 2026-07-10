@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { History, Play, ShieldAlert, Check, RefreshCw, Eye, EyeOff } from "lucide-react";
 import { api, type Checkpoint, type CheckpointDiff } from "../lib/api";
+import { lastSelectedProjectRoot } from "../lib/panelTransition";
 
 export default function CheckpointsPane() {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
@@ -15,20 +16,56 @@ export default function CheckpointsPane() {
   const [diffData, setDiffData] = useState<Record<string, CheckpointDiff>>({});
   const [loadingDiffs, setLoadingDiffs] = useState<Record<string, boolean>>({});
 
-  const fetchCheckpoints = async () => {
+  // Scope key: repo + active session — never leave another project's list painted.
+  const [projectRoot, setProjectRoot] = useState(lastSelectedProjectRoot);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const scopeKey = `${projectRoot || "__none__"}::${activeSessionId || "__none__"}`;
+  const fetchGenRef = useRef(0);
+
+  const clearLocalState = useCallback(() => {
+    setCheckpoints([]);
+    setExpandedDiffs({});
+    setDiffData({});
+    setLoadingDiffs({});
+    setError(null);
+    setSuccessMsg(null);
+    setIsRestoring(null);
+  }, []);
+
+  const fetchCheckpoints = useCallback(async () => {
+    const gen = ++fetchGenRef.current;
     setIsLoading(true);
     setError(null);
     try {
       const list = await api.getCheckpoints();
+      if (gen !== fetchGenRef.current) return;
       // Sort newest first
       const sorted = [...list].sort((a, b) => b.timestamp - a.timestamp);
       setCheckpoints(sorted);
     } catch (err: any) {
+      if (gen !== fetchGenRef.current) return;
       setError(err?.message || "Failed to fetch checkpoints");
     } finally {
-      setIsLoading(false);
+      if (gen === fetchGenRef.current) setIsLoading(false);
     }
-  };
+  }, []);
+
+  const refreshScope = useCallback(async () => {
+    try {
+      const ws = await api.getWorkspace();
+      const repo = ws?.repo || "";
+      setProjectRoot(repo);
+      if (!repo) {
+        setActiveSessionId(null);
+        return;
+      }
+      const sessions = await api.sessions(repo);
+      const active = sessions.find((s) => s.active);
+      setActiveSessionId(active?.id ?? null);
+    } catch {
+      // Keep last known scope; fetch may still succeed against server active.
+    }
+  }, []);
 
   const toggleDiff = async (id: string) => {
     const isCurrentlyExpanded = !!expandedDiffs[id];
@@ -56,24 +93,46 @@ export default function CheckpointsPane() {
     }
   };
 
+  // Clear + refetch whenever project/session scope changes.
   useEffect(() => {
+    clearLocalState();
     fetchCheckpoints();
-    // Live-refresh when the agent mutates the repo (it dispatches
-    // "harness-repo-mutated" after every edit/checkpoint/restore) and when the
-    // window/tab regains focus -- so new restore points appear on their own
-    // instead of only after tabbing out and back (which used to remount the
-    // pane and was the only thing triggering a refetch).
+  }, [scopeKey, clearLocalState, fetchCheckpoints]);
+
+  useEffect(() => {
+    void refreshScope();
+
+    const onProject = (e: Event) => {
+      const path = (e as CustomEvent<string>).detail;
+      if (typeof path === "string") {
+        // Clear immediately so the previous project's list never lingers.
+        clearLocalState();
+        setProjectRoot(path);
+      }
+      void refreshScope();
+    };
+    const onSessionOrConfig = () => {
+      clearLocalState();
+      void refreshScope();
+    };
     const onMutated = () => fetchCheckpoints();
     const onVisible = () => { if (!document.hidden) fetchCheckpoints(); };
+
+    window.addEventListener("harness-project-selected", onProject);
+    window.addEventListener("harness-config-changed", onSessionOrConfig);
+    window.addEventListener("harness-new-session", onSessionOrConfig);
     window.addEventListener("harness-repo-mutated", onMutated);
     window.addEventListener("focus", onVisible);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
+      window.removeEventListener("harness-project-selected", onProject);
+      window.removeEventListener("harness-config-changed", onSessionOrConfig);
+      window.removeEventListener("harness-new-session", onSessionOrConfig);
       window.removeEventListener("harness-repo-mutated", onMutated);
       window.removeEventListener("focus", onVisible);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, []);
+  }, [clearLocalState, fetchCheckpoints, refreshScope]);
 
   const handleCreateSnapshot = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -30,11 +30,13 @@ def _within(base: str, target: str) -> bool:
 
 
 class CheckpointStore:
-    def __init__(self, repo_path: Optional[str]):
+    def __init__(self, repo_path: Optional[str], session_id: Optional[str] = None):
         # Resolve to realpath to ensure realpath-confinement works reliably.
         # Guard None/empty repo (no workspace open) -> feature disabled gracefully.
         self.repo = os.path.realpath(os.path.abspath(repo_path)) if repo_path else None
+        self.session_id = (session_id or "").strip() or None
         self._enabled = False
+        self._repo_hash: Optional[str] = None
 
         if self.repo and os.path.exists(self.repo):
             try:
@@ -51,14 +53,65 @@ class CheckpointStore:
                 pass
 
         if self._enabled:
-            repo_hash = hashlib.sha256(self.repo.encode("utf-8")).hexdigest()[:12]
+            self._repo_hash = hashlib.sha256(self.repo.encode("utf-8")).hexdigest()[:12]
             self._meta_dir = Path.home() / ".pmharness" / "checkpoints"
-            self._meta_file = self._meta_dir / f"{repo_hash}.json"
+            self._meta_file = self._meta_dir / f"{self._repo_hash}.json"
         else:
             self._meta_dir = None
             self._meta_file = None
 
-    def snapshot(self, label: str, trigger: str) -> Optional[str]:
+    def _resolve_session_id(self, session_id: Optional[str] = None) -> Optional[str]:
+        """Prefer an explicit per-call session_id, else the store default."""
+        sid = (session_id if session_id is not None else self.session_id) or None
+        if isinstance(sid, str):
+            sid = sid.strip() or None
+        return sid
+
+    def _repo_mismatch_error(self, expected_repo: Optional[str]) -> Optional[str]:
+        """Refuse when the caller's intended workspace is not this store's repo."""
+        if expected_repo is None or expected_repo == "":
+            return None
+        if not self.repo:
+            return "Checkpoints disabled: no repository bound to store"
+        intended = os.path.realpath(os.path.abspath(expected_repo))
+        if intended != self.repo:
+            return "Checkpoint store repo does not match intended workspace"
+        return None
+
+    def _find_checkpoint(self, checkpoint_id: str) -> Optional[dict[str, Any]]:
+        for cp in self._list_raw_checkpoints():
+            if cp.get("id") == checkpoint_id:
+                return cp
+        return None
+
+    def _session_access_error(
+        self, checkpoint: Optional[dict[str, Any]], session_id: Optional[str]
+    ) -> Optional[str]:
+        """
+        Refuse restore/diff when the checkpoint is stamped with a session_id
+        that does not match the active session. Legacy entries without
+        session_id remain usable within the matching repo store only.
+        """
+        if checkpoint is None:
+            # Fall through to git existence checks for a clearer "not found"
+            # when the commit exists but metadata was pruned.
+            return None
+        stamped = checkpoint.get("session_id")
+        if not stamped:
+            return None
+        active = self._resolve_session_id(session_id)
+        if not active:
+            return "Checkpoint belongs to another session"
+        if stamped != active:
+            return "Checkpoint belongs to another session"
+        return None
+
+    def snapshot(
+        self,
+        label: str,
+        trigger: str,
+        session_id: Optional[str] = None,
+    ) -> Optional[str]:
         """
         Creates a snapshot of the workspace (tracked + untracked files)
         as a dangling commit object in Git without affecting HEAD, current branch,
@@ -139,8 +192,14 @@ class CheckpointStore:
             )
             commit_sha = commit_res.stdout.strip()
 
-            # Update the JSON metadata
-            self._save_metadata(commit_sha, label, trigger, head_sha)
+            # Update the JSON metadata (stamp session + repo_hash for safety)
+            self._save_metadata(
+                commit_sha,
+                label,
+                trigger,
+                head_sha,
+                session_id=self._resolve_session_id(session_id),
+            )
 
             return commit_sha
 
@@ -149,17 +208,39 @@ class CheckpointStore:
             print(f"Checkpoint error during snapshot: {e}", file=sys.stderr)
             return None
 
-    def list(self) -> list[dict[str, Any]]:
+    def list(self, session_id: Optional[str] = None) -> list[dict[str, Any]]:
         """
-        Returns a list of all checkpoints that exist in the Git database.
+        Returns checkpoints for the active session that still exist in Git.
+
+        Entries stamped with session_id must match. Legacy entries without
+        session_id are included only for this repo's store (metadata is already
+        repo_hash-keyed) and never leak across repos.
         """
         if not self._enabled:
             return []
 
         raw = self._list_raw_checkpoints()
-        return self._filter_existing_commits(raw)
+        active = self._resolve_session_id(session_id)
+        filtered: list[dict[str, Any]] = []
+        for cp in raw:
+            stamped = cp.get("session_id")
+            if stamped:
+                # Stamped rows require an active session match — never dump
+                # every session's restore points when session_id is unset.
+                if active is not None and stamped == active:
+                    filtered.append(cp)
+                continue
+            # Legacy (no session_id): repo-bound via meta file — safe to show
+            # alongside the active session's own checkpoints for this workspace.
+            filtered.append(cp)
+        return self._filter_existing_commits(filtered)
 
-    def restore(self, checkpoint_id: str) -> dict[str, Any]:
+    def restore(
+        self,
+        checkpoint_id: str,
+        session_id: Optional[str] = None,
+        expected_repo: Optional[str] = None,
+    ) -> dict[str, Any]:
         """
         Restores the working tree files to match the checkpoint,
         without moving HEAD/branch. Auto-snapshots the current state first
@@ -170,6 +251,15 @@ class CheckpointStore:
                 "ok": False,
                 "error": "Checkpoints disabled: repository is not a git worktree",
             }
+
+        repo_err = self._repo_mismatch_error(expected_repo)
+        if repo_err:
+            return {"ok": False, "error": repo_err}
+
+        meta = self._find_checkpoint(checkpoint_id)
+        session_err = self._session_access_error(meta, session_id)
+        if session_err:
+            return {"ok": False, "error": session_err}
 
         # Verify target checkpoint exists
         try:
@@ -185,8 +275,13 @@ class CheckpointStore:
             return {"ok": False, "error": f"Failed to verify checkpoint: {e}"}
 
         # 1. Capture current state as auto-snapshot (for undo capability)
+        active = self._resolve_session_id(session_id)
         auto_label = f"Auto-snapshot before restoring {checkpoint_id[:8]}"
-        auto_snapshot_id = self.snapshot(label=auto_label, trigger="restore_checkpoint")
+        auto_snapshot_id = self.snapshot(
+            label=auto_label,
+            trigger="restore_checkpoint",
+            session_id=active,
+        )
         if not auto_snapshot_id:
             return {"ok": False, "error": "Failed to create auto-snapshot before restore"}
 
@@ -240,7 +335,12 @@ class CheckpointStore:
         except Exception as e:
             return {"ok": False, "error": f"Restore failed with error: {e}"}
 
-    def diff(self, checkpoint_id: str) -> dict[str, Any]:
+    def diff(
+        self,
+        checkpoint_id: str,
+        session_id: Optional[str] = None,
+        expected_repo: Optional[str] = None,
+    ) -> dict[str, Any]:
         """
         Returns the unified diff between the checkpoint commit's tree and the CURRENT working tree.
         """
@@ -249,6 +349,15 @@ class CheckpointStore:
                 "ok": False,
                 "error": "Checkpoints disabled: repository is not a git worktree",
             }
+
+        repo_err = self._repo_mismatch_error(expected_repo)
+        if repo_err:
+            return {"ok": False, "error": repo_err}
+
+        meta = self._find_checkpoint(checkpoint_id)
+        session_err = self._session_access_error(meta, session_id)
+        if session_err:
+            return {"ok": False, "error": session_err}
 
         # Verify target checkpoint exists
         try:
@@ -389,7 +498,12 @@ class CheckpointStore:
         return []
 
     def _save_metadata(
-        self, commit_sha: str, label: str, trigger: str, head_sha: Optional[str]
+        self,
+        commit_sha: str,
+        label: str,
+        trigger: str,
+        head_sha: Optional[str],
+        session_id: Optional[str] = None,
     ) -> None:
         if not self._meta_dir or not self._meta_file:
             return
@@ -397,13 +511,17 @@ class CheckpointStore:
             self._meta_dir.mkdir(parents=True, exist_ok=True)
             checkpoints = self._list_raw_checkpoints()
 
-            entry = {
+            entry: dict[str, Any] = {
                 "id": commit_sha,
                 "label": label,
                 "trigger": trigger,
                 "timestamp": int(time.time()),
                 "head": head_sha,
+                "repo_hash": self._repo_hash,
             }
+            sid = self._resolve_session_id(session_id)
+            if sid:
+                entry["session_id"] = sid
             checkpoints.append(entry)
 
             if len(checkpoints) > 50:
