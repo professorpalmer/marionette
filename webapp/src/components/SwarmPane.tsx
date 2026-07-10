@@ -804,7 +804,7 @@ export default function SwarmPane() {
                 <span className="flex items-center gap-1.5 truncate max-w-[72%]">
                   <Cpu size={11} className="text-accent shrink-0" />
                   <span className="text-txt font-mono font-medium truncate" title={displayModel}>
-                    {displayModel || "provider worker"}
+                    {displayModel || "worker"}
                   </span>
                 </span>
                 <span className="flex items-center gap-2 shrink-0 font-mono">

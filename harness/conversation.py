@@ -4281,7 +4281,13 @@ class ConversationalSession(ToolDispatchMixin):
                             short = uuid.uuid4().hex[:8]
                             job_id = f"local-{short}"
                             self._session_job_ids.append(job_id)
-                            self._register_local_job(job_id, act.goal, role=_mode, cwd=effective_repo)
+                            # Stamp adapter=engine (agentic|native) at dispatch;
+                            # never the pilot driver / openrouter slug.
+                            self._register_local_job(
+                                job_id, act.goal, role=_mode, cwd=effective_repo,
+                                engine=engine,
+                                model=(self.config.driver or "") if engine == "native" else "",
+                            )
                             
                             # Warm heavy imports single-threaded before the worker
                             # thread races the PyInstaller PYZ reader (see fn docs).
@@ -4603,7 +4609,11 @@ class ConversationalSession(ToolDispatchMixin):
                                 short = uuid.uuid4().hex[:8]
                                 job_id = f"local-{short}"
                                 try:
-                                    self._register_local_job(job_id, sub_goal, role=_mode, cwd=effective_repo)
+                                    self._register_local_job(
+                                        job_id, sub_goal, role=_mode, cwd=effective_repo,
+                                        engine=engine,
+                                        model=(self.config.driver or "") if engine == "native" else "",
+                                    )
                                     # Submit the selected edit engine through the
                                     # bounded-inflight gate. A False return means
                                     # the pool is at capacity: release the
@@ -5526,16 +5536,33 @@ class ConversationalSession(ToolDispatchMixin):
             self._inflight_objectives.discard(key)
 
     def _register_local_job(self, job_id: str, goal: str, role: str = "implement",
-                            cwd: str = "") -> None:
-        """Record a dispatched provider-native worker so it appears in the swarm
+                            cwd: str = "", engine: str = "", model: str = "") -> None:
+        """Record a dispatched in-process edit worker so it appears in the swarm
         panel while it runs (the panel otherwise only sees Puppetmaster store
         jobs). Shaped like a store job: a single synthesized worker task carries
-        the live status the UI renders."""
+        the live status the UI renders.
+
+        ``engine`` is ``agentic`` or ``native`` (never the pilot provider slug).
+        When known, ``model`` is the routed/driver model id; the panel shows
+        ``{engine}/{model}``. Task role is ``{role} ({engine})`` -- never
+        ``provider worker``.
+        """
         import time
         from harness.job_scoping import job_label_for_session
 
         effective_cwd = cwd or self.config.repo or ""
         session_id = self.harness_session_id or ""
+        engine_label = (engine or "").strip().lower()
+        if engine_label not in ("agentic", "native"):
+            # Callers that have not yet picked an engine get native semantics
+            # (Marionette pilot / ProviderWorker) without stamping the openrouter
+            # pilot slug as the adapter -- that lied when the run was agentic.
+            engine_label = "native"
+        model_id = (model or "").strip()
+        if not model_id and engine_label == "native":
+            model_id = (self.config.driver or "").strip()
+        display_model = f"{engine_label}/{model_id}" if model_id else engine_label
+        task_role = f"{role} ({engine_label})" if role else f"implement ({engine_label})"
         with self._local_jobs_lock:
             self._local_job_cancels[job_id] = threading.Event()
             now = time.time()
@@ -5544,8 +5571,8 @@ class ConversationalSession(ToolDispatchMixin):
                 "goal": goal,
                 "status": "running",
                 "role": role,
-                "adapter": self.config.driver or "provider",
-                "model": self.config.driver or "provider",
+                "adapter": engine_label,
+                "model": display_model,
                 "session_id": session_id,
                 "cwd": effective_cwd,
                 "label": job_label_for_session(session_id),
@@ -5557,10 +5584,10 @@ class ConversationalSession(ToolDispatchMixin):
                 "artifacts": [],
                 "tasks": [{
                     "id": f"{job_id}-w0",
-                    "role": "provider worker",
+                    "role": task_role,
                     "instruction": goal,
                     "status": "running",
-                    "adapter": self.config.driver or "provider",
+                    "adapter": engine_label,
                 }],
             }
             self._persist_local_jobs_locked()
@@ -5568,9 +5595,15 @@ class ConversationalSession(ToolDispatchMixin):
     def _finish_local_job(self, job_id: str, ok: bool, summary: str = "",
                           files: Optional[list] = None, tokens: int = 0,
                           est_cost_usd: float = 0.0,
-                          status: str = "") -> None:
+                          status: str = "",
+                          engine: str = "", model: str = "") -> None:
         """Flip a live local job to its terminal state so the panel stops showing
-        a spinner and surfaces the outcome (files touched + a one-line summary)."""
+        a spinner and surfaces the outcome (files touched + a one-line summary).
+
+        When ``engine`` / ``model`` are known (from WorkerResult), overwrite the
+        provisional register-time labels so an agentic run never keeps a native
+        or pilot-slug stamp after it finishes.
+        """
         import time
         with self._local_jobs_lock:
             job = self._local_jobs.get(job_id)
@@ -5585,17 +5618,40 @@ class ConversationalSession(ToolDispatchMixin):
                 terminal = "completed" if ok else "failed"
             job["status"] = terminal
             job["updated_at"] = time.time()
+            engine_label = (engine or "").strip().lower()
+            model_id = (model or "").strip()
+            if engine_label in ("agentic", "native"):
+                job["adapter"] = engine_label
+                if job.get("tasks"):
+                    job["tasks"][0]["adapter"] = engine_label
+                    base_role = (job.get("role") or "implement").strip() or "implement"
+                    job["tasks"][0]["role"] = f"{base_role} ({engine_label})"
+            if engine_label or model_id:
+                eng = engine_label or (job.get("adapter") or "").strip() or "native"
+                mid = model_id
+                if mid:
+                    job["model"] = f"{eng}/{mid}"
+                elif eng:
+                    job["model"] = eng
             if tokens:
                 job["tokens"] = tokens
             real_cost = float(est_cost_usd or 0.0)
             if not real_cost and tokens:
                 # Provider-worker jobs only carry a combined token total (no
                 # in/out split). Price at the output rate so output-heavy runs
-                # are not systematically under-priced.
+                # are not systematically under-priced. Prefer the worker's own
+                # model when stamped; else fall back to the pilot driver.
                 try:
                     from pmharness.registry import resolve_price
                     from harness.server import _job_cost
-                    price_in, price_out = resolve_price(self.config.driver)
+                    price_spec = model_id or (job.get("model") or "")
+                    # Strip engine/ prefix if present (e.g. agentic/z-ai/...).
+                    if "/" in price_spec and price_spec.split("/", 1)[0] in (
+                        "agentic", "native",
+                    ):
+                        price_spec = price_spec.split("/", 1)[1]
+                    price_spec = price_spec or self.config.driver
+                    price_in, price_out = resolve_price(price_spec)
                     real_cost = _job_cost(0, 0, tokens, price_in, price_out)
                 except Exception:
                     real_cost = 0.0
@@ -5945,6 +6001,8 @@ class ConversationalSession(ToolDispatchMixin):
                     "pending_review": pending_review_info
                 }
                 
+            wr_engine = (getattr(res, "engine", None) or "").strip()
+            wr_model = (getattr(res, "model", None) or "").strip()
             self._finish_local_job(
                 job_id,
                 ok=not res_dict.get("error"),
@@ -5952,6 +6010,8 @@ class ConversationalSession(ToolDispatchMixin):
                 files=res_dict.get("files") or [],
                 tokens=res_dict.get("tokens_out", 0) + res_dict.get("tokens_in", 0),
                 est_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
+                engine=wr_engine,
+                model=wr_model,
             )
             self._swarm_results.put({
                 "job_id": job_id,
@@ -6240,7 +6300,7 @@ class ConversationalSession(ToolDispatchMixin):
             return
         try:
             import queue
-            finished_jobs: list[tuple[str, str]] = []  # (job_id, objective)
+            finished_jobs: list[tuple[str, str, bool]] = []  # (job_id, objective, failed)
             while True:
                 try:
                     item = self._swarm_results.get_nowait()
@@ -6261,14 +6321,33 @@ class ConversationalSession(ToolDispatchMixin):
                     applied = res_job["applied"]
                     applied_files = res_job["files"]
                     summary = res_job["summary"]
+                    held_for_review = bool(res_job.get("held_for_review"))
+                    failed = bool(
+                        res_job.get("error")
+                        or (not applied and not held_for_review)
+                    )
 
-                    msg_content = f"[swarm result for: {objective}] {summary}"
-                    if applied and applied_files:
-                        msg_content += f"; applied {len(applied_files)} files"
-                    elif res_job.get("held_for_review"):
-                        msg_content += f"; held for review"
-                    elif res_job.get("has_patch_art") and not applied:
-                        msg_content += f"; patch failed to apply: {res_job.get('apply_msg')}"
+                    if failed:
+                        # Loud failure keep-alive: never dress a dead worker as a
+                        # quiet "swarm result" -- the pilot must not pretend a
+                        # patch landed.
+                        err_bit = (res_job.get("error") or summary or "worker failed").strip()
+                        msg_content = f"[swarm FAILED for: {objective}] {err_bit}"
+                        if res_job.get("has_patch_art") and not applied:
+                            apply_msg = res_job.get("apply_msg") or ""
+                            if apply_msg and apply_msg not in msg_content:
+                                msg_content += f"; patch failed to apply: {apply_msg}"
+                        display_error = res_job.get("error") or err_bit or None
+                    else:
+                        err_bit = ""
+                        msg_content = f"[swarm result for: {objective}] {summary}"
+                        if applied and applied_files:
+                            msg_content += f"; applied {len(applied_files)} files"
+                        elif held_for_review:
+                            msg_content += f"; held for review"
+                        elif res_job.get("has_patch_art") and not applied:
+                            msg_content += f"; patch failed to apply: {res_job.get('apply_msg')}"
+                        display_error = res_job.get("error") or None
 
                     self._history.append({"role": "assistant", "content": msg_content})
 
@@ -6282,7 +6361,7 @@ class ConversationalSession(ToolDispatchMixin):
                         "applied": bool(applied),
                         "files": list(applied_files or []),
                         "summary": summary or "",
-                        "error": res_job.get("error") or None,
+                        "error": display_error,
                         "objective": objective,
                     })
 
@@ -6309,7 +6388,7 @@ class ConversationalSession(ToolDispatchMixin):
                             "label": f"Before swarm patch {job_id[:8]}"
                         })
 
-                    finished_jobs.append((job_id, objective))
+                    finished_jobs.append((job_id, objective, failed))
                 except Exception:
                     # Best-effort: never raise on the chat hot path; degrade to
                     # continuing the drain so remaining results still surface.
@@ -6325,22 +6404,45 @@ class ConversationalSession(ToolDispatchMixin):
             # N resume turns when N workers finish in the same poll window.
             if finished_jobs:
                 try:
+                    any_failed = any(failed for _jid, _obj, failed in finished_jobs)
                     if len(finished_jobs) == 1:
-                        job_id, _obj = finished_jobs[0]
-                        resume_text = (
-                            f"[background job {job_id} finished] The result above is now "
-                            "available. Report the outcome to the user concisely and take "
-                            "the appropriate next step (validate, run tests, apply/fix, or "
-                            "run a narrowed follow-up) without waiting for the user to ask."
-                        )
+                        job_id, _obj, failed = finished_jobs[0]
+                        if failed:
+                            resume_text = (
+                                f"[background job {job_id} FAILED] The swarm result above "
+                                "did NOT land a patch. Report this failure to the user "
+                                "clearly; do not pretend the patch was applied. Decide "
+                                "whether to retry with a narrowed follow-up, gather more "
+                                "context, or stop -- without waiting for the user to ask."
+                            )
+                        else:
+                            resume_text = (
+                                f"[background job {job_id} finished] The result above is now "
+                                "available. Report the outcome to the user concisely and take "
+                                "the appropriate next step (validate, run tests, apply/fix, or "
+                                "run a narrowed follow-up) without waiting for the user to ask."
+                            )
                     else:
-                        ids = ", ".join(jid for jid, _ in finished_jobs)
-                        resume_text = (
-                            f"[background jobs {ids} finished] The results above are now "
-                            "available. Report the outcomes to the user concisely and take "
-                            "the appropriate next step (validate, run tests, apply/fix, or "
-                            "run a narrowed follow-up) without waiting for the user to ask."
-                        )
+                        ids = ", ".join(jid for jid, _obj, _f in finished_jobs)
+                        if any_failed:
+                            fail_ids = ", ".join(
+                                jid for jid, _obj, failed in finished_jobs if failed
+                            )
+                            resume_text = (
+                                f"[background jobs {ids} finished; FAILED: {fail_ids}] "
+                                "One or more swarm results above FAILED and did NOT land a "
+                                "patch. Report the failures to the user clearly; do not "
+                                "pretend those patches were applied. Take the appropriate "
+                                "next step on the successes and failures without waiting "
+                                "for the user to ask."
+                            )
+                        else:
+                            resume_text = (
+                                f"[background jobs {ids} finished] The results above are now "
+                                "available. Report the outcomes to the user concisely and take "
+                                "the appropriate next step (validate, run tests, apply/fix, or "
+                                "run a narrowed follow-up) without waiting for the user to ask."
+                            )
                     # Re-activate the pilot with a user-role continuation. But never
                     # create two adjacent user messages: some chat APIs (Anthropic)
                     # require strict user/assistant alternation, and the concurrency
@@ -6356,20 +6458,29 @@ class ConversationalSession(ToolDispatchMixin):
 
                     yield ConvEvent("pilot_resume", {
                         "job_id": finished_jobs[0][0],
-                        "job_ids": [jid for jid, _ in finished_jobs],
+                        "job_ids": [jid for jid, _obj, _f in finished_jobs],
                         "objective": finished_jobs[0][1],
                     })
                 except Exception:
                     # Degrade: emit one resume per job (previous behavior) so the
                     # keep-alive contract is preserved even if merge fails.
-                    for job_id, objective in finished_jobs:
+                    for job_id, objective, failed in finished_jobs:
                         try:
-                            resume_text = (
-                                f"[background job {job_id} finished] The result above is now "
-                                "available. Report the outcome to the user concisely and take "
-                                "the appropriate next step (validate, run tests, apply/fix, or "
-                                "run a narrowed follow-up) without waiting for the user to ask."
-                            )
+                            if failed:
+                                resume_text = (
+                                    f"[background job {job_id} FAILED] The swarm result above "
+                                    "did NOT land a patch. Report this failure to the user "
+                                    "clearly; do not pretend the patch was applied. Decide "
+                                    "whether to retry with a narrowed follow-up, gather more "
+                                    "context, or stop -- without waiting for the user to ask."
+                                )
+                            else:
+                                resume_text = (
+                                    f"[background job {job_id} finished] The result above is now "
+                                    "available. Report the outcome to the user concisely and take "
+                                    "the appropriate next step (validate, run tests, apply/fix, or "
+                                    "run a narrowed follow-up) without waiting for the user to ask."
+                                )
                             if self._history and self._history[-1].get("role") == "user":
                                 self._history[-1]["content"] = (
                                     self._history[-1]["content"].rstrip() + "\n\n" + resume_text

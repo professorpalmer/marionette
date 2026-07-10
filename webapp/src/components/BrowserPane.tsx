@@ -1,9 +1,22 @@
 import { useEffect, useRef, useState } from "react";
-import { RotateCw, ExternalLink, ArrowLeft, ArrowRight, Plus, X } from "lucide-react";
+import { RotateCw, ExternalLink, ArrowLeft, ArrowRight, Plus, X, Globe } from "lucide-react";
 
 // In-app browser pane with multi-tab support.
 // Each tab maintains its own URL, loading state, history, and active iframe/webview.
 const DEFAULT_URL = "https://duckduckgo.com";
+
+function looksLikeGoogleAuth(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    if (host === "accounts.google.com" || host === "accounts.youtube.com") return true;
+    if (host.endsWith(".google.com") && path.includes("oauth")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 interface Tab {
   id: string;
@@ -142,6 +155,16 @@ export default function BrowserPane() {
     try { window.open(target, "_blank"); } catch {}
   };
 
+  // Escape hatch when Google still rejects the embedded Chromium guest: open
+  // the current URL in the user's real system browser.
+  const openInSystemBrowser = (target: string) => {
+    const ipc = (window as any).harnessIPC;
+    if (ipc && typeof ipc.openExternal === "function") {
+      try { ipc.openExternal(target); return; } catch {}
+    }
+    try { window.open(target, "_blank"); } catch {}
+  };
+
   const back = () => {
     if (isDesktop) {
       const wv = webviewsRef.current[activeTabId];
@@ -267,6 +290,14 @@ export default function BrowserPane() {
                        focus:outline-none focus:border-accent2" />
         </form>
         <NavBtn label="Pop out (always-on-top, persists when you switch tabs)" onClick={() => popOut(url)}><ExternalLink size={12} /></NavBtn>
+        {isDesktop && looksLikeGoogleAuth(url) && (
+          <NavBtn
+            label="Open in system browser (if Google rejects the in-app browser)"
+            onClick={() => openInSystemBrowser(url)}
+          >
+            <Globe size={12} />
+          </NavBtn>
+        )}
       </div>
 
       <div className="flex-1 relative overflow-hidden bg-bg" style={{ backgroundColor: "#0f1113" }}>
@@ -345,6 +376,10 @@ export default function BrowserPane() {
               src={tab.initialUrl}
               // @ts-expect-error -- webview is an Electron element, not in React JSX types
               allowpopups="true"
+              // Do NOT set a relative preload here -- Electron requires an absolute
+              // file: URL, and main's will-attach-webview always forces the trusted
+              // browser-preload.cjs path before guest contents attach. Omitting
+              // the attribute avoids React racing a bad path that main then rewrites.
               // Persistent session partition: cookies + localStorage survive
               // webview remounts and navigations. Without this the webview gets a
               // fresh in-memory session each render, wiping the auth cookie right

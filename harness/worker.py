@@ -94,6 +94,12 @@ class WorkerResult:
     escaped_paths: list[str] = field(default_factory=list)
     # Declarative pre/post check results (harness/declarative_checks.py).
     declarative_checks: list[dict] = field(default_factory=list)
+    # Edit-engine label (agentic|native) and the model that actually ran.
+    # Optional empty defaults keep positional/legacy construction back-compatible;
+    # conversation._register_local_job / _finish_local_job use these so the swarm
+    # panel never stamps the pilot slug as the worker when the engine is agentic.
+    engine: str = ""
+    model: str = ""
 
 
 # --- Escaped-write detection ------------------------------------------------

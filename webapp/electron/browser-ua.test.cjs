@@ -24,6 +24,20 @@ function browserUserAgent(versionsChrome, platform) {
   );
 }
 
+function browserClientHintHeaders(versionsChrome, platform) {
+  const chrome = versionsChrome || "130.0.0.0";
+  const major = String(chrome).split(".")[0] || "130";
+  let plat = "Windows";
+  if (platform === "darwin") plat = "macOS";
+  else if (platform === "linux") plat = "Linux";
+  return {
+    "User-Agent": browserUserAgent(chrome, platform),
+    "Sec-CH-UA": `"Not_A Brand";v="8", "Chromium";v="${major}", "Google Chrome";v="${major}"`,
+    "Sec-CH-UA-Mobile": "?0",
+    "Sec-CH-UA-Platform": `"${plat}"`,
+  };
+}
+
 describe("browserUserAgent", () => {
   it("embeds the real Chromium version, not a hardcoded newer Chrome", () => {
     const ua = browserUserAgent("130.0.6723.191", "win32");
@@ -37,11 +51,73 @@ describe("browserUserAgent", () => {
     assert.match(ua, /Macintosh; Intel Mac OS X/);
   });
 
+  it("Client Hints major version matches the UA Chromium build on Windows", () => {
+    const chrome = "130.0.6723.191";
+    const ua = browserUserAgent(chrome, "win32");
+    const hints = browserClientHintHeaders(chrome, "win32");
+    assert.match(ua, /Chrome\/130\.0\.6723\.191/);
+    assert.match(hints["Sec-CH-UA"], /Chromium";v="130"/);
+    assert.match(hints["Sec-CH-UA"], /Google Chrome";v="130"/);
+    assert.equal(hints["Sec-CH-UA-Platform"], `"Windows"`);
+    assert.equal(hints["Sec-CH-UA-Mobile"], "?0");
+    assert.equal(hints["User-Agent"], ua);
+  });
+
   it("main.cjs wires AutomationControlled off and browser-preload", () => {
     const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
     assert.match(main, /disable-blink-features.*AutomationControlled/);
     assert.match(main, /browser-preload\.cjs/);
     assert.match(main, /process\.versions\.chrome/);
     assert.ok(fs.existsSync(path.join(__dirname, "browser-preload.cjs")));
+  });
+
+  it("main.cjs aligns Sec-CH-UA Client Hints on persist:browser", () => {
+    const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+    assert.match(main, /browserClientHintHeaders/);
+    assert.match(main, /Sec-CH-UA/);
+    assert.match(main, /onBeforeSendHeaders/);
+    assert.match(main, /persist:browser/);
+    assert.match(main, /setUserAgent\([^,]+,\s*"en-US,en"\)/);
+  });
+
+  it("main.cjs keeps trusted preload on will-attach-webview and OAuth popups", () => {
+    const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+    assert.match(main, /will-attach-webview/);
+    assert.match(main, /browserPreloadPath/);
+    assert.match(main, /did-create-window/);
+    assert.match(main, /wireBrowserContentsAutomation/);
+    assert.match(main, /overrideBrowserWindowOptions[\s\S]*preload:\s*browserPreloadPath\(\)/);
+    assert.match(main, /function openPopoutWindow[\s\S]*preload:\s*browserPreloadPath\(\)/);
+    assert.match(main, /browser:openExternal/);
+  });
+
+  it("main.cjs logs fingerprint diagnostics to electron.log", () => {
+    const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+    assert.match(main, /\[browser\] fingerprint/);
+    assert.match(main, /process\.versions\.electron/);
+    assert.match(main, /AutomationControlled=disabled/);
+    assert.match(main, /will-attach-webview preload=/);
+    assert.match(main, /client-hints aligned/);
+  });
+
+  it("browser-preload.cjs patches chrome/plugins/languages/mimeTypes early", () => {
+    const preload = fs.readFileSync(
+      path.join(__dirname, "browser-preload.cjs"),
+      "utf8"
+    );
+    assert.match(preload, /webFrame\.executeJavaScript/);
+    assert.match(preload, /navigator,\s*"webdriver"/);
+    assert.match(preload, /window\.chrome/);
+    assert.match(preload, /navigator,\s*"plugins"/);
+    assert.match(preload, /navigator,\s*"languages"/);
+    assert.match(preload, /navigator,\s*"mimeTypes"/);
+    assert.match(preload, /userAgentData/);
+    assert.match(preload, /__pmAutomationHidden/);
+  });
+
+  it("renderer preload exposes openExternal escape hatch", () => {
+    const preload = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
+    assert.match(preload, /openExternal/);
+    assert.match(preload, /browser:openExternal/);
   });
 });

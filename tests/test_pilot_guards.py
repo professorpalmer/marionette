@@ -63,6 +63,18 @@ class _Act:
         "Do a sweep of error handling",
         "Draft a refactor plan for the harness",
         "Improve quality across the project",
+        "Find out why the browser fails on Windows",
+        "Figure out the auth timeout",
+        "Dig into the session lifecycle",
+        "Trace the request path through the harness",
+        "Investigate the flaky browser integration",
+        "How does inherit=True affect subprocess behaviour?",
+        "Processes are impacting each other via subprocess inherit",
+        "Compare Windows vs Mac browser launch",
+        (
+            "marionette still having the issue with the browser not working on "
+            "windows. doesn't have this issue on Mac... Find out for me"
+        ),
     ],
 )
 def test_broad_intent_classification_positives(message):
@@ -83,6 +95,25 @@ def test_broad_intent_classification_positives(message):
 )
 def test_broad_intent_classification_negatives(message):
     assert is_broad_intent_user_message(message) is False
+
+
+def test_investigate_shaped_turn_swarm_gate_suppresses_exploration():
+    """Cross-platform investigate prompt must trip broad intent + swarm gate."""
+    prompt = (
+        "marionette still having the issue with the browser not working on "
+        "windows. doesn't have this issue on Mac... Find out for me"
+    )
+    assert is_broad_intent_user_message(prompt) is True
+    state = new_turn_guard_state(prompt)
+    assert state.broad_intent is True
+
+    for kind, act in [
+        ("list_dir", _Act(kind="list_dir", path=".")),
+        ("search_files", _Act(kind="search_files", query="browser")),
+    ]:
+        verdict = check_swarm_gate(state, kind, act)
+        assert verdict.suppress is True
+        assert verdict.reason == "swarm_gate"
 
 
 def test_swarm_gate_disabled_by_env(monkeypatch):

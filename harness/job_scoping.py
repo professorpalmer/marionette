@@ -101,18 +101,18 @@ def job_visible_for_view(
 
     Visible when the stamped session matches the active session, OR the job is
     an unstamped legacy row whose task cwd lies under the current workspace.
-    A RUNNING job is always visible: live work must never be scoped out of the
-    tracker (a stale/missing stamp or a self-checkout cwd otherwise hides it).
+    Running jobs use those same rules (they must not leak across open
+    directories). Narrow escape: a running job with no session stamp and no
+    cwd stays visible so true orphans remain cancellable.
     """
-    if job_is_running(status):
-        return True
-    stamped = parse_job_session_id(label, tasks)
+    stamped = parse_job_session_id(label, tasks) or (session_id or "").strip()
     if stamped:
         return stamped == (active_session_id or "")
-    if not repo_root:
-        return False
     cwd = job_repo_cwd(tasks)
     if not cwd:
+        # Unstamped + no cwd: only running orphans stay visible (cancellable).
+        return job_is_running(status)
+    if not repo_root:
         return False
     return cwd_under_repo(cwd, repo_root)
 
@@ -217,9 +217,6 @@ def filter_local_jobs(local_jobs: list[dict], *, active_session_id: str, repo_ro
     """Apply the same visibility rule to in-process ``local-*`` worker rows."""
     visible: list[dict] = []
     for job in local_jobs or []:
-        if job_is_running(job.get("status")):
-            visible.append(job)
-            continue
         label = job.get("label")
         session_id = job.get("session_id") or parse_job_session_id(label, [])
         cwd = (job.get("cwd") or "").strip()
@@ -227,6 +224,11 @@ def filter_local_jobs(local_jobs: list[dict], *, active_session_id: str, repo_ro
             if session_id == (active_session_id or ""):
                 visible.append(job)
             continue
-        if cwd and repo_root and cwd_under_repo(cwd, repo_root):
+        if not cwd:
+            # Unstamped + no cwd: only running orphans stay visible (cancellable).
+            if job_is_running(job.get("status")):
+                visible.append(job)
+            continue
+        if repo_root and cwd_under_repo(cwd, repo_root):
             visible.append(job)
     return visible

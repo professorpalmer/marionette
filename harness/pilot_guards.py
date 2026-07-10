@@ -24,7 +24,7 @@ from typing import Any
 
 # Thresholds (override via env for tuning in the field).
 LOOP_REPEAT_CAP = int(os.environ.get("HARNESS_LOOP_REPEAT_CAP", "3"))
-DELEGATE_THRESHOLD = int(os.environ.get("HARNESS_DELEGATE_THRESHOLD", "8"))
+DELEGATE_THRESHOLD = int(os.environ.get("HARNESS_DELEGATE_THRESHOLD", "4"))
 SWARM_GATE_READ_ALLOWANCE = int(os.environ.get("HARNESS_SWARM_GATE_READ_ALLOWANCE", "2"))
 TURN_TOOL_BUDGET_DEFAULT = int(os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "25"))
 
@@ -96,6 +96,15 @@ _BROAD_INTENT_RE = re.compile(
     r"\breview\b(?:\s+(?:the|this|my|our|entire|whole|full|platform|codebase|repo|project|directory|dir|folder|module|system|app|service|quality|security|architecture))?|"
     r"look\s+through|"
     r"find\s+all\b|"
+    r"find\s+out\b|"
+    r"figure\s+out\b|"
+    r"dig\s+into\b|"
+    r"\btrace\b|"
+    r"\binvestigate\b|"
+    r"\bimpacting\b|"
+    r"\binherit\b|"
+    r"\bsubprocess\b|"
+    r"how\s+does\b.{0,120}?\baffect\b|"
     r"map\s+the\b|"
     r"improve\s+quality|"
     r"what\s+could\s+break|"
@@ -120,6 +129,9 @@ _NARROW_INTENT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+_WINDOWS_OS_RE = re.compile(r"\bwindows\b", re.IGNORECASE)
+_OTHER_OS_RE = re.compile(r"\b(?:mac|macos|linux)\b", re.IGNORECASE)
 
 
 def loop_guard_enabled() -> bool:
@@ -228,14 +240,21 @@ class GuardVerdict:
     replay: bool = False
 
 
+def _is_cross_platform_compare(text: str) -> bool:
+    """True when a message contrasts Windows with Mac/macOS/Linux."""
+    return bool(_WINDOWS_OS_RE.search(text) and _OTHER_OS_RE.search(text))
+
+
 def is_broad_intent_user_message(message: str) -> bool:
-    """Classify user text for broad audit/review/sweep tasks (pure function)."""
+    """Classify user text for broad audit/review/investigate tasks (pure function)."""
     text = _norm_whitespace(message or "")
     if not text:
         return False
     if _NARROW_INTENT_RE.search(text):
         return False
-    return bool(_BROAD_INTENT_RE.search(text))
+    if _BROAD_INTENT_RE.search(text):
+        return True
+    return _is_cross_platform_compare(text)
 
 
 def _norm_path(path: str) -> str:

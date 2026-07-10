@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   postJSON: (path, body) => ipcRenderer.invoke("harness:postJSON", path, body),
   pickFolder: () => ipcRenderer.invoke("harness:pickFolder"),
   popoutBrowser: (url) => ipcRenderer.invoke("browser:popout", url),
+  // Open a URL in the OS default browser (escape hatch when in-app Google OAuth rejects).
+  openExternal: (url) => ipcRenderer.invoke("browser:openExternal", url),
   uploadFile: (payload) => ipcRenderer.invoke("harness:uploadFile", payload),
   // Fire-and-forget: persist a caught renderer error to the Electron main log so
   // a UI crash is diagnosable from ~/.pmharness/electron.log without devtools.

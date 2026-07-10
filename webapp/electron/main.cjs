@@ -809,9 +809,16 @@ function createWindow() {
   // Force OUR browser-preload (strips any attacker-supplied preload path)
   // so Google/OAuth bot signals are cleared before page scripts run.
   win.webContents.on("will-attach-webview", (_e, webPreferences) => {
-    webPreferences.preload = path.join(__dirname, "browser-preload.cjs");
+    const preloadPath = browserPreloadPath();
+    webPreferences.preload = preloadPath;
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;
+    // Keep guest out of the default session; React may omit partition briefly.
+    if (!webPreferences.partition) webPreferences.partition = "persist:browser";
+    logMain(
+      `[browser] will-attach-webview preload=${preloadPath} ` +
+      `partition=${webPreferences.partition || "(none)"}`
+    );
   });
   // expose the backend port to the renderer for any direct needs
   win.webContents.on("did-finish-load", () => {
@@ -857,6 +864,107 @@ function browserUserAgent() {
   );
 }
 
+function browserPreloadPath() {
+  return path.join(__dirname, "browser-preload.cjs");
+}
+
+// Client Hints (Sec-CH-UA*) that agree with browserUserAgent(). Electron 33's
+// setUserAgent(string) updates the UA string but can leave metadata/brands
+// out of sync -- Windows Google OAuth is especially picky. We force the
+// low-entropy hints on every outbound request from persist:browser.
+function browserClientHintHeaders() {
+  const chrome = (process.versions && process.versions.chrome) || "130.0.0.0";
+  const major = String(chrome).split(".")[0] || "130";
+  let platform = "Windows";
+  if (process.platform === "darwin") platform = "macOS";
+  else if (process.platform === "linux") platform = "Linux";
+  // Match Chrome's current low-entropy brand list shape (Grease brand + Chromium + Google Chrome).
+  const secChUa =
+    `"Not_A Brand";v="8", "Chromium";v="${major}", "Google Chrome";v="${major}"`;
+  return {
+    "User-Agent": browserUserAgent(),
+    "Sec-CH-UA": secChUa,
+    "Sec-CH-UA-Mobile": "?0",
+    "Sec-CH-UA-Platform": `"${platform}"`,
+    "Sec-CH-UA-Full-Version": `"${chrome}"`,
+    "Sec-CH-UA-Full-Version-List":
+      `"Not_A Brand";v="10.0.0.0", "Chromium";v="${chrome}", "Google Chrome";v="${chrome}"`,
+    "Sec-CH-UA-Arch": `"x86"`,
+    "Sec-CH-UA-Bitness": `"64"`,
+    "Sec-CH-UA-Model": `""`,
+    "Sec-CH-UA-Platform-Version":
+      platform === "Windows" ? `"15.0.0"` : platform === "macOS" ? `"13.0.0"` : `"6.5.0"`,
+    "Sec-CH-UA-WoW64": "?0",
+  };
+}
+
+function applyChromeFingerprint(contents) {
+  if (!contents || contents.isDestroyed?.()) return;
+  const ua = browserUserAgent();
+  try { contents.setUserAgent(ua); } catch {}
+}
+
+// Late-path twin of browser-preload.cjs for guest contents that somehow miss
+// the trusted preload (or for SPA navigations that re-probe navigator).
+function hideAutomation(contents) {
+  if (!contents || contents.isDestroyed?.()) return;
+  try {
+    contents.executeJavaScript(`(() => {
+      try {
+        if (window.__pmAutomationHidden) return;
+        window.__pmAutomationHidden = true;
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined,
+          configurable: true,
+        });
+        try {
+          if (!window.chrome) {
+            window.chrome = { runtime: {}, loadTimes: function(){return{};}, csi: function(){return{};}, app: {} };
+          } else {
+            if (!window.chrome.runtime) window.chrome.runtime = {};
+            if (typeof window.chrome.loadTimes !== 'function') window.chrome.loadTimes = function(){return{};};
+            if (typeof window.chrome.csi !== 'function') window.chrome.csi = function(){return{};};
+            if (!window.chrome.app) window.chrome.app = {};
+          }
+        } catch (_) {}
+        const opl = navigator.plugins;
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => opl && opl.length > 0 ? opl : [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+          ],
+          configurable: true,
+        });
+        if (!navigator.languages || navigator.languages.length === 0) {
+          Object.defineProperty(navigator, 'languages', {
+            get: () => Object.freeze(['en-US', 'en']),
+            configurable: true,
+          });
+        }
+        const omt = navigator.mimeTypes;
+        Object.defineProperty(navigator, 'mimeTypes', {
+          get: () => omt && omt.length > 0 ? omt : [
+            { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+            { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' }
+          ],
+          configurable: true,
+        });
+      } catch (_) {}
+    })();`).catch(() => {});
+  } catch (_) {}
+}
+
+function wireBrowserContentsAutomation(contents) {
+  if (!contents || contents.__pmBrowserStealthWired) return;
+  contents.__pmBrowserStealthWired = true;
+  applyChromeFingerprint(contents);
+  // dom-ready is earlier than did-finish-load -- Google's reject page often
+  // decides before full load completes. Preload still fires first.
+  contents.on("dom-ready", () => hideAutomation(contents));
+  contents.on("did-finish-load", () => hideAutomation(contents));
+}
+
 // Configure the in-app browser's PERSISTENT session partition. The <webview>
 // uses partition="persist:browser"; here we give that session a realistic
 // desktop user-agent (some sites -- X/Twitter included -- refuse to keep a
@@ -864,18 +972,55 @@ function browserUserAgent() {
 // route webview popups (OAuth/login windows) to a real child window in the SAME
 // partition so the auth cookie is written to the session the webview reads from.
 function configureBrowserSession() {
+  const chromeUA = browserUserAgent();
+  const chromeVer = (process.versions && process.versions.chrome) || "(unknown)";
+  logMain(
+    `[browser] fingerprint electron=${process.versions.electron || "(unknown)"} ` +
+    `chrome=${chromeVer} platform=${process.platform} ` +
+    `AutomationControlled=disabled ua=${chromeUA}`
+  );
   try {
     const ses = session.fromPartition("persist:browser");
-    const chromeUA = browserUserAgent();
-    try { ses.setUserAgent(chromeUA); } catch {}
-    _dbg2(`browser session UA: ${chromeUA}`);
+    // acceptLanguages keeps Accept-Language / language Client Hints consistent
+    // with a normal Chrome en-US install (Windows Google is picky here too).
+    try { ses.setUserAgent(chromeUA, "en-US,en"); } catch {
+      try { ses.setUserAgent(chromeUA); } catch {}
+    }
+
+    // Force Sec-CH-UA* to agree with the UA string on every request from this
+    // partition (webview + OAuth popups share it). Electron does not expose a
+    // first-class userAgentMetadata setter in 33.x, so headers are the reliable fix.
+    const hints = browserClientHintHeaders();
+    try {
+      ses.webRequest.onBeforeSendHeaders((details, callback) => {
+        const headers = { ...(details.requestHeaders || {}) };
+        for (const [k, v] of Object.entries(hints)) {
+          // Preserve whatever casing Chromium already used for the key.
+          const existing = Object.keys(headers).find(
+            (hk) => hk.toLowerCase() === k.toLowerCase()
+          );
+          headers[existing || k] = v;
+        }
+        callback({ cancel: false, requestHeaders: headers });
+      });
+      logMain(
+        `[browser] client-hints aligned Sec-CH-UA=${hints["Sec-CH-UA"]} ` +
+        `platform=${hints["Sec-CH-UA-Platform"]}`
+      );
+    } catch (hintErr) {
+      logMain(
+        `[browser] client-hints wire failed: ` +
+        `${hintErr && hintErr.message ? hintErr.message : hintErr}`
+      );
+    }
+    logMain(`[browser] session UA set: ${chromeUA}`);
   } catch (e) {
-    _dbg2(`browser session config failed: ${e}`);
+    logMain(`[browser] session config failed: ${e && e.message ? e.message : e}`);
   }
 }
 
 function _dbg2(msg) {
-  try { fs.appendFileSync(path.join(os.homedir(), ".pmharness", "electron.log"), `${new Date().toISOString()} ${msg}\n`); } catch {}
+  logMain(msg);
 }
 
 // Live pop-out windows. Holding strong references here is what makes a pop-out
@@ -991,15 +1136,23 @@ function injectPopoutClickCatcher(contents) {
 }
 
 app.on("web-contents-created", (_e, contents) => {
-  if (contents.getType() === "webview") {
-    // Align the webview's own UA with the session (and real Chromium build).
-    // Session-level setUserAgent alone is not always inherited on Windows.
-    try { contents.setUserAgent(browserUserAgent()); } catch {}
+  const type = contents.getType();
+  // Webview guests + OAuth popup BrowserWindows (type "window") that land on
+  // persist:browser all need the same Chrome UA + hideAutomation belt.
+  if (type === "webview") {
+    applyChromeFingerprint(contents);
+    logMain(`[browser] webview contents created; UA applied`);
     contents.setWindowOpenHandler(() => {
       return {
         action: "allow",
         overrideBrowserWindowOptions: {
-          webPreferences: { partition: "persist:browser", contextIsolation: true },
+          webPreferences: {
+            partition: "persist:browser",
+            contextIsolation: true,
+            nodeIntegration: false,
+            // Same trusted preload as will-attach-webview / openPopoutWindow.
+            preload: browserPreloadPath(),
+          },
           width: 600,
           height: 750,
           // Default pinned: pop a video/meeting out, then go back to the
@@ -1011,55 +1164,45 @@ app.on("web-contents-created", (_e, contents) => {
     // Attach persistence + pin toggle to the freshly created pop-out window.
     contents.on("did-create-window", (childWindow) => {
       try { childWindow.setAlwaysOnTop(true, "floating"); } catch {}
-      try { childWindow.webContents.setUserAgent(browserUserAgent()); } catch {}
+      try {
+        applyChromeFingerprint(childWindow.webContents);
+        wireBrowserContentsAutomation(childWindow.webContents);
+        logMain(`[browser] OAuth/popup did-create-window; UA+preload parity applied`);
+      } catch (err) {
+        logMain(`did-create-window stealth failed: ${err && err.message ? err.message : err}`);
+      }
       wirePopoutWindow(childWindow);
     });
     // Hide residual automation signals. Primary fix is the process-level
-    // AutomationControlled blink disable + matching Chrome UA; this is the
-    // late-path belt for plugins/languages/mimeTypes Google also sniffs.
-    const hideAutomation = () => {
-      try {
-        contents.executeJavaScript(`(() => {
-          try {
-            if (window.__pmAutomationHidden) return;
-            window.__pmAutomationHidden = true;
-            Object.defineProperty(navigator, 'webdriver', {
-              get: () => undefined,
-              configurable: true,
-            });
-            try {
-              if (!window.chrome) window.chrome = { runtime: {} };
-              else if (!window.chrome.runtime) window.chrome.runtime = {};
-            } catch (_) {}
-            const opl = navigator.plugins;
-            Object.defineProperty(navigator, 'plugins', {
-              get: () => opl.length > 0 ? opl : [
-                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
-              ]
-            });
-            if (!navigator.languages || navigator.languages.length === 0) {
-              Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            }
-            const omt = navigator.mimeTypes;
-            Object.defineProperty(navigator, 'mimeTypes', {
-              get: () => omt.length > 0 ? omt : [
-                { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }
-              ]
-            });
-          } catch (_) {}
-        })();`).catch(() => {});
-      } catch (_) {}
-    };
-    // dom-ready is earlier than did-finish-load -- Google's reject page often
-    // decides before full load completes.
-    contents.on("dom-ready", hideAutomation);
-    contents.on("did-finish-load", () => { hideAutomation(); injectPopoutClickCatcher(contents); });
+    // AutomationControlled blink disable + matching Chrome UA + Client Hints;
+    // this is the late-path belt (preload is the early path).
+    wireBrowserContentsAutomation(contents);
+    contents.on("did-finish-load", () => { injectPopoutClickCatcher(contents); });
     contents.on("console-message", (_evt, _level, message) => {
       if (typeof message === "string" && message.startsWith(POPOUT_CLICK_SENTINEL)) {
         const url = message.slice(POPOUT_CLICK_SENTINEL.length);
         try { openPopoutWindow(url); } catch (err) { logMain(`popout click failed: ${err && err.message ? err.message : err}`); }
       }
     });
+  } else if (type === "window") {
+    // Catch BrowserWindows created via setWindowOpenHandler / window.open that
+    // share the browser partition (OAuth) even when did-create-window on the
+    // webview was skipped for some navigations.
+    try {
+      const ses = contents.session;
+      if (ses && typeof ses.getUserAgent === "function") {
+        // Heuristic: only fingerprint guests already on (or bound to) the
+        // browser partition. openPopoutWindow wires itself explicitly too.
+        const partitionUA = (() => {
+          try { return session.fromPartition("persist:browser").getUserAgent(); } catch { return ""; }
+        })();
+        const thisUA = (() => { try { return ses.getUserAgent(); } catch { return ""; } })();
+        if (partitionUA && thisUA === partitionUA) {
+          applyChromeFingerprint(contents);
+          wireBrowserContentsAutomation(contents);
+        }
+      }
+    } catch (_) {}
   }
 });
 
@@ -1081,11 +1224,12 @@ function openPopoutWindow(url) {
       partition: "persist:browser",
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(__dirname, "browser-preload.cjs"),
+      preload: browserPreloadPath(),
     },
   });
   try { win.setAlwaysOnTop(true, "floating"); } catch {}
-  try { win.webContents.setUserAgent(browserUserAgent()); } catch {}
+  applyChromeFingerprint(win.webContents);
+  wireBrowserContentsAutomation(win.webContents);
   wirePopoutWindow(win);
   win.loadURL(target);
   return win;
@@ -1097,6 +1241,23 @@ ipcMain.handle("browser:popout", (_e, url) => {
     return { ok: true };
   } catch (e) {
     logMain(`browser:popout failed: ${e && e.message ? e.message : e}`);
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
+
+// Cheap escape hatch when in-app Google/OAuth still rejects: open the URL in
+// the user's real system browser (outside Electron guest fingerprinting).
+ipcMain.handle("browser:openExternal", async (_e, url) => {
+  try {
+    const target = typeof url === "string" ? url.trim() : "";
+    if (!/^https?:\/\//i.test(target)) {
+      return { ok: false, error: "only http(s) URLs allowed" };
+    }
+    await shell.openExternal(target);
+    logMain(`[browser] openExternal ${target}`);
+    return { ok: true };
+  } catch (e) {
+    logMain(`browser:openExternal failed: ${e && e.message ? e.message : e}`);
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
 });

@@ -111,12 +111,11 @@ def test_stamped_job_visible_only_for_matching_session():
 
 
 def test_running_job_always_visible_regardless_of_scope():
-    # Live work must never be scoped out of the tracker: a running swarm whose
-    # stamp or cwd mismatches the view (e.g. auditing the self-checkout from a
-    # different project) still shows while it runs.
+    # Running jobs follow the same session/cwd scope as finished ones — a
+    # mismatch must hide them so live work does not leak across directories.
     label = job_label_for_session("sess-a")
     tasks = [SimpleNamespace(payload={"cwd": "/somewhere/else", "session_id": "sess-a"})]
-    assert job_visible_for_view(
+    assert not job_visible_for_view(
         session_id="sess-a",
         label=label,
         tasks=tasks,
@@ -134,13 +133,73 @@ def test_running_job_always_visible_regardless_of_scope():
     )
 
 
+def test_running_job_visible_when_session_matches():
+    label = job_label_for_session("sess-a")
+    tasks = [SimpleNamespace(payload={"cwd": "/somewhere/else", "session_id": "sess-a"})]
+    assert job_visible_for_view(
+        session_id="sess-a",
+        label=label,
+        tasks=tasks,
+        active_session_id="sess-a",
+        repo_root="/work/b",
+        status="running",
+    )
+
+
+def test_running_job_visible_when_legacy_cwd_matches():
+    tasks = [SimpleNamespace(payload={"cwd": "/work/a/project"})]
+    assert job_visible_for_view(
+        session_id="",
+        label=None,
+        tasks=tasks,
+        active_session_id="sess-b",
+        repo_root="/work/a",
+        status="running",
+    )
+
+
+def test_running_orphan_visible_without_session_or_cwd():
+    assert job_visible_for_view(
+        session_id="",
+        label=None,
+        tasks=[],
+        active_session_id="sess-b",
+        repo_root="/work/b",
+        status="running",
+    )
+
+
 def test_running_local_job_always_visible():
     rows = [
         {"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/elsewhere"},
         {"id": "local-2", "status": "complete", "session_id": "sess-a", "cwd": "/elsewhere"},
     ]
     visible = filter_local_jobs(rows, active_session_id="sess-b", repo_root="/work/b")
+    assert [j["id"] for j in visible] == []
+
+
+def test_running_local_job_visible_when_session_matches():
+    rows = [
+        {"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/elsewhere"},
+    ]
+    visible = filter_local_jobs(rows, active_session_id="sess-a", repo_root="/work/b")
     assert [j["id"] for j in visible] == ["local-1"]
+
+
+def test_running_local_job_visible_when_legacy_cwd_matches():
+    rows = [
+        {"id": "local-1", "status": "running", "cwd": "/work/a/sub"},
+    ]
+    visible = filter_local_jobs(rows, active_session_id="sess-b", repo_root="/work/a")
+    assert [j["id"] for j in visible] == ["local-1"]
+
+
+def test_running_local_orphan_visible_without_session_or_cwd():
+    rows = [
+        {"id": "local-orphan", "status": "running"},
+    ]
+    visible = filter_local_jobs(rows, active_session_id="sess-b", repo_root="/work/b")
+    assert [j["id"] for j in visible] == ["local-orphan"]
 
 
 def test_filter_store_jobs_two_sessions_two_repos(tmp_path):

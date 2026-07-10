@@ -244,7 +244,10 @@ def run_native_edit(
         expects_diff=expects_diff,
     )
     # ProviderWorker.run() stamps tokens_out from the budget on every return path.
-    return worker.run()
+    result = worker.run()
+    result.engine = "native"
+    result.model = (getattr(config, "driver", None) or "") or ""
+    return result
 
 
 def run_agentic_edit(
@@ -261,8 +264,10 @@ def run_agentic_edit(
     from harness.job_scoping import job_label_for_session, stamp_task_payload
 
     if not agentic_available():
-        return WorkerResult(ok=False, error=AGENTIC_UNAVAILABLE,
-                            summary="No provider key visible for the agentic engine.")
+        return _stamp_agentic(WorkerResult(
+            ok=False, error=AGENTIC_UNAVAILABLE,
+            summary="No provider key visible for the agentic engine.",
+        ))
 
     try:
         from puppetmaster.orchestrator import Orchestrator
@@ -270,8 +275,10 @@ def run_agentic_edit(
         from puppetmaster.workers import WorkerSpec
     except Exception as exc:
         _diag("edit_engines.run_agentic_edit.import", exc)
-        return WorkerResult(ok=False, error=AGENTIC_UNAVAILABLE,
-                            summary=f"Puppetmaster unavailable: {exc}")
+        return _stamp_agentic(WorkerResult(
+            ok=False, error=AGENTIC_UNAVAILABLE,
+            summary=f"Puppetmaster unavailable: {exc}",
+        ))
 
     provider = (os.environ.get("HARNESS_IMPLEMENT_PROVIDER", "") or "").strip().lower()
     model = (os.environ.get("HARNESS_IMPLEMENT_MODEL", "") or "").strip()
@@ -335,29 +342,40 @@ def run_agentic_edit(
 
             patch, files_changed = finalize_worktree_patch(wt_path)
             tokens_out, tokens_in, failure, final_text = _summarize_agentic_result(result)
+            routed_model = _routed_model_id(result)
 
             if not patch.strip():
                 # Distinguish "engine could not run" (route/provider failure) from
                 # "ran fine but changed nothing" so fallback only fires for the former.
                 if failure in ("no_model", "unknown_provider", "route_failed"):
-                    return WorkerResult(ok=False, error=AGENTIC_ROUTE_FAILED,
-                                        summary=final_text or "Agentic engine could not select a model/provider.")
+                    return _stamp_agentic(WorkerResult(
+                        ok=False, error=AGENTIC_ROUTE_FAILED,
+                        summary=final_text or "Agentic engine could not select a model/provider.",
+                        model=routed_model,
+                    ), result)
                 if not expects_diff:
-                    return WorkerResult(
+                    return _stamp_agentic(WorkerResult(
                         ok=True, tokens_out=tokens_out, tokens_in=tokens_in,
                         summary=final_text or "No summary available.",
-                    )
-                return WorkerResult(ok=False, tokens_out=tokens_out, tokens_in=tokens_in,
-                                    summary=final_text or "no changes produced")
+                        model=routed_model,
+                    ), result)
+                return _stamp_agentic(WorkerResult(
+                    ok=False, tokens_out=tokens_out, tokens_in=tokens_in,
+                    summary=final_text or "no changes produced",
+                    model=routed_model,
+                ), result)
 
-            return WorkerResult(
+            return _stamp_agentic(WorkerResult(
                 ok=True, patch=patch, files_changed=files_changed,
                 tokens_out=tokens_out, tokens_in=tokens_in,
                 summary=final_text or (f"Files changed: {', '.join(files_changed)}" if files_changed else "Patch generated"),
-            )
+                model=routed_model,
+            ), result)
     except Exception as exc:
         _diag("edit_engines.run_agentic_edit", exc)
-        return WorkerResult(ok=False, error=AGENTIC_ERROR, summary=f"Agentic engine error: {exc}")
+        return _stamp_agentic(WorkerResult(
+            ok=False, error=AGENTIC_ERROR, summary=f"Agentic engine error: {exc}",
+        ))
 
 
 def _summarize_agentic_result(result) -> tuple[int, int, str, str]:
@@ -379,3 +397,35 @@ def _summarize_agentic_result(result) -> tuple[int, int, str, str]:
         if stdout and not final_text:
             final_text = str(stdout)[:2000]
     return tokens_out, tokens_in, failure, final_text
+
+
+def _routed_model_id(result) -> str:
+    """Model id from a ROUTING artifact on an agentic orchestrator result.
+
+    Prefers the last non-empty model_id so a router-fallback stamp wins over an
+    earlier plan-billed $0 pick. Returns '' when nothing routed."""
+    model_id = ""
+    for art in getattr(result, "artifacts", []) or []:
+        atype = getattr(art, "type", None)
+        type_str = str(getattr(atype, "value", None) or atype or "").strip().lower()
+        payload = getattr(art, "payload", {}) or {}
+        # Typed ROUTING rows are authoritative; untyped fakes that already carry
+        # model_id are accepted so hermetic tests need not import ArtifactType.
+        if type_str and type_str != "routing":
+            continue
+        if type_str != "routing" and not (payload.get("model_id") or payload.get("model")):
+            continue
+        mid = payload.get("model_id") or payload.get("model") or ""
+        if mid:
+            model_id = str(mid)
+    return model_id
+
+
+def _stamp_agentic(result: "WorkerResult", pm_result=None) -> "WorkerResult":
+    """Label a WorkerResult as the agentic engine + routed model (best-effort)."""
+    result.engine = "agentic"
+    if not (result.model or "").strip() and pm_result is not None:
+        routed = _routed_model_id(pm_result)
+        if routed:
+            result.model = routed
+    return result

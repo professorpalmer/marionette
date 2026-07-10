@@ -288,6 +288,7 @@ def test_agentic_payload_capability_key_and_default_cap(monkeypatch):
 
         result = run_agentic_edit(cfg, "make a change")
         assert result.ok is True
+        assert result.engine == "agentic"
         assert len(captured) == 1
         payload = captured[0]
         assert payload["mode"] == "implement"
@@ -297,6 +298,48 @@ def test_agentic_payload_capability_key_and_default_cap(monkeypatch):
         assert payload[EXPECTED_CAP_KEY] == 86
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_edit_stamps_routed_model_from_routing_artifact(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        routing = _fake_artifact(model_id="z-ai/glm-5.2", estimated_cost_usd=0.004)
+        routing.type = "routing"
+        _install_agentic_mocks(
+            monkeypatch,
+            orchestrator_result=_fake_pm_result([
+                routing,
+                _fake_artifact(tokens_out=20, tokens_in=8, stdout="patched"),
+            ]),
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("diff content", ["test.txt"]),
+        )
+        result = run_agentic_edit(cfg, "make a change")
+        assert result.ok is True
+        assert result.engine == "agentic"
+        assert result.model == "z-ai/glm-5.2"
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_native_edit_stamps_engine_and_driver(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        cfg.driver = "stub-oracle-v2"
+        sentinel = WorkerResult(ok=True, patch="p", summary="done")
+
+        monkeypatch.setattr(ProviderWorker, "run", lambda self: sentinel)
+        result = run_native_edit(cfg, "edit foo")
+        assert result is sentinel
+        assert result.engine == "native"
+        assert result.model == "stub-oracle-v2"
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
 
 
 def test_agentic_payload_max_capability_env_override(monkeypatch):
