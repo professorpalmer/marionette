@@ -60,6 +60,50 @@ def test_boot_skips_workspace_when_harness_repo_already_set(reload_server, tmp_p
     assert os.environ.get("HARNESS_REPO") == str(forced)
 
 
+def test_boot_clears_leaked_app_root_harness_repo_and_restores_user(
+    reload_server, tmp_path, monkeypatch,
+):
+    """Packaged startup may inherit HARNESS_REPO=<app checkout>; restore user repo."""
+    user_proj = tmp_path / "dugout"
+    user_proj.mkdir()
+    app_root = tmp_path / "app-checkout"
+    app_root.mkdir()
+    (tmp_path / "workspace.json").write_text(
+        json.dumps({"repo": str(user_proj), "recents": [str(user_proj)]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MARIONETTE_APP_ROOT", str(app_root))
+    srv = reload_server(HARNESS_REPO=str(app_root))
+    assert srv._cfg.repo == str(user_proj)
+    assert os.environ.get("HARNESS_REPO") == str(user_proj)
+
+
+def test_boot_clears_leaked_app_root_without_saved_workspace(
+    reload_server, tmp_path, monkeypatch,
+):
+    """Leaked app-root HARNESS_REPO with no workspace.json must open nothing."""
+    app_root = tmp_path / "app-checkout"
+    app_root.mkdir()
+    monkeypatch.setenv("MARIONETTE_APP_ROOT", str(app_root))
+    srv = reload_server(HARNESS_REPO=str(app_root))
+    assert srv._cfg.repo == ""
+    assert not os.environ.get("HARNESS_REPO")
+
+
+def test_boot_preserves_explicit_cli_app_checkout_without_electron_marker(
+    reload_server, monkeypatch,
+):
+    """Direct CLI may intentionally open the running checkout (no MARIONETTE_APP_ROOT)."""
+    import harness
+
+    running = Path(harness.__file__).resolve().parent.parent
+    monkeypatch.delenv("MARIONETTE_APP_ROOT", raising=False)
+    monkeypatch.delenv("HARNESS_APP_ROOT", raising=False)
+    srv = reload_server(HARNESS_REPO=str(running))
+    assert srv._cfg.repo == str(running)
+    assert os.environ.get("HARNESS_REPO") == str(running)
+
+
 def test_boot_first_launch_opens_no_project(reload_server, tmp_path):
     # No workspace.json under the isolated state dir.
     srv = reload_server(HARNESS_REPO=None)

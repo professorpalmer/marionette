@@ -1544,6 +1544,40 @@ try:
 except Exception as e:
     _diag("server.boot_usage_restore_boot", e)
 
+def _scrub_leaked_app_root_harness_repo() -> None:
+    """Drop HARNESS_REPO when it points at the Marionette app checkout itself.
+
+    Packaged Electron may inherit a process-level HARNESS_REPO equal to the
+    app install root; that must not skip workspace.json boot restore. Direct
+    CLI use without MARIONETTE_APP_ROOT is intentional even when the path is
+    this running checkout (dev working in the Marionette repo).
+    """
+    repo = (_cfg.repo or os.environ.get("HARNESS_REPO") or "").strip()
+    if not repo or not _is_app_install_root(repo):
+        return
+    app_root_env = (os.environ.get("MARIONETTE_APP_ROOT") or "").strip()
+    if app_root_env:
+        try:
+            if _norm_realpath(repo) == _norm_realpath(app_root_env):
+                _cfg.repo = ""
+                os.environ.pop("HARNESS_REPO", None)
+                return
+        except OSError:
+            pass
+    packaged = os.path.join(os.path.expanduser("~"), ".marionette", "marionette")
+    try:
+        if os.path.isdir(packaged) and _norm_realpath(repo) == _norm_realpath(packaged):
+            _cfg.repo = ""
+            os.environ.pop("HARNESS_REPO", None)
+    except OSError:
+        pass
+
+
+try:
+    _scrub_leaked_app_root_harness_repo()
+except Exception as e:
+    _diag("server.scrub_leaked_app_root", e)
+
 _ws_boot_path = _resolve_existing_state_file("workspace.json")
 if not os.environ.get("HARNESS_REPO") and os.path.exists(_ws_boot_path):
     try:

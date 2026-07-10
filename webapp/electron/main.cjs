@@ -503,7 +503,12 @@ async function _startBackendOnce() {
     // from boot restore + PROJECTS recents so Marionette never auto-opens itself.
     MARIONETTE_APP_ROOT: repoRoot,
   };
-  if (!process.env.HARNESS_REPO) {
+  // Packaged: never pass HARNESS_REPO — a process-level value (often the app
+  // checkout on Windows) would skip workspace.json restore in the backend.
+  // Dev: only omit when unset so an explicit dev-shell override still works.
+  if (isPackaged) {
+    delete customEnv.HARNESS_REPO;
+  } else if (!process.env.HARNESS_REPO) {
     delete customEnv.HARNESS_REPO;
   }
 
