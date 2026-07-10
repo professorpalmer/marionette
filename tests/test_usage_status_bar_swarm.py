@@ -575,3 +575,218 @@ def test_api_swarm_live_job_rows_carry_routing_and_cache_savings(tmp_path, monke
         assert abs(live["session"]["cache_saved_usd_swarm"] - 0.27) < 1e-9
     finally:
         httpd.shutdown()
+
+
+def test_api_usage_tokens_used_is_pilot_only_plus_job_tokens(tmp_path, monkeypatch):
+    """Boot pill tokens_used must match pilot-only + store job tokens (not undercount)."""
+    from harness.sessions import SessionStore
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_dir = tmp_path / "harness-state"
+    harness_store = create_store("sqlite", str(harness_dir))
+
+    sess_store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    row = sess_store.create(title="token parity", repo=str(repo), workspace_root=str(repo))
+    sid = row["id"]
+    monkeypatch.setattr(server, "_sessions", sess_store)
+
+    job = harness_store.create_job("token parity", label=job_label_for_session(sid))
+    _save_task(harness_store, job.id, str(repo), session_id=sid, model="worker-model")
+    harness_store.save_artifact(
+        _verification(
+            job.id, "t1", "worker-model", 200_000, 10_000, tokens_cached=100_000
+        )
+    )
+
+    # Pilot meters: 15k used of which 5k in + 2k out are worker-attributed;
+    # 40k cached of which 100k swarm would clamp pilot_only_cached to 0.
+    # Use a smaller pilot cache so pilot_only_cached stays positive.
+    old_pilot = server._pilot
+    pilot = SimpleNamespace(
+        _tokens_used=15_000,
+        _tokens_in=10_000,
+        _tokens_out=5_000,
+        _tokens_cached=40_000,
+        _worker_tokens_in=5_000,
+        _worker_tokens_out=2_000,
+        _worker_cost_usd=0.0,
+        state_dir=str(harness_dir),
+        harness_session_id=sid,
+        live_local_jobs=lambda: [],
+    )
+    monkeypatch.setattr(server, "_pilot", pilot)
+    monkeypatch.setattr(
+        server,
+        "_boot_usage_meters",
+        lambda: {
+            "_tokens_used": 15_000,
+            "_tokens_in": 10_000,
+            "_tokens_out": 5_000,
+            "_tokens_cached": 40_000,
+            "_worker_tokens_in": 5_000,
+            "_worker_tokens_out": 2_000,
+            "_worker_cost_usd": 0.0,
+        },
+    )
+    monkeypatch.setattr(server, "_boot_session_cost", lambda price_in, price_out: 0.01)
+
+    httpd, port = _api_server(str(harness_dir))
+    try:
+        monkeypatch.setattr(
+            server,
+            "_jobs_snapshot",
+            lambda: [
+                {
+                    "id": job.id,
+                    "goal": "token parity",
+                    "status": "complete",
+                    "adapter": "agentic",
+                    "label": job_label_for_session(sid),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            server._session,
+            "state",
+            lambda: SimpleNamespace(
+                store=harness_store,
+                format_artifacts=lambda arts: [],
+                job_artifacts=lambda jid: [],
+            ),
+        )
+        monkeypatch.setattr(
+            "harness.cli_job_merge.resolve_cli_state_dir",
+            lambda workspace_root="": None,
+        )
+        monkeypatch.setattr(
+            server,
+            "_swarm_registry",
+            lambda: [_registry_spec("worker-model", input_per_mtok_usd=3.0)],
+        )
+        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
+        monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
+        server._cfg.repo = str(repo)
+
+        scoped = urllib.parse.quote(str(repo), safe="")
+        usage = json.loads(
+            _api_get(port, f"/api/usage?repo={scoped}", server._TOKEN).read().decode()
+        )
+        job_rows = usage["jobs"]
+        assert len(job_rows) == 1
+        job_tokens = int(job_rows[0]["tokens"] or 0)
+        assert job_tokens == 210_000  # 200k in + 10k out
+        pilot_only = max(0, 15_000 - 5_000 - 2_000)
+        assert usage["session"]["tokens_used"] == pilot_only + job_tokens
+
+        # swarm_cached=100k > pilot _t_cached=40k -> pilot_only_cached=0
+        # display tokens_cached = 0 + 100_000; cache_savings_usd prices pilot only
+        assert usage["session"]["tokens_cached"] == 100_000
+        assert abs(usage["session"]["cache_savings_usd"] - 0.0) < 1e-9
+        # 100k cached @ $3/MTok * 0.9 = 0.27
+        assert abs(usage["session"]["cache_saved_usd_swarm"] - 0.27) < 1e-9
+
+        live = json.loads(
+            _api_get(port, f"/api/swarm/live?repo={scoped}", server._TOKEN).read().decode()
+        )
+        assert live["session"]["tokens_used"] == pilot_only + job_tokens
+        assert live["session"]["tokens_cached"] == 100_000
+        assert abs(live["session"]["cache_savings_usd"] - 0.0) < 1e-9
+        assert abs(live["session"]["cache_saved_usd_swarm"] - 0.27) < 1e-9
+    finally:
+        httpd.shutdown()
+        server._pilot = old_pilot
+
+
+def test_api_usage_combined_cache_keeps_pilot_only_when_disjoint(tmp_path, monkeypatch):
+    """When pilot cache exceeds swarm attribution, keep the exclusive pilot portion."""
+    from harness.sessions import SessionStore
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_dir = tmp_path / "harness-state"
+    harness_store = create_store("sqlite", str(harness_dir))
+
+    sess_store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    row = sess_store.create(title="cache combine", repo=str(repo), workspace_root=str(repo))
+    sid = row["id"]
+    monkeypatch.setattr(server, "_sessions", sess_store)
+
+    job = harness_store.create_job("cache combine", label=job_label_for_session(sid))
+    _save_task(harness_store, job.id, str(repo), session_id=sid, model="worker-model")
+    harness_store.save_artifact(
+        _verification(
+            job.id, "t1", "worker-model", 50_000, 5_000, tokens_cached=20_000
+        )
+    )
+
+    old_pilot = server._pilot
+    monkeypatch.setattr(
+        server,
+        "_boot_usage_meters",
+        lambda: {
+            "_tokens_used": 8_000,
+            "_tokens_in": 6_000,
+            "_tokens_out": 2_000,
+            "_tokens_cached": 50_000,
+            "_worker_tokens_in": 0,
+            "_worker_tokens_out": 0,
+            "_worker_cost_usd": 0.0,
+        },
+    )
+    monkeypatch.setattr(server, "_boot_session_cost", lambda price_in, price_out: 0.01)
+    monkeypatch.setattr(
+        "pmharness.registry.resolve_price",
+        lambda driver: (3.0, 15.0),
+    )
+
+    httpd, port = _api_server(str(harness_dir))
+    try:
+        monkeypatch.setattr(
+            server,
+            "_jobs_snapshot",
+            lambda: [
+                {
+                    "id": job.id,
+                    "goal": "cache combine",
+                    "status": "complete",
+                    "adapter": "agentic",
+                    "label": job_label_for_session(sid),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            server._session,
+            "state",
+            lambda: SimpleNamespace(store=harness_store),
+        )
+        monkeypatch.setattr(
+            "harness.cli_job_merge.resolve_cli_state_dir",
+            lambda workspace_root="": None,
+        )
+        monkeypatch.setattr(
+            server,
+            "_swarm_registry",
+            lambda: [_registry_spec("worker-model", input_per_mtok_usd=3.0)],
+        )
+        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
+        monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
+        server._cfg.repo = str(repo)
+
+        scoped = urllib.parse.quote(str(repo), safe="")
+        usage = json.loads(
+            _api_get(port, f"/api/usage?repo={scoped}", server._TOKEN).read().decode()
+        )
+        # pilot_only_cached = 50k - 20k = 30k; display = 30k + 20k = 50k
+        assert usage["session"]["tokens_cached"] == 50_000
+        # 30k @ $3/MTok * 0.9 = 0.081
+        assert abs(usage["session"]["cache_savings_usd"] - 0.081) < 1e-9
+        # 20k @ $3/MTok * 0.9 = 0.054
+        assert abs(usage["session"]["cache_saved_usd_swarm"] - 0.054) < 1e-9
+        job_tokens = int(usage["jobs"][0]["tokens"] or 0)
+        assert usage["session"]["tokens_used"] == 8_000 + job_tokens
+    finally:
+        httpd.shutdown()
+        server._pilot = old_pilot

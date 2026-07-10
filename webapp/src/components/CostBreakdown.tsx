@@ -71,6 +71,8 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
     typeof data.cache_saved_usd_swarm === "number" && isFinite(data.cache_saved_usd_swarm) && data.cache_saved_usd_swarm > 0
       ? data.cache_saved_usd_swarm
       : 0;
+  // One Prompt-cache saved row: pilot-priced cache + authoritative swarm store.
+  const promptCacheSaved = cacheSavings + swarmCacheSaved;
   const compactSavings =
     typeof data.tool_output_savings_usd === "number" && isFinite(data.tool_output_savings_usd) && data.tool_output_savings_usd > 0
       ? data.tool_output_savings_usd
@@ -137,11 +139,11 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         </div>
       ) : null}
 
-      {/* (b) Cache savings -- only when there is a real, positive dollar figure. */}
-      {cacheSavings > 0 ? (
+      {/* (b) Cache savings -- pilot + swarm store, one row. */}
+      {promptCacheSaved > 0 ? (
         <div className="flex items-center justify-between mb-1">
           <span className="text-muted">Prompt-cache saved</span>
-          <span className="text-accent font-medium tabular-nums">~{fmtCost(cacheSavings)}</span>
+          <span className="text-accent font-medium tabular-nums">~{fmtCost(promptCacheSaved)}</span>
         </div>
       ) : null}
 
@@ -149,13 +151,6 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         <div className="flex items-center justify-between mb-1">
           <span className="text-muted">Routing saved</span>
           <span className="text-accent font-medium tabular-nums">~{fmtCost(routingSaved)}</span>
-        </div>
-      ) : null}
-
-      {swarmCacheSaved > 0 ? (
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-muted">Swarm cache saved</span>
-          <span className="text-accent font-medium tabular-nums">~{fmtCost(swarmCacheSaved)}</span>
         </div>
       ) : null}
 
@@ -225,14 +220,14 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           the mechanism that keeps spend low even absent a flat-frontier
           baseline. Kept to one short line. */}
       <div className="mt-2 pt-2 border-t border-edge/60 text-[10px] leading-snug text-muted/90">
-        {cacheSavings > 0 || compactSavings > 0 || routingSaved > 0 || swarmCacheSaved > 0 ? (
+        {promptCacheSaved > 0 || compactSavings > 0 || routingSaved > 0 ? (
           <span>
             Routed per-step to the cheapest capable model
             {routingSaved > 0 ? (
               <>, saving <span className="text-accent">~{fmtCost(routingSaved)}</span> vs a flat-frontier baseline</>
             ) : null}
-            {cacheSavings > 0 || swarmCacheSaved > 0 ? (
-              <>, with <span className="text-accent">~{fmtCost(cacheSavings + swarmCacheSaved)}</span> saved via prompt caching</>
+            {promptCacheSaved > 0 ? (
+              <>, with <span className="text-accent">~{fmtCost(promptCacheSaved)}</span> saved via prompt caching</>
             ) : null}
             {compactSavings > 0 ? (
               <>, and <span className="text-accent">~{fmtCost(compactSavings)}</span> avoided by compact tool outputs</>

@@ -42,12 +42,14 @@ describe("CostBreakdown", () => {
     expect(screen.getByText(/soon — L1 nearing limit/)).toBeInTheDocument();
   });
 
-  it("renders routing and swarm-cache savings rows when positive", () => {
+  it("renders routing and combined prompt-cache savings when positive", () => {
     render(
       <CostBreakdown
         data={{
           tokens_used: 1000,
           est_cost_usd: 0.70,
+          tokens_cached: 50_000,
+          cache_savings_usd: 0.02,
           routing_saved_usd: 0.40,
           cache_saved_usd_swarm: 0.05,
         }}
@@ -57,9 +59,12 @@ describe("CostBreakdown", () => {
     expect(screen.getByText("Routing saved")).toBeInTheDocument();
     const routingRow = screen.getByText("Routing saved").closest("div");
     expect(within(routingRow!).getByText("~$0.40")).toBeInTheDocument();
-    expect(screen.getByText("Swarm cache saved")).toBeInTheDocument();
-    const swarmRow = screen.getByText("Swarm cache saved").closest("div");
-    expect(within(swarmRow!).getByText("~$0.05")).toBeInTheDocument();
+    expect(screen.getByText("Prompt-cache saved")).toBeInTheDocument();
+    expect(screen.queryByText("Swarm cache saved")).not.toBeInTheDocument();
+    const cacheRow = screen.getByText("Prompt-cache saved").closest("div");
+    // 0.02 pilot + 0.05 swarm = ~$0.07
+    expect(within(cacheRow!).getByText("~$0.07")).toBeInTheDocument();
+    expect(screen.getByText("Tokens from cache")).toBeInTheDocument();
   });
 
   it("omits zero or absent savings rows", () => {

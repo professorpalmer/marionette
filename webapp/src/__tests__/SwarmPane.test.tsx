@@ -131,7 +131,7 @@ describe("SwarmPane routing dedupe", () => {
   });
 });
 
-describe("SwarmPane mid-run savings meters", () => {
+describe("SwarmPane mid-run job-row meters", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -140,7 +140,7 @@ describe("SwarmPane mid-run savings meters", () => {
     mockArtifacts.mockResolvedValue([]);
   });
 
-  it("shows cache, routing, and compact savings on a running job row", async () => {
+  it("shows tokens, compact tokens, and cost only -- not cache/route savings", async () => {
     mockSwarmLive.mockResolvedValue(
       liveJob({
         status: "running",
@@ -157,11 +157,14 @@ describe("SwarmPane mid-run savings meters", () => {
     render(<SwarmPane />);
 
     await waitFor(() => {
-      expect(screen.getByText("8,000 cached")).toBeInTheDocument();
-      expect(screen.getByText("1,500 compact ($0.0030)")).toBeInTheDocument();
-      expect(screen.getByText("cache $0.0123")).toBeInTheDocument();
-      expect(screen.getByText("route $0.0400")).toBeInTheDocument();
+      expect(screen.getAllByText("12,000t").length).toBeGreaterThan(0);
+      expect(screen.getByText("1,500 compact")).toBeInTheDocument();
+      expect(screen.getAllByText("$0.0500").length).toBeGreaterThan(0);
     });
+    expect(screen.queryByText("8,000 cached")).not.toBeInTheDocument();
+    expect(screen.queryByText("cache $0.0123")).not.toBeInTheDocument();
+    expect(screen.queryByText("route $0.0400")).not.toBeInTheDocument();
+    expect(screen.queryByText(/compact \(\$/)).not.toBeInTheDocument();
   });
 });
 

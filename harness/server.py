@@ -4574,14 +4574,16 @@ class Handler(BaseHTTPRequestHandler):
             _t_in = int(_boot_meters.get("_tokens_in", 0) or 0)
             _t_out = int(_boot_meters.get("_tokens_out", 0) or 0)
             _t_cached = int(_boot_meters.get("_tokens_cached", 0) or 0)
+            _w_in = int(_boot_meters.get("_worker_tokens_in", 0) or 0)
+            _w_out = int(_boot_meters.get("_worker_tokens_out", 0) or 0)
             # Price each live runner (and carry) via _session_cost_split so
             # worker dollars stay at each worker's own model rate.
             est_session_cost = _boot_session_cost(price_in, price_out)
-            _cache_savings_usd = _cache_savings(_t_cached, price_in)
             jobs_list = []
             session_total = None
             routing_saved_usd = 0.0
             cache_saved_usd_swarm = 0.0
+            swarm_cached = 0
             try:
                 # Same merged, workspace-scoped job set the tracker uses
                 # (/api/swarm/live): harness store + per-project CLI store, so
@@ -4684,9 +4686,14 @@ class Handler(BaseHTTPRequestHandler):
 
                 for jid in jids:
                     try:
+                        raw_arts = _job_arts(jid)
                         tokens, est_cost_usd = _job_swarm_accounting(
-                            _job_arts(jid), registry
+                            raw_arts, registry
                         )
+                        try:
+                            swarm_cached += int(_tokens_cached_swarm(raw_arts) or 0)
+                        except Exception:
+                            pass
                         jobs_list.append({
                             "job_id": jid,
                             "tokens": tokens,
@@ -4707,12 +4714,20 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 _diag("server.usage_jobs_aggregate", e)
             # Swarm store jobs: dollars come ONLY from here (usage artifacts x
-            # registry). Their tokens are folded into the pilot meters for
-            # display but carried in _worker_tokens_* so _session_cost_split
-            # excludes them from the pilot-priced portion -- local provider
-            # workers are the ones folded in as dollars via _worker_cost_usd.
+            # registry). Token display = pilot-only meters (boot total minus
+            # worker in/out already folded into pilot) + authoritative store
+            # job token sums -- mirrors SwarmPane job.tokens without undercount.
             swarm_cost = sum(float(j.get("est_cost_usd") or 0.0) for j in jobs_list)
             est_session_cost += swarm_cost
+            pilot_only_tokens = max(0, tokens_used - _w_in - _w_out)
+            job_tokens_sum = sum(int(j.get("tokens") or 0) for j in jobs_list)
+            tokens_used = pilot_only_tokens + job_tokens_sum
+            # Cache tokens: subtract overlapping swarm attribution from pilot
+            # meters, then add authoritative store-job cache (avoids double
+            # count when harness workers were folded into _tokens_cached).
+            pilot_only_cached = max(0, _t_cached - min(_t_cached, swarm_cached))
+            tokens_cached = pilot_only_cached + swarm_cached
+            _cache_savings_usd = _cache_savings(pilot_only_cached, price_in)
             response_data = {
                 "session": {
                     "tokens_used": tokens_used,
@@ -4721,8 +4736,9 @@ class Handler(BaseHTTPRequestHandler):
                     "price_in": price_in,
                     "price_out": price_out,
                     # Prompt-cache hits (billed at the cache-read discount) and
-                    # the USD that discount saved vs full input price.
-                    "tokens_cached": _t_cached,
+                    # the USD that discount saved vs full input price (pilot-
+                    # only; store-job cache USD is cache_saved_usd_swarm).
+                    "tokens_cached": tokens_cached,
                     "cache_savings_usd": round(_cache_savings_usd, 6),
                     # Routing + swarm-cache savings over the boot-repo epoch job
                     # set (additive to the pilot cache/compaction figures).
@@ -4929,15 +4945,16 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 _diag("server.jobs_list_merge_local", e)
             
-            tokens_used = getattr(_pilot, "_tokens_used", 0)
+            tokens_used = int(getattr(_pilot, "_tokens_used", 0) or 0)
             # Accurate split: input tokens at price_in, output at price_out, with
             # cached prompt tokens re-billed at the cache-read discount. Falls
             # back to a single-rate estimate if the in/out split isn't tracked.
             _t_in = getattr(_pilot, "_tokens_in", 0)
             _t_out = getattr(_pilot, "_tokens_out", 0)
             _t_cached = int(getattr(_pilot, "_tokens_cached", 0) or 0)
+            _w_in = int(getattr(_pilot, "_worker_tokens_in", 0) or 0)
+            _w_out = int(getattr(_pilot, "_worker_tokens_out", 0) or 0)
             est_session_cost = _session_cost_split(_pilot, price_in, price_out)
-            _cache_savings_usd = _cache_savings(_t_cached, price_in)
             # Add swarm store-job spend from the scoped job list only.
             try:
                 est_session_cost += sum(
@@ -4947,19 +4964,29 @@ class Handler(BaseHTTPRequestHandler):
                 )
             except Exception:
                 pass
-            
+
             # Mid-run savings: sum per-job routing/cache meters so the live
             # session block matches /api/usage (pilot cache stays separate).
             live_routing_saved = 0.0
             live_cache_saved = 0.0
+            swarm_cached = 0
+            job_tokens_sum = 0
             try:
                 for j in res_jobs:
                     if str(j.get("id") or "").startswith("local-"):
                         continue
                     live_routing_saved += float(j.get("routing_saved_usd") or 0.0)
                     live_cache_saved += float(j.get("cache_saved_usd") or 0.0)
+                    swarm_cached += int(j.get("tokens_cached") or 0)
+                    job_tokens_sum += int(j.get("tokens") or 0)
             except Exception:
                 pass
+
+            # Same token parity as /api/usage: pilot-only + store job tokens.
+            tokens_used = max(0, tokens_used - _w_in - _w_out) + job_tokens_sum
+            pilot_only_cached = max(0, _t_cached - min(_t_cached, swarm_cached))
+            tokens_cached = pilot_only_cached + swarm_cached
+            _cache_savings_usd = _cache_savings(pilot_only_cached, price_in)
 
             response_data = {
                 "session": {
@@ -4969,7 +4996,7 @@ class Handler(BaseHTTPRequestHandler):
                     # Prompt-cache hits (billed at the cache-read discount) so the
                     # UI can show how much input was served near-free -- proof the
                     # harness is not token-hungry -- plus the USD it saved.
-                    "tokens_cached": _t_cached,
+                    "tokens_cached": tokens_cached,
                     "cache_savings_usd": round(_cache_savings_usd, 6),
                     "routing_saved_usd": round(live_routing_saved, 6),
                     "cache_saved_usd_swarm": round(live_cache_saved, 6),

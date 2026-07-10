@@ -66,14 +66,18 @@ def test_rebuild_pilot_preserves_usage_meters():
         srv._pilot._worker_tokens_in = 900
         srv._pilot._worker_tokens_out = 300
 
+        # Display tokens_used = pilot_only + store jobs (no jobs here =>
+        # raw meters minus worker in/out already folded into the pilot).
+        expected_tokens = 12_000 - 900 - 300
         before = _get_usage(port, srv._TOKEN)
-        assert before["session"]["tokens_used"] == 12_000
+        assert before["session"]["tokens_used"] == expected_tokens
         assert before["session"]["est_cost_usd"] > 0
 
         srv._rebuild_pilot_and_session()
 
         after = _get_usage(port, srv._TOKEN)
-        assert after["session"]["tokens_used"] == 12_000
+        assert after["session"]["tokens_used"] == expected_tokens
+        assert getattr(srv._pilot, "_tokens_used") == 12_000
         assert getattr(srv._pilot, "_tokens_in") == 8_000
         assert getattr(srv._pilot, "_tokens_out") == 4_000
         assert getattr(srv._pilot, "_tokens_cached") == 1_500
