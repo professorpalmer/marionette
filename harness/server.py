@@ -1288,14 +1288,21 @@ def _norm_realpath(path: str) -> str:
 def _app_install_roots() -> list:
     """Paths that are the Marionette app itself, not user projects.
 
-    The packaged checkout (~/.marionette/marionette) and the live source root
-    Electron passes as MARIONETTE_APP_ROOT must never auto-appear as the open
-    workspace or in PROJECTS recents -- users only see them if they open that
-    folder manually for the current session. Entries are ``_norm_realpath``
-    canonical so comparisons stay case-insensitive on Windows.
+    The packaged checkout (~/.marionette/marionette), the live source root
+    Electron passes as MARIONETTE_APP_ROOT / MARIONETTE_CHECKOUT, and the
+    checkout that is actually running this process (derived from
+    ``harness.__file__``) must never auto-appear as the open workspace or in
+    PROJECTS recents -- users only see them if they open that folder manually
+    for the current session. Entries are ``_norm_realpath`` canonical so
+    comparisons stay case-insensitive on Windows.
     """
     roots = []
-    for key in ("MARIONETTE_APP_ROOT", "HARNESS_APP_ROOT"):
+    for key in (
+        "MARIONETTE_APP_ROOT",
+        "HARNESS_APP_ROOT",
+        "MARIONETTE_CHECKOUT",
+        "HARNESS_CHECKOUT",
+    ):
         raw = (os.environ.get(key) or "").strip()
         if raw:
             try:
@@ -1307,6 +1314,17 @@ def _app_install_roots() -> list:
         if os.path.isdir(packaged):
             roots.append(_norm_realpath(packaged))
     except OSError:
+        pass
+    # Whatever checkout is executing this backend -- catches both the
+    # packaged ~/.marionette/marionette tree and a developer
+    # Projects/marionette checkout when that is what Electron spawned.
+    try:
+        import harness as _harness_pkg
+        _pkg_dir = os.path.dirname(os.path.abspath(_harness_pkg.__file__))
+        _running = os.path.dirname(_pkg_dir)
+        if _running:
+            roots.append(_norm_realpath(_running))
+    except Exception:
         pass
     # Dedupe while preserving order.
     out = []
@@ -3406,9 +3424,22 @@ class Handler(BaseHTTPRequestHandler):
                     if s.get("id") == _sessions.active:
                         target_sess = s
                         break
-                target_repo = target_sess.get("repo", "").strip() if target_sess else ""
+                target_repo = ""
+                if target_sess:
+                    target_repo = (
+                        session_stored_root(target_sess)
+                        or (target_sess.get("repo") or "").strip()
+                    )
 
-                if target_repo and os.path.isdir(target_repo) and target_repo != _cfg.repo:
+                # Never let a stale app-checkout session yank the live workspace
+                # back to ~/.marionette/marionette (or the running source tree).
+                # Conversation view still switches; only the project root is kept.
+                if (
+                    target_repo
+                    and os.path.isdir(target_repo)
+                    and target_repo != _cfg.repo
+                    and not _is_app_install_root(target_repo)
+                ):
                     _cfg.repo = target_repo
                     os.environ["HARNESS_REPO"] = target_repo
                     _note_boot_repo(target_repo)

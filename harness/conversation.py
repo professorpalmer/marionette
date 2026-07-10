@@ -3404,17 +3404,26 @@ class ConversationalSession(ToolDispatchMixin):
                         self._append_action_result(act, aid, err_msg, is_native)
                         continue
 
-                    # Update active configuration and environment
-                    self.config.repo = target_repo
-                    os.environ["HARNESS_REPO"] = target_repo
-
+                    # Update active configuration and environment -- but never
+                    # let an agent open_project yank the workspace onto the
+                    # Marionette app checkout itself.
                     try:
-                        from harness.server import _cfg, _record_recent_workspace
+                        from harness.server import _cfg, _record_recent_workspace, _is_app_install_root
+                        if _is_app_install_root(target_repo):
+                            err_msg = (
+                                "Refusing to open the Marionette app checkout as a "
+                                "project; pick a user repository instead."
+                            )
+                            yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+                            self._append_action_result(act, aid, err_msg, is_native, ok=False)
+                            continue
+                        self.config.repo = target_repo
+                        os.environ["HARNESS_REPO"] = target_repo
                         _cfg.repo = target_repo
                         _record_recent_workspace(target_repo)
-                    except Exception as e:
-                        # Log or handle import/calling exceptions gracefully
-                        pass
+                    except Exception:
+                        self.config.repo = target_repo
+                        os.environ["HARNESS_REPO"] = target_repo
 
                     basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
                     yield ConvEvent("action_result", {

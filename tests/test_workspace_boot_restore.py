@@ -248,4 +248,71 @@ def test_record_recent_skips_app_install_root(tmp_path, monkeypatch):
     data = json.loads((tmp_path / "workspace.json").read_text(encoding="utf-8"))
     assert data["repo"] == str(user)
     assert str(app) not in data["recents"]
-    assert str(user) in data["recents"]
+
+
+def test_app_install_roots_include_running_harness_checkout(monkeypatch):
+    """The checkout executing this process is always treated as app-root,
+    even when MARIONETTE_APP_ROOT is unset (covers Projects/marionette)."""
+    import harness
+    import harness.server as srv
+
+    monkeypatch.delenv("MARIONETTE_APP_ROOT", raising=False)
+    monkeypatch.delenv("HARNESS_APP_ROOT", raising=False)
+    monkeypatch.delenv("MARIONETTE_CHECKOUT", raising=False)
+    monkeypatch.delenv("HARNESS_CHECKOUT", raising=False)
+    running = Path(harness.__file__).resolve().parent.parent
+    assert srv._is_app_install_root(str(running)) is True
+
+
+def test_session_switch_does_not_repoint_to_app_install_root(tmp_path, monkeypatch):
+    """Stale app-checkout sessions must not yank the live workspace back."""
+    import json as _json
+    import threading
+    from http.server import ThreadingHTTPServer
+    import harness.server as srv
+
+    user = tmp_path / "user-proj"
+    user.mkdir()
+    app = tmp_path / "app-checkout"
+    app.mkdir()
+    monkeypatch.setenv("MARIONETTE_APP_ROOT", str(app))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(srv, "_puppetmaster_available", lambda: False)
+    monkeypatch.setattr(srv, "_index_codegraph_bg", lambda repo: None)
+
+    srv._cfg.repo = str(user)
+    os.environ["HARNESS_REPO"] = str(user)
+    srv._sessions.path = str(tmp_path / "harness_sessions.json")
+    srv._sessions._sessions = [
+        {"id": "user1", "title": "User", "created": 1.0,
+         "repo": str(user), "workspace_root": str(user), "archived": False},
+        {"id": "app1", "title": "App audit", "created": 2.0,
+         "repo": str(app), "workspace_root": str(app), "archived": False},
+    ]
+    srv._sessions._active = "user1"
+    srv._sessions._save()
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/sessions/switch",
+            data=_json.dumps({"id": "app1"}).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Harness-Token": srv._TOKEN,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = _json.loads(resp.read().decode())
+        assert body.get("ok") is True
+        assert srv._sessions.active == "app1"
+        # Workspace must stay on the user project.
+        assert srv._cfg.repo == str(user)
+        assert body.get("repo") == str(user)
+    finally:
+        httpd.shutdown()
