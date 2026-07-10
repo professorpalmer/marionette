@@ -265,6 +265,22 @@ class TestToolDispatchIntegration:
         assert status == "success"
         assert ids["job_id"] in val
 
+    def test_read_file_on_internal_uri_directory_lists(self):
+        """read_file on an internal URI directory redirects to a listing (ok=True)."""
+        state_dir = tempfile.mkdtemp(prefix="internal-uri-tool-")
+        ids = _seed_store(state_dir)
+        cfg = HarnessConfig(state_dir=state_dir, repo="")
+        session = ConversationalSession(cfg)
+
+        act = PilotAction(kind="read_file", path="job://")
+        ok, status, val = session._do_read_file(act)
+        assert ok is True
+        assert status == "success"
+        assert "path is a directory" in val
+        assert "use list_dir next time" in val
+        assert ids["job_id"] in val
+        assert "Path is a directory:" not in val
+
     def test_read_file_still_rejects_filesystem_traversal(self):
         with tempfile.TemporaryDirectory() as repo:
             cfg = HarnessConfig(state_dir=tempfile.mkdtemp(), repo=repo)

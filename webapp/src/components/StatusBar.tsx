@@ -220,7 +220,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
       {showUsage && (
         <>
           <span className="w-px h-3 bg-edge/40" />
-          <span className="flex items-center gap-1.5 text-muted/80" title="Token usage and estimated cost since the app started">
+          <span className="flex items-center gap-1.5 text-muted/80" title="Token usage and estimated cost for this app launch (survives backend restart; resets on full quit)">
             <Coins size={10} className="text-faint" />
             <span>{formatTokens(usage.tokens_used)} tok</span>
             {(() => {
@@ -267,7 +267,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
               <button
                 type="button"
                 onClick={() => setCostOpen((v) => !v)}
-                title="Estimated spend since the app started -- click for the full cost breakdown"
+                title="Estimated spend for this app launch -- click for the full cost breakdown"
                 className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-good/40 hover:text-good transition cursor-pointer"
               >
                 ~{formatCost(usage.est_cost_usd)}

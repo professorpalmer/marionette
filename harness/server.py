@@ -114,6 +114,11 @@ _COST_EPOCH = datetime.now(timezone.utc)
 # pill never resets when the UI attaches a different session. New runners start
 # at zero -- do NOT snapshot meters into them on attach/create (that would
 # double-count once /api/usage sums carry + all live runners).
+#
+# Across backend restarts inside the SAME Electron app run, carry + cost epoch
+# are restored from boot_usage.json when HARNESS_APP_RUN_ID matches (minted once
+# per desktop launch). A full app quit+relaunch mints a new id and the status
+# bar starts at zero -- that is the only intentional reset.
 _BOOT_METER_ATTRS = (
     "_tokens_used",
     "_tokens_in",
@@ -127,6 +132,9 @@ _BOOT_METER_CARRY: dict[str, float] = {attr: 0.0 for attr in _BOOT_METER_ATTRS}
 # Every workspace opened this process -- boot-pill swarm dollars merge
 # epoch-windowed jobs across these repos, not only the active _cfg.repo.
 _BOOT_REPOS: set[str] = set()
+_BOOT_USAGE_PERSIST_LOCK = threading.Lock()
+_BOOT_USAGE_LAST_PERSIST = 0.0
+_BOOT_USAGE_RESTORED = False
 
 
 def _job_in_cost_window(created_at: Any) -> bool:
@@ -142,6 +150,136 @@ def _job_in_cost_window(created_at: Any) -> bool:
         return stamp >= _COST_EPOCH
     except Exception:
         return True
+
+
+def _app_run_id() -> str:
+    return (os.environ.get("HARNESS_APP_RUN_ID") or "").strip()
+
+
+def _boot_usage_path() -> str:
+    root = (getattr(_cfg, "state_dir", None) or "").strip() or os.path.join(
+        os.path.expanduser("~"), ".pmharness", "state"
+    )
+    return os.path.join(root, "boot_usage.json")
+
+
+def _fold_all_live_runners_into_boot_carry() -> None:
+    """Collapse every live runner into carry so a backend restart can persist one blob."""
+    try:
+        live = list(_runners.runners())
+    except Exception:
+        live = []
+    seen = {id(r) for r in live}
+    try:
+        pilot = _pilot
+    except NameError:
+        pilot = None
+    if pilot is not None and id(pilot) not in seen:
+        live.append(pilot)
+    for runner in live:
+        try:
+            _fold_runner_meters_into_boot_carry("", runner)
+        except Exception:
+            pass
+
+
+def _persist_boot_usage(*, fold_live: bool = False, force: bool = False) -> None:
+    """Write boot meters + cost epoch for same-app-run backend respawns.
+
+    Snapshot is ``carry + live runners`` (same shape as the status-bar boot
+    pill) so a crash/respawn restores spend/savings without zeroing the live
+    process. ``fold_live=True`` is for intentional restart paths that are about
+    to kill the process anyway.
+
+    No-op without HARNESS_APP_RUN_ID (tests / bare CLI) so hermetic runs stay clean.
+    """
+    global _BOOT_USAGE_LAST_PERSIST
+    run_id = _app_run_id()
+    if not run_id:
+        return
+    now = time.time()
+    with _BOOT_USAGE_PERSIST_LOCK:
+        if not force and (now - _BOOT_USAGE_LAST_PERSIST) < 2.0:
+            return
+        try:
+            if fold_live:
+                _fold_all_live_runners_into_boot_carry()
+                carry_snap = {
+                    attr: float(_BOOT_METER_CARRY.get(attr, 0.0) or 0.0)
+                    for attr in _BOOT_METER_ATTRS
+                }
+            else:
+                try:
+                    carry_snap = {
+                        attr: float(v)
+                        for attr, v in _boot_usage_meters().items()
+                        if attr in _BOOT_METER_ATTRS
+                    }
+                except Exception:
+                    carry_snap = {
+                        attr: float(_BOOT_METER_CARRY.get(attr, 0.0) or 0.0)
+                        for attr in _BOOT_METER_ATTRS
+                    }
+            payload = {
+                "app_run_id": run_id,
+                "cost_epoch": _COST_EPOCH.isoformat(),
+                "carry": carry_snap,
+                "repos": sorted(_BOOT_REPOS),
+                "saved_at": now,
+            }
+            path = _boot_usage_path()
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, separators=(",", ":"))
+            os.replace(tmp, path)
+            _BOOT_USAGE_LAST_PERSIST = now
+        except Exception as e:
+            _diag("server.boot_usage_persist", e)
+
+
+def _restore_boot_usage() -> bool:
+    """Reload boot meters when this backend shares the Electron app-run id."""
+    global _COST_EPOCH, _BOOT_USAGE_RESTORED
+    if _BOOT_USAGE_RESTORED:
+        return False
+    _BOOT_USAGE_RESTORED = True
+    run_id = _app_run_id()
+    if not run_id:
+        return False
+    path = _boot_usage_path()
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return False
+        if str(data.get("app_run_id") or "").strip() != run_id:
+            return False
+        epoch_raw = data.get("cost_epoch")
+        if epoch_raw:
+            stamp = datetime.fromisoformat(str(epoch_raw))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            _COST_EPOCH = stamp
+        carry = data.get("carry") or {}
+        if isinstance(carry, dict):
+            for attr in _BOOT_METER_ATTRS:
+                try:
+                    _BOOT_METER_CARRY[attr] = float(carry.get(attr, 0.0) or 0.0)
+                except Exception:
+                    pass
+        for repo in data.get("repos") or []:
+            try:
+                if repo and os.path.isdir(str(repo)):
+                    _BOOT_REPOS.add(os.path.abspath(str(repo)))
+            except Exception:
+                pass
+        return True
+    except Exception as e:
+        _diag("server.boot_usage_restore", e)
+        return False
 
 
 def _active_session_total(session_job_ids, arts_getter, registry) -> Any:
@@ -422,6 +560,41 @@ def _job_dead_run_failure(raw_arts, status: str):
     return "workers failed"
 
 
+def _routing_estimate_by_task(artifacts) -> dict:
+    """FINAL router pre-flight estimate per task_id (escalation > fallback > router).
+
+    Untasked ROUTING rows are omitted -- they have no worker row to attach to.
+    """
+    try:
+        from puppetmaster.models import ArtifactType
+    except Exception:
+        return {}
+    rank = {
+        "router-escalation": 3,
+        "router-fallback": 2,
+        "router": 1,
+    }
+    best: dict = {}  # task_id -> (rank, cost)
+    for artifact in artifacts or []:
+        if getattr(artifact, "type", None) != ArtifactType.ROUTING:
+            continue
+        created_by = getattr(artifact, "created_by", "") or ""
+        r = rank.get(created_by, 0)
+        if r == 0:
+            continue
+        payload = getattr(artifact, "payload", None) or {}
+        cost = float(
+            payload.get("estimated_cost_usd") or payload.get("nominal_cost_usd") or 0.0
+        )
+        task_id = getattr(artifact, "task_id", None)
+        if not task_id:
+            continue
+        prev = best.get(task_id)
+        if prev is None or r > prev[0]:
+            best[task_id] = (r, cost)
+    return {tid: cost for tid, (_r, cost) in best.items()}
+
+
 def _routing_estimate_cost(artifacts) -> float:
     """Sum FINAL router pre-flight estimates; interim fallback before usage lands.
 
@@ -465,22 +638,9 @@ def _live_price_unpriced_tasks(job_cost) -> float:
     OpenRouter price map (public /models feed, disk-cached). Worker model ids
     like 'z-ai/glm-5.2' are OpenRouter slugs, so this usually resolves exactly;
     unmatched models contribute nothing. Best-effort, never raises."""
-    try:
-        from pmharness.registry import price
-    except Exception:
-        return 0.0
     total = 0.0
     for task in getattr(job_cost, "tasks", []):
-        if task.priced or (not task.tokens_in and not task.tokens_out):
-            continue
-        try:
-            price_in, price_out = price(task.model_id)
-        except Exception:
-            continue
-        if price_in is None or price_out is None:
-            continue
-        total += ((task.tokens_in / 1.0e6) * price_in
-                  + (task.tokens_out / 1.0e6) * price_out)
+        total += _live_price_task(task)
     return total
 
 
@@ -497,22 +657,7 @@ def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
     from puppetmaster.usage import aggregate_token_usage
     from puppetmaster.cost import price_job
 
-    try:
-        from puppetmaster.models import ArtifactType
-    except Exception:
-        ArtifactType = None
-
-    arts_for_usage = list(raw_arts or [])
-    if ArtifactType is not None:
-        has_routing = any(
-            getattr(a, "type", None) == ArtifactType.ROUTING for a in arts_for_usage
-        )
-        if not has_routing:
-            verification = [
-                a for a in arts_for_usage if getattr(a, "type", None) == ArtifactType.VERIFICATION
-            ]
-            if verification:
-                arts_for_usage = verification
+    arts_for_usage = _arts_for_swarm_usage(raw_arts)
 
     tokens = 0
     try:
@@ -536,6 +681,84 @@ def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
     except Exception:
         est_cost_usd = _routing_estimate_cost(raw_arts)
     return tokens, round(est_cost_usd, 6)
+
+
+def _arts_for_swarm_usage(raw_arts):
+    """Artifacts used for usage pricing: VERIFICATION-only when no ROUTING."""
+    arts_for_usage = list(raw_arts or [])
+    try:
+        from puppetmaster.models import ArtifactType
+    except Exception:
+        return arts_for_usage
+    has_routing = any(
+        getattr(a, "type", None) == ArtifactType.ROUTING for a in arts_for_usage
+    )
+    if not has_routing:
+        verification = [
+            a for a in arts_for_usage if getattr(a, "type", None) == ArtifactType.VERIFICATION
+        ]
+        if verification:
+            return verification
+    return arts_for_usage
+
+
+def _live_price_task(task) -> float:
+    """Price one unpriced TaskCost against the live OpenRouter map. Best-effort."""
+    if getattr(task, "priced", False) or (
+        not getattr(task, "tokens_in", 0) and not getattr(task, "tokens_out", 0)
+    ):
+        return 0.0
+    try:
+        from pmharness.registry import price
+        price_in, price_out = price(task.model_id)
+    except Exception:
+        return 0.0
+    if price_in is None or price_out is None:
+        return 0.0
+    return ((task.tokens_in / 1.0e6) * price_in
+            + (task.tokens_out / 1.0e6) * price_out)
+
+
+def _task_swarm_accounting(raw_arts, registry: list) -> dict:
+    """Per-task ``{tokens, est_cost_usd}`` for /api/swarm/live worker rows.
+
+    Prefers measured/estimated usage priced like :func:`_job_swarm_accounting`;
+    falls back to the FINAL routing estimate per task while usage is absent or
+    unpriceable. Keys are task_ids present on usage or ROUTING artifacts.
+    """
+    from puppetmaster.usage import select_usage_records
+    from puppetmaster.cost import price_job
+
+    by_task: dict = {}
+    for task_id, cost in _routing_estimate_by_task(raw_arts).items():
+        by_task[task_id] = {"tokens": 0, "est_cost_usd": round(float(cost or 0.0), 6)}
+
+    arts_for_usage = _arts_for_swarm_usage(raw_arts)
+    try:
+        usage = select_usage_records(arts_for_usage)
+        job_cost = price_job(arts_for_usage, registry)
+        priced = {t.task_id: t for t in getattr(job_cost, "tasks", [])}
+        for task_id, record in usage.items():
+            if str(task_id).startswith("__untasked_"):
+                continue
+            tokens = int(record.get("tokens_in") or 0) + int(record.get("tokens_out") or 0)
+            cost = 0.0
+            tc = priced.get(task_id)
+            if tc is not None:
+                if tc.priced and tc.marginal_cost_usd > 0:
+                    cost = float(tc.marginal_cost_usd)
+                else:
+                    cost = _live_price_task(tc)
+            prev = by_task.get(task_id) or {"tokens": 0, "est_cost_usd": 0.0}
+            by_task[task_id] = {
+                "tokens": tokens,
+                "est_cost_usd": (
+                    round(cost, 6) if cost > 0 else float(prev.get("est_cost_usd") or 0.0)
+                ),
+            }
+    except Exception:
+        pass
+    return by_task
 
 
 _COST_OPTIMIZING_POLICIES = frozenset({"balanced", "cheap"})
@@ -1205,6 +1428,12 @@ elif not _cfg.state_dir:
     except Exception as e:
         _diag("server.stable_state_dir", e)
 
+# Same Electron app-run: restore boot spend/savings after a backend respawn.
+try:
+    _restore_boot_usage()
+except Exception as e:
+    _diag("server.boot_usage_restore_boot", e)
+
 _ws_boot_path = _resolve_existing_state_file("workspace.json")
 if not os.environ.get("HARNESS_REPO") and os.path.exists(_ws_boot_path):
     try:
@@ -1464,6 +1693,10 @@ def _fold_runner_meters_into_boot_carry(session_id: str, runner: Any) -> None:
                 setattr(runner, attr, 0)
         except Exception:
             pass
+    try:
+        _persist_boot_usage(fold_live=False)
+    except Exception:
+        pass
 
 
 # Wire after definition so boot construction above can create the registry first.
@@ -2422,6 +2655,7 @@ class Handler(BaseHTTPRequestHandler):
                 if _sessions.active:
                     save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
                 _set_resume_latch()
+                _persist_boot_usage(fold_live=True, force=True)
                 return self._send(200, json.dumps({"ok": True}))
             except Exception as e:
                 return self._send(500, json.dumps({"ok": False, "error": str(e)}))
@@ -2436,6 +2670,7 @@ class Handler(BaseHTTPRequestHandler):
                 if _sessions.active:
                     save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
                 _set_resume_latch()
+                _persist_boot_usage(fold_live=True, force=True)
             except Exception as e:
                 _diag("server.self_edit_restart_persist", e)
             self._send(200, json.dumps({"ok": True, "restarting": True}))
@@ -4753,6 +4988,10 @@ class Handler(BaseHTTPRequestHandler):
                 "session_total": session_total,
                 "jobs": jobs_list
             }
+            try:
+                _persist_boot_usage(fold_live=False)
+            except Exception:
+                pass
             return self._send(200, json.dumps(response_data))
         if u.path == "/api/artifacts":
             q = parse_qs(u.query)
@@ -4855,6 +5094,12 @@ class Handler(BaseHTTPRequestHandler):
                         artifacts_complete = not terminal
 
                     tokens, est_cost_usd = _job_swarm_accounting(raw_arts, registry)
+                    # Per-task meters from raw artifacts (before slim) so worker
+                    # rows keep tokens/cost even when the artifact list is slimmed.
+                    try:
+                        task_accounting = _task_swarm_accounting(raw_arts, registry)
+                    except Exception:
+                        task_accounting = {}
                     # Per-job savings from raw artifacts (before slim). Terminal
                     # rows still get these meters even when the artifact list is
                     # slimmed -- expand must not be required to see savings.
@@ -4887,14 +5132,24 @@ class Handler(BaseHTTPRequestHandler):
                             # Finished cards only need role/status/adapter for the
                             # worker strip; skip long instructions until expand.
                             instr = "" if terminal else (getattr(t, "instruction", "") or "")
-                            tasks_list.append({
-                                "id": getattr(t, "id", ""),
+                            tid = getattr(t, "id", "") or ""
+                            entry = {
+                                "id": tid,
                                 "role": getattr(t, "role", ""),
                                 "instruction": instr,
                                 "status": str(getattr(t, "status", "")),
                                 "adapter": getattr(t, "adapter", ""),
                                 "completed_at": getattr(t, "completed_at", None),
-                            })
+                            }
+                            acct = task_accounting.get(tid) if tid else None
+                            if acct:
+                                t_tokens = int(acct.get("tokens") or 0)
+                                t_cost = float(acct.get("est_cost_usd") or 0.0)
+                                if t_tokens > 0:
+                                    entry["tokens"] = t_tokens
+                                if t_cost > 0:
+                                    entry["est_cost_usd"] = round(t_cost, 6)
+                            tasks_list.append(entry)
                     except Exception:
                         pass
 

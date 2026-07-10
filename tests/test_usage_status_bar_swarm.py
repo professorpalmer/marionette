@@ -577,6 +577,97 @@ def test_api_swarm_live_job_rows_carry_routing_and_cache_savings(tmp_path, monke
         httpd.shutdown()
 
 
+def test_api_swarm_live_tasks_carry_per_task_tokens_and_cost(tmp_path, monkeypatch):
+    """Worker rows on /api/swarm/live must include per-task tokens/cost from usage."""
+    from harness.sessions import SessionStore
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_dir = tmp_path / "harness-state"
+    harness_store = create_store("sqlite", str(harness_dir))
+
+    sess_store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    row = sess_store.create(title="task-meters", repo=str(repo), workspace_root=str(repo))
+    sid = row["id"]
+    monkeypatch.setattr(server, "_sessions", sess_store)
+
+    job = harness_store.create_job("task meters", label=job_label_for_session(sid))
+    payload = stamp_task_payload({"cwd": str(repo)}, session_id=sid, cwd=str(repo))
+    payload["model"] = "worker-model"
+    task = Task(
+        id="task-worker-1",
+        job_id=job.id,
+        role="implement",
+        instruction="do work",
+        adapter="agentic",
+        payload=payload,
+    )
+    harness_store.save_task(task)
+    harness_store.save_artifact(
+        _routing(
+            job.id,
+            "task-worker-1",
+            policy="balanced",
+            baseline=0.50,
+            estimated=0.05,
+            model_id="worker-model",
+        )
+    )
+    harness_store.save_artifact(
+        _verification(job.id, "task-worker-1", "worker-model", 100_000, 20_000)
+    )
+
+    httpd, port = _api_server(str(harness_dir))
+    try:
+        monkeypatch.setattr(
+            server,
+            "_jobs_snapshot",
+            lambda: [
+                {
+                    "id": job.id,
+                    "goal": "task meters",
+                    "status": "running",
+                    "adapter": "agentic",
+                    "label": job_label_for_session(sid),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            server._session,
+            "state",
+            lambda: SimpleNamespace(store=harness_store, format_artifacts=lambda arts: []),
+        )
+        monkeypatch.setattr(
+            "harness.cli_job_merge.resolve_cli_state_dir",
+            lambda workspace_root="": None,
+        )
+        monkeypatch.setattr(
+            server,
+            "_swarm_registry",
+            lambda: [_registry_spec("worker-model")],
+        )
+        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
+        monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
+        server._cfg.repo = str(repo)
+
+        scoped = urllib.parse.quote(str(repo), safe="")
+        live = json.loads(
+            _api_get(port, f"/api/swarm/live?repo={scoped}", server._TOKEN).read().decode()
+        )
+        assert len(live["jobs"]) == 1
+        row = live["jobs"][0]
+        assert row["tokens"] == 120_000
+        assert abs(row["est_cost_usd"] - 0.14) < 1e-6
+        assert len(row["tasks"]) == 1
+        worker = row["tasks"][0]
+        assert worker["id"] == "task-worker-1"
+        assert worker["tokens"] == 120_000
+        assert abs(worker["est_cost_usd"] - 0.14) < 1e-6
+    finally:
+        httpd.shutdown()
+
+
 def test_api_usage_tokens_used_is_pilot_only_plus_job_tokens(tmp_path, monkeypatch):
     """Boot pill tokens_used must match pilot-only + store job tokens (not undercount)."""
     from harness.sessions import SessionStore

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from harness.server import _job_swarm_accounting, _routing_estimate_cost
+from harness.server import _job_swarm_accounting, _routing_estimate_cost, _task_swarm_accounting
 from puppetmaster.models import Artifact, ArtifactType
 
 
@@ -255,3 +255,92 @@ def test_job_swarm_accounting_prices_verification_without_routing():
     tokens, cost = _job_swarm_accounting(arts, registry)
     assert tokens == 60_000
     assert abs(cost - 0.07) < 1e-6
+
+
+def test_task_swarm_accounting_prefers_usage_over_routing_per_task():
+    """Worker rows must show measured tokens/cost, not the routing estimate."""
+    registry = [_registry_spec("worker-model", input_per_mtok_usd=1.0, output_per_mtok_usd=2.0)]
+    arts = [
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.062, "model_id": "worker-model"},
+        ),
+        _artifact(
+            task_id="t2",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.03, "model_id": "worker-model"},
+        ),
+        _artifact(
+            task_id="t1",
+            payload={
+                "tokens_in": 100_000,
+                "tokens_out": 20_000,
+                "model": "worker-model",
+            },
+        ),
+        _artifact(
+            task_id="t2",
+            payload={
+                "tokens_in": 50_000,
+                "tokens_out": 10_000,
+                "model": "worker-model",
+            },
+        ),
+    ]
+    by_task = _task_swarm_accounting(arts, registry)
+    assert by_task["t1"]["tokens"] == 120_000
+    assert abs(by_task["t1"]["est_cost_usd"] - 0.14) < 1e-6
+    assert by_task["t2"]["tokens"] == 60_000
+    assert abs(by_task["t2"]["est_cost_usd"] - 0.07) < 1e-6
+    # Job aggregate still matches the sum of per-task meters.
+    tokens, cost = _job_swarm_accounting(arts, registry)
+    assert tokens == 180_000
+    assert abs(cost - 0.21) < 1e-6
+
+
+def test_task_swarm_accounting_falls_back_to_routing_estimate():
+    registry = [_registry_spec("worker-model")]
+    arts = [
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.062, "model_id": "worker-model"},
+        ),
+        _artifact(
+            task_id="t2",
+            art_type=ArtifactType.ROUTING,
+            created_by="router-fallback",
+            payload={"estimated_cost_usd": 0.0048, "model_id": "worker-model"},
+        ),
+    ]
+    by_task = _task_swarm_accounting(arts, registry)
+    assert by_task["t1"]["tokens"] == 0
+    assert abs(by_task["t1"]["est_cost_usd"] - 0.062) < 1e-9
+    assert by_task["t2"]["tokens"] == 0
+    assert abs(by_task["t2"]["est_cost_usd"] - 0.0048) < 1e-9
+
+
+def test_task_swarm_accounting_keeps_estimate_when_usage_unpriceable():
+    arts = [
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.0067, "model_id": "unknown-model"},
+        ),
+        _artifact(
+            task_id="t1",
+            payload={
+                "tokens_in": 300_000,
+                "tokens_out": 60_000,
+                "model": "unknown-model",
+            },
+        ),
+    ]
+    by_task = _task_swarm_accounting(arts, registry=[])
+    assert by_task["t1"]["tokens"] == 360_000
+    assert abs(by_task["t1"]["est_cost_usd"] - 0.0067) < 1e-9

@@ -6,7 +6,10 @@ Per-turn guards wired before native tool dispatch:
 
 1. LOOP BREAKER — suppress repeated (tool, normalized-args) calls within a turn.
 2. SWARM GATE — on broad-intent user messages, block native exploration until
-   run_swarm / run_parallel / run_implement is dispatched.
+   run_swarm / run_parallel / run_implement is dispatched. After dispatch,
+   list_dir / search_files / exploration run_command stay blocked on broad
+   turns (read_file + search_codegraph remain allowed to validate concrete
+   findings); thin swarm results require re-dispatch, not an inline campaign.
 3. DELEGATE GATE — after too many native exploration calls without delegation,
    redirect the pilot to search_codegraph or Puppetmaster dispatch verbs.
 4. ITERATION BUDGET — hard cap on total tool calls per pilot turn.
@@ -405,8 +408,22 @@ def is_native_exploration(kind: str, act: Any) -> bool:
 
 
 def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any) -> bool:
-    if not state.broad_intent or state.swarm_dispatched:
+    if not state.broad_intent:
         return False
+
+    # After a swarm/implement/parallel dispatch on a broad turn: still allow
+    # search_codegraph (never gated here) and read_file to validate concrete
+    # findings, but keep blocking list_dir / search_files / exploration
+    # run_command so a thin swarm cannot be replaced by an inline campaign.
+    if state.swarm_dispatched:
+        if kind == "read_file":
+            return False
+        if kind in ("list_dir", "search_files"):
+            return True
+        if kind == "run_command" and is_exploration_command(getattr(act, "command", "") or ""):
+            return True
+        return False
+
     if kind == "read_file":
         return state.read_file_count >= SWARM_GATE_READ_ALLOWANCE
     if kind in ("list_dir", "search_files"):
@@ -425,8 +442,18 @@ def _loop_suppress_message(kind: str, repeat_count: int) -> str:
     )
 
 
-def _swarm_gate_suppress_message(kind: str) -> str:
+def _swarm_gate_suppress_message(kind: str, *, swarm_dispatched: bool = False) -> str:
     roles = ", ".join(BROAD_SWARM_ROLES)
+    if swarm_dispatched:
+        return (
+            f"(SUPPRESSED: native exploration {kind} — a swarm already ran this turn and "
+            f"broad list_dir/search_files/grep sweeps stay blocked. If swarm findings were "
+            f"empty, vague, verification-only, or insufficient for the user's ask, "
+            f"re-dispatch a narrowed run_swarm (or run_parallel analysis roles) with a "
+            f"sharper objective. search_codegraph and read_file of paths cited in swarm "
+            f"findings remain allowed to validate concrete findings — do NOT substitute "
+            f"an inline exploration campaign.)"
+        )
     return (
         f"(SUPPRESSED: native exploration {kind} — this turn's user message is a broad "
         f"audit/review/sweep task and you have not dispatched run_swarm/run_parallel/"
@@ -435,13 +462,23 @@ def _swarm_gate_suppress_message(kind: str) -> str:
         f"for narrow symbol lookups). Dispatch run_swarm with MULTIPLE roles "
         f"({roles}) and auto-routed models so parallel workers map the space. The "
         f"durable artifact store makes every swarm cheaper on follow-up turns "
-        f"(artifact recall is zero-token). After dispatch, native exploration unlocks "
-        f"to validate findings.)"
+        f"(artifact recall is zero-token). After dispatch, search_codegraph and "
+        f"read_file of paths cited in findings remain allowed to validate concrete "
+        f"findings; list_dir/search_files/grep sweeps stay blocked. If findings are "
+        f"shallow or empty, re-dispatch a narrowed swarm — never substitute an inline "
+        f"exploration campaign.)"
     )
 
 
-def _swarm_gate_replay_message(kind: str) -> str:
+def _swarm_gate_replay_message(kind: str, *, swarm_dispatched: bool = False) -> str:
     """Short cached redirect after the first full swarm-gate suppress this turn."""
+    if swarm_dispatched:
+        return (
+            f"[swarm_gate redirect already issued this turn — stop broad native "
+            f"exploration ({kind}). If findings were thin, re-dispatch a narrowed "
+            f"run_swarm/run_parallel. search_codegraph and read_file of cited paths "
+            f"remain allowed.]"
+        )
     return (
         f"[swarm_gate redirect already issued this turn — stop native exploration "
         f"({kind}). Call run_swarm, run_implement, or run_parallel now. "
@@ -541,6 +578,7 @@ def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
 
     prior = state.swarm_gate_suppress_count
     state.swarm_gate_suppress_count = prior + 1
+    dispatched = bool(state.swarm_dispatched)
 
     # First suppression(s) this turn get the full redirect so the model sees a
     # clear "stop exploring, call run_swarm now" signal. Further identical-class
@@ -550,13 +588,13 @@ def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
         return GuardVerdict(
             suppress=True,
             reason="swarm_gate",
-            message=_swarm_gate_suppress_message(kind),
+            message=_swarm_gate_suppress_message(kind, swarm_dispatched=dispatched),
         )
 
     return GuardVerdict(
         suppress=True,
         reason="swarm_gate_replay",
-        message=_swarm_gate_replay_message(kind),
+        message=_swarm_gate_replay_message(kind, swarm_dispatched=dispatched),
         replay=True,
     )
 

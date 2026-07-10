@@ -168,6 +168,10 @@ let viteUrl = null;
 // shared file and any stale second instance. The reuse path (below) adopts the
 // running backend's token instead of this freshly-minted one.
 let harnessToken = crypto.randomBytes(16).toString("hex");
+// Stable for this Electron process only. Backend restarts (self-edit apply,
+// crash respawn) inherit it via env so boot cost/savings meters restore from
+// disk; a full app quit+relaunch mints a new id and the status bar starts fresh.
+const harnessAppRunId = process.env.HARNESS_APP_RUN_ID || crypto.randomBytes(16).toString("hex");
 // Timestamps of recent unexpected respawns -- caps a crash loop (see backend.on exit).
 let respawnTimes = [];
 // Coalesces concurrent startBackend() calls. Two overlapping starts (app 'ready'
@@ -451,7 +455,14 @@ async function _startBackendOnce() {
   // PYTHONUNBUFFERED: stream backend stdout/stderr to the log immediately instead
   // of sitting in a pipe buffer (that buffering hid the real startup/crash lines
   // and left a ~20-min gap between "spawning" and "GUI on" in the log).
-  const customEnv = { ..._shellEnv, ...process.env, PYTHONUNBUFFERED: "1", HARNESS_REPO: process.env.HARNESS_REPO || repoRoot, HARNESS_TOKEN: harnessToken };
+  const customEnv = {
+    ..._shellEnv,
+    ...process.env,
+    PYTHONUNBUFFERED: "1",
+    HARNESS_REPO: process.env.HARNESS_REPO || repoRoot,
+    HARNESS_TOKEN: harnessToken,
+    HARNESS_APP_RUN_ID: harnessAppRunId,
+  };
 
   // Point PMHARNESS_PYTHON at the checkout's venv interpreter for dispatching
   // Puppetmaster / implement workers. The venv has editable harness + puppetmaster

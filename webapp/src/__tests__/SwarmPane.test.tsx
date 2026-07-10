@@ -326,3 +326,118 @@ describe("SwarmPane findings section collapse", () => {
     });
   });
 });
+
+describe("SwarmPane worker tokens and cost", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("shows compact tokens and cost on each worker row", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-workers",
+        status: "running",
+        goal: "Multi worker spend",
+        tokens: 180_000,
+        est_cost_usd: 0.21,
+        tasks: [
+          {
+            id: "t1",
+            role: "implement",
+            instruction: "build it",
+            status: "completed",
+            adapter: "agentic",
+            tokens: 120_000,
+            est_cost_usd: 0.14,
+          },
+          {
+            id: "t2",
+            role: "review",
+            instruction: "check it",
+            status: "running",
+            adapter: "openrouter",
+            tokens: 60_000,
+            est_cost_usd: 0.07,
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    // Running jobs auto-expand; do not click the goal (that collapses the card).
+    await waitFor(() => {
+      expect(screen.getByText("Workers (2)")).toBeInTheDocument();
+    });
+    expect(screen.getByText("120,000t")).toBeInTheDocument();
+    expect(screen.getByText("$0.1400")).toBeInTheDocument();
+    expect(screen.getByText("60,000t")).toBeInTheDocument();
+    expect(screen.getByText("$0.0700")).toBeInTheDocument();
+  });
+});
+
+describe("SwarmPane external (CLI) source badge", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("labels CLI-merged jobs as external", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-cli",
+        goal: "Cursor MCP implement",
+        status: "running",
+        adapter: "cursor",
+        source: "cli",
+        tasks: [
+          {
+            id: "t1",
+            role: "cursor",
+            instruction: "do the thing",
+            status: "running",
+            adapter: "cursor",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTitle(
+          "Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace",
+        ),
+      ).toHaveTextContent("external");
+    });
+  });
+
+  it("does not show the external chip for harness jobs", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        source: "harness",
+        adapter: "cursor",
+        model: "grok-4-5",
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("Model: grok-4-5")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByTitle(
+        "Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace",
+      ),
+    ).toBeNull();
+  });
+});

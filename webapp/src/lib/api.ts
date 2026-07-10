@@ -56,6 +56,10 @@ export type Task = {
   status: string;
   adapter: string;
   completed_at?: string | null;
+  /** Measured/estimated tokens for this worker (from usage arts). */
+  tokens?: number;
+  /** Usage-priced cost, or routing estimate while usage is absent. */
+  est_cost_usd?: number;
 };
 export type Job = {
   id: string;
@@ -63,6 +67,8 @@ export type Job = {
   status: string;
   role?: string;
   adapter?: string;
+  /** "harness" (Marionette-dispatched) or "cli" (Cursor MCP / terminal PM). */
+  source?: "harness" | "cli" | string;
   created_at?: string | null;
   updated_at?: number | string | null;
   tokens?: number;

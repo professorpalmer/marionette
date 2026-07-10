@@ -143,9 +143,13 @@ function swarmSignature(res: SwarmLive | null): string {
     parts.push(
       `${j.id}:${j.status}:${tasks.length}:${arts.length}` +
       `:${j.tokens ?? 0}:${(j.est_cost_usd ?? 0).toFixed(4)}` +
-      `:${j.tool_output_tokens_saved ?? 0}`,
+      `:${j.tool_output_tokens_saved ?? 0}:${j.source ?? "harness"}`,
     );
-    for (const t of tasks) parts.push(`${t.id}=${t.status}`);
+    for (const t of tasks) {
+      parts.push(
+        `${t.id}=${t.status}:${t.tokens ?? 0}:${(t.est_cost_usd ?? 0).toFixed(4)}`,
+      );
+    }
   }
   const s = res.session;
   if (s) parts.push(`S:${s.driver ?? ""}`);
@@ -679,8 +683,11 @@ export default function SwarmPane() {
           </div>
 
           {/* Model + worker count + adapter -- the "who's doing this and on what"
-              line, so the swarm's shape reads without expanding. */}
-          {(displayModel || workerCount > 0 || adapter) && (
+              line, so the swarm's shape reads without expanding. CLI/external
+              jobs (Cursor MCP, terminal `puppetmaster`) share the workspace
+              store and are merged in on purpose; label them so they don't look
+              like Marionette-dispatched swarms. */}
+          {(displayModel || workerCount > 0 || adapter || j.source === "cli") && (
             <div className="flex items-center gap-1.5 pl-6 pr-1 mt-1 flex-wrap">
               {displayModel && (
                 <span className="flex items-center gap-1 text-[9px] font-mono text-accent/90 bg-accent/10 px-1.5 py-0.5 rounded" title={`Model: ${displayModel}`}>
@@ -694,6 +701,14 @@ export default function SwarmPane() {
               )}
               {adapter && (
                 <span className="text-[9px] text-faint bg-panel2/40 px-1.5 py-0.5 rounded lowercase">{adapter}</span>
+              )}
+              {j.source === "cli" && (
+                <span
+                  className="text-[9px] text-muted bg-panel2/60 border border-edge/50 px-1.5 py-0.5 rounded"
+                  title="Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace"
+                >
+                  external
+                </span>
               )}
             </div>
           )}
@@ -861,12 +876,22 @@ export default function SwarmPane() {
                                 <span className="text-faint font-normal">({task.adapter || "no-adapter"})</span>
                               </span>
                             </span>
-                            <span className={`text-[8px] uppercase font-bold px-1 rounded shrink-0 ${
-                              ts === "running" ? "text-accent bg-accent/10"
-                                : ts === "done" ? "text-good bg-good/10"
-                                : ts === "fail" ? "text-risk bg-risk/10"
-                                : "text-muted bg-panel"
-                            }`}>{task.status}</span>
+                            <span className="flex items-center gap-1.5 shrink-0">
+                              {((task.tokens ?? 0) > 0 || (task.est_cost_usd ?? 0) > 0) && (
+                                <span className="text-muted font-mono text-[9px] flex items-center gap-1 tabular-nums">
+                                  {(task.tokens ?? 0) > 0 && (
+                                    <span>{Number(task.tokens).toLocaleString()}t</span>
+                                  )}
+                                  <span className="text-good/90">{formatCost(Number(task.est_cost_usd || 0))}</span>
+                                </span>
+                              )}
+                              <span className={`text-[8px] uppercase font-bold px-1 rounded ${
+                                ts === "running" ? "text-accent bg-accent/10"
+                                  : ts === "done" ? "text-good bg-good/10"
+                                  : ts === "fail" ? "text-risk bg-risk/10"
+                                  : "text-muted bg-panel"
+                              }`}>{task.status}</span>
+                            </span>
                           </div>
                           {hasInstruction && (tExpanded ? (
                             <div className="text-muted text-[9.5px] mt-1 whitespace-pre-wrap break-words leading-relaxed">{task.instruction}</div>

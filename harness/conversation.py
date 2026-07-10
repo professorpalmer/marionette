@@ -6442,6 +6442,14 @@ class ConversationalSession(ToolDispatchMixin):
             if finished_jobs:
                 try:
                     any_failed = any(failed for _jid, _obj, failed in finished_jobs)
+                    thin_analysis_nudge = (
+                        " If this was a read-only analysis swarm and findings are "
+                        "empty, vague, verification-only, or insufficient for the "
+                        "user's ask, re-dispatch a narrowed run_swarm (or "
+                        "run_parallel analysis roles) with a sharper objective — "
+                        "do NOT open a broad inline exploration campaign "
+                        "(list_dir/search_files/grep/read sweeps) as a substitute."
+                    )
                     if len(finished_jobs) == 1:
                         job_id, _obj, failed = finished_jobs[0]
                         if failed:
@@ -6458,6 +6466,7 @@ class ConversationalSession(ToolDispatchMixin):
                                 "available. Report the outcome to the user concisely and take "
                                 "the appropriate next step (validate, run tests, apply/fix, or "
                                 "run a narrowed follow-up) without waiting for the user to ask."
+                                + thin_analysis_nudge
                             )
                     else:
                         ids = ", ".join(jid for jid, _obj, _f in finished_jobs)
@@ -6479,6 +6488,7 @@ class ConversationalSession(ToolDispatchMixin):
                                 "available. Report the outcomes to the user concisely and take "
                                 "the appropriate next step (validate, run tests, apply/fix, or "
                                 "run a narrowed follow-up) without waiting for the user to ask."
+                                + thin_analysis_nudge
                             )
                     # Re-activate the pilot with a user-role continuation. But never
                     # create two adjacent user messages: some chat APIs (Anthropic)

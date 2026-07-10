@@ -77,7 +77,36 @@ def test_drain_success_still_says_finished():
     ]
     assert resume
     assert "FAILED" not in resume[0]["content"]
+    assert "re-dispatch a narrowed run_swarm" in resume[0]["content"]
+    assert "inline exploration campaign" in resume[0]["content"]
     assert any(e.kind == "pilot_resume" for e in events)
+
+
+def test_drain_success_keepalive_nudges_redispatch_not_inline_explore():
+    """Successful analysis keep-alive must forbid substituting inline exploration."""
+    s = _session()
+    s._swarm_results.put({
+        "job_id": "analysis-thin",
+        "objective": "audit auth",
+        "result": {
+            "applied": True,
+            "files": [],
+            "summary": "Successfully completed analysis task",
+            "error": None,
+            "has_patch_art": False,
+        },
+    })
+    list(s.drain_swarm_results())
+    resume = [
+        m for m in s._history
+        if m["role"] == "user" and "[background job analysis-thin finished]" in m["content"]
+    ]
+    assert resume
+    text = resume[0]["content"]
+    assert "read-only analysis swarm" in text
+    assert "re-dispatch a narrowed run_swarm" in text
+    assert "list_dir/search_files/grep/read sweeps" in text
+    assert "do NOT open a broad inline exploration campaign" in text
 
 
 def test_drain_applied_false_without_error_still_failed():

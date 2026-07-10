@@ -215,3 +215,39 @@ def test_read_file_can_read_spilled_result_outside_repo():
         # A path outside both the repo and the spill dir is still rejected.
         bad = session._do_read_file(_ReadAct(path="/etc/passwd"))
         assert bad[0] is False and bad[1] == "path_traversal"
+
+
+def test_read_file_on_directory_returns_listing():
+    """read_file on a real directory should succeed with a listing, not IsADirectoryError."""
+    with tempfile.TemporaryDirectory() as repo:
+        sub = os.path.join(repo, "frontend", "src")
+        os.makedirs(sub)
+        with open(os.path.join(sub, "app.ts"), "w", encoding="utf-8") as f:
+            f.write("export {}\n")
+        nested = os.path.join(sub, "components")
+        os.makedirs(nested)
+
+        cfg = HarnessConfig(
+            repo=os.path.realpath(repo),
+            swarm_adapter="demo",
+            state_dir=tempfile.mkdtemp(),
+        )
+        session = ConversationalSession(cfg)
+
+        ok, status, val = session._do_read_file(_ReadAct(path="frontend/src"))
+        assert ok is True, f"expected success, got {status}: {val}"
+        assert status == "success"
+        assert "path is a directory" in val
+        assert "use list_dir next time" in val
+        assert "app.ts" in val
+        assert "components/" in val
+        assert "IsADirectoryError" not in val
+        assert "Path is a directory:" not in val
+
+        # Narrow file reads remain unchanged.
+        ok_file, status_file, val_file = session._do_read_file(
+            _ReadAct(path="frontend/src/app.ts")
+        )
+        assert ok_file is True and status_file == "success"
+        assert "export" in val_file
+        assert "path is a directory" not in val_file

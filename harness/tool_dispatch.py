@@ -67,8 +67,10 @@ class ToolDispatchMixin:
             except InternalUriError as exc:
                 return False, "internal_uri_error", str(exc)
             if resource.is_directory:
-                return False, "is_directory", (
-                    f"Path is a directory: {act.path}. Use list_dir for internal URI directories."
+                listing = resource.content or "(empty directory)"
+                return True, "success", (
+                    "(path is a directory — listing contents; use list_dir next time)\n"
+                    + listing
                 )
             content = resource.content
             if len(content) > 200 * 1024:
@@ -86,8 +88,17 @@ class ToolDispatchMixin:
             if not os.path.exists(target_path):
                 raise FileNotFoundError(f"File not found: {act.path}")
             if os.path.isdir(target_path):
-                raise IsADirectoryError(f"Path is a directory: {act.path}")
-            
+                # Auto-redirect: pilots often read_file a directory; return a
+                # listing instead of a red IsADirectoryError so the turn is useful.
+                ok, status, val = self._do_list_dir(act)
+                if not ok:
+                    return False, status, val if isinstance(val, str) else str(val)
+                result_text = val[1] if isinstance(val, tuple) else str(val)
+                return True, "success", (
+                    "(path is a directory — listing contents; use list_dir next time)\n"
+                    + result_text
+                )
+
             with open(target_path, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
             

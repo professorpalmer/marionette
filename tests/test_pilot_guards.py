@@ -227,13 +227,58 @@ def test_swarm_gate_allows_two_reads_then_blocks():
     assert again.replay is True
 
 
-def test_swarm_gate_unlocks_after_swarm_dispatch():
+def test_swarm_gate_keeps_blocking_sweeps_after_dispatch():
+    """After dispatch, list_dir/search_files/grep stay blocked; read_file unlocks."""
     state = new_turn_guard_state("Audit the harness directory")
     record_action_execution(state, "run_swarm", _Act(kind="run_swarm", goal="map harness"))
     assert state.swarm_dispatched is True
 
+    list_verdict = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
+    assert list_verdict.suppress is True
+    assert list_verdict.reason == "swarm_gate"
+    assert "re-dispatch" in list_verdict.message.lower()
+    assert "inline exploration" in list_verdict.message.lower()
+
+    search_verdict = check_swarm_gate(
+        state, "search_files", _Act(kind="search_files", query="TODO")
+    )
+    assert search_verdict.suppress is True
+    assert search_verdict.reason == "swarm_gate_replay"
+
+    grep_verdict = check_swarm_gate(
+        state, "run_command", _Act(kind="run_command", command="rg TODO")
+    )
+    assert grep_verdict.suppress is True
+
+    read_verdict = check_swarm_gate(
+        state, "read_file", _Act(kind="read_file", path="harness/pilot.py")
+    )
+    assert read_verdict.suppress is False
+
+    cg_verdict = check_swarm_gate(
+        state, "search_codegraph", _Act(kind="search_codegraph", query="TurnGuardState")
+    )
+    assert cg_verdict.suppress is False
+
+
+def test_swarm_gate_pre_dispatch_message_forbids_inline_substitute():
+    state = new_turn_guard_state("Give me an audit of this directory")
     verdict = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
-    assert verdict.suppress is False
+    assert verdict.suppress is True
+    assert "re-dispatch a narrowed swarm" in verdict.message
+    assert "native exploration unlocks" not in verdict.message
+    assert "list_dir/search_files/grep sweeps stay blocked" in verdict.message
+
+
+def test_pilot_system_requires_redispatch_on_shallow_swarm():
+    from harness.pilot import PILOT_SYSTEM
+
+    assert "re-dispatch a narrowed run_swarm" in PILOT_SYSTEM
+    assert "NEVER open a broad inline exploration campaign" in PILOT_SYSTEM
+    assert "thin results mean sharpen and re-dispatch" in PILOT_SYSTEM
+    assert "do NOT \"validate with native tools\"" in PILOT_SYSTEM
+    # Old abuse-prone phrasing must not remain as the sole post-swarm guidance.
+    assert "use native exploration only to validate specific findings." not in PILOT_SYSTEM
 
 
 def test_swarm_gate_off_allows_exploration(monkeypatch):
