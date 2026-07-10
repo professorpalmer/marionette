@@ -21,6 +21,9 @@ build/*.iconset/
 artifacts/
 .hermes/
 
+# Session decision notes are local-only (wiki ingest). Never publish.
+docs/session_decisions*.md
+
 # Stray secrets -- never commit
 signing.env
 .signing-keys/

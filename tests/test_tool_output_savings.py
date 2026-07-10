@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import ThreadingHTTPServer
@@ -305,9 +306,12 @@ def test_job_id_migration_and_filter(tmp_path):
     assert alpha.record_count == 1
     assert alpha.tokens_saved == tokens_avoided(4000, 400)
 
-    payload = job_savings_payload(state_dir, "job_beta")
+    payload = job_savings_payload(state_dir, "job_beta", price_in=3.0)
     assert payload["tool_output_tokens_saved"] == tokens_avoided(2000, 200)
     assert payload["tool_output_compactions"] == 1
+    assert payload["tool_output_savings_usd"] == pytest.approx(
+        savings_usd(tokens_avoided(2000, 200), 3.0)
+    )
 
 
 def test_job_id_column_added_to_legacy_db(tmp_path):
@@ -355,3 +359,179 @@ def test_job_id_column_added_to_legacy_db(tmp_path):
 def test_cross_platform_char_token_ratio_documented(chars_per_token):
     """Guard the deterministic ratio used on Windows and macOS alike."""
     assert chars_per_token == 4
+
+
+def _write_pm_offload_jsonl(cli_dir, *, job_id: str, tool_call_id: str,
+                            original_chars: int, compact_chars: int) -> int:
+    """Write a Puppetmaster-shaped tool_output_savings.jsonl row; return tokens."""
+    saved = tokens_avoided(original_chars, compact_chars)
+    path = os.path.join(cli_dir, "tool_output_savings.jsonl")
+    rec = {
+        "ts": "2026-07-10T00:00:00+00:00",
+        "kind": "tool_output_offload",
+        "job_id": job_id,
+        "task_id": "t1",
+        "tool_name": "run_terminal",
+        "tool_call_id": tool_call_id,
+        "original_chars": original_chars,
+        "compact_chars": compact_chars,
+        "tokens_saved": saved,
+        "reason": "tool-output offload",
+        "path": "",
+    }
+    with open(path, "a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
+    return saved
+
+
+def test_job_savings_payload_merges_pm_jsonl_only(tmp_path):
+    """Job with only PM-state JSONL offloads still surfaces token savings + USD."""
+    harness_dir = str(tmp_path / "harness")
+    os.makedirs(harness_dir)
+    cli_dir = str(tmp_path / "cli")
+    os.makedirs(cli_dir)
+    saved = _write_pm_offload_jsonl(
+        cli_dir,
+        job_id="pm-job-1",
+        tool_call_id="pm-tc-1",
+        original_chars=20_000,
+        compact_chars=2_000,
+    )
+    payload = job_savings_payload(
+        harness_dir, "pm-job-1", cli_state_dir=cli_dir, price_in=3.0
+    )
+    assert payload["tool_output_tokens_saved"] == saved
+    assert payload["tool_output_compactions"] == 1
+    assert payload["tool_output_savings_usd"] == pytest.approx(savings_usd(saved, 3.0))
+
+
+def test_job_savings_payload_dedupes_shared_tool_call_id(tmp_path):
+    harness_dir = str(tmp_path / "harness")
+    cli_dir = str(tmp_path / "cli")
+    os.makedirs(cli_dir)
+    get_ledger(harness_dir).record(
+        session_id="sess",
+        tool_call_id="shared-tc",
+        original_chars=8_000,
+        compact_chars=1_000,
+        reason="persist",
+        job_id="job-x",
+    )
+    _write_pm_offload_jsonl(
+        cli_dir,
+        job_id="job-x",
+        tool_call_id="shared-tc",
+        original_chars=9_000,
+        compact_chars=500,
+    )
+    _write_pm_offload_jsonl(
+        cli_dir,
+        job_id="job-x",
+        tool_call_id="pm-only-tc",
+        original_chars=4_000,
+        compact_chars=400,
+    )
+    payload = job_savings_payload(
+        harness_dir, "job-x", cli_state_dir=cli_dir, price_in=2.0
+    )
+    expected = tokens_avoided(8_000, 1_000) + tokens_avoided(4_000, 400)
+    assert payload["tool_output_tokens_saved"] == expected
+    assert payload["tool_output_compactions"] == 2
+
+
+def test_usage_and_swarm_live_surface_pm_only_job_offloads(tmp_path, monkeypatch):
+    """A CLI-store job with only PM JSONL offloads shows on /api/usage + /api/swarm/live."""
+    from types import SimpleNamespace
+
+    from harness.job_scoping import stamp_task_payload
+    from puppetmaster.models import Artifact, ArtifactType, Task
+    from puppetmaster.store_factory import create_store
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_dir = tmp_path / "harness-state"
+    harness_dir.mkdir()
+    cli_dir = tmp_path / "cli-state"
+    cli_store = create_store("sqlite", str(cli_dir))
+    job = cli_store.create_job("pm offload job")
+    payload = stamp_task_payload({"cwd": str(repo)}, session_id="", cwd=str(repo))
+    payload["model"] = "worker-model"
+    task = Task(
+        job_id=job.id,
+        role="implement",
+        instruction="do work",
+        adapter="agentic",
+        payload=payload,
+    )
+    cli_store.save_task(task)
+    cli_store.save_artifact(
+        Artifact(
+            job_id=job.id,
+            task_id=task.id,
+            type=ArtifactType.VERIFICATION,
+            created_by="worker",
+            payload={
+                "model": "worker-model",
+                "tokens_in": 1_000,
+                "tokens_out": 100,
+                "check": "usage",
+                "result": "ok",
+            },
+            confidence=0.9,
+            evidence=["usage"],
+        )
+    )
+    saved = _write_pm_offload_jsonl(
+        str(cli_dir),
+        job_id=job.id,
+        tool_call_id="pm-api-tc",
+        original_chars=16_000,
+        compact_chars=1_600,
+    )
+
+    httpd, port, srv_mod = _usage_server(str(harness_dir))
+    try:
+        monkeypatch.setattr(
+            "harness.cli_job_merge.resolve_cli_state_dir",
+            lambda workspace_root="": str(cli_dir),
+        )
+        monkeypatch.setattr(srv_mod, "_job_in_cost_window", lambda created_at: True)
+        monkeypatch.setattr(
+            srv_mod,
+            "_swarm_registry",
+            lambda: [
+                SimpleNamespace(
+                    id="worker-model",
+                    adapter_model_name="worker-model",
+                    input_per_mtok_usd=1.0,
+                    output_per_mtok_usd=2.0,
+                    billing="metered",
+                    marginal_cost_usd=lambda tin, tout: (
+                        (tin / 1e6) * 1.0 + (tout / 1e6) * 2.0
+                    ),
+                    estimate_cost_usd=lambda tin, tout: (
+                        (tin / 1e6) * 1.0 + (tout / 1e6) * 2.0
+                    ),
+                )
+            ],
+        )
+        srv_mod._cfg.repo = str(repo)
+        srv_mod._BOOT_REPOS.add(str(repo))
+
+        headers = {"X-Harness-Token": srv_mod._TOKEN}
+        scoped = urllib.parse.quote(str(repo), safe="")
+        usage = _get_json(port, f"/api/usage?repo={scoped}", headers=headers)
+        job_rows = [j for j in usage["jobs"] if j.get("job_id") == job.id]
+        assert len(job_rows) == 1
+        assert job_rows[0]["tool_output_tokens_saved"] == saved
+        assert job_rows[0]["tool_output_savings_usd"] > 0
+        assert usage["session"]["tool_output_tokens_saved"] >= saved
+
+        swarm = _get_json(port, f"/api/swarm/live?repo={scoped}", headers=headers)
+        swarm_rows = [j for j in swarm["jobs"] if j.get("id") == job.id]
+        assert len(swarm_rows) == 1
+        assert swarm_rows[0]["tool_output_tokens_saved"] == saved
+        assert swarm_rows[0]["tool_output_savings_usd"] > 0
+    finally:
+        httpd.shutdown()
+        srv_mod._BOOT_REPOS.discard(str(repo))

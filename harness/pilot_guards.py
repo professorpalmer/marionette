@@ -26,6 +26,10 @@ from typing import Any
 LOOP_REPEAT_CAP = int(os.environ.get("HARNESS_LOOP_REPEAT_CAP", "3"))
 DELEGATE_THRESHOLD = int(os.environ.get("HARNESS_DELEGATE_THRESHOLD", "4"))
 SWARM_GATE_READ_ALLOWANCE = int(os.environ.get("HARNESS_SWARM_GATE_READ_ALLOWANCE", "2"))
+# How many full swarm-gate redirect messages to emit per turn before switching
+# to a short cached replay (stops broad-intent turns burning N unique SUPPRESSED
+# payloads on list_dir/search_files/grep before the model finally calls run_swarm).
+SWARM_GATE_FULL_REDIRECT_CAP = int(os.environ.get("HARNESS_SWARM_GATE_FULL_REDIRECT_CAP", "1"))
 TURN_TOOL_BUDGET_DEFAULT = int(os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "25"))
 
 # Puppetmaster / structural tools — never blocked by the delegate gate.
@@ -227,6 +231,8 @@ class TurnGuardState:
     broad_intent: bool = False
     swarm_dispatched: bool = False
     read_file_count: int = 0
+    # Count of swarm-gate suppressions this turn (full redirect + short replays).
+    swarm_gate_suppress_count: int = 0
     iteration_budget: IterationBudget | None = None
 
 
@@ -424,11 +430,22 @@ def _swarm_gate_suppress_message(kind: str) -> str:
     return (
         f"(SUPPRESSED: native exploration {kind} — this turn's user message is a broad "
         f"audit/review/sweep task and you have not dispatched run_swarm/run_parallel/"
-        f"run_implement yet. Your FIRST action on broad work must be run_swarm with "
-        f"MULTIPLE roles ({roles}) and auto-routed models so parallel workers map the "
-        f"space. The durable artifact store makes every swarm cheaper on follow-up turns "
-        f"(artifact recall is zero-token). After dispatch, native exploration unlocks to "
-        f"validate findings. search_codegraph remains available for narrow symbol lookups.)"
+        f"run_implement yet. STOP exploring. Your ONLY allowed next tools are "
+        f"run_swarm, run_implement, or run_parallel (search_codegraph remains available "
+        f"for narrow symbol lookups). Dispatch run_swarm with MULTIPLE roles "
+        f"({roles}) and auto-routed models so parallel workers map the space. The "
+        f"durable artifact store makes every swarm cheaper on follow-up turns "
+        f"(artifact recall is zero-token). After dispatch, native exploration unlocks "
+        f"to validate findings.)"
+    )
+
+
+def _swarm_gate_replay_message(kind: str) -> str:
+    """Short cached redirect after the first full swarm-gate suppress this turn."""
+    return (
+        f"[swarm_gate redirect already issued this turn — stop native exploration "
+        f"({kind}). Call run_swarm, run_implement, or run_parallel now. "
+        f"search_codegraph remains allowed for narrow symbols.]"
     )
 
 
@@ -522,10 +539,25 @@ def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
     if not is_swarm_gate_blocked_exploration(state, kind, act):
         return GuardVerdict(False)
 
+    prior = state.swarm_gate_suppress_count
+    state.swarm_gate_suppress_count = prior + 1
+
+    # First suppression(s) this turn get the full redirect so the model sees a
+    # clear "stop exploring, call run_swarm now" signal. Further identical-class
+    # suppressions reuse a short cached replay (loop-guard style) so broad-intent
+    # turns cannot burn many unique SUPPRESSED payloads before dispatch.
+    if prior < SWARM_GATE_FULL_REDIRECT_CAP:
+        return GuardVerdict(
+            suppress=True,
+            reason="swarm_gate",
+            message=_swarm_gate_suppress_message(kind),
+        )
+
     return GuardVerdict(
         suppress=True,
-        reason="swarm_gate",
-        message=_swarm_gate_suppress_message(kind),
+        reason="swarm_gate_replay",
+        message=_swarm_gate_replay_message(kind),
+        replay=True,
     )
 
 

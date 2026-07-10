@@ -2651,6 +2651,9 @@ class ConversationalSession(ToolDispatchMixin):
 
             self._turn_output_tokens = 0
             self._turn_budget = None
+            # Fresh user message: clear prior-step guard state so swarm-gate
+            # redirect caps do not leak across unrelated turns.
+            self._turn_guard_state = None
             try:
                 from .turn_budget import parse_turn_budget, turn_budget_enabled
 
@@ -3142,7 +3145,15 @@ class ConversationalSession(ToolDispatchMixin):
 
             # 4. Execute each action as a collapsible tool-call.
             READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "search_files", "web_search", "web_fetch", "read_pdf", "view_image", "lsp"}
+            prior_guard = getattr(self, "_turn_guard_state", None)
             guard_state = new_turn_guard_state(user_message)
+            # Carry swarm-gate redirect progress across model steps in this send()
+            # so broad-intent turns cannot re-burn a full SUPPRESSED payload every
+            # step before the model finally dispatches run_swarm.
+            if prior_guard is not None:
+                guard_state.swarm_gate_suppress_count = getattr(
+                    prior_guard, "swarm_gate_suppress_count", 0
+                )
             self._turn_guard_state = guard_state
             guard_suppressed: dict[int, Any] = {}
             guard_recorded_indices: set[int] = set()
@@ -3321,13 +3332,18 @@ class ConversationalSession(ToolDispatchMixin):
                                 "pilot_guards",
                                 msg=f"{guard_verdict.reason} replayed {act.kind}",
                             )
+                            _replay_headline = (
+                                "swarm gate redirect already issued"
+                                if getattr(guard_verdict, "reason", "") == "swarm_gate_replay"
+                                else "cached repeat of identical call"
+                            )
                             yield ConvEvent("action_result", {
                                 "id": aid,
                                 "num": 1,
                                 "types": ["cached"],
                                 "adapter": "local",
                                 "mode": "tool",
-                                "artifacts": [{"type": "cached", "headline": "cached repeat of identical call"}],
+                                "artifacts": [{"type": "cached", "headline": _replay_headline}],
                             })
                             self._append_action_result(act, aid, guard_verdict.message, is_native, ok=True)
                             continue
@@ -3350,13 +3366,18 @@ class ConversationalSession(ToolDispatchMixin):
                                     "pilot_guards",
                                     msg=f"{guard_verdict.reason} replayed {act.kind}",
                                 )
+                                _replay_headline = (
+                                    "swarm gate redirect already issued"
+                                    if getattr(guard_verdict, "reason", "") == "swarm_gate_replay"
+                                    else "cached repeat of identical call"
+                                )
                                 yield ConvEvent("action_result", {
                                     "id": aid,
                                     "num": 1,
                                     "types": ["cached"],
                                     "adapter": "local",
                                     "mode": "tool",
-                                    "artifacts": [{"type": "cached", "headline": "cached repeat of identical call"}],
+                                    "artifacts": [{"type": "cached", "headline": _replay_headline}],
                                 })
                                 self._append_action_result(act, aid, guard_verdict.message, is_native, ok=True)
                                 continue

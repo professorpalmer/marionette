@@ -108,12 +108,17 @@ def aggregate_jsonl_records(
     records: list[dict],
     *,
     session_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+    dedupe_by_tool_call_id: bool = False,
 ) -> ToolOutputSavingsSummary:
-    """Aggregate JSONL records with dedupe by (session_id, tool_call_id).
+    """Aggregate JSONL records with dedupe.
 
-    When duplicate keys appear, the first record wins (append-only semantics).
+    Default key is ``(session_id, tool_call_id)``. When
+    ``dedupe_by_tool_call_id`` is True (cross-ledger merge), key is
+    ``tool_call_id`` alone so harness SQLite and PM JSONL rows for the same
+    call count once. First record wins (append-only semantics).
     """
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str] | str] = set()
     tokens = 0
     chars = 0
     count = 0
@@ -121,9 +126,12 @@ def aggregate_jsonl_records(
     for rec in records:
         sid = str(rec.get("session_id") or "")
         tcid = str(rec.get("tool_call_id") or "")
+        jid = str(rec.get("job_id") or "")
         if session_id is not None and sid != session_id:
             continue
-        key = (sid, tcid)
+        if job_id is not None and jid != job_id:
+            continue
+        key: tuple[str, str] | str = tcid if dedupe_by_tool_call_id else (sid, tcid)
         if not tcid or key in seen:
             continue
         seen.add(key)
@@ -300,7 +308,9 @@ class ToolOutputSavingsLedger:
         except Exception:
             # Fall back to JSONL aggregate when SQLite is unreadable.
             records = parse_jsonl_records(self._jsonl_path)
-            return aggregate_jsonl_records(records, session_id=session_id)
+            return aggregate_jsonl_records(
+                records, session_id=session_id, job_id=job_id
+            )
         finally:
             self.close()
 
@@ -318,6 +328,69 @@ class ToolOutputSavingsLedger:
             record_count=len(rows),
             by_reason=by_reason,
         )
+
+    def list_records(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        job_id: Optional[str] = None,
+    ) -> list[dict]:
+        """Return raw savings rows (for cross-ledger merge / dedupe)."""
+        try:
+            with self._lock:
+                self._ensure_db()
+                assert self._conn is not None
+                if session_id and job_id:
+                    rows = self._conn.execute(
+                        "SELECT session_id, tool_call_id, original_chars, compact_chars, "
+                        "tokens_saved, reason, job_id FROM tool_output_savings "
+                        "WHERE session_id = ? AND job_id = ?",
+                        (session_id, job_id),
+                    ).fetchall()
+                elif session_id:
+                    rows = self._conn.execute(
+                        "SELECT session_id, tool_call_id, original_chars, compact_chars, "
+                        "tokens_saved, reason, job_id FROM tool_output_savings "
+                        "WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchall()
+                elif job_id:
+                    rows = self._conn.execute(
+                        "SELECT session_id, tool_call_id, original_chars, compact_chars, "
+                        "tokens_saved, reason, job_id FROM tool_output_savings "
+                        "WHERE job_id = ?",
+                        (job_id,),
+                    ).fetchall()
+                else:
+                    rows = self._conn.execute(
+                        "SELECT session_id, tool_call_id, original_chars, compact_chars, "
+                        "tokens_saved, reason, job_id FROM tool_output_savings"
+                    ).fetchall()
+        except Exception:
+            records = parse_jsonl_records(self._jsonl_path)
+            return [
+                r
+                for r in records
+                if (session_id is None or str(r.get("session_id") or "") == session_id)
+                and (job_id is None or str(r.get("job_id") or "") == job_id)
+            ]
+        finally:
+            self.close()
+
+        out: list[dict] = []
+        for sid, tcid, orig, compact, saved, reason, jid in rows:
+            out.append(
+                {
+                    "session_id": sid or "",
+                    "tool_call_id": tcid or "",
+                    "original_chars": int(orig),
+                    "compact_chars": int(compact),
+                    "tokens_saved": int(saved),
+                    "reason": reason or "",
+                    "job_id": jid or "",
+                }
+            )
+        return out
 
     def close(self) -> None:
         with self._lock:
@@ -370,14 +443,104 @@ def try_record(
         pass
 
 
+def load_state_dir_records(
+    state_dir: str,
+    *,
+    session_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+    jsonl_only: bool = False,
+) -> list[dict]:
+    """Load savings records from a state dir (SQLite and/or JSONL).
+
+    When ``jsonl_only`` is True (PM/CLI ledgers), read the JSONL file only —
+    Puppetmaster writes ``tool_output_savings.jsonl`` without a harness SQLite
+    ledger.
+    """
+    if not state_dir:
+        return []
+    root = os.path.abspath(state_dir)
+    if jsonl_only:
+        records = parse_jsonl_records(os.path.join(root, JSONL_FILENAME))
+        return [
+            r
+            for r in records
+            if (session_id is None or str(r.get("session_id") or "") == session_id)
+            and (job_id is None or str(r.get("job_id") or "") == job_id)
+        ]
+    try:
+        return get_ledger(root).list_records(session_id=session_id, job_id=job_id)
+    except Exception:
+        records = parse_jsonl_records(os.path.join(root, JSONL_FILENAME))
+        return [
+            r
+            for r in records
+            if (session_id is None or str(r.get("session_id") or "") == session_id)
+            and (job_id is None or str(r.get("job_id") or "") == job_id)
+        ]
+
+
+def merged_savings_summary(
+    harness_state_dir: str,
+    *,
+    cli_state_dirs: Optional[list[str]] = None,
+    session_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+) -> ToolOutputSavingsSummary:
+    """Merge harness ledger + PM/CLI JSONL offloads; dedupe by tool_call_id.
+
+    PM/CLI JSONL rows typically omit ``session_id``; when merging them we
+    filter by ``job_id`` only (and never by harness session). Callers that
+    pass ``cli_state_dirs`` for a session-scoped view should use
+    ``session_id=None`` (process-wide) so PM offloads are included.
+    """
+    records: list[dict] = []
+    if harness_state_dir:
+        records.extend(
+            load_state_dir_records(
+                harness_state_dir,
+                session_id=session_id,
+                job_id=job_id,
+            )
+        )
+    seen_dirs: set[str] = set()
+    if harness_state_dir:
+        seen_dirs.add(os.path.abspath(harness_state_dir))
+    for raw in cli_state_dirs or []:
+        if not raw:
+            continue
+        key = os.path.abspath(raw)
+        if key in seen_dirs:
+            continue
+        seen_dirs.add(key)
+        # PM JSONL: job filter only (no session_id on those rows).
+        records.extend(
+            load_state_dir_records(
+                key,
+                job_id=job_id,
+                jsonl_only=True,
+            )
+        )
+    return aggregate_jsonl_records(records, dedupe_by_tool_call_id=True)
+
+
 def session_savings_payload(
     state_dir: str,
     session_id: str,
     price_in: float,
+    *,
+    cli_state_dirs: Optional[list[str]] = None,
 ) -> dict:
     """Build API-facing savings fields for a session."""
     try:
-        summary = get_ledger(state_dir).summarize(session_id=session_id or None)
+        if cli_state_dirs:
+            # Process-wide / boot: fold PM JSONL; empty session_id => all sessions.
+            summary = merged_savings_summary(
+                state_dir,
+                cli_state_dirs=cli_state_dirs,
+                session_id=session_id or None,
+            )
+        else:
+            summary = get_ledger(state_dir).summarize(session_id=session_id or None)
     except Exception:
         summary = ToolOutputSavingsSummary()
     usd = savings_usd(summary.tokens_saved, price_in)
@@ -388,8 +551,19 @@ def session_savings_payload(
     }
 
 
-def job_savings_payload(state_dir: str, job_id: str) -> dict:
-    """Build API-facing savings fields for one swarm job."""
+def job_savings_payload(
+    state_dir: str,
+    job_id: str,
+    *,
+    cli_state_dir: Optional[str] = None,
+    price_in: float = 0.0,
+) -> dict:
+    """Build API-facing savings fields for one swarm job.
+
+    Merges harness-state ledger rows with optional PM/CLI
+    ``tool_output_savings.jsonl`` for the same job_id (deduped by
+    tool_call_id). Includes USD when ``price_in`` is provided.
+    """
     if not job_id:
         return {
             "tool_output_tokens_saved": 0,
@@ -397,10 +571,20 @@ def job_savings_payload(state_dir: str, job_id: str) -> dict:
             "tool_output_compactions": 0,
         }
     try:
-        summary = get_ledger(state_dir).summarize(job_id=job_id)
+        cli_dirs = [cli_state_dir] if cli_state_dir else None
+        if cli_dirs:
+            summary = merged_savings_summary(
+                state_dir,
+                cli_state_dirs=cli_dirs,
+                job_id=job_id,
+            )
+        else:
+            summary = get_ledger(state_dir).summarize(job_id=job_id)
     except Exception:
         summary = ToolOutputSavingsSummary()
+    usd = savings_usd(summary.tokens_saved, price_in)
     return {
         "tool_output_tokens_saved": summary.tokens_saved,
+        "tool_output_savings_usd": round(usd, 6),
         "tool_output_compactions": summary.record_count,
     }

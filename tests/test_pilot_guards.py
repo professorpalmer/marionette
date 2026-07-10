@@ -10,6 +10,7 @@ from harness.pilot_guards import (
     DELEGATE_THRESHOLD,
     IterationBudget,
     LOOP_REPEAT_CAP,
+    SWARM_GATE_FULL_REDIRECT_CAP,
     SWARM_GATE_READ_ALLOWANCE,
     TurnGuardState,
     check_cli_redirect,
@@ -107,13 +108,17 @@ def test_investigate_shaped_turn_swarm_gate_suppresses_exploration():
     state = new_turn_guard_state(prompt)
     assert state.broad_intent is True
 
-    for kind, act in [
-        ("list_dir", _Act(kind="list_dir", path=".")),
-        ("search_files", _Act(kind="search_files", query="browser")),
-    ]:
-        verdict = check_swarm_gate(state, kind, act)
-        assert verdict.suppress is True
-        assert verdict.reason == "swarm_gate"
+    first = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
+    assert first.suppress is True
+    assert first.reason == "swarm_gate"
+    assert first.replay is False
+
+    second = check_swarm_gate(
+        state, "search_files", _Act(kind="search_files", query="browser")
+    )
+    assert second.suppress is True
+    assert second.reason == "swarm_gate_replay"
+    assert second.replay is True
 
 
 def test_swarm_gate_disabled_by_env(monkeypatch):
@@ -140,9 +145,66 @@ def test_swarm_gate_suppresses_list_dir_before_dispatch():
     verdict = check_swarm_gate(state, "list_dir", act)
     assert verdict.suppress is True
     assert verdict.reason == "swarm_gate"
+    assert verdict.replay is False
     assert "run_swarm" in verdict.message
+    assert "STOP exploring" in verdict.message
+    assert state.swarm_gate_suppress_count == 1
     for role in BROAD_SWARM_ROLES:
         assert role in verdict.message
+
+
+def test_swarm_gate_subsequent_suppressions_use_short_replay():
+    """After the first full redirect, further exploration is a cheap cached replay."""
+    state = new_turn_guard_state("Give me an audit of this directory")
+    first = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
+    assert first.suppress is True
+    assert first.reason == "swarm_gate"
+    assert first.replay is False
+    assert first.message.startswith("(SUPPRESSED")
+    assert state.swarm_gate_suppress_count == SWARM_GATE_FULL_REDIRECT_CAP
+
+    second = check_swarm_gate(state, "search_files", _Act(kind="search_files", query="foo"))
+    assert second.suppress is True
+    assert second.reason == "swarm_gate_replay"
+    assert second.replay is True
+    assert second.message.startswith("[swarm_gate redirect already issued")
+    assert "run_swarm" in second.message
+    assert len(second.message) < len(first.message)
+    assert state.swarm_gate_suppress_count == SWARM_GATE_FULL_REDIRECT_CAP + 1
+
+    third = check_swarm_gate(
+        state, "run_command", _Act(kind="run_command", command="rg TODO")
+    )
+    assert third.suppress is True
+    assert third.reason == "swarm_gate_replay"
+    assert third.replay is True
+    assert len(third.message) < len(first.message)
+
+
+def test_swarm_gate_replay_does_not_apply_when_narrow():
+    state = new_turn_guard_state("Where is TurnGuardState defined?")
+    assert state.broad_intent is False
+    first = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
+    assert first.suppress is False
+    assert state.swarm_gate_suppress_count == 0
+    second = check_swarm_gate(state, "search_files", _Act(kind="search_files", query="x"))
+    assert second.suppress is False
+    assert state.swarm_gate_suppress_count == 0
+
+
+def test_swarm_gate_allows_search_codegraph_on_broad_turn():
+    """search_codegraph stays open even after native exploration is redirected."""
+    state = new_turn_guard_state("Give me an audit of this directory")
+    assert state.broad_intent is True
+    blocked = check_swarm_gate(state, "list_dir", _Act(kind="list_dir", path="."))
+    assert blocked.suppress is True
+    assert state.swarm_gate_suppress_count == 1
+
+    act = _Act(kind="search_codegraph", query="TurnGuardState")
+    assert check_swarm_gate(state, "search_codegraph", act).suppress is False
+    assert check_pilot_guards(state, "search_codegraph", act).suppress is False
+    # Suppress count must not advance for allowed tools.
+    assert state.swarm_gate_suppress_count == 1
 
 
 def test_swarm_gate_allows_two_reads_then_blocks():
@@ -156,6 +218,13 @@ def test_swarm_gate_allows_two_reads_then_blocks():
     verdict = check_swarm_gate(state, "read_file", blocked)
     assert verdict.suppress is True
     assert verdict.reason == "swarm_gate"
+    assert verdict.replay is False
+
+    # Further over-allowance reads reuse the short cached redirect.
+    again = check_swarm_gate(state, "read_file", _Act(kind="read_file", path="extra2.py"))
+    assert again.suppress is True
+    assert again.reason == "swarm_gate_replay"
+    assert again.replay is True
 
 
 def test_swarm_gate_unlocks_after_swarm_dispatch():

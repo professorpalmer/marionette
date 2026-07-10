@@ -195,9 +195,34 @@ def _tool_output_savings_fields(price_in: float, *, process_wide: bool = False) 
     When ``process_wide`` is True (boot /api/usage pill), aggregate across the
     whole state-dir ledger for this process epoch rather than the active
     harness_session_id -- so dir/session swaps do not zero the saved meter.
+    Also folds Puppetmaster/CLI ``tool_output_savings.jsonl`` offloads from
+    boot-repo state dirs (deduped by tool_call_id).
     """
     # Empty session_id => ledger summarize() aggregates all sessions.
     sid = "" if process_wide else (getattr(_pilot, "harness_session_id", "") or "")
+    cli_dirs: list[str] = []
+    if process_wide:
+        try:
+            from .cli_job_merge import resolve_cli_state_dir
+
+            repos: set[str] = set(_BOOT_REPOS)
+            active = getattr(_cfg, "repo", "") or ""
+            if active:
+                repos.add(
+                    os.path.abspath(active) if os.path.isdir(active) else active
+                )
+            seen: set[str] = set()
+            for repo in repos:
+                cli_dir = resolve_cli_state_dir(repo or "")
+                if not cli_dir:
+                    continue
+                key = os.path.abspath(cli_dir)
+                if key in seen:
+                    continue
+                seen.add(key)
+                cli_dirs.append(cli_dir)
+        except Exception:
+            cli_dirs = []
     try:
         from .tool_output_savings import session_savings_payload
 
@@ -205,6 +230,7 @@ def _tool_output_savings_fields(price_in: float, *, process_wide: bool = False) 
             _pilot.state_dir,
             sid,
             price_in,
+            cli_state_dirs=cli_dirs or None,
         )
     except Exception:
         payload = {
@@ -272,13 +298,28 @@ def _tool_output_savings_fields(price_in: float, *, process_wide: bool = False) 
 
 
 def _job_savings_fields(job_id: str) -> dict:
+    """Per-job tool-output savings, merging harness + PM/CLI JSONL ledgers."""
     try:
+        from .cli_job_merge import resolve_cli_state_dir
         from .tool_output_savings import job_savings_payload
 
-        return job_savings_payload(_pilot.state_dir, job_id)
+        try:
+            from pmharness.registry import resolve_price
+
+            price_in, _ = resolve_price(_cfg.driver)
+        except Exception:
+            price_in = 0.0
+        cli_dir = resolve_cli_state_dir(getattr(_cfg, "repo", "") or "")
+        return job_savings_payload(
+            _pilot.state_dir,
+            job_id,
+            cli_state_dir=cli_dir,
+            price_in=price_in,
+        )
     except Exception:
         return {
             "tool_output_tokens_saved": 0,
+            "tool_output_savings_usd": 0.0,
             "tool_output_compactions": 0,
         }
 
@@ -560,12 +601,51 @@ def _registry_input_per_mtok(model_id: str, registry: list) -> float:
     return 0.0
 
 
-def _cache_saved_usd_swarm(raw_arts, registry: list) -> float:
-    """Swarm prompt-cache savings from usage-bearing task artifacts.
+def _tokens_cached_swarm(raw_arts) -> int:
+    """Sum ``tokens_cached`` across usage-bearing artifacts (one per task).
 
-    Per task with ``tokens_cached > 0``: tokens_cached/1e6 * input_per_mtok *
-    (1 - CACHE_READ_MULTIPLIER). Skips tasks whose usage already carried
-    ``real_cost_usd`` (cache discount is inside the provider total). Best-effort.
+    Same task-dedupe as :func:`_cache_saved_usd_swarm` so the token count and
+    USD figure stay aligned on /api/swarm/live job rows. Best-effort.
+    """
+    seen_tasks: set = set()
+    total = 0
+    try:
+        for artifact in raw_arts or []:
+            payload = getattr(artifact, "payload", None) or {}
+            if not isinstance(payload, dict):
+                continue
+            if "tokens_in" not in payload and "tokens_out" not in payload:
+                continue
+            task_id = getattr(artifact, "task_id", None)
+            if task_id:
+                if task_id in seen_tasks:
+                    continue
+                seen_tasks.add(task_id)
+            try:
+                tokens_cached = int(payload.get("tokens_cached") or 0)
+            except (TypeError, ValueError):
+                continue
+            if tokens_cached > 0:
+                total += tokens_cached
+    except Exception:
+        return 0
+    return total
+
+
+def _cache_saved_usd_swarm(raw_arts, registry: list) -> float:
+    """Store-job swarm prompt-cache savings for display (not spend).
+
+    Per task with ``tokens_cached > 0`` and a known registry input price:
+    tokens_cached/1e6 * input_per_mtok * (1 - CACHE_READ_MULTIPLIER).
+
+    Always credits cache hits even when ``real_cost_usd`` is set — that field
+    is the provider spend total (already cache-discounted); suppressing the
+    savings *display* left the status bar at $0 for agentic workers.
+
+    Store-job savings belong only here (``cache_saved_usd_swarm``). Harness-
+    attributed worker cache hits already land in pilot ``_tokens_cached`` /
+    ``cache_savings_usd``; do not fold store-job cache into those meters for
+    this figure. Spend math is unchanged. Best-effort.
     """
     seen_tasks: set = set()
     total = 0.0
@@ -586,12 +666,6 @@ def _cache_saved_usd_swarm(raw_arts, registry: list) -> float:
             except (TypeError, ValueError):
                 continue
             if tokens_cached <= 0:
-                continue
-            try:
-                real_cost = float(payload.get("real_cost_usd") or 0.0)
-            except (TypeError, ValueError):
-                real_cost = 0.0
-            if real_cost > 0:
                 continue
             model = (
                 payload.get("model")
@@ -4765,6 +4839,23 @@ class Handler(BaseHTTPRequestHandler):
                         artifacts_complete = not terminal
 
                     tokens, est_cost_usd = _job_swarm_accounting(raw_arts, registry)
+                    # Per-job savings from raw artifacts (before slim). Terminal
+                    # rows still get these meters even when the artifact list is
+                    # slimmed -- expand must not be required to see savings.
+                    try:
+                        job_routing_saved = round(_routing_saved_usd(raw_arts), 6)
+                    except Exception:
+                        job_routing_saved = 0.0
+                    try:
+                        job_cache_saved = round(
+                            _cache_saved_usd_swarm(raw_arts, registry), 6
+                        )
+                    except Exception:
+                        job_cache_saved = 0.0
+                    try:
+                        job_tokens_cached = int(_tokens_cached_swarm(raw_arts) or 0)
+                    except Exception:
+                        job_tokens_cached = 0
                     job_model = resolve_job_model(
                         raw_arts,
                         (tasks_by_job.get(jid, []) if tasks_by_job is not None else []),
@@ -4802,6 +4893,9 @@ class Handler(BaseHTTPRequestHandler):
                         "task_count": j.get("task_count", 0),
                         "tokens": tokens,
                         "est_cost_usd": est_cost_usd,
+                        "tokens_cached": job_tokens_cached,
+                        "routing_saved_usd": job_routing_saved,
+                        "cache_saved_usd": job_cache_saved,
                         "artifacts": artifacts_list,
                         "artifacts_complete": artifacts_complete,
                         "tasks": tasks_list,
@@ -4854,6 +4948,19 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             
+            # Mid-run savings: sum per-job routing/cache meters so the live
+            # session block matches /api/usage (pilot cache stays separate).
+            live_routing_saved = 0.0
+            live_cache_saved = 0.0
+            try:
+                for j in res_jobs:
+                    if str(j.get("id") or "").startswith("local-"):
+                        continue
+                    live_routing_saved += float(j.get("routing_saved_usd") or 0.0)
+                    live_cache_saved += float(j.get("cache_saved_usd") or 0.0)
+            except Exception:
+                pass
+
             response_data = {
                 "session": {
                     "tokens_used": tokens_used,
@@ -4864,6 +4971,8 @@ class Handler(BaseHTTPRequestHandler):
                     # harness is not token-hungry -- plus the USD it saved.
                     "tokens_cached": _t_cached,
                     "cache_savings_usd": round(_cache_savings_usd, 6),
+                    "routing_saved_usd": round(live_routing_saved, 6),
+                    "cache_saved_usd_swarm": round(live_cache_saved, 6),
                     **_tool_output_savings_fields(price_in),
                 },
                 "jobs": res_jobs

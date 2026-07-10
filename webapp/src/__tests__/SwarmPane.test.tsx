@@ -131,6 +131,40 @@ describe("SwarmPane routing dedupe", () => {
   });
 });
 
+describe("SwarmPane mid-run savings meters", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("shows cache, routing, and compact savings on a running job row", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        tokens: 12_000,
+        est_cost_usd: 0.05,
+        tokens_cached: 8_000,
+        cache_saved_usd: 0.0123,
+        routing_saved_usd: 0.04,
+        tool_output_tokens_saved: 1_500,
+        tool_output_savings_usd: 0.003,
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByText("8,000 cached")).toBeInTheDocument();
+      expect(screen.getByText("1,500 compact ($0.0030)")).toBeInTheDocument();
+      expect(screen.getByText("cache $0.0123")).toBeInTheDocument();
+      expect(screen.getByText("route $0.0400")).toBeInTheDocument();
+    });
+  });
+});
+
 describe("SwarmPane dead-run detection", () => {
   beforeEach(() => {
     vi.clearAllMocks();

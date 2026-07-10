@@ -68,7 +68,14 @@ export type Job = {
   tokens?: number;
   est_cost_usd?: number;
   model?: string;
+  /** Prompt-cache hits on this job's usage-bearing artifacts. */
+  tokens_cached?: number;
+  /** Router baseline-vs-chosen savings for this job (balanced/cheap). */
+  routing_saved_usd?: number;
+  /** Swarm prompt-cache savings priced from this job's usage x registry. */
+  cache_saved_usd?: number;
   tool_output_tokens_saved?: number;
+  tool_output_savings_usd?: number;
   tool_output_compactions?: number;
   task_count?: number;
   tasks?: Task[];
@@ -115,6 +122,10 @@ export type SwarmLive = {
     tokens_used: number;
     est_cost_usd: number;
     driver?: string;
+    tokens_cached?: number;
+    cache_savings_usd?: number;
+    routing_saved_usd?: number;
+    cache_saved_usd_swarm?: number;
     tool_output_tokens_saved?: number;
     tool_output_savings_usd?: number;
     tool_output_compactions?: number;

@@ -130,15 +130,24 @@ function saveDismissed(ids: Set<string>): void {
 // the payload can be ~1MB; JSON.stringify-diffing it (or blindly setData every
 // poll) re-renders the whole tree for no delta and blocks the main thread. We
 // hash only the fields the UI actually draws -- job/task status, counts, tokens,
-// cost -- so an unchanged poll skips the re-render entirely. Artifacts are
-// append-only in a run, so their count is a sound proxy for "new finding landed".
+// cost, and savings meters -- so an unchanged poll skips the re-render entirely.
+// Artifacts are append-only in a run, so their count is a sound proxy for
+// "new finding landed".
 function swarmSignature(res: SwarmLive | null): string {
   if (!res) return "";
   const parts: string[] = [];
   for (const j of res.jobs || []) {
     const tasks = j.tasks || [];
     const arts = jobArtifactList(j);
-    parts.push(`${j.id}:${j.status}:${tasks.length}:${arts.length}:${j.tokens ?? 0}:${(j.est_cost_usd ?? 0).toFixed(4)}`);
+    parts.push(
+      `${j.id}:${j.status}:${tasks.length}:${arts.length}` +
+      `:${j.tokens ?? 0}:${(j.est_cost_usd ?? 0).toFixed(4)}` +
+      `:${j.tokens_cached ?? 0}` +
+      `:${(j.routing_saved_usd ?? 0).toFixed(4)}` +
+      `:${(j.cache_saved_usd ?? 0).toFixed(4)}` +
+      `:${j.tool_output_tokens_saved ?? 0}` +
+      `:${(j.tool_output_savings_usd ?? 0).toFixed(4)}`,
+    );
     for (const t of tasks) parts.push(`${t.id}=${t.status}`);
   }
   const s = res.session;
@@ -259,6 +268,32 @@ function jobTokens(j: Job): number {
 
 function jobCompactTokens(j: Job): number {
   return Number(j.tool_output_tokens_saved || 0);
+}
+
+function jobCompactUsd(j: Job): number {
+  return Number(j.tool_output_savings_usd || 0);
+}
+
+function jobCacheTokens(j: Job): number {
+  return Number(j.tokens_cached || 0);
+}
+
+function jobCacheSavedUsd(j: Job): number {
+  return Number(j.cache_saved_usd || 0);
+}
+
+function jobRoutingSavedUsd(j: Job): number {
+  return Number(j.routing_saved_usd || 0);
+}
+
+function jobHasSavings(j: Job): boolean {
+  return (
+    jobCompactTokens(j) > 0 ||
+    jobCompactUsd(j) > 0 ||
+    jobCacheTokens(j) > 0 ||
+    jobCacheSavedUsd(j) > 0 ||
+    jobRoutingSavedUsd(j) > 0
+  );
 }
 
 function formatCost(cost: number): string {
@@ -633,11 +668,36 @@ export default function SwarmPane() {
               </Tooltip>
             </div>
             <div className="flex items-center gap-3 shrink-0 text-[10px] pl-2">
-              {(terminal || jobCost(j) > 0 || jobTokens(j) > 0 || jobCompactTokens(j) > 0) && (
-                <span className="text-muted font-mono flex items-center gap-1.5">
+              {(terminal || jobCost(j) > 0 || jobTokens(j) > 0 || jobHasSavings(j)) && (
+                <span className="text-muted font-mono flex items-center gap-1.5 flex-wrap justify-end">
                   {jobTokens(j) > 0 && <span>{jobTokens(j).toLocaleString()}t</span>}
+                  {jobCacheTokens(j) > 0 && (
+                    <span className="text-accent/80" title="Prompt-cache hits on this job">
+                      {jobCacheTokens(j).toLocaleString()} cached
+                    </span>
+                  )}
                   {jobCompactTokens(j) > 0 && (
-                    <span className="text-accent/90">{jobCompactTokens(j).toLocaleString()} compact</span>
+                    <span
+                      className="text-accent/90"
+                      title={
+                        jobCompactUsd(j) > 0
+                          ? `Tool-output compaction saved ~${formatCost(jobCompactUsd(j))}`
+                          : "Tokens avoided by tool-output compaction"
+                      }
+                    >
+                      {jobCompactTokens(j).toLocaleString()} compact
+                      {jobCompactUsd(j) > 0 ? ` (${formatCost(jobCompactUsd(j))})` : ""}
+                    </span>
+                  )}
+                  {jobCacheSavedUsd(j) > 0 && (
+                    <span className="text-accent/80" title="Swarm prompt-cache savings">
+                      cache {formatCost(jobCacheSavedUsd(j))}
+                    </span>
+                  )}
+                  {jobRoutingSavedUsd(j) > 0 && (
+                    <span className="text-accent/80" title="Router vs frontier baseline">
+                      route {formatCost(jobRoutingSavedUsd(j))}
+                    </span>
                   )}
                   <span className="text-good/90">{formatCost(jobCost(j))}</span>
                 </span>

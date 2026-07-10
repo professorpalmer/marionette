@@ -25,6 +25,7 @@ from harness.job_scoping import job_label_for_session, stamp_task_payload
 from harness.server import (
     _cache_saved_usd_swarm,
     _routing_saved_usd,
+    _tokens_cached_swarm,
 )
 from puppetmaster.models import Artifact, ArtifactType, Task
 from puppetmaster.store_factory import create_store
@@ -176,9 +177,10 @@ def test_routing_saved_usd_zero_baseline_skipped():
     assert _routing_saved_usd(arts) == 0.0
 
 
-def test_cache_saved_usd_swarm_skips_real_cost_tasks():
+def test_cache_saved_usd_swarm_credits_real_cost_tasks():
+    """real_cost_usd is spend; it must not suppress cache-savings display."""
     registry = [_registry_spec("worker-model", input_per_mtok_usd=3.0)]
-    # 100k cached @ $3/MTok * 0.9 = 0.27; real_cost task must contribute 0.
+    # 100k + 40k cached @ $3/MTok * 0.9 = 0.378 (both tasks contribute).
     arts = [
         _verification(
             "j1", "t1", "worker-model", 200_000, 10_000, tokens_cached=100_000
@@ -193,7 +195,7 @@ def test_cache_saved_usd_swarm_skips_real_cost_tasks():
             real_cost_usd=0.12,
         ),
     ]
-    assert abs(_cache_saved_usd_swarm(arts, registry) - 0.27) < 1e-9
+    assert abs(_cache_saved_usd_swarm(arts, registry) - 0.378) < 1e-9
 
 
 def test_api_usage_includes_cli_store_job_dollars(tmp_path, monkeypatch):
@@ -477,5 +479,99 @@ def test_api_usage_routing_saved_usd_in_response(tmp_path, monkeypatch):
             _api_get(port, f"/api/usage?repo={scoped}", server._TOKEN).read().decode()
         )
         assert abs(usage["session"]["routing_saved_usd"] - 0.40) < 1e-9
+    finally:
+        httpd.shutdown()
+
+
+def test_tokens_cached_swarm_dedupes_per_task():
+    arts = [
+        _verification("j1", "t1", "worker-model", 200_000, 10_000, tokens_cached=100_000),
+        _verification("j1", "t1", "worker-model", 200_000, 10_000, tokens_cached=100_000),
+        _verification("j1", "t2", "worker-model", 50_000, 5_000, tokens_cached=40_000),
+    ]
+    assert _tokens_cached_swarm(arts) == 140_000
+
+
+def test_api_swarm_live_job_rows_carry_routing_and_cache_savings(tmp_path, monkeypatch):
+    """Mid-run /api/swarm/live job cards need per-job savings, not just spend."""
+    from harness.sessions import SessionStore
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_dir = tmp_path / "harness-state"
+    harness_store = create_store("sqlite", str(harness_dir))
+
+    sess_store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    row = sess_store.create(title="live-savings", repo=str(repo), workspace_root=str(repo))
+    sid = row["id"]
+    monkeypatch.setattr(server, "_sessions", sess_store)
+
+    job = harness_store.create_job("live savings", label=job_label_for_session(sid))
+    _save_task(harness_store, job.id, str(repo), session_id=sid, model="worker-model")
+    harness_store.save_artifact(
+        _routing(job.id, "t1", policy="balanced", baseline=0.50, estimated=0.10)
+    )
+    harness_store.save_artifact(
+        _verification(
+            job.id, "t1", "worker-model", 200_000, 10_000, tokens_cached=100_000
+        )
+    )
+
+    httpd, port = _api_server(str(harness_dir))
+    try:
+        monkeypatch.setattr(
+            server,
+            "_jobs_snapshot",
+            lambda: [
+                {
+                    "id": job.id,
+                    "goal": "live savings",
+                    "status": "running",
+                    "adapter": "agentic",
+                    "label": job_label_for_session(sid),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            server._session,
+            "state",
+            lambda: SimpleNamespace(store=harness_store, format_artifacts=lambda arts: []),
+        )
+        monkeypatch.setattr(
+            "harness.cli_job_merge.resolve_cli_state_dir",
+            lambda workspace_root="": None,
+        )
+        monkeypatch.setattr(
+            server,
+            "_swarm_registry",
+            lambda: [_registry_spec("worker-model", input_per_mtok_usd=3.0)],
+        )
+        monkeypatch.setattr(
+            server,
+            "_job_savings_fields",
+            lambda jid: {
+                "tool_output_tokens_saved": 1200,
+                "tool_output_savings_usd": 0.0036,
+                "tool_output_compactions": 1,
+            },
+        )
+        monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
+        server._cfg.repo = str(repo)
+
+        scoped = urllib.parse.quote(str(repo), safe="")
+        live = json.loads(
+            _api_get(port, f"/api/swarm/live?repo={scoped}", server._TOKEN).read().decode()
+        )
+        assert len(live["jobs"]) == 1
+        row = live["jobs"][0]
+        assert abs(row["routing_saved_usd"] - 0.40) < 1e-9
+        # 100k cached @ $3/MTok * 0.9 = 0.27
+        assert abs(row["cache_saved_usd"] - 0.27) < 1e-9
+        assert row["tokens_cached"] == 100_000
+        assert row["tool_output_tokens_saved"] == 1200
+        assert abs(row["tool_output_savings_usd"] - 0.0036) < 1e-9
+        assert abs(live["session"]["routing_saved_usd"] - 0.40) < 1e-9
+        assert abs(live["session"]["cache_saved_usd_swarm"] - 0.27) < 1e-9
     finally:
         httpd.shutdown()

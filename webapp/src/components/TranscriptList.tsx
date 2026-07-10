@@ -136,14 +136,31 @@ function objKey(obj: object): string {
   }
   return k;
 }
+// Persist Investigated-toggle open state across remounts. Card patches used to
+// replace the lead item's object identity, which changed the React key, remounted
+// ActivityGroup, and reset useState(false) -- the "blinks itself closed" bug.
+const __activityOpen = new Map<string, boolean>();
+
+function activityGroupStableId(items: ActivityItem[], fallbackIndex: number): string {
+  // Prefer the first tool card's durable id -- setCard replaces the wrapper
+  // object on every patch, so object-identity keys remount on every result.
+  for (const it of items) {
+    if (it.kind === "card" && it.card?.id) return `grp-card-${it.card.id}`;
+  }
+  for (const it of items) {
+    if (it.kind === "checkpoint") return `grp-ckpt-${it.id}`;
+    if (it.kind === "swarm_result") return `grp-swres-${it.job_id}`;
+  }
+  if (items[0]) return `grp-${objKey(items[0])}`;
+  return `grp-${fallbackIndex}`;
+}
+
 function stableItemKey(it: GroupedItem, i: number): string {
   switch (it.kind) {
     case "msg":
       return `msg-${objKey(it.msg)}`;
     case "activity_group":
-      // Key off the first inner item's identity so the group stays stable as
-      // long as its lead item does; falls back to index for empty groups.
-      return `grp-${it.items[0] ? objKey(it.items[0]) : i}`;
+      return activityGroupStableId(it.items, i);
     case "swarm_result":
       return `swres-${it.job_id}`;
     case "swarm_pending":
@@ -417,6 +434,7 @@ export const TranscriptList = memo(function TranscriptList({
       return (
         <ActivityGroup
           key={key}
+          groupId={key}
           items={it.items}
           onToggleCard={(card) => onSetCard(card.id, { open: !card.open })}
         />
@@ -491,6 +509,11 @@ function cleanAssistantText(text: string): string {
   return result || "Working...";
 }
 
+function isGateSuppressed(card: Card): boolean {
+  const err = card.result?.error;
+  return typeof err === "string" && err.startsWith("(SUPPRESSED");
+}
+
 function getCardMeta(card: Card): string | null {
   if (card.running) return null;
   const parts: string[] = [];
@@ -500,7 +523,11 @@ function getCardMeta(card: Card): string | null {
     parts.push(`${duration}ms`);
   }
 
-  if (card.result?.error) {
+  if (isGateSuppressed(card)) {
+    // Swarm/delegate gate blocked this call -- not a tool failure. Label it
+    // honestly so a broad-ask turn doesn't look like a wall of red errors.
+    parts.push("blocked");
+  } else if (card.result?.error) {
     parts.push("error");
   } else if (card.result?.artifacts && card.result.artifacts.length > 0) {
     const headline = card.result.artifacts[0].headline || "";
@@ -527,13 +554,24 @@ function getCardMeta(card: Card): string | null {
 function ActivityGroup({
   items,
   onToggleCard,
+  groupId,
 }: {
   items: ActivityItem[];
   onToggleCard: (card: Card) => void;
+  groupId: string;
 }) {
   // Compact-by-default: a whole investigation collapses to one summary line
   // (Cursor-style "Investigated -- N steps"), expandable to the full list.
-  const [open, setOpen] = useState(false);
+  // Seed from the module map so a remount (e.g. thinking-only -> first card
+  // arrives) does not yank an explicitly opened group shut mid-stream.
+  const [open, setOpen] = useState(() => __activityOpen.get(groupId) ?? false);
+  const toggleOpen = () => {
+    setOpen((v) => {
+      const next = !v;
+      __activityOpen.set(groupId, next);
+      return next;
+    });
+  };
 
   const cards = items.filter((it) => it.kind === "card") as { kind: "card"; card: Card }[];
   const cgItems = items.filter((it) => it.kind === "codegraph_context") as { kind: "codegraph_context"; symbols: number; query: string }[];
@@ -636,7 +674,7 @@ function ActivityGroup({
   return (
     <div className="my-1 w-full">
       <button
-        onClick={() => setOpen(!open)}
+        onClick={toggleOpen}
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-panel2/20 border border-edge/30 hover:bg-panel2/40 transition text-[11px] text-muted w-fit select-none"
       >
         {open ? <ChevronDown size={11} className="text-faint/70" /> : <ChevronRight size={11} className="text-faint/70" />}
@@ -1087,10 +1125,11 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   const meta = getCardMeta(card);
 
   // Hermes tool-row spec: monochrome. Success is SILENT (no glyph -- the row
-  // reads as done without a checkmark); only running (spinner) and error
-  // (destructive) carry a leading glyph. Tool name is secondary grey, not
-  // colored/bold. Meta is the faintest tertiary tier.
-  const isErr = !!card.result?.error;
+  // reads as done without a checkmark); only running (spinner) and hard error
+  // (destructive) carry a leading glyph. Gate suppressions are muted "blocked",
+  // not red -- they are intentional harness redirects, not tool failures.
+  const suppressed = isGateSuppressed(card);
+  const isErr = !!card.result?.error && !suppressed;
   return (
     <div className="flex flex-col w-full select-none">
       <button
@@ -1103,9 +1142,11 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
               <Loader2 size={11} className="animate-spin text-faint/70" />
             ) : isErr ? (
               <span className="w-1.5 h-1.5 rounded-full bg-risk/70" />
+            ) : suppressed ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-faint/50" />
             ) : null}
           </div>
-          <span className={`font-medium shrink-0 ${isErr ? "text-risk/85" : "text-txt/70"}`}>
+          <span className={`font-medium shrink-0 ${isErr ? "text-risk/85" : suppressed ? "text-faint/80" : "text-txt/70"}`}>
             {toolName}
           </span>
           <span className="text-faint/85 truncate max-w-[70%] font-normal" title={card.goal}>
@@ -1128,7 +1169,11 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
         <div className="mt-1 ml-5 pl-3 border-l border-edge py-1.5 pr-3 bg-panel2/40 rounded-r-md text-[11px] max-w-full text-txt/90 space-y-1">
           <KV k="goal" v={card.goal} />
           {card.cwd && <KV k="cwd" v={card.cwd} />}
-          {card.result?.error && <div className="text-risk mt-1 font-sans">error: {card.result.error}</div>}
+          {card.result?.error && (
+            <div className={`mt-1 font-sans ${suppressed ? "text-faint/80" : "text-risk"}`}>
+              {suppressed ? card.result.error : `error: ${card.result.error}`}
+            </div>
+          )}
           {card.result && !card.result.error && (
             <>
               {card.result.job_id && <KV k="job" v={card.result.job_id || ""} />}
