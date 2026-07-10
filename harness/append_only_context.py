@@ -1,6 +1,12 @@
-"""Append-only context mode resolution for prefix KV-cache reuse.
+"""Append-only context mode resolution for prefix-cache hygiene.
 
-Mirrors OMP's append-only-context-mode.ts auto-detection. Never raises.
+Under ``auto``, append-only is preferred for *all* agentic BYOK backends —
+local KV-cache hosts *and* cloud APIs (OpenRouter, OpenAI, Anthropic, Gemini,
+xAI, etc.). Mutating the system prompt each pilot step busts automatic prefix
+cache and explicit Claude/Qwen breakpoints; append-only keeps the system
+prefix stable and routes turn-varying context into the user trailer instead.
+
+``on`` forces enable; ``off`` disables. Never raises.
 """
 from __future__ import annotations
 
@@ -71,11 +77,19 @@ def _driver_name_local(driver_name: str) -> bool:
 
 
 def _auto_enable(base_url: str, driver_name: str) -> bool:
+    """Prefer append-only under auto for local *and* cloud BYOK.
+
+    Local/RFC1918/driver-marker detection is retained for clarity and for any
+    future narrowing, but auto defaults ON so cloud hosts (OpenRouter, OpenAI,
+    Anthropic, Gemini, xAI, …) get the same prefix-cache hygiene as local KV.
+    """
     if _driver_name_local(driver_name):
         return True
     if _base_url_local(base_url):
         return True
-    return False
+    # Cloud BYOK / unknown hosts: still enable. Prefix-cache hygiene matters
+    # for remote APIs as much as local KV-cache; opt out with setting=off.
+    return True
 
 
 def should_enable_append_only(setting: str, base_url: str, driver_name: str) -> bool:

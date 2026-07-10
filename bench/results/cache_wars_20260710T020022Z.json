@@ -1,0 +1,442 @@
+{
+  "created_at": "2026-07-10T01:59:27.208292+00:00",
+  "mode": "live",
+  "model": "anthropic/claude-sonnet-4.5",
+  "messages": 12,
+  "prices": {
+    "price_in": 3.0,
+    "price_out": 15.0,
+    "cache_read_mult": 0.1,
+    "cache_write_5m_mult": 1.25,
+    "cache_write_1h_mult": 2.0
+  },
+  "overhead": {
+    "system_chars": 1092,
+    "system_tokens_est": 273,
+    "fat_system_tokens_est": 304,
+    "tools_count": 28,
+    "tools_chars": 14906,
+    "tools_tokens_est": 3726,
+    "stable_prefix_tokens_est": 3999,
+    "fat_stable_prefix_tokens_est": 4030,
+    "claude_code_bloat_claim": 6817,
+    "vs_claude_code_bloat": -2818
+  },
+  "projection": {
+    "scenario": "AGNT-card projection (40 msgs x ~5186 content tokens)",
+    "marionette_1h_usd": 0.6931,
+    "marionette_5m_usd": 0.6841,
+    "marionette_no_cache_usd": 0.6343,
+    "claude_code_1h_usd": 0.743,
+    "agnt_published_usd": 2.68,
+    "claude_code_published_usd": 6.89,
+    "no_cache_published_usd": 12.76,
+    "our_bloat_tokens": 3999,
+    "claude_code_bloat_tokens": 6817,
+    "note": "Projection uses AGNT's content-per-msg figure and Sonnet list rates; it is NOT a live receipt. Live arm below is billing-grade."
+  },
+  "live": {
+    "marionette_1h": {
+      "arm": "marionette_1h",
+      "model": "anthropic/claude-sonnet-4.5",
+      "turns": [
+        {
+          "i": 1,
+          "wall_s": 1.478,
+          "prompt_tokens": 4589,
+          "completion_tokens": 6,
+          "cached_tokens": 4247,
+          "cache_write_tokens": 339,
+          "usd": 0.003407,
+          "text_preview": "OK-1"
+        },
+        {
+          "i": 2,
+          "wall_s": 1.583,
+          "prompt_tokens": 4617,
+          "completion_tokens": 6,
+          "cached_tokens": 4586,
+          "cache_write_tokens": 28,
+          "usd": 0.001643,
+          "text_preview": "OK-2"
+        },
+        {
+          "i": 3,
+          "wall_s": 1.683,
+          "prompt_tokens": 4645,
+          "completion_tokens": 6,
+          "cached_tokens": 4614,
+          "cache_write_tokens": 28,
+          "usd": 0.001651,
+          "text_preview": "OK-3"
+        },
+        {
+          "i": 4,
+          "wall_s": 1.184,
+          "prompt_tokens": 4673,
+          "completion_tokens": 6,
+          "cached_tokens": 4642,
+          "cache_write_tokens": 28,
+          "usd": 0.00166,
+          "text_preview": "OK-4"
+        },
+        {
+          "i": 5,
+          "wall_s": 1.367,
+          "prompt_tokens": 4701,
+          "completion_tokens": 6,
+          "cached_tokens": 4670,
+          "cache_write_tokens": 28,
+          "usd": 0.001668,
+          "text_preview": "OK-5"
+        },
+        {
+          "i": 6,
+          "wall_s": 1.583,
+          "prompt_tokens": 4729,
+          "completion_tokens": 6,
+          "cached_tokens": 4698,
+          "cache_write_tokens": 28,
+          "usd": 0.001676,
+          "text_preview": "OK-6"
+        },
+        {
+          "i": 7,
+          "wall_s": 1.634,
+          "prompt_tokens": 4757,
+          "completion_tokens": 6,
+          "cached_tokens": 4726,
+          "cache_write_tokens": 28,
+          "usd": 0.001685,
+          "text_preview": "OK-7"
+        },
+        {
+          "i": 8,
+          "wall_s": 1.233,
+          "prompt_tokens": 4785,
+          "completion_tokens": 6,
+          "cached_tokens": 4754,
+          "cache_write_tokens": 28,
+          "usd": 0.001693,
+          "text_preview": "OK-8"
+        },
+        {
+          "i": 9,
+          "wall_s": 1.268,
+          "prompt_tokens": 4813,
+          "completion_tokens": 6,
+          "cached_tokens": 4782,
+          "cache_write_tokens": 28,
+          "usd": 0.001702,
+          "text_preview": "OK-9"
+        },
+        {
+          "i": 10,
+          "wall_s": 1.45,
+          "prompt_tokens": 4841,
+          "completion_tokens": 6,
+          "cached_tokens": 4810,
+          "cache_write_tokens": 28,
+          "usd": 0.00171,
+          "text_preview": "OK-10"
+        },
+        {
+          "i": 11,
+          "wall_s": 1.184,
+          "prompt_tokens": 4869,
+          "completion_tokens": 6,
+          "cached_tokens": 4838,
+          "cache_write_tokens": 28,
+          "usd": 0.001718,
+          "text_preview": "OK-11"
+        },
+        {
+          "i": 12,
+          "wall_s": 1.416,
+          "prompt_tokens": 4897,
+          "completion_tokens": 6,
+          "cached_tokens": 4866,
+          "cache_write_tokens": 28,
+          "usd": 0.001727,
+          "text_preview": "OK-12"
+        }
+      ],
+      "totals": {
+        "prompt_tokens": 56916,
+        "completion_tokens": 72,
+        "cached_tokens": 56233,
+        "cache_write_tokens": 647,
+        "usd_total": 0.02194,
+        "errors": 0
+      }
+    },
+    "marionette_5m": {
+      "arm": "marionette_5m",
+      "model": "anthropic/claude-sonnet-4.5",
+      "turns": [
+        {
+          "i": 1,
+          "wall_s": 1.542,
+          "prompt_tokens": 4589,
+          "completion_tokens": 6,
+          "cached_tokens": 4586,
+          "cache_write_tokens": 0,
+          "usd": 0.001475,
+          "text_preview": "OK-1"
+        },
+        {
+          "i": 2,
+          "wall_s": 2.016,
+          "prompt_tokens": 4617,
+          "completion_tokens": 6,
+          "cached_tokens": 4614,
+          "cache_write_tokens": 0,
+          "usd": 0.001483,
+          "text_preview": "OK-2"
+        },
+        {
+          "i": 3,
+          "wall_s": 1.292,
+          "prompt_tokens": 4645,
+          "completion_tokens": 6,
+          "cached_tokens": 4642,
+          "cache_write_tokens": 0,
+          "usd": 0.001492,
+          "text_preview": "OK-3"
+        },
+        {
+          "i": 4,
+          "wall_s": 1.476,
+          "prompt_tokens": 4673,
+          "completion_tokens": 6,
+          "cached_tokens": 4670,
+          "cache_write_tokens": 0,
+          "usd": 0.0015,
+          "text_preview": "OK-4"
+        },
+        {
+          "i": 5,
+          "wall_s": 1.445,
+          "prompt_tokens": 4701,
+          "completion_tokens": 6,
+          "cached_tokens": 4698,
+          "cache_write_tokens": 0,
+          "usd": 0.001508,
+          "text_preview": "OK-5"
+        },
+        {
+          "i": 6,
+          "wall_s": 2.079,
+          "prompt_tokens": 4729,
+          "completion_tokens": 6,
+          "cached_tokens": 4726,
+          "cache_write_tokens": 0,
+          "usd": 0.001517,
+          "text_preview": "OK-6"
+        },
+        {
+          "i": 7,
+          "wall_s": 1.492,
+          "prompt_tokens": 4757,
+          "completion_tokens": 6,
+          "cached_tokens": 4754,
+          "cache_write_tokens": 0,
+          "usd": 0.001525,
+          "text_preview": "OK-7"
+        },
+        {
+          "i": 8,
+          "wall_s": 1.945,
+          "prompt_tokens": 4785,
+          "completion_tokens": 6,
+          "cached_tokens": 4782,
+          "cache_write_tokens": 0,
+          "usd": 0.001534,
+          "text_preview": "OK-8"
+        },
+        {
+          "i": 9,
+          "wall_s": 1.331,
+          "prompt_tokens": 4813,
+          "completion_tokens": 6,
+          "cached_tokens": 4810,
+          "cache_write_tokens": 0,
+          "usd": 0.001542,
+          "text_preview": "OK-9"
+        },
+        {
+          "i": 10,
+          "wall_s": 1.3,
+          "prompt_tokens": 4841,
+          "completion_tokens": 6,
+          "cached_tokens": 4838,
+          "cache_write_tokens": 0,
+          "usd": 0.00155,
+          "text_preview": "OK-10"
+        },
+        {
+          "i": 11,
+          "wall_s": 1.258,
+          "prompt_tokens": 4869,
+          "completion_tokens": 6,
+          "cached_tokens": 4866,
+          "cache_write_tokens": 0,
+          "usd": 0.001559,
+          "text_preview": "OK-11"
+        },
+        {
+          "i": 12,
+          "wall_s": 1.736,
+          "prompt_tokens": 4897,
+          "completion_tokens": 6,
+          "cached_tokens": 4894,
+          "cache_write_tokens": 0,
+          "usd": 0.001567,
+          "text_preview": "OK-12"
+        }
+      ],
+      "totals": {
+        "prompt_tokens": 56916,
+        "completion_tokens": 72,
+        "cached_tokens": 56880,
+        "cache_write_tokens": 0,
+        "usd_total": 0.018252,
+        "errors": 0
+      }
+    },
+    "no_cache": {
+      "arm": "no_cache",
+      "model": "anthropic/claude-sonnet-4.5",
+      "turns": [
+        {
+          "i": 1,
+          "wall_s": 1.58,
+          "prompt_tokens": 4589,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.003162,
+          "text_preview": "OK-1"
+        },
+        {
+          "i": 2,
+          "wall_s": 1.308,
+          "prompt_tokens": 4617,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.003246,
+          "text_preview": "OK-2"
+        },
+        {
+          "i": 3,
+          "wall_s": 2.056,
+          "prompt_tokens": 4645,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.00333,
+          "text_preview": "OK-3"
+        },
+        {
+          "i": 4,
+          "wall_s": 2.246,
+          "prompt_tokens": 4673,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.003414,
+          "text_preview": "OK-4"
+        },
+        {
+          "i": 5,
+          "wall_s": 1.384,
+          "prompt_tokens": 4701,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.003498,
+          "text_preview": "OK-5"
+        },
+        {
+          "i": 6,
+          "wall_s": 1.665,
+          "prompt_tokens": 4729,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.003582,
+          "text_preview": "OK-6"
+        },
+        {
+          "i": 7,
+          "wall_s": 1.235,
+          "prompt_tokens": 4757,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.003666,
+          "text_preview": "OK-7"
+        },
+        {
+          "i": 8,
+          "wall_s": 1.584,
+          "prompt_tokens": 4785,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.00375,
+          "text_preview": "OK-8"
+        },
+        {
+          "i": 9,
+          "wall_s": 1.483,
+          "prompt_tokens": 4813,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.003834,
+          "text_preview": "OK-9"
+        },
+        {
+          "i": 10,
+          "wall_s": 2.082,
+          "prompt_tokens": 4841,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.003918,
+          "text_preview": "OK-10"
+        },
+        {
+          "i": 11,
+          "wall_s": 1.468,
+          "prompt_tokens": 4869,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.004002,
+          "text_preview": "OK-11"
+        },
+        {
+          "i": 12,
+          "wall_s": 1.35,
+          "prompt_tokens": 4897,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.004086,
+          "text_preview": "OK-12"
+        }
+      ],
+      "totals": {
+        "prompt_tokens": 56916,
+        "completion_tokens": 72,
+        "cached_tokens": 47532,
+        "cache_write_tokens": 0,
+        "usd_total": 0.043492,
+        "errors": 0
+      }
+    }
+  }
+}

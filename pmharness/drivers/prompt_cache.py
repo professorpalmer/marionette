@@ -4,8 +4,8 @@ from __future__ import annotations
 
 OpenRouter requires EXPLICIT cache_control for Anthropic Claude and Alibaba
 Qwen. OpenAI / Gemini / DeepSeek / Grok / Moonshot are automatic — do not
-invent markers for those. Native AnthropicDriver uses the same breakpoint
-policy (stable 1h / history 5m) via cache_control().
+invent markers for those. Native AnthropicDriver uses the same AGNT-style
+all-1h breakpoint policy via cache_control().
 """
 
 import hashlib
@@ -32,15 +32,18 @@ def prompt_cache_enabled() -> bool:
 def cache_control(*, stable: bool, family: str = "claude") -> dict:
     """Build a cache_control breakpoint.
 
-    Stable prefixes (system + last tool schema) default to a 1h TTL for Claude
-    so repeats across long sessions keep paying the cheaper cache read. Moving
-    history breakpoints stay on the default 5m window (no ttl key). Qwen only
-    accepts ephemeral (no ttl). Override Claude stable TTL via
-    HARNESS_ANTHROPIC_CACHE_TTL=1h|5m; 5m/off drops ttl on stable markers too.
+    AGNT-style all-1h: every Claude breakpoint (system, last tool schema, and
+    the two history markers) defaults to ttl:1h so long sessions keep paying
+    cache-read rates. ``stable`` is retained for call-site clarity; both
+    stable and history markers share the same TTL policy. Qwen only accepts
+    ephemeral (no ttl). Override via HARNESS_ANTHROPIC_CACHE_TTL=1h|5m;
+    5m/off/0/false/no drops ttl on ALL Claude markers so benches can run a
+    5m arm.
     """
     marker: dict[str, str] = {"type": "ephemeral"}
-    if family == "qwen" or not stable:
+    if family == "qwen":
         return marker
+    _ = stable  # call-site intent only; Claude TTL is all-1h or all-ephemeral
     ttl = (os.environ.get("HARNESS_ANTHROPIC_CACHE_TTL") or "1h").strip().lower()
     if ttl in ("5m", "5min", "off", "0", "false", "no"):
         return marker
@@ -91,6 +94,22 @@ def _mark_content_block(msg: dict, cc: dict) -> bool:
     return False
 
 
+def _strip_cache_control(obj: Any) -> None:
+    """Remove every cache_control marker from a message/tool tree in place.
+
+    Anthropic allows at most 4 breakpoints per request. Multi-turn chats must
+    clear prior markers before re-stamping the current stable/history set, or
+    markers accumulate and the provider 400s ("Found 5/7/...").
+    """
+    if isinstance(obj, dict):
+        obj.pop("cache_control", None)
+        for v in obj.values():
+            _strip_cache_control(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            _strip_cache_control(item)
+
+
 def apply_openai_compat_cache_control(
     body: dict,
     *,
@@ -113,6 +132,12 @@ def apply_openai_compat_cache_control(
     if not isinstance(messages, list):
         messages = []
 
+    # Drop leftover markers from earlier turns before placing a fresh ≤4 set.
+    _strip_cache_control(messages)
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        _strip_cache_control(tools)
+
     # Stable: system text
     for msg in messages:
         if isinstance(msg, dict) and msg.get("role") == "system":
@@ -120,7 +145,6 @@ def apply_openai_compat_cache_control(
             break
 
     # Stable: last tool schema (identical every turn)
-    tools = body.get("tools")
     if isinstance(tools, list) and tools:
         last_tool = tools[-1]
         if isinstance(last_tool, dict):

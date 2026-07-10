@@ -51,6 +51,6 @@ def test_normal_message_still_gets_cached():
     # The non-empty last message SHOULD carry a marker (caching still works).
     last = body["messages"][-1]["content"]
     assert isinstance(last, list) and last[-1].get("cache_control")
-    # History markers omit ttl (default 5m); stable system keeps 1h.
-    assert last[-1]["cache_control"] == {"type": "ephemeral"}
+    # AGNT-style all-1h: history and stable system both get ttl:1h.
+    assert last[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}

@@ -331,10 +331,8 @@ def test_history_uses_two_stable_breakpoints():
     assert _marker_on(out[-2]) is not None, "second-to-last message must be cache-marked (stable prefix)"
 
 
-def test_stable_markers_default_to_1h_history_omits_ttl():
-    # Smart policy: system + last-tool pay for 1h; moving history markers stay
-    # on the default 5m window (no ttl key) so we do not burn a 2.0x write on
-    # breakpoints that shift every turn.
+def test_all_claude_markers_default_to_1h_ttl():
+    # AGNT-style all-1h: system + last-tool + both history markers get ttl:1h.
     d = _mk_driver()
     msgs = [
         {"role": "user", "content": "first"},
@@ -348,12 +346,11 @@ def test_stable_markers_default_to_1h_history_omits_ttl():
 
     hist_last = _marker_on(body["messages"][-1])
     hist_prev = _marker_on(body["messages"][-2])
-    assert hist_last == {"type": "ephemeral"}
-    assert hist_prev == {"type": "ephemeral"}
-    assert "ttl" not in hist_last and "ttl" not in hist_prev
+    assert hist_last == {"type": "ephemeral", "ttl": "1h"}
+    assert hist_prev == {"type": "ephemeral", "ttl": "1h"}
 
 
-def test_env_5m_drops_ttl_on_stable_markers(monkeypatch):
+def test_env_5m_drops_ttl_on_stable_and_history_markers(monkeypatch):
     monkeypatch.setenv("HARNESS_ANTHROPIC_CACHE_TTL", "5m")
     d = _mk_driver()
     msgs = [
@@ -366,8 +363,11 @@ def test_env_5m_drops_ttl_on_stable_markers(monkeypatch):
     assert "ttl" not in body["system"][0]["cache_control"]
     assert body["tools"][-1]["cache_control"] == {"type": "ephemeral"}
     assert "ttl" not in body["tools"][-1]["cache_control"]
-    # History markers remain ttl-less either way.
+    # History markers also lose ttl under the 5m/off override.
     assert _marker_on(body["messages"][-1]) == {"type": "ephemeral"}
+    assert "ttl" not in _marker_on(body["messages"][-1])
+    assert _marker_on(body["messages"][-2]) == {"type": "ephemeral"}
+    assert "ttl" not in _marker_on(body["messages"][-2])
 
 
 def test_total_cache_breakpoints_within_anthropic_limit():
@@ -387,4 +387,4 @@ def test_single_message_history_still_valid():
     body = d._build_body([{"role": "user", "content": "only"}], tools=None, system="sys")
     assert _count_cache_markers(body) <= 4
     assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
-    assert _marker_on(body["messages"][-1]) == {"type": "ephemeral"}
+    assert _marker_on(body["messages"][-1]) == {"type": "ephemeral", "ttl": "1h"}

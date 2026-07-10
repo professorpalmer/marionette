@@ -94,11 +94,10 @@ def test_anthropic_chat_tools_and_system(monkeypatch):
             "cache_control": {"type": "ephemeral", "ttl": "1h"}
         }
     ]
-    # Last tool is the other stable breakpoint; history (single user msg) stays 5m
+    # Last tool + history share AGNT-style all-1h TTL by default
     assert body_data["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     hist = body_data["messages"][-1]["content"][-1]["cache_control"]
-    assert hist == {"type": "ephemeral"}
-    assert "ttl" not in hist
+    assert hist == {"type": "ephemeral", "ttl": "1h"}
 
     # Assert tools conversion schema shape {name, description, input_schema}
     assert len(body_data["tools"]) == 1

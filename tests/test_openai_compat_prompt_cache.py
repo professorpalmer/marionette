@@ -92,7 +92,7 @@ def test_explicit_cache_family_detection():
     assert explicit_cache_family("deepseek/deepseek-chat") is None
 
 
-def test_claude_via_openrouter_stamps_stable_1h_and_history_5m():
+def test_claude_via_openrouter_stamps_all_1h_including_history():
     d = _driver("anthropic/claude-sonnet-4")
     body = _sample_body()
     d._prepare_body(body, messages=body["messages"], system="You are helpful.")
@@ -101,10 +101,9 @@ def test_claude_via_openrouter_stamps_stable_1h_and_history_5m():
     assert _marker_on_msg(sys_msg) == {"type": "ephemeral", "ttl": "1h"}
     assert body["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
-    # History: last + second-to-last non-system messages (ephemeral, no ttl)
-    assert _marker_on_msg(body["messages"][-1]) == {"type": "ephemeral"}
-    assert _marker_on_msg(body["messages"][-2]) == {"type": "ephemeral"}
-    assert "ttl" not in _marker_on_msg(body["messages"][-1])
+    # History: last + second-to-last non-system messages also get ttl:1h
+    assert _marker_on_msg(body["messages"][-1]) == {"type": "ephemeral", "ttl": "1h"}
+    assert _marker_on_msg(body["messages"][-2]) == {"type": "ephemeral", "ttl": "1h"}
     assert _count_cache_markers(body) <= 4
 
 
@@ -122,8 +121,14 @@ def test_qwen_stamps_ephemeral_without_ttl():
     assert _marker_on_msg(body["messages"][-2]) is None
 
 
-def test_gpt_and_gemini_get_no_cache_control():
-    for model in ("openai/gpt-4o", "google/gemini-2.5-pro", "gpt-4o"):
+def test_gpt_gemini_grok_get_no_cache_control():
+    for model in (
+        "openai/gpt-4o",
+        "google/gemini-2.5-pro",
+        "gpt-4o",
+        "x-ai/grok-3",
+        "grok-3",
+    ):
         d = _driver(model)
         body = _sample_body()
         d._prepare_body(body, messages=body["messages"], system="You are helpful.")
@@ -138,7 +143,7 @@ def test_kill_switch_disables_all_stamping(monkeypatch):
     assert _count_cache_markers(body) == 0
 
 
-def test_anthropic_cache_ttl_5m_drops_stable_ttl_for_claude_via_or(monkeypatch):
+def test_anthropic_cache_ttl_5m_drops_ttl_on_stable_and_history(monkeypatch):
     monkeypatch.setenv("HARNESS_ANTHROPIC_CACHE_TTL", "5m")
     d = _driver("anthropic/claude-3.5-sonnet")
     body = _sample_body()
@@ -146,6 +151,11 @@ def test_anthropic_cache_ttl_5m_drops_stable_ttl_for_claude_via_or(monkeypatch):
     assert _marker_on_msg(body["messages"][0]) == {"type": "ephemeral"}
     assert "ttl" not in _marker_on_msg(body["messages"][0])
     assert body["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "ttl" not in body["tools"][-1]["cache_control"]
+    assert _marker_on_msg(body["messages"][-1]) == {"type": "ephemeral"}
+    assert "ttl" not in _marker_on_msg(body["messages"][-1])
+    assert _marker_on_msg(body["messages"][-2]) == {"type": "ephemeral"}
+    assert "ttl" not in _marker_on_msg(body["messages"][-2])
 
 
 def test_openrouter_session_id_from_env(monkeypatch):
@@ -187,7 +197,7 @@ def test_empty_system_text_not_marked():
     }
     apply_openai_compat_cache_control(body, model="anthropic/claude-sonnet-4")
     assert _marker_on_msg(body["messages"][0]) is None
-    assert _marker_on_msg(body["messages"][1]) == {"type": "ephemeral"}
+    assert _marker_on_msg(body["messages"][1]) == {"type": "ephemeral", "ttl": "1h"}
 
 
 def test_prepare_body_is_idempotent_safe():

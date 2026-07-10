@@ -1,0 +1,1163 @@
+{
+  "created_at": "2026-07-10T02:33:32.783000+00:00",
+  "mode": "live",
+  "model": "anthropic/claude-sonnet-4.5",
+  "messages": 40,
+  "content_tokens": 5186,
+  "prices": {
+    "price_in": 3.0,
+    "price_out": 15.0,
+    "cache_read_mult": 0.1,
+    "cache_write_5m_mult": 1.25,
+    "cache_write_1h_mult": 2.0
+  },
+  "overhead": {
+    "system_chars": 1092,
+    "system_tokens_est": 273,
+    "fat_system_tokens_est": 304,
+    "tools_count": 28,
+    "tools_chars": 14906,
+    "tools_tokens_est": 3726,
+    "stable_prefix_tokens_est": 3999,
+    "fat_stable_prefix_tokens_est": 4030,
+    "claude_code_bloat_claim": 6817,
+    "vs_claude_code_bloat": -2818
+  },
+  "projection": {
+    "scenario": "AGNT-card projection (40 msgs x ~5186 content tokens)",
+    "marionette_1h_usd": 0.6931,
+    "marionette_5m_usd": 0.6841,
+    "marionette_no_cache_usd": 0.6343,
+    "claude_code_1h_usd": 0.743,
+    "agnt_published_usd": 2.68,
+    "claude_code_published_usd": 6.89,
+    "no_cache_published_usd": 12.76,
+    "our_bloat_tokens": 3999,
+    "claude_code_bloat_tokens": 6817,
+    "note": "Projection uses AGNT's content-per-msg figure and Sonnet list rates; it is NOT a live receipt. Live arm below is billing-grade."
+  },
+  "live": {
+    "marionette_1h": {
+      "arm": "marionette_1h",
+      "model": "anthropic/claude-sonnet-4.5",
+      "turns": [
+        {
+          "i": 1,
+          "wall_s": 2.279,
+          "prompt_tokens": 11268,
+          "completion_tokens": 6,
+          "cached_tokens": 4247,
+          "cache_write_tokens": 7018,
+          "usd": 0.043481,
+          "text_preview": "OK-1"
+        },
+        {
+          "i": 2,
+          "wall_s": 2.339,
+          "prompt_tokens": 17975,
+          "completion_tokens": 6,
+          "cached_tokens": 11265,
+          "cache_write_tokens": 6707,
+          "usd": 0.043721,
+          "text_preview": "OK-2"
+        },
+        {
+          "i": 3,
+          "wall_s": 2.351,
+          "prompt_tokens": 24682,
+          "completion_tokens": 6,
+          "cached_tokens": 17972,
+          "cache_write_tokens": 6707,
+          "usd": 0.045733,
+          "text_preview": "OK-3"
+        },
+        {
+          "i": 4,
+          "wall_s": 2.592,
+          "prompt_tokens": 31389,
+          "completion_tokens": 6,
+          "cached_tokens": 24679,
+          "cache_write_tokens": 6707,
+          "usd": 0.047745,
+          "text_preview": "OK-4"
+        },
+        {
+          "i": 5,
+          "wall_s": 2.733,
+          "prompt_tokens": 38096,
+          "completion_tokens": 6,
+          "cached_tokens": 31386,
+          "cache_write_tokens": 6707,
+          "usd": 0.049757,
+          "text_preview": "OK-5"
+        },
+        {
+          "i": 6,
+          "wall_s": 2.379,
+          "prompt_tokens": 44803,
+          "completion_tokens": 6,
+          "cached_tokens": 38093,
+          "cache_write_tokens": 6707,
+          "usd": 0.051769,
+          "text_preview": "OK-6"
+        },
+        {
+          "i": 7,
+          "wall_s": 2.719,
+          "prompt_tokens": 51510,
+          "completion_tokens": 6,
+          "cached_tokens": 44800,
+          "cache_write_tokens": 6707,
+          "usd": 0.053781,
+          "text_preview": "OK-7"
+        },
+        {
+          "i": 8,
+          "wall_s": 3.63,
+          "prompt_tokens": 58217,
+          "completion_tokens": 6,
+          "cached_tokens": 51507,
+          "cache_write_tokens": 6707,
+          "usd": 0.055793,
+          "text_preview": "OK-8"
+        },
+        {
+          "i": 9,
+          "wall_s": 2.732,
+          "prompt_tokens": 64924,
+          "completion_tokens": 6,
+          "cached_tokens": 58214,
+          "cache_write_tokens": 6707,
+          "usd": 0.057805,
+          "text_preview": "OK-9"
+        },
+        {
+          "i": 10,
+          "wall_s": 3.034,
+          "prompt_tokens": 71550,
+          "completion_tokens": 6,
+          "cached_tokens": 64921,
+          "cache_write_tokens": 6626,
+          "usd": 0.059331,
+          "text_preview": "OK-10"
+        },
+        {
+          "i": 11,
+          "wall_s": 3.049,
+          "prompt_tokens": 78176,
+          "completion_tokens": 6,
+          "cached_tokens": 71547,
+          "cache_write_tokens": 6626,
+          "usd": 0.061319,
+          "text_preview": "OK-11"
+        },
+        {
+          "i": 12,
+          "wall_s": 2.6,
+          "prompt_tokens": 84802,
+          "completion_tokens": 6,
+          "cached_tokens": 78173,
+          "cache_write_tokens": 6626,
+          "usd": 0.063307,
+          "text_preview": "OK-12"
+        },
+        {
+          "i": 13,
+          "wall_s": 3.06,
+          "prompt_tokens": 91428,
+          "completion_tokens": 6,
+          "cached_tokens": 84799,
+          "cache_write_tokens": 6626,
+          "usd": 0.065295,
+          "text_preview": "OK-13"
+        },
+        {
+          "i": 14,
+          "wall_s": 3.147,
+          "prompt_tokens": 98054,
+          "completion_tokens": 6,
+          "cached_tokens": 91425,
+          "cache_write_tokens": 6626,
+          "usd": 0.067283,
+          "text_preview": "OK-14"
+        },
+        {
+          "i": 15,
+          "wall_s": 3.218,
+          "prompt_tokens": 104680,
+          "completion_tokens": 6,
+          "cached_tokens": 98051,
+          "cache_write_tokens": 6626,
+          "usd": 0.06927,
+          "text_preview": "OK-15"
+        },
+        {
+          "i": 16,
+          "wall_s": 3.008,
+          "prompt_tokens": 111306,
+          "completion_tokens": 6,
+          "cached_tokens": 104677,
+          "cache_write_tokens": 6626,
+          "usd": 0.071258,
+          "text_preview": "OK-16"
+        },
+        {
+          "i": 17,
+          "wall_s": 3.437,
+          "prompt_tokens": 117932,
+          "completion_tokens": 6,
+          "cached_tokens": 111303,
+          "cache_write_tokens": 6626,
+          "usd": 0.073246,
+          "text_preview": "OK-17"
+        },
+        {
+          "i": 18,
+          "wall_s": 3.294,
+          "prompt_tokens": 124558,
+          "completion_tokens": 6,
+          "cached_tokens": 117929,
+          "cache_write_tokens": 6626,
+          "usd": 0.075234,
+          "text_preview": "OK-18"
+        },
+        {
+          "i": 19,
+          "wall_s": 3.333,
+          "prompt_tokens": 131184,
+          "completion_tokens": 6,
+          "cached_tokens": 124555,
+          "cache_write_tokens": 6626,
+          "usd": 0.077222,
+          "text_preview": "OK-19"
+        },
+        {
+          "i": 20,
+          "wall_s": 2.804,
+          "prompt_tokens": 137810,
+          "completion_tokens": 6,
+          "cached_tokens": 131181,
+          "cache_write_tokens": 6626,
+          "usd": 0.079209,
+          "text_preview": "OK-20"
+        },
+        {
+          "i": 21,
+          "wall_s": 4.576,
+          "prompt_tokens": 144436,
+          "completion_tokens": 6,
+          "cached_tokens": 137807,
+          "cache_write_tokens": 6626,
+          "usd": 0.081197,
+          "text_preview": "OK-21"
+        },
+        {
+          "i": 22,
+          "wall_s": 3.516,
+          "prompt_tokens": 151062,
+          "completion_tokens": 6,
+          "cached_tokens": 144433,
+          "cache_write_tokens": 6626,
+          "usd": 0.083185,
+          "text_preview": "OK-22"
+        },
+        {
+          "i": 23,
+          "wall_s": 3.42,
+          "prompt_tokens": 157688,
+          "completion_tokens": 6,
+          "cached_tokens": 151059,
+          "cache_write_tokens": 6626,
+          "usd": 0.085173,
+          "text_preview": "OK-23"
+        },
+        {
+          "i": 24,
+          "wall_s": 3.465,
+          "prompt_tokens": 164314,
+          "completion_tokens": 6,
+          "cached_tokens": 157685,
+          "cache_write_tokens": 6626,
+          "usd": 0.087161,
+          "text_preview": "OK-24"
+        },
+        {
+          "i": 25,
+          "wall_s": 3.427,
+          "prompt_tokens": 170940,
+          "completion_tokens": 6,
+          "cached_tokens": 164311,
+          "cache_write_tokens": 6626,
+          "usd": 0.089148,
+          "text_preview": "OK-25"
+        },
+        {
+          "i": 26,
+          "wall_s": 3.607,
+          "prompt_tokens": 177566,
+          "completion_tokens": 6,
+          "cached_tokens": 170937,
+          "cache_write_tokens": 6626,
+          "usd": 0.091136,
+          "text_preview": "OK-26"
+        },
+        {
+          "i": 27,
+          "wall_s": 3.82,
+          "prompt_tokens": 184192,
+          "completion_tokens": 6,
+          "cached_tokens": 177563,
+          "cache_write_tokens": 6626,
+          "usd": 0.093124,
+          "text_preview": "OK-27"
+        },
+        {
+          "i": 28,
+          "wall_s": 3.421,
+          "prompt_tokens": 190818,
+          "completion_tokens": 6,
+          "cached_tokens": 184189,
+          "cache_write_tokens": 6626,
+          "usd": 0.095112,
+          "text_preview": "OK-28"
+        },
+        {
+          "i": 29,
+          "wall_s": 3.63,
+          "prompt_tokens": 197444,
+          "completion_tokens": 6,
+          "cached_tokens": 190815,
+          "cache_write_tokens": 6626,
+          "usd": 0.0971,
+          "text_preview": "OK-29"
+        },
+        {
+          "i": 30,
+          "wall_s": 3.361,
+          "prompt_tokens": 204070,
+          "completion_tokens": 6,
+          "cached_tokens": 197441,
+          "cache_write_tokens": 6626,
+          "usd": 0.099087,
+          "text_preview": "OK-30"
+        },
+        {
+          "i": 31,
+          "wall_s": 3.491,
+          "prompt_tokens": 210696,
+          "completion_tokens": 6,
+          "cached_tokens": 204067,
+          "cache_write_tokens": 6626,
+          "usd": 0.101075,
+          "text_preview": "OK-31"
+        },
+        {
+          "i": 32,
+          "wall_s": 5.249,
+          "prompt_tokens": 217322,
+          "completion_tokens": 6,
+          "cached_tokens": 210693,
+          "cache_write_tokens": 6626,
+          "usd": 0.103063,
+          "text_preview": "OK-32"
+        },
+        {
+          "i": 33,
+          "wall_s": 3.742,
+          "prompt_tokens": 223948,
+          "completion_tokens": 6,
+          "cached_tokens": 217319,
+          "cache_write_tokens": 6626,
+          "usd": 0.105051,
+          "text_preview": "OK-33"
+        },
+        {
+          "i": 34,
+          "wall_s": 4.052,
+          "prompt_tokens": 230574,
+          "completion_tokens": 6,
+          "cached_tokens": 223945,
+          "cache_write_tokens": 6626,
+          "usd": 0.107038,
+          "text_preview": "OK-34"
+        },
+        {
+          "i": 35,
+          "wall_s": 3.979,
+          "prompt_tokens": 237200,
+          "completion_tokens": 6,
+          "cached_tokens": 230571,
+          "cache_write_tokens": 6626,
+          "usd": 0.109026,
+          "text_preview": "OK-35"
+        },
+        {
+          "i": 36,
+          "wall_s": 4.151,
+          "prompt_tokens": 243826,
+          "completion_tokens": 6,
+          "cached_tokens": 237197,
+          "cache_write_tokens": 6626,
+          "usd": 0.111014,
+          "text_preview": "OK-36"
+        },
+        {
+          "i": 37,
+          "wall_s": 3.61,
+          "prompt_tokens": 250452,
+          "completion_tokens": 6,
+          "cached_tokens": 243823,
+          "cache_write_tokens": 6626,
+          "usd": 0.113002,
+          "text_preview": "OK-37"
+        },
+        {
+          "i": 38,
+          "wall_s": 3.716,
+          "prompt_tokens": 257078,
+          "completion_tokens": 6,
+          "cached_tokens": 250449,
+          "cache_write_tokens": 6626,
+          "usd": 0.11499,
+          "text_preview": "OK-38"
+        },
+        {
+          "i": 39,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 207075 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_vrtx_011CcsbcxgxZY5rqfjLWF4fx\\\"}\",\"provider_name\":\"Google\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provi",
+          "wall_s": 4.616879940032959
+        },
+        {
+          "i": 40,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 207075 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_vrtx_011CcsbdMhZA2znZav6x8zFb\\\"}\",\"provider_name\":\"Google\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provi",
+          "wall_s": 5.380290746688843
+        }
+      ],
+      "totals": {
+        "prompt_tokens": 5107970,
+        "completion_tokens": 228,
+        "cached_tokens": 4855028,
+        "cache_write_tokens": 252828,
+        "usd_total": 2.977238,
+        "errors": 2
+      }
+    },
+    "marionette_5m": {
+      "arm": "marionette_5m",
+      "model": "anthropic/claude-sonnet-4.5",
+      "turns": [
+        {
+          "i": 1,
+          "wall_s": 2.063,
+          "prompt_tokens": 11268,
+          "completion_tokens": 6,
+          "cached_tokens": 11265,
+          "cache_write_tokens": 0,
+          "usd": 0.003479,
+          "text_preview": "OK-1"
+        },
+        {
+          "i": 2,
+          "wall_s": 2.2,
+          "prompt_tokens": 17975,
+          "completion_tokens": 6,
+          "cached_tokens": 17972,
+          "cache_write_tokens": 0,
+          "usd": 0.005491,
+          "text_preview": "OK-2"
+        },
+        {
+          "i": 3,
+          "wall_s": 2.195,
+          "prompt_tokens": 24682,
+          "completion_tokens": 6,
+          "cached_tokens": 24679,
+          "cache_write_tokens": 0,
+          "usd": 0.007503,
+          "text_preview": "OK-3"
+        },
+        {
+          "i": 4,
+          "wall_s": 2.144,
+          "prompt_tokens": 31389,
+          "completion_tokens": 6,
+          "cached_tokens": 31386,
+          "cache_write_tokens": 0,
+          "usd": 0.009515,
+          "text_preview": "OK-4"
+        },
+        {
+          "i": 5,
+          "wall_s": 2.577,
+          "prompt_tokens": 38096,
+          "completion_tokens": 6,
+          "cached_tokens": 38093,
+          "cache_write_tokens": 0,
+          "usd": 0.011527,
+          "text_preview": "OK-5"
+        },
+        {
+          "i": 6,
+          "wall_s": 2.274,
+          "prompt_tokens": 44803,
+          "completion_tokens": 6,
+          "cached_tokens": 44800,
+          "cache_write_tokens": 0,
+          "usd": 0.013539,
+          "text_preview": "OK-6"
+        },
+        {
+          "i": 7,
+          "wall_s": 2.499,
+          "prompt_tokens": 51510,
+          "completion_tokens": 6,
+          "cached_tokens": 51507,
+          "cache_write_tokens": 0,
+          "usd": 0.015551,
+          "text_preview": "OK-7"
+        },
+        {
+          "i": 8,
+          "wall_s": 2.342,
+          "prompt_tokens": 58217,
+          "completion_tokens": 6,
+          "cached_tokens": 58214,
+          "cache_write_tokens": 0,
+          "usd": 0.017563,
+          "text_preview": "OK-8"
+        },
+        {
+          "i": 9,
+          "wall_s": 2.592,
+          "prompt_tokens": 64924,
+          "completion_tokens": 6,
+          "cached_tokens": 64921,
+          "cache_write_tokens": 0,
+          "usd": 0.019575,
+          "text_preview": "OK-9"
+        },
+        {
+          "i": 10,
+          "wall_s": 2.577,
+          "prompt_tokens": 71550,
+          "completion_tokens": 6,
+          "cached_tokens": 71547,
+          "cache_write_tokens": 0,
+          "usd": 0.021563,
+          "text_preview": "OK-10"
+        },
+        {
+          "i": 11,
+          "wall_s": 2.721,
+          "prompt_tokens": 78176,
+          "completion_tokens": 6,
+          "cached_tokens": 78173,
+          "cache_write_tokens": 0,
+          "usd": 0.023551,
+          "text_preview": "OK-11"
+        },
+        {
+          "i": 12,
+          "wall_s": 2.72,
+          "prompt_tokens": 84802,
+          "completion_tokens": 6,
+          "cached_tokens": 84799,
+          "cache_write_tokens": 0,
+          "usd": 0.025539,
+          "text_preview": "OK-12"
+        },
+        {
+          "i": 13,
+          "wall_s": 2.765,
+          "prompt_tokens": 91428,
+          "completion_tokens": 6,
+          "cached_tokens": 91425,
+          "cache_write_tokens": 0,
+          "usd": 0.027527,
+          "text_preview": "OK-13"
+        },
+        {
+          "i": 14,
+          "wall_s": 2.658,
+          "prompt_tokens": 98054,
+          "completion_tokens": 6,
+          "cached_tokens": 98051,
+          "cache_write_tokens": 0,
+          "usd": 0.029514,
+          "text_preview": "OK-14"
+        },
+        {
+          "i": 15,
+          "wall_s": 2.672,
+          "prompt_tokens": 104680,
+          "completion_tokens": 6,
+          "cached_tokens": 104677,
+          "cache_write_tokens": 0,
+          "usd": 0.031502,
+          "text_preview": "OK-15"
+        },
+        {
+          "i": 16,
+          "wall_s": 3.124,
+          "prompt_tokens": 111306,
+          "completion_tokens": 6,
+          "cached_tokens": 111303,
+          "cache_write_tokens": 0,
+          "usd": 0.03349,
+          "text_preview": "OK-16"
+        },
+        {
+          "i": 17,
+          "wall_s": 3.363,
+          "prompt_tokens": 117932,
+          "completion_tokens": 6,
+          "cached_tokens": 117929,
+          "cache_write_tokens": 0,
+          "usd": 0.035478,
+          "text_preview": "OK-17"
+        },
+        {
+          "i": 18,
+          "wall_s": 3.028,
+          "prompt_tokens": 124558,
+          "completion_tokens": 6,
+          "cached_tokens": 124555,
+          "cache_write_tokens": 0,
+          "usd": 0.037466,
+          "text_preview": "OK-18"
+        },
+        {
+          "i": 19,
+          "wall_s": 2.705,
+          "prompt_tokens": 131184,
+          "completion_tokens": 6,
+          "cached_tokens": 131181,
+          "cache_write_tokens": 0,
+          "usd": 0.039453,
+          "text_preview": "OK-19"
+        },
+        {
+          "i": 20,
+          "wall_s": 3.05,
+          "prompt_tokens": 137810,
+          "completion_tokens": 6,
+          "cached_tokens": 137807,
+          "cache_write_tokens": 0,
+          "usd": 0.041441,
+          "text_preview": "OK-20"
+        },
+        {
+          "i": 21,
+          "wall_s": 3.101,
+          "prompt_tokens": 144436,
+          "completion_tokens": 6,
+          "cached_tokens": 144433,
+          "cache_write_tokens": 0,
+          "usd": 0.043429,
+          "text_preview": "OK-21"
+        },
+        {
+          "i": 22,
+          "wall_s": 2.998,
+          "prompt_tokens": 151062,
+          "completion_tokens": 6,
+          "cached_tokens": 151059,
+          "cache_write_tokens": 0,
+          "usd": 0.045417,
+          "text_preview": "OK-22"
+        },
+        {
+          "i": 23,
+          "wall_s": 3.191,
+          "prompt_tokens": 157688,
+          "completion_tokens": 6,
+          "cached_tokens": 157685,
+          "cache_write_tokens": 0,
+          "usd": 0.047405,
+          "text_preview": "OK-23"
+        },
+        {
+          "i": 24,
+          "wall_s": 3.298,
+          "prompt_tokens": 164314,
+          "completion_tokens": 6,
+          "cached_tokens": 164311,
+          "cache_write_tokens": 0,
+          "usd": 0.049392,
+          "text_preview": "OK-24"
+        },
+        {
+          "i": 25,
+          "wall_s": 3.228,
+          "prompt_tokens": 170940,
+          "completion_tokens": 6,
+          "cached_tokens": 170937,
+          "cache_write_tokens": 0,
+          "usd": 0.05138,
+          "text_preview": "OK-25"
+        },
+        {
+          "i": 26,
+          "wall_s": 3.127,
+          "prompt_tokens": 177566,
+          "completion_tokens": 6,
+          "cached_tokens": 177563,
+          "cache_write_tokens": 0,
+          "usd": 0.053368,
+          "text_preview": "OK-26"
+        },
+        {
+          "i": 27,
+          "wall_s": 3.026,
+          "prompt_tokens": 184192,
+          "completion_tokens": 6,
+          "cached_tokens": 184189,
+          "cache_write_tokens": 0,
+          "usd": 0.055356,
+          "text_preview": "OK-27"
+        },
+        {
+          "i": 28,
+          "wall_s": 3.22,
+          "prompt_tokens": 190818,
+          "completion_tokens": 6,
+          "cached_tokens": 190815,
+          "cache_write_tokens": 0,
+          "usd": 0.057344,
+          "text_preview": "OK-28"
+        },
+        {
+          "i": 29,
+          "wall_s": 3.18,
+          "prompt_tokens": 197444,
+          "completion_tokens": 6,
+          "cached_tokens": 197441,
+          "cache_write_tokens": 0,
+          "usd": 0.059331,
+          "text_preview": "OK-29"
+        },
+        {
+          "i": 30,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 204087 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbjbWC2w4awg6zaL7Dq\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.9674324989318848
+        },
+        {
+          "i": 31,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 210713 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011Ccsbju6rV2QyveEMok5m5\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 4.0914695262908936
+        },
+        {
+          "i": 32,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 217339 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbkAgUW1MjebKWzPywW\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.641596555709839
+        },
+        {
+          "i": 33,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 223965 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbkQ2Q8N4mRWLLs3qmH\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.8115735054016113
+        },
+        {
+          "i": 34,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 230591 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbkiqzH9sqMB6Cg1r21\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.7937285900115967
+        },
+        {
+          "i": 35,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 237217 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbkyvM6gphonhTagb7S\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.4381296634674072
+        },
+        {
+          "i": 36,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 243843 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbmJ1Xf3zuBLJivixCT\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 4.234333753585815
+        },
+        {
+          "i": 37,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 250469 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbmWEzFx44p9KihVhxB\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.036186933517456
+        },
+        {
+          "i": 38,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 207075 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_vrtx_011CcsbmnrrrfJf4rnrY5QaX\\\"}\",\"provider_name\":\"Google\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provi",
+          "wall_s": 3.7227931022644043
+        },
+        {
+          "i": 39,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 207075 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_vrtx_011Ccsbn45uA6MEF3xamcAEF\\\"}\",\"provider_name\":\"Google\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provi",
+          "wall_s": 3.4692342281341553
+        },
+        {
+          "i": 40,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 207075 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_vrtx_011CcsbnGqN9Xwwih1mb8Gfs\\\"}\",\"provider_name\":\"Google\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provi",
+          "wall_s": 3.29105281829834
+        }
+      ],
+      "totals": {
+        "prompt_tokens": 3032804,
+        "completion_tokens": 174,
+        "cached_tokens": 3032717,
+        "cache_write_tokens": 0,
+        "usd_total": 0.912686,
+        "errors": 11
+      }
+    },
+    "no_cache": {
+      "arm": "no_cache",
+      "model": "anthropic/claude-sonnet-4.5",
+      "turns": [
+        {
+          "i": 1,
+          "wall_s": 2.023,
+          "prompt_tokens": 11268,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.023199,
+          "text_preview": "OK-1"
+        },
+        {
+          "i": 2,
+          "wall_s": 2.984,
+          "prompt_tokens": 17975,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.04332,
+          "text_preview": "OK-2"
+        },
+        {
+          "i": 3,
+          "wall_s": 2.18,
+          "prompt_tokens": 24682,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.063441,
+          "text_preview": "OK-3"
+        },
+        {
+          "i": 4,
+          "wall_s": 3.21,
+          "prompt_tokens": 31389,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.083562,
+          "text_preview": "OK-4"
+        },
+        {
+          "i": 5,
+          "wall_s": 2.238,
+          "prompt_tokens": 38096,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.103683,
+          "text_preview": "OK-5"
+        },
+        {
+          "i": 6,
+          "wall_s": 2.829,
+          "prompt_tokens": 44803,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.123804,
+          "text_preview": "OK-6"
+        },
+        {
+          "i": 7,
+          "wall_s": 2.726,
+          "prompt_tokens": 51510,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.143925,
+          "text_preview": "OK-7"
+        },
+        {
+          "i": 8,
+          "wall_s": 2.482,
+          "prompt_tokens": 58217,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.164046,
+          "text_preview": "OK-8"
+        },
+        {
+          "i": 9,
+          "wall_s": 2.574,
+          "prompt_tokens": 64924,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.184167,
+          "text_preview": "OK-9"
+        },
+        {
+          "i": 10,
+          "wall_s": 2.542,
+          "prompt_tokens": 71550,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.204045,
+          "text_preview": "OK-10"
+        },
+        {
+          "i": 11,
+          "wall_s": 2.462,
+          "prompt_tokens": 78176,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.223923,
+          "text_preview": "OK-11"
+        },
+        {
+          "i": 12,
+          "wall_s": 2.628,
+          "prompt_tokens": 84802,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.243801,
+          "text_preview": "OK-12"
+        },
+        {
+          "i": 13,
+          "wall_s": 2.677,
+          "prompt_tokens": 91428,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.263679,
+          "text_preview": "OK-13"
+        },
+        {
+          "i": 14,
+          "wall_s": 2.454,
+          "prompt_tokens": 98054,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.283557,
+          "text_preview": "OK-14"
+        },
+        {
+          "i": 15,
+          "wall_s": 2.684,
+          "prompt_tokens": 104680,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.303435,
+          "text_preview": "OK-15"
+        },
+        {
+          "i": 16,
+          "wall_s": 2.972,
+          "prompt_tokens": 111306,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.323313,
+          "text_preview": "OK-16"
+        },
+        {
+          "i": 17,
+          "wall_s": 3.249,
+          "prompt_tokens": 117932,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.343191,
+          "text_preview": "OK-17"
+        },
+        {
+          "i": 18,
+          "wall_s": 2.698,
+          "prompt_tokens": 124558,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.363069,
+          "text_preview": "OK-18"
+        },
+        {
+          "i": 19,
+          "wall_s": 2.954,
+          "prompt_tokens": 131184,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.382947,
+          "text_preview": "OK-19"
+        },
+        {
+          "i": 20,
+          "wall_s": 3.094,
+          "prompt_tokens": 137810,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.402825,
+          "text_preview": "OK-20"
+        },
+        {
+          "i": 21,
+          "wall_s": 3.044,
+          "prompt_tokens": 144436,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.422703,
+          "text_preview": "OK-21"
+        },
+        {
+          "i": 22,
+          "wall_s": 3.187,
+          "prompt_tokens": 151062,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.442581,
+          "text_preview": "OK-22"
+        },
+        {
+          "i": 23,
+          "wall_s": 3.083,
+          "prompt_tokens": 157688,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.462459,
+          "text_preview": "OK-23"
+        },
+        {
+          "i": 24,
+          "wall_s": 3.374,
+          "prompt_tokens": 164314,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.482337,
+          "text_preview": "OK-24"
+        },
+        {
+          "i": 25,
+          "wall_s": 3.008,
+          "prompt_tokens": 170940,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.502215,
+          "text_preview": "OK-25"
+        },
+        {
+          "i": 26,
+          "wall_s": 3.803,
+          "prompt_tokens": 177566,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.522093,
+          "text_preview": "OK-26"
+        },
+        {
+          "i": 27,
+          "wall_s": 3.762,
+          "prompt_tokens": 184192,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.541971,
+          "text_preview": "OK-27"
+        },
+        {
+          "i": 28,
+          "wall_s": 3.325,
+          "prompt_tokens": 190818,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.561849,
+          "text_preview": "OK-28"
+        },
+        {
+          "i": 29,
+          "wall_s": 3.999,
+          "prompt_tokens": 197444,
+          "completion_tokens": 6,
+          "cached_tokens": 3961,
+          "cache_write_tokens": 0,
+          "usd": 0.581727,
+          "text_preview": "OK-29"
+        },
+        {
+          "i": 30,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 204087 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbtjVeuQ512AZjnENKX\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.0631065368652344
+        },
+        {
+          "i": 31,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 210713 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011Ccsbu1ZnhdXZmfGpysffX\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.76053524017334
+        },
+        {
+          "i": 32,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 217339 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbuCqT4rCaA1Q1HA9tC\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 2.667400598526001
+        },
+        {
+          "i": 33,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 223965 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbuQZQ1jaSPzfpF3Zox\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 2.7260491847991943
+        },
+        {
+          "i": 34,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 230591 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbudjuKStrg9EhgjsL8\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.0564613342285156
+        },
+        {
+          "i": 35,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 237217 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsburWrbZDhBk5c4o6ja\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.1377370357513428
+        },
+        {
+          "i": 36,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 243843 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011Ccsbv6F6sETJ18B6quXeH\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 3.1218795776367188
+        },
+        {
+          "i": 37,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 250469 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_011CcsbvUHQmsnXfAuzwhEwZ\\\"}\",\"provider_name\":\"Azure\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provider re",
+          "wall_s": 5.2807910442352295
+        },
+        {
+          "i": 38,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 207075 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_vrtx_011Ccsbvi1unbAdGvHj8s9AX\\\"}\",\"provider_name\":\"Google\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provi",
+          "wall_s": 2.986173629760742
+        },
+        {
+          "i": 39,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 207075 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_vrtx_011CcsbvvC96h9e2VPg8WK5a\\\"}\",\"provider_name\":\"Google\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provi",
+          "wall_s": 2.7934606075286865
+        },
+        {
+          "i": 40,
+          "error": "HTTP 400: {\"error\":{\"message\":\"Provider returned error\",\"code\":400,\"metadata\":{\"raw\":\"{\\\"type\\\":\\\"error\\\",\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"prompt is too long: 207075 tokens > 200000 maximum\\\"},\\\"request_id\\\":\\\"req_vrtx_011CcsbwEfPxNthJe6iAFKwY\\\"}\",\"provider_name\":\"Google\",\"is_byok\":false,\"previous_errors\":[{\"code\":400,\"message\":\"Provider returned error\",\"provider_name\":\"Amazon Bedrock\",\"raw\":\"{\\\"message\\\":\\\"Input is too long for requested model.\\\"}\"},{\"code\":400,\"message\":\"Provi",
+          "wall_s": 4.306829214096069
+        }
+      ],
+      "totals": {
+        "prompt_tokens": 3032804,
+        "completion_tokens": 174,
+        "cached_tokens": 114869,
+        "cache_write_tokens": 0,
+        "usd_total": 8.790876,
+        "errors": 11
+      }
+    }
+  }
+}

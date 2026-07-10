@@ -2721,6 +2721,13 @@ class ConversationalSession(ToolDispatchMixin):
         else:
             max_steps = 2 * _pilot_steps
             _step_iter = range(max_steps)
+
+        # Advisory compaction once per user turn (after the new user message is
+        # in history), NOT at the start of every tool-loop step. Mid-turn
+        # history rewrites bust prefix cache for all providers. CONTEXT_OVERFLOW
+        # still force-compacts inside the step loop as a last resort.
+        yield from self._maybe_compact_history()
+
         for step in _step_iter:
             if self._cancel.is_set():
                 yield ConvEvent("interrupted", {"reason": "session interrupted"})
@@ -2731,8 +2738,6 @@ class ConversationalSession(ToolDispatchMixin):
             self._steer_pending = False
             yield from self._check_and_inject_steer()
             self._steer_pending = False
-
-            yield from self._maybe_compact_history()
 
             # 1. Ask the pilot for its next conversational turn.
             base_sys = self._history[0]["content"]

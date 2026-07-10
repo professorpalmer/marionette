@@ -50,12 +50,17 @@ def test_local_base_urls(base_url):
     [
         "https://api.openai.com/v1",
         "https://openrouter.ai/api/v1",
+        "https://api.anthropic.com",
+        "https://generativelanguage.googleapis.com/v1",
+        "https://api.x.ai/v1",
         "not-a-url",
         "",
     ],
 )
 def test_public_or_garbage_urls(base_url):
-    assert not should_enable_append_only("auto", base_url, "gpt-4")
+    # auto defaults ON for cloud BYOK and unknown/garbage hosts (prefix-cache
+    # hygiene). Opt out explicitly with setting=off.
+    assert should_enable_append_only("auto", base_url, "gpt-4")
 
 
 def test_settings_on_off():

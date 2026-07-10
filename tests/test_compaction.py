@@ -229,3 +229,101 @@ def test_context_usage():
     assert cats["Summarized conversation"] > 0
     assert cats["Conversation"] > 0
     assert cats["Subagent"] == 0
+
+
+def test_advisory_compact_once_per_user_turn_not_per_tool_step(monkeypatch, tmp_path):
+    """Advisory compact runs at the user-turn boundary, not mid tool-loop.
+
+    Prefix-cache hygiene: rewriting history at the start of every pilot step
+    busts the prompt prefix. force=True on CONTEXT_OVERFLOW remains available.
+    """
+    import inspect
+    import json
+
+    from pmharness.drivers.openai_compat import DriverResponse
+
+    # Call-site contract: advisory compact is before the step loop; force=True
+    # overflow path stays inside the loop.
+    src = inspect.getsource(ConversationalSession._send_locked_inner)
+    advisory_idx = src.find("yield from self._maybe_compact_history()")
+    force_idx = src.find("yield from self._maybe_compact_history(force=True)")
+    step_loop_idx = src.find("for step in _step_iter:")
+    assert advisory_idx != -1, "advisory _maybe_compact_history() must remain"
+    assert force_idx != -1, "CONTEXT_OVERFLOW force=True compact must remain"
+    assert step_loop_idx != -1
+    assert advisory_idx < step_loop_idx, (
+        "advisory compact must run once before the tool-loop step iterator"
+    )
+    assert force_idx > step_loop_idx, (
+        "force=True overflow compact must stay inside the step loop"
+    )
+    # No per-step advisory call after the loop starts (only force=True).
+    after_loop = src[step_loop_idx:]
+    assert "yield from self._maybe_compact_history()" not in after_loop.replace(
+        "yield from self._maybe_compact_history(force=True)", ""
+    )
+
+    class _TwoStepPilot:
+        name = "two-step-compact-spy"
+        base_url = "https://openrouter.ai/api/v1"
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages, *, tools=None, system=None):
+            self.calls += 1
+            if self.calls == 1:
+                return DriverResponse(
+                    text="",
+                    tokens_out=5,
+                    latency_ms=1.0,
+                    meta={
+                        "tool_calls": [
+                            {
+                                "id": "call_spy_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": json.dumps({"path": "spy.txt"}),
+                                },
+                            }
+                        ],
+                        "finish_reason": "tool_calls",
+                    },
+                )
+            return DriverResponse(
+                text="done after tool",
+                tokens_out=5,
+                latency_ms=1.0,
+                meta={"tool_calls": [], "finish_reason": "stop"},
+            )
+
+        def complete(self, prompt, *, system=None):
+            return DriverResponse(text="summary", tokens_out=1, latency_ms=1.0)
+
+    monkeypatch.setenv("HARNESS_APPEND_ONLY_CONTEXT", "on")
+    (tmp_path / "spy.txt").write_text("hello", encoding="utf-8")
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path), repo=str(tmp_path))
+    session = ConversationalSession(cfg)
+    session.pilot = _TwoStepPilot()
+
+    compact_calls: list[dict] = []
+    real_compact = session._maybe_compact_history
+
+    def _spy_compact(force: bool = False):
+        compact_calls.append({"force": force})
+        yield from real_compact(force=force)
+
+    monkeypatch.setattr(session, "_maybe_compact_history", _spy_compact)
+
+    list(session.send("read spy.txt then finish"))
+
+    assert session.pilot.calls >= 2, "expected a multi-step tool loop"
+    advisory = [c for c in compact_calls if not c["force"]]
+    assert len(advisory) == 1, (
+        f"advisory compact must run once per user turn, got {compact_calls!r}"
+    )
+
+    # force=True path remains callable (overflow last resort).
+    list(session._maybe_compact_history(force=True))
+    assert any(c["force"] for c in compact_calls)

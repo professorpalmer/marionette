@@ -89,6 +89,9 @@ class OpenAICompatDriver:
         Best-effort: never raises; automatic-cache models are left untouched.
         """
         try:
+            if "openrouter.ai" in (self.base_url or "").lower():
+                # Ask OpenRouter for prompt_tokens_details (cached / cache_write).
+                body.setdefault("usage", {"include": True})
             apply_openai_compat_cache_control(body, model=self.model)
             maybe_attach_openrouter_session_id(
                 body,
@@ -100,6 +103,24 @@ class OpenAICompatDriver:
         except Exception:
             pass
         return body
+
+    @staticmethod
+    def _cache_fields_from_usage(usage: dict) -> tuple[int, int]:
+        """Return (cache_read_tokens, cache_write_tokens) from an OpenAI-style usage blob."""
+        usage = usage or {}
+        details = usage.get("prompt_tokens_details") or {}
+        cached = int(
+            details.get("cached_tokens")
+            or usage.get("cache_read_input_tokens")
+            or 0
+        )
+        written = int(
+            details.get("cache_write_tokens")
+            or details.get("cache_write")
+            or usage.get("cache_creation_input_tokens")
+            or 0
+        )
+        return cached, written
 
     def complete(
         self,
@@ -158,8 +179,7 @@ class OpenAICompatDriver:
                     latency_ms=latency,
                 )
             usage = raw.get("usage", {}) or {}
-            prompt_tokens_details = usage.get("prompt_tokens_details") or {}
-            cached_tokens = int(prompt_tokens_details.get("cached_tokens", 0) or 0)
+            cached_tokens, cache_write_tokens = self._cache_fields_from_usage(usage)
             return DriverResponse(
                 text=text,
                 tokens_in=int(usage.get("prompt_tokens", 0) or 0),
@@ -169,6 +189,8 @@ class OpenAICompatDriver:
                 meta={
                     "raw_finish": raw["choices"][0].get("finish_reason") if raw.get("choices") else None,
                     "cache_read_tokens": cached_tokens,
+                    "cache_write_tokens": cache_write_tokens,
+                    "raw_usage": usage,
                 },
             )
 
@@ -268,8 +290,7 @@ class OpenAICompatDriver:
             pure_text = strip_think_blocks(text)
 
             usage = raw.get("usage", {}) or {}
-            prompt_tokens_details = usage.get("prompt_tokens_details") or {}
-            cached_tokens = int(prompt_tokens_details.get("cached_tokens", 0) or 0)
+            cached_tokens, cache_write_tokens = self._cache_fields_from_usage(usage)
             return DriverResponse(
                 text=pure_text,
                 tokens_in=int(usage.get("prompt_tokens", 0) or 0),
@@ -281,6 +302,8 @@ class OpenAICompatDriver:
                     "reasoning": reasoning,
                     "finish_reason": finish_reason,
                     "cache_read_tokens": cached_tokens,
+                    "cache_write_tokens": cache_write_tokens,
+                    "raw_usage": usage,
                 },
             )
 
@@ -337,6 +360,7 @@ class OpenAICompatDriver:
             tokens_in = 0
             tokens_out = 0
             cached_tokens = 0
+            cache_write_tokens = 0
             stream_started = False
 
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -360,8 +384,9 @@ class OpenAICompatDriver:
                             if chunk_usage:
                                 tokens_in = int(chunk_usage.get("prompt_tokens", 0) or 0)
                                 tokens_out = int(chunk_usage.get("completion_tokens", 0) or 0)
-                                prompt_tokens_details = chunk_usage.get("prompt_tokens_details") or {}
-                                cached_tokens = int(prompt_tokens_details.get("cached_tokens", 0) or 0)
+                                cached_tokens, cache_write_tokens = self._cache_fields_from_usage(
+                                    chunk_usage
+                                )
 
                             choices = chunk.get("choices") or []
                             if choices:
@@ -462,6 +487,7 @@ class OpenAICompatDriver:
                     "finish_reason": finish_reason,
                     "stream_started": stream_started,
                     "cache_read_tokens": cached_tokens,
+                    "cache_write_tokens": cache_write_tokens,
                 },
             )
 

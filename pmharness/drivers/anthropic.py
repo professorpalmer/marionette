@@ -235,8 +235,8 @@ class AnthropicDriver:
         # top agents (Cursor/Claude Code) rely on to keep input cost near-flat as
         # the conversation grows.
         #
-        # History markers intentionally omit ttl (default 5m write). Only the
-        # stable system/tool breakpoints pay for the extended 1h TTL.
+        # AGNT-style all-1h: history markers get the same ttl:1h as stable
+        # system/tool breakpoints (override via HARNESS_ANTHROPIC_CACHE_TTL).
         if self._prompt_cache_on() and anthropic_msgs:
             history_cc = _cache_control(stable=False)
 
