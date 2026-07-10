@@ -186,7 +186,9 @@ def test_parallel_reads_timing_sanity(monkeypatch):
     # Serial would be 3 * 0.5s = 1.5s of sleeping alone; parallel is ~0.5s.
     # Windows CI has flaked above 1.2s from git/config probe overhead even when
     # the three sleeps overlap, so allow more headroom there while still
-    # failing a true serial regression (~1.5s sleep + overhead).
+    # failing a true serial regression (~1.5s sleep + overhead). macOS CI has
+    # also flaked at 1.2003s against a hard 1.2 bound — keep non-Windows under
+    # serial floor but with a little scheduler slack.
     import sys
-    bound = 2.0 if sys.platform == "win32" else 1.2
+    bound = 2.0 if sys.platform == "win32" else 1.35
     assert elapsed < bound, f"Elapsed time {elapsed}s suggests reads ran serially!"
