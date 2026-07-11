@@ -68,3 +68,17 @@ def test_concurrent_claims_have_exactly_one_winner():
 
     assert sum(1 for r in results if r) == 1  # exactly one thread claimed it
     assert len(results) == 32
+
+
+def test_external_then_local_same_goal_second_claim_fails():
+    """Regression: twin run_implement (cursor/external + local agentic) used to
+    both dispatch because only the local path claimed. Shared claim must block
+    the second path the way run_implement now does before branching."""
+    s = _session()
+    goal = "Fix three bugs in backend/app/main.py that break the paste URL flow"
+    # First dispatch (external PM path) claims.
+    assert s._claim_objective(goal) is True
+    # Second identical run_implement (local path) must be rejected.
+    assert s._claim_objective(goal) is False
+    s._release_objective(goal)
+    assert s._claim_objective(goal) is True

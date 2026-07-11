@@ -4180,6 +4180,31 @@ class ConversationalSession(ToolDispatchMixin):
                         self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
                         continue
 
+                    # Claim BEFORE external vs local branch so a twin run_implement
+                    # in the same turn (e.g. cursor + agentic) cannot both dispatch.
+                    # Previously only the local path claimed, which produced twin
+                    # Swarm Tracker cards for the same goal.
+                    if not self._claim_objective(act.goal):
+                        dedup_msg = (
+                            "An identical objective is already running in a "
+                            "background worker -- not dispatching a duplicate. "
+                            "Wait for the in-flight worker's patch instead of "
+                            "re-issuing the same edit; duplicate workers race the "
+                            "same files and cause PATCH-DID-NOT-APPLY."
+                        )
+                        yield ConvEvent("action_result", {
+                            "id": aid, "status": "skipped", "message": dedup_msg,
+                        })
+                        self._append_action_result(
+                            act, aid,
+                            f"(run_implement {aid} skipped -- duplicate objective already in flight)",
+                            is_native,
+                        )
+                        continue
+
+                    claimed = True
+                    dispatched = False
+
                     external_adapters = {"cursor", "claude-code", "codex", "openai"}
                     requested_adapter = act.adapter or ""
                     
@@ -4248,10 +4273,12 @@ class ConversationalSession(ToolDispatchMixin):
                                         f"Swarm capacity reached ({self._swarm_inflight()} in flight); "
                                         "not dispatching more right now. Wait for an in-flight worker to finish."
                                     )
+                                    self._release_objective(act.goal)
                                     yield ConvEvent("action_result", {"id": aid, "error": cap_msg})
                                     self._append_action_result(act, aid, f"(run_implement {aid} deferred: {cap_msg})", is_native)
                                     continue
 
+                                dispatched = True  # background await owns objective release
                                 # Emit ConvEvent kind="swarm_pending" with {job_ids, objective}
                                 yield ConvEvent("swarm_pending", {
                                     "job_ids": [job_id],
@@ -4270,6 +4297,7 @@ class ConversationalSession(ToolDispatchMixin):
                                 yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms + 1})
                                 return
                             else:
+                                self._release_objective(act.goal)
                                 output = "".join(all_output_lines)[:5000]
                                 yield ConvEvent("action_result", {
                                     "id": aid,
@@ -4278,6 +4306,8 @@ class ConversationalSession(ToolDispatchMixin):
                                 self._append_action_result(act, aid, f"(run_implement {aid} failed: no job_id detected. Output:\n{output})", is_native)
 
                         except Exception as e:
+                            if claimed and not dispatched:
+                                self._release_objective(act.goal)
                             yield ConvEvent("action_result", {"id": aid, "error": str(e)})
                             self._append_action_result(act, aid, f"(run_implement {aid} failed: {e})", is_native)
                         continue
@@ -4305,23 +4335,7 @@ class ConversationalSession(ToolDispatchMixin):
                             "mode": engine,
                         })
                         
-                        claimed = False
-                        dispatched = False
                         try:
-                            if not self._claim_objective(act.goal):
-                                dedup_msg = (
-                                    "An identical objective is already running in a "
-                                    "background worker -- not dispatching a duplicate. "
-                                    "Wait for the in-flight worker's patch instead of "
-                                    "re-issuing the same edit; duplicate workers race the "
-                                    "same files and cause PATCH-DID-NOT-APPLY."
-                                )
-                                yield ConvEvent("action_result", {
-                                    "id": aid, "status": "skipped", "message": dedup_msg,
-                                })
-                                self._append_action_result(act, aid, f"(run_implement {aid} skipped -- duplicate objective already in flight)", is_native)
-                                continue
-                            claimed = True
                             import uuid
                             short = uuid.uuid4().hex[:8]
                             job_id = f"local-{short}"
@@ -6166,6 +6180,8 @@ class ConversationalSession(ToolDispatchMixin):
                 "state_dir": state_dir
             })
         finally:
+            # Free the objective claimed at run_implement dispatch (external path).
+            self._release_objective(objective)
             # Cleanup state_dir if present
             if state_dir:
                 import shutil
