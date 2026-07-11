@@ -214,7 +214,7 @@ function _autolinkLine(line: string): string {
     if (m.startsWith("<")) return m;
     return `[${m}](${m})`;
   });
-  work = work.replace(BARE_PATH, (full, pathPart: string, offset: number) => {
+  work = work.replace(BARE_PATH, (full, pathPart: string) => {
     if (isExternalUrl(pathPart) || !looksLikeFilePath(pathPart)) return full;
     // Preserve the leading delimiter captured by (?:^|[\s(])
     const lead = full.slice(0, full.length - pathPart.length);
