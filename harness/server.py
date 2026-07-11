@@ -4194,7 +4194,7 @@ class Handler(BaseHTTPRequestHandler):
             return_url = "http://%s/api/wiki/connect" % host
             from urllib.parse import quote as _quote
             setup_url = (
-                "https://portablellm.wiki/welcome"
+                "https://portablellm.wiki/connect/marionette"
                 "?client=marionette"
                 "&return=%s"
                 "&nonce=%s"

@@ -373,8 +373,8 @@ def test_wiki_handoff_returns_loopback_setup_url():
         assert data["ok"] is True
         assert data["nonce"]
         assert data["return_url"] == f"http://127.0.0.1:{port}/api/wiki/connect"
-        assert "return=" in data["setup_url"]
+        assert "connect/marionette" in data["setup_url"]
         assert "client=marionette" in data["setup_url"]
-        assert "portablellm.wiki/welcome" in data["setup_url"]
+        assert "return=" in data["setup_url"]
     finally:
         httpd.shutdown()

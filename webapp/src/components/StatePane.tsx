@@ -87,7 +87,7 @@ export default function StatePane({ artifacts }: {
   const openWikiSetup = async () => {
     // Prefer loopback handoff (?return=http://127.0.0.1:PORT/api/wiki/connect)
     // so Windows never routes marionette:// to the Microsoft Store.
-    let url = "https://portablellm.wiki/welcome?client=marionette";
+    let url = "https://portablellm.wiki/connect/marionette?client=marionette";
     try {
       const handoff = await api.startWikiHandoff();
       if (handoff?.setup_url) url = handoff.setup_url;
