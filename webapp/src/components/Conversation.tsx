@@ -9,13 +9,16 @@ import FileEditorPane from "./FileEditorPane";
 import { TranscriptList, type Item, type Msg, type Card } from "./TranscriptList";
 
 /**
- * Keep-stale session switch: decide what to show while the target transcript
- * loads. Never blank to [] on a miss between two real sessions -- that paints
- * the first-run "Message the pilot" placeholder for a frame.
+ * Session-switch transcript hydrate: decide what to show while the target
+ * transcript loads.
  *
  * - cache hit -> show cached items (authoritative for that session)
- * - cache miss with prior content -> keep prior items, mark stale
- * - no prior / cleared session id -> empty is correct
+ * - cache miss -> empty + stale (loading). Never paint priorItems: that leaked
+ *   session A's Investigated/swarm chunks into a brand-new empty session B.
+ * - cleared session id -> empty is correct
+ *
+ * A brief empty flash on an uncached switch is preferable to cross-session
+ * relic paint. Warm-cache hits still hydrate instantly with no flash.
  */
 export function resolveSwitchTranscript(args: {
   nextId: string | null;
@@ -28,9 +31,8 @@ export function resolveSwitchTranscript(args: {
   if (args.cached) {
     return { items: args.cached, stale: false, blank: false };
   }
-  if (args.priorItems.length > 0) {
-    return { items: args.priorItems, stale: true, blank: false };
-  }
+  // priorItems intentionally unused: never show another session's rows.
+  void args.priorItems;
   return { items: [], stale: true, blank: false };
 }
 
@@ -756,16 +758,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       cached: cachedEntry?.items,
       priorItems: itemsRef.current,
     });
-    if (cachedEntry) {
-      setItems(resolved.items);
-      itemsRef.current = resolved.items;
-      setTranscriptStale(false);
-    } else if (resolved.stale) {
-      // Keep prior rows visible (dimmed) until sessionTranscript lands.
-      setTranscriptStale(true);
-    } else {
-      setTranscriptStale(false);
-    }
+    // Always apply resolved items so a cache miss blanks prior session rows
+    // instead of leaving A's transcript painted under B's id.
+    setItems(resolved.items);
+    itemsRef.current = resolved.items;
+    setTranscriptStale(resolved.stale);
 
     // Immediately reflect runner busy state for the session we switched TO
     // (warm cache + Stop chrome) before the background transcript refresh.
@@ -856,9 +853,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       .catch(() => {
         if (loadGen !== transcriptLoadGenRef.current) return;
         if (cachedSessionIdRef.current !== activeSessionId) return;
-        // Cache hit or keep-stale miss: never blank to the empty placeholder.
-        // Only clear when we had nothing to show.
-        if (!hadCache && itemsRef.current.length === 0) {
+        // Cache hit: keep showing that session's cached rows on refresh failure.
+        // Cache miss: clear — never leave another session's relics on screen.
+        if (!hadCache) {
           setItems([]);
           itemsRef.current = [];
           setTranscriptStale(false);

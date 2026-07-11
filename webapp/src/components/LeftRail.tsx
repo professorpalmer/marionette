@@ -6,6 +6,7 @@ import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } 
 import { repoPathsEqual } from "../lib/pathNormalize";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
+import { writeTranscriptCache } from "./Conversation";
 
 /**
  * Stable PROJECTS rail order: keep recents as-is, append currentRepo only when
@@ -537,7 +538,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     if (target && (!current || !repoPathsEqual(target, current))) {
       await handleOpenProject(target);
     }
-    await api.createSession();
+    const created = await api.createSession();
+    // Seed an empty warm-cache entry before Conversation's switch effect runs
+    // so it never paints the previous session's transcript under this id.
+    if (created?.id) {
+      writeTranscriptCache(created.id, []);
+    }
     await refreshSessionsRef.current();
   };
   useEffect(() => {

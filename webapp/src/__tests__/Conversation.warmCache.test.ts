@@ -112,15 +112,17 @@ describe("transcript warm cache", () => {
   });
 });
 
-describe("resolveSwitchTranscript keep-stale", () => {
-  it("cache miss keeps prior items and marks stale (no empty flash)", () => {
+describe("resolveSwitchTranscript", () => {
+  // Cross-session relic paint is forbidden: a full session A must not leak
+  // Investigated/swarm chunks into an uncached (often brand-new empty) B.
+  it("cache miss blanks prior items and marks stale (no cross-session relics)", () => {
     const prior = [makeMsg("user", "from A")];
     const r = resolveSwitchTranscript({
       nextId: "sess-b",
       cached: undefined,
       priorItems: prior,
     });
-    expect(r.items).toEqual(prior);
+    expect(r.items).toEqual([]);
     expect(r.stale).toBe(true);
     expect(r.blank).toBe(false);
   });
@@ -136,7 +138,7 @@ describe("resolveSwitchTranscript keep-stale", () => {
     expect(r.stale).toBe(false);
   });
 
-  it("cleared session id blanks only when there is no prior content", () => {
+  it("cleared session id blanks", () => {
     expect(
       resolveSwitchTranscript({ nextId: null, cached: undefined, priorItems: [] }),
     ).toEqual({ items: [], stale: false, blank: true });
