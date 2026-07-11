@@ -3,8 +3,9 @@ import { Plug, Play, Square, Trash2, Plus, Check, X } from "lucide-react";
 import { api } from "../lib/api";
 
 // MCP server manager: add/start/stop/remove MCP servers and see their tools.
-// "Access other MCPs people wanna add" -- github, aws, vercel, browser, custom.
-export default function McpPane() {
+// Embedded mode lives under State (CodeGraph / Wiki) so the right rail does not
+// need a separate MCP tab.
+export default function McpPane({ embedded = false }: { embedded?: boolean }) {
   const [servers, setServers] = useState<any[]>([]);
   const [tools, setTools] = useState<any[]>([]);
   const [catalog, setCatalog] = useState<Record<string, any>>({});
@@ -24,17 +25,31 @@ export default function McpPane() {
   const remove = async (n: string) => { setBusy(n); try { await api.mcpRemove(n); await refresh(); } finally { setBusy(""); } };
 
   return (
-    <div className="flex flex-col h-full text-[12px]">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-edge">
-        <span className="uppercase tracking-wider text-[10px] text-faint font-medium flex items-center gap-1.5">
-          <Plug size={11} /> MCP Servers
-        </span>
-        <button onClick={() => setAdding((v) => !v)} className="text-muted hover:text-txt"><Plus size={14} /></button>
+    <div className={`flex flex-col text-[12px] ${embedded ? "h-full min-h-0" : "h-full"}`}>
+      <div className={`flex items-center justify-between shrink-0 ${embedded ? "px-2 py-1" : "px-3 py-2 border-b border-edge"}`}>
+        {!embedded ? (
+          <span className="uppercase tracking-wider text-[10px] text-faint font-medium flex items-center gap-1.5">
+            <Plug size={11} /> MCP Servers
+          </span>
+        ) : (
+          <span className="text-[9px] text-faint">
+            {servers.length === 0
+              ? "No servers"
+              : `${servers.filter((s) => s.running).length}/${servers.length} running`}
+          </span>
+        )}
+        <button
+          onClick={() => setAdding((v) => !v)}
+          className="text-muted hover:text-txt"
+          title={adding ? "Cancel add" : "Add MCP server"}
+        >
+          <Plus size={14} />
+        </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5">
+      <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1.5">
         {servers.length === 0 && !adding && (
-          <div className="text-faint text-[11px] text-center mt-6 px-3 leading-relaxed">
+          <div className={`text-faint text-[11px] text-center px-3 leading-relaxed ${embedded ? "mt-2" : "mt-6"}`}>
             No MCP servers yet. Add github, aws, vercel, a browser controller, or any custom server.
           </div>
         )}
@@ -66,7 +81,7 @@ export default function McpPane() {
       </div>
 
       {tools.length > 0 && (
-        <div className="border-t border-edge p-2 max-h-44 overflow-y-auto">
+        <div className="border-t border-edge p-2 max-h-44 overflow-y-auto shrink-0">
           <div className="uppercase tracking-wider text-[10px] text-faint mb-1">Available tools ({tools.length})</div>
           {tools.map((t) => (
             <div key={t.qualified} className="py-1 border-b border-edge/20 last:border-none flex flex-wrap items-baseline gap-x-1.5 min-w-0">

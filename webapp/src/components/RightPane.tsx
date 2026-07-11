@@ -1,11 +1,10 @@
 import { useState, useEffect, useRef, Fragment } from "react";
-import { Database, Globe, FolderTree, GitBranch, GitFork, Plug, Settings, SquareTerminal, Columns, Rows, Split, X, History, GitPullRequest, Network } from "lucide-react";
+import { Database, Globe, FolderTree, GitBranch, GitFork, Settings, SquareTerminal, Columns, Rows, Split, X, History, GitPullRequest, Network } from "lucide-react";
 import StatePane from "./StatePane";
 import BrowserPane from "./BrowserPane";
 import FileTree from "./FileTree";
 import SourceControl from "./SourceControl";
 import WorktreesPane from "./WorktreesPane";
-import McpPane from "./McpPane";
 import SettingsShell from "./SettingsShell";
 import TerminalPane from "./TerminalPane";
 import CheckpointsPane from "./CheckpointsPane";
@@ -15,7 +14,7 @@ import ErrorBoundary from "./ErrorBoundary";
 import { api, type PendingReview } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 
-type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "mcp" | "settings" | "checkpoints" | "review" | "swarm";
+type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm";
 
 const TAB_CONFIG: Record<Tab, { label: string; icon: React.ReactNode }> = {
   state: { label: "State", icon: <Database size={12} /> },
@@ -24,7 +23,6 @@ const TAB_CONFIG: Record<Tab, { label: string; icon: React.ReactNode }> = {
   worktrees: { label: "Worktrees", icon: <GitFork size={12} /> },
   terminal: { label: "Terminal", icon: <SquareTerminal size={12} /> },
   browser: { label: "Browser", icon: <Globe size={12} /> },
-  mcp: { label: "MCP", icon: <Plug size={12} /> },
   settings: { label: "Settings", icon: <Settings size={12} /> },
   checkpoints: { label: "History", icon: <History size={12} /> },
   review: { label: "Review", icon: <GitPullRequest size={12} /> },
@@ -32,12 +30,12 @@ const TAB_CONFIG: Record<Tab, { label: string; icon: React.ReactNode }> = {
 };
 
 // Visual grouping for the tab bar: Workspace | Changes | Tools, with Settings pinned last.
-// A thin divider is rendered between groups so 10 icons read as 3 organized clusters
+// A thin divider is rendered between groups so icons read as organized clusters
 // instead of one crowded row. Group membership also drives the canonical default order.
 const TAB_GROUPS: { group: string; tabs: Tab[] }[] = [
   { group: "workspace", tabs: ["state", "swarm", "files", "git", "worktrees", "terminal"] },
   { group: "changes", tabs: ["review", "checkpoints"] },
-  { group: "tools", tabs: ["browser", "mcp"] },
+  { group: "tools", tabs: ["browser"] },
 ];
 // Settings is intentionally separated and rendered last (after a flex spacer).
 const PINNED_LAST: Tab = "settings";
@@ -72,9 +70,10 @@ export default function RightPane({ artifacts, onOpenWizard }: {
     const saved = localStorage.getItem("pmharness.tabOrder");
     if (saved) {
       try {
-        const parsed = JSON.parse(saved) as Tab[];
+        const parsed = JSON.parse(saved) as string[];
         const validTabs: Tab[] = CANONICAL_ORDER.slice();
-        const filtered = parsed.filter(t => validTabs.includes(t));
+        // Drop retired "mcp" tab (merged into State).
+        const filtered = parsed.filter((t): t is Tab => validTabs.includes(t as Tab));
         const missing = validTabs.filter(t => !filtered.includes(t));
         // Always keep Settings pinned last regardless of saved order.
         const merged = [...filtered, ...missing].filter(t => t !== PINNED_LAST);
@@ -89,6 +88,11 @@ export default function RightPane({ artifacts, onOpenWizard }: {
       order = order.filter(t => t !== "swarm");
       order.splice(1, 0, "swarm");
       localStorage.setItem("pmharness.tabOrder.swarm2nd", "1");
+      localStorage.setItem("pmharness.tabOrder", JSON.stringify(order));
+    }
+    if (!localStorage.getItem("pmharness.tabOrder.mcpMerged")) {
+      order = order.filter(t => (t as string) !== "mcp");
+      localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
       localStorage.setItem("pmharness.tabOrder", JSON.stringify(order));
     }
     return order;
@@ -131,13 +135,14 @@ export default function RightPane({ artifacts, onOpenWizard }: {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "checkpoints", "review", "swarm"];
+        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "settings", "checkpoints", "review", "swarm"];
+        const remap = (t: string): Tab => (t === "mcp" ? "state" : (validTabs.includes(t as Tab) ? t as Tab : "state"));
         // Settings is a destination you visit, not a home tab: restoring it as
         // the startup tab made every launch open on the settings page whenever
         // the previous session ended there.
-        let primaryTab = validTabs.includes(parsed.primaryTab) ? parsed.primaryTab : "state";
+        let primaryTab = remap(parsed.primaryTab);
         if (primaryTab === "settings") primaryTab = "state";
-        const secondaryTab = validTabs.includes(parsed.secondaryTab) ? parsed.secondaryTab : "terminal";
+        const secondaryTab = remap(parsed.secondaryTab || "terminal");
         return {
           isSplit: !!parsed.isSplit,
           primaryTab,
@@ -184,8 +189,14 @@ export default function RightPane({ artifacts, onOpenWizard }: {
   useEffect(() => {
     const onFocusTab = (e: any) => {
       if (e?.detail) {
+        // MCP merged into State; expand that section when something asks for MCP.
+        if (e.detail === "mcp") {
+          updateSplitState({ primaryTab: "state" });
+          window.dispatchEvent(new Event("harness-expand-mcp"));
+          return;
+        }
         const targetTab = e.detail as Tab;
-        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "mcp", "settings", "swarm"];
+        const validTabs: Tab[] = ["state", "files", "git", "worktrees", "terminal", "browser", "settings", "swarm", "checkpoints", "review"];
         if (validTabs.includes(targetTab)) {
           updateSplitState({ primaryTab: targetTab });
         }
@@ -316,8 +327,6 @@ export default function RightPane({ artifacts, onOpenWizard }: {
         return <TerminalPane />;
       case "worktrees":
         return <WorktreesPane />;
-      case "mcp":
-        return <McpPane />;
       case "settings":
         return (
           <SettingsShell

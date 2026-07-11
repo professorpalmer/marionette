@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "luc
 import { api, type CodegraphStatus, type WikiStatusData } from "../lib/api";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
+import McpPane from "./McpPane";
 
 // Re-enable when a better presentation exists. Artifacts stay fully
 // logged/stored on the backend; this flag is display-only.
@@ -51,8 +52,12 @@ export default function StatePane({ artifacts }: {
   // full metrics are one click away. Preference persists per user.
   const [cgOpen, setCgOpen] = useState(() => localStorage.getItem("pmharness.statePane.cgOpen") === "1");
   const [wikiOpen, setWikiOpen] = useState(() => localStorage.getItem("pmharness.statePane.wikiOpen") === "1");
+  // MCP defaults open so it fills the State pane dead space under CodeGraph/Wiki.
+  const [mcpOpen, setMcpOpen] = useState(() => localStorage.getItem("pmharness.statePane.mcpOpen") !== "0");
+  const [mcpSummary, setMcpSummary] = useState({ total: 0, running: 0 });
   const toggleCg = () => setCgOpen((v) => { localStorage.setItem("pmharness.statePane.cgOpen", v ? "0" : "1"); return !v; });
   const toggleWiki = () => setWikiOpen((v) => { localStorage.setItem("pmharness.statePane.wikiOpen", v ? "0" : "1"); return !v; });
+  const toggleMcp = () => setMcpOpen((v) => { localStorage.setItem("pmharness.statePane.mcpOpen", v ? "0" : "1"); return !v; });
 
   useEffect(() => {
     const onProject = (e: Event) => {
@@ -117,6 +122,30 @@ export default function StatePane({ artifacts }: {
       window.dispatchEvent(new Event("harness-config-changed"));
     });
   }, [revalidateWiki]);
+
+  useEffect(() => {
+    const onExpandMcp = () => {
+      setMcpOpen(true);
+      localStorage.setItem("pmharness.statePane.mcpOpen", "1");
+    };
+    window.addEventListener("harness-expand-mcp", onExpandMcp);
+    return () => window.removeEventListener("harness-expand-mcp", onExpandMcp);
+  }, []);
+
+  useEffect(() => {
+    const load = () => {
+      api.mcp().then((d) => {
+        const servers = Array.isArray(d?.servers) ? d.servers : [];
+        setMcpSummary({
+          total: servers.length,
+          running: servers.filter((s: { running?: boolean }) => !!s.running).length,
+        });
+      }).catch(() => {});
+    };
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -316,6 +345,16 @@ export default function StatePane({ artifacts }: {
     ? `${wiki?.page_count ?? 0} pages`
     : "";
 
+  const mcpDot = mcpSummary.running > 0 ? "bg-good" : mcpSummary.total > 0 ? "bg-accent" : "bg-faint";
+  const mcpWord = mcpSummary.total === 0
+    ? "none"
+    : mcpSummary.running > 0
+      ? "running"
+      : "stopped";
+  const mcpMetric = mcpSummary.total > 0
+    ? `${mcpSummary.running}/${mcpSummary.total}`
+    : "";
+
   const statusDimmed = projectSwitching || cgTransitioning || wikiTransitioning;
 
   // SHOW_ARTIFACTS is currently false; keep processing above intact and touch
@@ -332,12 +371,11 @@ export default function StatePane({ artifacts }: {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Telemetry status strip: CodeGraph + Wiki collapsed to quiet one-line
-          pills. This is proof-of-power chrome -- kept available, kept subdued,
-          so the eye lands on the findings below instead of a wall of stats. */}
-      <div className={`px-2 pt-2 pb-1.5 shrink-0 flex flex-col gap-1 ${panelOpacityClass(statusDimmed, cgStale || wikiStale)}`}>
+      {/* Telemetry + MCP: CodeGraph/Wiki stay compact; MCP expands into the
+          remaining State pane height so the rail is not mostly blank. */}
+      <div className={`px-2 pt-2 pb-1.5 flex-1 min-h-0 flex flex-col gap-1 ${panelOpacityClass(statusDimmed, cgStale || wikiStale)}`}>
         {/* CodeGraph pill */}
-        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden">
+        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0">
           <button
             onClick={toggleCg}
             className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors"
@@ -444,7 +482,7 @@ export default function StatePane({ artifacts }: {
         </div>
 
         {/* Wiki pill */}
-        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden">
+        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0">
           <button
             onClick={toggleWiki}
             className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors"
@@ -593,6 +631,27 @@ export default function StatePane({ artifacts }: {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+        </div>
+
+        {/* MCP: fills remaining State pane height (was a separate right-rail tab). */}
+        <div className={`rounded-md border border-edge/40 bg-panel/40 overflow-hidden flex flex-col ${mcpOpen ? "flex-1 min-h-0" : "shrink-0"}`}>
+          <button
+            onClick={toggleMcp}
+            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors shrink-0"
+            title={mcpOpen ? "Hide MCP servers" : "Show MCP servers"}
+          >
+            {mcpOpen ? <ChevronDown className="w-3 h-3 text-faint shrink-0" /> : <ChevronRight className="w-3 h-3 text-faint shrink-0" />}
+            <span className="uppercase tracking-wider font-semibold text-faint">MCP</span>
+            <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${mcpDot}`} aria-hidden />
+            <span className="text-muted lowercase">{mcpWord}</span>
+            <span className="flex-1" />
+            {mcpMetric && <span className="text-faint tabular-nums truncate">{mcpMetric}</span>}
+          </button>
+          {mcpOpen && (
+            <div className="flex-1 min-h-0 overflow-hidden border-t border-edge/30">
+              <McpPane embedded />
             </div>
           )}
         </div>
