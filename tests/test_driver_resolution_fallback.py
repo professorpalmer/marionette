@@ -66,3 +66,48 @@ def test_provider_spec_driver_resolves_when_disconnected(monkeypatch):
     srv._resolve_available_driver()
     assert srv._driver_provider_available(srv._cfg.driver)
     assert srv._cfg.driver.startswith("anthropic:")
+
+
+def test_curated_enabled_drops_compiled_in_default(monkeypatch):
+    """User enables only a non-default OpenRouter model — active driver must
+    leave qwen3-coder-30b and land on the first enabled spec."""
+    _install_cfg(
+        monkeypatch,
+        enabled=["openrouter:deepseek/deepseek-v4-pro"],
+        driver="qwen3-coder-30b",
+    )
+    monkeypatch.setattr(
+        "harness.model_visibility.get_enabled",
+        lambda: ["openrouter:deepseek/deepseek-v4-pro"],
+    )
+    monkeypatch.setattr(
+        "harness.model_visibility.enabled_pilots",
+        lambda: ["openrouter:deepseek/deepseek-v4-pro"],
+    )
+    srv._resolve_available_driver()
+    assert srv._cfg.driver == "openrouter:deepseek/deepseek-v4-pro"
+
+
+def test_available_pilots_does_not_inject_stale_default(monkeypatch):
+    """Picker list must not force-prepend a driver the user never enabled."""
+    _install_cfg(
+        monkeypatch,
+        enabled=["openrouter:deepseek/deepseek-v4-pro"],
+        driver="qwen3-coder-30b",
+    )
+    state = os.environ["HARNESS_STATE_DIR"]
+    monkeypatch.setattr(
+        "harness.model_visibility._store_path",
+        lambda: os.path.join(state, "models.json"),
+    )
+    monkeypatch.setattr(
+        "harness.model_visibility.enabled_pilots",
+        lambda: ["openrouter:deepseek/deepseek-v4-pro"],
+    )
+    monkeypatch.setattr(
+        "harness.model_visibility.get_enabled",
+        lambda: ["openrouter:deepseek/deepseek-v4-pro"],
+    )
+    pilots = srv._available_pilots()
+    assert "qwen3-coder-30b" not in pilots
+    assert pilots[0] == "openrouter:deepseek/deepseek-v4-pro"

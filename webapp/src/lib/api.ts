@@ -595,8 +595,16 @@ export const api = {
   skillDistill: () => postJSON<{ skill?: any; rules?: any }>("/api/skills/distill", {}),
   wikiIngestPrepared: (pages: any[]) => postJSON<{ ok: boolean; ingested: number }>("/api/wiki/ingest-prepared", { pages }),
   modelCatalog: () => getJSON<ModelCatalogResponse>("/api/models/catalog"),
-  toggleModel: (spec: string, enabled: boolean) => postJSON<{ ok: boolean; enabled: string[] }>("/api/models/toggle", { spec, enabled }),
-  setEnabledModels: (enabled: string[]) => postJSON<{ ok: boolean; enabled: string[] }>("/api/models/set", { enabled }),
+  toggleModel: (spec: string, enabled: boolean) =>
+    postJSON<{ ok: boolean; enabled: string[]; driver?: string; driver_changed?: boolean }>(
+      "/api/models/toggle",
+      { spec, enabled },
+    ),
+  setEnabledModels: (enabled: string[]) =>
+    postJSON<{ ok: boolean; enabled: string[]; driver?: string; driver_changed?: boolean }>(
+      "/api/models/set",
+      { enabled },
+    ),
   rules: () => getJSON<any[]>("/api/rules"),
   ruleAdd: (text: string, scope?: string) =>
     postJSON<{ ok: boolean; slug: string; text: string; scope: string; state: string; source: string }>(

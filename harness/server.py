@@ -1806,6 +1806,9 @@ def _resolve_available_driver():
             return
         from . import model_visibility as _mv
         # Pick the first available pilot (enabled set, key-filtered).
+        # enabled_pilots() is ordered by provider then catalog — first toggled
+        # model on the first keyed provider wins when the compiled-in default
+        # is not in the curated set.
         candidates = _mv.enabled_pilots()
         for spec in candidates:
             if _driver_provider_available(spec):
@@ -1821,6 +1824,31 @@ def _resolve_available_driver():
                 return
     except Exception as e:
         _diag("server.resolve_available_driver", e)
+
+
+def _resync_driver_after_model_curation() -> dict:
+    """After Models toggles, keep the active pilot inside the enabled set.
+
+    Returns {driver, changed} so the Settings UI / picker can refresh. Persists
+    the new driver like /api/pilot/swap so a relaunch does not snap back to
+    the compiled-in qwen default.
+    """
+    prev = _cfg.driver
+    _resolve_available_driver()
+    changed = _cfg.driver != prev
+    if changed:
+        try:
+            _rebuild_pilot_and_session()
+        except Exception as e:
+            # Busy mid-turn: leave the resolved _cfg.driver for the next
+            # rebuild; still report the intended driver so the picker label
+            # matches what will run after the turn.
+            _diag("server.model_curation_driver_rebuild", e)
+        try:
+            _save_workspace_driver(_cfg.repo, _cfg.driver)
+        except Exception as e:
+            _diag("server.model_curation_driver_persist", e)
+    return {"driver": _cfg.driver, "changed": changed}
 
 
 _resolve_available_driver()
@@ -3568,11 +3596,23 @@ class Handler(BaseHTTPRequestHandler):
             spec = body.get("spec", "")
             on = _parse_bool(body.get("enabled", True))
             enabled = _mv.toggle(spec, on)
-            return self._send(200, json.dumps({"ok": True, "enabled": enabled}))
+            sync = _resync_driver_after_model_curation()
+            return self._send(200, json.dumps({
+                "ok": True,
+                "enabled": enabled,
+                "driver": sync.get("driver") or _cfg.driver,
+                "driver_changed": bool(sync.get("changed")),
+            }))
         if path == "/api/models/set":
             from . import model_visibility as _mv
             enabled = _mv.set_enabled(body.get("enabled") or [])
-            return self._send(200, json.dumps({"ok": True, "enabled": enabled}))
+            sync = _resync_driver_after_model_curation()
+            return self._send(200, json.dumps({
+                "ok": True,
+                "enabled": enabled,
+                "driver": sync.get("driver") or _cfg.driver,
+                "driver_changed": bool(sync.get("changed")),
+            }))
         if path == "/api/skills/approve":
             sk = _skills.set_state(body.get("slug", ""), "active")
             return self._send(200, json.dumps({"ok": bool(sk)}))
@@ -6727,14 +6767,28 @@ def _available_pilots():
     FULL live catalog (incl. newly released models like gpt-5.5) as toggles; the
     picker shows only what is toggled on there, so the two always agree.
 
-    The current driver is forced first so the picker shows it selected. If the
-    user has not curated anything yet, enabled_pilots() falls back to the full
-    available set."""
+    The current driver is forced first when it is still in the enabled set so
+    the picker shows it selected. A stale compiled-in default (e.g. qwen) that
+    the user never toggled on is NOT injected — that made the composer look
+    like it was on a model that could not run.
+    """
     from . import model_visibility as _mv
     cur = _cfg.driver
     pilots = _mv.enabled_pilots()
-    # ensure the current driver appears first (it may already be in the list)
-    ordered = [cur] + [p for p in pilots if p != cur]
+    curated = _mv.get_enabled()
+    cur_allowed = False
+    if cur:
+        if cur in pilots:
+            cur_allowed = True
+        elif curated and _driver_in_enabled_set(cur, curated):
+            cur_allowed = True
+        elif not curated:
+            # No curation yet: full available set — keep current first if present.
+            cur_allowed = cur in pilots or _driver_in_enabled_set(cur, pilots)
+    if cur_allowed:
+        ordered = [cur] + [p for p in pilots if p != cur]
+    else:
+        ordered = list(pilots)
     # De-dup while preserving order.
     seen = set()
     out = []
@@ -6742,7 +6796,7 @@ def _available_pilots():
         if s and s not in seen:
             seen.add(s)
             out.append(s)
-    return out or [cur]
+    return out or ([cur] if cur else [])
 
 
 def _get_settings_dict():
