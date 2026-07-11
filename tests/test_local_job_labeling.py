@@ -18,8 +18,14 @@ def _session(driver: str = "stub-oracle-v2") -> ConversationalSession:
     return ConversationalSession(cfg)
 
 
-def test_register_local_job_agentic_never_uses_pilot_slug():
+def test_register_local_job_agentic_never_uses_pilot_slug(monkeypatch):
     # Pilot slug on config must not leak into agentic local-job adapter/model.
+    # Stub the router preview so hermetic runs without a models registry still
+    # exercise the empty-model path.
+    monkeypatch.setattr(
+        "harness.local_job_routing.preview_agentic_route",
+        lambda *a, **k: {},
+    )
     s = _session(driver="stub-oracle-v2")
     s.config.driver = "openrouter/anthropic/claude-sonnet-4"
     s._register_local_job(
@@ -49,7 +55,11 @@ def test_register_local_job_native_uses_engine_and_driver():
     assert job["tasks"][0]["adapter"] == "native"
 
 
-def test_finish_local_job_overwrites_model_from_worker_result():
+def test_finish_local_job_overwrites_model_from_worker_result(monkeypatch):
+    monkeypatch.setattr(
+        "harness.local_job_routing.preview_agentic_route",
+        lambda *a, **k: {},
+    )
     s = _session(driver="stub-oracle-v2")
     s.config.driver = "openrouter/anthropic/claude-sonnet-4"
     s._register_local_job(

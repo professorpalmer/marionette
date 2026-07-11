@@ -214,7 +214,14 @@ def filter_store_jobs(
 
 
 def filter_local_jobs(local_jobs: list[dict], *, active_session_id: str, repo_root: str) -> list[dict]:
-    """Apply the same visibility rule to in-process ``local-*`` worker rows."""
+    """Apply the same visibility rule to in-process ``local-*`` worker rows.
+
+    Running locals whose cwd sits under the open workspace stay visible even
+    when the session stamp drifted (interrupt / mid-flight session switch) --
+    otherwise the chat can say "swarm running" while the tracker looks empty.
+    Terminal jobs still require an exact session match (or legacy cwd match
+    when unstamped).
+    """
     visible: list[dict] = []
     for job in local_jobs or []:
         label = job.get("label")
@@ -222,6 +229,14 @@ def filter_local_jobs(local_jobs: list[dict], *, active_session_id: str, repo_ro
         cwd = (job.get("cwd") or "").strip()
         if session_id:
             if session_id == (active_session_id or ""):
+                visible.append(job)
+                continue
+            if (
+                job_is_running(job.get("status"))
+                and repo_root
+                and cwd
+                and cwd_under_repo(cwd, repo_root)
+            ):
                 visible.append(job)
             continue
         if not cwd:

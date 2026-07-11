@@ -88,6 +88,24 @@ def managed_worktree(repo: str, base: str = "HEAD") -> Iterator[str]:
             delete_branch(repo, branch_name)
 
 
+@contextlib.contextmanager
+def managed_worktree_for_goal(
+    repo: str, goal: str, base: str = "HEAD",
+) -> Iterator[str]:
+    """Like :func:`managed_worktree`, then seed live goal paths into the worktree.
+
+    HEAD checkouts omit untracked / dirty files the pilot just wrote. Seeding
+    copies any goal-referenced live files into the worktree so agentic/native
+    workers can see them (empty-diff / ``C:\\dev\\null`` class of failures).
+    """
+    from harness.worktree_seed import seed_worktree_from_goal
+
+    with managed_worktree(repo, base=base) as wt_path:
+        with contextlib.suppress(Exception):
+            seed_worktree_from_goal(repo, wt_path, goal)
+        yield wt_path
+
+
 def finalize_worktree_patch(wt_path: str) -> tuple[str, list[str]]:
     """Stage everything in `wt_path`, drop build artifacts, return (patch, files).
 
@@ -285,7 +303,7 @@ def run_agentic_edit(
 
     try:
         repo_root = cwd or config.repo
-        with managed_worktree(repo_root) as wt_path:
+        with managed_worktree_for_goal(repo_root, goal) as wt_path:
             payload: dict = stamp_task_payload({
                 "mode": "implement",
                 "cwd": wt_path,

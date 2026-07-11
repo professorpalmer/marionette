@@ -434,6 +434,13 @@ class ProviderWorker:
             if not _is_confined(wt_path, managed_dir):
                 raise ValueError("Confinement violation: worktree path lies outside the managed directory")
 
+            # Seed live goal paths (untracked / dirty) so the worker sees them.
+            try:
+                from harness.worktree_seed import seed_worktree_from_goal
+                seed_worktree_from_goal(self.repo, wt_path, self.goal)
+            except Exception:
+                pass
+
             check_results: list = []
             from harness.declarative_checks import declarative_checks_enabled
 

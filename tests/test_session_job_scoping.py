@@ -170,12 +170,22 @@ def test_running_orphan_visible_without_session_or_cwd():
 
 
 def test_running_local_job_always_visible():
+    # Wrong session AND cwd outside the open repo: stay hidden.
     rows = [
         {"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/elsewhere"},
         {"id": "local-2", "status": "complete", "session_id": "sess-a", "cwd": "/elsewhere"},
     ]
     visible = filter_local_jobs(rows, active_session_id="sess-b", repo_root="/work/b")
     assert [j["id"] for j in visible] == []
+
+
+def test_running_local_job_visible_on_session_drift_when_cwd_matches():
+    rows = [
+        {"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/work/b/sub"},
+        {"id": "local-2", "status": "completed", "session_id": "sess-a", "cwd": "/work/b/sub"},
+    ]
+    visible = filter_local_jobs(rows, active_session_id="sess-b", repo_root="/work/b")
+    assert [j["id"] for j in visible] == ["local-1"]
 
 
 def test_running_local_job_visible_when_session_matches():

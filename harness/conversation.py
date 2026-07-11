@@ -4532,6 +4532,25 @@ class ConversationalSession(ToolDispatchMixin):
                         self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
                         continue
 
+                    # Hard fan-out: refuse one-worker rewrites of oversized files.
+                    try:
+                        from harness.implement_guards import check_oversized_single_file_rewrite
+                        fanout_msg = check_oversized_single_file_rewrite(act.goal, effective_repo)
+                    except Exception:
+                        fanout_msg = None
+                    if fanout_msg:
+                        yield ConvEvent("action_start", {
+                            "id": aid, "kind": "run_implement", "goal": act.goal,
+                            "cwd": effective_repo,
+                        })
+                        yield ConvEvent("action_result", {"id": aid, "error": fanout_msg})
+                        self._append_action_result(
+                            act, aid,
+                            f"(run_implement {aid} refused by fan-out guard: {fanout_msg})",
+                            is_native,
+                        )
+                        continue
+
                     # Claim BEFORE external vs local branch so a twin run_implement
                     # in the same turn (e.g. cursor + agentic) cannot both dispatch.
                     # Previously only the local path claimed, which produced twin
@@ -4806,6 +4825,37 @@ class ConversationalSession(ToolDispatchMixin):
                     MAX_PARALLEL_CAP = 8
                     if len(goals) > MAX_PARALLEL_CAP:
                         goals = goals[:MAX_PARALLEL_CAP]
+
+                    # Hard fan-out per goal: drop whole-file oversized rewrites.
+                    try:
+                        from harness.implement_guards import check_oversized_single_file_rewrite
+                        kept_goals = []
+                        refused_goals = []
+                        for g in goals:
+                            msg = check_oversized_single_file_rewrite(g, effective_repo)
+                            if msg:
+                                refused_goals.append((g, msg))
+                            else:
+                                kept_goals.append(g)
+                        if refused_goals:
+                            for g, msg in refused_goals:
+                                yield ConvEvent("notice", {
+                                    "message": f"Fan-out guard refused goal: {msg}",
+                                })
+                            goals = kept_goals
+                        if not goals:
+                            err = (
+                                "run_parallel: every goal was refused by the fan-out "
+                                "guard (oversized single-file rewrite). Split each "
+                                "file into sectioned run_parallel goals."
+                            )
+                            yield ConvEvent("action_result", {"id": aid, "error": err})
+                            self._append_action_result(
+                                act, aid, f"(run_parallel {aid} failed: {err})", is_native,
+                            )
+                            continue
+                    except Exception:
+                        pass
 
                     external_adapters = {"cursor", "claude-code", "codex", "openai", "hermes"}
                     requested_adapter, adapter_remap_note = self._resolve_requested_implement_adapter(
@@ -6072,6 +6122,10 @@ class ConversationalSession(ToolDispatchMixin):
         When known, ``model`` is the routed/driver model id; the panel shows
         ``{engine}/{model}``. Task role is ``{role} ({engine})`` -- never
         ``provider worker``.
+
+        For agentic jobs with no model yet, dry-run the router and stamp a
+        ROUTING artifact + estimate so the tracker shows model/cost mid-flight
+        instead of a bare ``agentic`` badge.
         """
         import time
         from harness.job_scoping import job_label_for_session
@@ -6087,6 +6141,19 @@ class ConversationalSession(ToolDispatchMixin):
         model_id = (model or "").strip()
         if not model_id and engine_label == "native":
             model_id = (self.config.driver or "").strip()
+        routing_arts: list = []
+        est_cost = 0.0
+        if engine_label == "agentic" and not model_id:
+            try:
+                from harness.local_job_routing import preview_agentic_route
+                preview = preview_agentic_route(goal, role=role or "implement")
+            except Exception:
+                preview = {}
+            model_id = (preview.get("model_id") or "").strip()
+            est_cost = float(preview.get("est_cost_usd") or 0.0)
+            art = preview.get("artifact")
+            if isinstance(art, dict):
+                routing_arts.append(art)
         display_model = f"{engine_label}/{model_id}" if model_id else engine_label
         task_role = f"{role} ({engine_label})" if role else f"implement ({engine_label})"
         with self._local_jobs_lock:
@@ -6106,8 +6173,8 @@ class ConversationalSession(ToolDispatchMixin):
                 "updated_at": now,
                 "task_count": 1,
                 "tokens": 0,
-                "est_cost_usd": 0.0,
-                "artifacts": [],
+                "est_cost_usd": round(est_cost, 6) if est_cost else 0.0,
+                "artifacts": list(routing_arts),
                 "tasks": [{
                     "id": f"{job_id}-w0",
                     "role": task_role,
@@ -6192,7 +6259,22 @@ class ConversationalSession(ToolDispatchMixin):
                     "Patch applied" if ok else "Worker failed")
             if files:
                 headline = f"{headline} ({len(files)} file{'s' if len(files) != 1 else ''})"
-            job["artifacts"] = [{
+            # Keep any pre-stamped ROUTING card (model/cost preview) and update
+            # its estimate to the real spend so expand still shows the model.
+            keep_routing = []
+            for art in (job.get("artifacts") or []):
+                if not isinstance(art, dict):
+                    continue
+                if (art.get("type") or "").strip().upper() != "ROUTING":
+                    continue
+                updated = dict(art)
+                if model_id:
+                    updated["model"] = model_id
+                    updated["headline"] = f"Routed to {model_id}"
+                if real_cost:
+                    updated["est_cost_usd"] = round(real_cost, 6)
+                keep_routing.append(updated)
+            job["artifacts"] = keep_routing + [{
                 "type": "patch" if (ok and not cancelled) else "error",
                 "headline": headline[:240],
             }]

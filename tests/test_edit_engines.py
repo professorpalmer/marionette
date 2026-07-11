@@ -76,6 +76,7 @@ def _install_agentic_mocks(monkeypatch, *, orchestrator_result=None, capture_pay
     """Patch Puppetmaster + worktree so run_agentic_edit stays hermetic."""
     monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
     monkeypatch.setattr("harness.edit_engines.managed_worktree", _fake_managed_worktree)
+    monkeypatch.setattr("harness.edit_engines.managed_worktree_for_goal", _fake_managed_worktree)
 
     storage: list[dict] = capture_payload if capture_payload is not None else []
 

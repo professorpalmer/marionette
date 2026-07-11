@@ -589,10 +589,14 @@ export default function SwarmPane() {
     const tasks = j.tasks || [];
     // Prefer the deduped final routing card (fallback/escalation wins) over the
     // job.model field so a stale initial router pick never badges the header.
+    // Local agentic jobs stamp model as "agentic/<id>"; strip the engine prefix
+    // so the badge shows the real model next to the separate adapter chip.
     const routerModel = routingArts.find((a: Artifact) => a.model)?.model || j.model || "";
     const workerCount = tasks.length;
     const adapter = j.adapter || tasks[0]?.adapter || "";
-    const displayModel = routerModel || adapter;
+    const displayModel = (routerModel || "")
+      .replace(/^(?:agentic|native)\//i, "")
+      .trim() || adapter;
     const terminal = isTerminal(j);
 
     const toggle = () => {
@@ -699,7 +703,7 @@ export default function SwarmPane() {
                   {workerCount} worker{workerCount > 1 ? "s" : ""}
                 </span>
               )}
-              {adapter && (
+              {adapter && adapter.toLowerCase() !== displayModel.toLowerCase() && (
                 <span className="text-[9px] text-faint bg-panel2/40 px-1.5 py-0.5 rounded lowercase">{adapter}</span>
               )}
               {j.source === "cli" && (
