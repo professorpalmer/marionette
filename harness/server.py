@@ -3317,6 +3317,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/sessions/archive", "/api/sessions/rename",
                       "/api/sessions/relocate", "/api/sessions/move",
                       "/api/session/interrupt", "/api/session/compact", "/api/session/steer",
+                      "/api/session/rewind", "/api/session/rewind/restore",
                       "/api/session/queue", "/api/session/queue/reorder",
                       "/api/session/persist", "/api/restart",
                       "/api/chat/stash",
@@ -4265,6 +4266,55 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/session/interrupt":
             _pilot.interrupt()
             return self._send(200, json.dumps({"ok": True}))
+        if path == "/api/session/rewind":
+            # Hermes-style message edit: truncate transcript at a user turn,
+            # stash the tail for Revert, return composer prefill. Does not
+            # auto-send. Prefer user_ordinal (stable across UI-only items).
+            if not _pilot:
+                return self._send(404, json.dumps({"ok": False, "error": "no active session"}))
+            result = None
+            if body.get("user_ordinal") is not None:
+                try:
+                    user_ordinal = int(body.get("user_ordinal"))
+                except (TypeError, ValueError):
+                    return self._send(400, json.dumps({"ok": False, "error": "user_ordinal must be an int"}))
+                result = _pilot.rewind_to_user_ordinal(user_ordinal)
+            elif body.get("display_index") is not None:
+                try:
+                    display_index = int(body.get("display_index"))
+                except (TypeError, ValueError):
+                    return self._send(400, json.dumps({"ok": False, "error": "display_index must be an int"}))
+                result = _pilot.rewind_to_display_index(display_index)
+            else:
+                return self._send(400, json.dumps({"ok": False, "error": "user_ordinal or display_index required"}))
+            if not result.get("ok"):
+                code = 409 if result.get("code") == "busy" else 400
+                return self._send(code, json.dumps(result))
+            try:
+                _save_active_transcript()
+            except Exception as e:
+                _diag("server.rewind_persist", e)
+            return self._send(200, json.dumps(result))
+        if path == "/api/session/rewind/restore":
+            if not _pilot:
+                return self._send(404, json.dumps({"ok": False, "error": "no active session"}))
+            result = _pilot.restore_rewind_stash()
+            if not result.get("ok"):
+                code = 409 if result.get("code") == "busy" else 400
+                return self._send(code, json.dumps(result))
+            try:
+                _save_active_transcript()
+            except Exception as e:
+                _diag("server.rewind_restore_persist", e)
+            # Return the restored transcript so the UI can repaint without a
+            # separate GET (avoids a flash of the truncated view).
+            try:
+                data = _pilot.export_transcript_data()
+            except Exception:
+                data = {}
+            result["display"] = data.get("display") or []
+            result["history"] = data.get("history") or []
+            return self._send(200, json.dumps(result))
         if path == "/api/session/steer":
             text = body.get("text", "").strip()
             images = body.get("images") or []

@@ -420,6 +420,8 @@ class ConversationalSession(ToolDispatchMixin):
         self._ctx_token_cache_len: int = -1
         # parallel clean transcript for rendering in UI
         self._display_transcript: list[dict] = []
+        # One-slot stash for Hermes-style message-edit Revert (set by rewind).
+        self._rewind_stash = None  # type: ignore[assignment]
         # tracking background swarm job IDs for the session
         self._session_job_ids: list[str] = []
         # optional durable-knowledge integration (portable-llm-wiki)
@@ -936,6 +938,135 @@ class ConversationalSession(ToolDispatchMixin):
         # Heal a previously-corrupted transcript (dangling or non-adjacent
         # tool_use) on load so we never send an invalid history to the model.
         self._sanitize_tool_pairs()
+
+    def is_turn_busy(self) -> bool:
+        """True while a pilot turn holds the single-writer busy lock."""
+        try:
+            return bool(self._busy.locked())
+        except Exception:
+            return False
+
+    def rewind_to_user_ordinal(self, user_ordinal: int) -> dict:
+        """Hermes-style undo for message edit: truncate at the Nth user turn (0-based).
+
+        Soft-stashes the discarded tail on ``_rewind_stash`` so the UI can offer
+        Revert. Prefill is that user message's text (composer edit/resubmit).
+        Does not auto-send.
+        """
+        if self.is_turn_busy():
+            return {
+                "ok": False,
+                "error": "session busy — stop the current turn before editing a prior message",
+                "code": "busy",
+            }
+        if user_ordinal < 0:
+            return {"ok": False, "error": "user_ordinal out of range"}
+
+        display = list(self._display_transcript or [])
+        display_index = None
+        seen = 0
+        prefill = ""
+        for i, row in enumerate(display):
+            if not isinstance(row, dict):
+                continue
+            rtype = row.get("type") or "message"
+            if rtype not in ("message", ""):
+                continue
+            if (row.get("role") or "") != "user":
+                continue
+            if seen == user_ordinal:
+                display_index = i
+                prefill = row.get("text") or row.get("content") or ""
+                if not isinstance(prefill, str):
+                    prefill = str(prefill or "")
+                break
+            seen += 1
+
+        if display_index is None:
+            return {"ok": False, "error": "user_ordinal out of range"}
+
+        cut_hist = None
+        seen_h = 0
+        for hi, m in enumerate(self._history):
+            if hi == 0:
+                continue
+            if (m.get("role") or "") == "user":
+                if seen_h == user_ordinal:
+                    cut_hist = hi
+                    break
+                seen_h += 1
+
+        self._rewind_stash = {
+            "history": self.export_history(),
+            "display": list(display),
+            "job_ids": list(self._session_job_ids or []),
+            "display_index": display_index,
+            "user_ordinal": user_ordinal,
+            "prefill": prefill,
+        }
+
+        self._display_transcript = display[:display_index]
+        if cut_hist is not None:
+            system_prompt = self._history[0] if self._history else {"role": "system", "content": ""}
+            self._history = [system_prompt] + list(self._history[1:cut_hist])
+        self._sanitize_tool_pairs()
+
+        removed = len(display) - display_index
+        notice = (
+            f"Editing from that message ({removed} turn item(s) set aside). "
+            "Resubmit the edited text, or Revert to restore."
+        )
+        return {
+            "ok": True,
+            "prefill": prefill,
+            "notice": notice,
+            "removed_count": removed,
+            "kept_display": len(self._display_transcript),
+            "display_index": display_index,
+        }
+
+    def rewind_to_display_index(self, display_index: int) -> dict:
+        """Compatibility wrapper: map a display row index to user_ordinal then rewind."""
+        display = list(self._display_transcript or [])
+        if display_index < 0 or display_index >= len(display):
+            return {"ok": False, "error": "display_index out of range"}
+        ordinal = 0
+        for i, row in enumerate(display):
+            if i > display_index:
+                break
+            if not isinstance(row, dict):
+                continue
+            rtype = row.get("type") or "message"
+            if rtype in ("message", "") and (row.get("role") or "") == "user":
+                if i == display_index:
+                    return self.rewind_to_user_ordinal(ordinal)
+                ordinal += 1
+        return {"ok": False, "error": "can only rewind from a user message"}
+
+    def restore_rewind_stash(self) -> dict:
+        """Restore the transcript tail saved by the last successful rewind."""
+        if self.is_turn_busy():
+            return {
+                "ok": False,
+                "error": "session busy — stop the current turn before reverting",
+                "code": "busy",
+            }
+        stash = getattr(self, "_rewind_stash", None)
+        if not isinstance(stash, dict) or not stash.get("display"):
+            return {"ok": False, "error": "nothing to revert"}
+        self.load_history({
+            "history": stash.get("history") or [],
+            "display": stash.get("display") or [],
+            "job_ids": stash.get("job_ids") or [],
+        })
+        self._rewind_stash = None
+        return {
+            "ok": True,
+            "display_count": len(self._display_transcript),
+        }
+
+    def clear_rewind_stash(self) -> None:
+        self._rewind_stash = None
 
     def _render_history(self) -> str:
         """Flatten transcript into a single prompt for completion-style drivers."""

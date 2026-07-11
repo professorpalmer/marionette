@@ -373,6 +373,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const [selectedSlashIndex, setSelectedSlashIndex] = useState<number>(0);
 
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editNotice, setEditNotice] = useState<string | null>(null);
+  const [canRevertEdit, setCanRevertEdit] = useState(false);
+  const [editBusy, setEditBusy] = useState(false);
 
   const [customCommands, setCustomCommands] = useState<{ name: string; description: string; scope: string }[]>([]);
 
@@ -713,6 +716,15 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     const prevId = cachedSessionIdRef.current;
     if (prevId && prevId !== activeSessionId) {
       transcriptCacheBySessionId.set(prevId, { items: [...itemsRef.current] });
+    }
+
+    // Rewind-edit chrome is session-local; never carry Revert/prefill across ids.
+    setEditingIndex(null);
+    setCanRevertEdit(false);
+    setEditNotice(null);
+    setEditBusy(false);
+    if (prevId && prevId !== activeSessionId) {
+      setInput("");
     }
 
     // Detach SSE only -- closing EventSource is OK; interrupt would kill the turn.
@@ -1232,13 +1244,73 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   };
 
   const handleEditMessage = (idx: number, originalText: string) => {
-    setEditingIndex(idx);
-    setInput(originalText);
-    setTimeout(() => {
-      if (taRef.current) {
-        taRef.current.focus();
-      }
-    }, 10);
+    const isBusy = status === "thinking" || status === "executing" || status === "streaming";
+    if (isBusy || editBusy) {
+      setEditNotice("Stop the current turn before editing a prior message.");
+      return;
+    }
+    // Count user messages before this items-index so UI-only rows (thinking,
+    // steer, etc.) do not skew the backend display ordinal.
+    const userOrdinal = items
+      .slice(0, idx)
+      .filter((it) => it.kind === "msg" && it.msg.role === "user").length;
+
+    setEditBusy(true);
+    api.rewindSession(userOrdinal)
+      .then((res) => {
+        if (!res?.ok) {
+          setEditNotice(res?.error || "Could not rewind transcript for edit.");
+          return;
+        }
+        // Truncate the visible transcript to the same spot; message reappears
+        // when the user resubmits. Revert restores the stashed tail.
+        setItems((prev) => prev.slice(0, idx));
+        setEditingIndex(idx);
+        setInput(res.prefill || originalText);
+        setCanRevertEdit(true);
+        setEditNotice(res.notice || "Editing — resubmit, or Revert to restore.");
+        setTimeout(() => taRef.current?.focus(), 10);
+      })
+      .catch((err) => {
+        setEditNotice((err as Error)?.message || "Rewind failed.");
+      })
+      .finally(() => setEditBusy(false));
+  };
+
+  const handleRevertEdit = () => {
+    if (editBusy) return;
+    setEditBusy(true);
+    api.restoreRewind()
+      .then((res) => {
+        if (!res?.ok) {
+          setEditNotice(res?.error || "Nothing to revert.");
+          return;
+        }
+        const restored = transcriptResponseToItems({
+          display: res.display,
+          history: res.history,
+        });
+        setItems(restored);
+        writeTranscriptCache(activeSessionId || "", restored);
+        setEditingIndex(null);
+        setInput("");
+        setCanRevertEdit(false);
+        setEditNotice(null);
+      })
+      .catch((err) => {
+        setEditNotice((err as Error)?.message || "Revert failed.");
+      })
+      .finally(() => setEditBusy(false));
+  };
+
+  const handleCancelEdit = () => {
+    if (canRevertEdit) {
+      handleRevertEdit();
+      return;
+    }
+    setEditingIndex(null);
+    setInput("");
+    setEditNotice(null);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1247,6 +1319,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setMentionSearch(null);
         setMentionIndex(-1);
         setSlashSearch(null);
+        e.preventDefault();
+        return;
+      }
+      if (editingIndex !== null || canRevertEdit) {
+        handleCancelEdit();
         e.preventDefault();
         return;
       }
@@ -2013,10 +2090,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       }
     }
 
-    // ERGONOMICS CHOICE: Loaded edit back into composer. On send, we send as a new turn
-    // (appending as a fresh turn) to prevent corrupting the backend session history
-    // while providing a seamless correction/resubmission flow.
+    // After a rewind-edit, clear the editing chrome but keep Revert available
+    // so the user can restore the prior branch (Hermes/Cursor pattern).
     setEditingIndex(null);
+    setEditNotice(canRevertEdit ? "Edited — Revert restores the previous turns." : null);
 
     const isBusy = status === "thinking" || status === "executing" || status === "streaming";
 
@@ -2115,7 +2192,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           <span className="text-faint/70 text-[10px] font-normal">|</span>
           <span className="text-muted/80 text-[10px] font-medium tracking-wide uppercase">The Puppetmaster Harness</span>
         </span>
-        <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}><StatusPill status={status} /></div>
+        <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+          <StatusPill status={transcriptStale ? "switching…" : status} />
+        </div>
       </header>
 
       {openTabs.length > 0 && (
@@ -2487,22 +2566,49 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               isDragOver ? "border-accent ring-1 ring-accent" : "border-edge"
             }`}
           >
-            {/* Editing indicator */}
-            {editingIndex !== null && (
-              <div className="flex items-center justify-between px-3.5 py-1.5 bg-panel border-b border-edge text-[11.5px] text-accent select-none rounded-t-2xl">
-                <span className="flex items-center gap-1.5">
-                  <Pencil size={11} />
-                  <span>Editing message #{editingIndex + 1}</span>
+            {/* Editing / Revert chrome (Hermes-style rewind) */}
+            {(editingIndex !== null || canRevertEdit || editNotice) && (
+              <div className="flex items-center justify-between gap-2 px-3.5 py-1.5 bg-panel border-b border-edge text-[11.5px] text-accent select-none rounded-t-2xl">
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <Pencil size={11} className="shrink-0" />
+                  <span className="truncate">
+                    {editingIndex !== null
+                      ? (editNotice || `Editing message #${editingIndex + 1}`)
+                      : (editNotice || "Prior turns set aside")}
+                  </span>
                 </span>
-                <button
-                  onClick={() => {
-                    setEditingIndex(null);
-                    setInput("");
-                  }}
-                  className="text-faint hover:text-muted transition font-medium text-[10px] px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2"
-                >
-                  Cancel
-                </button>
+                <span className="flex items-center gap-1 shrink-0">
+                  {canRevertEdit && (
+                    <button
+                      type="button"
+                      disabled={editBusy}
+                      onClick={() => handleRevertEdit()}
+                      className="text-accent hover:text-txt transition font-semibold text-[10px] px-1.5 py-0.5 rounded border border-accent/40 bg-accent/10 hover:bg-accent/20 disabled:opacity-50"
+                      title="Restore the conversation from before this edit"
+                    >
+                      Revert?
+                    </button>
+                  )}
+                  {editingIndex !== null && (
+                    <button
+                      type="button"
+                      disabled={editBusy}
+                      onClick={() => handleCancelEdit()}
+                      className="text-faint hover:text-muted transition font-medium text-[10px] px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  {editingIndex === null && canRevertEdit && (
+                    <button
+                      type="button"
+                      onClick={() => { setCanRevertEdit(false); setEditNotice(null); }}
+                      className="text-faint hover:text-muted transition font-medium text-[10px] px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2"
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                </span>
               </div>
             )}
 
@@ -2959,11 +3065,11 @@ function WorkspaceChip() {
 function StatusPill({ status }: { status: string }) {
   const m: Record<string, string> = {
     idle: "text-faint", thinking: "text-accent", executing: "text-warn",
-    done: "text-good", error: "text-risk",
+    done: "text-good", error: "text-risk", "switching…": "text-accent",
   };
   const dot: Record<string, string> = {
     idle: "bg-faint", thinking: "bg-accent animate-pulse", executing: "bg-warn animate-pulse",
-    done: "bg-good", error: "bg-risk",
+    done: "bg-good", error: "bg-risk", "switching…": "bg-accent animate-pulse",
   };
   return <span className={`text-[10.5px] flex items-center gap-1.5 ${m[status] || m.idle}`}>
     <span className={`w-1.5 h-1.5 rounded-full ${dot[status] || dot.idle}`} />{status}</span>;
