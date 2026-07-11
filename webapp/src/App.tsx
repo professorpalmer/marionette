@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type Config } from "./lib/api";
 import LeftRail from "./components/LeftRail";
 import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
+import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner from "./components/UpdateBanner";
 import ProviderKeyBanner from "./components/ProviderKeyBanner";
@@ -18,6 +19,17 @@ const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n
 const num = (k: string, d: number) => { const v = Number(localStorage.getItem(k)); return Number.isFinite(v) && v > 0 ? v : d; };
 const bool = (k: string, d: boolean) => { const v = localStorage.getItem(k); return v === null ? d : v === "1"; };
 
+function lastRightTab(): string {
+  try {
+    const raw = localStorage.getItem("pmharness.splitState");
+    if (!raw) return "state";
+    const parsed = JSON.parse(raw);
+    const t = parsed?.primaryTab;
+    if (typeof t === "string" && t && t !== "settings" && t !== "mcp") return t;
+  } catch { /* ignore */ }
+  return "state";
+}
+
 export default function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -31,7 +43,14 @@ export default function App() {
   const [leftW, setLeftW] = useState(() => num(LS.left, 248));
   const [rightW, setRightW] = useState(() => Math.max(340, num(LS.right, 340)));
   const [leftOpen, setLeftOpen] = useState(() => bool(LS.leftOpen, true));
-  const [rightOpen, setRightOpen] = useState(() => bool(LS.rightOpen, true));
+  // Default closed: chat-first layout; RightDock surfaces Swarm/Changes/Browser/…
+  const [rightOpen, setRightOpen] = useState(() => bool(LS.rightOpen, false));
+  const pendingRightTab = useRef<string | null>(null);
+
+  const openRightTo = (tab: string) => {
+    pendingRightTab.current = tab || "state";
+    setRightOpen(true);
+  };
 
   const [showWizard, setShowWizard] = useState(false);
 
@@ -139,6 +158,28 @@ export default function App() {
   useEffect(() => { localStorage.setItem(LS.leftOpen, leftOpen ? "1" : "0"); }, [leftOpen]);
   useEffect(() => { localStorage.setItem(LS.rightOpen, rightOpen ? "1" : "0"); }, [rightOpen]);
 
+  // After the right pane mounts, apply any pending tab focus from the dock / hotkeys.
+  useEffect(() => {
+    if (!rightOpen || !pendingRightTab.current) return;
+    const tab = pendingRightTab.current;
+    pendingRightTab.current = null;
+    window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: tab }));
+  }, [rightOpen]);
+
+  // If something asks for a tab while the pane is closed, open it first then focus.
+  useEffect(() => {
+    const onFocusTab = (e: Event) => {
+      const tab = (e as CustomEvent).detail;
+      if (!tab || typeof tab !== "string") return;
+      setRightOpen((open) => {
+        if (!open) pendingRightTab.current = tab;
+        return true;
+      });
+    };
+    window.addEventListener("harness-focus-tab", onFocusTab as EventListener);
+    return () => window.removeEventListener("harness-focus-tab", onFocusTab as EventListener);
+  }, []);
+
   // hotkeys (Cursor-style, adapted for the harness). Most map to panels/sessions/nav;
   // IDE-only ones (inline edit, autocomplete) do not apply to an orchestration harness.
   useEffect(() => {
@@ -147,10 +188,10 @@ export default function App() {
       if (!mod) return;
       const k = e.key.toLowerCase();
       // Cmd+` -> focus the Terminal tab (classic terminal toggle)
-      if (e.key === "`") { e.preventDefault(); setRightOpen(true); window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "terminal" })); return; }
+      if (e.key === "`") { e.preventDefault(); openRightTo("terminal"); return; }
       if (e.shiftKey) {
         // Cmd+Shift+J -> Settings (Cursor: Cursor settings)
-        if (k === "j") { e.preventDefault(); setRightOpen(true); window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" })); }
+        if (k === "j") { e.preventDefault(); openRightTo("settings"); }
         return;
       }
       switch (k) {
@@ -175,10 +216,7 @@ export default function App() {
           is up (it already covers key setup) to avoid stacking two prompts. */}
       {config?.agentic_ready === false && !showWizard && (
         <ProviderKeyBanner
-          onAddKey={() => {
-            setRightOpen(true);
-            window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
-          }}
+          onAddKey={() => openRightTo("settings")}
         />
       )}
       <div className="flex-1 min-h-0 flex">
@@ -202,7 +240,7 @@ export default function App() {
             </ErrorBoundary>
           </div>
         </div>
-        {rightOpen && (
+        {rightOpen ? (
           <>
             <Resizer side="right" onResize={(dx) => setRightW((w) => clamp(w + dx, 340, 640))} />
             <div style={{ width: rightW }} className="shrink-0 h-full overflow-hidden">
@@ -211,6 +249,11 @@ export default function App() {
               </ErrorBoundary>
             </div>
           </>
+        ) : (
+          <RightDock
+            onOpenTab={openRightTo}
+            onExpand={() => openRightTo(lastRightTab())}
+          />
         )}
       </div>
       <StatusBar config={config}
