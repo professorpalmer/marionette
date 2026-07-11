@@ -14,6 +14,7 @@ export default function StatePane({ artifacts }: {
 }) {
   // CodeGraph status state
   const [reindexing, setReindexing] = useState(false);
+  const [applyingExcludes, setApplyingExcludes] = useState(false);
   // Seed from the last announced root: a pane instance that mounts AFTER the
   // harness-project-selected event (tab switch, second window) would otherwise
   // stay rootless forever and render "CODEGRAPH none / WIKI off" while its
@@ -107,6 +108,30 @@ export default function StatePane({ artifacts }: {
     } finally {
       setReindexing(false);
     }
+  };
+
+  const handleApplyExcludes = async () => {
+    setApplyingExcludes(true);
+    try {
+      const excludes = cg?.suggested_action?.excludes
+        || cg?.preflight?.suggested_excludes
+        || [];
+      await api.applyCodegraphExcludes(excludes);
+      await revalidateCg();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setApplyingExcludes(false);
+    }
+  };
+
+  const handleOpenSuggestedRoot = () => {
+    const path = cg?.suggested_action?.path;
+    if (!path) return;
+    void api.openWorkspace(path).then(() => {
+      window.dispatchEvent(new Event("harness-config-changed"));
+      void revalidateCg();
+    }).catch((err) => console.error(err));
   };
 
   // Group and Dedupe Logic. Signal groups (what the user asked the swarm for)
@@ -217,11 +242,26 @@ export default function StatePane({ artifacts }: {
 
   const cgReady = cg?.status === "ready";
   const cgIndexing = cg?.status === "indexing";
-  const cgDot = cgReady ? "bg-good" : cgIndexing ? "bg-accent" : "bg-faint";
-  const cgWord = cgIndexing ? "indexing" : cgReady ? "ready" : cg?.status === "unsupported" ? "unsupported" : "none";
+  const cgNeedsScope = cg?.status === "needs_scope";
+  const cgDot = cgReady ? "bg-good" : (cgIndexing || cgNeedsScope) ? "bg-accent" : "bg-faint";
+  const cgWord = cgIndexing
+    ? "indexing"
+    : cgReady
+      ? "ready"
+      : cgNeedsScope
+        ? "needs scope"
+        : cg?.status === "unsupported"
+          ? "unsupported"
+          : "none";
   const cgMetric = cgReady && cg?.nodes != null
     ? `${cg.nodes.toLocaleString()} nodes`
-    : cgIndexing ? "working" : cg?.status === "none" ? "no workspace" : "";
+    : cgIndexing
+      ? "working"
+      : cgNeedsScope
+        ? "scope tree"
+        : cg?.status === "none"
+          ? "no workspace"
+          : "";
 
   const wikiOk = wiki?.status === "ok";
   const wikiErr = wiki?.status === "error";
@@ -268,6 +308,41 @@ export default function StatePane({ artifacts }: {
 
           {cgOpen && cg?.status !== "none" && (
             <div className="px-2.5 pb-2 pt-1 border-t border-edge/30">
+              {cgNeedsScope && (
+                <div className="mb-2 space-y-1.5">
+                  <div className="text-[10px] text-warn leading-snug">
+                    {cg.reason || "This workspace is too large or asset-heavy to index as a whole."}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {cg.suggested_action?.kind === "open_subdir" && cg.suggested_action.path && (
+                      <button
+                        type="button"
+                        onClick={handleOpenSuggestedRoot}
+                        className="text-[9px] bg-accent/15 hover:bg-accent/25 text-accent px-1.5 py-0.5 rounded transition-colors font-medium border border-accent/30"
+                      >
+                        Open source subdir
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleApplyExcludes}
+                      disabled={applyingExcludes || reindexing}
+                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2"
+                    >
+                      {applyingExcludes ? "Applying..." : "Apply asset excludes"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleReindex}
+                      disabled={reindexing || applyingExcludes}
+                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2"
+                    >
+                      {reindexing ? "Indexing..." : "Retry index"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-3 gap-2 text-[11px]">
                 <div>
                   <div className="text-faint text-[9px] uppercase tracking-wide">Nodes</div>
@@ -303,16 +378,18 @@ export default function StatePane({ artifacts }: {
                 {cg?.last_indexed
                   ? <span className="text-[8px] text-faint truncate">Indexed {new Date(cg.last_indexed).toLocaleString()}</span>
                   : <span />}
-                <button
-                  onClick={handleReindex}
-                  disabled={reindexing || cgIndexing}
-                  className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 shrink-0"
-                >
-                  {reindexing || cgIndexing ? "Indexing..." : "Re-index"}
-                </button>
+                {!cgNeedsScope && (
+                  <button
+                    onClick={handleReindex}
+                    disabled={reindexing || cgIndexing}
+                    className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 shrink-0"
+                  >
+                    {reindexing || cgIndexing ? "Indexing..." : "Re-index"}
+                  </button>
+                )}
               </div>
 
-              {cgIndexing && cg?.reason && (
+              {(cgIndexing || cg?.status === "unsupported") && cg?.reason && (
                 <div className="mt-1.5 text-[9px] text-accent/80">{cg.reason}</div>
               )}
             </div>

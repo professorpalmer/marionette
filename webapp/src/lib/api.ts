@@ -369,8 +369,19 @@ export type ModelCatalogResponse = {
 
 export type CodegraphStatus = {
   indexed: boolean;
-  status: "ready" | "indexing" | "unsupported" | "none";
+  status: "ready" | "indexing" | "unsupported" | "needs_scope" | "none";
   reason?: string | null;
+  preflight?: {
+    verdict?: string;
+    reason?: string;
+    suggested_roots?: string[];
+    suggested_excludes?: string[];
+  } | null;
+  suggested_action?: {
+    kind?: string;
+    path?: string;
+    excludes?: string[];
+  } | null;
   nodes: number | null;
   edges: number | null;
   files: number | null;
@@ -637,7 +648,7 @@ export const api = {
   setWorktreeMax: (max: number) => postJSON<{ ok: boolean }>("/api/worktrees/max", { max }),
 
   openWorkspace: (path: string) => postJSON<{ ok: boolean; repo: string; branch: string; is_git: boolean; codegraph: "indexing" | "ready" | "unsupported"; active_session?: string }>("/api/workspace/open", { path }),
-  forgetWorkspace: (path: string) => postJSON<{ ok: boolean; recents: string[] }>("/api/workspace/forget", { path }),
+  forgetWorkspace: (path: string) => postJSON<{ ok: boolean; recents: string[]; cleared_active?: boolean; repo?: string }>("/api/workspace/forget", { path }),
   getWorkspace: () => getJSON<WorkspaceInfo>("/api/workspace"),
   getWorkspaceFiles: () => getJSON<{ files: string[] }>(withToken("/api/workspace/files")),
   searchSymbols: (q: string) => getJSON<{ symbols: { name: string; kind: string; path: string; line: number }[]; status?: string }>(withToken("/api/workspace/symbols?q=" + encodeURIComponent(q))),
@@ -670,6 +681,10 @@ export const api = {
 
   getCodegraph: () => getJSON<CodegraphStatus>("/api/codegraph"),
   reindexCodegraph: () => postJSON<{ ok: boolean; status: string }>("/api/codegraph/reindex", {}),
+  applyCodegraphExcludes: (excludes?: string[]) =>
+    postJSON<{ ok: boolean; status: string; reason?: string }>("/api/codegraph/apply-excludes", {
+      excludes: excludes || [],
+    }),
   getWikiGraph: () => getJSON<WikiGraphData>("/api/wiki/graph"),
   getWikiStatus: () => getJSON<WikiStatusData>("/api/wiki/status"),
   getWikiConfig: () => getJSON<{ api_base: string; has_token: boolean }>("/api/wiki/config"),

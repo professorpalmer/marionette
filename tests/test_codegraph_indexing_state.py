@@ -39,9 +39,12 @@ def test_index_alive_tracks_proc(monkeypatch):
 
 def test_status_self_heals_when_indexer_dead(monkeypatch, tmp_path):
     # Simulate the wedged state: global says "indexing" but no live indexer,
-    # and the .codegraph dir exists on disk (index actually completed).
+    # and a built CodeGraph DB exists on disk (index actually completed).
     repo = str(tmp_path)
-    os.makedirs(os.path.join(repo, ".codegraph"), exist_ok=True)
+    cg_dir = os.path.join(repo, ".codegraph")
+    os.makedirs(cg_dir, exist_ok=True)
+    # Gate is the DB file, not the directory alone (config-only checkouts).
+    open(os.path.join(cg_dir, "codegraph.db"), "wb").close()
     monkeypatch.setattr(srv, "_puppetmaster_available", lambda: True)
     monkeypatch.setattr(srv, "_codegraph_index_proc", None)  # no live indexer
     srv._codegraph_status = "indexing"
@@ -50,6 +53,16 @@ def test_status_self_heals_when_indexer_dead(monkeypatch, tmp_path):
     result = srv._get_codegraph_status(repo)
     assert result == "ready"
     assert srv._codegraph_status == "ready"
+
+
+def test_status_clears_indexing_when_indexer_dead_without_db(monkeypatch, tmp_path):
+    repo = str(tmp_path)
+    os.makedirs(os.path.join(repo, ".codegraph"), exist_ok=True)
+    monkeypatch.setattr(srv, "_puppetmaster_available", lambda: True)
+    monkeypatch.setattr(srv, "_codegraph_index_proc", None)
+    srv._codegraph_status = "indexing"
+    assert srv._get_codegraph_status(repo) == "unsupported"
+    assert srv._codegraph_status == "unsupported"
 
 
 def test_status_stays_indexing_while_alive(monkeypatch, tmp_path):

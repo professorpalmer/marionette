@@ -135,7 +135,8 @@ def test_forget_recent_workspace(monkeypatch, tmp_path):
         assert data["repo"] == str(dir1)
         assert data["recents"] == [str(dir1), str(dir2)]
 
-    # Switch active back to dir2 before forget (forget does not rewrite repo).
+    # Switch active back to dir2 before forget (forget clears repo when it
+    # matches the forgotten path).
     srv._record_recent_workspace(str(dir2))
 
     # Now forget dir1
@@ -148,6 +149,71 @@ def test_forget_recent_workspace(monkeypatch, tmp_path):
         data = json.load(f)
         assert data["repo"] == str(dir2)
         assert str(dir1) not in data["recents"]
+
+    # Forgetting the active workspace clears the boot-restore repo key so the
+    # rail cannot re-append it as a phantom via buildProjectsList.
+    recents = srv._forget_recent_workspace(str(dir2))
+    assert str(dir2) not in recents
+    with open(ws_file) as f:
+        data = json.load(f)
+        assert data["repo"] == ""
+        assert data["recents"] == []
+
+
+def test_forget_recent_workspace_normalizes_path_spelling(monkeypatch, tmp_path):
+    """Slash/case variants of the same root must all drop on forget."""
+    import json
+    import os
+    import tempfile
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/some/other/dummy/path")
+    ws_file = tmp_path / "workspace.json"
+
+    dir1 = tmp_path / "Ashita"
+    dir1.mkdir()
+    stored = str(dir1)
+    # Record with native spelling.
+    srv._record_recent_workspace(stored)
+
+    # Forget with a deliberately different slash/case form when on Windows.
+    if os.name == "nt":
+        alt = stored.replace("\\", "/")
+        if alt[0].isupper():
+            alt = alt[0].lower() + alt[1:]
+        elif alt[0].islower():
+            alt = alt[0].upper() + alt[1:]
+    else:
+        alt = stored
+
+    recents = srv._forget_recent_workspace(alt)
+    assert stored not in recents
+    with open(ws_file) as f:
+        data = json.load(f)
+        assert data["recents"] == []
+        assert data["repo"] == ""
+
+
+def test_record_recent_dedupes_path_spellings(monkeypatch, tmp_path):
+    import os
+    import tempfile
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/some/other/dummy/path")
+
+    dir1 = tmp_path / "proj"
+    dir1.mkdir()
+    a = str(dir1)
+    srv._record_recent_workspace(a)
+    if os.name == "nt":
+        b = a.replace("\\", "/")
+        recents = srv._record_recent_workspace(b)
+        assert len(recents) == 1
+    else:
+        recents = srv._record_recent_workspace(a)
+        assert len(recents) == 1
 
 
 class _OpenProjectPilot:

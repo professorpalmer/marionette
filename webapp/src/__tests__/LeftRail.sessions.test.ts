@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, purgeSessionFromRootCaches, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, filterForgottenRecent, purgeSessionFromRootCaches, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -230,6 +230,22 @@ describe("LeftRail session list contracts", () => {
     const afterOpenNew = buildProjectsList("C:\\Projects\\delta", recents);
     expect(afterOpenNew[0]).toBe("C:\\Projects\\alpha");
     expect(afterOpenNew[afterOpenNew.length - 1]).toBe("C:\\Projects\\delta");
+  });
+
+  it("buildProjectsList dedupes slash/case siblings and forget filter matches them", () => {
+    const recents = ["C:\\Ashita\\Ashita", "c:/Ashita/Ashita", "C:\\Projects\\other"];
+    const list = buildProjectsList("", recents);
+    expect(list).toEqual(["C:\\Ashita\\Ashita", "C:\\Projects\\other"]);
+
+    // Forgetting with an alternate spelling drops the stored form.
+    expect(filterForgottenRecent(recents, "C:/ashita/ashita")).toEqual([
+      "C:\\Projects\\other",
+    ]);
+
+    // Empty currentRepo after forget must not resurrect the path.
+    expect(buildProjectsList("", filterForgottenRecent(recents, "C:\\Ashita\\Ashita"))).toEqual([
+      "C:\\Projects\\other",
+    ]);
   });
 
   it("workspaces SWR key is per-repo so branch lists stay warm and isolated", () => {

@@ -10,20 +10,26 @@ import { writeTranscriptCache } from "./Conversation";
 
 /**
  * Stable PROJECTS rail order: keep recents as-is, append currentRepo only when
- * it is not already present. Never force the active path to index 0.
+ * it is not already present (slash/case-insensitive). Never force the active
+ * path to index 0.
  */
 export function buildProjectsList(currentRepo: string, rawRecents: string[]): string[] {
-  const seen = new Set<string>();
+  const seen: string[] = [];
   const out: string[] = [];
   for (const p of rawRecents) {
-    if (!p || seen.has(p)) continue;
-    seen.add(p);
+    if (!p || seen.some((s) => repoPathsEqual(s, p))) continue;
+    seen.push(p);
     out.push(p);
   }
-  if (currentRepo && !seen.has(currentRepo)) {
+  if (currentRepo && !seen.some((s) => repoPathsEqual(s, currentRepo))) {
     out.push(currentRepo);
   }
   return out;
+}
+
+/** Drop a path (and slash/case siblings) from a recents list. */
+export function filterForgottenRecent(recents: string[], path: string): string[] {
+  return (recents || []).filter((r) => !repoPathsEqual(r, path));
 }
 
 /** Drop a session id from every per-root sessions SWR cache. Returns how many
@@ -335,17 +341,47 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const handleForgetProject = async (path: string) => {
     const previous = workspaceInfo;
+    const forgettingActive = !!(previous?.repo && repoPathsEqual(previous.repo, path));
     mutateWorkspace(previous
-      ? { ...previous, recents: (previous.recents || []).filter((r) => r !== path) }
+      ? {
+          ...previous,
+          recents: filterForgottenRecent(previous.recents || [], path),
+          // Drop active repo immediately so buildProjectsList cannot re-append
+          // the forgotten path as a phantom row.
+          ...(forgettingActive ? { repo: "", branch: "", is_git: false, codegraph_status: "none" } : {}),
+        }
       : undefined);
     setExpandedProjects((prev) => {
       const next = { ...prev };
-      delete next[path];
+      for (const key of Object.keys(next)) {
+        if (repoPathsEqual(key, path)) delete next[key];
+      }
       return next;
     });
+    // Drop per-root session cache so orphan titles cannot linger under the
+    // forgotten path (or a slash/case sibling key).
+    try {
+      writeSWRCache(`sessions:${path}`, []);
+      setSessionsCacheEpoch((n) => n + 1);
+    } catch { /* best-effort */ }
+    if (forgettingActive) {
+      setSelectedProjectPath("");
+    }
     try {
       const res = await api.forgetWorkspace(path);
-      mutateWorkspace(previous ? { ...previous, recents: res.recents } : undefined);
+      mutateWorkspace(previous
+        ? {
+            ...previous,
+            recents: res.recents,
+            repo: res.cleared_active ? (res.repo || "") : previous.repo,
+            ...(res.cleared_active
+              ? { branch: "", is_git: false, codegraph_status: "none" }
+              : {}),
+          }
+        : undefined);
+      if (res.cleared_active) {
+        window.dispatchEvent(new Event("harness-config-changed"));
+      }
     } catch (err) {
       console.error(err);
       if (previous) mutateWorkspace(previous);
@@ -368,10 +404,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     };
   }, [revalidateWorkspace, revalidateJobs, revalidateWorkspaces]);
 
-  // Poll workspace status while CodeGraph indexes so the badge flips to READY
-  // without opening a session or switching directories.
+  // Poll workspace status while CodeGraph indexes (or waits on scope) so the
+  // badge flips without opening a session or switching directories.
   useEffect(() => {
-    if (workspaceInfo?.codegraph_status !== "indexing") return;
+    const st = workspaceInfo?.codegraph_status;
+    if (st !== "indexing" && st !== "needs_scope") return;
     const poll = () => { void revalidateWorkspace(); };
     poll();
     const timer = setInterval(poll, 4000);
@@ -379,7 +416,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   }, [workspaceInfo?.codegraph_status, revalidateWorkspace]);
 
   useEffect(() => {
-    if (workspaceInfo?.codegraph_status !== "indexing") return;
+    const st = workspaceInfo?.codegraph_status;
+    if (st !== "indexing" && st !== "needs_scope") return;
     const onFocus = () => { void revalidateWorkspace(); };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
@@ -660,18 +698,24 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     // Trust cache contents: they were fetched with ?repo= for this root, so
     // the backend already applied visibility (including legacy orphans).
     const cached = readSWRCache<Session[]>(`sessions:${projectPath}`);
-    if (cached) {
-      return cached.filter((s) => !s.archived);
-    }
-    // Fallback while the active-repo hook's live data is the only source.
-    if (repoPathsEqual(projectPath, currentRepo)) {
-      return activeSessions.filter((s) => {
-        const root = s.workspace_root || s.repo || "";
-        // Empty root = legacy orphan visible everywhere (backend contract).
-        return !root || repoPathsEqual(root, projectPath);
-      });
-    }
-    return [];
+    const rows = cached
+      ? cached.filter((s) => !s.archived)
+      : (repoPathsEqual(projectPath, currentRepo)
+        ? activeSessions.filter((s) => {
+            const root = s.workspace_root || s.repo || "";
+            // Empty root = legacy orphan visible everywhere (backend contract).
+            return !root || repoPathsEqual(root, projectPath);
+          })
+        : []);
+    // Client guard: rootless orphans must only paint under the *active*
+    // workspace row. Prefetch into sessions:${otherRoot} otherwise shows
+    // foreign titles under huge dirs (Ashita); clicking them switches away.
+    const isActiveRow = repoPathsEqual(projectPath, currentRepo);
+    return rows.filter((s) => {
+      const root = (s.workspace_root || s.repo || "").trim();
+      if (!root) return isActiveRow;
+      return repoPathsEqual(root, projectPath);
+    });
   };
 
   const sessionsResolvedFor = (projectPath: string): boolean =>
@@ -852,13 +896,15 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   {/* CodeGraph status (inline compact) */}
                   {showCgBadge && (
                     <span className={`text-[9px] font-semibold uppercase px-1 rounded shrink-0 ${
-                      cgStatus === "ready" 
-                        ? "text-good bg-good/10" 
-                        : cgStatus === "indexing" 
-                          ? "text-warn bg-warn/10 animate-pulse" 
-                          : "text-faint bg-panel2"
+                      cgStatus === "ready"
+                        ? "text-good bg-good/10"
+                        : cgStatus === "indexing"
+                          ? "text-warn bg-warn/10 animate-pulse"
+                          : cgStatus === "needs_scope"
+                            ? "text-warn bg-warn/10"
+                            : "text-faint bg-panel2"
                     }`}>
-                      {cgStatus}
+                      {cgStatus === "needs_scope" ? "scope" : cgStatus}
                     </span>
                   )}
 

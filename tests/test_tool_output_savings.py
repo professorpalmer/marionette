@@ -184,11 +184,33 @@ def _usage_server(tmp_state_dir):
     srv._session.state_dir = tmp_state_dir
     srv._pilot.state_dir = tmp_state_dir
     srv._pilot.harness_session_id = "usage-test-session"
+    # /api/usage folds CLI ledgers from _BOOT_REPOS + active repo when
+    # process_wide=True. Clear both so suite order (e.g. after codegraph
+    # tests that open a real workspace) cannot inflate compaction counts.
+    prior_boot = set(srv._BOOT_REPOS)
+    prior_repo = srv._cfg.repo
+    srv._BOOT_REPOS.clear()
+    srv._cfg.repo = ""
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
     port = httpd.server_address[1]
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
-    return httpd, port, srv
+
+    class _Handle:
+        def __init__(self):
+            self.port = port
+            self.srv = srv
+            self._httpd = httpd
+            self._prior_boot = prior_boot
+            self._prior_repo = prior_repo
+
+        def shutdown(self):
+            self._httpd.shutdown()
+            srv._BOOT_REPOS.clear()
+            srv._BOOT_REPOS.update(self._prior_boot)
+            srv._cfg.repo = self._prior_repo
+
+    return _Handle(), port, srv
 
 
 def _get_json(port, path, headers=None):
@@ -203,7 +225,7 @@ def _get_json(port, path, headers=None):
 def test_usage_api_includes_tool_output_savings_fields():
     tmp_dir = tempfile.mkdtemp()
     try:
-        httpd, port, srv = _usage_server(tmp_dir)
+        handle, port, srv = _usage_server(tmp_dir)
         try:
             from harness.tool_output_savings import get_ledger
 
@@ -224,7 +246,7 @@ def test_usage_api_includes_tool_output_savings_fields():
             swarm = _get_json(port, "/api/swarm/live", headers=headers)
             assert swarm["session"]["tool_output_tokens_saved"] == session["tool_output_tokens_saved"]
         finally:
-            httpd.shutdown()
+            handle.shutdown()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
