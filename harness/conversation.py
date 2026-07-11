@@ -59,6 +59,8 @@ from .pilot_guards import (
     cli_redirect_enabled,
     new_turn_guard_state,
     record_action_execution,
+    dedupe_dispatch_actions,
+    normalize_objective_key,
 )
 from .diag import note as _diag_note
 
@@ -2967,6 +2969,9 @@ class ConversationalSession(ToolDispatchMixin):
                     turn_note = self._turn_budget_system_note()
                     if turn_note:
                         sys_prompt += "\n\n" + turn_note
+                    adapter_note = self._active_adapters_system_note()
+                    if adapter_note:
+                        sys_prompt += "\n\n" + adapter_note
 
                     self._history[0]["content"] = sys_prompt
                     prompt = self._render_history()
@@ -3366,6 +3371,9 @@ class ConversationalSession(ToolDispatchMixin):
             history_len_before_actions = len(self._history)
             # Track files edited THIS turn (for the auto-verify loop below).
             turn_changed_files: list[str] = []
+            # Bulletproof same-turn dedupe: twin run_implement tool_calls with
+            # near-identical goals never both reach dispatch.
+            turn.actions = dedupe_dispatch_actions(turn.actions)
             for idx, act in enumerate(turn.actions):
                 if idx > 0:
                     yield from self._check_and_inject_steer()
@@ -3421,13 +3429,22 @@ class ConversationalSession(ToolDispatchMixin):
                     _b = act.arguments or {}
                     act_goal = _b.get("url") or _b.get("ref") or _b.get("direction") or act.kind
 
-                yield ConvEvent("action_start", {
-                    "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
-                    "cwd": self.config.repo or None,
-                    "adapter": self.config.swarm_adapter,
-                })
+                # run_implement / run_parallel emit their own action_start after
+                # engine selection (includes mode=agentic|native). Emitting here
+                # too produced twin "Investigated 2 run implements" chrome.
+                if act.kind not in ("run_implement", "run_parallel"):
+                    yield ConvEvent("action_start", {
+                        "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
+                        "cwd": self.config.repo or None,
+                        "adapter": self.config.swarm_adapter,
+                    })
 
                 if plan and act.kind in ("run_implement", "run_parallel", "write_file", "edit_file", "hash_edit", "run_command"):
+                    if act.kind in ("run_implement", "run_parallel"):
+                        yield ConvEvent("action_start", {
+                            "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
+                            "cwd": self.config.repo or None,
+                        })
                     yield ConvEvent("action_result", {
                         "id": aid,
                         "error": f"(plan mode: skipped {act.kind})"
@@ -3436,6 +3453,11 @@ class ConversationalSession(ToolDispatchMixin):
                     continue
 
                 if getattr(self.config, "no_delegation", False) and act.kind in ("run_implement", "run_parallel", "run_swarm"):
+                    if act.kind in ("run_implement", "run_parallel"):
+                        yield ConvEvent("action_start", {
+                            "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
+                            "cwd": self.config.repo or None,
+                        })
                     err_msg = "delegation is disabled for workers; edit the files directly with write_file, edit_file, or hash_edit"
                     yield ConvEvent("action_result", {
                         "id": aid,
@@ -4430,6 +4452,10 @@ class ConversationalSession(ToolDispatchMixin):
                         _abs, _err = self._validate_target_repo(act.repo)
                         if _err:
                             error_msg = f"run_implement: target repo {act.repo} is not a valid git repository"
+                            yield ConvEvent("action_start", {
+                                "id": aid, "kind": "run_implement", "goal": act.goal,
+                                "cwd": self.config.repo or None,
+                            })
                             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
                             self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
                             continue
@@ -4437,6 +4463,10 @@ class ConversationalSession(ToolDispatchMixin):
                     effective_repo = _target_repo_override or self.config.repo
                     if not effective_repo:
                         error_msg = "No workspace directory (config.repo) is open."
+                        yield ConvEvent("action_start", {
+                            "id": aid, "kind": "run_implement", "goal": act.goal,
+                            "cwd": None,
+                        })
                         yield ConvEvent("action_result", {"id": aid, "error": error_msg})
                         self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
                         continue
@@ -4453,6 +4483,10 @@ class ConversationalSession(ToolDispatchMixin):
                             "re-issuing the same edit; duplicate workers race the "
                             "same files and cause PATCH-DID-NOT-APPLY."
                         )
+                        yield ConvEvent("action_start", {
+                            "id": aid, "kind": "run_implement", "goal": act.goal,
+                            "cwd": effective_repo,
+                        })
                         yield ConvEvent("action_result", {
                             "id": aid, "status": "skipped", "message": dedup_msg,
                         })
@@ -4466,37 +4500,35 @@ class ConversationalSession(ToolDispatchMixin):
                     claimed = True
                     dispatched = False
 
-                    external_adapters = {"cursor", "claude-code", "codex", "openai"}
-                    requested_adapter = act.adapter or ""
-                    
-                    if requested_adapter in external_adapters:
-                        # Gracefully fall back to the provider-native worker (which runs
-                        # off the user's own provider key) when the external CLI adapter
-                        # is unavailable, instead of hard-failing. The platform must never
-                        # be unusable just because an optional worker CLI is missing.
-                        if not _puppetmaster_available() or not self._external_adapter_available(requested_adapter):
-                            yield ConvEvent("action_result", {
-                                "id": aid,
-                                "num": 0,
-                                "types": ["note"],
-                                "artifacts": [{"type": "note", "headline": f"{requested_adapter} adapter unavailable -- using provider-native worker (your keys)"}],
-                            })
-                            self._append_action_result(act, aid, f"(run_implement: {requested_adapter} adapter unavailable; falling back to the provider-native worker on your own keys)", is_native)
-                            use_external = False
-                        else:
-                            use_external = True
-                    else:
-                        use_external = False
+                    external_adapters = {"cursor", "claude-code", "codex", "openai", "hermes"}
+                    requested_adapter, adapter_remap_note = self._resolve_requested_implement_adapter(
+                        act.adapter or ""
+                    )
+                    use_external = (
+                        requested_adapter in external_adapters
+                        and _puppetmaster_available()
+                        and self._external_adapter_available(requested_adapter)
+                    )
+                    if requested_adapter in external_adapters and not use_external:
+                        # Disabled by platform lock or CLI missing -- stay on
+                        # agentic/native rather than hard-failing.
+                        if not adapter_remap_note:
+                            adapter_remap_note = (
+                                f"adapter '{requested_adapter}' unavailable; "
+                                "using standalone agentic/native"
+                            )
+                        requested_adapter = ""
 
                     if use_external:
-                        adapter = act.adapter or self._detect_default_implement_adapter()
+                        adapter = requested_adapter
+                        # External path: no mode= stamp (tests + UI treat mode as
+                        # the in-process agentic|native engine label only).
                         yield ConvEvent("action_start", {
                             "id": aid,
                             "kind": "run_implement",
                             "goal": act.goal,
                             "cwd": effective_repo,
                         })
-
                         try:
                             import json
                             cmd = _puppetmaster_cmd(
@@ -4554,7 +4586,16 @@ class ConversationalSession(ToolDispatchMixin):
                                     "message": f"Dispatched background swarm job {job_id}"
                                 })
                                 
-                                self._append_action_result(act, aid, f"(run_implement {aid} dispatched in background: job {job_id})", is_native)
+                                self._append_action_result(
+                                    act, aid,
+                                    f"(run_implement {aid} dispatched in background: job {job_id}"
+                                    + (f"; {adapter_remap_note}" if adapter_remap_note else "")
+                                    + ")",
+                                    is_native,
+                                )
+                                yield from self._answer_remaining_tool_calls(
+                                    turn.actions, idx, is_native, action_seq,
+                                )
                                 yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms + 1})
                                 return
                             else:
@@ -4577,7 +4618,7 @@ class ConversationalSession(ToolDispatchMixin):
                         # router-picked, no external CLI) by default, or Marionette's
                         # native pilot when no provider key is present / native is asked.
                         from harness.edit_engines import select_edit_engine
-                        engine = select_edit_engine(self.config, act.adapter or "")
+                        engine = select_edit_engine(self.config, requested_adapter)
                         # Mode drives whether an empty worktree diff is success
                         # (analysis/review) or failure (implement). Do NOT infer
                         # from prompt keywords -- only the explicit mode field.
@@ -4619,7 +4660,7 @@ class ConversationalSession(ToolDispatchMixin):
                             # existing "claimed and not dispatched" cleanup.
                             if not self._submit_swarm(
                                 self._run_provider_worker_background,
-                                job_id, act.goal, act.adapter or "", _target_repo_override,
+                                job_id, act.goal, requested_adapter, _target_repo_override,
                                 expects_diff,
                             ):
                                 cap_msg = (
@@ -4642,15 +4683,27 @@ class ConversationalSession(ToolDispatchMixin):
                                 "objective": act.goal
                             })
                             
+                            dispatch_msg = f"Dispatched background swarm job {job_id}"
+                            if adapter_remap_note:
+                                dispatch_msg = f"{dispatch_msg} ({adapter_remap_note})"
                             # Complete the visible action start and result for the dispatch itself
                             yield ConvEvent("action_result", {
                                 "id": aid,
                                 "job_id": job_id,
                                 "status": "pending",
-                                "message": f"Dispatched background swarm job {job_id}"
+                                "message": dispatch_msg,
                             })
                             
-                            self._append_action_result(act, aid, f"(run_implement {aid} dispatched in background: job {job_id})", is_native)
+                            self._append_action_result(
+                                act, aid,
+                                f"(run_implement {aid} dispatched in background: job {job_id}"
+                                + (f"; {adapter_remap_note}" if adapter_remap_note else "")
+                                + ")",
+                                is_native,
+                            )
+                            yield from self._answer_remaining_tool_calls(
+                                turn.actions, idx, is_native, action_seq,
+                            )
                             yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms + 1})
                             return
                         except Exception as e:
@@ -4693,28 +4746,25 @@ class ConversationalSession(ToolDispatchMixin):
                     if len(goals) > MAX_PARALLEL_CAP:
                         goals = goals[:MAX_PARALLEL_CAP]
 
-                    external_adapters = {"cursor", "claude-code", "codex", "openai"}
-                    requested_adapter = act.adapter or ""
-                    
-                    if requested_adapter in external_adapters:
-                        # Gracefully fall back to the provider-native worker when the
-                        # external CLI adapter is unavailable, instead of hard-failing.
-                        if not _puppetmaster_available() or not self._external_adapter_available(requested_adapter):
-                            yield ConvEvent("action_result", {
-                                "id": aid,
-                                "num": 0,
-                                "types": ["note"],
-                                "artifacts": [{"type": "note", "headline": f"{requested_adapter} adapter unavailable -- using provider-native worker (your keys)"}],
-                            })
-                            self._append_action_result(act, aid, f"(run_parallel: {requested_adapter} adapter unavailable; falling back to the provider-native worker on your own keys)", is_native)
-                            use_external = False
-                        else:
-                            use_external = True
-                    else:
-                        use_external = False
+                    external_adapters = {"cursor", "claude-code", "codex", "openai", "hermes"}
+                    requested_adapter, adapter_remap_note = self._resolve_requested_implement_adapter(
+                        act.adapter or ""
+                    )
+                    use_external = (
+                        requested_adapter in external_adapters
+                        and _puppetmaster_available()
+                        and self._external_adapter_available(requested_adapter)
+                    )
+                    if requested_adapter in external_adapters and not use_external:
+                        if not adapter_remap_note:
+                            adapter_remap_note = (
+                                f"adapter '{requested_adapter}' unavailable; "
+                                "using standalone agentic/native"
+                            )
+                        requested_adapter = ""
 
                     if use_external:
-                        adapter = act.adapter or self._detect_default_implement_adapter()
+                        adapter = requested_adapter
                         mode = act.mode or "implement"
 
                         sub_aids = []
@@ -4881,6 +4931,9 @@ class ConversationalSession(ToolDispatchMixin):
                                 "message": f"Dispatched parallel background swarm jobs: {', '.join(job_ids_collected)}"
                             })
                             self._append_action_result(act, aid, f"(run_parallel dispatched {len(job_ids_collected)} jobs in background: {', '.join(job_ids_collected)})", is_native)
+                            yield from self._answer_remaining_tool_calls(
+                                turn.actions, idx, is_native, action_seq,
+                            )
                             yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms + len(job_ids_collected)})
                             return
                         else:
@@ -4894,7 +4947,7 @@ class ConversationalSession(ToolDispatchMixin):
                         # Standalone in-process parallel path: the agentic engine per
                         # goal (keys-only, router-picked) or the native pilot fallback.
                         from harness.edit_engines import select_edit_engine
-                        engine = select_edit_engine(self.config, act.adapter or "")
+                        engine = select_edit_engine(self.config, requested_adapter)
                         try:
                             _mode = (getattr(act, "mode", None) or "implement").strip().lower()
                         except Exception:
@@ -4940,7 +4993,7 @@ class ConversationalSession(ToolDispatchMixin):
                                     # objective, record a deferred goal, and move on.
                                     submitted = self._submit_swarm(
                                         self._run_provider_worker_background,
-                                        job_id, sub_goal, act.adapter or "", _target_repo_override,
+                                        job_id, sub_goal, requested_adapter, _target_repo_override,
                                         expects_diff,
                                     )
                                 except Exception:
@@ -4994,6 +5047,9 @@ class ConversationalSession(ToolDispatchMixin):
                             })
                             
                             self._append_action_result(act, aid, f"(run_parallel {aid} dispatched {len(job_ids_collected)} jobs in background: {', '.join(job_ids_collected)})", is_native)
+                            yield from self._answer_remaining_tool_calls(
+                                turn.actions, idx, is_native, action_seq,
+                            )
                             yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms + len(job_ids_collected)})
                             return
                         except Exception as e:
@@ -5568,15 +5624,19 @@ class ConversationalSession(ToolDispatchMixin):
     def _external_adapter_available(self, adapter: str) -> bool:
         """True when the requested external CLI adapter can actually run.
 
-        The provider-native ProviderWorker (which runs in-process off whatever
-        provider key the user supplied) is ALWAYS available, so this gate only
-        governs the optional external CLI adapters. When the requested adapter's
-        CLI / key is missing we fall back to the provider-native worker instead
-        of hard-failing -- the platform must never be unusable just because an
-        optional external worker CLI is absent.
+        Honors the live platform lock first: a disabled adapter is never
+        "available" even if its CLI is on PATH (fixes cursor stickiness when
+        the operator disables cursor and enables agentic). The provider-native
+        / agentic in-process path is always the fallback when this returns False.
         """
         import shutil
         a = (adapter or "").lower().strip()
+        try:
+            from puppetmaster.platform_lock import KNOWN_ADAPTERS, is_adapter_enabled
+            if a in KNOWN_ADAPTERS and not is_adapter_enabled(a):
+                return False
+        except Exception:
+            pass
         if a == "cursor":
             return shutil.which("cursor") is not None
         if a == "claude-code":
@@ -5585,6 +5645,8 @@ class ConversationalSession(ToolDispatchMixin):
             return shutil.which("codex") is not None
         if a == "openai":
             return bool(os.environ.get("OPENAI_API_KEY"))
+        if a == "hermes":
+            return shutil.which("hermes") is not None
         # Unknown adapter name: let the external path try (it will report its own error).
         return True
 
@@ -5623,9 +5685,68 @@ class ConversationalSession(ToolDispatchMixin):
             pass
         return "", f"target repo {abs_path} is not a valid git repository"
 
+    def _resolve_requested_implement_adapter(self, requested: str) -> tuple:
+        """Map a pilot-requested adapter to what may actually run right now.
+
+        Returns ``(effective, note)``. Empty ``effective`` means use the
+        in-process agentic/native path. Disabled or missing external adapters
+        are remapped rather than hard-failing.
+        """
+        requested = (requested or "").strip().lower()
+        if not requested or requested in ("agentic", "native", "provider"):
+            return requested, ""
+        external = {"cursor", "claude-code", "codex", "openai", "hermes"}
+        if requested not in external:
+            return requested, ""
+        if self._external_adapter_available(requested):
+            return requested, ""
+        note = (
+            f"adapter '{requested}' is disabled by platform lock or its CLI is "
+            "unavailable; using standalone agentic/native instead"
+        )
+        return "", note
+
+    def _active_adapters_system_note(self) -> str:
+        """Live platform-lock snapshot injected each turn so the pilot cannot
+        keep requesting a previously-enabled adapter after the operator flips
+        Settings > Platform."""
+        try:
+            from puppetmaster.platform_lock import enabled_adapters
+            enabled = sorted(enabled_adapters())
+        except Exception:
+            return ""
+        if not enabled:
+            return (
+                "ACTIVE IMPLEMENT PLATFORMS (live): none enabled. "
+                "Omit adapter on run_implement (standalone agentic/native only)."
+            )
+        preferred = "agentic" if "agentic" in enabled else enabled[0]
+        disabled_hint = ""
+        try:
+            from puppetmaster.platform_lock import KNOWN_ADAPTERS
+            disabled = sorted(set(KNOWN_ADAPTERS) - set(enabled))
+            if disabled:
+                disabled_hint = f" Do NOT pass adapter={{{', '.join(disabled)}}} — those are disabled."
+        except Exception:
+            pass
+        return (
+            f"ACTIVE IMPLEMENT PLATFORMS (live, re-read every turn): {', '.join(enabled)}. "
+            f"Default run_implement MUST omit adapter or use '{preferred}'.{disabled_hint}"
+        )
+
     def _detect_default_implement_adapter(self) -> str:
+        """Prefer agentic when enabled; never return a platform-locked adapter."""
+        try:
+            from puppetmaster.platform_lock import enabled_adapters, is_adapter_enabled
+            enabled = enabled_adapters()
+            if "agentic" in enabled:
+                return "agentic"
+        except Exception:
+            enabled = None
+            is_adapter_enabled = None  # type: ignore
+
         if not _puppetmaster_available():
-            return "hermes"
+            return "agentic"
         try:
             p = subprocess.run(
                 _puppetmaster_cmd("platform", "status"),
@@ -5635,19 +5756,20 @@ class ConversationalSession(ToolDispatchMixin):
                 timeout=10
             )
             output = p.stdout or ""
-            enabled = []
             import re
             matches = re.findall(r"\[on\s*\]\s*([a-zA-Z0-9_-]+)", output)
-            for m in matches:
-                enabled.append(m.lower().strip())
-            
-            pref = ["hermes", "codex", "cursor", "claude-code"]
+            on = {m.lower().strip() for m in matches}
+            pref = ["agentic", "hermes", "codex", "cursor", "claude-code"]
             for adapter in pref:
-                if adapter in enabled:
+                if adapter not in on:
+                    continue
+                if is_adapter_enabled is not None and not is_adapter_enabled(adapter):
+                    continue
+                if adapter == "agentic" or self._external_adapter_available(adapter):
                     return adapter
         except Exception:
             pass
-        return "hermes"  # fallback
+        return "agentic"
 
     def _await_and_apply_job(self, job_id: str, state_dir: Optional[str] = None, objective: str = "") -> dict:
         import json
@@ -5827,11 +5949,33 @@ class ConversationalSession(ToolDispatchMixin):
             "pending_review": pending_review_info
         }
 
+    def _answer_remaining_tool_calls(self, actions, current_idx, is_native, action_seq):
+        """Answer sibling tool_calls abandoned by a pause-point dispatch.
+
+        When run_implement/run_parallel returns early, any later tool_calls in
+        the same model message would otherwise lack a tool result -- native
+        providers then re-issue them, producing the twin-swarm bug. Emit a
+        skipped result for each remaining action so the turn is well-formed.
+        """
+        for later in (actions or [])[current_idx + 1:]:
+            action_seq += 1
+            skip_aid = f"a{action_seq}"
+            kind = getattr(later, "kind", "") or "action"
+            skip_msg = (
+                f"(skipped {kind}: prior background dispatch is a pause-point; "
+                "wait for that worker instead of issuing a twin)"
+            )
+            yield ConvEvent("action_result", {
+                "id": skip_aid,
+                "status": "skipped",
+                "message": skip_msg,
+            })
+            self._append_action_result(later, skip_aid, skip_msg, is_native, ok=True)
+
     @staticmethod
     def _normalize_objective(goal: str) -> str:
-        """Canonical form for objective dedup: whitespace-collapsed, lowercased.
-        Two dispatches that differ only in spacing/case target the same work."""
-        return " ".join((goal or "").split()).lower()
+        """Canonical form for objective dedup (path-separator + punctuation aware)."""
+        return normalize_objective_key(goal)
 
     def _claim_objective(self, goal: str) -> bool:
         """Atomically reserve an objective for dispatch. Returns False if an

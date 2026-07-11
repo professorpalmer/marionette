@@ -286,6 +286,49 @@ def _norm_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
 
 
+def normalize_objective_key(goal: str) -> str:
+    """Canonical objective fingerprint for in-flight + same-turn dispatch dedupe.
+
+    Collapses whitespace/case, normalizes path separators, and strips decorative
+    punctuation so near-identical implement goals (slash vs backslash, trailing
+    periods) still collide.
+    """
+    text = _norm_whitespace(goal or "").lower().replace("\\", "/")
+    text = re.sub(r"[^\w\s/.:_-]+", " ", text)
+    text = _norm_whitespace(text).strip(".:_-")
+    return _norm_whitespace(text)
+
+
+def dedupe_dispatch_actions(actions: list) -> list:
+    """Keep the first run_implement/run_swarm/run_parallel per objective fingerprint.
+
+    Models often emit two nearly-identical implement tool_calls in one turn.
+    Filtering before execution is the bulletproof layer above in-flight claims.
+    """
+    seen: set[tuple] = set()
+    out: list = []
+    for act in actions or []:
+        kind = getattr(act, "kind", "") or ""
+        if kind in ("run_implement", "run_swarm"):
+            key = (kind, normalize_objective_key(getattr(act, "goal", "") or ""))
+            if key[1]:
+                if key in seen:
+                    continue
+                seen.add(key)
+        elif kind == "run_parallel":
+            goals = getattr(act, "goals", None) or []
+            norm_goals = tuple(
+                normalize_objective_key(g) for g in goals if normalize_objective_key(g)
+            )
+            key = (kind, norm_goals)
+            if norm_goals:
+                if key in seen:
+                    continue
+                seen.add(key)
+        out.append(act)
+    return out
+
+
 def normalize_action_args(kind: str, act: Any) -> str:
     """Canonical JSON key for near-duplicate detection."""
     args = getattr(act, "arguments", None) or {}
@@ -328,13 +371,15 @@ def normalize_action_args(kind: str, act: Any) -> str:
     elif kind == "query_wiki":
         payload["question"] = _norm_whitespace(args.get("question", "") or "")
     elif kind in ("run_swarm", "run_implement"):
-        payload["goal"] = _norm_whitespace(getattr(act, "goal", "") or "")
+        payload["goal"] = normalize_objective_key(getattr(act, "goal", "") or "")
         roles = getattr(act, "roles", None) or []
         payload["roles"] = sorted(roles) if isinstance(roles, list) else []
         payload["repo"] = _norm_path(getattr(act, "repo", "") or "")
     elif kind == "run_parallel":
         goals = getattr(act, "goals", None) or []
-        payload["goals"] = [_norm_whitespace(g) for g in goals] if isinstance(goals, list) else []
+        payload["goals"] = (
+            [normalize_objective_key(g) for g in goals] if isinstance(goals, list) else []
+        )
         payload["mode"] = (getattr(act, "mode", "") or "").strip().lower()
         payload["repo"] = _norm_path(getattr(act, "repo", "") or "")
     elif kind == "call_mcp":
@@ -543,6 +588,23 @@ def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
     if prior < 1:
         return GuardVerdict(False)
 
+    cached = state.successful_results.get(key)
+    # Swarm/implement/parallel: one dispatch per objective fingerprint per turn.
+    # Never allow LOOP_REPEAT_CAP re-runs -- twin workers race the same files.
+    if kind in SWARM_DISPATCH_KINDS:
+        if cached is not None:
+            return GuardVerdict(
+                suppress=True,
+                reason="loop_replay",
+                message=f"[cached repeat of identical call]\n{cached}",
+                replay=True,
+            )
+        return GuardVerdict(
+            suppress=True,
+            reason="loop",
+            message=_loop_suppress_message(kind, prior),
+        )
+
     # LOOP_REPEAT_CAP bounds how many times the same (kind, args) may run this
     # turn (1 original + up to CAP-1 cached replays). The (CAP+1)th identical
     # call hard-suppresses with the existing error -- so the cap finally means
@@ -554,7 +616,6 @@ def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
             message=_loop_suppress_message(kind, prior),
         )
 
-    cached = state.successful_results.get(key)
     if cached is not None:
         return GuardVerdict(
             suppress=True,

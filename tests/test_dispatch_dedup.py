@@ -33,6 +33,12 @@ def test_claim_normalizes_whitespace_and_case():
     assert s._claim_objective("FIX THE BUG") is False
 
 
+def test_claim_normalizes_path_separators():
+    s = _session()
+    assert s._claim_objective(r"Rewrite at C:\Ashita\addons\kotoba") is True
+    assert s._claim_objective("Rewrite at C:/Ashita/addons/kotoba.") is False
+
+
 def test_empty_objective_is_never_deduped():
     s = _session()
     # Nothing meaningful to collide on -- empty/whitespace claims always succeed.
