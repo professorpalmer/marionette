@@ -253,6 +253,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const [opening, setOpening] = useState(false);
+  const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null);
   const codegraphByRepoRef = useRef<Record<string, string>>({});
   const [railTab, setRailTab] = useState<"projects" | "sessions">(() => {
     try {
@@ -362,7 +363,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   // Dim only on real transitions (key change / first load), never on background
   // polls of already-current data -- polling dims read as UI "blinking".
   const panelSwitching =
-    opening || workspaceTransitioning || sessionsTransitioning || jobsTransitioning;
+    opening || !!switchingSessionId || workspaceTransitioning || sessionsTransitioning || jobsTransitioning;
 
   useEffect(() => {
     dispatchProjectSwitching(panelSwitching);
@@ -465,6 +466,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           codegraph_status: res.codegraph,
           recents: workspaceInfo?.recents,
         });
+        // Hermes-style: land inside the opened project — expand + select so
+        // sessions are visible without an extra click.
+        setExpandedProjects((prev) => ({ ...prev, [res.repo]: true }));
+        setSelectedProjectPath(res.repo);
+        dispatchProjectSelected(res.repo);
         await Promise.all([revalidateWorkspace(), revalidateWorkspaces(), revalidateSessions()]);
         window.dispatchEvent(new Event("harness-config-changed"));
       } else {
@@ -588,20 +594,26 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
   };
   const switchSession = async (id: string) => {
-    const res: any = await api.switchSession(id);
-    await refreshSessionsRef.current();
-    // Session switch can repoint the active repo (and thus the codegraph) on the
-    // backend. Fire the same event the dir-open path uses so the codegraph/state
-    // panel refetches -- without this, clicking a session leaves the old graph
-    // shown even though the backend already swapped repos.
-    window.dispatchEvent(new Event("harness-config-changed"));
-    const repo = (res?.repo || "").trim();
-    if (repo) {
-      setExpandedProjects((prev) => ({ ...prev, [repo]: true }));
-      setSelectedProjectPath(repo);
-    }
-    if (railTab === "sessions") {
-      void refreshBankSessions();
+    if (switchingSessionId || opening) return;
+    setSwitchingSessionId(id);
+    try {
+      const res: any = await api.switchSession(id);
+      await refreshSessionsRef.current();
+      // Session switch can repoint the active repo (and thus the codegraph) on the
+      // backend. Fire the same event the dir-open path uses so the codegraph/state
+      // panel refetches -- without this, clicking a session leaves the old graph
+      // shown even though the backend already swapped repos.
+      window.dispatchEvent(new Event("harness-config-changed"));
+      const repo = (res?.repo || "").trim();
+      if (repo) {
+        setExpandedProjects((prev) => ({ ...prev, [repo]: true }));
+        setSelectedProjectPath(repo);
+      }
+      if (railTab === "sessions") {
+        void refreshBankSessions();
+      }
+    } finally {
+      setSwitchingSessionId(null);
     }
   };
 
@@ -645,6 +657,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     const current = (workspaceInfo?.repo || "").trim();
     if (target && (!current || !repoPathsEqual(target, current))) {
       await handleOpenProject(target);
+    } else if (target) {
+      setExpandedProjects((prev) => ({ ...prev, [target]: true }));
     }
     const created = await api.createSession();
     // Seed an empty warm-cache entry before Conversation's switch effect runs
@@ -903,7 +917,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           disabled={opening}
           className="w-full text-center text-accent text-[11px] font-semibold py-1 hover:bg-accent/10 rounded transition disabled:opacity-50"
         >
-          {opening ? "Opening..." : "Open Folder..."}
+          {opening ? "Opening…" : "Open Folder..."}
         </button>
       </div>
       </div>
@@ -950,14 +964,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                 <button
                   key={s.id}
                   type="button"
-                  onClick={() => void switchSession(s.id)}
-                  className={`w-full text-left px-2 py-1.5 rounded transition min-w-0 ${
+                  disabled={!!switchingSessionId || opening}
+                  onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                  className={`w-full text-left px-2 py-1.5 rounded transition min-w-0 disabled:opacity-60 ${
                     isActive ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
                   }`}
                   title={`${s.title}\n${root}`}
                 >
-                  <div className={`text-[12.5px] truncate ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
-                    {s.title || "Untitled"}
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {switchingSessionId === s.id
+                      ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                      : null}
+                    <div className={`text-[12.5px] truncate flex-1 ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
+                      {s.title || "Untitled"}
+                    </div>
                   </div>
                   <div className="text-[10px] text-faint truncate font-mono">{label}</div>
                 </button>
@@ -977,11 +997,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             const basename = getWorkspaceBasename(projectPath) || "Untitled Project";
             const isCurrentActive = !!(workspaceInfo?.repo && repoPathsEqual(projectPath, workspaceInfo.repo));
             const isSelected = repoPathsEqual(projectPath, selectedProjectPath);
-            // Expand is user-driven only: missing key means collapsed. Do not
-            // mirror isCurrentActive — session switch / open folder must not
-            // auto-expand the new root or collapse the previous one.
+            // Expand is mostly user-driven; open/switch/newSession also expand
+            // the landing root so sessions appear without an extra click.
             const isExpanded = !!expandedProjects[projectPath];
-            
+            const browsingOther =
+              isSelected && !!workspaceInfo?.repo && !repoPathsEqual(projectPath, workspaceInfo.repo);
             const projectSessions = projectSessionsFor(projectPath);
             projectSessions.sort((a, b) => b.created - a.created);
             const count = projectSessions.length;
@@ -991,13 +1011,24 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             const sessionsReady = sessionsResolvedFor(projectPath);
             
             return (
-              <div key={projectPath} className={`rounded transition min-w-0 overflow-hidden ${isSelected ? "bg-panel2/50 border-l-2 border-accent" : "hover:bg-panel2/20"}`}>
+              <div
+                key={projectPath}
+                className={`rounded transition min-w-0 overflow-hidden ${
+                  browsingOther
+                    ? "bg-panel2/50 border-l-2 border-warn/70"
+                    : isSelected
+                      ? "bg-panel2/50 border-l-2 border-accent"
+                      : "hover:bg-panel2/20"
+                }`}
+              >
                 {/* Project Row */}
                 <div
                   onClick={() => handleProjectRowClick(projectPath, isExpanded)}
                   onContextMenu={(e) => handleProjectContextMenu(e, projectPath)}
                   className="flex items-center gap-1.5 px-2 py-1.5 cursor-pointer select-none group"
-                  title={projectPath}
+                  title={browsingOther
+                    ? `${projectPath}\nBrowsing sessions — click a session to open this project`
+                    : projectPath}
                 >
                   {/* Expand Chevron */}
                   <button
@@ -1094,15 +1125,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                             />
                           ) : (
                             <div className="flex items-center gap-0.5 min-w-0">
-                              <button onClick={() => switchSession(s.id)}
+                              <button
+                                onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                                disabled={!!switchingSessionId || opening}
                                 onDoubleClick={() => {
                                   setRenamingId(s.id);
                                   setRenamingTitle(s.title || "Untitled");
                                 }}
                                 onContextMenu={(e) => handleContextMenu(e, s)}
-                                className={`flex-1 min-w-0 text-left rounded px-1.5 py-1 flex items-center gap-1.5 text-[12.5px] transition
-                                  ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}`}>
-                                <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />
+                                className={`flex-1 min-w-0 text-left rounded px-1.5 py-1 flex items-center gap-1.5 text-[12.5px] transition disabled:opacity-60
+                                  ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}
+                                  ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
+                                {switchingSessionId === s.id
+                                  ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                                  : <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />}
                                 <span className="flex-1 min-w-0 truncate">{s.title || "Untitled"}</span>
                                 <RunnerStatusDot status={runners[s.id]} />
                               </button>
