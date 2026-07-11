@@ -2739,7 +2739,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               rows={1} placeholder={auto ? "Give the pilot an objective..." : "Message the pilot..."}
-              className="w-full bg-transparent px-3 pt-2.5 pb-1 text-[0.8125rem] resize-none focus:outline-none overflow-y-auto placeholder:text-faint" />
+              className="w-full bg-transparent px-3 pt-2.5 pb-1 text-[0.8125rem] resize-none focus:outline-none overflow-hidden placeholder:text-faint" />
             <div className="flex items-center gap-1.5 px-3 pb-2">
               <button onClick={() => {
                 setAuto((a) => {

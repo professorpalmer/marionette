@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.46, deliberately pre-1.0. Vetted privately before any wider release.
+> Status: v0.9.47, deliberately pre-1.0. Vetted privately before any wider release.
 
 ## Documentation
 
@@ -36,8 +36,9 @@ SSE):
 - **Center -- the pilot loop.** A conversational driver: you talk to it, it emits
   structured tool calls (read, search, edit, run, delegate), and the harness
   executes them in code. No "I will now call the tool" narrator tax.
-- **Right -- durable state.** Live CodeGraph stats, the portable wiki graph, and
-  the artifact feed from every action and delegated job.
+- **Right -- tools on demand.** Default closed with a slim dock (Swarm, Changes,
+  Browser, Terminal, State). State holds CodeGraph, Wiki, and MCP. Open restores
+  last width on the chosen tab.
 - **Left -- workspace.** Projects, git branches/worktrees, sessions (auto-named
   from the first message), and the Puppetmaster job list.
 
