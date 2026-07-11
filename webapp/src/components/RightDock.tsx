@@ -5,11 +5,13 @@ import {
   Globe,
   Network,
   PanelRight,
+  Settings,
   SquareTerminal,
 } from "lucide-react";
 import { api } from "../lib/api";
 
-/** Curated destinations when the right pane is collapsed — Cursor-style, fixed set. */
+/** Curated destinations when the right pane is collapsed — Cursor-style, fixed set.
+ *  Settings is rendered separately, pinned to the bottom of the column. */
 const DOCK_LINKS: { id: string; tab: string; label: string; icon: ReactNode; title: string }[] = [
   {
     id: "swarm",
@@ -104,6 +106,17 @@ export default function RightDock({
           </button>
         ))}
       </div>
+
+      {/* Settings pinned to the column foot so it stays reachable with the pane closed. */}
+      <button
+        type="button"
+        onClick={() => onOpenTab("settings")}
+        title="Settings (Ctrl/Cmd+Shift+J)"
+        className="mx-1 mt-1 flex flex-col items-center gap-1 rounded-md px-1 py-2.5 text-muted hover:text-txt hover:bg-panel2/50 transition-colors border-t border-edge/40"
+      >
+        <Settings size={14} />
+        <span className="text-[9px] font-medium tracking-wide leading-none">Settings</span>
+      </button>
     </aside>
   );
 }
