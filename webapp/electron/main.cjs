@@ -129,9 +129,114 @@ const gotSingleInstanceLock = isDev || app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    const link = (argv || []).find((a) => typeof a === "string" && a.startsWith("marionette://"));
+    if (link) {
+      try { applyWikiConnectDeepLink(link); } catch (err) {
+        logMain(`wiki-connect second-instance failed: ${err && err.message ? err.message : err}`);
+      }
+    }
     const w = BrowserWindow.getAllWindows()[0];
     if (w) { try { if (w.isMinimized()) w.restore(); w.show(); w.focus(); } catch { /* ignore */ } }
+  });
+}
+
+// Custom protocol so portablellm.wiki can hand credentials back after signup:
+//   marionette://wiki-connect?url=<personal LLM URL>
+// Registered for packaged + unpackaged (dev) launches.
+function registerMarionetteProtocol() {
+  try {
+    if (process.defaultApp) {
+      if (process.argv.length >= 2) {
+        app.setAsDefaultProtocolClient("marionette", process.execPath, [
+          path.resolve(process.argv[1]),
+        ]);
+      }
+    } else {
+      app.setAsDefaultProtocolClient("marionette");
+    }
+  } catch (err) {
+    logMain(`setAsDefaultProtocolClient failed: ${err && err.message ? err.message : err}`);
+  }
+}
+
+function parseWikiConnectDeepLink(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  const text = raw.trim();
+  if (!text.toLowerCase().startsWith("marionette://wiki-connect")) return null;
+  try {
+    // URL() needs a parseable host; normalize scheme for WHATWG parser.
+    const normalized = text.replace(/^marionette:\/\//i, "https://marionette/");
+    const u = new URL(normalized);
+    const personalUrl = u.searchParams.get("url") || "";
+    const apiBase = u.searchParams.get("api_base") || "";
+    const token = u.searchParams.get("token") || u.searchParams.get("t") || "";
+    if (personalUrl) return { api_base: personalUrl, owner_token: undefined };
+    if (apiBase) return { api_base: apiBase, owner_token: token || undefined };
+  } catch (err) {
+    logMain(`parseWikiConnectDeepLink failed: ${err && err.message ? err.message : err}`);
+  }
+  return null;
+}
+
+let wikiConnectQueue = [];
+
+async function applyWikiConnectDeepLink(raw) {
+  const parsed = parseWikiConnectDeepLink(raw);
+  if (!parsed || !parsed.api_base) {
+    logMain(`wiki-connect ignored (unparseable): ${String(raw).slice(0, 120)}`);
+    return { ok: false, error: "unparseable" };
+  }
+  // Backend may not be up yet on cold-start protocol launch — queue and flush
+  // after waitForBackend.
+  if (!backendPort) {
+    wikiConnectQueue.push(raw);
+    return { ok: false, error: "queued" };
+  }
+  try {
+    const body = { api_base: parsed.api_base };
+    if (parsed.owner_token) body.owner_token = parsed.owner_token;
+    const res = await backendRequest("POST", "/api/wiki/config", body);
+    logMain(`[wiki-connect] saved api_base=${(res && res.api_base) || parsed.api_base}`);
+    if (win && !win.isDestroyed()) {
+      try {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      } catch { /* ignore */ }
+      try { win.webContents.send("wiki:connected", res || { ok: true }); } catch { /* ignore */ }
+    }
+    return { ok: true, result: res };
+  } catch (err) {
+    logMain(`wiki-connect apply failed: ${err && err.message ? err.message : err}`);
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+}
+
+function flushWikiConnectQueue() {
+  const q = wikiConnectQueue.splice(0, wikiConnectQueue.length);
+  for (const raw of q) {
+    applyWikiConnectDeepLink(raw).catch(() => {});
+  }
+}
+
+function wireWikiConnectNavigation(contents) {
+  if (!contents || contents.__wikiConnectWired) return;
+  contents.__wikiConnectWired = true;
+  const intercept = (url) => {
+    if (typeof url === "string" && url.toLowerCase().startsWith("marionette://wiki-connect")) {
+      try { applyWikiConnectDeepLink(url); } catch (err) {
+        logMain(`wiki-connect navigate failed: ${err && err.message ? err.message : err}`);
+      }
+      return true;
+    }
+    return false;
+  };
+  contents.on("will-navigate", (e, url) => {
+    if (intercept(url)) e.preventDefault();
+  });
+  contents.on("will-redirect", (e, url) => {
+    if (intercept(url)) e.preventDefault();
   });
 }
 
@@ -1247,6 +1352,7 @@ app.on("web-contents-created", (_e, contents) => {
   // persist:browser all need the same Chrome UA + hideAutomation belt.
   if (type === "webview") {
     applyChromeFingerprint(contents);
+    wireWikiConnectNavigation(contents);
     logMain(`[browser] webview contents created; UA applied`);
     contents.setWindowOpenHandler(() => {
       return {
@@ -1336,6 +1442,7 @@ function openPopoutWindow(url) {
   try { win.setAlwaysOnTop(true, "floating"); } catch {}
   applyChromeFingerprint(win.webContents);
   wireBrowserContentsAutomation(win.webContents);
+  wireWikiConnectNavigation(win.webContents);
   wirePopoutWindow(win);
   win.loadURL(target);
   return win;
@@ -1370,6 +1477,7 @@ ipcMain.handle("browser:openExternal", async (_e, url) => {
 
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return; // a prior instance owns the backend
+  registerMarionetteProtocol();
   configureBrowserSession();
   // A Finder/Dock launch inherits a minimal launchd PATH that omits Homebrew and
   // Node version managers, so the FIRST-RUN bootstrap (git/node/uv discovery) can
@@ -1398,6 +1506,15 @@ app.whenReady().then(async () => {
   }
   try { await startBackend(); } catch (e) { console.error("backend start failed:", e); }
   createWindow();
+  flushWikiConnectQueue();
+  const coldLink = (process.argv || []).find(
+    (a) => typeof a === "string" && a.startsWith("marionette://"),
+  );
+  if (coldLink) {
+    try { await applyWikiConnectDeepLink(coldLink); } catch (e) {
+      logMain(`wiki-connect cold-start failed: ${e && e.message ? e.message : e}`);
+    }
+  }
   // Re-open: ensure a healthy backend, THEN (re)create the window. startBackend()
   // is idempotent -- it reuses a live backend via the marker, or respawns one if
   // it died -- so a reopened window always connects to a working backend.
@@ -1410,6 +1527,15 @@ app.whenReady().then(async () => {
       const w = BrowserWindow.getAllWindows()[0];
       try { if (w.isMinimized()) w.restore(); w.show(); w.focus(); } catch {}
     }
+  });
+});
+
+// macOS: protocol opens arrive as open-url when the app is running / launched
+// from a marionette:// click.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  applyWikiConnectDeepLink(url).catch((err) => {
+    logMain(`wiki-connect open-url failed: ${err && err.message ? err.message : err}`);
   });
 });
 

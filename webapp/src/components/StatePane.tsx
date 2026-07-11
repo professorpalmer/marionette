@@ -80,11 +80,30 @@ export default function StatePane({ artifacts }: {
   // one-click path to create (or self-host) their portable LLM wiki. Mirrors the
   // markdown-link open flow: stash the URL, focus the tab, then dispatch the open.
   const openWikiSetup = () => {
-    const url = "https://portablellm.wiki";
+    // Hosted signup / connect — pop out so GitHub OAuth survives panel switches.
+    // ?client=marionette makes DoneView mint a private personal LLM URL and
+    // deep-link back via marionette://wiki-connect (no paste).
+    const url = "https://portablellm.wiki/welcome?client=marionette";
+    const ipc = (window as any).harnessIPC;
+    if (ipc && typeof ipc.popoutBrowser === "function") {
+      try {
+        ipc.popoutBrowser(url);
+        return;
+      } catch { /* fall through to in-app browser tab */ }
+    }
     (window as any).__pmPendingBrowserUrl = url;
     window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "browser" }));
     window.dispatchEvent(new CustomEvent("harness-open-url", { detail: { url } }));
   };
+
+  useEffect(() => {
+    const ipc = (window as any).harnessIPC;
+    if (!ipc || typeof ipc.onWikiConnected !== "function") return;
+    return ipc.onWikiConnected(() => {
+      void revalidateWiki();
+      window.dispatchEvent(new Event("harness-config-changed"));
+    });
+  }, [revalidateWiki]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -492,17 +511,17 @@ export default function StatePane({ artifacts }: {
                 <div className="flex flex-col gap-1.5">
                   <div className="text-faint leading-relaxed">
                     A portable LLM wiki is a personal, URL-addressable briefing about
-                    you that any model can read to work with your context. Connect
-                    portablellm.wiki (paste your personal LLM URL in Settings) --
-                    Marionette will not invent a local demo wiki on first launch.
+                    you that any model can read. Click below to open portablellm.wiki
+                    in a pop-out browser — sign up (or sign in), and Marionette links
+                    automatically at owner tier. No token paste.
                   </div>
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={openWikiSetup}
                       className="text-[9px] bg-accent/15 hover:bg-accent/25 text-accent px-2 py-0.5 rounded transition-colors font-medium border border-accent/30 flex items-center gap-1 shrink-0"
-                      title="Open portablellm.wiki to create or connect your wiki"
+                      title="Open portablellm.wiki signup in a pop-out browser"
                     >
-                      <ExternalLink className="w-2.5 h-2.5" /> Set up portablellm.wiki
+                      <ExternalLink className="w-2.5 h-2.5" /> Connect portablellm.wiki
                     </button>
                     <button
                       onClick={() => void revalidateWiki()}

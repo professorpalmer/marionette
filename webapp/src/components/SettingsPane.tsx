@@ -1317,16 +1317,16 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             Wiki Graph
           </div>
           <div className="text-[10px] text-muted leading-relaxed">
-            Paste your portablellm.wiki personal LLM URL (or API base + owner token)
-            to populate the Wiki graph tab. Hosted API form:
-            {" "}https://api.portablellm.wiki/t/your-tenant.
+            Prefer <span className="text-accent">State → Wiki → Connect portablellm.wiki</span>
+            {" "}(pop-out signup auto-links). Manual paste still works: personal LLM URL
+            or https://api.portablellm.wiki/t/your-tenant.
             {wikiCfg ? <span className={wikiCfg.has_token ? " text-good" : " text-faint"}> {wikiCfg.has_token ? "Token set." : "No token."}</span> : null}
           </div>
           <input
             type="text"
             value={wikiBase}
             onChange={(e) => setWikiBase(e.target.value)}
-            placeholder="Personal LLM URL or https://api.portablellm.wiki/t/your-tenant"
+            placeholder="Personal LLM URL (or leave blank and use Connect button)"
             className="w-full bg-bg border border-edge rounded px-2 py-1 text-[11px] font-mono text-txt focus:outline-none focus:border-accent"
           />
           <input

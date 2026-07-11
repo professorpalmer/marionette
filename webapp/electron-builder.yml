@@ -10,6 +10,10 @@ files:
   - "!electron/**/*.test.cjs"
   - node_modules/**/*
 afterSign: build/notarize.cjs
+protocols:
+  - name: Marionette
+    schemes:
+      - marionette
 mac:
   category: public.app-category.developer-tools
   target:

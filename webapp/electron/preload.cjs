@@ -87,5 +87,12 @@ contextBridge.exposeInMainWorld("harnessIPC", {
     ipcRenderer.on("backend:respawned", handler);
     return () => ipcRenderer.removeListener("backend:respawned", handler);
   },
+  // Fired when portablellm.wiki hands back a personal LLM URL via
+  // marionette://wiki-connect (Electron protocol / webview intercept).
+  onWikiConnected: (cb) => {
+    const handler = (_e, payload) => { try { cb(payload); } catch (_) {} };
+    ipcRenderer.on("wiki:connected", handler);
+    return () => ipcRenderer.removeListener("wiki:connected", handler);
+  },
   isDesktop: true,
 });
