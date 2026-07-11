@@ -954,12 +954,17 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     return () => window.removeEventListener("harness-focus-input", onFocus);
   }, []);
 
-  // Auto-grow textarea effect (Cursor-like dynamic expansion)
+  // Auto-grow textarea (Cursor-like). Keep overflow hidden until we hit the
+  // max height -- overflow-y-auto on an empty/short field paints a useless
+  // Windows classic scrollbar gutter inside the rounded composer.
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
+    const contentH = ta.scrollHeight;
+    const maxH = 200;
+    ta.style.height = Math.min(contentH, maxH) + "px";
+    ta.style.overflowY = contentH > maxH ? "auto" : "hidden";
   }, [input]);
 
   // Load workspace files for @-mention dropdown
