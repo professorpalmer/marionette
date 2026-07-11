@@ -30,7 +30,18 @@ def _max_concurrent_from_env(default: int = DEFAULT_MAX_CONCURRENT_SESSIONS) -> 
 
 
 def _is_busy(runner: Any) -> bool:
-    """Duck-typed busy check: ``_busy.locked()`` or ``_state != idle``."""
+    """Duck-typed busy check: prefer ``is_turn_busy()``, else lock / state.
+
+    ConversationalSession.is_turn_busy() reports False after an explicit Stop
+    even while an abandoned generator still holds ``_busy``, so the runners
+    poll does not flip the UI back to thinking.
+    """
+    fn = getattr(runner, "is_turn_busy", None)
+    if callable(fn):
+        try:
+            return bool(fn())
+        except Exception:
+            pass
     busy = getattr(runner, "_busy", None)
     if busy is not None:
         locked = getattr(busy, "locked", None)

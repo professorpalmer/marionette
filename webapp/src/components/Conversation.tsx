@@ -276,6 +276,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     { id: string; text: string; category: string }[]
   >([]);
   const cancelRef = useRef<null | (() => void)>(null);
+  // User hit Stop: suppress runners-poll "thinking" re-arm and keep-alive resume
+  // until the next real user send (not an auto pilot_resume).
+  const userStoppedRef = useRef(false);
   const feedRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const planTurnRef = useRef(false);
@@ -884,9 +887,21 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   usePolling(() => {
     if (!activeSessionId) return;
     if (localStreamActiveRef.current) return;
+    if (userStoppedRef.current) {
+      // Stop must stick: ignore runners=running while the abandoned generator
+      // unwinds; keep chrome idle until the user sends again.
+      detachedBusyRef.current = false;
+      setStatus((prev) =>
+        prev === "thinking" || prev === "executing" || prev === "streaming"
+          ? "idle"
+          : prev
+      );
+      return;
+    }
     const sid = activeSessionId;
     return api.getSessionState().then((res) => {
       if (cachedSessionIdRef.current !== sid || localStreamActiveRef.current) return;
+      if (userStoppedRef.current) return;
       const runners = res?.runners || {};
       const running = runners[sid] === "running";
       if (running) {
@@ -1604,6 +1619,14 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     // Stale transcript = prior session still on screen while B hydrates.
     // Never send into the wrong session.
     if (transcriptStale && !resume) return;
+    if (!resume) {
+      // Real user/autopilot send clears the Stop hold so thinking can run again.
+      userStoppedRef.current = false;
+    } else if (userStoppedRef.current) {
+      // Keep-alive after Stop must not re-arm the turn.
+      resumeQueuedRef.current = false;
+      return;
+    }
     planTurnRef.current = usePlan;
     // imagesOverride lets the idle queue-drain path (maybeDrainQueue) carry a
     // queued prompt's image attachments even though they were never placed in
@@ -1955,13 +1978,20 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // Chains naturally: each continuation can dispatch more work whose completion
   // queues the next resume, so the pilot "runs run runs" until the work is done.
   const maybeRunQueuedResume = () => {
+    if (userStoppedRef.current) {
+      resumeQueuedRef.current = false;
+      return;
+    }
     if (!resumeQueuedRef.current) return;
     // Still busy? Leave the flag set -- the next turn's onDone (or the poll) will
     // pick it up. Only clear it once we've actually committed to running.
     if (cancelRef.current) return;
     resumeQueuedRef.current = false;
     setSafeTimeout(() => {
-      if (cancelRef.current) { resumeQueuedRef.current = true; return; }
+      if (userStoppedRef.current || cancelRef.current) {
+        if (!userStoppedRef.current) resumeQueuedRef.current = true;
+        return;
+      }
       executeSendRef.current("", false, false, true);
     }, 60);
   };
@@ -1969,6 +1999,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // A pilot_resume can also arrive via the swarm-results poll while the session is
   // idle (the common background-job case). Trigger a continuation immediately.
   const triggerResume = () => {
+    if (userStoppedRef.current) {
+      resumeQueuedRef.current = false;
+      return;
+    }
     if (cancelRef.current) { resumeQueuedRef.current = true; return; }
     executeSendRef.current("", false, false, true);
   };
@@ -2130,11 +2164,15 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   };
 
   const stop = () => {
+    userStoppedRef.current = true;
+    resumeQueuedRef.current = false;
+    detachedBusyRef.current = false;
     cancelRef.current?.();
     cancelRef.current = null;
     localStreamActiveRef.current = false;
     flushTypewriter();
     setStatus("idle");
+    setCompactingStatus(null);
     api.interruptSession().catch((e) => console.error("Failed to interrupt session on backend:", e));
   };
 

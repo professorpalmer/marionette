@@ -494,6 +494,9 @@ class ConversationalSession(ToolDispatchMixin):
         self._busy = threading.Lock()
         self._busy_since = 0.0  # monotonic time the lock was acquired (0 = free)
         self._interrupt_requested = False  # user hit Stop; allow faster busy recovery
+        # After Stop: report runners idle + suppress swarm keep-alive resume until
+        # the next real user send (abandoned generator may still hold _busy).
+        self._stop_holds_idle = False
         # Generation guard for the single-writer lock. The watchdog can force-
         # release a wedged turn's _busy so drain/new turns recover (audit finding
         # #6); the generation lets the reaped turn's own finally detect it was
@@ -942,7 +945,19 @@ class ConversationalSession(ToolDispatchMixin):
         self._sanitize_tool_pairs()
 
     def is_turn_busy(self) -> bool:
-        """True while a pilot turn holds the single-writer busy lock."""
+        """True while a pilot turn holds the single-writer busy lock.
+
+        After an explicit Stop, report not-busy so the runners poll and UI Stop
+        chrome settle even if the abandoned generator has not released ``_busy``
+        yet (blocked in a subprocess / provider call).
+        """
+        if getattr(self, "_stop_holds_idle", False):
+            return False
+        try:
+            if self._cancel.is_set() and self._interrupt_requested:
+                return False
+        except Exception:
+            pass
         try:
             return bool(self._busy.locked())
         except Exception:
@@ -2064,17 +2079,55 @@ class ConversationalSession(ToolDispatchMixin):
         self._interrupted_swarms = True
 
     def interrupt(self) -> None:
-        """Signal any in-flight run_auto/send to stop at the next checkpoint."""
+        """Hard Stop: cancel the turn, kill local workers, and report idle to the UI.
+
+        Cooperative cancel alone is not enough -- a turn blocked in run_command or
+        a local implement thread keeps ``_busy`` locked, so /api/session/state still
+        reports runners=running and the UI re-arms "thinking" after Stop. We:
+        1. set the cancel flag,
+        2. cancel every in-process local job,
+        3. hold an idle status surface until the next user send,
+        4. mark interrupt_requested so a follow-up send can force-recover the lock.
+        """
         self.cancel()
-        # Mark an EXPLICIT user stop. The in-flight generator may be blocked
-        # inside a subprocess/tool call (run_command, a worker) and can't check
-        # _cancel -- so it can't run its finally to release _busy -- until that
-        # call returns. If the user then sends a new message, the lock is still
-        # held and the normal stale-recovery is too strict (it needs _state ==
-        # 'idle', but the session is still 'executing' mid-tool), so the next
-        # turn wrongly errored 'session busy'. This flag lets the busy-acquire
-        # path force-recover after a short grace once the user has asked to stop.
         self._interrupt_requested = True
+        self._stop_holds_idle = True
+        # Surface idle immediately so the runners poll stops flipping the
+        # composer back to thinking while the abandoned generator unwinds.
+        try:
+            self._state = "idle"
+        except Exception:
+            pass
+        try:
+            with self._local_jobs_lock:
+                running_ids = [
+                    jid for jid, job in self._local_jobs.items()
+                    if (job or {}).get("status") == "running"
+                ]
+            for jid in running_ids:
+                try:
+                    self.cancel_local_job(jid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Best-effort: trip Puppetmaster cancel flags for session-dispatched jobs
+        # so workers halt instead of finishing and kicking keep-alive resume.
+        try:
+            from puppetmaster.cancellation import request_cancel
+            for jid in list(self._session_job_ids or []):
+                if not jid:
+                    continue
+                try:
+                    request_cancel(jid)
+                except Exception:
+                    pass
+                try:
+                    self.cancel_local_job(jid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def steer_with_images(self, text: str, images: Optional[list] = None) -> None:
         """Enqueue a steer, transcribing any attached images into the steer text.
@@ -2508,6 +2561,14 @@ class ConversationalSession(ToolDispatchMixin):
         assesses the result and takes the next step -- no new user message and no
         autopilot required.
         """
+        # Keep-alive must not restart a turn the user just stopped. Real user /
+        # autopilot sends clear the Stop hold in _mark_busy_acquired once they
+        # own the lock.
+        if resume and (
+            getattr(self, "_stop_holds_idle", False)
+            or getattr(self, "_interrupted_swarms", False)
+        ):
+            return
         self._cancel.clear()
         self._pending_advisor_warnings = []
         if not self._busy.acquire(blocking=False):
@@ -6600,9 +6661,11 @@ class ConversationalSession(ToolDispatchMixin):
         with self._busy_meta:
             self._busy_gen += 1
             self._busy_since = _t.monotonic()
-            # A new turn owns the lock now; clear any stale interrupt intent so it
-            # can't trigger a spurious force-recovery against this healthy turn.
+            # A new turn owns the lock now; clear any stale interrupt / Stop-hold
+            # so they can't spuriously force-recover or suppress this healthy turn.
             self._interrupt_requested = False
+            self._stop_holds_idle = False
+            self._interrupted_swarms = False
             return self._busy_gen
 
     def _release_busy(self, gen: int) -> None:
@@ -6869,7 +6932,14 @@ class ConversationalSession(ToolDispatchMixin):
             # Coalesce: one merged user continuation + one pilot_resume per drain
             # pass (not per job). Keeps the keep-alive contract while avoiding
             # N resume turns when N workers finish in the same poll window.
-            if finished_jobs:
+            # After explicit Stop, still emit swarm_result badges above but do
+            # NOT append resume text or fire pilot_resume -- that re-arms thinking.
+            suppress_resume = (
+                getattr(self, "_interrupted_swarms", False)
+                or getattr(self, "_stop_holds_idle", False)
+                or self._cancel.is_set()
+            )
+            if finished_jobs and not suppress_resume:
                 try:
                     any_failed = any(failed for _jid, _obj, failed in finished_jobs)
                     thin_analysis_nudge = (
@@ -7235,6 +7305,7 @@ class ConversationalSession(ToolDispatchMixin):
         failed_verifications = 0
         cycle = 0
         self._cancel.clear()
+        self._interrupted_swarms = False
         while True:
             if self._cancel.is_set():
                 yield ConvEvent("auto_halt", {"reason": "cancelled",
