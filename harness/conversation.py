@@ -3259,7 +3259,7 @@ class ConversationalSession(ToolDispatchMixin):
                     turn_had_invalid = True
                     continue
                 act_goal = act.goal
-                if act.kind in ("read_file", "write_file", "edit_file", "hash_edit", "list_dir", "view_image", "open_project"):
+                if act.kind in ("read_file", "write_file", "edit_file", "hash_edit", "list_dir", "view_image", "open_project", "relocate_session"):
                     act_goal = act.path or "(workspace root)"
                 elif act.kind == "run_command":
                     act_goal = act.command
@@ -3280,6 +3280,8 @@ class ConversationalSession(ToolDispatchMixin):
                     act_goal = act.query
                 elif act.kind == "search_state":
                     act_goal = act.query
+                elif act.kind == "session_bank":
+                    act_goal = (act.arguments or {}).get("session_id") or act.query or "list"
                 elif act.kind == "search_tools":
                     act_goal = act.query or ",".join(act.arguments.get("activate") or [])
                 elif act.kind == "query_wiki":
@@ -3435,6 +3437,134 @@ class ConversationalSession(ToolDispatchMixin):
                         "artifacts": [{"type": "workspace", "headline": f"Opened project: {basename}"}]
                     })
                     self._append_action_result(act, aid, f"Opened project: {basename}", is_native)
+                    continue
+
+                # ---- relocate_session branch ----------------------------------
+                if act.kind == "relocate_session":
+                    args = act.arguments or {}
+                    target_repo = (
+                        (act.path or "").strip()
+                        or (act.repo or "").strip()
+                        or (args.get("workspace_root") or args.get("path") or args.get("repo") or "")
+                    ).strip()
+                    sid = (args.get("session_id") or args.get("id") or "").strip()
+                    title = args.get("title")
+                    if not target_repo:
+                        err_msg = "Error: workspace_root is required for relocate_session"
+                        yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+                        self._append_action_result(act, aid, err_msg, is_native, ok=False)
+                        continue
+                    try:
+                        from harness.server import _handle_session_relocate
+                        status, payload = _handle_session_relocate({
+                            "workspace_root": target_repo,
+                            "session_id": sid,
+                            "title": title if isinstance(title, str) else None,
+                        })
+                    except Exception as e:
+                        err_msg = f"Error relocating session: {e}"
+                        yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+                        self._append_action_result(act, aid, err_msg, is_native, ok=False)
+                        continue
+                    if status != 200 or not payload.get("ok"):
+                        err_msg = payload.get("error") or f"relocate failed ({status})"
+                        yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+                        self._append_action_result(act, aid, err_msg, is_native, ok=False)
+                        continue
+                    # Keep this runner's config.repo aligned with the server.
+                    try:
+                        self.config.repo = target_repo
+                        os.environ["HARNESS_REPO"] = target_repo
+                    except Exception:
+                        pass
+                    basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
+                    headline = f"Moved conversation into {basename}"
+                    yield ConvEvent("action_result", {
+                        "id": aid,
+                        "num": 1,
+                        "types": ["workspace"],
+                        "adapter": "local",
+                        "mode": "tool",
+                        "artifacts": [{"type": "workspace", "headline": headline}],
+                    })
+                    self._append_action_result(
+                        act, aid,
+                        f"{headline}\nsession={payload.get('active')} workspace_root={target_repo}",
+                        is_native,
+                    )
+                    continue
+
+                # ---- session_bank branch --------------------------------------
+                if act.kind == "session_bank":
+                    args = act.arguments or {}
+                    query = (act.query or args.get("query") or "").strip()
+                    sid = (args.get("session_id") or args.get("id") or "").strip()
+                    try:
+                        limit = int(args.get("limit") if args.get("limit") is not None else (act.limit or 20))
+                    except (TypeError, ValueError):
+                        limit = 20
+                    try:
+                        from harness.server import _sessions, _sessions_state_dir
+                        from harness.sessions import load_transcript
+                        if sid:
+                            rows = [r for r in _sessions.list() if r.get("id") == sid]
+                            meta = rows[0] if rows else {"id": sid, "title": "(unknown)"}
+                            data = load_transcript(_sessions_state_dir(), sid)
+                            history = []
+                            if isinstance(data, dict):
+                                history = data.get("history") or data.get("display") or []
+                            elif isinstance(data, list):
+                                history = data
+                            lines = [
+                                f"Session {sid}: {meta.get('title') or '(untitled)'}",
+                                f"workspace_root: {meta.get('workspace_root') or meta.get('repo') or ''}",
+                                f"created: {meta.get('created')}",
+                                f"messages: {len(history)}",
+                                "",
+                            ]
+                            for msg in history[:40]:
+                                if not isinstance(msg, dict):
+                                    continue
+                                role = msg.get("role") or msg.get("type") or "?"
+                                content = msg.get("content") or msg.get("text") or ""
+                                if isinstance(content, list):
+                                    parts = []
+                                    for p in content:
+                                        if isinstance(p, dict) and p.get("type") == "text":
+                                            parts.append(str(p.get("text") or ""))
+                                        elif isinstance(p, str):
+                                            parts.append(p)
+                                    content = "\n".join(parts)
+                                text = str(content).strip().replace("\n", " ")
+                                if len(text) > 240:
+                                    text = text[:237] + "..."
+                                if text:
+                                    lines.append(f"[{role}] {text}")
+                            val = "\n".join(lines)
+                        else:
+                            bank = _sessions.list_bank(
+                                query=query,
+                                limit=limit,
+                                state_dir=_sessions_state_dir(),
+                            )
+                            lines = [f"Session bank ({len(bank)}):"]
+                            for row in bank:
+                                lines.append(
+                                    f"- {row.get('id')} | {row.get('title') or '(untitled)'} | "
+                                    f"{row.get('workspace_root') or row.get('repo') or '(no root)'} | "
+                                    f"in={row.get('input_tokens', 0)} out={row.get('output_tokens', 0)}"
+                                )
+                            val = "\n".join(lines) if bank else "No sessions found."
+                    except Exception as e:
+                        err_msg = f"session_bank failed: {e}"
+                        yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+                        self._append_action_result(act, aid, err_msg, is_native, ok=False)
+                        continue
+                    yield ConvEvent("action_result", {
+                        "id": aid, "num": 1, "types": ["session_bank"], "adapter": "local", "mode": "tool",
+                        "artifacts": [{"type": "session_bank", "headline": f"session_bank: {sid or query or 'list'}"}],
+                    })
+                    self._append_action_result(act, aid, f"(session_bank returned)\n{val}", is_native)
                     continue
 
                 # ---- read_file branch -----------------------------------------

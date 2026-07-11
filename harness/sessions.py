@@ -303,6 +303,98 @@ class SessionStore:
                     self._save()
                     break
 
+    def relocate(
+        self,
+        sid: str,
+        workspace_root: str,
+        *,
+        repo: str = "",
+        branch: str = "",
+        title: Optional[str] = None,
+        make_active: bool = True,
+    ) -> Optional[dict]:
+        """Move a session into ``workspace_root`` without creating a new session.
+
+        Preserves the same session id (and therefore the transcript file under
+        ``state/transcripts/<sid>.json``). When ``make_active`` is True, the
+        relocated session becomes the active view.
+        """
+        ws_root = (workspace_root or "").strip()
+        if not sid or not ws_root:
+            return None
+        with self._lock:
+            for s in self._sessions:
+                if s["id"] != sid:
+                    continue
+                s["workspace_root"] = ws_root
+                s["repo"] = (repo or ws_root).strip()
+                if branch:
+                    s["branch"] = branch
+                if title is not None and str(title).strip():
+                    s["title"] = str(title).strip()
+                if make_active:
+                    self._active = sid
+                self._save()
+                return {
+                    **s,
+                    "active": s["id"] == self._active,
+                    "workspace_root": session_stored_root(s),
+                    "input_tokens": int(s.get("input_tokens", 0) or 0),
+                    "output_tokens": int(s.get("output_tokens", 0) or 0),
+                    "cache_read_tokens": int(s.get("cache_read_tokens", 0) or 0),
+                    "estimated_cost_usd": float(s.get("estimated_cost_usd", 0.0) or 0.0),
+                }
+            return None
+
+    def list_bank(
+        self,
+        query: str = "",
+        limit: int = 50,
+        state_dir: str = "",
+    ) -> list[dict]:
+        """Chronological listing of ALL sessions (cross-workspace transcript bank).
+
+        Optional ``query`` matches title, id, or workspace_root (case-insensitive).
+        """
+        rows = self.list(workspace_root="", state_dir=state_dir)
+        rows.sort(key=lambda s: float(s.get("created", 0) or 0), reverse=True)
+        q = (query or "").strip().lower()
+        if q:
+            filtered = []
+            for row in rows:
+                hay = " ".join([
+                    str(row.get("title") or ""),
+                    str(row.get("id") or ""),
+                    str(row.get("workspace_root") or ""),
+                    str(row.get("repo") or ""),
+                ]).lower()
+                if q in hay:
+                    filtered.append(row)
+            rows = filtered
+        cap = max(1, min(int(limit or 50), 500))
+        return rows[:cap]
+
+    def migrate_empty_roots(self, workspace_root: str) -> list[str]:
+        """Bind rootless / empty-root sessions to ``workspace_root`` (boot hygiene).
+
+        Does not change the active session. Returns relocated session ids.
+        """
+        ws_root = (workspace_root or "").strip()
+        if not ws_root:
+            return []
+        moved: list[str] = []
+        with self._lock:
+            for s in self._sessions:
+                if session_stored_root(s):
+                    continue
+                s["workspace_root"] = ws_root
+                if not (s.get("repo") or "").strip():
+                    s["repo"] = ws_root
+                moved.append(s["id"])
+            if moved:
+                self._save()
+        return moved
+
     @property
     def active(self) -> Optional[str]:
         return self._active

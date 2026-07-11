@@ -1133,6 +1133,60 @@ def _state_home() -> str:
     return root
 
 
+def _home_workspace_path() -> str:
+    """Durable default workspace for chats with no Open Folder.
+
+    Production: ``~/.pmharness/home``. Under ``HARNESS_STATE_DIR`` (tests /
+    isolated runs): ``{state_dir}/home`` so we never touch the real home tree.
+    This path is a real user project root -- not ephemeral -- and must remain
+    boot-restorable via ``_record_recent_workspace``.
+    """
+    explicit = os.environ.get("HARNESS_STATE_DIR")
+    if explicit:
+        return os.path.join(explicit, "home")
+    return os.path.join(_pmharness_root(), "home")
+
+
+def _is_home_workspace(path: str) -> bool:
+    """True when ``path`` is the durable Home workspace (slash/case-insensitive)."""
+    if not path:
+        return False
+    try:
+        return _paths_same_workspace(path, _home_workspace_path())
+    except Exception:
+        return False
+
+
+def _ensure_home_workspace() -> str:
+    """Create the Home workspace on demand, seed a minimal AGENTS.md, record it.
+
+    Returns the absolute home path. Never raises for normal filesystem errors
+    beyond returning the intended path; callers may still use it as a bind root.
+    """
+    home = os.path.abspath(_home_workspace_path())
+    try:
+        os.makedirs(home, exist_ok=True)
+    except Exception as e:
+        _diag("server.home_workspace_mkdir", e)
+    agents = os.path.join(home, "AGENTS.md")
+    try:
+        if not os.path.isfile(agents):
+            with open(agents, "w", encoding="utf-8", newline="\n") as f:
+                f.write(
+                    "# Home workspace\n\n"
+                    "Default Marionette workspace for chats started without "
+                    "Open Folder. Prefer moving durable project work into a "
+                    "real repository via relocate_session / Open Folder.\n"
+                )
+    except Exception as e:
+        _diag("server.home_workspace_seed", e)
+    try:
+        _record_recent_workspace(home, as_active=False)
+    except Exception as e:
+        _diag("server.home_workspace_record", e)
+    return home
+
+
 def _env_settings_path() -> str:
     return os.path.join(_state_home(), "env_settings.json")
 
@@ -1391,7 +1445,7 @@ def _pick_boot_workspace(ws_data: dict) -> str:
     return ""
 
 
-def _record_recent_workspace(target_repo: str) -> list:
+def _record_recent_workspace(target_repo: str, *, as_active: bool = True) -> list:
     import json
     import os
     import tempfile as _tf
@@ -1447,13 +1501,15 @@ def _record_recent_workspace(target_repo: str) -> list:
         # The "repo" key is what boot restores as the active workspace, so a
         # temp dir / app checkout here resurrects as a phantom project on next
         # launch. Keep the prior persisted repo when the new target is not a
-        # user project.
-        if _persistable(target_repo):
+        # user project. as_active=False (Home seed) only appends to recents.
+        if as_active and _persistable(target_repo):
             persisted_repo = target_repo
         elif prior_repo and _persistable(prior_repo):
             persisted_repo = prior_repo
-        else:
+        elif as_active:
             persisted_repo = ""
+        else:
+            persisted_repo = prior_repo if _persistable(prior_repo) else ""
 
         # Use atomic-write
         target_dir = os.path.dirname(ws_json_path)
@@ -2229,6 +2285,108 @@ def _handle_session_delete(sid: str) -> tuple[int, dict]:
     return 200, {"ok": True, "active": new_active}
 
 
+def _handle_session_relocate(body: dict) -> tuple[int, dict]:
+    """Move an existing session into a project workspace (no new blank session).
+
+    Updates ``workspace_root``/``repo``, records the target in recents, opens
+    the workspace as active, and keeps the same session id / transcript file.
+    """
+    global _codegraph_status, _codegraph_status_reason
+    target_repo = (body.get("workspace_root") or body.get("path") or body.get("repo") or "").strip()
+    if not target_repo:
+        return 400, {"ok": False, "error": "workspace_root is required"}
+    if not os.path.isdir(target_repo):
+        return 400, {"ok": False, "error": f"path is not an existing directory: {target_repo}"}
+    if _is_app_install_root(target_repo):
+        return 400, {"ok": False, "error": "refusing to relocate into the Marionette app checkout"}
+
+    sid = (body.get("session_id") or body.get("session") or body.get("id") or "").strip()
+    if not sid:
+        sid = (_sessions.active or "").strip()
+    if not sid:
+        return 400, {"ok": False, "error": "no session_id and no active session"}
+
+    title = body.get("title")
+    _save_active_transcript()
+
+    prev_active = _sessions.active
+    prev_repo = _cfg.repo
+    prev_env_repo = os.environ.get("HARNESS_REPO")
+
+    branch = ""
+    try:
+        import subprocess
+        proc = subprocess.run(
+            ["git", "-C", target_repo, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode == 0:
+            branch = (proc.stdout or "").strip()
+    except Exception:
+        pass
+
+    relocated = _sessions.relocate(
+        sid,
+        target_repo,
+        repo=target_repo,
+        branch=branch,
+        title=title if isinstance(title, str) else None,
+        make_active=True,
+    )
+    if not relocated:
+        return 404, {"ok": False, "error": "unknown session"}
+
+    _cfg.repo = target_repo
+    os.environ["HARNESS_REPO"] = target_repo
+    _note_boot_repo(target_repo)
+    try:
+        _record_recent_workspace(target_repo)
+    except Exception as e:
+        _diag("server.session_relocate_record_recent", e)
+
+    has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
+    if not has_codegraph:
+        if _puppetmaster_available():
+            _codegraph_status = "indexing"
+            _codegraph_status_reason = None
+        _index_codegraph_bg(target_repo)
+    else:
+        if _puppetmaster_available():
+            _codegraph_status = "ready"
+            _maybe_refresh_codegraph(target_repo)
+        else:
+            _codegraph_status = "unsupported"
+
+    try:
+        _attach_view(sid)
+    except LeaseExhaustedError as e:
+        if prev_active:
+            try:
+                _sessions.switch(prev_active)
+            except Exception as roll_e:
+                _diag("server.session_relocate_lease_rollback", roll_e)
+        if _cfg.repo != prev_repo:
+            _cfg.repo = prev_repo
+            if prev_env_repo is None:
+                os.environ.pop("HARNESS_REPO", None)
+            else:
+                os.environ["HARNESS_REPO"] = prev_env_repo
+        return 409, {
+            "ok": False,
+            "error": str(e) or "session runner lease exhausted",
+            "code": "lease_exhausted",
+        }
+
+    return 200, {
+        "ok": True,
+        "session": relocated,
+        "active": sid,
+        "repo": target_repo,
+        "workspace_root": target_repo,
+        "codegraph": _get_codegraph_status(target_repo),
+    }
+
+
 def _apply_model_context_window():
     """Recompute _cfg.max_context_tokens for the active driver's real window
     after a model swap. An explicit HARNESS_MAX_CONTEXT_TOKENS env override
@@ -2366,6 +2524,23 @@ def _scrub_app_root_sessions_on_boot() -> None:
 
 _scrub_app_root_sessions_on_boot()
 
+
+def _migrate_orphan_sessions_to_home() -> None:
+    """Bind empty-root session rows to the durable Home workspace on boot.
+
+    Pre-home builds left rootless sessions visible everywhere (or nowhere in
+    the Projects rail). Migrating them into Home keeps transcripts reachable
+    under Projects -> Home without creating new session ids.
+    """
+    try:
+        home = _ensure_home_workspace()
+        _sessions.migrate_empty_roots(home)
+    except Exception as e:
+        _diag("server.boot_home_session_migrate", e)
+
+
+_migrate_orphan_sessions_to_home()
+
 # Startup: Restore the active/most-recent session's transcript into _pilot
 # and register it as the active view in the runner registry.
 if _sessions.active:
@@ -2468,7 +2643,7 @@ def _parse_bool(val) -> bool:
     return False
 
 
-_codegraph_status = "unsupported"
+_codegraph_status = "none"
 _codegraph_status_reason = None
 # Last preflight payload for the active repo (surfaced on /api/codegraph).
 _codegraph_preflight = None  # dict | None
@@ -2709,6 +2884,13 @@ def _index_codegraph_bg(repo_path: str):
             _codegraph_status_cache.pop(repo_path, None)
         return
 
+    # Claim INDEXING immediately -- before preflight -- so /api/workspace/open
+    # and status polls never flash UNSUPPORTED while scope prep runs. Preflight
+    # may still override to needs_scope / unsupported on real failures.
+    _codegraph_status = "indexing"
+    _codegraph_status_reason = None
+    _codegraph_status_cache.pop(repo_path, None)
+
     # Preflight before spawning: avoid a doomed 10-minute walk of game assets.
     try:
         pre = _prepare_codegraph_scope(repo_path)
@@ -2831,28 +3013,52 @@ def _reindex_codegraph_bg(repo_path: str):
 
 
 def _get_codegraph_status(repo_path: str) -> str:
-    global _codegraph_status
+    """Resolve CodeGraph badge status for ``repo_path``.
+
+    ``unsupported`` is reserved for confirmed failures (PM missing, path
+    missing, indexer failed with a reason). The transient empty-index case
+    (PM available, path exists, no DB yet, no failure reason) returns
+    ``indexing`` so the LeftRail never flashes UNSUPPORTED before the
+    indexer starts.
+    """
+    global _codegraph_status, _codegraph_status_reason
     if not repo_path:
-        return "unsupported"
+        return "none"
     if not _puppetmaster_available():
         _codegraph_status = "unsupported"
         return "unsupported"
-    # Self-heal: trust "indexing" only while the indexer subprocess is alive.
+    if not os.path.isdir(repo_path):
+        _codegraph_status = "unsupported"
+        return "unsupported"
+    # Self-heal: trust "indexing" while the indexer is alive OR while we are
+    # still in preflight/spawn (status=indexing but proc not assigned yet).
+    # Demoting that window to unsupported caused the LeftRail UNSUPPORTED flash.
     if _codegraph_status == "indexing":
         if _codegraph_index_alive():
             return "indexing"
         if _codegraph_indexed(repo_path):
             _codegraph_status = "ready"
             return "ready"
-        # Indexer finished/died with no DB — do not stick on "indexing".
-        _codegraph_status = "unsupported"
-        return "unsupported"
+        # Proc handle present but dead => indexer exited without a DB.
+        if _codegraph_index_proc is not None:
+            _codegraph_status = "unsupported"
+            if not _codegraph_status_reason:
+                _codegraph_status_reason = "Indexer stopped before writing codegraph.db"
+            return "unsupported"
+        # No proc yet (preflight / about to spawn) -- stay indexing.
+        return "indexing"
     if _codegraph_status == "needs_scope":
         return "needs_scope"
     if _codegraph_indexed(repo_path):
         _codegraph_status = "ready"
         return "ready"
-    return "unsupported"
+    # Confirmed failure with a reason sticks; bare default / empty-index does not.
+    if _codegraph_status == "unsupported" and _codegraph_status_reason:
+        return "unsupported"
+    # Transient: PM ok, path ok, not indexed yet — never flash unsupported.
+    if _codegraph_status not in ("indexing", "pending"):
+        _codegraph_status = "indexing"
+    return "indexing"
 
 
 # Debounce: never re-check staleness more than once per this interval per repo,
@@ -3109,6 +3315,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/sessions/create", "/api/sessions/switch",
                       "/api/sessions/delete", "/api/sessions/clear",
                       "/api/sessions/archive", "/api/sessions/rename",
+                      "/api/sessions/relocate", "/api/sessions/move",
                       "/api/session/interrupt", "/api/session/compact", "/api/session/steer",
                       "/api/session/queue", "/api/session/queue/reorder",
                       "/api/session/persist", "/api/restart",
@@ -3618,6 +3825,11 @@ class Handler(BaseHTTPRequestHandler):
 
             has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
             if not has_codegraph:
+                # Set indexing before spawn/preflight so the open response and
+                # immediate polls never flash unsupported.
+                if _puppetmaster_available():
+                    _codegraph_status = "indexing"
+                    _codegraph_status_reason = None
                 _index_codegraph_bg(target_repo)
             else:
                 if _puppetmaster_available():
@@ -3853,7 +4065,11 @@ class Handler(BaseHTTPRequestHandler):
             # the store pointed at an unattached session.
             prev_active = _sessions.active
             title = body.get("title") or "New session"
-            repo = _cfg.repo or ""
+            repo = (_cfg.repo or "").strip()
+            # No Open Folder: bind the session to the durable Home workspace so
+            # it appears under Projects -> Home (never a rootless orphan).
+            if not repo:
+                repo = _ensure_home_workspace()
             branch = ""
             if repo and os.path.isdir(repo):
                 import subprocess
@@ -3901,6 +4117,9 @@ class Handler(BaseHTTPRequestHandler):
             run_hooks("sessionStart", {"session_id": sid, "title": title})
 
             return self._send(200, json.dumps(res))
+        if path in ("/api/sessions/relocate", "/api/sessions/move"):
+            status, payload = _handle_session_relocate(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/sessions/switch":
             # Multi-session: switching VIEW must not 409 just because the
             # outgoing (or another) runner is busy -- other sessions keep
@@ -3947,6 +4166,9 @@ class Handler(BaseHTTPRequestHandler):
 
                     has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
                     if not has_codegraph:
+                        if _puppetmaster_available():
+                            _codegraph_status = "indexing"
+                            _codegraph_status_reason = None
                         _index_codegraph_bg(target_repo)
                     else:
                         if _puppetmaster_available():
@@ -3975,7 +4197,7 @@ class Handler(BaseHTTPRequestHandler):
                     }))
 
                 res["repo"] = _cfg.repo
-                res["codegraph"] = _get_codegraph_status(_cfg.repo) if _cfg.repo else "unsupported"
+                res["codegraph"] = _get_codegraph_status(_cfg.repo) if _cfg.repo else "none"
 
             return self._send(200, json.dumps(res))
         if path == "/api/sessions/delete":
@@ -5108,7 +5330,7 @@ class Handler(BaseHTTPRequestHandler):
                             branch = proc_branch.stdout.strip()
                 except Exception:
                     pass
-            cg_status = _get_codegraph_status(repo) if repo else "unsupported"
+            cg_status = _get_codegraph_status(repo) if repo else "none"
             recents = []
             try:
                 _ws_path = _workspace_json_path()
@@ -5126,12 +5348,22 @@ class Handler(BaseHTTPRequestHandler):
                 and "/var/folders/" not in os.path.realpath(r)
                 and not _is_app_install_root(r)
             ]
+            # Ensure Home is always visible in Projects (boot-restorable).
+            try:
+                home = _ensure_home_workspace()
+                if home and os.path.isdir(home) and not any(
+                    _paths_same_workspace(home, r) for r in recents
+                ):
+                    recents = list(recents) + [home]
+            except Exception as e:
+                _diag("server.workspace_home_recent", e)
             return self._send(200, json.dumps({
                 "repo": repo,
                 "branch": branch,
                 "is_git": is_git,
                 "codegraph_status": cg_status,
-                "recents": recents
+                "recents": recents,
+                "home": _home_workspace_path(),
             }))
         if u.path == "/api/models/catalog":
             if self._guard():
@@ -6318,11 +6550,43 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/sessions":
             # Optional ?repo=<path> lists sessions for that root WITHOUT switching
             # the active workspace (LeftRail prefetches every project row).
+            # ?all=1 (or /api/sessions/bank) returns the cross-workspace bank.
             q = parse_qs(u.query)
+            all_flag = (q.get("all", [""])[0] or "").strip().lower()
+            want_all = all_flag in ("1", "true", "yes", "on")
+            if want_all:
+                query = (q.get("q", [""])[0] or q.get("query", [""])[0] or "").strip()
+                try:
+                    limit = int((q.get("limit", ["50"])[0] or "50"))
+                except ValueError:
+                    limit = 50
+                return self._send(200, json.dumps(_sessions.list_bank(
+                    query=query,
+                    limit=limit,
+                    state_dir=_sessions_state_dir(),
+                )))
             repo_override = (q.get("repo", [""])[0] or "").strip()
             root = repo_override or (_cfg.repo or "")
+            if not repo_override and not root:
+                # No Open Folder: sidebar lists Home-bound sessions, not everything.
+                try:
+                    root = _ensure_home_workspace()
+                except Exception:
+                    root = ""
             return self._send(200, json.dumps(_sessions.list(
                 workspace_root=root,
+                state_dir=_sessions_state_dir(),
+            )))
+        if u.path == "/api/sessions/bank":
+            q = parse_qs(u.query)
+            query = (q.get("q", [""])[0] or q.get("query", [""])[0] or "").strip()
+            try:
+                limit = int((q.get("limit", ["50"])[0] or "50"))
+            except ValueError:
+                limit = 50
+            return self._send(200, json.dumps(_sessions.list_bank(
+                query=query,
+                limit=limit,
                 state_dir=_sessions_state_dir(),
             )))
         if u.path == "/api/auto":

@@ -1741,8 +1741,21 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         onJobChange();
         setItems((prev) => {
           const cardItem = prev.find((it) => it.kind === "card" && it.card.id === d.id);
-          if (cardItem && cardItem.kind === "card" && cardItem.card.kind === "open_project" && !d.error) {
+          if (
+            cardItem
+            && cardItem.kind === "card"
+            && (cardItem.card.kind === "open_project" || cardItem.card.kind === "relocate_session")
+            && !d.error
+          ) {
             window.dispatchEvent(new Event("harness-config-changed"));
+            if (cardItem.card.kind === "relocate_session") {
+              const root = (cardItem.card.goal || "").trim();
+              if (root && root !== "(workspace root)") {
+                window.dispatchEvent(new CustomEvent("harness-session-relocated", {
+                  detail: { workspace_root: root },
+                }));
+              }
+            }
           }
           return prev;
         });
@@ -2892,8 +2905,16 @@ function WorkspaceChip() {
     if (picked) await openPath(picked);
   };
   // Split on both separators so Windows paths show the leaf dir, not C:\...\repo.
-  const base = (p: string) => p ? p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p : "";
-  const name = ws?.repo ? base(ws.repo) : "No folder";
+  const base = (p: string) => {
+    if (!p) return "";
+    const home = ws?.home || "";
+    if (home && p.replace(/\\/g, "/").toLowerCase() === home.replace(/\\/g, "/").toLowerCase()) {
+      return "Home";
+    }
+    if (/[/\\]\.pmharness[/\\]home$/i.test(p.replace(/\\/g, "/"))) return "Home";
+    return p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
+  };
+  const name = ws?.repo ? base(ws.repo) : (ws?.home ? "Home" : "No folder");
   const recents = (ws?.recents || []).filter((r) => r !== ws?.repo);
 
   return (

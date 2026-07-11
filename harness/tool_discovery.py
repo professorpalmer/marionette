@@ -58,6 +58,8 @@ _PILOT_EXTRAS: Set[str] = {
     "search_files",
     "memory",
     "open_project",
+    "relocate_session",
+    "session_bank",
     "route_task",
     "run_swarm",
     "run_implement",

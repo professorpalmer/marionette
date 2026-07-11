@@ -305,6 +305,17 @@ def normalize_action_args(kind: str, act: Any) -> str:
         if kind == "hash_edit":
             ops = args.get("ops")
             payload["ops"] = ops if isinstance(ops, list) else []
+    elif kind == "relocate_session":
+        payload["workspace_root"] = _norm_path(
+            getattr(act, "path", "") or getattr(act, "repo", "")
+            or args.get("workspace_root", "") or args.get("path", "") or ""
+        )
+        payload["session_id"] = (args.get("session_id") or args.get("id") or "").strip()
+        payload["title"] = _norm_whitespace(args.get("title", "") or "")
+    elif kind == "session_bank":
+        payload["query"] = _norm_whitespace(getattr(act, "query", "") or args.get("query", "") or "")
+        payload["session_id"] = (args.get("session_id") or args.get("id") or "").strip()
+        payload["limit"] = _norm_optional_int(args.get("limit") if "limit" in args else getattr(act, "limit", None))
     elif kind == "run_command":
         payload["command"] = _norm_whitespace(getattr(act, "command", "") or "")
     elif kind in ("search_files", "search_codegraph", "search_state", "search_tools", "web_search"):

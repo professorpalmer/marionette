@@ -38,6 +38,7 @@ from typing import Optional
 
 
 VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "hash_edit", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "search_state", "search_tools", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project",
+                      "relocate_session", "session_bank",
                       "lsp",
                       "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
                       "browser_scroll", "browser_back", "browser_get_text", "browser_screenshot"}
@@ -123,6 +124,10 @@ class PilotAction:
             raise PilotError("call_mcp action requires a 'tool' (server.tool)")
         if self.kind in ("read_file", "write_file", "view_image", "open_project") and not (self.path or "").strip():
             raise PilotError(f"{self.kind} action requires a 'path'")
+        if self.kind == "relocate_session":
+            target = (self.path or self.repo or (self.arguments or {}).get("workspace_root") or "").strip()
+            if not target:
+                raise PilotError("relocate_session requires workspace_root (or path)")
         if self.kind == "edit_file" and not (self.path or "").strip():
             raise PilotError("edit_file action requires a 'path'")
         if self.kind == "edit_file" and not self.old_str:
@@ -269,6 +274,72 @@ def build_tools_schema(
                 "required": ["path"]
             }
         }
+    })
+
+    # relocate_session -- move the current (or named) chat into a project
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "relocate_session",
+            "description": (
+                "Move this conversation into a project/workspace without creating a new blank session. "
+                "Use when the user says 'move this convo into that project' or similar. "
+                "Updates the session's workspace_root, opens/records the project, and keeps the transcript."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workspace_root": {
+                        "type": "string",
+                        "description": "Absolute path of the target project directory",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Alias for workspace_root",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session id to move (defaults to the active session)",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional new title for the session",
+                    },
+                },
+                "required": [],
+            },
+        },
+    })
+
+    # session_bank -- Hermes-style transcript bank browse/search/read
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "session_bank",
+            "description": (
+                "Browse or search prior chat sessions across all workspaces (transcript bank). "
+                "With no session_id, lists recent sessions (optional query filter). "
+                "With session_id, returns a compact transcript summary for that session."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional filter matching title, id, or workspace path",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "When set, read/summarize that session's transcript",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max sessions to list (default 20)",
+                    },
+                },
+                "required": [],
+            },
+        },
     })
 
     # 1. read_file
@@ -866,6 +937,8 @@ def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> Pilot
         # so a slightly-off tool call still does the right thing instead of erroring.
         path = (args.get("path") or args.get("file_path") or args.get("filename")
                 or args.get("file") or args.get("filepath") or "")
+        if kind == "relocate_session" and not path:
+            path = (args.get("workspace_root") or args.get("repo") or "")
         content = (args.get("content") or args.get("text") or args.get("code")
                    or args.get("file_contents") or args.get("contents") or "")
         old_str = (args.get("old_str") or args.get("old_string") or args.get("old")
@@ -1309,6 +1382,9 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `lsp`: fetch IDE-style status/diagnostics for Python/TypeScript by invoking locally available tools (pyright/tsc/tsserver). Requires optional `language` ('python'/'typescript'/'auto') and `mode` ('status'/'diagnostics').
 - `search_tools`: search the catalog of available pilot and MCP tools; use `activate` to enable hidden tools for later turns.
 - `query_wiki`: query the durable cross-session architecture and knowledge wiki. Requires `question`.
+- `open_project`: open a local directory as the active project/workspace. Requires `path`.
+- `relocate_session`: move the current (or named) conversation into a project without starting a blank session. Requires `workspace_root` (or `path`); optional `session_id`, `title`.
+- `session_bank`: list/search prior sessions across workspaces, or read a transcript summary by `session_id`.
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
 
 MATCH EFFORT TO THE REQUEST (read this first):

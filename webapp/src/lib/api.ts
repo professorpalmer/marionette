@@ -144,6 +144,7 @@ export type WorkspaceInfo = {
   is_git: boolean;
   codegraph_status: string;
   recents?: string[];
+  home?: string;
 };
 
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
@@ -494,12 +495,32 @@ export const api = {
       : "/api/sessions";
     return getJSON<Session[]>(path);
   },
+  sessionsBank: (opts?: { query?: string; limit?: number }) => {
+    const params = new URLSearchParams({ all: "1" });
+    if (opts?.query) params.set("q", opts.query);
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    return getJSON<Session[]>(`/api/sessions?${params.toString()}`);
+  },
   sessionTranscript: (session: string) => getJSON<{ history: any[]; display?: any[]; job_ids?: string[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
   getSessionState: () => getJSON<SessionState>(withToken("/api/session/state")),
   interruptSession: () => postJSON<{ ok: boolean }>("/api/session/interrupt", {}),
   getSwarmResults: () => getJSON<SwarmResultsResponse>(withToken("/api/session/swarm-results")),
   createSession: (title?: string) => postJSON<Session>("/api/sessions/create", { title }),
   switchSession: (id: string) => postJSON("/api/sessions/switch", { id }),
+  relocateSession: (workspaceRoot: string, opts?: { sessionId?: string; title?: string }) =>
+    postJSON<{
+      ok: boolean;
+      active?: string;
+      repo?: string;
+      workspace_root?: string;
+      session?: Session;
+      error?: string;
+      codegraph?: string;
+    }>("/api/sessions/relocate", {
+      workspace_root: workspaceRoot,
+      session_id: opts?.sessionId,
+      title: opts?.title,
+    }),
   // POST rather than DELETE: the packaged Electron preload only bridges
   // getJSON/postJSON, so a DELETE falls through to an unroutable fetch.
   deleteSession: (id: string) =>
@@ -664,7 +685,7 @@ export const api = {
     postJSON<{ ok: boolean; deleted: string[]; count: number }>("/api/worktrees/prune-edit-branches", {}),
   setWorktreeMax: (max: number) => postJSON<{ ok: boolean }>("/api/worktrees/max", { max }),
 
-  openWorkspace: (path: string) => postJSON<{ ok: boolean; repo: string; branch: string; is_git: boolean; codegraph: "indexing" | "ready" | "unsupported"; active_session?: string }>("/api/workspace/open", { path }),
+  openWorkspace: (path: string) => postJSON<{ ok: boolean; repo: string; branch: string; is_git: boolean; codegraph: "indexing" | "ready" | "unsupported" | "needs_scope" | "none" | "pending"; active_session?: string }>("/api/workspace/open", { path }),
   forgetWorkspace: (path: string) => postJSON<{ ok: boolean; recents: string[]; cleared_active?: boolean; repo?: string }>("/api/workspace/forget", { path }),
   getWorkspace: () => getJSON<WorkspaceInfo>("/api/workspace"),
   getWorkspaceFiles: () => getJSON<{ files: string[] }>(withToken("/api/workspace/files")),

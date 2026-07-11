@@ -312,7 +312,7 @@ export default function StatePane({ artifacts }: {
       : cgNeedsScope
         ? "needs scope"
         : cg?.status === "unsupported"
-          ? "unsupported"
+          ? "failed"
           : "none";
   const cgMetric = cgReady && cg?.nodes != null
     ? `${cg.nodes.toLocaleString()} nodes`

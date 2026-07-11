@@ -59,10 +59,24 @@ def test_status_clears_indexing_when_indexer_dead_without_db(monkeypatch, tmp_pa
     repo = str(tmp_path)
     os.makedirs(os.path.join(repo, ".codegraph"), exist_ok=True)
     monkeypatch.setattr(srv, "_puppetmaster_available", lambda: True)
-    monkeypatch.setattr(srv, "_codegraph_index_proc", None)
+    # Dead proc still held in the handle -- distinguishes "exited" from
+    # "preflight, not spawned yet" (which must stay indexing).
+    fp = _FakeProc(alive=False)
+    monkeypatch.setattr(srv, "_codegraph_index_proc", (repo, fp))
     srv._codegraph_status = "indexing"
     assert srv._get_codegraph_status(repo) == "unsupported"
     assert srv._codegraph_status == "unsupported"
+
+
+def test_status_stays_indexing_during_preflight_before_spawn(monkeypatch, tmp_path):
+    """No proc yet + indexing must NOT flash unsupported (open-folder race)."""
+    repo = str(tmp_path)
+    monkeypatch.setattr(srv, "_puppetmaster_available", lambda: True)
+    monkeypatch.setattr(srv, "_codegraph_index_proc", None)
+    srv._codegraph_status = "indexing"
+    srv._codegraph_status_reason = None
+    assert srv._get_codegraph_status(repo) == "indexing"
+    assert srv._codegraph_status == "indexing"
 
 
 def test_status_stays_indexing_while_alive(monkeypatch, tmp_path):

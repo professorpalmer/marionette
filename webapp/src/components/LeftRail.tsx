@@ -213,8 +213,28 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const getWorkspaceBasename = (repoPath: string) => {
     if (!repoPath) return "";
+    const homePath = workspaceInfo?.home || "";
+    if (homePath && repoPathsEqual(repoPath, homePath)) return "Home";
     const parts = repoPath.split(/[/\\]/);
-    return parts[parts.length - 1] || repoPath;
+    const base = parts[parts.length - 1] || repoPath;
+    if (base.toLowerCase() === "home" && homePath && repoPathsEqual(repoPath, homePath)) {
+      return "Home";
+    }
+    // Durable Home workspace even before /api/workspace returns home=
+    if (base.toLowerCase() === "home" && /[/\\]\.pmharness[/\\]home$/i.test(repoPath.replace(/\\/g, "/"))) {
+      return "Home";
+    }
+    return base;
+  };
+
+  const codegraphBadgeLabel = (cgStatus: string) => {
+    if (cgStatus === "needs_scope") return "scope";
+    if (cgStatus === "pending") return "indexing";
+    // Never paint the word UNSUPPORTED for transient/empty-index flash;
+    // confirmed failures surface as "failed".
+    if (cgStatus === "unsupported") return "failed";
+    if (cgStatus === "none") return "";
+    return cgStatus;
   };
 
   const handleRenameSubmit = async (id: string) => {
@@ -234,6 +254,15 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const [opening, setOpening] = useState(false);
   const codegraphByRepoRef = useRef<Record<string, string>>({});
+  const [railTab, setRailTab] = useState<"projects" | "sessions">(() => {
+    try {
+      return localStorage.getItem("pmharness.leftRail.tab") === "sessions" ? "sessions" : "projects";
+    } catch {
+      return "projects";
+    }
+  });
+  const [bankSessions, setBankSessions] = useState<Session[]>([]);
+  const [bankLoading, setBankLoading] = useState(false);
 
   const currentRepoRef = useRef("");
   // Assigned after projects + SWR hooks exist; early handlers (rename) call through this.
@@ -559,14 +588,55 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
   };
   const switchSession = async (id: string) => {
-    await api.switchSession(id);
+    const res: any = await api.switchSession(id);
     await refreshSessionsRef.current();
     // Session switch can repoint the active repo (and thus the codegraph) on the
     // backend. Fire the same event the dir-open path uses so the codegraph/state
     // panel refetches -- without this, clicking a session leaves the old graph
     // shown even though the backend already swapped repos.
     window.dispatchEvent(new Event("harness-config-changed"));
+    const repo = (res?.repo || "").trim();
+    if (repo) {
+      setExpandedProjects((prev) => ({ ...prev, [repo]: true }));
+      setSelectedProjectPath(repo);
+    }
+    if (railTab === "sessions") {
+      void refreshBankSessions();
+    }
   };
+
+  const refreshBankSessions = useCallback(async () => {
+    setBankLoading(true);
+    try {
+      const rows = await api.sessionsBank({ limit: 80 });
+      setBankSessions(Array.isArray(rows) ? rows.filter((s) => !s.archived) : []);
+    } catch {
+      setBankSessions([]);
+    } finally {
+      setBankLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (railTab !== "sessions") return;
+    void refreshBankSessions();
+  }, [railTab, refreshBankSessions, jobsRefresh]);
+
+  useEffect(() => {
+    const onRelocated = (e: Event) => {
+      const root = String((e as CustomEvent).detail?.workspace_root || "").trim();
+      if (!root) return;
+      setRailTab("projects");
+      try { localStorage.setItem("pmharness.leftRail.tab", "projects"); } catch { /* ignore */ }
+      setExpandedProjects((prev) => ({ ...prev, [root]: true }));
+      setSelectedProjectPath(root);
+      void revalidateWorkspace();
+      void refreshSessionsRef.current();
+    };
+    window.addEventListener("harness-session-relocated", onRelocated);
+    return () => window.removeEventListener("harness-session-relocated", onRelocated);
+  }, [revalidateWorkspace]);
+
   const newSession = async (inProjectPath?: string) => {
     // createSession always uses the active _cfg.repo. When the user has
     // selected a different (often empty) project, open that workspace first
@@ -839,7 +909,66 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       </div>
 
       <div ref={upperSectionsRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0 ${panelOpacityClass(panelSwitching, sessionsStale || workspaceStale)}`}>
+      {/* Projects | Sessions toggle */}
+      <div className="px-3 pt-3 flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => {
+            setRailTab("projects");
+            try { localStorage.setItem("pmharness.leftRail.tab", "projects"); } catch { /* ignore */ }
+          }}
+          className={`flex-1 text-[11px] font-semibold uppercase tracking-wider py-1 rounded transition ${
+            railTab === "projects" ? "bg-panel2 text-txt" : "text-muted hover:text-txt hover:bg-panel2/40"
+          }`}
+        >
+          Projects
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setRailTab("sessions");
+            try { localStorage.setItem("pmharness.leftRail.tab", "sessions"); } catch { /* ignore */ }
+          }}
+          className={`flex-1 text-[11px] font-semibold uppercase tracking-wider py-1 rounded transition ${
+            railTab === "sessions" ? "bg-panel2 text-txt" : "text-muted hover:text-txt hover:bg-panel2/40"
+          }`}
+        >
+          Sessions
+        </button>
+      </div>
+
+      {/* GLOBAL SESSIONS BANK */}
+      {railTab === "sessions" && (
+        <Section title="Recent" headerSpinner={bankLoading}>
+          {bankSessions.length === 0 && !bankLoading && <Empty>No sessions</Empty>}
+          <div className="space-y-0.5 pb-2">
+            {bankSessions.map((s) => {
+              const root = s.workspace_root || s.repo || "";
+              const label = getWorkspaceBasename(root) || "Home";
+              const isActive = !!s.active;
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => void switchSession(s.id)}
+                  className={`w-full text-left px-2 py-1.5 rounded transition min-w-0 ${
+                    isActive ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
+                  }`}
+                  title={`${s.title}\n${root}`}
+                >
+                  <div className={`text-[12.5px] truncate ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
+                    {s.title || "Untitled"}
+                  </div>
+                  <div className="text-[10px] text-faint truncate font-mono">{label}</div>
+                </button>
+              );
+            })}
+          </div>
+        </Section>
+      )}
+
       {/* PROJECTS SECTION */}
+      {railTab === "projects" && (
       <div ref={projectsSectionRef}>
       <Section title="Projects" headerSpinner={panelSwitching && (sessionsValidating || workspaceValidating)}>
         {projects.length === 0 && !panelSwitching && <Empty>No projects</Empty>}
@@ -857,7 +986,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             projectSessions.sort((a, b) => b.created - a.created);
             const count = projectSessions.length;
             const cgStatus = codegraphStatusFor(projectPath, isCurrentActive);
-            const showCgBadge = !!cgStatus && (isCurrentActive || isSelected);
+            const cgLabel = cgStatus ? codegraphBadgeLabel(cgStatus) : "";
+            const showCgBadge = !!cgLabel && (isCurrentActive || isSelected);
             const sessionsReady = sessionsResolvedFor(projectPath);
             
             return (
@@ -898,13 +1028,13 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                     <span className={`text-[9px] font-semibold uppercase px-1 rounded shrink-0 ${
                       cgStatus === "ready"
                         ? "text-good bg-good/10"
-                        : cgStatus === "indexing"
+                        : cgStatus === "indexing" || cgStatus === "pending"
                           ? "text-warn bg-warn/10 animate-pulse"
                           : cgStatus === "needs_scope"
                             ? "text-warn bg-warn/10"
                             : "text-faint bg-panel2"
                     }`}>
-                      {cgStatus === "needs_scope" ? "scope" : cgStatus}
+                      {cgLabel}
                     </span>
                   )}
 
@@ -1019,9 +1149,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         </div>
       </Section>
       </div>
+      )}
 
       {/* BRANCH SWITCHING / WORKSPACES */}
-      {workspaceInfo?.is_git && (
+      {railTab === "projects" && workspaceInfo?.is_git && (
         <Section
           title="Branches"
           action={
@@ -1066,7 +1197,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       )}
 
       {/* ARCHIVED SESSIONS */}
-      {archivedSessions.length > 0 && (
+      {railTab === "projects" && archivedSessions.length > 0 && (
         <Section title="Archived">
           <button
             onClick={() => setArchivedExpanded(!archivedExpanded)}
