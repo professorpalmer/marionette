@@ -183,7 +183,52 @@ export function transcriptResponseToItems(res: {
         }
       }));
   }
-  return deduplicateConsecutiveAssistantMessages(loadedItems);
+  return deduplicateConsecutiveAssistantMessages(dedupeDisplayItems(loadedItems));
+}
+
+/**
+ * Drop consecutive duplicate tool cards / swarm badges (same id).
+ * Session-switch SSE races can re-append events already present after a
+ * transcript poll replace; without this the Investigated block repeats forever.
+ */
+export function dedupeDisplayItems(items: Item[]): Item[] {
+  const out: Item[] = [];
+  const seenCardIds = new Set<string>();
+  const seenSwarmIds = new Set<string>();
+  for (const item of items) {
+    if (item.kind === "card" && item.card?.id) {
+      const id = String(item.card.id);
+      if (seenCardIds.has(id)) continue;
+      seenCardIds.add(id);
+    } else if (item.kind === "swarm_result" && item.job_id) {
+      const id = String(item.job_id);
+      if (seenSwarmIds.has(id)) continue;
+      seenSwarmIds.add(id);
+    }
+    out.push(item);
+  }
+  return out;
+}
+
+/** Cheap content fingerprint so busy-poll refresh can skip identical payloads. */
+export function transcriptFingerprint(items: Item[]): string {
+  let fp = `n=${items.length}`;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind === "msg") {
+      fp += `|m:${it.msg.role}:${it.msg.text.length}:${it.msg.streaming ? 1 : 0}`;
+    } else if (it.kind === "card") {
+      const r = it.card.result;
+      fp += `|c:${it.card.id}:${it.card.running ? 1 : 0}:${r ? 1 : 0}`;
+    } else if (it.kind === "swarm_result") {
+      fp += `|s:${it.job_id}:${it.applied ? 1 : 0}`;
+    } else if (it.kind === "thinking") {
+      fp += `|t:${(it.text || "").length}`;
+    } else {
+      fp += `|o:${it.kind}`;
+    }
+  }
+  return fp;
 }
 
 /**
@@ -215,6 +260,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const cachedSessionIdRef = useRef<string | null>(null);
   // Monotonic id so a slow sessionTranscript response for a prior switch is ignored.
   const transcriptLoadGenRef = useRef(0);
+  // Busy-poll fingerprint: skip setItems when disk payload matches what's on screen
+  // (avoids remounting the whole transcript every 1.5s = periodic blink).
+  const transcriptFpRef = useRef("");
+  // SSE ownership: ignore late events after detach / session switch.
+  const streamSessionIdRef = useRef<string | null>(null);
+  const streamGenRef = useRef(0);
 
   const [openTabs, setOpenTabs] = useState<{ path: string; isDirty: boolean; line?: number; col?: number }[]>([]);
   const [activeTab, setActiveTab] = useState<string>("chat");
@@ -266,6 +317,8 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // True while visible items belong to a prior session (or are awaiting hydrate).
   // Dims the feed and blocks send so stale A is never treated as B.
   const [transcriptStale, setTranscriptStale] = useState(false);
+  const transcriptStaleRef = useRef(false);
+  useEffect(() => { transcriptStaleRef.current = transcriptStale; }, [transcriptStale]);
   // True while this Conversation owns a live SSE stream for the active session.
   // Runner-poll busy chrome must not clobber local streaming status, and must
   // not force idle while SSE is still attached.
@@ -724,7 +777,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // still running, keep/show thinking so Stop/Steer stay available (slices B/C/D).
   useEffect(() => {
     const prevId = cachedSessionIdRef.current;
-    if (prevId && prevId !== activeSessionId) {
+    if (prevId && prevId !== activeSessionId && !transcriptStaleRef.current) {
+      // Only cache when the visible rows belong to prevId. Stale bleed (prior
+      // session still painted) must not poison the warm cache.
       transcriptCacheBySessionId.set(prevId, { items: [...itemsRef.current] });
     }
 
@@ -738,6 +793,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     }
 
     // Detach SSE only -- closing EventSource is OK; interrupt would kill the turn.
+    // Bump streamGen so any late onmessage from the closed stream is ignored.
+    streamGenRef.current += 1;
+    streamSessionIdRef.current = null;
     if (cancelRef.current) {
       cancelRef.current();
       cancelRef.current = null;
@@ -784,6 +842,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     // instead of leaving A's transcript painted under B's id.
     setItems(resolved.items);
     itemsRef.current = resolved.items;
+    transcriptFpRef.current = transcriptFingerprint(resolved.items);
     setTranscriptStale(resolved.stale);
 
     // Immediately reflect runner busy state for the session we switched TO
@@ -822,6 +881,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         const loadedItems = transcriptResponseToItems(res);
         setItems(loadedItems);
         itemsRef.current = loadedItems;
+        transcriptFpRef.current = transcriptFingerprint(loadedItems);
         transcriptCacheBySessionId.set(activeSessionId, { items: [...loadedItems] });
         setTranscriptStale(false);
 
@@ -926,6 +986,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           if (cachedSessionIdRef.current !== sid) return;
           if (localStreamActiveRef.current) return;
           const loadedItems = transcriptResponseToItems(tres);
+          const fp = transcriptFingerprint(loadedItems);
+          // Identical payload: keep existing object identities so React does not
+          // remount every Investigated/card row (the periodic blink).
+          if (fp === transcriptFpRef.current) return;
+          transcriptFpRef.current = fp;
           setItems(loadedItems);
           itemsRef.current = loadedItems;
           transcriptCacheBySessionId.set(sid, { items: [...loadedItems] });
@@ -941,6 +1006,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             if (cachedSessionIdRef.current !== sid) return;
             if (localStreamActiveRef.current) return;
             const loadedItems = transcriptResponseToItems(tres);
+            const fp = transcriptFingerprint(loadedItems);
+            if (fp === transcriptFpRef.current) return;
+            transcriptFpRef.current = fp;
             setItems(loadedItems);
             itemsRef.current = loadedItems;
             transcriptCacheBySessionId.set(sid, { items: [...loadedItems] });
@@ -1654,7 +1722,18 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths);
     localStreamActiveRef.current = true;
     detachedBusyRef.current = false;
+    const streamSid = activeSessionId;
+    const streamGen = ++streamGenRef.current;
+    streamSessionIdRef.current = streamSid;
+    const streamLive = () =>
+      streamGenRef.current === streamGen
+      && streamSessionIdRef.current === streamSid
+      && cachedSessionIdRef.current === streamSid;
     cancelRef.current = streamer((ev: any) => {
+      // Drop late events after session switch / SSE detach so tool cards from
+      // session A never append onto B (bleed) or re-append onto A (infinite
+      // Investigated repeats while the busy poll also replaces from disk).
+      if (!streamLive()) return;
       const d = ev.data || {};
       if (ev.kind === "compacting") {
         setCompactingStatus(d.message || "Summarizing chat context");
@@ -1800,11 +1879,16 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (ev.kind === "action_start") {
         setCompactingStatus(null);
         setStatus("executing");
-        setItems((p) => [...p, { kind: "card", card: {
+        setItems((p) => {
+          // Idempotent: a late/replayed action_start with the same id must not
+          // stack another card (session-switch SSE race → infinite Investigated).
+          if (p.some((it) => it.kind === "card" && it.card.id === d.id)) return p;
+          return [...p, { kind: "card", card: {
           // Default tool cards to collapsed always: they used to mount open while
           // running and snap shut on action_result, which read as a flicker.
           // Start collapsed; the user can click to expand (onToggleCard).
-          id: d.id, goal: d.goal, cwd: d.cwd, running: true, open: false, kind: d.kind } }]);
+          id: d.id, goal: d.goal, cwd: d.cwd, running: true, open: false, kind: d.kind } }];
+        });
       } else if (ev.kind === "action_result") {
         setCompactingStatus(null);
         setStatus("thinking");
@@ -1945,8 +2029,26 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setStatus("error");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
       }
-    }, () => { flushTypewriter(); setStatus("done"); cancelRef.current = null; localStreamActiveRef.current = false; setCompactingStatus(null); maybeRunQueuedResume(); maybeDrainQueue(); },
-       () => { flushTypewriter(); setStatus("error"); cancelRef.current = null; localStreamActiveRef.current = false; setCompactingStatus(null); maybeRunQueuedResume(); maybeDrainQueue(); });
+    }, () => {
+         if (!streamLive()) return;
+         flushTypewriter();
+         setStatus("done");
+         cancelRef.current = null;
+         localStreamActiveRef.current = false;
+         setCompactingStatus(null);
+         maybeRunQueuedResume();
+         maybeDrainQueue();
+       },
+       () => {
+         if (!streamLive()) return;
+         flushTypewriter();
+         setStatus("error");
+         cancelRef.current = null;
+         localStreamActiveRef.current = false;
+         setCompactingStatus(null);
+         maybeRunQueuedResume();
+         maybeDrainQueue();
+       });
   };
 
   // AUTO-QUEUE ("playlist") from idle: the backend auto-drains the server-side

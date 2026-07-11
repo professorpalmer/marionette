@@ -6509,7 +6509,19 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/sessions/transcript":
             q = parse_qs(u.query)
             sid = q.get("session", [None])[0] or _sessions.active or ""
-            data = load_transcript(_cfg.state_dir or _tf.gettempdir(), sid)
+            # Prefer the live runner's in-memory transcript when present so a
+            # mid-turn detached UI poll sees cards as they land (not a stale
+            # disk snapshot). Fall back to disk for evicted / never-attached ids.
+            data = None
+            try:
+                live = _runners.get(sid) if sid else None
+                if live is not None and hasattr(live, "export_transcript_data"):
+                    data = live.export_transcript_data()
+            except Exception as e:
+                _diag("server.transcript_live_export", e)
+                data = None
+            if data is None:
+                data = load_transcript(_cfg.state_dir or _tf.gettempdir(), sid)
             if isinstance(data, dict):
                 history_list = data.get("history", [])
                 display_list = data.get("display", [])

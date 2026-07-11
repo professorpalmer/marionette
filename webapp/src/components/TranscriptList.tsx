@@ -154,14 +154,17 @@ const __activityOpen = new Map<string, boolean>();
 function activityGroupStableId(items: ActivityItem[], fallbackIndex: number): string {
   // Prefer the first tool card's durable id -- setCard replaces the wrapper
   // object on every patch, so object-identity keys remount on every result.
+  // ALWAYS suffix the group index: duplicate card ids in a corrupted/replayed
+  // transcript must not share one React key (that remounts one group across
+  // every sibling and looks like the same block repeating forever).
   for (const it of items) {
-    if (it.kind === "card" && it.card?.id) return `grp-card-${it.card.id}`;
+    if (it.kind === "card" && it.card?.id) return `grp-card-${it.card.id}-${fallbackIndex}`;
   }
   for (const it of items) {
-    if (it.kind === "checkpoint") return `grp-ckpt-${it.id}`;
-    if (it.kind === "swarm_result") return `grp-swres-${it.job_id}`;
+    if (it.kind === "checkpoint") return `grp-ckpt-${it.id}-${fallbackIndex}`;
+    if (it.kind === "swarm_result") return `grp-swres-${it.job_id}-${fallbackIndex}`;
   }
-  if (items[0]) return `grp-${objKey(items[0])}`;
+  if (items[0]) return `grp-${objKey(items[0])}-${fallbackIndex}`;
   return `grp-${fallbackIndex}`;
 }
 
