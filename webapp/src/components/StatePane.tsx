@@ -79,11 +79,14 @@ export default function StatePane({ artifacts }: {
   // Open the hosted wiki in the in-app Browser tab so a disconnected user has a
   // one-click path to create (or self-host) their portable LLM wiki. Mirrors the
   // markdown-link open flow: stash the URL, focus the tab, then dispatch the open.
-  const openWikiSetup = () => {
-    // Hosted signup / connect — pop out so GitHub OAuth survives panel switches.
-    // ?client=marionette makes DoneView mint a private personal LLM URL and
-    // deep-link back via marionette://wiki-connect (no paste).
-    const url = "https://portablellm.wiki/welcome?client=marionette";
+  const openWikiSetup = async () => {
+    // Prefer loopback handoff (?return=http://127.0.0.1:PORT/api/wiki/connect)
+    // so Windows never routes marionette:// to the Microsoft Store.
+    let url = "https://portablellm.wiki/welcome?client=marionette";
+    try {
+      const handoff = await api.startWikiHandoff();
+      if (handoff?.setup_url) url = handoff.setup_url;
+    } catch { /* fall back to client=marionette only */ }
     const ipc = (window as any).harnessIPC;
     if (ipc && typeof ipc.popoutBrowser === "function") {
       try {
@@ -94,6 +97,16 @@ export default function StatePane({ artifacts }: {
     (window as any).__pmPendingBrowserUrl = url;
     window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "browser" }));
     window.dispatchEvent(new CustomEvent("harness-open-url", { detail: { url } }));
+  };
+
+  const disconnectWiki = async () => {
+    try {
+      await api.disconnectWiki();
+      window.dispatchEvent(new Event("harness-config-changed"));
+      await revalidateWiki();
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   useEffect(() => {
@@ -486,13 +499,20 @@ export default function StatePane({ artifacts }: {
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <button
-                      onClick={openWikiSetup}
+                      onClick={() => void openWikiSetup()}
                       className="text-[9px] bg-accent/15 hover:bg-accent/25 text-accent px-2 py-0.5 rounded transition-colors font-medium border border-accent/30 flex items-center gap-1 shrink-0"
                       title="Open portablellm.wiki Owner console"
                     >
                       <ExternalLink className="w-2.5 h-2.5" /> Owner console
+                    </button>
+                    <button
+                      onClick={() => void disconnectWiki()}
+                      className="text-[9px] bg-edge hover:bg-risk/20 text-muted hover:text-risk px-2 py-0.5 rounded transition-colors font-medium border border-edge2 shrink-0"
+                      title="Clear wiki URL and token so you can reconnect"
+                    >
+                      Disconnect
                     </button>
                     <button
                       onClick={() => void revalidateWiki()}
@@ -517,7 +537,7 @@ export default function StatePane({ artifacts }: {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <button
-                      onClick={openWikiSetup}
+                      onClick={() => void openWikiSetup()}
                       className="text-[9px] bg-accent/15 hover:bg-accent/25 text-accent px-2 py-0.5 rounded transition-colors font-medium border border-accent/30 flex items-center gap-1 shrink-0"
                       title="Open portablellm.wiki signup in a pop-out browser"
                     >
@@ -553,14 +573,23 @@ export default function StatePane({ artifacts }: {
                     {wiki?.base_url
                       ? <span className="text-[8px] text-faint truncate">{wiki.base_url}</span>
                       : <span />}
-                    <button
-                      onClick={() => void revalidateWiki()}
-                      disabled={wikiValidating}
-                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
-                      title="Refresh Wiki Stats"
-                    >
-                      <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => void disconnectWiki()}
+                        className="text-[9px] bg-edge hover:bg-risk/20 text-muted hover:text-risk px-2 py-0.5 rounded transition-colors font-medium border border-edge2"
+                        title="Clear wiki URL and token"
+                      >
+                        Disconnect
+                      </button>
+                      <button
+                        onClick={() => void revalidateWiki()}
+                        disabled={wikiValidating}
+                        className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center"
+                        title="Refresh Wiki Stats"
+                      >
+                        <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

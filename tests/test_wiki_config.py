@@ -58,3 +58,20 @@ def test_is_hosted_and_remote_helpers():
     assert wiki_config.is_remote_wiki_base("https://api.portablellm.wiki/t/x")
     assert not wiki_config.is_remote_wiki_base("http://127.0.0.1:8000")
     assert not wiki_config.is_remote_wiki_base("")
+
+
+def test_clear_wiki_config_wipes_env(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    wiki_config.set_wiki_config(
+        api_base="https://api.portablellm.wiki/t/acme",
+        owner_token="tok",
+    )
+    assert os.environ.get("WIKI_OWNER_TOKEN") == "tok"
+    res = wiki_config.clear_wiki_config()
+    assert res == {"api_base": "", "has_token": False}
+    assert not os.environ.get("WIKI_API_BASE")
+    assert not os.environ.get("WIKI_OWNER_TOKEN")
+    on_disk = json.loads((state / "wiki.json").read_text(encoding="utf-8"))
+    assert on_disk == {}

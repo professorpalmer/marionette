@@ -1343,6 +1343,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               try {
                 const res = await api.setWikiConfig(wikiBase, wikiToken || undefined);
                 setWikiCfg(res); setWikiToken("");
+                window.dispatchEvent(new Event("harness-config-changed"));
               } catch { /* ignore */ }
               finally { setWikiSaving(false); }
             }}
@@ -1350,6 +1351,25 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           >
             {wikiSaving ? "Saving..." : "Save Wiki Config"}
           </button>
+          {(wikiCfg?.api_base || wikiCfg?.has_token) ? (
+            <button
+              disabled={wikiSaving}
+              onClick={async () => {
+                setWikiSaving(true);
+                try {
+                  const res = await api.disconnectWiki();
+                  setWikiCfg(res);
+                  setWikiBase("");
+                  setWikiToken("");
+                  window.dispatchEvent(new Event("harness-config-changed"));
+                } catch { /* ignore */ }
+                finally { setWikiSaving(false); }
+              }}
+              className="ml-2 bg-edge hover:bg-risk/20 text-muted hover:text-risk text-[11px] font-semibold px-2 py-1 rounded transition disabled:opacity-50 border border-edge2"
+            >
+              Disconnect Wiki
+            </button>
+          ) : null}
         </div>
 
         {/* portable-llm-wiki explainer / learn-more link */}

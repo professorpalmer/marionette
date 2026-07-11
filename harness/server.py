@@ -1678,7 +1678,12 @@ _load_env_settings()
 # Masker-safe live key: if HARNESS_KEY_FILE points at a file, load it into the
 # expected env var for the chosen reach before the Session builds its driver.
 from .keys import load_api_keys_on_startup, get_api_key_status, get_env_var_for_reach, set_api_key, clear_api_key
-from .wiki_config import load_wiki_config_on_startup, get_wiki_config, set_wiki_config
+from .wiki_config import (
+    load_wiki_config_on_startup,
+    get_wiki_config,
+    set_wiki_config,
+    clear_wiki_config,
+)
 from .wiki_backend import ensure_wiki_backend_async
 load_api_keys_on_startup(_cfg.reach)
 # The Electron host spawns the backend with a stripped PATH; make Node visible so
@@ -1725,16 +1730,23 @@ def _wiki_status_extras(client, graph_res=None) -> dict:
     if viewer_is_owner is not None:
         extras["viewer_is_owner"] = viewer_is_owner
     needs_auth = False
+    # Personal LLM URLs mint private-tier *share* tokens — viewer_is_owner is
+    # False for those and must NOT force needs_auth. Only missing token or an
+    # actual public-tier response means the connection is incomplete.
     if is_hosted_portablellm_base(base):
         if not has_token:
             needs_auth = True
-        elif viewer_tier == "public":
-            needs_auth = True
-        elif viewer_is_owner is False:
+        elif (viewer_tier or "").lower() == "public":
             needs_auth = True
     if needs_auth:
         extras["status"] = "needs_auth"
-        extras["hint"] = _WIKI_NEEDS_AUTH_HINT
+        if has_token and (viewer_tier or "").lower() == "public":
+            extras["hint"] = (
+                "Token is saved but the wiki still returns public tier. "
+                "Disconnect, then Connect again (or paste a fresh personal LLM URL)."
+            )
+        else:
+            extras["hint"] = _WIKI_NEEDS_AUTH_HINT
         extras["needs_owner_token"] = True
     return extras
 
@@ -2479,8 +2491,47 @@ _codegraph_fail_until = {}  # repo -> monotonic timestamp
 # trip to the wiki host (up to an 8s timeout when slow/unreachable), and the
 # wiki graph changes rarely, so a brief cache removes the repeated stall on the
 # panel without making the data meaningfully stale.
-_wiki_graph_cache = {}  # base_url -> (monotonic_expiry, payload_dict)
+# Key includes a token fingerprint so saving a token after a public-tier fetch
+# cannot keep serving the stale public payload for the TTL window.
+_wiki_graph_cache = {}  # cache_key -> (monotonic_expiry, payload_dict)
 _WIKI_GRAPH_TTL = 60.0  # seconds
+
+# One-shot nonces for loopback wiki handoff (avoids marionette:// on Windows,
+# which the OS routes to the Microsoft Store when the protocol is unregistered).
+_wiki_connect_nonces = {}  # nonce -> monotonic_expiry
+_WIKI_CONNECT_NONCE_TTL = 900.0  # 15 minutes
+
+
+def _wiki_cache_key(client) -> str:
+    import hashlib
+    base = getattr(client, "base_url", "") or ""
+    tok = getattr(client, "token", "") or ""
+    th = hashlib.sha256(tok.encode("utf-8")).hexdigest()[:16] if tok else "none"
+    return "%s|%s" % (base, th)
+
+
+def _clear_wiki_graph_cache() -> None:
+    _wiki_graph_cache.clear()
+
+
+def _mint_wiki_connect_nonce() -> str:
+    import time as _time
+    # Drop expired entries opportunistically.
+    now = _time.monotonic()
+    for k, exp in list(_wiki_connect_nonces.items()):
+        if exp <= now:
+            _wiki_connect_nonces.pop(k, None)
+    nonce = _secrets.token_urlsafe(24)
+    _wiki_connect_nonces[nonce] = now + _WIKI_CONNECT_NONCE_TTL
+    return nonce
+
+
+def _consume_wiki_connect_nonce(nonce: str) -> bool:
+    import time as _time
+    if not nonce:
+        return False
+    exp = _wiki_connect_nonces.pop(nonce, None)
+    return exp is not None and exp > _time.monotonic()
 
 
 # Handle to the in-flight CodeGraph indexer: (repo_path, Popen). Lets status
@@ -2967,6 +3018,65 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _handle_wiki_connect(self, u):
+        """Apply wiki config from a loopback handoff (nonce + personal LLM URL)."""
+        if not _host_ok(self.headers.get("Host", "")):
+            return self._send(403, json.dumps({"error": "host not allowed"}))
+        qs = parse_qs(u.query)
+        nonce = (qs.get("nonce") or [""])[0]
+        raw_url = (qs.get("url") or [""])[0]
+        api_base = (qs.get("api_base") or [""])[0]
+        token = (qs.get("token") or [""])[0]
+        if not _consume_wiki_connect_nonce(nonce):
+            html = (
+                "<!doctype html><html><head><meta charset=utf-8>"
+                "<title>Wiki connect failed</title></head><body style='"
+                "font-family:system-ui;background:#111;color:#eee;padding:2rem'>"
+                "<h1>Link expired</h1>"
+                "<p>Open Connect again from Marionette State → Wiki.</p>"
+                "</body></html>"
+            )
+            return self._send(403, html, "text/html")
+        try:
+            if raw_url:
+                res = set_wiki_config(api_base=raw_url, owner_token=None)
+            elif api_base or token:
+                res = set_wiki_config(
+                    api_base=api_base or None,
+                    owner_token=token or None,
+                )
+            else:
+                html = (
+                    "<!doctype html><html><head><meta charset=utf-8>"
+                    "<title>Wiki connect failed</title></head><body style='"
+                    "font-family:system-ui;background:#111;color:#eee;padding:2rem'>"
+                    "<h1>Missing wiki URL</h1>"
+                    "<p>No personal LLM URL was provided.</p>"
+                    "</body></html>"
+                )
+                return self._send(400, html, "text/html")
+        except Exception as e:
+            html = (
+                "<!doctype html><html><head><meta charset=utf-8>"
+                "<title>Wiki connect failed</title></head><body style='"
+                "font-family:system-ui;background:#111;color:#eee;padding:2rem'>"
+                "<h1>Could not save</h1><p>%s</p></body></html>"
+            ) % (str(e).replace("<", "&lt;")[:200],)
+            return self._send(500, html, "text/html")
+        _clear_wiki_graph_cache()
+        base = (res or {}).get("api_base") or ""
+        html = (
+            "<!doctype html><html><head><meta charset=utf-8>"
+            "<title>Wiki linked</title></head><body style='"
+            "font-family:system-ui;background:#111;color:#eee;padding:2rem'>"
+            "<h1>Wiki linked</h1>"
+            "<p>Marionette saved your portable LLM wiki connection.</p>"
+            "<p style='color:#888;font-size:12px;word-break:break-all'>%s</p>"
+            "<p>You can close this window.</p>"
+            "</body></html>"
+        ) % (base.replace("<", "&lt;"),)
+        return self._send(200, html, "text/html")
+
     def do_OPTIONS(self):
         self.send_response(204); self._cors(); self.end_headers()
 
@@ -3016,6 +3126,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/memory/add", "/api/memory/remove",
                       "/api/memory/propose/accept", "/api/memory/propose/dismiss",
                       "/api/settings", "/api/providers/probe", "/api/providers/key", "/api/wiki/config",
+                      "/api/wiki/disconnect", "/api/wiki/handoff",
                       "/api/platform", "/api/reviews/apply", "/api/reviews/dismiss",
                       "/api/registry", "/api/roles", "/api/pilot/validate",
                       "/api/worktrees/add", "/api/worktrees/remove",
@@ -4066,7 +4177,34 @@ class Handler(BaseHTTPRequestHandler):
                 api_base=api_base if api_base is not None else None,
                 owner_token=owner_token if owner_token is not None else None,
             )
+            _clear_wiki_graph_cache()
             return self._send(200, json.dumps(res))
+        if path == "/api/wiki/disconnect":
+            res = clear_wiki_config()
+            _clear_wiki_graph_cache()
+            return self._send(200, json.dumps(res))
+        if path == "/api/wiki/handoff":
+            # Mint a one-shot nonce and return a setup URL that carries a
+            # loopback return target. Prefer this over marionette:// so Windows
+            # never opens the Microsoft Store for an unregistered protocol.
+            nonce = _mint_wiki_connect_nonce()
+            host = self.headers.get("Host", "") or ""
+            if not _host_ok(host):
+                return self._send(400, json.dumps({"error": "bad host"}))
+            return_url = "http://%s/api/wiki/connect" % host
+            from urllib.parse import quote as _quote
+            setup_url = (
+                "https://portablellm.wiki/welcome"
+                "?client=marionette"
+                "&return=%s"
+                "&nonce=%s"
+            ) % (_quote(return_url, safe=""), _quote(nonce, safe=""))
+            return self._send(200, json.dumps({
+                "ok": True,
+                "nonce": nonce,
+                "return_url": return_url,
+                "setup_url": setup_url,
+            }))
         if path == "/api/git/connect":
             method = body.get("method")
             if method not in ("gh", "device"):
@@ -4602,6 +4740,10 @@ class Handler(BaseHTTPRequestHandler):
         global _codegraph_status, _codegraph_status_reason
         global _codegraph_preflight, _codegraph_suggested_action
         u = urlparse(self.path)
+        # Loopback wiki handoff: browser navigates here with a one-shot nonce
+        # (no harness token). Must run before the centralized auth gate.
+        if u.path == "/api/wiki/connect":
+            return self._handle_wiki_connect(u)
         # CENTRALIZED AUTH GATE (defense against per-handler drift): do_POST has
         # a single token check at its top, but do_GET historically required each
         # handler to re-add a copy-pasted token check -- and ~11 endpoints
@@ -5285,7 +5427,8 @@ class Handler(BaseHTTPRequestHandler):
                     "base_url": ""
                 }))
             import time as _time
-            _wiki_cached = _wiki_graph_cache.get(client.base_url)
+            _ck = _wiki_cache_key(client)
+            _wiki_cached = _wiki_graph_cache.get(_ck)
             if _wiki_cached and _wiki_cached[0] > _time.monotonic():
                 return self._send(200, json.dumps(_wiki_cached[1]))
             try:
@@ -5337,7 +5480,7 @@ class Handler(BaseHTTPRequestHandler):
                 "base_url": client.base_url
             }
             _wiki_payload.update(_wiki_status_extras(client, res))
-            _wiki_graph_cache[client.base_url] = (
+            _wiki_graph_cache[_wiki_cache_key(client)] = (
                 _time.monotonic() + _WIKI_GRAPH_TTL, _wiki_payload)
             return self._send(200, json.dumps(_wiki_payload))
         if u.path == "/api/wiki/status":
@@ -5362,7 +5505,8 @@ class Handler(BaseHTTPRequestHandler):
                     "base_url": ""
                 }))
             import time as _time
-            _wiki_cached = _wiki_graph_cache.get(client.base_url)
+            _ck = _wiki_cache_key(client)
+            _wiki_cached = _wiki_graph_cache.get(_ck)
             if _wiki_cached and _wiki_cached[0] > _time.monotonic():
                 cached = _wiki_cached[1]
                 page_count = cached.get("page_count")
@@ -5424,7 +5568,7 @@ class Handler(BaseHTTPRequestHandler):
                 "base_url": client.base_url
             }
             _wiki_payload.update(extras)
-            _wiki_graph_cache[client.base_url] = (
+            _wiki_graph_cache[_wiki_cache_key(client)] = (
                 _time.monotonic() + _WIKI_GRAPH_TTL, _wiki_payload)
             page_count = extras.get("page_count")
             if page_count is None:

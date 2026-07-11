@@ -79,6 +79,21 @@ class WikiClient:
         self.subdir = subdir or os.environ.get("HARNESS_WIKI_SUBDIR", "conversations")
         self.timeout = timeout
 
+    def _auth_headers(self, extra: dict | None = None) -> dict:
+        """Headers for wiki reads: Bearer + X-Share-Token.
+
+        Owner tokens authenticate via Bearer; personal LLM share tokens are
+        accepted on either Bearer or X-Share-Token. Send both so a share token
+        never silently degrades to public tier.
+        """
+        headers = {"Accept": "application/json"}
+        if extra:
+            headers.update(extra)
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+            headers["X-Share-Token"] = self.token
+        return headers
+
     @property
     def configured(self) -> bool:
         return bool(self.base_url and self.token)
@@ -109,9 +124,7 @@ class WikiClient:
             return out
         try:
             url = f"{self.base_url}/wiki/manifest.json"
-            headers = {"Accept": "application/json"}
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
+            headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
             with urllib.request.urlopen(req, timeout=min(self.timeout, 8)) as r:
                 data = json.loads(r.read().decode("utf-8", "replace"))
@@ -169,9 +182,7 @@ class WikiClient:
             return []
         try:
             url = f"{self.base_url}/wiki/search?q=" + urllib.parse.quote(q)
-            headers = {"Accept": "application/json"}
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
+            headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 if r.status != 200:
@@ -221,12 +232,9 @@ class WikiClient:
 
         for path, method, payload in endpoints:
             url = f"{self.base_url}{path}"
-            headers = {
+            headers = self._auth_headers(extra={
                 "Content-Type": "application/json",
-                "Accept": "application/json"
-            }
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
+            })
 
             body = json.dumps(payload).encode()
             req = urllib.request.Request(url, data=body, method=method, headers=headers)
@@ -253,9 +261,7 @@ class WikiClient:
         # the RAG/chat LLM surface is unavailable.
         try:
             url = f"{self.base_url}/wiki/search?q=" + urllib.parse.quote(question)
-            headers = {"Accept": "application/json"}
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
+            headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 if r.status == 200:
@@ -276,9 +282,7 @@ class WikiClient:
         # Fallback to fetching manifest + returning a helpful summary if no query endpoint succeeded
         try:
             url = f"{self.base_url}/wiki/manifest.json"
-            headers = {"Accept": "application/json"}
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
+            headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 if r.status == 200:
@@ -308,9 +312,7 @@ class WikiClient:
 
         def _get(path):
             url = f"{self.base_url}{path}"
-            headers = {"Accept": "application/json"}
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
+            headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 if r.status != 200:
@@ -375,9 +377,7 @@ class WikiClient:
 
         def _fetch_neighborhood(slug):
             url = f"{self.base_url}/wiki/graph/{urllib.parse.quote(slug)}?hops=1"
-            headers = {"Accept": "application/json"}
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
+            headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
             with urllib.request.urlopen(req, timeout=_edge_timeout) as r:
                 if r.status != 200:

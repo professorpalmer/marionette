@@ -3,6 +3,7 @@ import json
 import threading
 import urllib.request
 import urllib.error
+import urllib.parse
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -76,7 +77,18 @@ def test_wiki_status_reuses_graph_cache_counts():
     httpd, port, srv = _server()
     # Seed the shared graph cache as if /api/wiki/graph already ran.
     fake_url = "https://wiki-status-test.example"
-    srv._wiki_graph_cache[fake_url] = (
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            self.base_url = fake_url
+            self.token = ""
+        def graph(self):
+            raise AssertionError("should use cache, not fetch")
+        def manifest_meta(self):
+            return {}
+
+    cache_key = srv._wiki_cache_key(_FakeClient())
+    srv._wiki_graph_cache[cache_key] = (
         __import__("time").monotonic() + 60.0,
         {
             "configured": True,
@@ -87,15 +99,6 @@ def test_wiki_status_reuses_graph_cache_counts():
         },
     )
     orig_url = srv._cfg.wiki_url
-    # Point config at the cached base so the handler hits the cache path.
-    # WikiClient may still construct; monkeypatch by setting wiki_url and
-    # ensuring cache key matches client.base_url.
-    class _FakeClient:
-        def __init__(self, *a, **k):
-            self.base_url = fake_url
-        def graph(self):
-            raise AssertionError("should use cache, not fetch")
-
     import harness.wiki as wiki_mod
     orig_cls = wiki_mod.WikiClient
     wiki_mod.WikiClient = _FakeClient
@@ -112,7 +115,7 @@ def test_wiki_status_reuses_graph_cache_counts():
     finally:
         wiki_mod.WikiClient = orig_cls
         srv._cfg.wiki_url = orig_url
-        srv._wiki_graph_cache.pop(fake_url, None)
+        srv._wiki_graph_cache.pop(cache_key, None)
         httpd.shutdown()
 
 
@@ -248,3 +251,130 @@ def test_wiki_client_graph_live_mocked(monkeypatch):
     assert len(res["edges"]) == 1
     edge = res["edges"][0]
     assert {edge["source"], edge["target"]} == {"a", "b"}
+
+
+def test_wiki_status_extras_private_share_token_not_needs_auth():
+    """Personal LLM share tokens are not owner; must not force needs_auth."""
+    import harness.server as srv
+
+    class _Client:
+        base_url = "https://api.portablellm.wiki/t/acme"
+        token = "share-tok"
+
+        def manifest_meta(self):
+            return {
+                "page_count": 120,
+                "viewer_tier": "private",
+                "viewer_is_owner": False,
+            }
+
+    extras = srv._wiki_status_extras(_Client())
+    assert extras.get("status") != "needs_auth"
+    assert extras.get("viewer_tier") == "private"
+    assert extras.get("viewer_is_owner") is False
+
+
+def test_wiki_status_extras_public_with_token_needs_auth():
+    import harness.server as srv
+
+    class _Client:
+        base_url = "https://api.portablellm.wiki/t/acme"
+        token = "bad-tok"
+
+        def manifest_meta(self):
+            return {
+                "page_count": 12,
+                "viewer_tier": "public",
+                "viewer_is_owner": False,
+            }
+
+    extras = srv._wiki_status_extras(_Client())
+    assert extras.get("status") == "needs_auth"
+    assert "Disconnect" in (extras.get("hint") or "")
+
+
+def test_wiki_cache_key_changes_with_token():
+    import harness.server as srv
+
+    class _C:
+        def __init__(self, tok):
+            self.base_url = "https://api.portablellm.wiki/t/acme"
+            self.token = tok
+
+    assert srv._wiki_cache_key(_C("")) != srv._wiki_cache_key(_C("secret"))
+    assert srv._wiki_cache_key(_C("a")) == srv._wiki_cache_key(_C("a"))
+
+
+def test_wiki_connect_and_disconnect_endpoints(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    httpd, port, srv = _server()
+    try:
+        # Seed a stale public cache entry that must clear on connect/disconnect.
+        srv._wiki_graph_cache["stale"] = (999999.0, {"status": "needs_auth"})
+        nonce = srv._mint_wiki_connect_nonce()
+        personal = "https://portablellm.wiki/acme/llm?t=fresh-token"
+        connect_path = (
+            "/api/wiki/connect?nonce=%s&url=%s"
+            % (nonce, urllib.parse.quote(personal, safe=""))
+        )
+        resp = _get(port, connect_path)
+        assert resp.status == 200
+        body = resp.read().decode()
+        assert "Wiki linked" in body
+        assert not srv._wiki_graph_cache
+        cfg = json.loads((state / "wiki.json").read_text(encoding="utf-8"))
+        assert cfg["api_base"] == "https://api.portablellm.wiki/t/acme"
+        assert cfg["owner_token"] == "fresh-token"
+
+        # Replayed nonce must fail.
+        try:
+            _get(port, connect_path)
+            assert False, "replay should 403"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+
+        # Disconnect clears config.
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/wiki/disconnect",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Harness-Token": srv._TOKEN,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode())
+        assert data["api_base"] == ""
+        assert data["has_token"] is False
+        on_disk = json.loads((state / "wiki.json").read_text(encoding="utf-8"))
+        assert on_disk == {}
+    finally:
+        httpd.shutdown()
+
+
+def test_wiki_handoff_returns_loopback_setup_url():
+    httpd, port, srv = _server()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/wiki/handoff",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Harness-Token": srv._TOKEN,
+                "Host": f"127.0.0.1:{port}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode())
+        assert data["ok"] is True
+        assert data["nonce"]
+        assert data["return_url"] == f"http://127.0.0.1:{port}/api/wiki/connect"
+        assert "return=" in data["setup_url"]
+        assert "client=marionette" in data["setup_url"]
+        assert "portablellm.wiki/welcome" in data["setup_url"]
+    finally:
+        httpd.shutdown()

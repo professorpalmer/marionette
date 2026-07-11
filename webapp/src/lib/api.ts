@@ -707,6 +707,15 @@ export const api = {
   getWikiConfig: () => getJSON<{ api_base: string; has_token: boolean }>("/api/wiki/config"),
   setWikiConfig: (api_base?: string, owner_token?: string) =>
     postJSON<{ api_base: string; has_token: boolean }>("/api/wiki/config", { api_base, owner_token }),
+  disconnectWiki: () =>
+    postJSON<{ api_base: string; has_token: boolean }>("/api/wiki/disconnect", {}),
+  startWikiHandoff: () =>
+    postJSON<{
+      ok: boolean;
+      nonce: string;
+      return_url: string;
+      setup_url: string;
+    }>("/api/wiki/handoff", {}),
 
   getPlatform: () => getJSON<{ adapters: PlatformAdapter[] }>("/api/platform"),
   togglePlatform: (name: string, enabled: boolean) => postJSON<{ adapters: PlatformAdapter[] }>("/api/platform", { name, enabled }),

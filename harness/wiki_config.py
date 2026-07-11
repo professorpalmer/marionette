@@ -207,8 +207,28 @@ def set_wiki_config(api_base: str = None, owner_token: str = None) -> dict:
 def _apply_to_env(cfg: dict):
     if cfg.get("api_base"):
         os.environ["WIKI_API_BASE"] = cfg["api_base"]
+    else:
+        os.environ.pop("WIKI_API_BASE", None)
     if cfg.get("owner_token"):
         os.environ["WIKI_OWNER_TOKEN"] = cfg["owner_token"]
+    else:
+        os.environ.pop("WIKI_OWNER_TOKEN", None)
+
+
+def clear_wiki_config() -> dict:
+    """Wipe wiki.json connection (api_base + token) and clear process env."""
+    p = _path()
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump({}, f)
+        os.replace(tmp, p)
+        restrict_to_owner(p)
+    except Exception:
+        pass
+    _apply_to_env({})
+    return {"api_base": "", "has_token": False}
 
 
 def _persist_cfg(cfg: dict) -> None:

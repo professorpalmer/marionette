@@ -238,6 +238,28 @@ function wireWikiConnectNavigation(contents) {
   contents.on("will-redirect", (e, url) => {
     if (intercept(url)) e.preventDefault();
   });
+  // Loopback handoff: popout lands on http://127.0.0.1:PORT/api/wiki/connect
+  // after mint. Notify the main window so State → Wiki refreshes immediately.
+  const notifyLoopback = (url) => {
+    if (typeof url !== "string") return;
+    if (!/\/api\/wiki\/connect(\?|$)/i.test(url)) return;
+    if (!/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(url)) return;
+    try {
+      const win = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed());
+      if (win && !win.isDestroyed()) {
+        try {
+          if (win.isMinimized()) win.restore();
+          win.show();
+          win.focus();
+        } catch { /* ignore */ }
+        try { win.webContents.send("wiki:connected", { ok: true, via: "loopback" }); } catch { /* ignore */ }
+      }
+    } catch (err) {
+      logMain(`wiki-connect loopback notify failed: ${err && err.message ? err.message : err}`);
+    }
+  };
+  contents.on("did-navigate", (_e, url) => { notifyLoopback(url); });
+  contents.on("did-navigate-in-page", (_e, url) => { notifyLoopback(url); });
 }
 
 // ---- login-shell environment capture (macOS Finder/Dock launch fix) --------
