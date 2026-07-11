@@ -2858,7 +2858,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
 
 function WorkspaceChip() {
-  const [ws, setWs] = useState<{ repo: string; branch: string; recents?: string[] } | null>(null);
+  const [ws, setWs] = useState<{ repo: string; branch: string; recents?: string[]; home?: string } | null>(null);
   const [open, setOpen] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const refresh = () => api.getWorkspace().then((w) => setWs(w as any)).catch(() => {});
