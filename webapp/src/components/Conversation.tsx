@@ -216,7 +216,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // Monotonic id so a slow sessionTranscript response for a prior switch is ignored.
   const transcriptLoadGenRef = useRef(0);
 
-  const [openTabs, setOpenTabs] = useState<{ path: string; isDirty: boolean }[]>([]);
+  const [openTabs, setOpenTabs] = useState<{ path: string; isDirty: boolean; line?: number; col?: number }[]>([]);
   const [activeTab, setActiveTab] = useState<string>("chat");
 
   const handleCloseTab = (path: string) => {
@@ -240,12 +240,19 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   };
 
   useEffect(() => {
-    const handleOpenFile = (e: CustomEvent<{ path: string }>) => {
+    const handleOpenFile = (e: CustomEvent<{ path: string; line?: number; col?: number }>) => {
       const filePath = e.detail.path;
+      if (!filePath) return;
+      const line = e.detail.line;
+      const col = e.detail.col;
       setOpenTabs((prev) => {
         const exists = prev.some((t) => t.path === filePath);
-        if (exists) return prev;
-        return [...prev, { path: filePath, isDirty: false }];
+        if (exists) {
+          return prev.map((t) =>
+            t.path === filePath ? { ...t, line, col } : t
+          );
+        }
+        return [...prev, { path: filePath, isDirty: false, line, col }];
       });
       setActiveTab(filePath);
     };
@@ -2969,6 +2976,8 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   ) : (
     <FileEditorPane
       path={activeTab}
+      line={openTabs.find((t) => t.path === activeTab)?.line}
+      col={openTabs.find((t) => t.path === activeTab)?.col}
       onClose={() => handleCloseTab(activeTab)}
       onDirtyChange={(dirty) => handleTabDirtyChange(activeTab, dirty)}
     />

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { RotateCw } from "lucide-react";
 import { postJSON, stream, withToken } from "../lib/transport";
+import { isExternalUrl, looksLikeFilePath, openAgentFile, openAgentUrl } from "../lib/agentLinks";
 
 // Built-in terminal: xterm.js front-end over the harness PTY backend.
 // create -> SSE stream output (base64 frames) -> POST keystrokes -> resize -> kill.
@@ -24,6 +26,27 @@ export default function TerminalPane() {
     setRestartNonce((n) => n + 1);
   };
 
+  // ActionCard "Run" injects a command into the live PTY.
+  useEffect(() => {
+    const onRun = (e: Event) => {
+      const cmd = String((e as CustomEvent<{ command?: string }>).detail?.command || "").trim();
+      if (!cmd) return;
+      const id = idRef.current;
+      if (!id) {
+        try {
+          termRef.current?.writeln(
+            "\r\n\x1b[90m[no live shell -- press Restart, then Run again]\x1b[0m"
+          );
+        } catch { /* ignore */ }
+        return;
+      }
+      // Send command + Enter. Prefer \r for PTY line discipline.
+      postJSON("/api/terminal/write", { id, data: cmd + "\r" });
+    };
+    window.addEventListener("harness-run-command", onRun as EventListener);
+    return () => window.removeEventListener("harness-run-command", onRun as EventListener);
+  }, []);
+
   useEffect(() => {
     if (!hostRef.current) return;
     setExited(false);
@@ -41,6 +64,13 @@ export default function TerminalPane() {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // Clickable URLs + path-looking tokens in terminal output.
+    term.loadAddon(
+      new WebLinksAddon((_event, uri) => {
+        if (isExternalUrl(uri)) openAgentUrl(uri);
+        else if (looksLikeFilePath(uri)) openAgentFile(uri);
+      })
+    );
     term.open(hostRef.current);
     try { fit.fit(); } catch { /* ignore */ }
     termRef.current = term;

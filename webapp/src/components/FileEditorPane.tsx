@@ -13,6 +13,10 @@ import { api } from "../lib/api";
 
 interface FileEditorPaneProps {
   path: string;
+  /** 1-based line to reveal after load (agent-loop link clicks). */
+  line?: number;
+  /** 1-based column within the line (optional). */
+  col?: number;
   onClose: () => void;
   onDirtyChange: (dirty: boolean) => void;
 }
@@ -41,6 +45,24 @@ function getLanguageExtension(filePath: string) {
       return markdown();
     default:
       return null;
+  }
+}
+
+/** Scroll CodeMirror to a 1-based line (and optional 1-based column). */
+function _scrollEditorToLine(view: EditorView, line: number, col?: number): void {
+  try {
+    const doc = view.state.doc;
+    const ln = Math.max(1, Math.min(line, doc.lines));
+    const lineObj = doc.line(ln);
+    const c = col != null ? Math.max(0, Math.min(col - 1, lineObj.length)) : 0;
+    const pos = lineObj.from + c;
+    view.dispatch({
+      selection: { anchor: pos, head: pos },
+      effects: EditorView.scrollIntoView(pos, { y: "center" }),
+    });
+    view.focus();
+  } catch {
+    /* ignore */
   }
 }
 
@@ -79,7 +101,7 @@ const customTheme = EditorView.theme({
   },
 });
 
-export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEditorPaneProps) {
+export default function FileEditorPane({ path, line, col, onClose, onDirtyChange }: FileEditorPaneProps) {
   const [content, setContent] = useState("");
   const [originalContent, setOriginalContent] = useState("");
   const [loading, setLoading] = useState(true);
@@ -97,6 +119,20 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
   const editorViewRef = useRef<EditorView | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const pendingJumpRef = useRef<{ line?: number; col?: number } | null>(
+    line != null ? { line, col } : null
+  );
+
+  // Agent-loop links may re-open the same file at a new line.
+  useEffect(() => {
+    if (line == null) return;
+    pendingJumpRef.current = { line, col };
+    const view = editorViewRef.current;
+    if (view && !loading) {
+      _scrollEditorToLine(view, line, col);
+      pendingJumpRef.current = null;
+    }
+  }, [line, col, path, loading]);
 
   useEffect(() => {
     if (showInlinePrompt && inputRef.current) {
@@ -190,6 +226,18 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
           setReadOnly(!!res.truncated);
           setIsDirty(false);
           onDirtyChangeRef.current(false);
+          // Jump after content lands; onCreateEditor may also apply pendingJump.
+          if (pendingJumpRef.current?.line != null) {
+            // Defer until CodeMirror has the new doc.
+            requestAnimationFrame(() => {
+              const view = editorViewRef.current;
+              const jump = pendingJumpRef.current;
+              if (view && jump?.line != null) {
+                _scrollEditorToLine(view, jump.line, jump.col);
+                pendingJumpRef.current = null;
+              }
+            });
+          }
         } else if (res.binary) {
           setError("Binary file cannot be viewed or edited in-app");
         } else {
@@ -449,6 +497,14 @@ export default function FileEditorPane({ path, onClose, onDirtyChange }: FileEdi
           height="100%"
           className="h-full text-[13px]"
           extensions={extensions}
+          onCreateEditor={(view) => {
+            editorViewRef.current = view;
+            const jump = pendingJumpRef.current;
+            if (jump?.line != null) {
+              _scrollEditorToLine(view, jump.line, jump.col);
+              pendingJumpRef.current = null;
+            }
+          }}
           onChange={(val) => {
             setContent(val);
             setIsDirty(true);

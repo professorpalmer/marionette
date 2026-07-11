@@ -5,6 +5,16 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import { api } from "../lib/api";
+import {
+  openAgentLink,
+  openAgentFile,
+  openAgentUrl,
+  openAgentCommand,
+  isExternalUrl,
+  looksLikePathInlineCode,
+  classifyActionGoal,
+  autolinkAgentText,
+} from "../lib/agentLinks";
 
 export type Msg = {
   role: "user" | "assistant";
@@ -789,42 +799,9 @@ function FencedCodeBlock({ className, children, ...props }: any) {
 
 // Route a clicked markdown link to the right surface instead of a raw
 // new-window navigation: http(s) opens an in-app Browser tab, a file-ish path
-// opens in the editor, and everything else (mailto, anchors) falls through to
-// default behavior.
-function isExternalUrl(href: string): boolean {
-  return /^https?:\/\//i.test(href);
-}
-
-function looksLikeFilePath(href: string): boolean {
-  if (!href) return false;
-  if (/^(https?|mailto|tel|data):/i.test(href) || href.startsWith("#")) return false;
-  const clean = href.replace(/^file:\/\//, "");
-  // A slash, or a dotted extension (optionally trailed by :line[:col]).
-  return /[\\/]/.test(clean) || /\.\w{1,8}(:\d+){0,2}$/.test(clean);
-}
-
+// opens in the editor, and everything else is blocked (no javascript: in Electron).
 function openMarkdownHref(href: string, e: React.MouseEvent): void {
-  if (!href) return;
-  if (isExternalUrl(href)) {
-    e.preventDefault();
-    // Stash the URL so a BrowserPane that mounts *because* of the focus below can
-    // consume it -- the open-url event alone races the pane's listener setup.
-    (window as any).__pmPendingBrowserUrl = href;
-    window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "browser" }));
-    window.dispatchEvent(new CustomEvent("harness-open-url", { detail: { url: href } }));
-    return;
-  }
-  if (looksLikeFilePath(href)) {
-    e.preventDefault();
-    const path = href.replace(/^file:\/\//, "").replace(/:(\d+)(:\d+)?$/, "");
-    window.dispatchEvent(new CustomEvent("harness-open-file", { detail: { path } }));
-    return;
-  }
-  // Catch-all: anything that is neither an external http(s) URL nor a file
-  // path (javascript:, data:, unknown schemes) must never reach the anchor's
-  // default navigation -- in Electron that is script execution in the
-  // renderer.
-  e.preventDefault();
+  openAgentLink(href, e);
 }
 
 // Memoized so a streaming bubble only re-parses when the text actually changes.
@@ -832,6 +809,7 @@ function openMarkdownHref(href: string, e: React.MouseEvent): void {
 // full remark/rehype pipeline would run each frame even when no character was
 // added. Restores formatted-while-streaming without the old ~40% CPU cost.
 const Markdown = memo(function Markdown({ text }: { text: string }) {
+  const linked = autolinkAgentText(text || "");
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -865,7 +843,7 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
             src={src}
             alt={alt || ""}
             loading="lazy"
-            onClick={() => { if (src && isExternalUrl(src)) openMarkdownHref(src, { preventDefault() {} } as React.MouseEvent); }}
+            onClick={() => { if (src && isExternalUrl(src)) openAgentUrl(src); }}
             className="max-w-full h-auto rounded-md border border-edge/40 my-2 cursor-zoom-in"
           />
         ),
@@ -893,6 +871,23 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
         code: ({ className, children, ...props }: any) => {
           const isInline = !className;
           if (isInline) {
+            const raw = nodeToText(children).trim();
+            if (looksLikePathInlineCode(raw)) {
+              return (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openAgentFile(raw);
+                  }}
+                  title={`Open ${raw}`}
+                  className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
+                >
+                  {children}
+                </button>
+              );
+            }
             return (
               <code className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90" {...props}>
                 {children}
@@ -908,7 +903,7 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
         pre: ({ children }: any) => <div className="my-1">{children}</div>
       }}
     >
-      {text}
+      {linked}
     </ReactMarkdown>
   );
 });
@@ -1130,6 +1125,22 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   // not red -- they are intentional harness redirects, not tool failures.
   const suppressed = isGateSuppressed(card);
   const isErr = !!card.result?.error && !suppressed;
+  const { linkKind, value: goalValue } = classifyActionGoal(card.kind || "", card.goal || "");
+
+  const onGoalClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (linkKind === "file") openAgentFile(goalValue);
+    else if (linkKind === "url") openAgentUrl(goalValue);
+    else if (linkKind === "command") openAgentCommand(goalValue, { run: false });
+  };
+
+  const onRunCommand = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openAgentCommand(goalValue, { run: true });
+  };
+
   return (
     <div className="flex flex-col w-full select-none">
       <button
@@ -1149,12 +1160,48 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
           <span className={`font-medium shrink-0 ${isErr ? "text-risk/85" : suppressed ? "text-faint/80" : "text-txt/70"}`}>
             {toolName}
           </span>
-          <span className="text-faint/85 truncate max-w-[70%] font-normal" title={card.goal}>
-            {card.goal}
-          </span>
+          {linkKind !== "none" && goalValue ? (
+            <span
+              role="link"
+              tabIndex={0}
+              onClick={onGoalClick}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") onGoalClick(e as any);
+              }}
+              className="text-accent/80 hover:underline underline-offset-2 truncate max-w-[70%] font-normal cursor-pointer"
+              title={
+                linkKind === "file"
+                  ? `Open ${goalValue}`
+                  : linkKind === "url"
+                  ? "Open in browser"
+                  : "Focus terminal"
+              }
+            >
+              {card.goal}
+            </span>
+          ) : (
+            <span className="text-faint/85 truncate max-w-[70%] font-normal" title={card.goal}>
+              {card.goal}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 shrink-0 text-[10px] text-faint/60 select-none tabular-nums">
+          {linkKind === "command" && goalValue && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={onRunCommand}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") onRunCommand(e as any);
+              }}
+              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded border border-edge/50 hover:bg-panel2/60 hover:text-txt cursor-pointer"
+              title="Run in terminal"
+            >
+              <Play size={9} />
+              Run
+            </span>
+          )}
           {meta && <span>{meta}</span>}
           <ChevronRight
             size={11}
@@ -1167,8 +1214,8 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
 
       {card.open && (
         <div className="mt-1 ml-5 pl-3 border-l border-edge py-1.5 pr-3 bg-panel2/40 rounded-r-md text-[11px] max-w-full text-txt/90 space-y-1">
-          <KV k="goal" v={card.goal} />
-          {card.cwd && <KV k="cwd" v={card.cwd} />}
+          <KV k="goal" v={card.goal} linkKind={linkKind} />
+          {card.cwd && <KV k="cwd" v={card.cwd} linkKind="file" />}
           {card.result?.error && (
             <div className={`mt-1 font-sans ${suppressed ? "text-faint/80" : "text-risk"}`}>
               {suppressed ? card.result.error : `error: ${card.result.error}`}
@@ -1198,9 +1245,30 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
     </div>
   );
 }
-const KV = ({ k, v }: { k: string; v: string }) => (
-  <div className="flex gap-2 mb-0.5"><span className="text-muted w-11 shrink-0">{k}</span><span className="break-all">{v}</span></div>
-);
+const KV = ({ k, v, linkKind }: { k: string; v: string; linkKind?: "file" | "url" | "command" | "none" }) => {
+  const clickable = linkKind === "file" || linkKind === "url" || linkKind === "command";
+  return (
+    <div className="flex gap-2 mb-0.5">
+      <span className="text-muted w-11 shrink-0">{k}</span>
+      {clickable && v ? (
+        <button
+          type="button"
+          className="break-all text-left text-accent/85 hover:underline underline-offset-2"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (linkKind === "file") openAgentFile(v);
+            else if (linkKind === "url") openAgentUrl(v);
+            else openAgentCommand(v, { run: false });
+          }}
+        >
+          {v}
+        </button>
+      ) : (
+        <span className="break-all">{v}</span>
+      )}
+    </div>
+  );
+};
 
 // A swarm outcome in the transcript. Previously this dumped the entire worker
 // summary as full-width green/red monospace text -- a "wall" that read as noise
@@ -1249,9 +1317,15 @@ function SwarmResultCard({ applied, files, summary, error, objective }: {
           {applied && files.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {files.map((f) => (
-                <span key={f} className="text-[9px] font-mono text-muted bg-panel2/60 border border-edge/50 rounded px-1 py-0.5">
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => openAgentFile(f)}
+                  className="text-[9px] font-mono text-accent/85 bg-panel2/60 border border-edge/50 rounded px-1 py-0.5 hover:underline underline-offset-2 cursor-pointer"
+                  title={`Open ${f}`}
+                >
                   {f}
-                </span>
+                </button>
               ))}
             </div>
           )}
