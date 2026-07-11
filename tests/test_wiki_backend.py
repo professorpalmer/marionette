@@ -70,6 +70,20 @@ def test_provision_generates_env_and_registers_owner_token(isolated_state, monke
     assert os.environ.get("WIKI_OWNER_TOKEN") == token
 
 
+def test_provision_does_not_clobber_remote_wiki_config(isolated_state, monkeypatch):
+    home, _ = isolated_state
+    _fake_backend(str(home), env_body="")
+    remote = "https://api.portablellm.wiki/t/professorpalmer"
+    wiki_config.set_wiki_config(api_base=remote, owner_token="keep-me")
+
+    wiki_backend._provision_wiki(log=open(os.devnull, "ab"))
+
+    cfg = wiki_config.get_wiki_config()
+    assert cfg["api_base"] == remote
+    assert cfg["has_token"] is True
+    assert os.environ.get("WIKI_API_BASE") == remote
+
+
 def test_provision_reuses_existing_owner_token(isolated_state):
     home, _ = isolated_state
     existing = "a" * 64
@@ -78,6 +92,17 @@ def test_provision_reuses_existing_owner_token(isolated_state):
     backend_dir = wiki_backend._provision_wiki(log=open(os.devnull, "ab"))
 
     assert wiki_backend._read_env_token(os.path.join(backend_dir, ".env")) == existing
+
+
+def test_ensure_skips_when_wiki_not_configured(isolated_state, monkeypatch):
+    monkeypatch.delenv("MARIONETTE_NO_WIKI", raising=False)
+    monkeypatch.delenv("WIKI_API_BASE", raising=False)
+    monkeypatch.delenv("HARNESS_WIKI_URL", raising=False)
+    monkeypatch.setenv("WIKI_API_BASE", "")
+    monkeypatch.setenv("HARNESS_WIKI_URL", "")
+    result = wiki_backend.ensure_wiki_backend_running(wait_secs=0.1)
+    assert result["started"] is False
+    assert "not configured" in result["reason"]
 
 
 def test_opt_out_skips_everything(monkeypatch):
@@ -230,6 +255,7 @@ def test_ensure_reports_no_usable_python(isolated_state, monkeypatch):
     home, _ = isolated_state
     backend = _fake_backend(str(home), with_uvicorn=False)
     monkeypatch.setenv("MARIONETTE_WIKI_DIR", backend)
+    monkeypatch.setenv("WIKI_API_BASE", "http://127.0.0.1:8000")
     monkeypatch.delenv("MARIONETTE_NO_WIKI", raising=False)
     monkeypatch.setattr(wiki_backend, "_healthz", lambda *args, **kwargs: False)
     monkeypatch.setattr(wiki_backend, "_uvicorn_importable", lambda: False)
@@ -249,6 +275,7 @@ def test_missing_venv_triggers_repair_at_most_once(isolated_state, monkeypatch):
     home, _ = isolated_state
     backend = _fake_backend(str(home), with_uvicorn=False)
     monkeypatch.setenv("MARIONETTE_WIKI_DIR", backend)
+    monkeypatch.setenv("WIKI_API_BASE", "http://127.0.0.1:8000")
     monkeypatch.delenv("MARIONETTE_NO_WIKI", raising=False)
     monkeypatch.setattr(wiki_backend, "_healthz", lambda *args, **kwargs: False)
     monkeypatch.setattr(wiki_backend, "_uvicorn_importable", lambda: False)
@@ -289,6 +316,7 @@ def test_failed_startup_schedules_retry(isolated_state, monkeypatch):
     home, _ = isolated_state
     backend = _fake_backend(str(home), with_uvicorn=True)
     monkeypatch.setenv("MARIONETTE_WIKI_DIR", backend)
+    monkeypatch.setenv("WIKI_API_BASE", "http://127.0.0.1:8000")
     monkeypatch.delenv("MARIONETTE_NO_WIKI", raising=False)
     monkeypatch.setattr(wiki_backend, "_healthz", lambda *args, **kwargs: False)
     monkeypatch.setattr(wiki_backend, "_venv_repair_attempted", True)

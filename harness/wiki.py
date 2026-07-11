@@ -93,6 +93,47 @@ class WikiClient:
         except Exception:
             return False
 
+    def manifest_meta(self) -> dict:
+        """Best-effort page_count / viewer_tier / viewer_is_owner from manifest.
+
+        Hosted portablellm.wiki returns public-tier pages when the owner token
+        is missing; page_count from the manifest is the authoritative count
+        (not len(graph nodes) after a partial neighborhood fetch).
+        """
+        out = {
+            "page_count": None,
+            "viewer_tier": None,
+            "viewer_is_owner": None,
+        }
+        if not self.base_url:
+            return out
+        try:
+            url = f"{self.base_url}/wiki/manifest.json"
+            headers = {"Accept": "application/json"}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token}"
+            req = urllib.request.Request(url, method="GET", headers=headers)
+            with urllib.request.urlopen(req, timeout=min(self.timeout, 8)) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            if not isinstance(data, dict):
+                return out
+            if "page_count" in data:
+                try:
+                    out["page_count"] = int(data["page_count"])
+                except (TypeError, ValueError):
+                    pass
+            elif isinstance(data.get("pages"), list):
+                out["page_count"] = len(data["pages"])
+            tier = data.get("viewer_tier") or data.get("tier")
+            if isinstance(tier, str) and tier.strip():
+                out["viewer_tier"] = tier.strip()
+            vio = data.get("viewer_is_owner")
+            if isinstance(vio, bool):
+                out["viewer_is_owner"] = vio
+        except Exception:
+            return out
+        return out
+
     def ingest(self, slug: str, content: str, *, note: str = "",
                run_orchestrator: bool = False) -> WikiResult:
         """Ingest a markdown source into the wiki (POST /owner/ingest)."""

@@ -1317,21 +1317,23 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             Wiki Graph
           </div>
           <div className="text-[10px] text-muted leading-relaxed">
-            Connect the portable-llm-wiki owner surface (same as the wiki MCP) to populate the Wiki graph tab.
-            {wikiCfg ? <span className={wikiCfg.has_token ? "text-good" : "text-faint"}> {wikiCfg.has_token ? "Token set." : "No token."}</span> : null}
+            Paste your portablellm.wiki personal LLM URL (or API base + owner token)
+            to populate the Wiki graph tab. Hosted API form:
+            {" "}https://api.portablellm.wiki/t/your-tenant.
+            {wikiCfg ? <span className={wikiCfg.has_token ? " text-good" : " text-faint"}> {wikiCfg.has_token ? "Token set." : "No token."}</span> : null}
           </div>
           <input
             type="text"
             value={wikiBase}
             onChange={(e) => setWikiBase(e.target.value)}
-            placeholder="WIKI_API_BASE (e.g. http://localhost:8000)"
+            placeholder="Personal LLM URL or https://api.portablellm.wiki/t/your-tenant"
             className="w-full bg-bg border border-edge rounded px-2 py-1 text-[11px] font-mono text-txt focus:outline-none focus:border-accent"
           />
           <input
             type="password"
             value={wikiToken}
             onChange={(e) => setWikiToken(e.target.value)}
-            placeholder={wikiCfg?.has_token ? "Owner token (leave blank to keep)" : "WIKI_OWNER_TOKEN"}
+            placeholder={wikiCfg?.has_token ? "Owner token (leave blank to keep)" : "Owner token (optional if URL includes ?t=)"}
             className="w-full bg-bg border border-edge rounded px-2 py-1 text-[11px] font-mono text-txt focus:outline-none focus:border-accent"
           />
           <button

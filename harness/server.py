@@ -1685,9 +1685,58 @@ load_api_keys_on_startup(_cfg.reach)
 # CodeGraph (a Node CLI) works out of the box instead of reporting "unsupported".
 _ensure_node_on_path()
 load_wiki_config_on_startup()
-# Auto-provision (clone + venv + token) and boot a local wiki backend so the
-# panel works out of the box with no manual terminal. Opt out: MARIONETTE_NO_WIKI=1.
+# Boot a local wiki backend only when wiki.json / env already points at loopback.
+# Fresh installs stay unconfigured so the UI can guide users to portablellm.wiki.
+# Opt out: MARIONETTE_NO_WIKI=1.
 ensure_wiki_backend_async()
+
+_WIKI_NEEDS_AUTH_HINT = (
+    "Connected at public tier only. Paste your personal LLM URL or owner token "
+    "in Settings → Wiki Graph (portablellm.wiki Owner console)."
+)
+
+
+def _wiki_status_extras(client, graph_res=None) -> dict:
+    """Extra wiki status fields: needs_auth, viewer_tier, page_count, hint."""
+    from .wiki_config import is_hosted_portablellm_base
+
+    extras = {}
+    base = getattr(client, "base_url", "") or ""
+    has_token = bool(getattr(client, "token", "") or "")
+    if not has_token:
+        try:
+            has_token = bool(get_wiki_config().get("has_token"))
+        except Exception:
+            has_token = False
+    meta = {}
+    try:
+        meta = client.manifest_meta() or {}
+    except Exception:
+        meta = {}
+    page_count = meta.get("page_count")
+    if page_count is None and isinstance(graph_res, dict):
+        page_count = len(graph_res.get("nodes") or [])
+    if page_count is not None:
+        extras["page_count"] = page_count
+    viewer_tier = meta.get("viewer_tier")
+    viewer_is_owner = meta.get("viewer_is_owner")
+    if viewer_tier is not None:
+        extras["viewer_tier"] = viewer_tier
+    if viewer_is_owner is not None:
+        extras["viewer_is_owner"] = viewer_is_owner
+    needs_auth = False
+    if is_hosted_portablellm_base(base):
+        if not has_token:
+            needs_auth = True
+        elif viewer_tier == "public":
+            needs_auth = True
+        elif viewer_is_owner is False:
+            needs_auth = True
+    if needs_auth:
+        extras["status"] = "needs_auth"
+        extras["hint"] = _WIKI_NEEDS_AUTH_HINT
+        extras["needs_owner_token"] = True
+    return extras
 
 
 def _driver_provider_available(spec: str) -> bool:
@@ -2394,6 +2443,9 @@ _codegraph_suggested_action = None  # dict | None
 # the subprocess), so a fresh index is reflected as soon as it finishes.
 _codegraph_status_cache = {}  # repo -> (monotonic_expiry, payload_dict)
 _CODEGRAPH_STATUS_TTL = 30.0  # seconds
+# After an indexer failure, suppress GET auto-reindex for this many seconds so
+# a missing cwd / WinError 2 cannot spam the panel and log every poll.
+_codegraph_fail_until = {}  # repo -> monotonic timestamp
 
 # Short-TTL cache for the /api/wiki/graph payload. Each fetch is an HTTP round
 # trip to the wiki host (up to an 8s timeout when slow/unreachable), and the
@@ -2563,6 +2615,21 @@ def _index_codegraph_bg(repo_path: str):
         return
     global _codegraph_index_proc
 
+    # Missing/moved workspace: fail once with a clear reason. Spawning with a
+    # bad cwd on Windows surfaces as WinError 2/267 and the GET self-heal loop
+    # used to re-kick forever, stuffing codegraph-index.log into the panel.
+    if not repo_path or not os.path.isdir(repo_path):
+        _codegraph_status = "unsupported"
+        _codegraph_status_reason = (
+            f"Workspace path is missing or not a directory: {repo_path or '(empty)'}. "
+            "Open Folder on the real path (e.g. C:\\Ashita or C:\\Ashita\\addons) "
+            "and Remove the phantom from Projects."
+        )
+        _codegraph_suggested_action = None
+        if repo_path:
+            _codegraph_status_cache.pop(repo_path, None)
+        return
+
     # Preflight before spawning: avoid a doomed 10-minute walk of game assets.
     try:
         pre = _prepare_codegraph_scope(repo_path)
@@ -2586,6 +2653,7 @@ def _index_codegraph_bg(repo_path: str):
         # Invalidate any cached status for this repo so the panel does not show
         # stale "ready" stats while a fresh (re)index is running.
         _codegraph_status_cache.pop(repo_path, None)
+        _codegraph_fail_until.pop(repo_path, None)
         log_path = _codegraph_index_log_path()
         try:
             import subprocess
@@ -2621,15 +2689,26 @@ def _index_codegraph_bg(repo_path: str):
                 _codegraph_status = "unsupported"
                 _codegraph_status_reason = (
                     "Indexer exited 0 but no codegraph.db was written. "
-                    + (_codegraph_tail_log() or "See codegraph-index.log.")
+                    + (_codegraph_tail_log(max_chars=400) or "See codegraph-index.log.")
                 )
             else:
                 _codegraph_status = "unsupported"
-                tail = _codegraph_tail_log()
+                # One clean failure line — do not dump the whole repeated log.
+                tail = _codegraph_tail_log(max_chars=400)
+                # Prefer the last non-empty line of the tail.
+                last_line = ""
+                if tail:
+                    for line in reversed(tail.splitlines()):
+                        if line.strip():
+                            last_line = line.strip()
+                            break
                 _codegraph_status_reason = (
                     f"Indexer failed (exit {proc.returncode}). "
-                    + (tail or "See ~/.pmharness/state/codegraph-index.log.")
+                    + (last_line or "See ~/.pmharness/state/codegraph-index.log.")
                 )
+                # Back off auto-reindex for this path so GET polling cannot
+                # restart a doomed indexer every few seconds.
+                _codegraph_fail_until[repo_path] = time.monotonic() + 120.0
         except Exception:
             timed_out = True
             _codegraph_status = "unsupported"
@@ -2638,6 +2717,7 @@ def _index_codegraph_bg(repo_path: str):
                 "The tree is likely still too large — open a code subdirectory "
                 "or apply asset excludes, then re-index."
             )
+            _codegraph_fail_until[repo_path] = time.monotonic() + 120.0
             try:
                 proc.kill()
             except Exception:
@@ -4981,8 +5061,44 @@ class Handler(BaseHTTPRequestHandler):
             # "indexing" rather than shelling out to `codegraph status --json`,
             # which hangs on a config-only checkout until the 20s timeout and then
             # mis-reports "unsupported". This makes a fresh install self-heal.
-            # Skip the kick when preflight already said the tree is unindexable.
+            # Skip the kick when preflight already said the tree is unindexable,
+            # the path is gone, or we recently failed for this repo.
             if not _codegraph_indexed(repo) and not _codegraph_index_alive():
+                import time as _time
+                if not os.path.isdir(repo):
+                    return self._send(200, json.dumps({
+                        "indexed": False,
+                        "status": "unsupported",
+                        "reason": (
+                            _codegraph_status_reason
+                            or f"Workspace path is missing: {repo}"
+                        ),
+                        "preflight": _codegraph_preflight,
+                        "suggested_action": _codegraph_suggested_action,
+                        "nodes": None,
+                        "edges": None,
+                        "files": None,
+                        "languages": None,
+                        "last_indexed": None,
+                        "repo": repo,
+                    }))
+                fail_until = float(_codegraph_fail_until.get(repo) or 0)
+                if fail_until > _time.monotonic():
+                    return self._send(200, json.dumps({
+                        "indexed": False,
+                        "status": _codegraph_status if _codegraph_status in (
+                            "unsupported", "needs_scope"
+                        ) else "unsupported",
+                        "reason": _codegraph_status_reason,
+                        "preflight": _codegraph_preflight,
+                        "suggested_action": _codegraph_suggested_action,
+                        "nodes": None,
+                        "edges": None,
+                        "files": None,
+                        "languages": None,
+                        "last_indexed": None,
+                        "repo": repo,
+                    }))
                 def _kick_index():
                     _index_codegraph_bg(repo)
                 threading.Thread(target=_kick_index, daemon=True).start()
@@ -5180,6 +5296,7 @@ class Handler(BaseHTTPRequestHandler):
                 "edges": res.get("edges") or [],
                 "base_url": client.base_url
             }
+            _wiki_payload.update(_wiki_status_extras(client, res))
             _wiki_graph_cache[client.base_url] = (
                 _time.monotonic() + _WIKI_GRAPH_TTL, _wiki_payload)
             return self._send(200, json.dumps(_wiki_payload))
@@ -5208,14 +5325,21 @@ class Handler(BaseHTTPRequestHandler):
             _wiki_cached = _wiki_graph_cache.get(client.base_url)
             if _wiki_cached and _wiki_cached[0] > _time.monotonic():
                 cached = _wiki_cached[1]
+                page_count = cached.get("page_count")
+                if page_count is None:
+                    page_count = len(cached.get("nodes") or [])
                 return self._send(200, json.dumps({
                     "configured": cached.get("configured", True),
                     "status": cached.get("status", "ok"),
-                    "page_count": len(cached.get("nodes") or []),
+                    "page_count": page_count,
                     "link_count": len(cached.get("edges") or []),
                     "error": cached.get("error"),
                     "retryable": cached.get("retryable"),
                     "base_url": cached.get("base_url") or client.base_url,
+                    "hint": cached.get("hint"),
+                    "viewer_tier": cached.get("viewer_tier"),
+                    "viewer_is_owner": cached.get("viewer_is_owner"),
+                    "needs_owner_token": cached.get("needs_owner_token"),
                 }))
             try:
                 res = client.graph()
@@ -5251,6 +5375,7 @@ class Handler(BaseHTTPRequestHandler):
                 }))
             nodes = res.get("nodes") or []
             edges = res.get("edges") or []
+            extras = _wiki_status_extras(client, res)
             _wiki_payload = {
                 "configured": True,
                 "status": "ok",
@@ -5258,14 +5383,22 @@ class Handler(BaseHTTPRequestHandler):
                 "edges": edges,
                 "base_url": client.base_url
             }
+            _wiki_payload.update(extras)
             _wiki_graph_cache[client.base_url] = (
                 _time.monotonic() + _WIKI_GRAPH_TTL, _wiki_payload)
+            page_count = extras.get("page_count")
+            if page_count is None:
+                page_count = len(nodes)
             return self._send(200, json.dumps({
                 "configured": True,
-                "status": "ok",
-                "page_count": len(nodes),
+                "status": _wiki_payload.get("status", "ok"),
+                "page_count": page_count,
                 "link_count": len(edges),
-                "base_url": client.base_url
+                "base_url": client.base_url,
+                "hint": extras.get("hint"),
+                "viewer_tier": extras.get("viewer_tier"),
+                "viewer_is_owner": extras.get("viewer_is_owner"),
+                "needs_owner_token": extras.get("needs_owner_token"),
             }))
         if u.path == "/api/settings":
             return self._send(200, json.dumps(_get_settings_dict()))

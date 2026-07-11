@@ -264,10 +264,25 @@ export default function StatePane({ artifacts }: {
           : "";
 
   const wikiOk = wiki?.status === "ok";
+  const wikiNeedsAuth = wiki?.status === "needs_auth";
   const wikiErr = wiki?.status === "error";
-  const wikiDot = wikiOk ? "bg-good" : wikiErr ? "bg-risk" : "bg-faint";
-  const wikiWord = wikiOk ? "connected" : wikiErr ? "error" : "off";
-  const wikiMetric = wikiOk ? `${wiki?.page_count ?? 0} pages` : "";
+  const wikiDot = wikiOk
+    ? "bg-good"
+    : wikiNeedsAuth
+      ? "bg-accent"
+      : wikiErr
+        ? "bg-risk"
+        : "bg-faint";
+  const wikiWord = wikiOk
+    ? "connected"
+    : wikiNeedsAuth
+      ? "public only"
+      : wikiErr
+        ? "error"
+        : "off";
+  const wikiMetric = (wikiOk || wikiNeedsAuth)
+    ? `${wiki?.page_count ?? 0} pages`
+    : "";
 
   const statusDimmed = projectSwitching || cgTransitioning || wikiTransitioning;
 
@@ -432,12 +447,54 @@ export default function StatePane({ artifacts }: {
                     </button>
                   </div>
                 </div>
+              ) : wikiNeedsAuth ? (
+                <div className="flex flex-col gap-1.5">
+                  <div className="text-warn leading-relaxed">
+                    {wiki?.hint
+                      || "Connected at public tier only. Paste your personal LLM URL or owner token in Settings → Wiki Graph."}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div>
+                      <div className="text-faint text-[9px] uppercase tracking-wide">Pages</div>
+                      <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                        {(wiki?.page_count ?? 0).toLocaleString()}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-faint text-[9px] uppercase tracking-wide">Links</div>
+                      <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                        {(wiki?.link_count ?? 0).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={openWikiSetup}
+                      className="text-[9px] bg-accent/15 hover:bg-accent/25 text-accent px-2 py-0.5 rounded transition-colors font-medium border border-accent/30 flex items-center gap-1 shrink-0"
+                      title="Open portablellm.wiki Owner console"
+                    >
+                      <ExternalLink className="w-2.5 h-2.5" /> Owner console
+                    </button>
+                    <button
+                      onClick={() => void revalidateWiki()}
+                      disabled={wikiValidating}
+                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
+                      title="Re-check wiki connection"
+                    >
+                      <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
+                    </button>
+                  </div>
+                  {wiki?.base_url
+                    ? <span className="text-[8px] text-faint truncate">{wiki.base_url}</span>
+                    : null}
+                </div>
               ) : !wikiOk ? (
                 <div className="flex flex-col gap-1.5">
                   <div className="text-faint leading-relaxed">
                     A portable LLM wiki is a personal, URL-addressable briefing about
-                    you that any model can read to work with your context. Optional --
-                    connect one (or host your own) to make every session smarter.
+                    you that any model can read to work with your context. Connect
+                    portablellm.wiki (paste your personal LLM URL in Settings) --
+                    Marionette will not invent a local demo wiki on first launch.
                   </div>
                   <div className="flex items-center gap-1.5">
                     <button

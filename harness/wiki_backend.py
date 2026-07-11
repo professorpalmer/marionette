@@ -1,9 +1,11 @@
-"""Auto-provision and auto-start a local Portable LLM Wiki backend so the wiki
-panel works out of the box on a fresh install -- no manual terminal, on any OS.
+"""Start a *local* Portable LLM Wiki backend when the user has configured one.
 
 Marionette is a *client* of the wiki (it reads WIKI_API_BASE / WIKI_OWNER_TOKEN).
-On startup we make sure a local wiki backend is running and that Marionette holds
-its owner token:
+Fresh installs stay unconfigured so the UI can guide users to portablellm.wiki
+(hosted) instead of silently cloning a local demo that clobbers or confuses a
+real wiki later.
+
+When WIKI_API_BASE / HARNESS_WIKI_URL points at loopback:
 
   1. If a wiki backend is already answering /healthz, do nothing.
   2. Otherwise look for an existing backend checkout to launch (discovery order
@@ -11,8 +13,8 @@ its owner token:
   3. Otherwise PROVISION one: shallow-clone the public wiki repo into a managed
      directory, create its venv + install backend deps (uv preferred, stdlib
      venv fallback), generate an OWNER_TOKEN, write backend/.env pointed at the
-     bundled demo wiki, and persist the token to Marionette's wiki.json so the
-     client authenticates as owner.
+     bundled demo wiki, and persist the token to Marionette's wiki.json -- but
+     never overwrite an already-configured remote (hosted) wiki.json.
 
 Everything here is pure Python over `git` + `uv` (both guaranteed by every
 installer), so it is identical across macOS, Windows, and Linux -- universality
@@ -67,12 +69,17 @@ def _opted_out() -> bool:
 
 
 def _wiki_base() -> str:
-    base = (
+    """Configured wiki API base, or empty when the user has not connected one.
+
+    Deliberately does NOT default to 127.0.0.1:8000 -- that default caused
+    first-run auto-provision to register a local demo wiki and clobber (or
+    preempt) a hosted portablellm.wiki connection.
+    """
+    return (
         os.environ.get("WIKI_API_BASE")
         or os.environ.get("HARNESS_WIKI_URL")
         or ""
     ).strip().rstrip("/")
-    return base or _DEFAULT_BASE
 
 
 def _is_local(base: str) -> bool:
@@ -324,10 +331,24 @@ def _provision_wiki(log) -> str | None:
             return backend_dir
 
     # 4. Register the token so Marionette's WikiClient authenticates as owner.
+    # Never clobber a remote/hosted wiki.json -- first-boot local provision used
+    # to overwrite api.portablellm.wiki with 127.0.0.1:8000 + a random token.
     if token:
         try:
-            from .wiki_config import set_wiki_config
-            set_wiki_config(api_base=_DEFAULT_BASE, owner_token=token)
+            from .wiki_config import get_wiki_config, is_remote_wiki_base, set_wiki_config
+            existing = get_wiki_config()
+            existing_base = (
+                (existing.get("api_base") or "").strip()
+                or (os.environ.get("WIKI_API_BASE") or "").strip()
+                or (os.environ.get("HARNESS_WIKI_URL") or "").strip()
+            )
+            if is_remote_wiki_base(existing_base):
+                _log_line(
+                    log,
+                    "skipping wiki.json registration: remote wiki already configured",
+                )
+            else:
+                set_wiki_config(api_base=_DEFAULT_BASE, owner_token=token)
         except Exception:
             pass
 
@@ -410,6 +431,10 @@ def ensure_wiki_backend_running(wait_secs: float = 90.0, allow_provision: bool =
             return {"started": False, "reason": "opted out (MARIONETTE_NO_WIKI)"}
 
         base = _wiki_base()
+        if not base:
+            # Fresh install: leave wiki unconfigured so the UI guides the user
+            # to portablellm.wiki instead of auto-cloning a local demo.
+            return {"started": False, "reason": "wiki not configured"}
         if not _is_local(base):
             return {"started": False, "reason": "wiki configured at a remote URL"}
         if _healthz(base):

@@ -392,22 +392,31 @@ export type CodegraphStatus = {
 
 export type WikiGraphData = {
   configured: boolean;
-  status: "ok" | "not_configured" | "error";
+  status: "ok" | "not_configured" | "error" | "needs_auth";
   nodes: { id: string; title: string; section?: string; tags?: string[] }[];
   edges: { source: string; target: string }[];
   error?: string;
   base_url?: string;
+  hint?: string;
+  viewer_tier?: string;
+  viewer_is_owner?: boolean;
+  needs_owner_token?: boolean;
+  page_count?: number;
 };
 
 /** Lightweight wiki strip payload (counts only; no full graph). */
 export type WikiStatusData = {
   configured: boolean;
-  status: "ok" | "not_configured" | "error";
+  status: "ok" | "not_configured" | "error" | "needs_auth";
   page_count: number;
   link_count: number;
   error?: string;
   retryable?: boolean;
   base_url?: string;
+  hint?: string;
+  viewer_tier?: string;
+  viewer_is_owner?: boolean;
+  needs_owner_token?: boolean;
 };
 
 export type ContextCategory = {
