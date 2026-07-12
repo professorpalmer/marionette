@@ -271,8 +271,20 @@ def _disconnected_file_path() -> str:
     state_dir = os.environ.get("HARNESS_STATE_DIR")
     if state_dir:
         p = os.path.join(state_dir, "disconnected.json")
-        if not os.path.exists(p) and os.path.exists(_DISCONNECTED_FILE):
-            return _DISCONNECTED_FILE
+        if os.path.exists(p):
+            return p
+        # Legacy layout: disconnected.json lived under ~/.pmharness/ while
+        # state moved to ~/.pmharness/state. Only fall back for real harness
+        # homes — never for ephemeral test / temp state dirs.
+        try:
+            home_root = os.path.normcase(
+                os.path.abspath(os.path.expanduser("~/.pmharness"))
+            )
+            abs_state = os.path.normcase(os.path.abspath(state_dir))
+            if abs_state.startswith(home_root) and os.path.exists(_DISCONNECTED_FILE):
+                return _DISCONNECTED_FILE
+        except Exception:
+            pass
         return p
     return _DISCONNECTED_FILE
 

@@ -174,11 +174,17 @@ def test_state_dir_keys_preferred_over_legacy(monkeypatch, tmp_path):
 
 
 def test_legacy_disconnected_fallback(monkeypatch, tmp_path):
-    state_dir = tmp_path / "state"
+    """Legacy ~/.pmharness/disconnected.json still applies when state is under
+    that home tree and the state-dir file is missing."""
+    home = tmp_path / ".pmharness"
+    home.mkdir()
+    state_dir = home / "state"
     state_dir.mkdir()
-    legacy_file = tmp_path / "disconnected.json"
+    legacy_file = home / "disconnected.json"
     legacy_file.write_text(json.dumps(["openrouter"]))
     monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
     import importlib
     from harness import keys as K
@@ -187,6 +193,23 @@ def test_legacy_disconnected_fallback(monkeypatch, tmp_path):
 
     assert K._disconnected_file_path() == str(legacy_file)
     assert "openrouter" in K.get_disconnected()
+
+
+def test_ephemeral_state_dir_ignores_legacy_disconnected(monkeypatch, tmp_path):
+    """Temp / test HARNESS_STATE_DIR must not inherit ~/.pmharness disconnects."""
+    state_dir = tmp_path / "ephemeral-state"
+    state_dir.mkdir()
+    legacy_file = tmp_path / "disconnected.json"
+    legacy_file.write_text(json.dumps(["anthropic", "openrouter"]))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
+
+    import importlib
+    from harness import keys as K
+    importlib.reload(K)
+    monkeypatch.setattr(K, "_DISCONNECTED_FILE", str(legacy_file))
+
+    assert K._disconnected_file_path() == str(state_dir / "disconnected.json")
+    assert K.get_disconnected() == set()
 
 
 def test_bedrock_bearer_save_load_and_env_injection(monkeypatch, tmp_path):
@@ -242,7 +265,7 @@ def test_bedrock_access_key_pair_required(monkeypatch, tmp_path):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
     for ev in (
         "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
+        "AWS_SESSION_TOKEN", "AWS_REGION", "BEDROCK_REGION", "AWS_DEFAULT_REGION",
     ):
         monkeypatch.delenv(ev, raising=False)
 

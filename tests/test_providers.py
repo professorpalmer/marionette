@@ -15,6 +15,10 @@ def _isolate_disconnected(monkeypatch):
     monkeypatch.setenv("HARNESS_STATE_DIR", state)
     with open(os.path.join(state, "keys.json"), "w", encoding="utf-8") as f:
         f.write("{}")
+    # Empty list beats the keys.py fallback to ~/.pmharness/disconnected.json
+    # when the state-dir file is missing.
+    with open(os.path.join(state, "disconnected.json"), "w", encoding="utf-8") as f:
+        f.write("[]")
     yield
 
 

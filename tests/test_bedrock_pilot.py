@@ -32,6 +32,8 @@ def _isolate(monkeypatch):
     # ~/.pmharness/keys.json (which may hold live Bedrock BYOK).
     with open(os.path.join(state, "keys.json"), "w", encoding="utf-8") as f:
         f.write("{}")
+    with open(os.path.join(state, "disconnected.json"), "w", encoding="utf-8") as f:
+        f.write("[]")
     for ev in _BEDROCK_ENV:
         monkeypatch.delenv(ev, raising=False)
     yield
