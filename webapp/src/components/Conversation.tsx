@@ -4,7 +4,7 @@ import { api, type Config } from "../lib/api";
 import { panelOpacityClass } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
 import PilotPicker from "./PilotPicker";
-import { pickFolder } from "../lib/transport";
+import { pickFolder, isDesktop, revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../lib/transport";
 import FileEditorPane from "./FileEditorPane";
 import { TranscriptList, type Item, type Msg, type Card } from "./TranscriptList";
 
@@ -269,6 +269,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
   const [openTabs, setOpenTabs] = useState<{ path: string; isDirty: boolean; line?: number; col?: number }[]>([]);
   const [activeTab, setActiveTab] = useState<string>("chat");
+  const [tabContextMenu, setTabContextMenu] = useState<{
+    x: number;
+    y: number;
+    path: string;
+  } | null>(null);
+  const [repoRoot, setRepoRoot] = useState<string>("");
 
   const handleCloseTab = (path: string) => {
     const tab = openTabs.find((t) => t.path === path);
@@ -282,6 +288,31 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     if (activeTab === path) {
       setActiveTab("chat");
     }
+  };
+
+  const handleCloseOtherTabs = (keepPath: string) => {
+    const closing = openTabs.filter((t) => t.path !== keepPath);
+    if (closing.some((t) => t.isDirty)) {
+      if (!window.confirm("Discard unsaved changes in other tabs?")) return;
+    }
+    setOpenTabs((prev) => prev.filter((t) => t.path === keepPath));
+    setActiveTab(keepPath);
+  };
+
+  const handleCloseAllTabs = () => {
+    if (openTabs.some((t) => t.isDirty)) {
+      if (!window.confirm("Discard unsaved changes in all tabs?")) return;
+    }
+    setOpenTabs([]);
+    setActiveTab("chat");
+  };
+
+  const normalizeTabPath = (p: string) => p.replace(/\\/g, "/");
+
+  const pathIsUnder = (candidate: string, root: string) => {
+    const c = normalizeTabPath(candidate);
+    const r = normalizeTabPath(root);
+    return c === r || c.startsWith(r + "/");
   };
 
   const handleTabDirtyChange = (path: string, isDirty: boolean) => {
@@ -312,6 +343,81 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       window.removeEventListener("harness-open-file", handleOpenFile as EventListener);
     };
   }, []);
+
+  useEffect(() => {
+    const handleDeleted = (e: CustomEvent<{ path: string }>) => {
+      const deleted = e.detail?.path;
+      if (!deleted) return;
+      setOpenTabs((prev) => prev.filter((t) => !pathIsUnder(t.path, deleted)));
+      setActiveTab((cur) => (pathIsUnder(cur, deleted) ? "chat" : cur));
+    };
+    const handleRenamed = (e: CustomEvent<{ from: string; to: string }>) => {
+      const from = e.detail?.from;
+      const to = e.detail?.to;
+      if (!from || !to) return;
+      setOpenTabs((prev) =>
+        prev.map((t) => {
+          if (normalizeTabPath(t.path) === normalizeTabPath(from)) {
+            return { ...t, path: to };
+          }
+          const norm = normalizeTabPath(t.path);
+          const fromNorm = normalizeTabPath(from);
+          if (norm.startsWith(fromNorm + "/")) {
+            return { ...t, path: to + t.path.slice(from.length) };
+          }
+          return t;
+        }),
+      );
+      setActiveTab((cur) => {
+        if (normalizeTabPath(cur) === normalizeTabPath(from)) return to;
+        const norm = normalizeTabPath(cur);
+        const fromNorm = normalizeTabPath(from);
+        if (norm.startsWith(fromNorm + "/")) return to + cur.slice(from.length);
+        return cur;
+      });
+    };
+    window.addEventListener("harness-file-deleted", handleDeleted as EventListener);
+    window.addEventListener("harness-file-renamed", handleRenamed as EventListener);
+    return () => {
+      window.removeEventListener("harness-file-deleted", handleDeleted as EventListener);
+      window.removeEventListener("harness-file-renamed", handleRenamed as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await api.config();
+        if (!cancelled) setRepoRoot(cfg.repo || "");
+      } catch {
+        /* ignore */
+      }
+    })();
+    const onCfg = () => {
+      void api.config().then((cfg) => setRepoRoot(cfg.repo || "")).catch(() => {});
+    };
+    window.addEventListener("harness-config-changed", onCfg);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("harness-config-changed", onCfg);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!tabContextMenu) return;
+    const handleClose = () => setTabContextMenu(null);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setTabContextMenu(null);
+    };
+    window.addEventListener("click", handleClose);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", handleClose);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [tabContextMenu]);
+
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<"idle"|"thinking"|"executing"|"done"|"error"|"streaming">("idle");
   // True while visible items belong to a prior session (or are awaiting hydrate).
@@ -2419,6 +2525,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                     ? "border-accent text-accent bg-bg/50"
                     : "border-transparent text-muted hover:text-txt"
                 }`}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setTabContextMenu({ x: e.clientX, y: e.clientY, path: t.path });
+                }}
               >
                 <button
                   onClick={() => setActiveTab(t.path)}
@@ -2442,6 +2553,95 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
               </div>
             );
           })}
+        </div>
+      )}
+
+      {tabContextMenu && (
+        <div
+          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[160px]"
+          style={{ top: tabContextMenu.y, left: tabContextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {isDesktop && (
+            <button
+              onClick={async () => {
+                const path = tabContextMenu.path;
+                setTabContextMenu(null);
+                const res = await revealWorkspacePath(repoRoot, path);
+                if (!res.ok) {
+                  window.dispatchEvent(
+                    new CustomEvent("harness-toast", {
+                      detail: res.error || "Could not reveal path",
+                    }),
+                  );
+                }
+              }}
+              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+            >
+              {revealInFolderLabel()}
+            </button>
+          )}
+          <button
+            onClick={async () => {
+              const path = tabContextMenu.path;
+              setTabContextMenu(null);
+              const abs = toAbsoluteWorkspacePath(repoRoot, path);
+              try {
+                await navigator.clipboard.writeText(abs);
+                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Path copied" }));
+              } catch {
+                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Could not copy path" }));
+              }
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            Copy Path
+          </button>
+          <button
+            onClick={async () => {
+              const path = tabContextMenu.path;
+              setTabContextMenu(null);
+              try {
+                await navigator.clipboard.writeText(path.replace(/\\/g, "/"));
+                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Relative path copied" }));
+              } catch {
+                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Could not copy path" }));
+              }
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            Copy Relative Path
+          </button>
+          <div className="border-t border-edge my-1" />
+          <button
+            onClick={() => {
+              const path = tabContextMenu.path;
+              setTabContextMenu(null);
+              handleCloseTab(path);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            Close
+          </button>
+          <button
+            onClick={() => {
+              const path = tabContextMenu.path;
+              setTabContextMenu(null);
+              handleCloseOtherTabs(path);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            Close others
+          </button>
+          <button
+            onClick={() => {
+              setTabContextMenu(null);
+              handleCloseAllTabs();
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            Close all
+          </button>
         </div>
       )}
 

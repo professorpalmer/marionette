@@ -12,6 +12,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
+import { isDesktop, revealInFolderLabel, revealWorkspacePath } from "../lib/transport";
 
 interface FileEditorPaneProps {
   path: string;
@@ -154,6 +155,8 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   const [kind, setKind] = useState<EditorKind>("code");
   const [textMode, setTextMode] = useState<TextBinaryMode>("code");
   const [binaryMeta, setBinaryMeta] = useState<BinaryMeta | null>(null);
+  const [repoRoot, setRepoRoot] = useState("");
+  const [pathMenu, setPathMenu] = useState<{ x: number; y: number } | null>(null);
 
   const [showInlinePrompt, setShowInlinePrompt] = useState(false);
   const [inlineInstruction, setInlineInstruction] = useState("");
@@ -181,6 +184,26 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
       pendingJumpRef.current = null;
     }
   }, [line, col, path, loading, textMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.config().then((cfg) => {
+      if (!cancelled) setRepoRoot(cfg.repo || "");
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!pathMenu) return;
+    const close = () => setPathMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [pathMenu]);
 
   useEffect(() => {
     if (showInlinePrompt && inputRef.current) {
@@ -454,9 +477,42 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
 
   return (
     <div className="flex-1 flex flex-col bg-bg h-full min-h-0 overflow-hidden relative">
+      {pathMenu && isDesktop && (
+        <div
+          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[160px]"
+          style={{ top: pathMenu.y, left: pathMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={async () => {
+              setPathMenu(null);
+              const res = await revealWorkspacePath(repoRoot, path);
+              if (!res.ok) {
+                window.dispatchEvent(
+                  new CustomEvent("harness-toast", {
+                    detail: res.error || "Could not reveal path",
+                  }),
+                );
+              }
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            {revealInFolderLabel()}
+          </button>
+        </div>
+      )}
       <div className="flex items-center justify-between px-4 py-1.5 border-b border-edge bg-panel select-none shrink-0 gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[11px] font-mono text-muted truncate" title={path}>
+          <span
+            className="text-[11px] font-mono text-muted truncate"
+            title={path}
+            onContextMenu={(e) => {
+              if (!isDesktop) return;
+              e.preventDefault();
+              e.stopPropagation();
+              setPathMenu({ x: e.clientX, y: e.clientY });
+            }}
+          >
             {path}
           </span>
           {isDirty && (

@@ -180,6 +180,37 @@ function parseWikiConnectDeepLink(raw) {
 }
 
 let wikiConnectQueue = [];
+// Debounce loopback "wiki linked" notifies: did-navigate + did-finish-load can
+// both fire for one handoff, and we must never target a popout BrowserWindow.
+let _wikiConnectedNotifyAt = 0;
+
+function isLoopbackWikiConnectUrl(url) {
+  if (typeof url !== "string") return false;
+  if (!/\/api\/wiki\/connect(\?|$|#)/i.test(url)) return false;
+  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(url);
+}
+
+/** Always notify the MAIN Marionette window — never the Connect popout. */
+function notifyMainWikiConnected(payload) {
+  const now = Date.now();
+  if (now - _wikiConnectedNotifyAt < 750) return false;
+  _wikiConnectedNotifyAt = now;
+  try {
+    if (!win || win.isDestroyed()) return false;
+    try {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    } catch { /* ignore */ }
+    try {
+      win.webContents.send("wiki:connected", payload || { ok: true });
+    } catch { /* ignore */ }
+    return true;
+  } catch (err) {
+    logMain(`wiki-connect notify failed: ${err && err.message ? err.message : err}`);
+    return false;
+  }
+}
 
 async function applyWikiConnectDeepLink(raw) {
   const parsed = parseWikiConnectDeepLink(raw);
@@ -198,14 +229,7 @@ async function applyWikiConnectDeepLink(raw) {
     if (parsed.owner_token) body.owner_token = parsed.owner_token;
     const res = await backendRequest("POST", "/api/wiki/config", body);
     logMain(`[wiki-connect] saved api_base=${(res && res.api_base) || parsed.api_base}`);
-    if (win && !win.isDestroyed()) {
-      try {
-        if (win.isMinimized()) win.restore();
-        win.show();
-        win.focus();
-      } catch { /* ignore */ }
-      try { win.webContents.send("wiki:connected", res || { ok: true }); } catch { /* ignore */ }
-    }
+    notifyMainWikiConnected(res || { ok: true });
     return { ok: true, result: res };
   } catch (err) {
     logMain(`wiki-connect apply failed: ${err && err.message ? err.message : err}`);
@@ -239,27 +263,15 @@ function wireWikiConnectNavigation(contents) {
     if (intercept(url)) e.preventDefault();
   });
   // Loopback handoff: popout lands on http://127.0.0.1:PORT/api/wiki/connect
-  // after mint. Notify the main window so State → Wiki refreshes immediately.
-  const notifyLoopback = (url) => {
-    if (typeof url !== "string") return;
-    if (!/\/api\/wiki\/connect(\?|$)/i.test(url)) return;
-    if (!/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(url)) return;
+  // after mint. Notify the MAIN window (not the popout) so State → Wiki refreshes.
+  // Prefer did-finish-load so wiki.json is fully written before status revalidate.
+  contents.on("did-finish-load", () => {
     try {
-      const win = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed());
-      if (win && !win.isDestroyed()) {
-        try {
-          if (win.isMinimized()) win.restore();
-          win.show();
-          win.focus();
-        } catch { /* ignore */ }
-        try { win.webContents.send("wiki:connected", { ok: true, via: "loopback" }); } catch { /* ignore */ }
-      }
-    } catch (err) {
-      logMain(`wiki-connect loopback notify failed: ${err && err.message ? err.message : err}`);
-    }
-  };
-  contents.on("did-navigate", (_e, url) => { notifyLoopback(url); });
-  contents.on("did-navigate-in-page", (_e, url) => { notifyLoopback(url); });
+      const url = contents.getURL();
+      if (!isLoopbackWikiConnectUrl(url)) return;
+      notifyMainWikiConnected({ ok: true, via: "loopback" });
+    } catch { /* ignore */ }
+  });
 }
 
 // ---- login-shell environment capture (macOS Finder/Dock launch fix) --------

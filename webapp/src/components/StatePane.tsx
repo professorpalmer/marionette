@@ -35,6 +35,9 @@ export default function StatePane({ artifacts }: {
     { enabled: !!projectRoot },
   );
 
+  // Wiki connection is process-global (wiki.json), not per-project — keep the
+  // status fetch enabled even before a workspace root is selected so Connect
+  // handoff can refresh the strip without a manual Refresh click.
   const {
     data: wiki,
     isValidating: wikiValidating,
@@ -42,9 +45,9 @@ export default function StatePane({ artifacts }: {
     isShowingStale: wikiStale,
     revalidate: revalidateWiki,
   } = useStaleWhileRevalidate<WikiStatusData>(
-    `wiki-status:${projectRoot || "__none__"}`,
+    `wiki-status:${projectRoot || "__global__"}`,
     () => api.getWikiStatus(),
-    { enabled: !!projectRoot },
+    { enabled: true },
   );
 
   // Telemetry (CodeGraph / Wiki) is collapsed by default so it reads as a quiet
@@ -117,10 +120,30 @@ export default function StatePane({ artifacts }: {
   useEffect(() => {
     const ipc = (window as any).harnessIPC;
     if (!ipc || typeof ipc.onWikiConnected !== "function") return;
-    return ipc.onWikiConnected(() => {
-      void revalidateWiki();
+    let cancelled = false;
+    const unsub = ipc.onWikiConnected(() => {
+      // Surface the Wiki strip immediately — users otherwise stay on Connect /
+      // Browser and think nothing happened.
+      setWikiOpen(true);
+      try { localStorage.setItem("pmharness.statePane.wikiOpen", "1"); } catch { /* ignore */ }
+      window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Wiki connected" }));
       window.dispatchEvent(new Event("harness-config-changed"));
+      // Retry: loopback notify can race the status probe by a few hundred ms.
+      void (async () => {
+        const delays = [0, 350, 1000];
+        for (const waitMs of delays) {
+          if (cancelled) return;
+          if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
+          if (cancelled) return;
+          const data = await revalidateWiki();
+          if (data && data.configured && data.status !== "not_configured") return;
+        }
+      })();
     });
+    return () => {
+      cancelled = true;
+      try { unsub?.(); } catch { /* ignore */ }
+    };
   }, [revalidateWiki]);
 
   useEffect(() => {

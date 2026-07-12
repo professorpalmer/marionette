@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld("harnessIPC", {
   fs: {
     readDir: (dir) => ipcRenderer.invoke("fs:readDir", dir),
     readFile: (file) => ipcRenderer.invoke("fs:readFile", file),
+    revealInFolder: (absPath) => ipcRenderer.invoke("fs:revealInFolder", absPath),
   },
   git: {
     status: (repo) => ipcRenderer.invoke("git:status", repo),

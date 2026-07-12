@@ -3482,6 +3482,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/workspace/open", "/api/workspace/forget", "/api/codegraph/reindex",
                       "/api/codegraph/apply-excludes",
                       "/api/file/write",
+                      "/api/file/delete", "/api/file/rename", "/api/file/mkdir",
                       "/api/inline-edit",
                       "/api/commands/render",
                       "/api/git/connect", "/api/git/device/poll", "/api/git/disconnect",
@@ -3871,6 +3872,107 @@ class Handler(BaseHTTPRequestHandler):
                 }))
             except Exception as e:
                 return self._send(500, json.dumps({"error": f"Failed to write file: {e}"}))
+
+        if path == "/api/file/delete":
+            if not repo or not os.path.exists(repo):
+                return self._send(400, json.dumps({"error": "No open workspace"}))
+            rel_path = body.get("path", "").strip()
+            if not rel_path:
+                return self._send(400, json.dumps({"error": "Missing path parameter"}))
+            try:
+                target_path, rel_posix = _resolve_editor_path(repo, rel_path)
+            except ValueError as e:
+                msg = str(e)
+                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
+                return self._send(code, json.dumps({"error": msg}))
+            # Never delete the workspace root itself.
+            repo_abs = os.path.realpath(repo)
+            if os.path.realpath(target_path) == repo_abs:
+                return self._send(400, json.dumps({"error": "Cannot delete workspace root"}))
+            if not os.path.exists(target_path):
+                return self._send(404, json.dumps({"error": "Path not found", "path": rel_posix}))
+            try:
+                import shutil as _shutil
+                if os.path.isdir(target_path) and not os.path.islink(target_path):
+                    _shutil.rmtree(target_path)
+                else:
+                    os.remove(target_path)
+                return self._send(200, json.dumps({"ok": True, "path": rel_posix}))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": f"Failed to delete: {e}"}))
+
+        if path == "/api/file/rename":
+            if not repo or not os.path.exists(repo):
+                return self._send(400, json.dumps({"error": "No open workspace"}))
+            # Accept {path, new_name} (same-dir rename) or {from, to} (rel paths).
+            src_raw = (body.get("from") or body.get("path") or "").strip()
+            new_name = (body.get("new_name") or "").strip()
+            dst_raw = (body.get("to") or "").strip()
+            if not src_raw:
+                return self._send(400, json.dumps({"error": "Missing path/from parameter"}))
+            if new_name and dst_raw:
+                return self._send(400, json.dumps({"error": "Provide new_name or to, not both"}))
+            if not new_name and not dst_raw:
+                return self._send(400, json.dumps({"error": "Missing new_name or to parameter"}))
+            if new_name:
+                # Same-directory rename: refuse path separators in the new name.
+                if "/" in new_name or "\\" in new_name or new_name in (".", ".."):
+                    return self._send(400, json.dumps({"error": "Invalid new_name"}))
+            try:
+                src_path, src_rel = _resolve_editor_path(repo, src_raw)
+            except ValueError as e:
+                msg = str(e)
+                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
+                return self._send(code, json.dumps({"error": msg}))
+            if not os.path.exists(src_path):
+                return self._send(404, json.dumps({"error": "Path not found", "path": src_rel}))
+            if new_name:
+                dst_raw = "/".join(
+                    p for p in (*(src_rel.split("/")[:-1] if src_rel else ()), new_name) if p
+                )
+            try:
+                dst_path, dst_rel = _resolve_editor_path(repo, dst_raw)
+            except ValueError as e:
+                msg = str(e)
+                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
+                return self._send(code, json.dumps({"error": msg}))
+            if os.path.realpath(src_path) == os.path.realpath(repo):
+                return self._send(400, json.dumps({"error": "Cannot rename workspace root"}))
+            if os.path.exists(dst_path):
+                return self._send(409, json.dumps({"error": "Destination already exists", "path": dst_rel}))
+            try:
+                dst_parent = os.path.dirname(dst_path)
+                if dst_parent and not os.path.isdir(dst_parent):
+                    os.makedirs(dst_parent, exist_ok=True)
+                os.rename(src_path, dst_path)
+                return self._send(200, json.dumps({
+                    "ok": True,
+                    "from": src_rel,
+                    "to": dst_rel,
+                }))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": f"Failed to rename: {e}"}))
+
+        if path == "/api/file/mkdir":
+            if not repo or not os.path.exists(repo):
+                return self._send(400, json.dumps({"error": "No open workspace"}))
+            rel_path = body.get("path", "").strip()
+            if not rel_path:
+                return self._send(400, json.dumps({"error": "Missing path parameter"}))
+            try:
+                target_path, rel_posix = _resolve_editor_path(repo, rel_path)
+            except ValueError as e:
+                msg = str(e)
+                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
+                return self._send(code, json.dumps({"error": msg}))
+            if os.path.exists(target_path):
+                return self._send(409, json.dumps({"error": "Path already exists", "path": rel_posix}))
+            try:
+                os.makedirs(target_path, exist_ok=False)
+                return self._send(200, json.dumps({"ok": True, "path": rel_posix}))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": f"Failed to create directory: {e}"}))
+
         if path == "/api/workspace/open":
             import subprocess
             target_repo = body.get("path", "").strip()

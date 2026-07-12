@@ -731,6 +731,12 @@ export const api = {
     return rel;
   },
   writeFile: (path: string, content: string) => postJSON<{ ok: boolean; bytes?: number; error?: string }>("/api/file/write", { path, content }),
+  deleteFile: (path: string) =>
+    postJSON<{ ok: boolean; path?: string; error?: string }>("/api/file/delete", { path }),
+  renameFile: (args: { path: string; new_name: string } | { from: string; to: string }) =>
+    postJSON<{ ok: boolean; from?: string; to?: string; error?: string }>("/api/file/rename", args),
+  mkdir: (path: string) =>
+    postJSON<{ ok: boolean; path?: string; error?: string }>("/api/file/mkdir", { path }),
   inlineEdit: (path: string, selection: string, instruction: string, prefix: string, suffix: string, language: string) => postJSON<{ ok: boolean; edit?: string; error?: string }>("/api/inline-edit", { path, selection, instruction, prefix, suffix, language }),
   compactSession: () => postJSON<{ ok: boolean; before_tokens: number; after_tokens: number }>("/api/session/compact", {}),
   steerSession: (text: string, images?: string[]) =>

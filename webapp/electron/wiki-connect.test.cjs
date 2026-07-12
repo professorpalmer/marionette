@@ -23,6 +23,12 @@ function parseWikiConnectDeepLink(raw) {
   return null;
 }
 
+function isLoopbackWikiConnectUrl(url) {
+  if (typeof url !== "string") return false;
+  if (!/\/api\/wiki\/connect(\?|$|#)/i.test(url)) return false;
+  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(url);
+}
+
 describe("parseWikiConnectDeepLink", () => {
   it("accepts personal LLM url param", () => {
     const url =
@@ -42,5 +48,30 @@ describe("parseWikiConnectDeepLink", () => {
 
   it("rejects unrelated schemes", () => {
     assert.equal(parseWikiConnectDeepLink("https://example.com"), null);
+  });
+});
+
+describe("isLoopbackWikiConnectUrl", () => {
+  it("accepts loopback connect handoff", () => {
+    assert.equal(
+      isLoopbackWikiConnectUrl("http://127.0.0.1:8765/api/wiki/connect?nonce=abc&url=x"),
+      true,
+    );
+    assert.equal(
+      isLoopbackWikiConnectUrl("http://localhost:8765/api/wiki/connect"),
+      true,
+    );
+  });
+
+  it("rejects non-loopback or non-connect URLs", () => {
+    assert.equal(
+      isLoopbackWikiConnectUrl("https://portablellm.wiki/connect/marionette"),
+      false,
+    );
+    assert.equal(
+      isLoopbackWikiConnectUrl("http://127.0.0.1:8765/api/wiki/status"),
+      false,
+    );
+    assert.equal(isLoopbackWikiConnectUrl(""), false);
   });
 });

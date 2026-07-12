@@ -105,7 +105,54 @@ export const nativeFs = {
     ipc?.fs?.readDir ? ipc.fs.readDir(dir) : Promise.resolve({ ok: false, error: "web build" }),
   readFile: (file: string): Promise<{ ok: boolean; content?: string; error?: string }> =>
     ipc?.fs?.readFile ? ipc.fs.readFile(file) : Promise.resolve({ ok: false, error: "web build" }),
+  revealInFolder: (absPath: string): Promise<{ ok: boolean; error?: string }> =>
+    ipc?.fs?.revealInFolder
+      ? ipc.fs.revealInFolder(absPath)
+      : Promise.resolve({ ok: false, error: "web build" }),
 };
+
+/** OS-specific label for shell.showItemInFolder. */
+export function revealInFolderLabel(): string {
+  const p = typeof navigator !== "undefined" ? navigator.platform || "" : "";
+  if (/Win/i.test(p)) return "Open in File Explorer";
+  if (/Mac/i.test(p)) return "Open in Finder";
+  return "Reveal in file manager";
+}
+
+function looksAbsolutePath(p: string): boolean {
+  if (!p) return false;
+  if (/^[a-zA-Z]:[\\/]/.test(p)) return true;
+  if (p.startsWith("\\\\") || p.startsWith("//")) return true;
+  // POSIX absolute (and avoid treating Windows drive-relative as abs)
+  if (p.startsWith("/") && !/^[a-zA-Z]:/.test(p)) return true;
+  return false;
+}
+
+/** Join a workspace-relative path to ``repoRoot``, or return abs paths as-is. */
+export function toAbsoluteWorkspacePath(repoRoot: string, relOrAbs: string): string {
+  const raw = (relOrAbs || "").trim();
+  if (!raw) return repoRoot;
+  if (looksAbsolutePath(raw)) return raw;
+  const sep = repoRoot.includes("\\") ? "\\" : "/";
+  const root = repoRoot.replace(/[\\/]+$/, "");
+  const rel = raw.replace(/^[\\/]+/, "").replace(/[\\/]+/g, sep);
+  return `${root}${sep}${rel}`;
+}
+
+/** Reveal a workspace path in the OS file manager (Electron only). */
+export async function revealWorkspacePath(
+  repoRoot: string,
+  relOrAbs: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!ipc?.fs?.revealInFolder) {
+    return { ok: false, error: "web build" };
+  }
+  if (!repoRoot && !looksAbsolutePath(relOrAbs)) {
+    return { ok: false, error: "No open workspace" };
+  }
+  const abs = toAbsoluteWorkspacePath(repoRoot || "", relOrAbs);
+  return nativeFs.revealInFolder(abs);
+}
 export const nativeGit = {
   status: (repo: string): Promise<any> =>
     ipc?.git?.status ? ipc.git.status(repo) : Promise.resolve({ ok: false, error: "web build" }),
