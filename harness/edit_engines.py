@@ -160,7 +160,11 @@ def agentic_available() -> bool:
         return any(
             os.environ.get(k, "").strip()
             for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-                      "GOOGLE_API_KEY", "OPENROUTER_API_KEY")
+                      "GOOGLE_API_KEY", "OPENROUTER_API_KEY",
+                      "AWS_BEARER_TOKEN_BEDROCK")
+        ) or (
+            bool(os.environ.get("AWS_ACCESS_KEY_ID", "").strip())
+            and bool(os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip())
         )
 
 

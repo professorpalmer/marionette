@@ -60,6 +60,14 @@ class Provider:
         is present in the environment."""
         if self._is_disconnected():
             return None
+        if self.name == "bedrock":
+            # Bearer OR (access key + secret); never treat a lone access key as
+            # configured. Prefer the bearer token for the opaque "key" value.
+            try:
+                from .keys import bedrock_credential_token
+                return bedrock_credential_token()
+            except Exception:
+                return None
         for ev in self.env_vars:
             v = os.environ.get(ev, "").strip()
             if v:
@@ -68,6 +76,13 @@ class Provider:
 
     def key_env(self) -> Optional[str]:
         if self._is_disconnected():
+            return None
+        if self.name == "bedrock":
+            if (os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip():
+                return "AWS_BEARER_TOKEN_BEDROCK"
+            if ((os.environ.get("AWS_ACCESS_KEY_ID") or "").strip()
+                    and (os.environ.get("AWS_SECRET_ACCESS_KEY") or "").strip()):
+                return "AWS_ACCESS_KEY_ID"
             return None
         for ev in self.env_vars:
             if os.environ.get(ev, "").strip():
@@ -165,6 +180,19 @@ PROVIDERS = (
         api_mode="chat_completions", display_name="NVIDIA NIM",
         pilot_models=("qwen/qwen3-coder-480b", "deepseek-ai/deepseek-v3.1"),
     ),
+    # AWS Bedrock: auth is multi-env (bearer OR access-key pair + region).
+    # Interactive pilot uses BedrockDriver (puppetmaster.bedrock.bedrock_chat);
+    # Marionette stores credentials and injects AWS_* / BEDROCK_* into the env.
+    Provider(
+        name="bedrock", aliases=("aws-bedrock", "aws"),
+        env_vars=("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID"),
+        base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+        api_mode="bedrock", display_name="AWS Bedrock",
+        pilot_models=(
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        ),
+    ),
 )
 
 _BY_NAME = {p.name: p for p in PROVIDERS}
@@ -205,6 +233,19 @@ def available_pilots() -> list:
     for p in available_providers():
         for m in p.pilot_models:
             entries.append(f"{p.name}:{m}")
+        # Honor an explicit BEDROCK_MODEL_ID as an extra pilot entry when set.
+        if p.name == "bedrock":
+            extra = (os.environ.get("BEDROCK_MODEL_ID") or "").strip()
+            if not extra:
+                try:
+                    from .keys import get_bedrock_status
+                    extra = (get_bedrock_status().get("model_id") or "").strip()
+                except Exception:
+                    extra = ""
+            if extra:
+                spec = f"bedrock:{extra}"
+                if spec not in entries:
+                    entries.append(spec)
 
     # NOTE: MoA presets are deliberately NOT offered as pilots. MoA is a
     # planner/review virtual model (Mixture-of-Agents) and cannot act as the
@@ -312,6 +353,11 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         return _finalize_driver(
             AnthropicDriver(name=spec, model=model, base_url=burl,
                             api_key_env=key_env, max_tokens=max_tokens)
+        )
+    if provider.api_mode == "bedrock":
+        from pmharness.drivers.bedrock import BedrockDriver
+        return _finalize_driver(
+            BedrockDriver(name=spec, model=model, max_tokens=max_tokens)
         )
     return _finalize_driver(
         OpenAICompatDriver(name=spec, model=model, base_url=provider.base_url,

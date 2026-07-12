@@ -22,7 +22,9 @@ def test_attribution_present():
 
 def test_detection_from_env(monkeypatch):
     for ev in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-               "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "GLM_API_KEY"):
+               "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "GLM_API_KEY",
+               "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
+               "AWS_SECRET_ACCESS_KEY"):
         monkeypatch.delenv(ev, raising=False)
     assert prov.available_providers() == []
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xxx")
@@ -60,7 +62,9 @@ def test_build_pilot_no_key_raises(monkeypatch):
     for ev in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
                "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "GLM_API_KEY",
                "ZAI_API_KEY", "Z_AI_API_KEY", "MINIMAX_API_KEY", "XAI_API_KEY",
-               "NVIDIA_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_TOKEN"):
+               "NVIDIA_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_TOKEN",
+               "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
+               "AWS_SECRET_ACCESS_KEY"):
         monkeypatch.delenv(ev, raising=False)
     try:
         prov.build_pilot("anthropic:claude-opus-4-8")
@@ -73,9 +77,20 @@ def test_available_pilots_are_provider_scoped(monkeypatch):
     for ev in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
                "DEEPSEEK_API_KEY", "GLM_API_KEY", "MINIMAX_API_KEY",
                "XAI_API_KEY", "NVIDIA_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
-               "GOOGLE_API_KEY", "ANTHROPIC_TOKEN"):
+               "GOOGLE_API_KEY", "ANTHROPIC_TOKEN",
+               "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
+               "AWS_SECRET_ACCESS_KEY"):
         monkeypatch.delenv(ev, raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-xxx")
     pilots = prov.available_pilots()
     assert all(p.startswith("openrouter:") or p == "moa-planner" or p.startswith("moa:") for p in pilots)
     assert len(pilots) >= 3
+
+
+def test_build_pilot_selects_bedrock_driver(monkeypatch):
+    from pmharness.drivers.bedrock import BedrockDriver
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-xxx")
+    model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    d = prov.build_pilot(f"bedrock:{model}")
+    assert isinstance(d, BedrockDriver)
+    assert d.model == model

@@ -69,6 +69,24 @@ def run_doctor(argv) -> int:
         _line("fail", f"driver {cfg.driver}", f"build failed: {e}")
         hard_fail = True
 
+    # 3a-2. Bedrock BYOK (optional -- agentic/PM workers read AWS_* from env)
+    try:
+        from .keys import get_bedrock_status
+        bst = get_bedrock_status()
+        if bst.get("configured"):
+            mode = bst.get("auth_mode") or "credentials"
+            region = bst.get("region") or "us-east-1"
+            detail = f"{mode} auth, region={region}"
+            if bst.get("model_id"):
+                detail += f", model={bst['model_id']}"
+            _line("ok", "bedrock", detail)
+        else:
+            _line("ok", "bedrock",
+                  "not configured (optional -- set AWS_BEARER_TOKEN_BEDROCK or "
+                  "access keys in Settings -> Providers)")
+    except Exception as e:
+        _line("warn", "bedrock", f"could not resolve: {e}")
+
     # 3b. Swarm adapter -- demo (substrate), agentic (standalone keys-only), or
     # openai (OpenRouter-routed) real read-only analysis.
     sa = os.environ.get("HARNESS_SWARM_ADAPTER", "demo").lower()

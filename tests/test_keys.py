@@ -187,3 +187,169 @@ def test_legacy_disconnected_fallback(monkeypatch, tmp_path):
 
     assert K._disconnected_file_path() == str(legacy_file)
     assert "openrouter" in K.get_disconnected()
+
+
+def test_bedrock_bearer_save_load_and_env_injection(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    for ev in (
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN", "AWS_REGION", "BEDROCK_REGION", "BEDROCK_MODEL_ID",
+    ):
+        monkeypatch.delenv(ev, raising=False)
+
+    from harness.keys import (
+        set_bedrock_credentials, get_bedrock_status, clear_bedrock_credentials,
+        load_api_keys_on_startup, get_api_key_status, get_keys_file_path,
+        BEDROCK_ENV_FIELDS,
+    )
+
+    status = set_bedrock_credentials({
+        "AWS_BEARER_TOKEN_BEDROCK": "bedrock-bearer-token-xyz9",
+        "AWS_REGION": "us-west-2",
+        "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    })
+    assert status["configured"] is True
+    assert status["has_key"] is True
+    assert status["auth_mode"] == "bearer"
+    assert status["masked"] == "....xyz9"
+    assert status["region"] == "us-west-2"
+    assert status["model_id"].startswith("us.anthropic.")
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") == "bedrock-bearer-token-xyz9"
+    assert os.environ.get("AWS_REGION") == "us-west-2"
+    assert os.environ.get("BEDROCK_MODEL_ID") == "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+    keys_path = get_keys_file_path()
+    assert os.path.exists(keys_path)
+    stored = json.loads(open(keys_path, encoding="utf-8").read())
+    assert isinstance(stored["bedrock"], dict)
+    assert stored["bedrock"]["AWS_BEARER_TOKEN_BEDROCK"].endswith("xyz9")
+
+    # Simulate restart: scrub env, then load from keyfile.
+    for ev in BEDROCK_ENV_FIELDS:
+        os.environ.pop(ev, None)
+    load_api_keys_on_startup("openrouter")
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") == "bedrock-bearer-token-xyz9"
+    assert os.environ.get("AWS_REGION") == "us-west-2"
+    assert get_api_key_status("bedrock")["has_key"] is True
+
+    cleared = clear_bedrock_credentials()
+    assert cleared["configured"] is False
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") is None
+    assert get_api_key_status("bedrock")["has_key"] is False
+
+
+def test_bedrock_access_key_pair_required(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    for ev in (
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    ):
+        monkeypatch.delenv(ev, raising=False)
+
+    from harness.keys import (
+        set_bedrock_credentials, get_bedrock_status, bedrock_auth_present,
+        _normalize_bedrock_creds,
+    )
+    from harness.providers import get_provider
+
+    # Access key alone is not enough.
+    set_bedrock_credentials({"AWS_ACCESS_KEY_ID": "AKIATESTACCESSKEY1"})
+    assert get_bedrock_status()["configured"] is False
+    assert bedrock_auth_present(_normalize_bedrock_creds({
+        "AWS_ACCESS_KEY_ID": "AKIATESTACCESSKEY1",
+    })) is False
+
+    status = set_bedrock_credentials({
+        "AWS_ACCESS_KEY_ID": "AKIATESTACCESSKEY1",
+        "AWS_SECRET_ACCESS_KEY": "secretsecretsecret12",
+        "AWS_SESSION_TOKEN": "session-token-value",
+        "BEDROCK_REGION": "eu-west-1",
+    })
+    assert status["configured"] is True
+    assert status["auth_mode"] == "access_key"
+    assert status["has_session_token"] is True
+    assert status["region"] == "eu-west-1"
+    assert os.environ.get("AWS_ACCESS_KEY_ID") == "AKIATESTACCESSKEY1"
+    assert os.environ.get("AWS_SECRET_ACCESS_KEY") == "secretsecretsecret12"
+    assert os.environ.get("AWS_SESSION_TOKEN") == "session-token-value"
+    assert os.environ.get("BEDROCK_REGION") == "eu-west-1"
+
+    p = get_provider("bedrock")
+    assert p is not None
+    assert p.available is True
+    assert p.key_env() == "AWS_ACCESS_KEY_ID"
+
+
+def test_bedrock_set_api_key_bearer_shortcut(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+
+    from harness.keys import set_api_key, get_api_key_status, clear_api_key
+
+    set_api_key("bedrock", "bearer-via-set-api-key-99")
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") == "bearer-via-set-api-key-99"
+    assert get_api_key_status("bedrock")["has_key"] is True
+    assert get_api_key_status("bedrock")["masked"] == "....y-99"
+
+    clear_api_key("bedrock")
+    assert get_api_key_status("bedrock")["has_key"] is False
+
+
+def test_bedrock_api_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    for ev in ("AWS_BEARER_TOKEN_BEDROCK", "AWS_REGION"):
+        monkeypatch.delenv(ev, raising=False)
+
+    httpd, port, srv = _server()
+    try:
+        resp = _get(port, "/api/bedrock")
+        data = json.loads(resp.read().decode())
+        assert data["configured"] is False
+
+        post = _post(port, "/api/bedrock", {
+            "AWS_BEARER_TOKEN_BEDROCK": "endpoint-bearer-tok4",
+            "AWS_REGION": "us-east-1",
+        }, {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN})
+        assert post.status == 200
+        body = json.loads(post.read().decode())
+        assert body["ok"] is True
+        assert body["configured"] is True
+        assert body["auth_mode"] == "bearer"
+        assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") == "endpoint-bearer-tok4"
+
+        settings = json.loads(_get(port, "/api/settings").read().decode())
+        assert settings["bedrock"]["configured"] is True
+
+        clear = _post(port, "/api/bedrock", {"clear": True},
+                      {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN})
+        clear_body = json.loads(clear.read().decode())
+        assert clear_body["configured"] is False
+    finally:
+        httpd.shutdown()
+
+
+def test_doctor_reports_bedrock(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("HARNESS_DRIVER", "stub-oracle-v2")
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+
+    from harness import cli
+    from harness.keys import set_bedrock_credentials
+
+    code = cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "bedrock" in out
+    assert "not configured" in out
+
+    set_bedrock_credentials({
+        "AWS_BEARER_TOKEN_BEDROCK": "doctor-bearer-token-1",
+        "AWS_REGION": "us-east-1",
+    })
+    code = cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "bearer auth" in out
+    assert "us-east-1" in out

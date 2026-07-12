@@ -54,6 +54,11 @@ _AGENTIC_TEMPLATES = {
         "frontier": (85, 5.0, 15.0, 131072, ["frontier", "reasoning"]),
         "balanced": (80, 2.0, 10.0, 131072, ["balanced", "fast", "vision"]),
     },
+    "bedrock": {
+        "frontier": (92, 3.0, 15.0, 200000, ["frontier", "reasoning", "analysis"]),
+        "balanced": (85, 3.0, 15.0, 200000, ["balanced", "fast", "vision"]),
+        "cheap": (70, 0.8, 4.0, 200000, ["cheap", "fast", "vision"]),
+    },
 }
 
 # Benchmark-anchored per-model overrides (mid-2026 OpenRouter data). The tier
@@ -107,6 +112,12 @@ _CURATED_MODELS = {
     "xai": [
         ("grok-4", "frontier", "grok-4"),
         ("grok-4-fast", "balanced", "grok-4-fast"),
+    ],
+    "bedrock": [
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "balanced",
+         "us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+        ("us.anthropic.claude-haiku-4-5-20251001-v1:0", "cheap",
+         "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
     ],
 }
 
@@ -324,6 +335,7 @@ def sync_agentic_registry(force: bool = False) -> dict:
             "deepseek": "deepseek",
             "zai": "zai",
             "xai": "xai",
+            "bedrock": "bedrock",
         }
         
         # Detect live providers with keys

@@ -39,9 +39,17 @@ def get_provider_key(p: Provider) -> Optional[str]:
     if k:
         return k
     stored = _read_keys()
-    k = stored.get(p.name, "")
-    if k:
-        return k
+    raw = stored.get(p.name, "")
+    if p.name == "bedrock":
+        from .keys import _normalize_bedrock_creds, bedrock_auth_present
+        creds = _normalize_bedrock_creds(raw)
+        if bedrock_auth_present(creds):
+            return (creds.get("AWS_BEARER_TOKEN_BEDROCK")
+                    or creds.get("AWS_ACCESS_KEY_ID")
+                    or None)
+        return None
+    if isinstance(raw, str) and raw:
+        return raw
     return None
 
 # Helpers for atomic file writes
@@ -66,6 +74,18 @@ def write_json_atomic(path: str, data: dict, chmod_mode: Optional[int] = None):
 
 # Probing logic
 def probe_provider(p: Provider, key: Optional[str]) -> dict:
+    if getattr(p, "api_mode", "") == "bedrock":
+        return {
+            "provider": p.name,
+            "models": [{"id": m} for m in p.pilot_models],
+            "source": "static",
+            "error": (
+                "AWS Bedrock has no shared models catalog here -- use a Bedrock "
+                "inference profile id (e.g. us.anthropic.claude-sonnet-4-5-...) "
+                "with the agentic/PM backend."
+            ),
+        }
+
     if not key:
         return {
             "provider": p.name,

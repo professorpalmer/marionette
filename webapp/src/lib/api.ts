@@ -28,6 +28,32 @@ export type Settings = {
   api_key_masked?: string;
   key_env_var?: string;
   preflight_ok?: boolean;
+  bedrock?: BedrockStatus;
+};
+
+export type BedrockStatus = {
+  configured: boolean;
+  has_key: boolean;
+  auth_mode?: string;
+  masked?: string;
+  has_bearer?: boolean;
+  has_access_key?: boolean;
+  has_session_token?: boolean;
+  region?: string;
+  aws_region?: string;
+  bedrock_region?: string;
+  model_id?: string;
+  disconnected?: boolean;
+};
+
+export type BedrockCredentials = {
+  AWS_BEARER_TOKEN_BEDROCK?: string;
+  AWS_ACCESS_KEY_ID?: string;
+  AWS_SECRET_ACCESS_KEY?: string;
+  AWS_SESSION_TOKEN?: string;
+  AWS_REGION?: string;
+  BEDROCK_REGION?: string;
+  BEDROCK_MODEL_ID?: string;
 };
 
 export type PendingReviewHunk = {
@@ -450,6 +476,11 @@ export const api = {
   clearProviderKey: (provider: string) => postJSON<ProviderKeyResult>("/api/providers/key", { provider, action: "clear" }),
   setProviderEnabled: (provider: string, enabled: boolean) =>
     postJSON<ProviderKeyResult>("/api/providers/key", { provider, action: enabled ? "enable" : "disable" }),
+  getBedrockStatus: () => getJSON<BedrockStatus>("/api/bedrock"),
+  setBedrockCredentials: (creds: BedrockCredentials) =>
+    postJSON<BedrockStatus & { ok?: boolean }>("/api/bedrock", creds),
+  clearBedrockCredentials: () =>
+    postJSON<BedrockStatus & { ok?: boolean }>("/api/bedrock", { clear: true }),
   getRegistry: () => getJSON<{ models: RegistryModel[] }>("/api/registry"),
   saveRegistry: (models: RegistryModel[]) => postJSON<{ ok: boolean; models: RegistryModel[] }>("/api/registry", { models }),
   getRoles: () => getJSON<RolesConfig>("/api/roles"),

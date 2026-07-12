@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChevronRight, ChevronDown, Plus, Trash2, ExternalLink, Search, X } from "lucide-react";
-import { api, type Settings, type UsageData, type PlatformAdapter, type GitStatus, type ProviderInfo } from "../lib/api";
+import { api, type Settings, type UsageData, type PlatformAdapter, type GitStatus, type ProviderInfo, type BedrockStatus } from "../lib/api";
 import SkillsPane from "./SkillsPane";
 import MemoryPane from "./MemoryPane";
 
@@ -60,6 +60,17 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [provKeyInput, setProvKeyInput] = useState<Record<string, string>>({});
   const [provBusy, setProvBusy] = useState<string>("");
+
+  // AWS Bedrock BYOK (multi-field; separate from single-key providers)
+  const [bedrock, setBedrock] = useState<BedrockStatus | null>(null);
+  const [bedrockBusy, setBedrockBusy] = useState(false);
+  const [bedrockBearer, setBedrockBearer] = useState("");
+  const [bedrockAccessKey, setBedrockAccessKey] = useState("");
+  const [bedrockSecretKey, setBedrockSecretKey] = useState("");
+  const [bedrockSessionToken, setBedrockSessionToken] = useState("");
+  const [bedrockRegion, setBedrockRegion] = useState("");
+  const [bedrockRegionAlt, setBedrockRegionAlt] = useState("");
+  const [bedrockModelId, setBedrockModelId] = useState("");
 
   // Feature states
   const [hooks, setHooks] = useState<any[]>([]);
@@ -185,6 +196,15 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       .then(setProviders)
       .catch((err) => console.error("Failed to load providers", err));
 
+    api.getBedrockStatus()
+      .then((b) => {
+        setBedrock(b);
+        setBedrockRegion(b.aws_region || "");
+        setBedrockRegionAlt(b.bedrock_region || "");
+        setBedrockModelId(b.model_id || "");
+      })
+      .catch((err) => console.error("Failed to load Bedrock status", err));
+
     api.getGitStatus()
       .then(setGitStatus)
       .catch((err) => {
@@ -265,6 +285,64 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   const refreshProviders = async () => {
     try { setProviders(await api.providers()); } catch (e) { console.error(e); }
+  };
+
+  const handleSaveBedrock = async () => {
+    setBedrockBusy(true);
+    try {
+      const patch: Record<string, string> = {};
+      if (bedrockBearer.trim()) patch.AWS_BEARER_TOKEN_BEDROCK = bedrockBearer.trim();
+      if (bedrockAccessKey.trim()) patch.AWS_ACCESS_KEY_ID = bedrockAccessKey.trim();
+      if (bedrockSecretKey.trim()) patch.AWS_SECRET_ACCESS_KEY = bedrockSecretKey.trim();
+      if (bedrockSessionToken.trim()) patch.AWS_SESSION_TOKEN = bedrockSessionToken.trim();
+      // Region / model always send current field values (including empty to clear).
+      patch.AWS_REGION = bedrockRegion.trim();
+      patch.BEDROCK_REGION = bedrockRegionAlt.trim();
+      patch.BEDROCK_MODEL_ID = bedrockModelId.trim();
+      const hasAuth =
+        !!patch.AWS_BEARER_TOKEN_BEDROCK ||
+        (!!patch.AWS_ACCESS_KEY_ID && !!patch.AWS_SECRET_ACCESS_KEY) ||
+        !!bedrock?.configured;
+      if (!hasAuth && !patch.AWS_REGION && !patch.BEDROCK_REGION && !patch.BEDROCK_MODEL_ID) {
+        return;
+      }
+      const res = await api.setBedrockCredentials(patch);
+      setBedrock(res);
+      setBedrockBearer("");
+      setBedrockAccessKey("");
+      setBedrockSecretKey("");
+      setBedrockSessionToken("");
+      await refreshProviders();
+      window.dispatchEvent(new Event("harness-config-changed"));
+      setStatus("saved");
+      setTimeout(() => setStatus(""), 2000);
+    } catch (e) {
+      console.error("Failed to save Bedrock credentials", e);
+      setError("Failed to save Bedrock credentials");
+    } finally {
+      setBedrockBusy(false);
+    }
+  };
+
+  const handleClearBedrock = async () => {
+    setBedrockBusy(true);
+    try {
+      const res = await api.clearBedrockCredentials();
+      setBedrock(res);
+      setBedrockBearer("");
+      setBedrockAccessKey("");
+      setBedrockSecretKey("");
+      setBedrockSessionToken("");
+      setBedrockRegion("");
+      setBedrockRegionAlt("");
+      setBedrockModelId("");
+      await refreshProviders();
+      window.dispatchEvent(new Event("harness-config-changed"));
+    } catch (e) {
+      console.error("Failed to clear Bedrock credentials", e);
+    } finally {
+      setBedrockBusy(false);
+    }
   };
 
   const handleSetProviderKey = async (name: string) => {
@@ -658,7 +736,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             Connect or disconnect each provider independently. Keys imported from your environment get an on/off toggle -- flip one off to stop using it without losing the key, for easy swapping (e.g. work vs. personal).
           </div>
           <div className="space-y-1.5">
-            {providers.map((p) => {
+            {providers.filter((p) => p.name !== "bedrock").map((p) => {
               // A provider can carry a key from the environment (e.g. a
               // shell-exported OPENROUTER_API_KEY) rather than one stored in the
               // app. Env-backed providers get an on/off toggle instead of a
@@ -736,6 +814,106 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               </div>
               );
             })}
+          </div>
+        </div>
+
+        </>)}
+        {gate("providers", "bedrock aws amazon bearer access key region inference profile") && (<>
+        {/* AWS Bedrock BYOK -- multi-field credentials for agentic/PM workers */}
+        <div className="space-y-2 border-t border-edge pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+              AWS Bedrock
+            </label>
+            <span className={`text-[10px] font-mono ${bedrock?.configured ? "text-good" : "text-faint"}`}>
+              {bedrock?.configured
+                ? `configured - ${bedrock.auth_mode || "credentials"}`
+                : "not configured"}
+            </span>
+          </div>
+          <p className="text-[10px] text-muted leading-normal">
+            Preferred: paste an <span className="font-mono text-faint">AWS_BEARER_TOKEN_BEDROCK</span>.
+            Or use access key + secret (+ optional session token). Credentials are injected into
+            the worker process env for Bedrock-priced models on the agentic backend.
+          </p>
+          <div className="space-y-1.5 bg-panel2 border border-edge/50 rounded p-2">
+            <input
+              type="password"
+              placeholder={bedrock?.has_bearer ? "Bearer token (leave blank to keep)" : "AWS_BEARER_TOKEN_BEDROCK"}
+              value={bedrockBearer}
+              onChange={(e) => setBedrockBearer(e.target.value)}
+              disabled={bedrockBusy}
+              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+            />
+            <div className="text-[9px] text-faint uppercase tracking-wider pt-1">or access keys</div>
+            <input
+              type="password"
+              placeholder={bedrock?.has_access_key ? "Access key id (leave blank to keep)" : "AWS_ACCESS_KEY_ID"}
+              value={bedrockAccessKey}
+              onChange={(e) => setBedrockAccessKey(e.target.value)}
+              disabled={bedrockBusy}
+              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+            />
+            <input
+              type="password"
+              placeholder={bedrock?.has_access_key ? "Secret access key (leave blank to keep)" : "AWS_SECRET_ACCESS_KEY"}
+              value={bedrockSecretKey}
+              onChange={(e) => setBedrockSecretKey(e.target.value)}
+              disabled={bedrockBusy}
+              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+            />
+            <input
+              type="password"
+              placeholder={bedrock?.has_session_token ? "Session token (leave blank to keep)" : "AWS_SESSION_TOKEN (optional)"}
+              value={bedrockSessionToken}
+              onChange={(e) => setBedrockSessionToken(e.target.value)}
+              disabled={bedrockBusy}
+              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+            />
+            <div className="grid grid-cols-2 gap-1.5 pt-1">
+              <input
+                type="text"
+                placeholder="AWS_REGION (e.g. us-east-1)"
+                value={bedrockRegion}
+                onChange={(e) => setBedrockRegion(e.target.value)}
+                disabled={bedrockBusy}
+                className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+              />
+              <input
+                type="text"
+                placeholder="BEDROCK_REGION (optional)"
+                value={bedrockRegionAlt}
+                onChange={(e) => setBedrockRegionAlt(e.target.value)}
+                disabled={bedrockBusy}
+                className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+              />
+            </div>
+            <input
+              type="text"
+              placeholder="Default inference profile id (optional)"
+              value={bedrockModelId}
+              onChange={(e) => setBedrockModelId(e.target.value)}
+              disabled={bedrockBusy}
+              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+            />
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={handleSaveBedrock}
+                disabled={bedrockBusy}
+                className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors"
+              >
+                {bedrockBusy ? "Saving..." : "Save Bedrock"}
+              </button>
+              {bedrock?.configured ? (
+                <button
+                  onClick={handleClearBedrock}
+                  disabled={bedrockBusy}
+                  className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors"
+                >
+                  Disconnect
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
 

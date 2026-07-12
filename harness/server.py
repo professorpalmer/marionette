@@ -1734,6 +1734,11 @@ _load_env_settings()
 # Masker-safe live key: if HARNESS_KEY_FILE points at a file, load it into the
 # expected env var for the chosen reach before the Session builds its driver.
 from .keys import load_api_keys_on_startup, get_api_key_status, get_env_var_for_reach, set_api_key, clear_api_key
+from .keys import (
+    get_bedrock_status,
+    set_bedrock_credentials,
+    clear_bedrock_credentials,
+)
 from .wiki_config import (
     load_wiki_config_on_startup,
     get_wiki_config,
@@ -3472,7 +3477,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/memory/add", "/api/memory/remove",
                       "/api/memory/propose/accept", "/api/memory/propose/dismiss",
                       "/api/settings", "/api/providers/probe", "/api/providers/key", "/api/wiki/config",
-                      "/api/wiki/disconnect", "/api/wiki/handoff",
+                      "/api/wiki/disconnect", "/api/wiki/handoff", "/api/bedrock",
                       "/api/platform", "/api/reviews/apply", "/api/reviews/dismiss",
                       "/api/registry", "/api/roles", "/api/pilot/validate",
                       "/api/worktrees/add", "/api/worktrees/remove",
@@ -4723,6 +4728,29 @@ class Handler(BaseHTTPRequestHandler):
             res = clear_wiki_config()
             _clear_wiki_graph_cache()
             return self._send(200, json.dumps(res))
+        if path == "/api/bedrock":
+            # AWS Bedrock BYOK: bearer token OR access-key pair + region/model.
+            action = str(body.get("action", "")).strip().lower()
+            if action == "clear" or body.get("clear") is True:
+                res = clear_bedrock_credentials()
+            else:
+                fields = body.get("bedrock") if isinstance(body.get("bedrock"), dict) else body
+                # Accept either {bedrock: {...}} or flat field names at the top level.
+                allowed = (
+                    "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
+                    "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+                    "AWS_REGION", "BEDROCK_REGION", "BEDROCK_MODEL_ID",
+                )
+                patch = {k: fields.get(k) for k in allowed if k in fields}
+                if not patch:
+                    return self._send(400, json.dumps({
+                        "error": "bedrock credentials required "
+                                 "(AWS_BEARER_TOKEN_BEDROCK or access key + secret)"
+                    }))
+                res = set_bedrock_credentials(patch)
+            from .auto_registry import sync_agentic_registry_safe
+            sync_agentic_registry_safe()
+            return self._send(200, json.dumps({"ok": True, **res}))
         if path == "/api/wiki/handoff":
             # Mint a one-shot nonce and return a setup URL that carries a
             # loopback return target. Prefer this over marionette:// so Windows
@@ -5012,10 +5040,16 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     _diag("server.provider_clear_driver_rebuild", e)
             else:
-                val = str(body.get("api_key", "")).strip()
-                if not val:
-                    return self._send(400, json.dumps({"error": "api_key required to set"}))
-                set_api_key(p.name, val)
+                # Bedrock accepts a multi-field credential blob; other providers
+                # take a single api_key string (bedrock also accepts api_key as
+                # the preferred bearer-token shortcut).
+                if p.name == "bedrock" and isinstance(body.get("bedrock"), dict):
+                    set_bedrock_credentials(body["bedrock"])
+                else:
+                    val = str(body.get("api_key", "")).strip()
+                    if not val:
+                        return self._send(400, json.dumps({"error": "api_key required to set"}))
+                    set_api_key(p.name, val)
                 # Resync agentic registry when a provider key is set
                 from .auto_registry import sync_agentic_registry_safe
                 sync_agentic_registry_safe()
@@ -5991,6 +6025,13 @@ class Handler(BaseHTTPRequestHandler):
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
             return self._send(200, json.dumps(get_wiki_config()))
+        if u.path == "/api/bedrock":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            return self._send(200, json.dumps(get_bedrock_status()))
         if u.path == "/api/wiki/graph":
             if self._guard():
                 return
@@ -7609,6 +7650,7 @@ def _get_settings_dict():
         "masked": status["masked"],
         "key_env_var": get_env_var_for_reach(reach),
         "preflight_ok": preflight_ok,
+        "bedrock": get_bedrock_status(),
     }
 
 
