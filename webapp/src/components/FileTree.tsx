@@ -1,8 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ChevronRight, ChevronDown, File, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import {
-  isDesktop,
   revealInFolderLabel,
   revealWorkspacePath,
   toAbsoluteWorkspacePath,
@@ -26,6 +25,15 @@ type FileContextMenu = {
   x: number;
   y: number;
   /** null = empty space / workspace root */
+  node: FileNode | null;
+};
+
+/** In-app name prompt -- Electron disables window.prompt, which made New/Rename no-ops. */
+type NamePromptState = {
+  mode: "new-file" | "new-folder" | "rename";
+  title: string;
+  initial: string;
+  dir: string;
   node: FileNode | null;
 };
 
@@ -171,6 +179,9 @@ export default function FileTree() {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<FileContextMenu | null>(null);
   const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
+  const [namePrompt, setNamePrompt] = useState<NamePromptState | null>(null);
+  const [nameValue, setNameValue] = useState("");
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadFiles = async () => {
     setLoading(true);
@@ -239,6 +250,16 @@ export default function FileTree() {
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!namePrompt) return;
+    setNameValue(namePrompt.initial);
+    const t = window.setTimeout(() => {
+      nameInputRef.current?.focus();
+      nameInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [namePrompt]);
+
   const handleFileSelect = (path: string) => {
     setSelectedPath(path);
     // Dispatch custom event to let CenterPane/Conversation know we want to open this file
@@ -257,11 +278,19 @@ export default function FileTree() {
     setConfirmDeletePath(null);
   };
 
-  const targetDirForCreate = (): string => {
-    const node = contextMenu?.node;
+  const targetDirForCreate = (node: FileNode | null): string => {
     if (!node) return "";
     if (node.isDir) return node.path;
     return parentDir(node.path);
+  };
+
+  const validateBaseName = (name: string): string | null => {
+    const trimmed = name.trim();
+    if (!trimmed) return "Name is required";
+    if (trimmed.includes("/") || trimmed.includes("\\") || trimmed === "." || trimmed === "..") {
+      return "Invalid name";
+    }
+    return null;
   };
 
   const handleReveal = async () => {
@@ -295,66 +324,81 @@ export default function FileTree() {
     handleFileSelect(node.path);
   };
 
-  const handleNewFile = async () => {
-    const dir = targetDirForCreate();
+  const openNewFilePrompt = () => {
+    const node = contextMenu?.node ?? null;
+    const dir = targetDirForCreate(node);
     closeMenu();
-    const name = window.prompt("New file name:");
-    if (!name || !name.trim()) return;
-    const trimmed = name.trim();
-    if (trimmed.includes("/") || trimmed.includes("\\") || trimmed === "." || trimmed === "..") {
-      toast("Invalid file name");
-      return;
-    }
-    const rel = joinRel(dir, trimmed);
-    try {
-      const res = await api.writeFile(rel, "");
-      if (!res.ok) {
-        toast(res.error || "Could not create file");
-        return;
-      }
-      await loadFiles();
-      notifyTreeMutated();
-      handleFileSelect(rel);
-    } catch (err: any) {
-      toast(err?.error || err?.message || "Could not create file");
-    }
+    setNamePrompt({ mode: "new-file", title: "New file", initial: "", dir, node });
   };
 
-  const handleNewFolder = async () => {
-    const dir = targetDirForCreate();
+  const openNewFolderPrompt = () => {
+    const node = contextMenu?.node ?? null;
+    const dir = targetDirForCreate(node);
     closeMenu();
-    const name = window.prompt("New folder name:");
-    if (!name || !name.trim()) return;
-    const trimmed = name.trim();
-    if (trimmed.includes("/") || trimmed.includes("\\") || trimmed === "." || trimmed === "..") {
-      toast("Invalid folder name");
-      return;
-    }
-    const rel = joinRel(dir, trimmed);
-    try {
-      const res = await api.mkdir(rel);
-      if (!res.ok) {
-        toast(res.error || "Could not create folder");
-        return;
-      }
-      await loadFiles();
-      notifyTreeMutated();
-    } catch (err: any) {
-      toast(err?.error || err?.message || "Could not create folder");
-    }
+    setNamePrompt({ mode: "new-folder", title: "New folder", initial: "", dir, node });
   };
 
-  const handleRename = async () => {
+  const openRenamePrompt = () => {
     const node = contextMenu?.node;
     if (!node) return;
     closeMenu();
-    const next = window.prompt("Rename to:", node.name);
-    if (!next || !next.trim() || next.trim() === node.name) return;
-    const trimmed = next.trim();
-    if (trimmed.includes("/") || trimmed.includes("\\") || trimmed === "." || trimmed === "..") {
-      toast("Invalid name");
+    setNamePrompt({
+      mode: "rename",
+      title: "Rename",
+      initial: node.name,
+      dir: parentDir(node.path),
+      node,
+    });
+  };
+
+  const submitNamePrompt = async () => {
+    if (!namePrompt) return;
+    const invalid = validateBaseName(nameValue);
+    if (invalid) {
+      toast(invalid);
       return;
     }
+    const trimmed = nameValue.trim();
+    const prompt = namePrompt;
+    setNamePrompt(null);
+
+    if (prompt.mode === "new-file") {
+      const rel = joinRel(prompt.dir, trimmed);
+      try {
+        const res = await api.writeFile(rel, "");
+        if (!res.ok) {
+          toast(res.error || "Could not create file");
+          return;
+        }
+        await loadFiles();
+        notifyTreeMutated();
+        handleFileSelect(rel);
+      } catch (err: any) {
+        toast(err?.error || err?.message || "Could not create file");
+      }
+      return;
+    }
+
+    if (prompt.mode === "new-folder") {
+      const rel = joinRel(prompt.dir, trimmed);
+      try {
+        const res = await api.mkdir(rel);
+        if (!res.ok) {
+          toast(res.error || "Could not create folder");
+          return;
+        }
+        await loadFiles();
+        notifyTreeMutated();
+      } catch (err: any) {
+        toast(err?.error || err?.message || "Could not create folder");
+      }
+      return;
+    }
+
+    // rename
+    const node = prompt.node;
+    if (!node) return;
+    if (trimmed === node.name) return;
     try {
       const res = await api.renameFile({ path: node.path, new_name: trimmed });
       if (!res.ok) {
@@ -454,9 +498,9 @@ export default function FileTree() {
               Open
             </button>
           )}
-          {isDesktop && node && (
+          {node && (
             <button
-              onClick={handleReveal}
+              onClick={() => void handleReveal()}
               className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
             >
               {revealLabel}
@@ -482,13 +526,13 @@ export default function FileTree() {
             <div className="border-t border-edge my-1" />
           )}
           <button
-            onClick={handleNewFile}
+            onClick={openNewFilePrompt}
             className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
           >
             New File…
           </button>
           <button
-            onClick={handleNewFolder}
+            onClick={openNewFolderPrompt}
             className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
           >
             New Folder…
@@ -497,7 +541,7 @@ export default function FileTree() {
             <>
               <div className="border-t border-edge my-1" />
               <button
-                onClick={handleRename}
+                onClick={openRenamePrompt}
                 className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
               >
                 Rename…
@@ -507,7 +551,7 @@ export default function FileTree() {
                   <span className="text-muted font-medium">Delete?</span>
                   <div className="flex gap-2">
                     <button
-                      onClick={handleDeleteConfirmed}
+                      onClick={() => void handleDeleteConfirmed()}
                       className="text-red-400 font-bold hover:underline"
                     >
                       Yes
@@ -530,6 +574,57 @@ export default function FileTree() {
               )}
             </>
           )}
+        </div>
+      )}
+
+      {namePrompt && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/45"
+          onClick={() => setNamePrompt(null)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setNamePrompt(null);
+          }}
+        >
+          <div
+            className="w-[min(360px,92vw)] rounded-lg border border-edge bg-panel shadow-xl p-3 flex flex-col gap-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-[12px] font-medium text-txt">{namePrompt.title}</div>
+            <input
+              ref={nameInputRef}
+              value={nameValue}
+              onChange={(e) => setNameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void submitNamePrompt();
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setNamePrompt(null);
+                }
+              }}
+              className="w-full rounded border border-edge bg-bg px-2 py-1.5 text-[12px] text-txt outline-none focus:border-accent"
+              placeholder={namePrompt.mode === "new-folder" ? "folder-name" : "name"}
+              spellCheck={false}
+            />
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setNamePrompt(null)}
+                className="px-2.5 py-1 rounded text-[11px] text-muted hover:bg-panel2"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitNamePrompt()}
+                className="px-2.5 py-1 rounded text-[11px] bg-accent/20 text-accent hover:bg-accent/30 font-medium"
+              >
+                OK
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

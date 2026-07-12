@@ -15,6 +15,11 @@ import {
   classifyActionGoal,
   autolinkAgentText,
 } from "../lib/agentLinks";
+import {
+  deriveBusyProgress,
+  investigatingHeadline,
+  shortenGoal,
+} from "../lib/turnProgress";
 
 export type Msg = {
   role: "user" | "assistant";
@@ -228,6 +233,8 @@ export type TranscriptListProps = {
   editingIndex: number | null;
   auto: boolean;
   plan: boolean;
+  /** Wall-clock ms since the current busy turn began (for elapsed on the footer). */
+  busyElapsedMs?: number | null;
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   onEditMessage: (idx: number, originalText: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
@@ -243,6 +250,7 @@ export const TranscriptList = memo(function TranscriptList({
   editingIndex,
   auto,
   plan,
+  busyElapsedMs = null,
   scrollContainerRef,
   onEditMessage,
   onExecuteSend,
@@ -457,6 +465,7 @@ export const TranscriptList = memo(function TranscriptList({
   });
 
   const isBusy = status === "thinking" || status === "executing" || status === "streaming";
+  const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
   return (
     <>
       {hiddenCount > 0 && (
@@ -476,9 +485,14 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       )}
       {isBusy && !compactingStatus && (
-        <div className="flex items-center gap-1.5 py-1 text-[12px] text-muted select-none mt-1 pl-0.5">
-          <Loader2 size={12} className="animate-spin text-muted" />
-          <span>{status === "thinking" ? "thinking..." : status === "streaming" ? "streaming..." : "running..."}</span>
+        <div
+          className="flex items-center gap-1.5 py-1 text-[12px] text-muted select-none mt-1 pl-0.5 min-w-0"
+          title={busyProgress.runningGoal || busyProgress.label}
+        >
+          <Loader2 size={12} className="animate-spin text-muted shrink-0" />
+          <span className="truncate font-mono text-[11.5px] tracking-tight">
+            {busyProgress.label || (status === "thinking" ? "thinking..." : status === "streaming" ? "streaming..." : "running...")}
+          </span>
         </div>
       )}
     </>
@@ -592,6 +606,9 @@ function ActivityGroup({
   const swarmResults = items.filter((it) => it.kind === "swarm_result") as { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }[];
   const actionCount = cards.length;
   const anyRunning = cards.some((c) => c.card.running);
+  const runningCard = [...cards].reverse().find((c) => c.card.running)?.card;
+  const runningKind = (runningCard?.kind || "").replace(/_/g, " ").trim();
+  const runningGoal = shortenGoal(runningCard?.goal || "");
   const narrationMsgs = items.filter(
     (it) => it.kind === "msg" && (it as { kind: "msg"; msg: Msg }).msg.text.trim()
   ) as { kind: "msg"; msg: Msg }[];
@@ -626,6 +643,13 @@ function ActivityGroup({
     .slice(0, 3)
     .map(([k, n]) => `${n} ${kindLabel(k)}${n === 1 ? "" : "s"}`)
     .join(", ");
+  const stepHeadline = investigatingHeadline(
+    actionCount,
+    anyRunning,
+    runningKind,
+    runningGoal,
+    kindSummary,
+  );
 
   const renderInner = (it: typeof items[number], idx: number) => {
     if (it.kind === "card") return <ActionCard key={idx} card={it.card} onToggle={() => onToggleCard(it.card)} />;
@@ -697,11 +721,11 @@ function ActivityGroup({
             ? "Swarm"
             : actionCount > 0 ? (anyRunning ? "Investigating" : "Investigated") : "Thought"}
         </span>
-        <span className="text-faint truncate max-w-[46ch] normal-case">
+        <span className="text-faint truncate max-w-[46ch] normal-case" title={anyRunning ? (runningCard?.goal || stepHeadline) : undefined}>
           {swarmResults.length > 0 && actionCount === 0
             ? `${swarmResults.length} result${swarmResults.length === 1 ? "" : "s"}`
             : actionCount > 0
-            ? `${actionCount} step${actionCount === 1 ? "" : "s"}${kindSummary ? ` -- ${kindSummary}` : ""}`
+            ? stepHeadline
             : narrationPreview}
         </span>
         {cgItems.length > 0 && (

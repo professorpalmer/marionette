@@ -3483,6 +3483,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/codegraph/apply-excludes",
                       "/api/file/write",
                       "/api/file/delete", "/api/file/rename", "/api/file/mkdir",
+                      "/api/file/reveal",
                       "/api/inline-edit",
                       "/api/commands/render",
                       "/api/git/connect", "/api/git/device/poll", "/api/git/disconnect",
@@ -3972,6 +3973,32 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": True, "path": rel_posix}))
             except Exception as e:
                 return self._send(500, json.dumps({"error": f"Failed to create directory: {e}"}))
+
+        if path == "/api/file/reveal":
+            # OS file-manager reveal. Prefer Electron shell.showItemInFolder when
+            # the preload bridge is present; this HTTP path covers stale shells
+            # and HTTP-only UIs so the FILES menu never toasts "web build".
+            if not repo or not os.path.exists(repo):
+                return self._send(400, json.dumps({"error": "No open workspace"}))
+            rel_path = body.get("path", "").strip()
+            if not rel_path:
+                return self._send(400, json.dumps({"error": "Missing path parameter"}))
+            try:
+                target_path, rel_posix = _resolve_editor_path(repo, rel_path)
+            except ValueError as e:
+                msg = str(e)
+                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
+                return self._send(code, json.dumps({"error": msg}))
+            if not os.path.exists(target_path):
+                return self._send(404, json.dumps({"error": "Path not found", "path": rel_posix}))
+            try:
+                from .file_reveal import reveal_in_file_manager
+                err = reveal_in_file_manager(target_path)
+                if err:
+                    return self._send(500, json.dumps({"error": err, "path": rel_posix}))
+                return self._send(200, json.dumps({"ok": True, "path": rel_posix}))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": f"Failed to reveal: {e}"}))
 
         if path == "/api/workspace/open":
             import subprocess

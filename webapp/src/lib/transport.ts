@@ -7,8 +7,15 @@
 
 export type StreamEvent = { kind: string; data?: any };
 
-// Detect an Electron preload bridge if present (set in a future desktop build).
-const ipc: any = (typeof window !== "undefined" && (window as any).harnessIPC) || null;
+/** Live Electron preload bridge (do not freeze at module import). */
+export function getHarnessIpc(): any {
+  if (typeof window === "undefined") return null;
+  return (window as any).harnessIPC || null;
+}
+
+// Snapshot for StatusBar / SourceControl gating. Reveal no longer depends on
+// this -- it falls back to POST /api/file/reveal when the bridge is missing.
+const ipc: any = getHarnessIpc();
 
 // Per-process auth token (defense-in-depth against unauthenticated localhost
 // access). Electron injects window.__HARNESS_TOKEN__; the served web page reads
@@ -101,14 +108,24 @@ export async function uploadFile(file: File): Promise<{ path: string; name: stri
 
 // Native desktop bridges (file tree + git). Web build returns not-supported.
 export const nativeFs = {
-  readDir: (dir: string): Promise<{ ok: boolean; nodes?: any[]; error?: string }> =>
-    ipc?.fs?.readDir ? ipc.fs.readDir(dir) : Promise.resolve({ ok: false, error: "web build" }),
-  readFile: (file: string): Promise<{ ok: boolean; content?: string; error?: string }> =>
-    ipc?.fs?.readFile ? ipc.fs.readFile(file) : Promise.resolve({ ok: false, error: "web build" }),
-  revealInFolder: (absPath: string): Promise<{ ok: boolean; error?: string }> =>
-    ipc?.fs?.revealInFolder
-      ? ipc.fs.revealInFolder(absPath)
-      : Promise.resolve({ ok: false, error: "web build" }),
+  readDir: (dir: string): Promise<{ ok: boolean; nodes?: any[]; error?: string }> => {
+    const bridge = getHarnessIpc();
+    return bridge?.fs?.readDir
+      ? bridge.fs.readDir(dir)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  readFile: (file: string): Promise<{ ok: boolean; content?: string; error?: string }> => {
+    const bridge = getHarnessIpc();
+    return bridge?.fs?.readFile
+      ? bridge.fs.readFile(file)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  revealInFolder: (absPath: string): Promise<{ ok: boolean; error?: string }> => {
+    const bridge = getHarnessIpc();
+    return bridge?.fs?.revealInFolder
+      ? bridge.fs.revealInFolder(absPath)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
 };
 
 /** OS-specific label for shell.showItemInFolder. */
@@ -139,19 +156,49 @@ export function toAbsoluteWorkspacePath(repoRoot: string, relOrAbs: string): str
   return `${root}${sep}${rel}`;
 }
 
-/** Reveal a workspace path in the OS file manager (Electron only). */
+/**
+ * Reveal a workspace path in the OS file manager.
+ * Prefer Electron ``fs.revealInFolder``; fall back to ``POST /api/file/reveal``
+ * so a stale preload (or HTTP-only UI) never toasts the useless "web build".
+ */
 export async function revealWorkspacePath(
   repoRoot: string,
   relOrAbs: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  if (!ipc?.fs?.revealInFolder) {
-    return { ok: false, error: "web build" };
-  }
   if (!repoRoot && !looksAbsolutePath(relOrAbs)) {
     return { ok: false, error: "No open workspace" };
   }
   const abs = toAbsoluteWorkspacePath(repoRoot || "", relOrAbs);
-  return nativeFs.revealInFolder(abs);
+  const bridge = getHarnessIpc();
+  if (bridge?.fs?.revealInFolder) {
+    try {
+      const res = await bridge.fs.revealInFolder(abs);
+      if (res && res.ok) return res;
+    } catch {
+      // fall through to HTTP
+    }
+  }
+  const rel = looksAbsolutePath(relOrAbs)
+    ? workspaceRelFromAbs(repoRoot, abs)
+    : String(relOrAbs || "").replace(/\\/g, "/");
+  try {
+    await postJSON("/api/file/reveal", { path: rel || "." });
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || "Could not reveal path" };
+  }
+}
+
+function workspaceRelFromAbs(repoRoot: string, abs: string): string {
+  const root = (repoRoot || "").replace(/[\\/]+$/, "");
+  if (!root) return abs.replace(/\\/g, "/");
+  const normRoot = root.replace(/\\/g, "/");
+  const normAbs = abs.replace(/\\/g, "/");
+  const a = normAbs.toLowerCase();
+  const r = normRoot.toLowerCase();
+  if (a === r) return ".";
+  if (a.startsWith(r + "/")) return normAbs.slice(normRoot.length).replace(/^\//, "");
+  return normAbs;
 }
 export const nativeGit = {
   status: (repo: string): Promise<any> =>

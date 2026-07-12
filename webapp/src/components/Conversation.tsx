@@ -4,9 +4,10 @@ import { api, type Config } from "../lib/api";
 import { panelOpacityClass } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
 import PilotPicker from "./PilotPicker";
-import { pickFolder, isDesktop, revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../lib/transport";
+import { pickFolder, revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../lib/transport";
 import FileEditorPane from "./FileEditorPane";
 import { TranscriptList, type Item, type Msg, type Card } from "./TranscriptList";
+import { deriveBusyProgress } from "../lib/turnProgress";
 
 /**
  * Session-switch transcript hydrate: decide what to show while the target
@@ -36,7 +37,7 @@ export function resolveSwitchTranscript(args: {
   return { items: [], stale: true, blank: false };
 }
 
-function getSimilarity(s1: string, s2: string): number {
+export function getSimilarity(s1: string, s2: string): number {
   const norm1 = s1.toLowerCase().replace(/[^a-z0-9]/g, "");
   const norm2 = s2.toLowerCase().replace(/[^a-z0-9]/g, "");
   
@@ -78,26 +79,69 @@ function getSimilarity(s1: string, s2: string): number {
   return wordJaccard;
 }
 
-function deduplicateConsecutiveAssistantMessages(items: Item[]): Item[] {
+/**
+ * Drop near-duplicate assistant narration within a turn.
+ *
+ * Pilots often restate the same diagnosis after each tool ("Found the root
+ * causes…") with cards between the bubbles -- consecutive-only dedupe missed
+ * that and left the user reading the same paragraph twice while tokens burned.
+ * Scan back past cards/thinking within the current user turn; keep the longer
+ * copy when similarity is high.
+ */
+export function deduplicateAssistantNarration(items: Item[]): Item[] {
   const result: Item[] = [];
+  // Indices into `result` of assistant msgs since the last user msg.
+  let turnAssistantIdx: number[] = [];
+
   for (const item of items) {
+    if (item.kind === "msg" && item.msg.role === "user") {
+      turnAssistantIdx = [];
+      result.push(item);
+      continue;
+    }
+
     if (item.kind === "msg" && item.msg.role === "assistant") {
-      const last = result[result.length - 1];
-      if (last && last.kind === "msg" && last.msg.role === "assistant") {
-        const lastText = last.msg.text;
-        const newText = item.msg.text;
-        
-        if (getSimilarity(lastText, newText) > 0.85) {
-          if (newText.length > lastText.length) {
-            result[result.length - 1] = item;
-          }
-          continue;
+      // Never collapse an open stream into a prior bubble -- the typewriter
+      // still owns it; finalize path will re-run this after streaming:false.
+      if (item.msg.streaming) {
+        result.push(item);
+        turnAssistantIdx.push(result.length - 1);
+        continue;
+      }
+
+      const newText = item.msg.text || "";
+      let dupIdx = -1;
+      for (let i = turnAssistantIdx.length - 1; i >= 0; i--) {
+        const prev = result[turnAssistantIdx[i]];
+        if (!prev || prev.kind !== "msg") continue;
+        if (prev.msg.streaming) continue;
+        if (getSimilarity(prev.msg.text || "", newText) > 0.85) {
+          dupIdx = turnAssistantIdx[i];
+          break;
         }
       }
+
+      if (dupIdx >= 0) {
+        const prev = result[dupIdx] as { kind: "msg"; msg: Msg };
+        if (newText.length > (prev.msg.text || "").length) {
+          result[dupIdx] = item;
+        }
+        continue;
+      }
+
+      result.push(item);
+      turnAssistantIdx.push(result.length - 1);
+      continue;
     }
+
     result.push(item);
   }
   return result;
+}
+
+/** @deprecated use deduplicateAssistantNarration -- kept as alias for callers. */
+function deduplicateConsecutiveAssistantMessages(items: Item[]): Item[] {
+  return deduplicateAssistantNarration(items);
 }
 
 
@@ -420,6 +464,27 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<"idle"|"thinking"|"executing"|"done"|"error"|"streaming">("idle");
+  // Wall clock for the live busy footer ("running · read_file · step 3 · 2m 14s").
+  // Starts when we enter a busy phase; clears on idle/done/error. A 1s tick keeps
+  // the elapsed label honest without re-rendering the whole app on a fast interval.
+  const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
+  const [busyNow, setBusyNow] = useState(() => Date.now());
+  useEffect(() => {
+    const busy = status === "thinking" || status === "executing" || status === "streaming";
+    if (busy) {
+      setBusyStartedAt((prev) => prev ?? Date.now());
+    } else {
+      setBusyStartedAt(null);
+    }
+  }, [status]);
+  useEffect(() => {
+    if (busyStartedAt == null) return;
+    setBusyNow(Date.now());
+    const id = window.setInterval(() => setBusyNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [busyStartedAt]);
+  const busyElapsedMs = busyStartedAt != null ? Math.max(0, busyNow - busyStartedAt) : null;
+  const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
   // True while visible items belong to a prior session (or are awaiting hydrate).
   // Dims the feed and blocks send so stale A is never treated as B.
   const [transcriptStale, setTranscriptStale] = useState(false);
@@ -2498,7 +2563,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           <span className="text-muted/80 text-[10px] font-medium tracking-wide uppercase">The Puppetmaster Harness</span>
         </span>
         <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
-          <StatusPill status={transcriptStale ? "switching…" : status} />
+          <StatusPill
+            status={transcriptStale ? "switching…" : status}
+            detail={!transcriptStale && busyProgress.label ? busyProgress.pill : undefined}
+          />
         </div>
       </header>
 
@@ -2562,25 +2630,23 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           style={{ top: tabContextMenu.y, left: tabContextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
-          {isDesktop && (
-            <button
-              onClick={async () => {
-                const path = tabContextMenu.path;
-                setTabContextMenu(null);
-                const res = await revealWorkspacePath(repoRoot, path);
-                if (!res.ok) {
-                  window.dispatchEvent(
-                    new CustomEvent("harness-toast", {
-                      detail: res.error || "Could not reveal path",
-                    }),
-                  );
-                }
-              }}
-              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-            >
-              {revealInFolderLabel()}
-            </button>
-          )}
+          <button
+            onClick={async () => {
+              const path = tabContextMenu.path;
+              setTabContextMenu(null);
+              const res = await revealWorkspacePath(repoRoot, path);
+              if (!res.ok) {
+                window.dispatchEvent(
+                  new CustomEvent("harness-toast", {
+                    detail: res.error || "Could not reveal path",
+                  }),
+                );
+              }
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            {revealInFolderLabel()}
+          </button>
           <button
             onClick={async () => {
               const path = tabContextMenu.path;
@@ -2675,6 +2741,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             editingIndex={editingIndex}
             auto={auto}
             plan={plan}
+            busyElapsedMs={busyElapsedMs}
             scrollContainerRef={feedRef}
             onEditMessage={stableEditMessage}
             onExecuteSend={stableExecuteSend}
@@ -3463,16 +3530,23 @@ function WorkspaceChip() {
 }
 
 
-function StatusPill({ status }: { status: string }) {
+function StatusPill({ status, detail }: { status: string; detail?: string }) {
   const m: Record<string, string> = {
     idle: "text-faint", thinking: "text-accent", executing: "text-warn",
+    streaming: "text-accent",
     done: "text-good", error: "text-risk", "switching…": "text-accent",
   };
   const dot: Record<string, string> = {
     idle: "bg-faint", thinking: "bg-accent animate-pulse", executing: "bg-warn animate-pulse",
+    streaming: "bg-accent animate-pulse",
     done: "bg-good", error: "bg-risk", "switching…": "bg-accent animate-pulse",
   };
-  return <span className={`text-[10.5px] flex items-center gap-1.5 ${m[status] || m.idle}`}>
-    <span className={`w-1.5 h-1.5 rounded-full ${dot[status] || dot.idle}`} />{status}</span>;
+  const label = detail && (status === "thinking" || status === "executing" || status === "streaming")
+    ? detail
+    : status;
+  return <span className={`text-[10.5px] flex items-center gap-1.5 min-w-0 max-w-[42ch] ${m[status] || m.idle}`} title={detail || status}>
+    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot[status] || dot.idle}`} />
+    <span className="truncate">{label}</span>
+  </span>;
 }
 

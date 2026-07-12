@@ -12,7 +12,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
-import { isDesktop, revealInFolderLabel, revealWorkspacePath } from "../lib/transport";
+import { revealInFolderLabel, revealWorkspacePath } from "../lib/transport";
 
 interface FileEditorPaneProps {
   path: string;
@@ -477,7 +477,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
 
   return (
     <div className="flex-1 flex flex-col bg-bg h-full min-h-0 overflow-hidden relative">
-      {pathMenu && isDesktop && (
+      {pathMenu && (
         <div
           className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[160px]"
           style={{ top: pathMenu.y, left: pathMenu.x }}
@@ -507,7 +507,6 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
             className="text-[11px] font-mono text-muted truncate"
             title={path}
             onContextMenu={(e) => {
-              if (!isDesktop) return;
               e.preventDefault();
               e.stopPropagation();
               setPathMenu({ x: e.clientX, y: e.clientY });

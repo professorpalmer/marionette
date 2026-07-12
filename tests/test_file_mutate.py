@@ -62,6 +62,7 @@ def test_file_mutate_endpoints_path_containment():
                 ("/api/file/mkdir", {"path": "auth-dir"}),
                 ("/api/file/rename", {"path": "keep.txt", "new_name": "x.txt"}),
                 ("/api/file/delete", {"path": "keep.txt"}),
+                ("/api/file/reveal", {"path": "keep.txt"}),
             ):
                 try:
                     _post(base, endpoint, body, token=None)
@@ -162,6 +163,21 @@ def test_file_mutate_endpoints_path_containment():
             try:
                 _post(base, "/api/file/delete", {"path": "."}, token)
                 assert False, "delete should refuse workspace root"
+            except urllib.error.HTTPError as e:
+                assert e.code in (400, 403)
+
+            # reveal is path-contained and returns ok for an existing file
+            from unittest import mock
+            with mock.patch("harness.file_reveal.reveal_in_file_manager", return_value=None) as reveal_mock:
+                res = json.load(_post(base, "/api/file/reveal", {"path": "kept.txt"}, token))
+                assert res["ok"] is True
+                assert reveal_mock.called
+
+            # reveal auth required (also covered in the auth loop above)
+            # reveal refuse escape
+            try:
+                _post(base, "/api/file/reveal", {"path": "../outside.txt"}, token)
+                assert False, "reveal should block escape"
             except urllib.error.HTTPError as e:
                 assert e.code in (400, 403)
 
