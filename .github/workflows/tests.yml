@@ -46,7 +46,7 @@ jobs:
           # Floor matches the accounting/routing fixes this release needs.
           # Unpinned `puppetmaster-ai` + pip cache can leave CI on an older
           # wheel (e.g. 1.14.0) and fail fallback-pricing regressions.
-          pip install -e ".[dev]" "puppetmaster-ai>=1.14.1"
+          pip install -e ".[dev]" "puppetmaster-ai>=1.19.0"
 
       - name: Run the offline test suite
         run: python -m pytest -q -p no:cacheprovider
