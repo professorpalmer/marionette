@@ -84,6 +84,57 @@ def test_seed_untracked_into_worktree(tmp_path):
     assert (wt / "addons" / "kotoba" / "translator.py").read_text(encoding="utf-8") == "print('live')\n"
 
 
+def test_seed_dynamic_from_dirty_token_match(tmp_path):
+    """Vague goals still seed when live dirty paths match a significant token."""
+    import subprocess
+    from harness.worktree_seed import goal_match_tokens
+
+    repo = tmp_path / "repo"
+    wt = tmp_path / "wt"
+    repo.mkdir()
+    wt.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@t"], cwd=repo, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"], cwd=repo, check=True, capture_output=True,
+    )
+    (repo / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True,
+    )
+    target = repo / "addons" / "kotoba" / "ad.html"
+    target.parent.mkdir(parents=True)
+    target.write_text("<html>ad</html>\n", encoding="utf-8")
+    # Unrelated untracked file must not seed on a kotoba-only goal.
+    noise = repo / "other" / "noise.py"
+    noise.parent.mkdir(parents=True)
+    noise.write_text("print(1)\n", encoding="utf-8")
+
+    assert "kotoba" in goal_match_tokens("fix the kotoba thrift ad")
+    seeded = seed_worktree_from_goal(
+        str(repo), str(wt), "fix the kotoba thrift ad",
+    )
+    assert "addons/kotoba/ad.html" in seeded
+    assert (wt / "addons" / "kotoba" / "ad.html").read_text(encoding="utf-8") == (
+        "<html>ad</html>\n"
+    )
+    assert "other/noise.py" not in seeded
+
+
+def test_seed_html_path_token(tmp_path):
+    repo = tmp_path / "repo"
+    wt = tmp_path / "wt"
+    repo.mkdir()
+    wt.mkdir()
+    target = repo / "page.html"
+    target.write_text("<p>hi</p>\n", encoding="utf-8")
+    seeded = seed_worktree_from_goal(str(repo), str(wt), "edit page.html")
+    assert "page.html" in seeded
+
+
 def test_filter_local_running_visible_on_session_drift(tmp_path):
     # Session stamp drifted but cwd is under the open workspace -- still show.
     rows = [

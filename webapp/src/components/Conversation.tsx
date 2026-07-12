@@ -339,6 +339,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // User hit Stop: suppress runners-poll "thinking" re-arm and keep-alive resume
   // until the next real user send (not an auto pilot_resume).
   const userStoppedRef = useRef(false);
+  // True once this turn got a real terminal SSE event (assistant_done / error /
+  // auto_halt) or the user hit Stop. When the EventSource dies without that,
+  // we surface an explicit abort bubble instead of silently leaving "thinking"
+  // with no answer (the "died mid-turn" hang).
+  const turnSettledRef = useRef(false);
   const feedRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const planTurnRef = useRef(false);
@@ -1703,6 +1708,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       return;
     }
     planTurnRef.current = usePlan;
+    turnSettledRef.current = false;
     // imagesOverride lets the idle queue-drain path (maybeDrainQueue) carry a
     // queued prompt's image attachments even though they were never placed in
     // the live attachedImages composer state.
@@ -1975,6 +1981,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
         }
       } else if (ev.kind === "auto_halt") {
+        turnSettledRef.current = true;
         setStatus("done");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "HALT: " + (d.reason || "") } }]);
       } else if (ev.kind === "swarm_pending") {
@@ -2017,6 +2024,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         }
         refreshQueue();
       } else if (ev.kind === "assistant_done") {
+        turnSettledRef.current = true;
         setStatus("done");
         fetchContextUsage();
         // The backend derives a session title from the first user message
@@ -2025,6 +2033,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         // "New session" until reload.
         window.dispatchEvent(new Event("harness-config-changed"));
       } else if (ev.kind === "error") {
+        turnSettledRef.current = true;
         setCompactingStatus(null);
         setStatus("error");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
@@ -2032,7 +2041,21 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     }, () => {
          if (!streamLive()) return;
          flushTypewriter();
-         setStatus("done");
+         // Stream closed without assistant_done / error / Stop -- explicit abort
+         // so the UI never looks like a silent hang after "thinking".
+         if (!turnSettledRef.current && !userStoppedRef.current) {
+           turnSettledRef.current = true;
+           setStatus("error");
+           setItems((p) => [...p, {
+             kind: "msg",
+             msg: {
+               role: "assistant",
+               text: "[aborted] Connection closed before the turn finished. Send again to retry.",
+             },
+           }]);
+         } else {
+           setStatus("done");
+         }
          cancelRef.current = null;
          localStreamActiveRef.current = false;
          setCompactingStatus(null);
@@ -2042,7 +2065,21 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
        () => {
          if (!streamLive()) return;
          flushTypewriter();
-         setStatus("error");
+         if (!turnSettledRef.current && !userStoppedRef.current) {
+           turnSettledRef.current = true;
+           setItems((p) => [...p, {
+             kind: "msg",
+             msg: {
+               role: "assistant",
+               text: "[aborted] Connection closed before the turn finished. Send again to retry.",
+             },
+           }]);
+           setStatus("error");
+         } else if (!userStoppedRef.current) {
+           // EventSource often fires onerror when the stream closes after a
+           // normal assistant_done -- do not paint a false error over success.
+           setStatus((prev) => (prev === "error" ? prev : "done"));
+         }
          cancelRef.current = null;
          localStreamActiveRef.current = false;
          setCompactingStatus(null);
@@ -2288,6 +2325,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
   const stop = () => {
     userStoppedRef.current = true;
+    turnSettledRef.current = true;
     resumeQueuedRef.current = false;
     detachedBusyRef.current = false;
     cancelRef.current?.();

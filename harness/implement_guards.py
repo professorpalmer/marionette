@@ -27,14 +27,17 @@ _REWRITE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Path-like tokens: posix or windows, with a common source extension.
+# Path-like tokens: posix or windows, with a common source / asset extension.
+# Longer extensions MUST precede shorter prefixes (html before h, mm before m).
 _PATH_RE = re.compile(
     r"(?:"
     r"[A-Za-z]:[\\/][^\s'\"`|;<>]+"  # Windows abs
     r"|"
     r"(?:\.{0,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+"  # rel multi-seg
     r"|"
-    r"[A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|rb|php|lua|cs|cpp|c|h|swift|kt|m|mm)"
+    r"[A-Za-z0-9_.-]+\.(?:tsx|ts|jsx|js|py|go|rs|java|rb|php|lua|cpp|cs|swift|kt|"
+    r"html?|css|scss|less|md|json|toml|ya?ml|vue|svelte|txt|sql|ps1|bat|xml|svg|"
+    r"mm|m|c|h)"
     r")"
 )
 
