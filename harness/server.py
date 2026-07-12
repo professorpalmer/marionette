@@ -2404,7 +2404,10 @@ def _live_pilot_driver() -> str:
     """Driver bound to the live ConversationalSession (may lag ``_cfg.driver``
     after a deferred mid-turn picker change)."""
     try:
-        return str(getattr(getattr(_pilot, "config", None), "driver", "") or "")
+        d = getattr(getattr(_pilot, "config", None), "driver", None)
+        # MagicMock / half-init pilots used in detach tests have a non-str
+        # driver; never treat those as a real mismatch worth rebuilding.
+        return d.strip() if isinstance(d, str) else ""
     except Exception:
         return ""
 
@@ -2456,7 +2459,10 @@ def _ensure_pilot_matches_driver(target: str | None = None) -> bool:
     want = (target or _cfg.driver or "").strip()
     if not want:
         return True
-    have = _live_pilot_driver().strip()
+    have = _live_pilot_driver()
+    if not have:
+        # No bound string driver (unit-test MagicMock, half-init) -- leave alone.
+        return True
     if want == have:
         return True
     busy = getattr(_pilot, "_busy", None)

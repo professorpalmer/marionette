@@ -49,6 +49,7 @@ def test_swap_defers_busy_without_taking_lock():
     # A busy turn must stage the preference fast, without entering the swap lock.
     import json as _json
     srv._pilot._busy.acquire()
+    prev_driver = srv._cfg.driver
     try:
         # Hold the swap lock so that IF _swap_pilot tried to acquire it for a
         # rebuild, it would block; deferred staging must short-circuit before that.
@@ -69,4 +70,5 @@ def test_swap_defers_busy_without_taking_lock():
             assert srv._cfg.driver == "some-model"
             assert srv._pilot is live_before
     finally:
+        srv._cfg.driver = prev_driver
         srv._pilot._busy.release()
