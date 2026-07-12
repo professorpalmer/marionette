@@ -11,7 +11,10 @@ def _isolate_disconnected(monkeypatch):
     """Point provider-disconnect state at an empty temp dir so these tests do not
     inherit the developer's real ~/.pmharness/disconnected.json (which would make
     a keyed provider read as unavailable)."""
-    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
+    state = tempfile.mkdtemp()
+    monkeypatch.setenv("HARNESS_STATE_DIR", state)
+    with open(os.path.join(state, "keys.json"), "w", encoding="utf-8") as f:
+        f.write("{}")
     yield
 
 

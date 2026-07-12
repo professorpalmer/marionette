@@ -26,7 +26,12 @@ _BEDROCK_ENV = (
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch):
-    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
+    state = tempfile.mkdtemp()
+    monkeypatch.setenv("HARNESS_STATE_DIR", state)
+    # Empty keys.json so get_keys_file_path does not migrate to the real
+    # ~/.pmharness/keys.json (which may hold live Bedrock BYOK).
+    with open(os.path.join(state, "keys.json"), "w", encoding="utf-8") as f:
+        f.write("{}")
     for ev in _BEDROCK_ENV:
         monkeypatch.delenv(ev, raising=False)
     yield
@@ -47,10 +52,15 @@ def test_available_pilots_include_bedrock_and_model_id(monkeypatch):
         "BEDROCK_MODEL_ID",
         "us.anthropic.claude-opus-4-6-20250514-v1:0",
     )
+    # Avoid live AWS listing in unit tests (would replace curated fallback).
+    monkeypatch.setenv("PMHARNESS_LIVE_MODELS", "0")
     pilots = prov.available_pilots()
     assert "bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0" in pilots
     assert "bedrock:us.anthropic.claude-haiku-4-5-20251001-v1:0" in pilots
     assert "bedrock:us.anthropic.claude-opus-4-6-20250514-v1:0" in pilots
+    assert "bedrock:amazon.nova-micro-v1:0" in pilots
+    assert "bedrock:deepseek.v3.2" in pilots
+    assert "bedrock:zai.glm-4.7-flash" in pilots
 
 
 def test_chat_maps_tool_use_to_openai_tool_calls(monkeypatch):

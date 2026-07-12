@@ -189,8 +189,19 @@ PROVIDERS = (
         base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
         api_mode="bedrock", display_name="AWS Bedrock",
         pilot_models=(
+            # Curated fallback only — live ListFoundationModels/ListInferenceProfiles
+            # replaces this when AWS creds work (see harness.model_fetch).
             "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "amazon.nova-micro-v1:0",
+            "amazon.nova-lite-v1:0",
+            "deepseek.v3.2",
+            "zai.glm-4.7-flash",
+            "moonshotai.kimi-k2.5",
+            "qwen.qwen3-coder-30b-a3b-v1:0",
+            "meta.llama3-1-8b-instruct-v1:0",
+            "mistral.mistral-7b-instruct-v0:2",
+            "minimax.minimax-m2.5",
         ),
     ),
 )

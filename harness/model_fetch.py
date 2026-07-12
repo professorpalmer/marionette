@@ -106,6 +106,12 @@ def _fetch_provider_models(provider, key: str) -> list[str]:
                 if mid:
                     out.append(mid)
             return out
+        if name == "bedrock":
+            # IAM/SigV4 against the caller's account — key arg is unused (presence
+            # only). Catalog is allow-list specific; do not hardcode Claude.
+            from puppetmaster.bedrock import list_chat_model_ids
+
+            return list(list_chat_model_ids(timeout=_FETCH_TIMEOUT))
     except Exception as e:
         # Preserve the cause: bad key, network down, and a changed provider
         # schema are very different problems and must not collapse to a silent

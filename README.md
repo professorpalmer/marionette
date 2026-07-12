@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.57, deliberately pre-1.0. Vetted privately before any wider release.
+> Status: v0.9.58, deliberately pre-1.0. Vetted privately before any wider release.
 
 ## Documentation
 
@@ -227,6 +227,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 |---|---|
 | `OPENROUTER_API_KEY` | Default reach: the whole field through one endpoint. |
 | `GEMINI_API_KEY` | Optional dedicated vision key. Not required -- vision also falls back to any provider key you already have that exposes a vision model. |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock BYOK (Settings can also load `~/.aws`). Pilots and agentic swarms use Converse; model pickers discover the account allow-list; prompt-cache hits feed the same token/cost/`cache_savings_usd` meters as Anthropic/OpenRouter. |
 | `HARNESS_VLM_REACH` / `HARNESS_VLM_MODEL` | Explicit vision-sidecar override (e.g. `openrouter` for an open VLM) and its model. |
 | `HARNESS_DRIVER` | Pilot model id. |
 | `HARNESS_STATE_DIR` | State home for sessions, transcripts, prompt queue, keys. Defaults to a stable `~/.pmharness/state` so history survives restarts. |
@@ -236,7 +237,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_AUTO_MAX_SWARMS` / `_TOKENS` / `_SECONDS` / `_MAX_IDLE` | Full-auto budget governor ceilings. |
 | `HARNESS_APPEND_ONLY_CONTEXT` | Force append-only KV-cache context mode (auto-detected for local/cache-discounting endpoints when unset). |
 
-Swarm job costs in the UI come from measured usage priced against `~/.puppetmaster/models.json`, then the live OpenRouter `/models` map (cached under `~/.pmharness/or_models_cache.json`), then the router pre-flight estimate. No manual registry entry is required for OpenRouter-hosted models like `z-ai/glm-5.2`.
+Swarm job costs in the UI come from measured usage priced against `~/.puppetmaster/models.json`, then the live OpenRouter `/models` map (cached under `~/.pmharness/or_models_cache.json`), then the router pre-flight estimate. Bedrock agentic workers use the same usage → `price_job` / tracker path (including cache-read discount). No manual registry entry is required for OpenRouter-hosted models like `z-ai/glm-5.2`.
 
 ## Conventions
 

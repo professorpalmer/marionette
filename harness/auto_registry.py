@@ -13,6 +13,7 @@ on their connected provider keys.
 
 import json
 import os
+import re
 from typing import Optional
 
 from .diag import note as _diag
@@ -118,6 +119,16 @@ _CURATED_MODELS = {
          "us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
         ("us.anthropic.claude-haiku-4-5-20251001-v1:0", "cheap",
          "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+        ("amazon.nova-lite-v1:0", "balanced", "amazon.nova-lite-v1:0"),
+        ("amazon.nova-micro-v1:0", "cheap", "amazon.nova-micro-v1:0"),
+        ("deepseek.v3.2", "balanced", "deepseek.v3.2"),
+        ("zai.glm-4.7-flash", "cheap", "zai.glm-4.7-flash"),
+        ("zai.glm-5", "frontier", "zai.glm-5"),
+        ("moonshotai.kimi-k2.5", "balanced", "moonshotai.kimi-k2.5"),
+        ("qwen.qwen3-coder-30b-a3b-v1:0", "balanced", "qwen.qwen3-coder-30b-a3b-v1:0"),
+        ("minimax.minimax-m2.5", "balanced", "minimax.minimax-m2.5"),
+        ("meta.llama3-1-8b-instruct-v1:0", "cheap", "meta.llama3-1-8b-instruct-v1:0"),
+        ("mistral.mistral-7b-instruct-v0:2", "cheap", "mistral.mistral-7b-instruct-v0:2"),
     ],
 }
 
@@ -189,23 +200,70 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
         def _keep(name: str) -> bool:
             n = name.lower()
             if any(x in n for x in ["gemini-2.0", "gemini-1", "gemma-3", "-preview",
-                                     "-exp", "vision", "embedding", "tts", "image"]):
+                                     "-exp", "vision", "embedding", "tts", "image",
+                                     "upscale", "stability.", "twelvelabs", "pegasus"]):
                 return False
-            # drop dated snapshot suffixes like -20250929 when an aliased
-            # (undated) variant of the same family will also be present.
+            # Bedrock context-window variants (…:24k / …:256k) duplicate the base id.
+            if provider_name == "bedrock" and re.search(r":\d+k$", n):
+                return False
             return True
+
+        def _bedrock_family(model_id: str) -> str:
+            """amazon.nova-… / us.anthropic.claude-… -> provider family key."""
+            parts = model_id.split(".")
+            if len(parts) >= 3 and parts[0] in (
+                "us", "eu", "ap", "global", "jp", "au", "ca", "me", "sa", "af",
+            ):
+                return parts[1]
+            return parts[0] if parts else model_id
 
         result = []
         seen = set()
-        for model_id in live_models:
-            if not _keep(model_id):
-                continue
-            if model_id in seen:
-                continue
-            seen.add(model_id)
-            result.append((model_id, _tier_of(model_id), model_id))
-            if len(result) >= 6:  # a handful per provider is plenty
-                break
+        if provider_name == "bedrock":
+            # Visit every Bedrock family (Claude is not the only option). Cap
+            # per family so DeepSeek/ZAI/Moonshot/Qwen are not starved.
+            by_family: dict[str, list[str]] = {}
+            for model_id in live_models:
+                if not _keep(model_id):
+                    continue
+                fam = _bedrock_family(model_id)
+                by_family.setdefault(fam, []).append(model_id)
+            prefer_prefix = ("us", "eu", "ap", "global")
+
+            def _rank(mid: str) -> tuple:
+                head = mid.split(".", 1)[0]
+                return (0 if head in prefer_prefix else 1, mid)
+
+            priority = [
+                "anthropic", "amazon", "deepseek", "zai", "moonshotai",
+                "moonshot", "qwen", "meta", "mistral", "minimax", "openai",
+                "cohere", "ai21",
+            ]
+            fam_order = [f for f in priority if f in by_family] + sorted(
+                f for f in by_family if f not in priority
+            )
+            max_per_family = 3
+            max_total = 36
+            for fam in fam_order:
+                for model_id in sorted(by_family[fam], key=_rank)[:max_per_family]:
+                    if model_id in seen:
+                        continue
+                    seen.add(model_id)
+                    result.append((model_id, _tier_of(model_id), model_id))
+                    if len(result) >= max_total:
+                        break
+                if len(result) >= max_total:
+                    break
+        else:
+            for model_id in live_models:
+                if not _keep(model_id):
+                    continue
+                if model_id in seen:
+                    continue
+                seen.add(model_id)
+                result.append((model_id, _tier_of(model_id), model_id))
+                if len(result) >= 6:  # a handful per provider is plenty
+                    break
 
         return result if result else _CURATED_MODELS.get(provider_name, [])
     except Exception as e:

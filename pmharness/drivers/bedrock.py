@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-"""BedrockDriver: interactive pilot over AWS Bedrock InvokeModel.
+"""BedrockDriver: interactive pilot over AWS Bedrock Converse.
 
 Wraps ``puppetmaster.bedrock.bedrock_chat`` (imported at call time — no new
 pip deps). Auth comes from process env (Marionette injects AWS_* / BEDROCK_*
-from Settings BYOK). Bedrock invoke is non-SSE; ``chat_stream`` falls back to
-``chat`` and emits one ``on_delta`` with the full text.
+from Settings BYOK). Converse stamps prompt-cache ``cachePoint``s and reports
+``cache_read_tokens`` / ``cache_write_tokens`` so session cost meters and
+``cache_savings_usd`` match other providers. Bedrock invoke is non-SSE;
+``chat_stream`` falls back to ``chat`` and emits one ``on_delta`` with the
+full text.
 """
 
 import json
