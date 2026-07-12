@@ -376,10 +376,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // harness itself at turn completion (an SSE "queued_prompt" event fires when
   // one starts running) -- so they persist across reloads and survive even if
   // this tab isn't watching. We just mirror the backend list here for display.
-  const [queueItems, setQueueItems] = useState<{ id: string; text: string; images?: string[] }[]>([]);
+  const [queueItems, setQueueItems] = useState<{ id: string; text: string; images?: string[]; model?: string }[]>([]);
   // Ref mirror so the status-transition effect (deps [status]) reads the CURRENT
   // queue when a turn ends, not a stale snapshot, without re-running on poll.
-  const queueItemsRef = useRef<{ id: string; text: string; images?: string[] }[]>([]);
+  const queueItemsRef = useRef<{ id: string; text: string; images?: string[]; model?: string }[]>([]);
   useEffect(() => { queueItemsRef.current = queueItems; }, [queueItems]);
   const [queueDragIndex, setQueueDragIndex] = useState<number | null>(null);
   const [queueDragOverIndex, setQueueDragOverIndex] = useState<number | null>(null);
@@ -2077,7 +2077,21 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         name: (p.split(/[\\/]/).pop() || p),
         previewUrl: p,
       }));
-      executeSendRef.current(next.text, auto, plan, false, nextImgs);
+      // Per-item model stamp (Hermes-style): apply before kicking the turn so a
+      // playlist queued under deepseek does not run under a later kimi pick.
+      const kick = async () => {
+        const stamped = next.model;
+        if (stamped) {
+          try {
+            await api.swapPilot(stamped);
+            window.dispatchEvent(new Event("harness-config-changed"));
+          } catch {
+            /* best-effort; stream start also reconciles _cfg vs live pilot */
+          }
+        }
+        executeSendRef.current(next.text, auto, plan, false, nextImgs);
+      };
+      void kick();
     }, 60);
   };
 

@@ -45,22 +45,28 @@ def test_concurrent_rebuild_no_torn_state():
     assert srv._session.state_dir == p.state_dir
 
 
-def test_swap_rejects_busy_before_lock():
-    # A busy turn must be rejected fast, without ever entering the swap lock.
+def test_swap_defers_busy_without_taking_lock():
+    # A busy turn must stage the preference fast, without entering the swap lock.
+    import json as _json
     srv._pilot._busy.acquire()
     try:
-        # Hold the swap lock so that IF _swap_pilot tried to acquire it, it would
-        # block; the busy-check must short-circuit before that.
+        # Hold the swap lock so that IF _swap_pilot tried to acquire it for a
+        # rebuild, it would block; deferred staging must short-circuit before that.
         with srv._pilot_swap_lock:
             captured = {}
 
             class FakeHandler:
                 def _send(self, code, body):
                     captured["code"] = code
-                    captured["body"] = body
+                    captured["body"] = _json.loads(body) if isinstance(body, str) else body
                     return None
 
+            live_before = srv._pilot
             srv.Handler._swap_pilot(FakeHandler(), "some-model")
-            assert captured["code"] == 409
+            assert captured["code"] == 200
+            assert captured["body"].get("deferred") is True
+            assert captured["body"].get("driver") == "some-model"
+            assert srv._cfg.driver == "some-model"
+            assert srv._pilot is live_before
     finally:
         srv._pilot._busy.release()

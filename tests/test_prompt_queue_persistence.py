@@ -21,13 +21,15 @@ def test_enqueue_survives_restart_in_order():
     d = tempfile.mkdtemp()
     s = _session(d)
     s.enqueue_prompt("first")
-    s.enqueue_prompt("second", images=["/tmp/a.png", "/tmp/b.png"])
+    s.enqueue_prompt("second", images=["/tmp/a.png", "/tmp/b.png"], model="glm-5.2")
 
     s2 = _session(d)
     items = s2.list_prompts()
     assert [i["text"] for i in items] == ["first", "second"]
     assert items[0]["images"] == []
+    assert items[0].get("model", "") == ""
     assert items[1]["images"] == ["/tmp/a.png", "/tmp/b.png"]
+    assert items[1]["model"] == "glm-5.2"
 
 
 def test_pop_reflected_after_reload():

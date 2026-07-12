@@ -2400,6 +2400,72 @@ def _apply_model_context_window():
         _diag("server.apply_model_context_window", e)
 
 
+def _live_pilot_driver() -> str:
+    """Driver bound to the live ConversationalSession (may lag ``_cfg.driver``
+    after a deferred mid-turn picker change)."""
+    try:
+        return str(getattr(getattr(_pilot, "config", None), "driver", "") or "")
+    except Exception:
+        return ""
+
+
+def _perform_pilot_swap(model: str) -> None:
+    """Rebuild the active pilot onto ``model``, preserving history/meters/MCP.
+
+    Caller must ensure the pilot is not mid-turn. Raises on build failure.
+    """
+    global _pilot
+    with _pilot_swap_lock:
+        old_history = getattr(_pilot, "_history", None)
+        old_auto_distill = getattr(_pilot, "_auto_distill", False)
+        old_pilot = _pilot
+        _cfg.driver = model
+        _apply_model_context_window()
+        # Frozen per-runner config; meters copied because this replaces
+        # the SAME view's runner (not a new attach).
+        _pilot = ConversationalSession(_runner_config_snapshot())
+        if old_history is not None:
+            _pilot._history = old_history
+        _pilot._auto_distill = old_auto_distill
+        _copy_pilot_meters(old_pilot, _pilot)
+        _pilot._mcp = _mcp
+        try:
+            _bind_pilot_services(_pilot)
+        except Exception:
+            # Older call sites relied on bare _mcp assign; binding is best-effort.
+            pass
+        try:
+            _sync_pilot_session_id()
+        except Exception:
+            pass
+        active_id = _sessions.active or _runners.active_view_id
+        if active_id:
+            _runners.drop(active_id, notify=False)
+            _runners.get_or_create(active_id, lambda: _pilot)
+            _runners.set_active_view(active_id)
+    _save_workspace_driver(_cfg.repo, model)
+
+
+def _ensure_pilot_matches_driver(target: str | None = None) -> bool:
+    """Apply a deferred picker swap before starting an idle turn.
+
+    Returns True if the live pilot already matches (or was rebuilt). Returns
+    False when the pilot is busy (caller should not start a conflicting turn
+    under a mismatched driver -- the deferred choice waits).
+    """
+    want = (target or _cfg.driver or "").strip()
+    if not want:
+        return True
+    have = _live_pilot_driver().strip()
+    if want == have:
+        return True
+    busy = getattr(_pilot, "_busy", None)
+    if busy is not None and busy.locked():
+        return False
+    _perform_pilot_swap(want)
+    return True
+
+
 def _rebuild_pilot_and_session():
     """Rebuild the ACTIVE view's runner for the current driver, preserving history.
 
@@ -4395,7 +4461,9 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
             try:
-                item = _pilot.enqueue_prompt(text, images=valid_imgs)
+                item = _pilot.enqueue_prompt(
+                    text, images=valid_imgs, model=_cfg.driver,
+                )
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)}))
             if not item or not item.get("id"):
@@ -6711,6 +6779,10 @@ class Handler(BaseHTTPRequestHandler):
         return detached
 
     def _stream_run(self, prompt: str, images=None):
+        try:
+            _ensure_pilot_matches_driver()
+        except Exception as e:
+            return self._send(500, json.dumps({"error": str(e)}))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -6750,6 +6822,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _stream_auto(self, objective: str):
         """Stream the fully-auto loop (governor-bounded) over SSE."""
+        try:
+            _ensure_pilot_matches_driver()
+        except Exception as e:
+            return self._send(500, json.dumps({"error": str(e)}))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -6802,39 +6878,33 @@ class Handler(BaseHTTPRequestHandler):
         Preserves the in-flight conversation: history, auto-distill, and MCP are
         carried onto the rebuilt pilot (mirrors _rebuild_pilot_and_session). A
         bare rebuild dropped history, so swapping mid-conversation silently reset
-        the context to empty. We also refuse a swap while a turn is streaming, so
-        the old pilot's busy stream is never orphaned underneath a fresh object."""
-        global _pilot
+        the context to empty.
+
+        Hermes-style mid-turn: while a turn is streaming we do NOT rebuild (that
+        would orphan the live stream). Instead we stage the choice on ``_cfg`` +
+        workspace drivers and return ``deferred: true``. The live turn keeps its
+        bound pilot; ``_ensure_pilot_matches_driver`` applies the rebuild at the
+        start of the next idle turn (Send / Queue drain / Autopilot).
+        """
         if not model:
             return self._send(400, json.dumps({"error": "model required"}))
-        # Do not swap underneath a live stream -- let it finish or be cancelled.
-        if getattr(_pilot, "_busy", None) is not None and _pilot._busy.locked():
-            return self._send(409, json.dumps({
-                "error": "a turn is in progress; stop it before switching models"}))
-        try:
-            with _pilot_swap_lock:
-                old_history = getattr(_pilot, "_history", None)
-                old_auto_distill = getattr(_pilot, "_auto_distill", False)
-                old_pilot = _pilot
-                _cfg.driver = model
-                _apply_model_context_window()
-                # Frozen per-runner config; meters copied because this replaces
-                # the SAME view's runner (not a new attach).
-                _pilot = ConversationalSession(_runner_config_snapshot())
-                if old_history is not None:
-                    _pilot._history = old_history
-                _pilot._auto_distill = old_auto_distill
-                _copy_pilot_meters(old_pilot, _pilot)
-                _pilot._mcp = _mcp
-                active_id = _sessions.active or _runners.active_view_id
-                if active_id:
-                    _runners.drop(active_id, notify=False)
-                    _runners.get_or_create(active_id, lambda: _pilot)
-                    _runners.set_active_view(active_id)
-            # Remember this model for the current workspace so switching dirs and
-            # coming back restores it.
+        busy = (
+            getattr(_pilot, "_busy", None) is not None
+            and _pilot._busy.locked()
+        )
+        if busy:
+            # Stage preference only -- do not touch the live pilot object.
+            _cfg.driver = model
+            _apply_model_context_window()
             _save_workspace_driver(_cfg.repo, model)
-            return self._send(200, json.dumps({"ok": True, "driver": model}))
+            return self._send(200, json.dumps({
+                "ok": True, "driver": model, "deferred": True,
+            }))
+        try:
+            _perform_pilot_swap(model)
+            return self._send(200, json.dumps({
+                "ok": True, "driver": model, "deferred": False,
+            }))
         except Exception as e:
             return self._send(500, json.dumps({"error": str(e)}))
 
@@ -6882,6 +6952,10 @@ class Handler(BaseHTTPRequestHandler):
         ``resume=True`` runs a keep-alive continuation turn: no new user message
         is appended -- the pilot generates off the history that drain_swarm_results
         already extended with the finished job's result + continuation."""
+        try:
+            _ensure_pilot_matches_driver()
+        except Exception as e:
+            return self._send(500, json.dumps({"error": str(e)}))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")

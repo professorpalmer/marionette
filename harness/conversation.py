@@ -671,6 +671,7 @@ class ConversationalSession(ToolDispatchMixin):
                 "id": str(it.get("id") or ""),
                 "text": str(it.get("text") or ""),
                 "images": [str(p) for p in (it.get("images") or []) if p],
+                "model": str(it.get("model") or ""),
             })
         with self._prompt_queue_lock:
             self._prompt_queue = restored
@@ -2331,7 +2332,8 @@ class ConversationalSession(ToolDispatchMixin):
     # All methods are lock-guarded and never raise; they return neutral
     # values on unexpected input rather than exploding the caller.
     # ------------------------------------------------------------------
-    def enqueue_prompt(self, text: str, images: Optional[list] = None) -> dict:
+    def enqueue_prompt(self, text: str, images: Optional[list] = None,
+                       model: Optional[str] = None) -> dict:
         """Append a full prompt to the queue and return the created item.
 
         Empty/whitespace-only text is rejected with an empty item -- callers
@@ -2340,20 +2342,26 @@ class ConversationalSession(ToolDispatchMixin):
         A queued prompt runs as its own fresh user turn, so it can carry image
         attachments (list of file paths). They are stored verbatim after basic
         sanitization and delivered when the prompt drains (see the turn loop).
+
+        ``model`` (optional) stamps the pilot driver that should run this item
+        when it drains -- Hermes-style per-prompt selection. Mid-turn playlist
+        drain skips items whose model differs from the live pilot so the turn
+        can end and the deferred swap can apply before the next turn starts.
         """
         try:
             t = (text or "").strip()
             if not t:
-                return {"id": "", "text": "", "images": []}
+                return {"id": "", "text": "", "images": [], "model": ""}
             imgs = [str(p) for p in (images or []) if p and str(p).strip()]
             import uuid as _uuid
-            item = {"id": _uuid.uuid4().hex[:8], "text": t, "images": imgs}
+            m = (model or "").strip()
+            item = {"id": _uuid.uuid4().hex[:8], "text": t, "images": imgs, "model": m}
             with self._prompt_queue_lock:
                 self._prompt_queue.append(item)
             self._save_prompt_queue()
             return dict(item)
         except Exception:
-            return {"id": "", "text": "", "images": []}
+            return {"id": "", "text": "", "images": [], "model": ""}
 
     def list_prompts(self) -> list:
         """Return a snapshot copy of the queue in order."""
@@ -2422,6 +2430,24 @@ class ConversationalSession(ToolDispatchMixin):
             return n
         except Exception:
             return 0
+
+    def _next_queued_needs_driver_swap(self) -> bool:
+        """True if the head queue item is stamped for a different pilot model.
+
+        Mid-turn playlist drain must not run a mismatched model inside the
+        current step loop -- leave the item queued so the turn ends and the
+        deferred swap can apply before the next turn starts.
+        """
+        try:
+            with self._prompt_queue_lock:
+                if not self._prompt_queue:
+                    return False
+                m = str(self._prompt_queue[0].get("model") or "").strip()
+                if not m:
+                    return False
+                return m != str(self.config.driver or "").strip()
+        except Exception:
+            return False
 
     def _pop_next_prompt(self) -> dict:
         """Pop and return the first queued prompt, or {} if the queue is empty.
@@ -3297,6 +3323,12 @@ class ConversationalSession(ToolDispatchMixin):
                 # a normal fresh turn. The `continue` re-enters the same step
                 # loop, which is bounded by the existing HARD_PILOT_STEPS /
                 # max_steps cap; the queue cannot make the loop unbounded.
+                # If the head item was stamped for a different pilot model
+                # (Hermes-style mid-turn picker change), stop this turn instead
+                # of draining it under the wrong driver -- idle drain + deferred
+                # swap will pick it up next.
+                if self._next_queued_needs_driver_swap():
+                    break
                 queued = self._pop_next_prompt()
                 if queued and queued.get("text"):
                     q_text = queued.get("text", "")

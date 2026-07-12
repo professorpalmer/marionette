@@ -717,10 +717,10 @@ export const api = {
   // complete turn one after the previous fully finishes. Distinct from steer
   // (a mid-turn interrupt on the CURRENT running turn). Items can be edited /
   // removed / reordered before they run.
-  queueList: () => getJSON<{ items: { id: string; text: string; images?: string[] }[] }>(withToken("/api/session/queue")),
-  queueAdd: (text: string, images?: string[]) => postJSON<{ ok: boolean; item: { id: string; text: string; images?: string[] } }>("/api/session/queue", { text, images: images || [] }),
+  queueList: () => getJSON<{ items: { id: string; text: string; images?: string[]; model?: string }[] }>(withToken("/api/session/queue")),
+  queueAdd: (text: string, images?: string[]) => postJSON<{ ok: boolean; item: { id: string; text: string; images?: string[]; model?: string } }>("/api/session/queue", { text, images: images || [] }),
   queueRemove: (id: string) => postJSON<{ ok: boolean; id: string }>("/api/session/queue", { id }),
-  queueReorder: (ids: string[]) => postJSON<{ ok: boolean; items: { id: string; text: string; images?: string[] }[] }>("/api/session/queue/reorder", { ids }),
+  queueReorder: (ids: string[]) => postJSON<{ ok: boolean; items: { id: string; text: string; images?: string[]; model?: string }[] }>("/api/session/queue/reorder", { ids }),
   queueClear: () => postJSON<{ ok: boolean; cleared: number }>("/api/session/queue", { clear: true }),
   getContextUsage: () => getJSON<ContextUsageResponse>(withToken("/api/context/usage")),
 

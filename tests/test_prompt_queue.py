@@ -25,6 +25,26 @@ def test_enqueue_and_list():
     assert [i["text"] for i in items] == ["first", "second"]
 
 
+def test_enqueue_stamps_model():
+    s = _session()
+    a = s.enqueue_prompt("flash job", model="deepseek/deepseek-v4-flash")
+    assert a["model"] == "deepseek/deepseek-v4-flash"
+    assert s.list_prompts()[0]["model"] == "deepseek/deepseek-v4-flash"
+
+
+def test_next_queued_needs_driver_swap():
+    s = _session()
+    s.enqueue_prompt("same-ish")  # no model stamp -> no swap needed
+    assert s._next_queued_needs_driver_swap() is False
+    s.clear_prompts()
+    s.enqueue_prompt("other", model="deepseek/deepseek-v4-flash")
+    # Session was built with default driver; stamped model differs.
+    assert s._next_queued_needs_driver_swap() is True
+    s.enqueue_prompt("same", model=s.config.driver)
+    # Head still the mismatched one.
+    assert s._next_queued_needs_driver_swap() is True
+
+
 def test_remove_present_and_missing():
     s = _session()
     a = s.enqueue_prompt("x")
