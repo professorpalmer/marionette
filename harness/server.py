@@ -3215,6 +3215,72 @@ def _strip_markdown_fences(text: str) -> str:
     return text
 
 
+def _resolve_editor_path(repo: str, user_path: str) -> tuple[str, str]:
+    """Resolve an editor/API path under ``repo`` → ``(abs_path, rel_posix)``.
+
+    Raises ``ValueError`` with a user-facing message on missing/escaped/.git paths.
+    """
+    from .paths import is_git_restricted_path, resolve_workspace_path
+
+    abs_path, rel_posix = resolve_workspace_path(repo, user_path)
+    if is_git_restricted_path(rel_posix):
+        raise ValueError("Access denied: .git files are restricted")
+    return abs_path, rel_posix
+
+
+def _guess_file_mime(path: str) -> str:
+    import mimetypes
+
+    mime, _ = mimetypes.guess_type(path)
+    return mime or "application/octet-stream"
+
+
+def _sqlite_table_names(path: str) -> list[str] | None:
+    """Best-effort read-only table list for .db/.sqlite files; None if not sqlite."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in {".db", ".sqlite", ".sqlite3"}:
+        return None
+    try:
+        import sqlite3
+
+        uri = Path(path).resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=1.0)
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+            return [str(r[0]) for r in rows if r and r[0]]
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+
+def _binary_file_payload(abs_path: str, rel_posix: str) -> dict[str, Any]:
+    """Metadata for binary workspace files (editor calm panel, not CodeMirror)."""
+    size = 0
+    try:
+        size = os.path.getsize(abs_path)
+    except OSError:
+        pass
+    name = os.path.basename(abs_path) or rel_posix
+    ext = os.path.splitext(name)[1].lower()
+    payload: dict[str, Any] = {
+        "ok": False,
+        "binary": True,
+        "error": "Cannot read binary files",
+        "path": rel_posix,
+        "name": name,
+        "size": size,
+        "mime": _guess_file_mime(abs_path),
+        "ext": ext,
+    }
+    tables = _sqlite_table_names(abs_path)
+    if tables is not None:
+        payload["sqlite_tables"] = tables
+    return payload
+
+
 def _parse_multipart_files(body: bytes, content_type: str) -> list:
     """Extract uploaded files from a multipart/form-data body using the stdlib
     email parser. Replaces cgi.FieldStorage, which was removed in Python 3.13.
@@ -3708,10 +3774,10 @@ class Handler(BaseHTTPRequestHandler):
             rel_path = body.get("path", "").strip()
             if not rel_path:
                 return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            target_path = os.path.abspath(os.path.join(repo, rel_path))
-            from .conversation import is_safe_path
-            if not is_safe_path(target_path, repo):
-                return self._send(400, json.dumps({"error": f"Path traversal attempt rejected: {rel_path}"}))
+            try:
+                _resolve_editor_path(repo, rel_path)
+            except ValueError as e:
+                return self._send(400, json.dumps({"error": str(e)}))
             
             selection = body.get("selection", "")
             instruction = body.get("instruction", "")
@@ -3766,20 +3832,19 @@ class Handler(BaseHTTPRequestHandler):
             content = body.get("content", "")
             if not rel_path:
                 return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            target_path = os.path.abspath(os.path.join(repo, rel_path))
-            from .conversation import is_safe_path
-            if not is_safe_path(target_path, repo):
-                return self._send(403, json.dumps({"error": f"Path traversal attempt rejected: {rel_path}"}))
-            parts = rel_path.split(os.sep)
-            if ".git" in parts or any(p.startswith(".git") for p in parts):
-                return self._send(403, json.dumps({"error": "Access denied: .git files are restricted"}))
+            try:
+                target_path, rel_posix = _resolve_editor_path(repo, rel_path)
+            except ValueError as e:
+                msg = str(e)
+                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
+                return self._send(code, json.dumps({"error": msg}))
             try:
                 try:
                     from .checkpoints import CheckpointStore
                     active_sid = _sessions.active or ""
                     store = CheckpointStore(repo, session_id=active_sid or None)
                     store.snapshot(
-                        label=f"before manual edit {rel_path}",
+                        label=f"before manual edit {rel_posix or rel_path}",
                         trigger="manual_edit",
                         session_id=active_sid or None,
                     )
@@ -5277,20 +5342,19 @@ class Handler(BaseHTTPRequestHandler):
             rel_path = parse_qs(u.query).get("path", [""])[0].strip()
             if not rel_path:
                 return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            full_path = os.path.abspath(os.path.join(repo, rel_path))
-            from .conversation import is_safe_path
-            if not is_safe_path(full_path, repo):
-                return self._send(403, json.dumps({"error": "Access denied: path escapes workspace"}))
-            parts = rel_path.split(os.sep)
-            if ".git" in parts or any(p.startswith(".git") for p in parts):
-                return self._send(403, json.dumps({"error": "Access denied: .git files are restricted"}))
+            try:
+                full_path, rel_posix = _resolve_editor_path(repo, rel_path)
+            except ValueError as e:
+                msg = str(e)
+                code = 403 if "Access denied" in msg else 400
+                return self._send(code, json.dumps({"error": msg}))
             if not os.path.isfile(full_path):
-                return self._send(404, json.dumps({"error": "File not found"}))
+                return self._send(404, json.dumps({"error": "File not found", "path": rel_posix}))
             try:
                 with open(full_path, "rb") as f:
                     chunk = f.read(1024)
                     if b"\x00" in chunk:
-                        return self._send(200, json.dumps({"ok": False, "error": "Cannot read binary files", "binary": True}))
+                        return self._send(200, json.dumps(_binary_file_payload(full_path, rel_posix)))
             except Exception as e:
                 return self._send(500, json.dumps({"error": f"Failed to check file type: {e}"}))
             try:
@@ -5306,12 +5370,52 @@ class Handler(BaseHTTPRequestHandler):
                         content = f.read()
                 return self._send(200, json.dumps({
                     "ok": True,
-                    "path": rel_path,
+                    "path": rel_posix or rel_path,
                     "content": content,
                     "truncated": truncated
                 }))
             except Exception as e:
                 return self._send(500, json.dumps({"error": f"Failed to read file: {e}"}))
+
+        if u.path == "/api/file/raw":
+            # Authenticated bytes for PDF/image/HTML preview. Same path gates as
+            # /api/file/read — never an arbitrary-file read outside the workspace.
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            repo = _cfg.repo
+            if not repo or not os.path.exists(repo):
+                return self._send(400, json.dumps({"error": "No open workspace"}))
+            rel_path = parse_qs(u.query).get("path", [""])[0].strip()
+            if not rel_path:
+                return self._send(400, json.dumps({"error": "Missing path parameter"}))
+            try:
+                full_path, rel_posix = _resolve_editor_path(repo, rel_path)
+            except ValueError as e:
+                msg = str(e)
+                code = 403 if "Access denied" in msg else 400
+                return self._send(code, json.dumps({"error": msg}))
+            if not os.path.isfile(full_path):
+                return self._send(404, json.dumps({"error": "File not found", "path": rel_posix}))
+            try:
+                size = os.path.getsize(full_path)
+                max_bytes = int(os.environ.get("HARNESS_FILE_RAW_MAX_BYTES", str(50 * 1024 * 1024)))
+                if size > max_bytes:
+                    return self._send(413, json.dumps({"error": "File too large for raw preview"}))
+                with open(full_path, "rb") as f:
+                    data = f.read()
+            except Exception as e:
+                return self._send(500, json.dumps({"error": f"Failed to read file: {e}"}))
+            ctype = _guess_file_mime(full_path)
+            # Browsers sniff HTML; force text/html for .html/.htm so iframe preview works.
+            ext = os.path.splitext(full_path)[1].lower()
+            if ext in {".html", ".htm"}:
+                ctype = "text/html; charset=utf-8"
+            elif ext == ".pdf":
+                ctype = "application/pdf"
+            return self._send(200, data, ctype)
 
         if u.path == "/api/image":
             # Serve an uploaded image back to the browser so SENT message

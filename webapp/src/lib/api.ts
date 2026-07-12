@@ -1,5 +1,5 @@
 // Typed harness API -- thin wrappers over the transport seam.
-import { getJSON, postJSON, stream, withToken, uploadFile, type StreamEvent } from "./transport";
+import { getJSON, getJSONSoft, postJSON, stream, withToken, uploadFile, type StreamEvent } from "./transport";
 
 export type Config = {
   driver: string; reach: string; budget: number;
@@ -707,7 +707,29 @@ export const api = {
   getWorkspace: () => getJSON<WorkspaceInfo>("/api/workspace"),
   getWorkspaceFiles: () => getJSON<{ files: string[] }>(withToken("/api/workspace/files")),
   searchSymbols: (q: string) => getJSON<{ symbols: { name: string; kind: string; path: string; line: number }[]; status?: string }>(withToken("/api/workspace/symbols?q=" + encodeURIComponent(q))),
-  readFile: (path: string) => getJSON<{ ok: boolean; path: string; content: string; truncated: boolean; error?: string; binary?: boolean }>("/api/file/read?path=" + encodeURIComponent(path)),
+  readFile: (path: string) =>
+    getJSONSoft<{
+      ok: boolean;
+      path?: string;
+      content?: string;
+      truncated?: boolean;
+      error?: string;
+      binary?: boolean;
+      name?: string;
+      size?: number;
+      mime?: string;
+      ext?: string;
+      sqlite_tables?: string[];
+    }>("/api/file/read?path=" + encodeURIComponent(path)),
+  /** Tokened absolute URL for PDF/image/HTML iframe or <img> preview. */
+  fileRawUrl: (path: string): string => {
+    const rel = withToken("/api/file/raw?path=" + encodeURIComponent(path));
+    if (typeof window !== "undefined") {
+      const port = (window as any).__HARNESS_PORT__;
+      if (port) return `http://127.0.0.1:${port}${rel}`;
+    }
+    return rel;
+  },
   writeFile: (path: string, content: string) => postJSON<{ ok: boolean; bytes?: number; error?: string }>("/api/file/write", { path, content }),
   inlineEdit: (path: string, selection: string, instruction: string, prefix: string, suffix: string, language: string) => postJSON<{ ok: boolean; edit?: string; error?: string }>("/api/inline-edit", { path, selection, instruction, prefix, suffix, language }),
   compactSession: () => postJSON<{ ok: boolean; before_tokens: number; after_tokens: number }>("/api/session/compact", {}),

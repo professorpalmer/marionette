@@ -27,6 +27,20 @@ export function withToken(path: string): string {
   return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok);
 }
 
+/** Like getJSON but returns parsed JSON for non-2xx responses instead of throwing. */
+export async function getJSONSoft<T = any>(path: string): Promise<T> {
+  if (ipc?.getJSON) return ipc.getJSON(path);
+  const r = await fetch(path, { headers: { "X-Harness-Token": authToken() } });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok && body && typeof body === "object" && !("ok" in body)) {
+    return { ok: false, error: (body as any).error || `${path} -> ${r.status}`, ...body } as T;
+  }
+  if (!r.ok && (body == null || typeof body !== "object")) {
+    return { ok: false, error: `${path} -> ${r.status}` } as T;
+  }
+  return body as T;
+}
+
 export async function getJSON<T = any>(path: string): Promise<T> {
   if (ipc?.getJSON) return ipc.getJSON(path);
   const r = await fetch(path, { headers: { "X-Harness-Token": authToken() } });

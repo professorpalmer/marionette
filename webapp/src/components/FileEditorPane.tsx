@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Loader2, Save, RotateCcw, Wand2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, Save, RotateCcw, Wand2, Eye, Code2, Globe, X } from "lucide-react";
 import CodeMirror from "@uiw/react-codemirror";
 import { okaidia } from "@uiw/codemirror-theme-okaidia";
 import { keymap, EditorView } from "@codemirror/view";
@@ -9,6 +9,8 @@ import { json } from "@codemirror/lang-json";
 import { css } from "@codemirror/lang-css";
 import { html } from "@codemirror/lang-html";
 import { markdown } from "@codemirror/lang-markdown";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
 
 interface FileEditorPaneProps {
@@ -21,8 +23,45 @@ interface FileEditorPaneProps {
   onDirtyChange: (dirty: boolean) => void;
 }
 
+type EditorKind = "code" | "markdown" | "html" | "pdf" | "image" | "binary";
+type TextBinaryMode = "code" | "preview";
+
+type BinaryMeta = {
+  name?: string;
+  size?: number;
+  mime?: string;
+  ext?: string;
+  sqlite_tables?: string[];
+};
+
+function fileExt(filePath: string): string {
+  const base = filePath.split(/[/\\]/).pop() || filePath;
+  const i = base.lastIndexOf(".");
+  return i >= 0 ? base.slice(i + 1).toLowerCase() : "";
+}
+
+function detectEditorKind(filePath: string, binary?: boolean): EditorKind {
+  const ext = fileExt(filePath);
+  if (binary) {
+    if (ext === "pdf") return "pdf";
+    if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico"].includes(ext)) return "image";
+    return "binary";
+  }
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (ext === "html" || ext === "htm") return "html";
+  // Text sources stay editable in CodeMirror; raster/PDF use viewers only when binary.
+  return "code";
+}
+
+function formatBytes(n?: number): string {
+  if (n == null || !Number.isFinite(n)) return "unknown size";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function getLanguageExtension(filePath: string) {
-  const ext = filePath.split(".").pop()?.toLowerCase() || "";
+  const ext = fileExt(filePath);
   switch (ext) {
     case "ts":
     case "tsx":
@@ -39,6 +78,7 @@ function getLanguageExtension(filePath: string) {
     case "scss":
       return css();
     case "html":
+    case "htm":
       return html();
     case "md":
     case "markdown":
@@ -67,7 +107,7 @@ function _scrollEditorToLine(view: EditorView, line: number, col?: number): void
 }
 
 function getLanguageFromPath(filePath: string): string {
-  const ext = filePath.split(".").pop()?.toLowerCase() || "";
+  const ext = fileExt(filePath);
   switch (ext) {
     case "ts":
     case "tsx":
@@ -82,6 +122,7 @@ function getLanguageFromPath(filePath: string): string {
     case "css":
       return "css";
     case "html":
+    case "htm":
       return "html";
     case "md":
     case "markdown":
@@ -110,6 +151,9 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [readOnly, setReadOnly] = useState(false);
+  const [kind, setKind] = useState<EditorKind>("code");
+  const [textMode, setTextMode] = useState<TextBinaryMode>("code");
+  const [binaryMeta, setBinaryMeta] = useState<BinaryMeta | null>(null);
 
   const [showInlinePrompt, setShowInlinePrompt] = useState(false);
   const [inlineInstruction, setInlineInstruction] = useState("");
@@ -123,16 +167,20 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     line != null ? { line, col } : null
   );
 
+  const rawUrl = useMemo(() => api.fileRawUrl(path), [path]);
+  const canPreview = kind === "markdown" || kind === "html";
+  const isTextEditable = kind === "code" || kind === "markdown" || kind === "html";
+
   // Agent-loop links may re-open the same file at a new line.
   useEffect(() => {
     if (line == null) return;
     pendingJumpRef.current = { line, col };
     const view = editorViewRef.current;
-    if (view && !loading) {
+    if (view && !loading && textMode === "code") {
       _scrollEditorToLine(view, line, col);
       pendingJumpRef.current = null;
     }
-  }, [line, col, path, loading]);
+  }, [line, col, path, loading, textMode]);
 
   useEffect(() => {
     if (showInlinePrompt && inputRef.current) {
@@ -182,19 +230,16 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           changes: { from, to, insert: replacement }
         });
 
-        // set selection to the newly inserted range to highlight it
         const newTo = from + replacement.length;
         view.dispatch({
           selection: { anchor: from, head: newTo },
           scrollIntoView: true
         });
 
-        // Mark dirty
         setContent(view.state.doc.toString());
         setIsDirty(true);
         onDirtyChangeRef.current(true);
 
-        // Close prompt
         setShowInlinePrompt(false);
         setInlineRange(null);
       } else {
@@ -217,18 +262,22 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     async function loadFile() {
       setLoading(true);
       setError(null);
+      setBinaryMeta(null);
+      setTextMode("code");
       try {
         const res = await api.readFile(path);
         if (!active) return;
         if (res.ok) {
+          const detected = detectEditorKind(path, false);
+          setKind(detected);
+          // HTML defaults to preview; markdown stays in code until toggled.
+          setTextMode(detected === "html" ? "preview" : "code");
           setContent(res.content || "");
           setOriginalContent(res.content || "");
           setReadOnly(!!res.truncated);
           setIsDirty(false);
           onDirtyChangeRef.current(false);
-          // Jump after content lands; onCreateEditor may also apply pendingJump.
           if (pendingJumpRef.current?.line != null) {
-            // Defer until CodeMirror has the new doc.
             requestAnimationFrame(() => {
               const view = editorViewRef.current;
               const jump = pendingJumpRef.current;
@@ -239,8 +288,23 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
             });
           }
         } else if (res.binary) {
-          setError("Binary file cannot be viewed or edited in-app");
+          const detected = detectEditorKind(path, true);
+          setKind(detected);
+          setBinaryMeta({
+            name: res.name,
+            size: res.size,
+            mime: res.mime,
+            ext: res.ext,
+            sqlite_tables: res.sqlite_tables,
+          });
+          setContent("");
+          setOriginalContent("");
+          setReadOnly(true);
+          setIsDirty(false);
+          onDirtyChangeRef.current(false);
+          setError(null);
         } else {
+          setKind(detectEditorKind(path, false));
           setError(res.error || "Failed to read file");
         }
       } catch (err: any) {
@@ -260,7 +324,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   }, [path]);
 
   const handleSave = async (currentContent: string = content) => {
-    if (saving || !isDirty) return;
+    if (saving || !isDirty || !isTextEditable) return;
     setSaving(true);
     setSaveStatus("saving");
     setError(null);
@@ -271,7 +335,6 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
         setIsDirty(false);
         onDirtyChangeRef.current(false);
         setOriginalContent(currentContent);
-        // Let other components know (like workspace files tree or git view)
         window.dispatchEvent(new CustomEvent("harness-file-saved", { detail: { path } }));
         setTimeout(() => setSaveStatus("idle"), 2000);
       } else {
@@ -299,19 +362,31 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     }
   };
 
+  const openInBrowserPanel = () => {
+    let url = rawUrl;
+    if (url && !/^https?:\/\//i.test(url) && typeof window !== "undefined") {
+      url = `${window.location.origin}${url.startsWith("/") ? "" : "/"}${url}`;
+    }
+    try {
+      (window as any).__pmPendingBrowserUrl = url;
+      window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "browser" }));
+      window.dispatchEvent(new CustomEvent("harness-open-url", { detail: { url } }));
+    } catch {
+      /* ignore */
+    }
+  };
+
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        handleSave(content);
+        if (isTextEditable) handleSave(content);
       }
     };
     window.addEventListener("keydown", handleGlobalKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleGlobalKeyDown);
-    };
-  }, [content, isDirty, saving, path, originalContent]);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [content, isDirty, saving, path, originalContent, isTextEditable]);
 
   if (loading) {
     return (
@@ -322,7 +397,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     );
   }
 
-  if (error) {
+  if (error && kind !== "binary" && kind !== "pdf" && kind !== "image") {
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-bg px-6 text-center">
         <span className="text-risk font-semibold text-[13px] mb-2">{error}</span>
@@ -336,14 +411,12 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     );
   }
 
-  // Set up CodeMirror extensions dynamically
   const extensions = [customTheme];
   const langExt = getLanguageExtension(path);
   if (langExt) {
     extensions.push(langExt);
   }
 
-  // Handle Cmd+S/Ctrl+S keymap within CodeMirror
   extensions.push(
     keymap.of([
       {
@@ -357,13 +430,13 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
       {
         key: "Mod-k",
         run: (view) => {
-          if (readOnly) return true;
+          if (readOnly || !isTextEditable) return true;
           editorViewRef.current = view;
           let { from, to } = view.state.selection.main;
           if (from === to) {
-            const line = view.state.doc.lineAt(from);
-            from = line.from;
-            to = line.to;
+            const lineObj = view.state.doc.lineAt(from);
+            from = lineObj.from;
+            to = lineObj.to;
           }
           setInlineRange({ from, to });
           setInlineInstruction("");
@@ -375,10 +448,13 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     ])
   );
 
+  const showCodeMirror = isTextEditable && textMode === "code";
+  const showMarkdownPreview = kind === "markdown" && textMode === "preview";
+  const showHtmlPreview = kind === "html" && textMode === "preview";
+
   return (
     <div className="flex-1 flex flex-col bg-bg h-full min-h-0 overflow-hidden relative">
-      {/* Editor toolbar */}
-      <div className="flex items-center justify-between px-4 py-1.5 border-b border-edge bg-panel select-none shrink-0">
+      <div className="flex items-center justify-between px-4 py-1.5 border-b border-edge bg-panel select-none shrink-0 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[11px] font-mono text-muted truncate" title={path}>
             {path}
@@ -386,141 +462,321 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           {isDirty && (
             <span className="w-2 h-2 rounded-full bg-warn shrink-0" title="Unsaved changes" />
           )}
-          {readOnly && (
+          {(readOnly || !isTextEditable) && (
             <span className="px-1.5 py-0.5 rounded bg-panel2 border border-edge text-[9px] font-mono uppercase text-muted tracking-wider select-none shrink-0">
               Read-only
             </span>
           )}
         </div>
 
-        <div className="flex items-center gap-3">
-          {saveStatus === "saving" && (
-            <span className="text-[11px] text-muted flex items-center gap-1">
-              <Loader2 className="animate-spin" size={12} />
-              Saving...
-            </span>
-          )}
-          {saveStatus === "saved" && (
-            <span className="text-[11px] text-good">Saved</span>
-          )}
-          {saveStatus === "error" && (
-            <span className="text-[11px] text-risk">Save failed</span>
+        <div className="flex items-center gap-2 shrink-0">
+          {canPreview && (
+            <div className="flex items-center rounded border border-edge overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setTextMode("code")}
+                className={`flex items-center gap-1 px-2 py-1 text-[11px] transition-colors ${
+                  textMode === "code" ? "bg-panel2 text-txt" : "text-muted hover:text-txt"
+                }`}
+                title="Source"
+              >
+                <Code2 size={12} />
+                Code
+              </button>
+              <button
+                type="button"
+                onClick={() => setTextMode("preview")}
+                className={`flex items-center gap-1 px-2 py-1 text-[11px] transition-colors border-l border-edge ${
+                  textMode === "preview" ? "bg-panel2 text-txt" : "text-muted hover:text-txt"
+                }`}
+                title="Preview"
+              >
+                <Eye size={12} />
+                Preview
+              </button>
+            </div>
           )}
 
-          <div className="flex items-center gap-1.5">
+          {(kind === "html" || kind === "pdf" || kind === "image") && (
             <button
-              onClick={handleRevert}
-              disabled={!isDirty || saving}
-              className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] transition-colors border ${
-                isDirty && !saving
-                  ? "border-edge text-muted hover:text-txt hover:bg-panel2"
-                  : "border-transparent text-faint cursor-not-allowed"
-              }`}
-              title="Discard unsaved changes"
+              type="button"
+              onClick={openInBrowserPanel}
+              className="flex items-center gap-1 px-2 py-1 rounded text-[11px] border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors"
+              title="Open in browser panel"
             >
-              <RotateCcw size={12} />
-              Revert
+              <Globe size={12} />
+              Browser
             </button>
+          )}
+
+          {isTextEditable && (
+            <>
+              {saveStatus === "saving" && (
+                <span className="text-[11px] text-muted flex items-center gap-1">
+                  <Loader2 className="animate-spin" size={12} />
+                  Saving...
+                </span>
+              )}
+              {saveStatus === "saved" && (
+                <span className="text-[11px] text-good">Saved</span>
+              )}
+              {saveStatus === "error" && (
+                <span className="text-[11px] text-risk">Save failed</span>
+              )}
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleRevert}
+                  disabled={!isDirty || saving}
+                  className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] transition-colors border ${
+                    isDirty && !saving
+                      ? "border-edge text-muted hover:text-txt hover:bg-panel2"
+                      : "border-transparent text-faint cursor-not-allowed"
+                  }`}
+                  title="Discard unsaved changes"
+                >
+                  <RotateCcw size={12} />
+                  Revert
+                </button>
+                <button
+                  onClick={() => handleSave(content)}
+                  disabled={!isDirty || saving}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded text-[11px] transition-colors border ${
+                    isDirty && !saving
+                      ? "bg-accent/15 border-accent/30 text-accent hover:bg-accent/25"
+                      : "border-transparent text-faint cursor-not-allowed"
+                  }`}
+                  title="Save file (Cmd/Ctrl+S)"
+                >
+                  <Save size={12} />
+                  Save
+                </button>
+              </div>
+            </>
+          )}
+
+          {!isTextEditable && (
             <button
-              onClick={() => handleSave(content)}
-              disabled={!isDirty || saving}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded text-[11px] transition-colors border ${
-                isDirty && !saving
-                  ? "bg-accent/15 border-accent/30 text-accent hover:bg-accent/25"
-                  : "border-transparent text-faint cursor-not-allowed"
-              }`}
-              title="Save file (Cmd/Ctrl+S)"
+              type="button"
+              onClick={onClose}
+              className="flex items-center gap-1 px-2 py-1 rounded text-[11px] border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors"
+              title="Close editor"
             >
-              <Save size={12} />
-              Save
+              <X size={12} />
+              Close
             </button>
-          </div>
+          )}
         </div>
       </div>
 
-      {/* Editor area with CodeMirror */}
-      <div className="flex-1 overflow-hidden relative">
-        {showInlinePrompt && (
-          <div ref={containerRef} className="absolute top-2 right-4 z-50 w-96 bg-panel2 border border-edge rounded-md shadow-lg p-3 flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold text-accent uppercase tracking-wider flex items-center gap-1">
-                <Wand2 size={12} className="text-accent shrink-0 animate-pulse" />
-                Inline Edit
-              </span>
-              <button
-                onClick={() => {
-                  setShowInlinePrompt(false);
-                  setInlineRange(null);
-                }}
-                className="text-[10px] text-muted hover:text-txt transition-colors border border-edge rounded px-1.5 py-0.5 bg-panel"
-              >
-                Esc
-              </button>
-            </div>
-            <div className="relative flex items-center">
-              <input
-                ref={inputRef}
-                type="text"
-                value={inlineInstruction}
-                onChange={(e) => setInlineInstruction(e.target.value)}
-                placeholder="Describe the edit... (Enter to apply)"
-                className="w-full bg-panel border border-edge rounded px-2.5 py-1.5 text-[12px] text-txt placeholder:text-muted outline-none focus:border-accent transition-colors"
-                disabled={inlineLoading}
-                onKeyDown={async (e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    await handleInlineEditSubmit();
-                  } else if (e.key === "Escape") {
-                    e.preventDefault();
-                    setShowInlinePrompt(false);
-                    setInlineRange(null);
+      <div className="flex-1 overflow-hidden relative min-h-0">
+        {showCodeMirror && (
+          <>
+            {showInlinePrompt && (
+              <div ref={containerRef} className="absolute top-2 right-4 z-50 w-96 bg-panel2 border border-edge rounded-md shadow-lg p-3 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-accent uppercase tracking-wider flex items-center gap-1">
+                    <Wand2 size={12} className="text-accent shrink-0 animate-pulse" />
+                    Inline Edit
+                  </span>
+                  <button
+                    onClick={() => {
+                      setShowInlinePrompt(false);
+                      setInlineRange(null);
+                    }}
+                    className="text-[10px] text-muted hover:text-txt transition-colors border border-edge rounded px-1.5 py-0.5 bg-panel"
+                  >
+                    Esc
+                  </button>
+                </div>
+                <div className="relative flex items-center">
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={inlineInstruction}
+                    onChange={(e) => setInlineInstruction(e.target.value)}
+                    placeholder="Describe the edit... (Enter to apply)"
+                    className="w-full bg-panel border border-edge rounded px-2.5 py-1.5 text-[12px] text-txt placeholder:text-muted outline-none focus:border-accent transition-colors"
+                    disabled={inlineLoading}
+                    onKeyDown={async (e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        await handleInlineEditSubmit();
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        setShowInlinePrompt(false);
+                        setInlineRange(null);
+                      }
+                    }}
+                  />
+                </div>
+                {inlineLoading && (
+                  <div className="text-[11px] text-muted flex items-center gap-1.5 py-0.5">
+                    <Loader2 className="animate-spin text-accent" size={12} />
+                    Thinking...
+                  </div>
+                )}
+                {inlineError && (
+                  <div className="text-[11px] text-risk break-words font-medium py-0.5">
+                    {inlineError}
+                  </div>
+                )}
+              </div>
+            )}
+            <CodeMirror
+              value={content}
+              theme={okaidia}
+              height="100%"
+              className="h-full text-[13px]"
+              extensions={extensions}
+              onCreateEditor={(view) => {
+                editorViewRef.current = view;
+                const jump = pendingJumpRef.current;
+                if (jump?.line != null) {
+                  _scrollEditorToLine(view, jump.line, jump.col);
+                  pendingJumpRef.current = null;
+                }
+              }}
+              onChange={(val) => {
+                setContent(val);
+                setIsDirty(true);
+                onDirtyChangeRef.current(true);
+              }}
+              readOnly={readOnly}
+              basicSetup={{
+                lineNumbers: true,
+                highlightActiveLine: true,
+                bracketMatching: true,
+                foldGutter: false,
+                dropCursor: true,
+                allowMultipleSelections: true,
+                indentOnInput: true,
+              }}
+            />
+          </>
+        )}
+
+        {showMarkdownPreview && (
+          <div className="h-full overflow-auto px-6 py-4 text-txt">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                h1: ({ children }: any) => (
+                  <h1 className="text-base font-semibold text-txt mt-3 mb-2 border-b border-edge pb-1">{children}</h1>
+                ),
+                h2: ({ children }: any) => (
+                  <h2 className="text-[13px] font-semibold text-txt mt-3 mb-1.5">{children}</h2>
+                ),
+                h3: ({ children }: any) => (
+                  <h3 className="text-[12px] font-semibold text-muted mt-2 mb-1">{children}</h3>
+                ),
+                p: ({ children }: any) => (
+                  <p className="text-[13px] leading-relaxed my-2 first:mt-0 last:mb-0">{children}</p>
+                ),
+                ul: ({ children }: any) => (
+                  <ul className="list-disc pl-5 my-2 space-y-1 text-txt/90">{children}</ul>
+                ),
+                ol: ({ children }: any) => (
+                  <ol className="list-decimal pl-5 my-2 space-y-1 text-txt/90">{children}</ol>
+                ),
+                li: ({ children }: any) => (
+                  <li className="text-[13px] leading-relaxed">{children}</li>
+                ),
+                code: ({ className, children }: any) => {
+                  const inline = !className;
+                  if (inline) {
+                    return (
+                      <code className="bg-panel2 px-1 py-0.5 rounded text-[12px] font-mono text-accent/90">
+                        {children}
+                      </code>
+                    );
                   }
-                }}
-              />
-            </div>
-            {inlineLoading && (
-              <div className="text-[11px] text-muted flex items-center gap-1.5 py-0.5">
-                <Loader2 className="animate-spin text-accent" size={12} />
-                Thinking...
-              </div>
-            )}
-            {inlineError && (
-              <div className="text-[11px] text-risk break-words font-medium py-0.5">
-                {inlineError}
-              </div>
-            )}
+                  return (
+                    <pre className="bg-panel2 border border-edge rounded p-3 my-2 overflow-auto text-[12px] font-mono">
+                      <code className={className}>{children}</code>
+                    </pre>
+                  );
+                },
+                a: ({ href, children }: any) => (
+                  <a href={href} className="text-accent/90 hover:underline" target="_blank" rel="noreferrer">
+                    {children}
+                  </a>
+                ),
+                blockquote: ({ children }: any) => (
+                  <blockquote className="border-l-2 border-edge pl-3 my-2 text-muted italic">{children}</blockquote>
+                ),
+                hr: () => <hr className="border-edge/60 my-3" />,
+              }}
+            >
+              {content}
+            </ReactMarkdown>
           </div>
         )}
-        <CodeMirror
-          value={content}
-          theme={okaidia}
-          height="100%"
-          className="h-full text-[13px]"
-          extensions={extensions}
-          onCreateEditor={(view) => {
-            editorViewRef.current = view;
-            const jump = pendingJumpRef.current;
-            if (jump?.line != null) {
-              _scrollEditorToLine(view, jump.line, jump.col);
-              pendingJumpRef.current = null;
-            }
-          }}
-          onChange={(val) => {
-            setContent(val);
-            setIsDirty(true);
-            onDirtyChangeRef.current(true);
-          }}
-          readOnly={readOnly}
-          basicSetup={{
-            lineNumbers: true,
-            highlightActiveLine: true,
-            bracketMatching: true,
-            foldGutter: false,
-            dropCursor: true,
-            allowMultipleSelections: true,
-            indentOnInput: true,
-          }}
-        />
+
+        {showHtmlPreview && (
+          <iframe
+            title="HTML preview"
+            srcDoc={content}
+            sandbox="allow-same-origin"
+            className="w-full h-full border-0 bg-white"
+          />
+        )}
+
+        {kind === "pdf" && (
+          <iframe
+            title="PDF preview"
+            src={rawUrl}
+            className="w-full h-full border-0 bg-panel"
+          />
+        )}
+
+        {kind === "image" && (
+          <div className="h-full overflow-auto flex items-center justify-center p-6 bg-bg">
+            <img
+              src={rawUrl}
+              alt={binaryMeta?.name || path}
+              className="max-w-full max-h-full object-contain"
+            />
+          </div>
+        )}
+
+        {kind === "binary" && (
+          <div className="h-full overflow-auto flex flex-col items-center justify-center px-8 py-10 text-center gap-3">
+            <div className="text-[13px] font-medium text-txt">
+              {binaryMeta?.name || path.split(/[/\\]/).pop() || path}
+            </div>
+            <div className="text-[12px] text-muted font-mono">
+              {formatBytes(binaryMeta?.size)}
+              {binaryMeta?.mime ? ` · ${binaryMeta.mime}` : ""}
+              {binaryMeta?.ext ? ` · ${binaryMeta.ext}` : ""}
+            </div>
+            <p className="text-[12px] text-muted max-w-md leading-relaxed">
+              This file exists in the workspace, but a binary preview is not available in the editor.
+            </p>
+            {binaryMeta?.sqlite_tables && binaryMeta.sqlite_tables.length > 0 && (
+              <div className="mt-2 w-full max-w-md text-left rounded border border-edge bg-panel2 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-muted mb-1.5">
+                  SQLite tables
+                </div>
+                <ul className="text-[12px] font-mono text-txt space-y-0.5 max-h-40 overflow-auto">
+                  {binaryMeta.sqlite_tables.map((t) => (
+                    <li key={t}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {binaryMeta?.sqlite_tables && binaryMeta.sqlite_tables.length === 0 && (
+              <p className="text-[11px] text-muted">SQLite database (no tables listed).</p>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="mt-2 text-[11px] text-muted hover:text-txt underline transition-colors"
+            >
+              Close editor
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

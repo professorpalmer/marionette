@@ -3,6 +3,7 @@ import json
 import threading
 import urllib.request
 import urllib.error
+import urllib.parse
 import tempfile
 import shutil
 from http.server import ThreadingHTTPServer
@@ -137,6 +138,62 @@ def test_file_edit_endpoints():
         assert len(checkpoints) > 0
         assert checkpoints[0]["trigger"] == "manual_edit"
         assert "before manual edit new_file.txt" in checkpoints[0]["label"]
+
+        # Test 7: Absolute path under repo is accepted for read
+        abs_init = os.path.join(temp_dir, "init.txt")
+        req = urllib.request.Request(
+            base + "/api/file/read?path=" + urllib.parse.quote(abs_init),
+            headers={"X-Harness-Token": token},
+        )
+        abs_res = json.load(urllib.request.urlopen(req, timeout=10))
+        assert abs_res["ok"] is True
+        assert abs_res["content"] == "Initial content"
+
+        # Test 8: Absolute path outside repo is denied
+        outside = os.path.realpath(os.path.join(temp_dir, "..", "outside-escape.txt"))
+        req = urllib.request.Request(
+            base + "/api/file/read?path=" + urllib.parse.quote(outside),
+            headers={"X-Harness-Token": token},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "Should have blocked absolute escape"
+        except urllib.error.HTTPError as e:
+            assert e.code in (403, 400)
+
+        # Test 9: Binary read returns metadata (not a blank 404)
+        bin_path = os.path.join(temp_dir, "blob.bin")
+        with open(bin_path, "wb") as f:
+            f.write(b"hello\x00world")
+        req = urllib.request.Request(
+            base + "/api/file/read?path=blob.bin",
+            headers={"X-Harness-Token": token},
+        )
+        bin_res = json.load(urllib.request.urlopen(req, timeout=10))
+        assert bin_res["ok"] is False
+        assert bin_res["binary"] is True
+        assert bin_res["size"] == 11
+        assert bin_res["name"] == "blob.bin"
+
+        # Test 10: /api/file/raw streams bytes with content-type
+        req = urllib.request.Request(
+            base + "/api/file/raw?path=blob.bin",
+            headers={"X-Harness-Token": token},
+        )
+        raw_res = urllib.request.urlopen(req, timeout=10)
+        assert raw_res.status == 200
+        assert raw_res.read() == b"hello\x00world"
+
+        # Test 11: /api/file/raw denies escape
+        req = urllib.request.Request(
+            base + "/api/file/raw?path=" + urllib.parse.quote(outside),
+            headers={"X-Harness-Token": token},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "raw should block escape"
+        except urllib.error.HTTPError as e:
+            assert e.code in (403, 400)
         
     finally:
         httpd.shutdown()

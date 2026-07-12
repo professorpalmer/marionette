@@ -8,7 +8,11 @@ delegate to path_within, so the difference is one explicit flag, not a fork.
 import os
 import tempfile
 
-from harness.paths import path_within
+from harness.paths import (
+    is_git_restricted_path,
+    path_within,
+    resolve_workspace_path,
+)
 from harness.conversation import is_safe_path
 from harness.worktrees import _is_confined
 
@@ -51,3 +55,72 @@ def test_is_confined_rejects_boundary():
 def test_path_within_never_raises_on_bad_input():
     # An unresolvable comparison must fail closed, not explode.
     assert path_within("relative/path", "/abs/parent", allow_equal=True) is False
+
+
+def test_resolve_workspace_path_relative_and_absolute():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.realpath(tmp)
+        nested = os.path.join(root, "sub", "file.txt")
+        os.makedirs(os.path.dirname(nested))
+        with open(nested, "w", encoding="utf-8") as f:
+            f.write("ok")
+
+        abs_path, rel = resolve_workspace_path(root, "sub/file.txt")
+        assert os.path.normcase(abs_path) == os.path.normcase(nested)
+        assert rel.replace("\\", "/") == "sub/file.txt"
+
+        # Absolute path under the repo must resolve (Windows-style abs included).
+        abs_path2, rel2 = resolve_workspace_path(root, nested)
+        assert os.path.normcase(abs_path2) == os.path.normcase(nested)
+        assert rel2.replace("\\", "/") == "sub/file.txt"
+
+        # Forward-slash absolute form
+        fwd = nested.replace("\\", "/")
+        abs_path3, rel3 = resolve_workspace_path(root, fwd)
+        assert os.path.normcase(abs_path3) == os.path.normcase(nested)
+        assert rel3.replace("\\", "/") == "sub/file.txt"
+
+
+def test_resolve_workspace_path_denies_escape():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.realpath(tmp)
+        outside = os.path.realpath(os.path.join(root, "..", "escape-outside.txt"))
+        try:
+            resolve_workspace_path(root, "../escape-outside.txt")
+            assert False, "expected escape to raise"
+        except ValueError as e:
+            assert "escapes workspace" in str(e)
+
+        try:
+            resolve_workspace_path(root, outside)
+            assert False, "expected absolute outside path to raise"
+        except ValueError as e:
+            assert "escapes workspace" in str(e)
+
+
+def test_resolve_workspace_path_windows_abs_under_repo_casing():
+    """Absolute-under-repo must succeed even when drive/component casing differs."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.realpath(tmp)
+        child = os.path.join(root, "a", "b.txt")
+        os.makedirs(os.path.dirname(child))
+        with open(child, "w", encoding="utf-8") as f:
+            f.write("x")
+
+        if os.name == "nt":
+            mixed = child[0].swapcase() + child[1:]
+            abs_path, rel = resolve_workspace_path(root, mixed)
+            assert os.path.normcase(abs_path) == os.path.normcase(child)
+            assert rel.replace("\\", "/") == "a/b.txt"
+        else:
+            abs_path, rel = resolve_workspace_path(root, child)
+            assert abs_path == child
+            assert rel == "a/b.txt"
+
+
+def test_is_git_restricted_path():
+    assert is_git_restricted_path(".git/config") is True
+    assert is_git_restricted_path("src/.git/hooks") is True
+    assert is_git_restricted_path(".gitignore") is False
+    assert is_git_restricted_path(".github/workflows/ci.yml") is False
+    assert is_git_restricted_path("src/file.py") is False
