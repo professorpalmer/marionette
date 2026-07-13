@@ -73,7 +73,7 @@ def test_fanout_guard_disable(tmp_path, monkeypatch):
 
 
 def test_check_implement_workspace_refuses_non_git(tmp_path, monkeypatch):
-    monkeypatch.delenv("HARNESS_IMPLEMENT_GIT_GUARD", raising=False)
+    monkeypatch.setenv("HARNESS_IMPLEMENT_GIT_GUARD", "1")
     bare = tmp_path / "not-a-repo"
     bare.mkdir()
     msg = check_implement_workspace(str(bare), goal="edit foo.py")
@@ -85,7 +85,7 @@ def test_check_implement_workspace_refuses_non_git(tmp_path, monkeypatch):
 def test_check_implement_workspace_allows_git(tmp_path, monkeypatch):
     import subprocess
 
-    monkeypatch.delenv("HARNESS_IMPLEMENT_GIT_GUARD", raising=False)
+    monkeypatch.setenv("HARNESS_IMPLEMENT_GIT_GUARD", "1")
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
@@ -93,7 +93,7 @@ def test_check_implement_workspace_allows_git(tmp_path, monkeypatch):
 
 
 def test_check_implement_workspace_refuses_home(tmp_path, monkeypatch):
-    monkeypatch.delenv("HARNESS_IMPLEMENT_GIT_GUARD", raising=False)
+    monkeypatch.setenv("HARNESS_IMPLEMENT_GIT_GUARD", "1")
     home = tmp_path / "pmharness" / "home"
     home.mkdir(parents=True)
     # Norm path contains /pmharness/home so is_home_or_ephemeral_workspace trips.

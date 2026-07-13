@@ -59,6 +59,10 @@ if os.name == "nt":
 os.environ.setdefault(
     "HARNESS_STATE_DIR", tempfile.mkdtemp(prefix="pmharness-test-state-")
 )
+# Dispatch tests use bare /mock/repo and tmp fixtures without .git. The
+# production git/Home soft-refuse stays on by default outside pytest; unit
+# tests that assert the refuse path re-enable via monkeypatch.
+os.environ.setdefault("HARNESS_IMPLEMENT_GIT_GUARD", "0")
 
 _real_socket = socket.socket
 
