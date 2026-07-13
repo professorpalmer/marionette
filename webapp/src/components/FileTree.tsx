@@ -492,7 +492,7 @@ export default function FileTree() {
       <div className="text-[10px] text-muted px-3 py-2 uppercase tracking-wider flex items-center justify-between shrink-0 border-b border-edge/30">
         <span>Files ({repoName || "unknown"})</span>
         <button
-          onClick={loadFiles}
+          onClick={() => { void loadFiles(); }}
           className="p-1 hover:bg-panel2 rounded transition text-muted hover:text-txt"
           title="Refresh file tree"
           disabled={loading}
