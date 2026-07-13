@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { ChevronRight, ChevronDown, File, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import {
+  isTransientHarnessConnError,
   revealInFolderLabel,
   revealWorkspacePath,
   toAbsoluteWorkspacePath,
@@ -182,40 +183,80 @@ export default function FileTree() {
   const [namePrompt, setNamePrompt] = useState<NamePromptState | null>(null);
   const [nameValue, setNameValue] = useState("");
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const loadGenRef = useRef(0);
+  const rootNodesRef = useRef<FileNode[]>([]);
+  rootNodesRef.current = rootNodes;
+  const retryTimerRef = useRef<number | null>(null);
 
-  const loadFiles = async () => {
+  const loadFiles = async (opts?: { attempt?: number }) => {
+    const attempt = opts?.attempt ?? 0;
+    const gen = ++loadGenRef.current;
+    if (retryTimerRef.current != null) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     setLoading(true);
-    setError(null);
+    if (attempt === 0) setError(null);
     try {
       const cfg = await api.config();
+      if (gen !== loadGenRef.current) return;
       const workspacePath = cfg.repo || "";
       setRepoRoot(workspacePath);
       const repoNameFromPath = workspacePath.split(/[/\\]/).pop() || "workspace";
       setRepoName(repoNameFromPath);
 
       const res = await api.getWorkspaceFiles();
+      if (gen !== loadGenRef.current) return;
       if (res && res.files) {
         const tree = buildTree(res.files);
         setRootNodes(tree);
+        setError(null);
       } else {
         setError("Failed to get workspace files");
       }
     } catch (err: any) {
-      setError(err.message || "Error loading workspace files");
+      if (gen !== loadGenRef.current) return;
+      const transient = isTransientHarnessConnError(err);
+      // Workspace open / relocate often races a brief backend gap. Keep any
+      // good tree painted and retry quietly instead of sticking a raw
+      // harness:getJSON ECONNREFUSED banner over the file list.
+      if (transient && attempt < 5) {
+        if (rootNodesRef.current.length === 0) {
+          setError("Harness is starting up — retrying…");
+        } else {
+          setError(null);
+        }
+        retryTimerRef.current = window.setTimeout(() => {
+          void loadFiles({ attempt: attempt + 1 });
+        }, 350 * (attempt + 1));
+        return;
+      }
+      const raw = err?.message || "Error loading workspace files";
+      setError(
+        transient
+          ? "Harness briefly unavailable — click refresh"
+          : raw,
+      );
     } finally {
-      setLoading(false);
+      if (gen === loadGenRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadFiles();
+    void loadFiles();
 
-    // Listen to changes that might require refreshing files
+    // Debounce: open_project + relocate_session both fire config-changed in
+    // one turn; one refresh after the dust settles is enough.
+    let debounceTimer: number | null = null;
     const handleRefresh = () => {
-      loadFiles();
+      if (debounceTimer != null) window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(() => {
+        void loadFiles();
+      }, 180);
     };
 
     window.addEventListener("harness-config-changed", handleRefresh);
+    window.addEventListener("harness-session-relocated", handleRefresh);
     window.addEventListener("harness-file-saved", handleRefresh);
     window.addEventListener("harness-file-edited", handleRefresh);
     // Electron: main fires this after backend respawn / port refresh so a
@@ -226,7 +267,10 @@ export default function FileTree() {
       : null;
 
     return () => {
+      if (debounceTimer != null) window.clearTimeout(debounceTimer);
+      if (retryTimerRef.current != null) window.clearTimeout(retryTimerRef.current);
       window.removeEventListener("harness-config-changed", handleRefresh);
+      window.removeEventListener("harness-session-relocated", handleRefresh);
       window.removeEventListener("harness-file-saved", handleRefresh);
       window.removeEventListener("harness-file-edited", handleRefresh);
       try { unsubRespawn?.(); } catch { /* ignore */ }

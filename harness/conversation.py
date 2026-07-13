@@ -3491,7 +3491,15 @@ class ConversationalSession(ToolDispatchMixin):
                     turn_had_invalid = True
                     continue
                 act_goal = act.goal
-                if act.kind in ("read_file", "write_file", "edit_file", "hash_edit", "list_dir", "view_image", "open_project", "relocate_session"):
+                if act.kind == "relocate_session":
+                    _rs = act.arguments or {}
+                    act_goal = (
+                        (act.path or "").strip()
+                        or (act.repo or "").strip()
+                        or (_rs.get("workspace_root") or _rs.get("path") or _rs.get("repo") or "")
+                        or "(workspace root)"
+                    )
+                elif act.kind in ("read_file", "write_file", "edit_file", "hash_edit", "list_dir", "view_image", "open_project"):
                     act_goal = act.path or "(workspace root)"
                 elif act.kind == "run_command":
                     act_goal = act.command
@@ -3680,6 +3688,8 @@ class ConversationalSession(ToolDispatchMixin):
                         "types": ["workspace"],
                         "adapter": "local",
                         "mode": "tool",
+                        "path": os.path.abspath(target_repo),
+                        "workspace_root": os.path.abspath(target_repo),
                         "artifacts": [{"type": "workspace", "headline": f"Opened project: {basename}"}]
                     })
                     self._append_action_result(act, aid, f"Opened project: {basename}", is_native)
@@ -3723,7 +3733,8 @@ class ConversationalSession(ToolDispatchMixin):
                         os.environ["HARNESS_REPO"] = target_repo
                     except Exception:
                         pass
-                    basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
+                    abs_target = os.path.abspath(target_repo)
+                    basename = os.path.basename(abs_target) or "Workspace"
                     headline = f"Moved conversation into {basename}"
                     yield ConvEvent("action_result", {
                         "id": aid,
@@ -3731,6 +3742,9 @@ class ConversationalSession(ToolDispatchMixin):
                         "types": ["workspace"],
                         "adapter": "local",
                         "mode": "tool",
+                        "path": abs_target,
+                        "workspace_root": abs_target,
+                        "session_id": payload.get("active") or sid,
                         "artifacts": [{"type": "workspace", "headline": headline}],
                     })
                     self._append_action_result(
@@ -4564,6 +4578,28 @@ class ConversationalSession(ToolDispatchMixin):
                         self._append_action_result(act, aid, f"(run_implement {aid} failed: {error_msg})", is_native)
                         continue
 
+                    # Hermes-style soft refuse: never dispatch a background
+                    # worker that dies instantly on non-git / Home workspaces.
+                    try:
+                        from harness.implement_guards import check_implement_workspace
+                        git_msg = check_implement_workspace(
+                            effective_repo, goal=act.goal or "",
+                        )
+                    except Exception:
+                        git_msg = None
+                    if git_msg:
+                        yield ConvEvent("action_start", {
+                            "id": aid, "kind": "run_implement", "goal": act.goal,
+                            "cwd": effective_repo,
+                        })
+                        yield ConvEvent("action_result", {"id": aid, "error": git_msg})
+                        self._append_action_result(
+                            act, aid,
+                            f"(run_implement {aid} refused: {git_msg})",
+                            is_native,
+                        )
+                        continue
+
                     # Hard fan-out: refuse one-worker rewrites of oversized files.
                     try:
                         from harness.implement_guards import check_oversized_single_file_rewrite
@@ -4852,6 +4888,24 @@ class ConversationalSession(ToolDispatchMixin):
                     if not goals:
                         yield ConvEvent("action_result", {"id": aid, "error": "run_parallel requires a non-empty goals array"})
                         self._append_action_result(act, aid, f"(run_parallel {aid} failed: run_parallel requires a non-empty goals array)", is_native)
+                        continue
+
+                    # Soft refuse whole parallel batch on non-git / Home workspace.
+                    try:
+                        from harness.implement_guards import check_implement_workspace
+                        git_msg = check_implement_workspace(
+                            effective_repo,
+                            goal="; ".join(goals[:3]),
+                        )
+                    except Exception:
+                        git_msg = None
+                    if git_msg:
+                        yield ConvEvent("action_result", {"id": aid, "error": git_msg})
+                        self._append_action_result(
+                            act, aid,
+                            f"(run_parallel {aid} refused: {git_msg})",
+                            is_native,
+                        )
                         continue
 
                     MAX_PARALLEL_CAP = 8
@@ -6944,7 +6998,7 @@ class ConversationalSession(ToolDispatchMixin):
             return
         try:
             import queue
-            finished_jobs: list[tuple[str, str, bool]] = []  # (job_id, objective, failed)
+            finished_jobs: list[tuple[str, str, bool, str]] = []  # (job_id, objective, failed, error)
             while True:
                 try:
                     item = self._swarm_results.get_nowait()
@@ -7032,7 +7086,12 @@ class ConversationalSession(ToolDispatchMixin):
                             "label": f"Before swarm patch {job_id[:8]}"
                         })
 
-                    finished_jobs.append((job_id, objective, failed))
+                    finished_jobs.append((
+                        job_id,
+                        objective,
+                        failed,
+                        (res_job.get("error") or err_bit or "") if failed else "",
+                    ))
                 except Exception:
                     # Best-effort: never raise on the chat hot path; degrade to
                     # continuing the drain so remaining results still surface.
@@ -7055,7 +7114,27 @@ class ConversationalSession(ToolDispatchMixin):
             )
             if finished_jobs and not suppress_resume:
                 try:
-                    any_failed = any(failed for _jid, _obj, failed in finished_jobs)
+                    from harness.implement_guards import is_preflight_worker_error
+
+                    def _fail_resume(job_id: str, err: str) -> str:
+                        if is_preflight_worker_error(err):
+                            return (
+                                f"[background job {job_id} FAILED before work started] "
+                                f"Setup/preflight error — no patch was attempted: {err}. "
+                                "Tell the user clearly. Prefer Open Project / pass "
+                                "repo=<git path> / run_command for filesystem tasks, "
+                                "or retry once the workspace is a git checkout. Do not "
+                                "claim a patch failed to land."
+                            )
+                        return (
+                            f"[background job {job_id} FAILED] The swarm result above "
+                            "did NOT land a patch. Report this failure to the user "
+                            "clearly; do not pretend the patch was applied. Decide "
+                            "whether to retry with a narrowed follow-up, gather more "
+                            "context, or stop -- without waiting for the user to ask."
+                        )
+
+                    any_failed = any(failed for _jid, _obj, failed, _err in finished_jobs)
                     thin_analysis_nudge = (
                         " If this was a read-only analysis swarm and findings are "
                         "empty, vague, verification-only, or insufficient for the "
@@ -7065,15 +7144,9 @@ class ConversationalSession(ToolDispatchMixin):
                         "(list_dir/search_files/grep/read sweeps) as a substitute."
                     )
                     if len(finished_jobs) == 1:
-                        job_id, _obj, failed = finished_jobs[0]
+                        job_id, _obj, failed, err = finished_jobs[0]
                         if failed:
-                            resume_text = (
-                                f"[background job {job_id} FAILED] The swarm result above "
-                                "did NOT land a patch. Report this failure to the user "
-                                "clearly; do not pretend the patch was applied. Decide "
-                                "whether to retry with a narrowed follow-up, gather more "
-                                "context, or stop -- without waiting for the user to ask."
-                            )
+                            resume_text = _fail_resume(job_id, err)
                         else:
                             resume_text = (
                                 f"[background job {job_id} finished] The result above is now "
@@ -7083,17 +7156,23 @@ class ConversationalSession(ToolDispatchMixin):
                                 + thin_analysis_nudge
                             )
                     else:
-                        ids = ", ".join(jid for jid, _obj, _f in finished_jobs)
+                        ids = ", ".join(jid for jid, _obj, _f, _e in finished_jobs)
                         if any_failed:
-                            fail_ids = ", ".join(
-                                jid for jid, _obj, failed in finished_jobs if failed
-                            )
+                            fail_bits = []
+                            for jid, _obj, failed, err in finished_jobs:
+                                if not failed:
+                                    continue
+                                if is_preflight_worker_error(err):
+                                    fail_bits.append(f"{jid} (preflight: {err})")
+                                else:
+                                    fail_bits.append(jid)
                             resume_text = (
-                                f"[background jobs {ids} finished; FAILED: {fail_ids}] "
-                                "One or more swarm results above FAILED and did NOT land a "
-                                "patch. Report the failures to the user clearly; do not "
-                                "pretend those patches were applied. Take the appropriate "
-                                "next step on the successes and failures without waiting "
+                                f"[background jobs {ids} finished; FAILED: "
+                                f"{', '.join(fail_bits)}] "
+                                "One or more swarm results above FAILED. Report "
+                                "failures clearly; do not pretend patches were "
+                                "applied when setup/preflight blocked the worker. "
+                                "Take the appropriate next step without waiting "
                                 "for the user to ask."
                             )
                         else:
@@ -7119,22 +7198,39 @@ class ConversationalSession(ToolDispatchMixin):
 
                     yield ConvEvent("pilot_resume", {
                         "job_id": finished_jobs[0][0],
-                        "job_ids": [jid for jid, _obj, _f in finished_jobs],
+                        "job_ids": [jid for jid, _obj, _f, _e in finished_jobs],
                         "objective": finished_jobs[0][1],
                     })
                 except Exception:
                     # Degrade: emit one resume per job (previous behavior) so the
                     # keep-alive contract is preserved even if merge fails.
-                    for job_id, objective, failed in finished_jobs:
+                    for job_id, objective, failed, err in finished_jobs:
                         try:
                             if failed:
-                                resume_text = (
-                                    f"[background job {job_id} FAILED] The swarm result above "
-                                    "did NOT land a patch. Report this failure to the user "
-                                    "clearly; do not pretend the patch was applied. Decide "
-                                    "whether to retry with a narrowed follow-up, gather more "
-                                    "context, or stop -- without waiting for the user to ask."
-                                )
+                                try:
+                                    from harness.implement_guards import is_preflight_worker_error
+                                    if is_preflight_worker_error(err):
+                                        resume_text = (
+                                            f"[background job {job_id} FAILED before work started] "
+                                            f"Setup/preflight error — no patch was attempted: {err}. "
+                                            "Tell the user clearly; do not claim a patch failed to land."
+                                        )
+                                    else:
+                                        resume_text = (
+                                            f"[background job {job_id} FAILED] The swarm result above "
+                                            "did NOT land a patch. Report this failure to the user "
+                                            "clearly; do not pretend the patch was applied. Decide "
+                                            "whether to retry with a narrowed follow-up, gather more "
+                                            "context, or stop -- without waiting for the user to ask."
+                                        )
+                                except Exception:
+                                    resume_text = (
+                                        f"[background job {job_id} FAILED] The swarm result above "
+                                        "did NOT land a patch. Report this failure to the user "
+                                        "clearly; do not pretend the patch was applied. Decide "
+                                        "whether to retry with a narrowed follow-up, gather more "
+                                        "context, or stop -- without waiting for the user to ask."
+                                    )
                             else:
                                 resume_text = (
                                     f"[background job {job_id} finished] The result above is now "

@@ -210,6 +210,24 @@ def _coerce_actions(raw_actions) -> list:
         adapter = a.get("adapter") or ""
         mode = a.get("mode") or ""
         instruction = a.get("instruction") or ""
+        # Envelope actions often put relocate's target on workspace_root /
+        # repo rather than path; keep those aliases in arguments and promote
+        # to path so action_start goal + dispatch share one resolved root.
+        if kind == "relocate_session" and not str(path).strip():
+            path = (
+                a.get("workspace_root")
+                or a.get("repo")
+                or (arguments.get("workspace_root") if isinstance(arguments, dict) else None)
+                or (arguments.get("repo") if isinstance(arguments, dict) else None)
+                or ""
+            )
+        if kind == "relocate_session":
+            if not isinstance(arguments, dict):
+                arguments = {}
+            else:
+                arguments = dict(arguments)
+            if path and not (arguments.get("workspace_root") or "").strip():
+                arguments["workspace_root"] = str(path)
         actions.append(PilotAction(kind=str(kind), goal=str(goal), roles=roles,
                                    tool=str(tool), arguments=arguments,
                                    path=str(path), content=str(content), command=str(command),
@@ -715,14 +733,21 @@ def build_tools_schema(
             "type": "function",
             "function": {
                 "name": "run_implement",
-                "description": "dispatch an edit-capable Puppetmaster worker that edits the repo in an isolated worktree and produces a patch. Requires `goal`.",
+                "description": (
+                    "dispatch an edit-capable worker that edits the repo in an "
+                    "isolated git worktree and produces a patch. Requires `goal`. "
+                    "Target must be a real git checkout (not Marionette Home / a "
+                    "plain folder). For compare/list/report tasks use run_command "
+                    "or run_swarm; pass repo=<absolute git path> when the open "
+                    "workspace is wrong."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "goal": {"type": "string", "description": "The coding objective / task description to implement"},
                         "adapter": {"type": "string", "description": "Optional edit engine. Default is 'agentic' -- Puppetmaster's standalone keys-only worker (routes directly through your provider API, no external CLI). 'native' forces Marionette's own richer pilot loop. 'cursor'/'codex'/'claude-code' use those external agent CLIs when installed."},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (expects a patch; default) or 'analysis'/'review' (read-only report; empty diff is success)."},
-                        "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one."}
+                        "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one. Must be a git work tree."}
                     },
                     "required": ["goal"]
                 }
@@ -735,7 +760,11 @@ def build_tools_schema(
             "type": "function",
             "function": {
                 "name": "run_parallel",
-                "description": "dispatch multiple Puppetmaster workers concurrently. Requires `goals` array.",
+                "description": (
+                    "dispatch multiple workers concurrently. Requires `goals` "
+                    "array. Same git-workspace rules as run_implement (not Home / "
+                    "non-git); pass repo= when needed."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -746,7 +775,7 @@ def build_tools_schema(
                         },
                         "adapter": {"type": "string", "description": "Optional edit engine (default 'agentic' -- standalone keys-only; 'native' for the richer pilot; 'cursor'/'codex'/'claude-code' for external CLIs when installed)"},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"},
-                        "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one."}
+                        "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one. Must be a git work tree."}
                     },
                     "required": ["goals"]
                 }

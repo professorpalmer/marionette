@@ -642,12 +642,32 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       try { localStorage.setItem("pmharness.leftRail.tab", "projects"); } catch { /* ignore */ }
       setExpandedProjects((prev) => ({ ...prev, [root]: true }));
       setSelectedProjectPath(root);
-      void revalidateWorkspace();
-      void refreshSessionsRef.current();
+      // Await workspace refresh first so buildProjectsList includes the new
+      // root, then seed that root's sessions cache even if projectsRef lagged.
+      void (async () => {
+        try {
+          await revalidateWorkspace();
+        } catch { /* ignore */ }
+        try {
+          const rows = await api.sessions(root);
+          writeSWRCache(`sessions:${root}`, Array.isArray(rows) ? rows : []);
+          setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
+          setSessionsCacheEpoch((n) => n + 1);
+        } catch {
+          setSessionsResolvedRoots((prev) => ({ ...prev, [root]: true }));
+          setSessionsCacheEpoch((n) => n + 1);
+        }
+        try {
+          await refreshSessionsRef.current();
+        } catch { /* ignore */ }
+        try {
+          await revalidateWorkspaces();
+        } catch { /* ignore */ }
+      })();
     };
     window.addEventListener("harness-session-relocated", onRelocated);
     return () => window.removeEventListener("harness-session-relocated", onRelocated);
-  }, [revalidateWorkspace]);
+  }, [revalidateWorkspace, revalidateWorkspaces]);
 
   const newSession = async (inProjectPath?: string) => {
     // createSession always uses the active _cfg.repo. When the user has

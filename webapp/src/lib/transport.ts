@@ -34,6 +34,22 @@ export function withToken(path: string): string {
   return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok);
 }
 
+/** True for loopback backend briefly gone (respawn / port flip). */
+export function isTransientHarnessConnError(err: unknown): boolean {
+  const code = (err as { code?: string; errno?: string } | null)?.code
+    || (err as { code?: string; errno?: string } | null)?.errno;
+  if (
+    code === "ECONNREFUSED"
+    || code === "ECONNRESET"
+    || code === "EPIPE"
+    || code === "ETIMEDOUT"
+  ) {
+    return true;
+  }
+  const msg = String((err as { message?: string } | null)?.message || err || "");
+  return /ECONNREFUSED|ECONNRESET|socket hang up|EPIPE|ETIMEDOUT/i.test(msg);
+}
+
 /** Like getJSON but returns parsed JSON for non-2xx responses instead of throwing. */
 export async function getJSONSoft<T = any>(path: string): Promise<T> {
   if (ipc?.getJSON) return ipc.getJSON(path);

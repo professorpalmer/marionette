@@ -40,6 +40,16 @@ def test_action_requires_goal():
         pass
 
 
+def test_coerce_relocate_promotes_workspace_root_to_path():
+    acts = _coerce_actions([{
+        "kind": "relocate_session",
+        "workspace_root": "C:\\tmp\\kotoba",
+    }])
+    assert len(acts) == 1
+    assert acts[0].path == "C:\\tmp\\kotoba"
+    assert acts[0].arguments.get("workspace_root") == "C:\\tmp\\kotoba"
+
+
 def test_roles_string_coerced_to_list():
     acts = _coerce_actions([{"kind": "run_swarm", "goal": "g", "roles": "explore"}])
     assert acts[0].roles == ["explore"]

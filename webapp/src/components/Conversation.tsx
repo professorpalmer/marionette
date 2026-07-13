@@ -2116,13 +2116,17 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             && !d.error
           ) {
             window.dispatchEvent(new Event("harness-config-changed"));
-            if (cardItem.card.kind === "relocate_session") {
-              const root = (cardItem.card.goal || "").trim();
-              if (root && root !== "(workspace root)") {
-                window.dispatchEvent(new CustomEvent("harness-session-relocated", {
-                  detail: { workspace_root: root },
-                }));
-              }
+            // Prefer the resolved path from action_result (workspace_root/path).
+            // Card.goal can be "(workspace root)" when relocate used
+            // workspace_root without path — that used to skip the left-rail
+            // expand/refresh and leave the project invisible until a tab flip.
+            const root = String(
+              d.workspace_root || d.path || d.repo || cardItem.card.goal || "",
+            ).trim();
+            if (root && root !== "(workspace root)") {
+              window.dispatchEvent(new CustomEvent("harness-session-relocated", {
+                detail: { workspace_root: root },
+              }));
             }
           }
           return prev;

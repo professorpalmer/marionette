@@ -5,8 +5,12 @@ from __future__ import annotations
 import tempfile
 
 from harness.implement_guards import (
+    check_implement_workspace,
     check_oversized_single_file_rewrite,
     extract_goal_paths,
+    is_home_or_ephemeral_workspace,
+    is_preflight_worker_error,
+    looks_like_analysis_only_goal,
     max_single_file_rewrite_lines,
 )
 from harness.job_scoping import filter_local_jobs
@@ -66,6 +70,93 @@ def test_fanout_guard_disable(tmp_path, monkeypatch):
     assert check_oversized_single_file_rewrite(
         f"REWRITE the file {big.name}", str(tmp_path),
     ) is None
+
+
+def test_check_implement_workspace_refuses_non_git(tmp_path, monkeypatch):
+    monkeypatch.delenv("HARNESS_IMPLEMENT_GIT_GUARD", raising=False)
+    bare = tmp_path / "not-a-repo"
+    bare.mkdir()
+    msg = check_implement_workspace(str(bare), goal="edit foo.py")
+    assert msg is not None
+    assert "REFUSED" in msg
+    assert "not a git repository" in msg.lower()
+
+
+def test_check_implement_workspace_allows_git(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.delenv("HARNESS_IMPLEMENT_GIT_GUARD", raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    assert check_implement_workspace(str(repo), goal="edit foo.py") is None
+
+
+def test_check_implement_workspace_refuses_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("HARNESS_IMPLEMENT_GIT_GUARD", raising=False)
+    home = tmp_path / "pmharness" / "home"
+    home.mkdir(parents=True)
+    # Norm path contains /pmharness/home so is_home_or_ephemeral_workspace trips.
+    assert is_home_or_ephemeral_workspace(str(home))
+    msg = check_implement_workspace(
+        str(home),
+        goal="compare Ashita and Windower directory trees",
+    )
+    assert msg is not None
+    assert "Marionette Home" in msg
+    assert "analysis-only" in msg.lower() or "run_command" in msg
+
+
+def test_check_implement_workspace_kill_switch(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_IMPLEMENT_GIT_GUARD", "0")
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert check_implement_workspace(str(bare)) is None
+
+
+def test_looks_like_analysis_only_goal():
+    assert looks_like_analysis_only_goal(
+        "compare Ashita and Windower and report which files differ"
+    )
+    assert not looks_like_analysis_only_goal(
+        "compare then fix kotoba.lua in both trees"
+    )
+
+
+def test_is_preflight_worker_error():
+    assert is_preflight_worker_error("not a git repo: C:\\Users\\x\\.pmharness\\home")
+    assert is_preflight_worker_error("REFUSED: workspace is Marionette Home")
+    assert not is_preflight_worker_error("no changes produced")
+
+
+def test_drain_preflight_failure_soft_resume():
+    """Preflight errors must not say 'did NOT land a patch'."""
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    s = ConversationalSession(cfg)
+    s._swarm_results.put({
+        "job_id": "local-preflight",
+        "objective": "compare trees",
+        "result": {
+            "applied": False,
+            "files": [],
+            "summary": "not a git repo",
+            "error": "not a git repo: C:/tmp/home",
+            "has_patch_art": False,
+        },
+    })
+    list(s.drain_swarm_results())
+    resume = [
+        m for m in s._history
+        if m["role"] == "user" and "FAILED" in m["content"]
+    ]
+    assert resume
+    text = resume[0]["content"]
+    assert "before work started" in text or "preflight" in text.lower()
+    assert "did NOT land a patch" not in text
+    assert "no patch was attempted" in text.lower()
 
 
 def test_seed_untracked_into_worktree(tmp_path):

@@ -267,6 +267,8 @@ def test_open_project_action_validates_and_succeeds(monkeypatch, tmp_path):
     assert len(action_results) == 1
     assert "error" not in action_results[0].data
     assert "workspace" in action_results[0].data.get("types", [])
+    assert os.path.normcase(os.path.abspath(action_results[0].data["workspace_root"])) == \
+        os.path.normcase(os.path.abspath(str(existing)))
     
     # Check that environment and config are updated
     assert session.config.repo == str(existing)
