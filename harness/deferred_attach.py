@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 
 def defer_cold_attach_enabled() -> bool:
@@ -109,9 +109,14 @@ class DeferredPilotPlaceholder:
             "job_ids": list(self._transcript.get("job_ids") or []),
         }
 
+    def export_history(self) -> list:
+        """Same shape as ConversationalSession.export_history (turns only)."""
+        return list(self._transcript.get("history") or [])
+
     def load_history(self, messages: Any) -> None:
         self._pending_history = messages
         self._transcript = normalize_transcript_payload(messages)
+        self._history = list(self._transcript.get("history") or [])
 
     def wait_ready(self, timeout: Optional[float] = None) -> bool:
         return self._ready.wait(timeout)
@@ -150,7 +155,7 @@ def schedule_deferred_build(
     on_done: Callable[[Any], None],
     on_error: Callable[[BaseException], None],
     delay: float = 0.0,
-) -> threading.Timer | threading.Thread:
+) -> Union[threading.Timer, threading.Thread]:
     """Run ``build_fn`` off the response path (Hermes ``_schedule_agent_build``)."""
 
     def _run() -> None:

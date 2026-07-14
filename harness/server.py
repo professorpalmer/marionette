@@ -2567,8 +2567,22 @@ def _attach_view(
             global _pilot, _session
             try:
                 _bind_pilot_services(real)
-                if load_transcript_on_create and history:
-                    real.load_history(history)
+                # Prefer the placeholder's live transcript: callers may
+                # load_history() after cold attach (tests + resume paths)
+                # while this build was still in flight. The attach-time
+                # ``history`` closure would otherwise wipe those turns.
+                live = placeholder.export_transcript_data()
+                hydrate = (
+                    live
+                    if (
+                        live.get("history")
+                        or live.get("display")
+                        or live.get("job_ids")
+                    )
+                    else history
+                )
+                if load_transcript_on_create and hydrate:
+                    real.load_history(hydrate)
                 real.harness_session_id = session_id
             except Exception as e:
                 _diag("server.deferred_pilot_hydrate", e)

@@ -239,6 +239,60 @@ def test_cold_deferred_attach_returns_placeholder_then_swaps(tmp_path, monkeypat
         srv._cfg.state_dir = old_state
 
 
+def test_deferred_build_preserves_post_attach_load_history(tmp_path, monkeypatch):
+    """load_history on the placeholder must win over attach-time empty disk."""
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    old_state = srv._cfg.state_dir
+    try:
+        state_dir = str(tmp_path)
+        srv._cfg.state_dir = state_dir
+        reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+        srv._runners = reg
+
+        a = srv._sessions.create(title="Cold")
+        sid = a["id"]
+        turns = [
+            {"role": "user", "content": "late-load"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        loaded: list = []
+
+        def capturing_load(messages):
+            loaded.clear()
+            if isinstance(messages, dict):
+                loaded.extend(messages.get("history") or [])
+            else:
+                loaded.extend(list(messages or []))
+
+        real = _idle_runner(sid=sid)
+        real.load_history = capturing_load
+        real.export_history = lambda: list(loaded)
+        gate = threading.Event()
+
+        def blocked_build():
+            gate.wait(timeout=5.0)
+            return real
+
+        with patch.object(srv, "_build_conversational_pilot", side_effect=blocked_build):
+            out = srv._attach_view(sid, defer_cold_build=True)
+            assert is_deferred_placeholder(out)
+            out.load_history(turns)
+            assert out.export_history() == turns
+        gate.set()
+        ready = out.ensure_ready(timeout=5.0)
+        assert ready is real
+        assert loaded == turns
+        assert reg.get(sid) is real
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._cfg.state_dir = old_state
+
+
 def test_switch_response_includes_idle_transcript(tmp_path, monkeypatch):
     """ /api/sessions/switch returns state + transcript without waiting on build."""
     import harness.server as srv
