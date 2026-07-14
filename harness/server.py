@@ -41,7 +41,11 @@ from .sessions import (
     session_stored_root,
     session_visible_for_workspace,
 )
-from .session_runners import SessionRunnerRegistry, LeaseExhaustedError
+from .session_runners import (
+    SessionRunnerRegistry,
+    LeaseExhaustedError,
+    build_lease_exhausted_payload,
+)
 from .autobudget import AutoBudget
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd, _ensure_node_on_path
 from .diag import note as _diag
@@ -2449,6 +2453,28 @@ def _active_pilot() -> Any:
     return _pilot
 
 
+def _lease_exhausted_body(exc: Optional[BaseException] = None) -> dict:
+    """Build the shared lease_exhausted 409 JSON from the live registry.
+
+    Titles come from SessionStore when cheap (unscoped list); missing titles
+    are omitted rather than blocking the response.
+    """
+    titles_by_id: dict[str, str] = {}
+    try:
+        for row in _sessions.list():
+            sid = str(row.get("id") or "")
+            title = str(row.get("title") or "").strip()
+            if sid and title:
+                titles_by_id[sid] = title
+    except Exception as e:
+        _diag("server.lease_exhausted_titles", e)
+    return build_lease_exhausted_payload(
+        _runners,
+        error=str(exc) if exc else None,
+        titles_by_id=titles_by_id or None,
+    )
+
+
 def _attach_view(session_id: str, *, factory=None, load_transcript_on_create: bool = True) -> Any:
     """Point the UI at ``session_id`` via the runner registry.
 
@@ -2678,11 +2704,7 @@ def _handle_session_relocate(body: dict) -> tuple[int, dict]:
                 os.environ.pop("HARNESS_REPO", None)
             else:
                 os.environ["HARNESS_REPO"] = prev_env_repo
-        return 409, {
-            "ok": False,
-            "error": str(e) or "session runner lease exhausted",
-            "code": "lease_exhausted",
-        }
+        return 409, _lease_exhausted_body(e)
 
     return 200, {
         "ok": True,
@@ -4406,10 +4428,7 @@ class Handler(BaseHTTPRequestHandler):
                             _sessions.switch(prev_active)
                         except Exception as roll_e:
                             _diag("server.workspace_open_lease_rollback", roll_e)
-                    return self._send(409, json.dumps({
-                        "error": str(e) or "session runner lease exhausted",
-                        "code": "lease_exhausted",
-                    }))
+                    return self._send(409, json.dumps(_lease_exhausted_body(e)))
 
             has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
             if not has_codegraph:
@@ -4699,10 +4718,7 @@ class Handler(BaseHTTPRequestHandler):
                             _sessions.switch(prev_active)
                         except Exception as roll_e:
                             _diag("server.session_create_lease_rollback", roll_e)
-                    return self._send(409, json.dumps({
-                        "error": str(e) or "session runner lease exhausted",
-                        "code": "lease_exhausted",
-                    }))
+                    return self._send(409, json.dumps(_lease_exhausted_body(e)))
 
             from .hooks import run_hooks
             run_hooks("sessionStart", {"session_id": sid, "title": title})
@@ -4782,10 +4798,7 @@ class Handler(BaseHTTPRequestHandler):
                             os.environ.pop("HARNESS_REPO", None)
                         else:
                             os.environ["HARNESS_REPO"] = prev_env_repo
-                    return self._send(409, json.dumps({
-                        "error": str(e) or "session runner lease exhausted",
-                        "code": "lease_exhausted",
-                    }))
+                    return self._send(409, json.dumps(_lease_exhausted_body(e)))
 
                 res["repo"] = _cfg.repo
                 res["codegraph"] = _get_codegraph_status(_cfg.repo) if _cfg.repo else "none"
@@ -5714,6 +5727,9 @@ class Handler(BaseHTTPRequestHandler):
                 "pending_swarms": _pilot.has_pending_swarms(),
                 "resume_pending": _consume_resume_pending(_state == "idle"),
                 "runners": _runners.statuses(),
+                # Active VIEW id so StatusBar can distinguish this session's
+                # runner from background sessions still executing under the lease.
+                "active_view_id": _runners.active_view_id,
             }))
         if u.path == "/api/session/context_at":
             if self._guard():

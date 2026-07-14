@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, filterForgottenRecent, isLeaseExhaustedError, purgeSessionFromRootCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, purgeSessionFromRootCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -264,10 +264,10 @@ describe("LeftRail session list contracts", () => {
     expect(workspacesCacheKey("")).toBe("workspaces:__none__");
   });
 
-  it("isLeaseExhaustedError detects postJSON 409 and lease_exhausted code", () => {
-    expect(isLeaseExhaustedError(new Error("/api/sessions/switch -> 409"))).toBe(true);
-    expect(isLeaseExhaustedError(new Error("/api/workspace/open -> 409"))).toBe(true);
-    expect(isLeaseExhaustedError(new Error("/api/sessions/create -> 409"))).toBe(true);
+  it("isLeaseExhaustedError requires lease_exhausted code (not bare 409)", () => {
+    expect(isLeaseExhaustedError(new Error("/api/sessions/switch -> 409"))).toBe(false);
+    expect(isLeaseExhaustedError(new Error("/api/workspace/open -> 409"))).toBe(false);
+    expect(isLeaseExhaustedError(new Error("/api/sessions/create -> 409"))).toBe(false);
     expect(isLeaseExhaustedError({ code: "lease_exhausted", error: "busy" })).toBe(true);
     expect(isLeaseExhaustedError(new Error("lease_exhausted: all slots busy"))).toBe(true);
     expect(
@@ -284,5 +284,33 @@ describe("LeftRail session list contracts", () => {
     expect(isLeaseExhaustedError({ status: 409, error: "Path already exists" })).toBe(false);
     expect(isLeaseExhaustedError({ status: 409, code: "busy" })).toBe(false);
     expect(isLeaseExhaustedError({ status: 409, code: "lease_exhausted" })).toBe(true);
+  });
+
+  it("formatLeaseExhaustedMessage names busy sessions and capacity", () => {
+    expect(
+      formatLeaseExhaustedMessage({
+        code: "lease_exhausted",
+        max_concurrent: 2,
+        active_count: 2,
+        busy_session_titles: ["Alpha", "Beta"],
+      }),
+    ).toMatch(/2\/2/);
+    expect(
+      formatLeaseExhaustedMessage({
+        code: "lease_exhausted",
+        max_concurrent: 2,
+        active_count: 2,
+        busy_session_titles: ["Alpha", "Beta"],
+      }),
+    ).toMatch(/"Alpha"/);
+    expect(
+      formatLeaseExhaustedMessage({
+        code: "lease_exhausted",
+        max_concurrent: 2,
+        active_count: 2,
+        busy_session_titles: ["Alpha", "Beta"],
+      }),
+    ).toMatch(/"Beta"/);
+    expect(formatLeaseExhaustedMessage({ code: "lease_exhausted" })).toBe(SESSION_LEASE_EXHAUSTED_MESSAGE);
   });
 });

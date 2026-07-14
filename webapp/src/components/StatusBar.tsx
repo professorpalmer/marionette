@@ -8,17 +8,19 @@ import { sanitizeUpdateMessage } from "../lib/updateMessages";
 
 type FooterRuntimeStatus = "ready" | "thinking" | "busy";
 
-/** Mirror Conversation/LeftRail: pilot state + any session runner liveness. */
+/** Mirror Conversation/LeftRail: pilot state + active-view runner liveness. */
 export function deriveFooterRuntimeStatus(
   sessionState: SessionState | null,
 ): FooterRuntimeStatus {
   if (!sessionState) return "ready";
   if (sessionState.state === "awaiting_swarm" || sessionState.pending_swarms) return "busy";
   if (sessionState.state === "thinking") return "thinking";
-  const hasRunningRunner = Object.values(sessionState.runners ?? {}).some(
-    (status) => status === "running",
-  );
-  if (hasRunningRunner) return "thinking";
+  const runners = sessionState.runners ?? {};
+  const activeId = sessionState.active_view_id;
+  // Only the active VIEW's runner drives the footer "thinking" chrome.
+  // Background sessions may keep running under the lease without flipping
+  // the active view to thinking.
+  if (activeId && runners[activeId] === "running") return "thinking";
   return "ready";
 }
 

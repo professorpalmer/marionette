@@ -11,6 +11,7 @@ from harness.session_runners import (
     LeaseExhaustedError,
     SessionRunnerRegistry,
     _is_busy,
+    build_lease_exhausted_payload,
 )
 
 
@@ -187,3 +188,21 @@ def test_awaiting_swarm_runner_not_evicted_as_idle():
         reg.get_or_create("new", _idle_runner)
 
     assert set(reg.ids()) == {"swarm", "busy"}
+
+
+def test_build_lease_exhausted_payload_includes_capacity_and_busy_ids():
+    reg = SessionRunnerRegistry(max_concurrent_sessions=2)
+    reg.get_or_create("a", _busy_runner)
+    reg.get_or_create("b", _busy_runner)
+    payload = build_lease_exhausted_payload(
+        reg,
+        error="session runner lease exhausted: all concurrent sessions are busy",
+        titles_by_id={"a": "Alpha", "b": "Beta"},
+    )
+    assert payload["code"] == "lease_exhausted"
+    assert payload["ok"] is False
+    assert payload["max_concurrent"] == 2
+    assert payload["active_count"] == 2
+    assert payload["busy_session_ids"] == ["a", "b"]
+    assert payload["busy_session_titles"] == ["Alpha", "Beta"]
+    assert "lease exhausted" in payload["error"].lower()

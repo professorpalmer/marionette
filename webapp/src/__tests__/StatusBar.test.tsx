@@ -34,6 +34,7 @@ describe("deriveFooterRuntimeStatus", () => {
     expect(deriveFooterRuntimeStatus({
       state: "idle",
       pending_swarms: false,
+      active_view_id: "sess-1",
       runners: { "sess-1": "idle" },
     })).toBe("ready");
   });
@@ -42,16 +43,18 @@ describe("deriveFooterRuntimeStatus", () => {
     expect(deriveFooterRuntimeStatus({
       state: "idle",
       pending_swarms: false,
+      active_view_id: "sess-1",
       runners: { "sess-1": "running" },
     })).toBe("thinking");
   });
 
-  it("returns thinking when a background session runner is running", () => {
+  it("returns ready when only a background session runner is running", () => {
     expect(deriveFooterRuntimeStatus({
       state: "idle",
       pending_swarms: false,
+      active_view_id: "sess-1",
       runners: { "sess-1": "idle", "sess-2": "running" },
-    })).toBe("thinking");
+    })).toBe("ready");
   });
 
   it("returns thinking when pilot state is thinking", () => {
@@ -299,6 +302,7 @@ describe("StatusBar runtime status", () => {
     mockGetSessionState.mockResolvedValue({
       state: "idle",
       pending_swarms: false,
+      active_view_id: "sess-1",
       runners: { "sess-1": "idle" },
     });
 
@@ -313,6 +317,7 @@ describe("StatusBar runtime status", () => {
     mockGetSessionState.mockResolvedValue({
       state: "idle",
       pending_swarms: false,
+      active_view_id: "sess-1",
       runners: { "sess-1": "running" },
     });
 
@@ -323,17 +328,18 @@ describe("StatusBar runtime status", () => {
     });
   });
 
-  it("shows thinking when a background session runner is running", async () => {
+  it("shows ready when only a background session runner is running", async () => {
     mockGetSessionState.mockResolvedValue({
       state: "idle",
       pending_swarms: false,
+      active_view_id: "sess-1",
       runners: { "sess-1": "idle", "sess-2": "running" },
     });
 
     render(<StatusBar {...statusBarProps} />);
 
     await waitFor(() => {
-      expect(screen.getByText("thinking")).toBeInTheDocument();
+      expect(screen.getByText("ready")).toBeInTheDocument();
     });
   });
 
@@ -341,6 +347,7 @@ describe("StatusBar runtime status", () => {
     mockGetSessionState.mockResolvedValue({
       state: "awaiting_swarm",
       pending_swarms: true,
+      active_view_id: "sess-1",
       runners: { "sess-1": "idle" },
     });
 

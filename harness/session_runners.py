@@ -18,6 +18,39 @@ class LeaseExhaustedError(Exception):
     """Raised when a new runner is needed but every lease slot is busy."""
 
 
+def build_lease_exhausted_payload(
+    registry: "SessionRunnerRegistry",
+    *,
+    error: Optional[str] = None,
+    titles_by_id: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """JSON body for every lease_exhausted 409 (capacity + busy sessions).
+
+    Prefer this helper over hand-rolled dicts so workspace/open, sessions/switch,
+    sessions/create, and relocate stay in sync.
+    """
+    statuses = registry.statuses()
+    busy_session_ids = [sid for sid, status in statuses.items() if status == "running"]
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error": (error or "").strip()
+        or "session runner lease exhausted: all concurrent sessions are busy",
+        "code": "lease_exhausted",
+        "max_concurrent": registry.max_concurrent_sessions,
+        "active_count": len(registry),
+        "busy_session_ids": busy_session_ids,
+    }
+    if titles_by_id:
+        titles = [
+            titles_by_id[sid]
+            for sid in busy_session_ids
+            if (titles_by_id.get(sid) or "").strip()
+        ]
+        if titles:
+            payload["busy_session_titles"] = titles
+    return payload
+
+
 def _max_concurrent_from_env(default: int = DEFAULT_MAX_CONCURRENT_SESSIONS) -> int:
     raw = (os.environ.get("HARNESS_MAX_CONCURRENT_SESSIONS") or "").strip()
     if not raw:

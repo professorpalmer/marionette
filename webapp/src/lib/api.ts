@@ -209,6 +209,9 @@ export type SessionState = {
   resume_pending?: boolean;
   // Per-session runner liveness from SessionRunnerRegistry (multi-session Phase B).
   runners?: Record<string, "running" | "idle">;
+  // Active VIEW session id — StatusBar must not treat background runners as
+  // the active view thinking.
+  active_view_id?: string | null;
 };
 
 export type SwarmResultData = {

@@ -13,19 +13,52 @@ import { writeTranscriptCache } from "./Conversation";
 export const SESSION_LEASE_EXHAUSTED_MESSAGE =
   "This session could not start — too many sessions are busy right now. Wait a moment or stop another turn, then try again.";
 
+export type LeaseExhaustedPayload = {
+  code?: string;
+  error?: string;
+  message?: string;
+  status?: number;
+  max_concurrent?: number;
+  active_count?: number;
+  busy_session_ids?: string[];
+  busy_session_titles?: string[];
+};
+
 /** True when switch/open/create failed because all session runner leases are busy. */
 export function isLeaseExhaustedError(err: unknown): boolean {
   if (!err) return false;
-  const e = err as { message?: string; code?: string; error?: string; status?: number };
+  const e = err as LeaseExhaustedPayload;
   if (e.code === "lease_exhausted") return true;
   const msg = String(e.message || e.error || err || "");
+  // Message-only fallbacks (older servers / bridge quirks). Do NOT treat a bare
+  // "... -> 409" as lease exhaustion — other conflicts share that status.
   if (/lease_exhausted/i.test(msg)) return true;
   if (/session runner lease exhausted/i.test(msg)) return true;
-  // postJSON throws before parsing the body: "/api/sessions/switch -> 409"
-  if (/\/api\/(?:sessions\/(?:switch|create)|workspace\/open)\s*->\s*409\b/i.test(msg)) {
-    return true;
-  }
   return false;
+}
+
+/** Hermes-style toast: name busy sessions and show capacity when the 409 body has them. */
+export function formatLeaseExhaustedMessage(err: unknown): string {
+  const e = (err || {}) as LeaseExhaustedPayload;
+  const max = typeof e.max_concurrent === "number" ? e.max_concurrent : null;
+  const active = typeof e.active_count === "number" ? e.active_count : null;
+  const titles = (e.busy_session_titles || []).map((t) => String(t).trim()).filter(Boolean);
+  const capacity =
+    max != null
+      ? active != null
+        ? `${active}/${max}`
+        : `${max}`
+      : null;
+  if (titles.length && capacity) {
+    return `Too many sessions are busy (${capacity}). Stop one of: ${titles.map((t) => `"${t}"`).join(", ")} — then try again.`;
+  }
+  if (titles.length) {
+    return `Too many sessions are busy. Stop one of: ${titles.map((t) => `"${t}"`).join(", ")} — then try again.`;
+  }
+  if (capacity) {
+    return `This session could not start — session capacity is full (${capacity}). Wait a moment or stop another turn, then try again.`;
+  }
+  return SESSION_LEASE_EXHAUSTED_MESSAGE;
 }
 
 /**
@@ -568,7 +601,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const notifySessionActivationBlocked = (err: unknown): boolean => {
     if (!isLeaseExhaustedError(err)) return false;
-    const msg = SESSION_LEASE_EXHAUSTED_MESSAGE;
+    const msg = formatLeaseExhaustedMessage(err);
     setSessionActivationNotice(msg);
     toast(msg);
     return true;

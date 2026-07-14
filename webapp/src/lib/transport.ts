@@ -112,7 +112,19 @@ export async function postJSON<T = any>(path: string, body: any): Promise<T> {
     headers: { "Content-Type": "application/json", "X-Harness-Token": authToken() },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`${path} -> ${r.status}`);
+  if (!r.ok) {
+    // Parse the body when present so callers (lease detectors) can require
+    // code===lease_exhausted instead of guessing from "... -> 409".
+    const parsed = await r.json().catch(() => null);
+    if (parsed && typeof parsed === "object") {
+      const err = new Error(
+        String((parsed as { error?: string }).error || `${path} -> ${r.status}`),
+      ) as Error & Record<string, unknown>;
+      Object.assign(err, parsed, { status: r.status });
+      throw err;
+    }
+    throw new Error(`${path} -> ${r.status}`);
+  }
   return r.json();
 }
 

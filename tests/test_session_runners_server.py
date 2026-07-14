@@ -157,7 +157,12 @@ def test_switch_returns_409_when_lease_exhausted(tmp_path):
             _post(port, "/api/sessions/switch", {"id": sid_c}, srv._TOKEN)
         assert ei.value.code == 409
         err = json.loads(ei.value.read().decode())
-        assert err.get("code") == "lease_exhausted" or "lease" in (err.get("error") or "").lower()
+        assert err.get("code") == "lease_exhausted"
+        assert err.get("max_concurrent") == 2
+        assert err.get("active_count") == 2
+        assert set(err.get("busy_session_ids") or []) == {sid_a, sid_b}
+        titles = err.get("busy_session_titles") or []
+        assert set(titles) == {"A", "B"}
 
         assert set(reg.ids()) == {sid_a, sid_b}
         assert reg.get(sid_c) is None
@@ -203,7 +208,12 @@ def test_create_returns_409_and_rolls_back_when_lease_exhausted():
             _post(port, "/api/sessions/create", {"title": "C"}, srv._TOKEN)
         assert ei.value.code == 409
         err = json.loads(ei.value.read().decode())
-        assert err.get("code") == "lease_exhausted" or "lease" in (err.get("error") or "").lower()
+        assert err.get("code") == "lease_exhausted"
+        assert err.get("max_concurrent") == 2
+        assert err.get("active_count") == 2
+        assert set(err.get("busy_session_ids") or []) == {sid_a, sid_b}
+        titles = err.get("busy_session_titles") or []
+        assert len(titles) == 2
 
         after_ids = {s["id"] for s in srv._sessions.list()}
         assert after_ids == before_ids
@@ -293,7 +303,12 @@ def test_workspace_open_returns_409_when_lease_exhausted(tmp_path):
             _post(port, "/api/workspace/open", {"path": str(target)}, srv._TOKEN)
         assert ei.value.code == 409
         err = json.loads(ei.value.read().decode())
-        assert err.get("code") == "lease_exhausted" or "lease" in (err.get("error") or "").lower()
+        assert err.get("code") == "lease_exhausted"
+        assert err.get("max_concurrent") == 2
+        assert err.get("active_count") == 2
+        assert set(err.get("busy_session_ids") or []) == {sid_a, sid_b}
+        titles = err.get("busy_session_titles") or []
+        assert len(titles) == 2
         assert set(reg.ids()) == {sid_a, sid_b}
     finally:
         srv._runners = old_runners
@@ -324,6 +339,7 @@ def test_session_state_exposes_runner_statuses():
         payload = json.loads(resp.read().decode())
         assert "runners" in payload
         assert payload["runners"].get(sid) == "idle"
+        assert payload.get("active_view_id") == sid
     finally:
         srv._runners = old_runners
         srv._pilot = old_pilot
