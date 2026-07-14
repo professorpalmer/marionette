@@ -142,6 +142,11 @@ class TestInternalUriResolution:
         ctx = InternalUriContext(state_dir=state_dir, repo=None)
         return state_dir, ids, ctx
 
+    def test_context_durable_matches_state_dir(self, seeded):
+        state_dir, _ids, ctx = seeded
+        durable = ctx.durable()
+        assert durable.state_dir == state_dir
+
     def test_job_list_and_detail(self, seeded):
         _, ids, ctx = seeded
         listing = resolve_internal_uri("job://", ctx)
