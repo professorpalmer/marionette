@@ -14,14 +14,23 @@ Workspace scoping (``session_visible_for_workspace``):
 
 import json
 import os
+import re
 import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass, asdict
-from typing import Optional, Any
+from typing import Optional, Any, List
 
 from .job_scoping import cwd_under_repo, _norm_path
+
+# Cap bytes read from a transcript when building list previews (OMP-style
+# cheap listing — avoid hydrating multi-MB histories for the sidebar).
+_PREVIEW_READ_BYTES = 8192
+_USER_CONTENT_RE = re.compile(
+    r'"role"\s*:\s*"user"\s*,\s*"content"\s*:\s*"((?:\\.|[^"\\])*)"',
+    re.DOTALL,
+)
 
 
 @dataclass
@@ -95,7 +104,13 @@ class SessionStore:
                     pass
                 raise
 
-    def list(self, workspace_root: str = "", state_dir: str = "") -> list[dict]:
+    def list(
+        self,
+        workspace_root: str = "",
+        state_dir: str = "",
+        *,
+        include_preview: bool = True,
+    ) -> list[dict]:
         rows = [{
             **s,
             "active": s["id"] == self._active,
@@ -108,12 +123,14 @@ class SessionStore:
             "cache_read_tokens": int(s.get("cache_read_tokens", 0) or 0),
             "estimated_cost_usd": float(s.get("estimated_cost_usd", 0.0) or 0.0),
         } for s in self._sessions]
-        if not workspace_root:
-            return rows
-        return [
-            row for row in rows
-            if session_visible_for_workspace(row, workspace_root, state_dir)
-        ]
+        if workspace_root:
+            rows = [
+                row for row in rows
+                if session_visible_for_workspace(row, workspace_root, state_dir)
+            ]
+        if include_preview and state_dir:
+            attach_session_previews(rows, state_dir)
+        return rows
 
     def accumulate_meters(
         self,
@@ -538,3 +555,95 @@ def load_transcript(state_dir: str, session_id: str) -> Any:
             return json.load(f)
     except Exception:
         return []
+
+
+def _unescape_json_string(raw: str) -> str:
+    try:
+        return json.loads('"' + raw + '"')
+    except Exception:
+        return raw.replace("\\n", " ").replace('\\"', '"')
+
+
+def _preview_from_messages(messages: Any, max_chars: int) -> str:
+    history: List[Any]
+    if isinstance(messages, dict):
+        history = list(messages.get("history") or [])
+    elif isinstance(messages, list):
+        history = messages
+    else:
+        return ""
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text") or ""))
+                elif isinstance(block, str):
+                    parts.append(block)
+            content = " ".join(parts)
+        text = " ".join(str(content or "").split())
+        if text:
+            return text[:max_chars]
+    return ""
+
+
+def transcript_preview(
+    state_dir: str,
+    session_id: str,
+    *,
+    max_chars: int = 120,
+) -> str:
+    """First user-turn snippet for session lists (capped disk read).
+
+    Small transcripts are JSON-parsed; large files use a prefix regex so the
+    sidebar never hydrates a multi-MB history just to show a one-line preview.
+    """
+    if not state_dir or not session_id:
+        return ""
+    safe_sid = "".join(c for c in session_id if c.isalnum() or c in ("-", "_"))
+    if not safe_sid:
+        return ""
+    path = os.path.join(state_dir, "transcripts", f"{safe_sid}.json")
+    if not os.path.isfile(path):
+        return ""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return ""
+    cap = max(1, int(max_chars or 120))
+    try:
+        if size <= _PREVIEW_READ_BYTES:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return _preview_from_messages(data, cap)
+        with open(path, "r", encoding="utf-8") as f:
+            head = f.read(_PREVIEW_READ_BYTES)
+        match = _USER_CONTENT_RE.search(head)
+        if not match:
+            return ""
+        text = " ".join(_unescape_json_string(match.group(1)).split())
+        return text[:cap]
+    except Exception:
+        return ""
+
+
+def attach_session_previews(
+    rows: List[dict],
+    state_dir: str,
+    *,
+    max_chars: int = 120,
+) -> None:
+    """Mutate session list rows with a ``preview`` field (empty string ok)."""
+    if not state_dir or not rows:
+        return
+    for row in rows:
+        sid = str(row.get("id") or "")
+        if not sid:
+            row["preview"] = ""
+            continue
+        row["preview"] = transcript_preview(state_dir, sid, max_chars=max_chars)

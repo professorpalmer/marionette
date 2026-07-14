@@ -1205,7 +1205,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       className={`w-full text-left px-2 py-1.5 rounded transition min-w-0 disabled:opacity-60 ${
                         isActive ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
                       }`}
-                      title={`${s.title}\n${root}`}
+                      title={`${s.title}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
                     >
                       <div className="flex items-center gap-1.5 min-w-0">
                         {switchingSessionId === s.id
@@ -1215,6 +1215,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                           {s.title || "Untitled"}
                         </div>
                       </div>
+                      {s.preview ? (
+                        <div className="text-[10px] text-faint truncate pl-0.5">{s.preview}</div>
+                      ) : null}
                       <div className="text-[10px] text-faint truncate font-mono">{label}</div>
                     </button>
                   );
@@ -1371,13 +1374,18 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                   setRenamingTitle(s.title || "Untitled");
                                 }}
                                 onContextMenu={(e) => handleContextMenu(e, s)}
-                                className={`flex-1 min-w-0 text-left rounded px-1.5 py-1 flex items-center gap-1.5 text-[12.5px] transition disabled:opacity-60
+                                className={`flex-1 min-w-0 text-left rounded px-1.5 py-1 flex items-start gap-1.5 text-[12.5px] transition disabled:opacity-60
                                   ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}
                                   ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
                                 {switchingSessionId === s.id
-                                  ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
-                                  : <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />}
-                                <span className="flex-1 min-w-0 truncate">{s.title || "Untitled"}</span>
+                                  ? <Loader2 size={11} className="shrink-0 mt-0.5 animate-spin text-accent" />
+                                  : <MessageSquare size={11} className={`shrink-0 mt-0.5 ${s.active ? "text-accent" : "text-faint"}`} />}
+                                <span className="flex-1 min-w-0">
+                                  <span className="block truncate">{s.title || "Untitled"}</span>
+                                  {s.preview ? (
+                                    <span className="block truncate text-[10px] font-normal text-faint">{s.preview}</span>
+                                  ) : null}
+                                </span>
                                 <RunnerStatusDot
                                   status={runners[s.id]}
                                   stoppable={shouldOfferBackgroundStop(runners[s.id], !!s.active)}

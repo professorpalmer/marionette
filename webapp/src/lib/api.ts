@@ -199,7 +199,7 @@ export type WorkspaceInfo = {
 };
 
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
-export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number };
+export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
 
 export type SessionState = {
   state: "idle" | "thinking" | "awaiting_swarm";
