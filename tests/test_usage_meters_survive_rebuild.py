@@ -74,19 +74,30 @@ def test_rebuild_pilot_preserves_usage_meters():
         before = _get_usage(port, srv._TOKEN)
         assert before["session"]["tokens_used"] == expected_tokens
         assert before["session"]["est_cost_usd"] > 0
+        before_cost = before["session"]["est_cost_usd"]
 
         srv._rebuild_pilot_and_session()
 
         after = _get_usage(port, srv._TOKEN)
+        # Process-lifetime totals survive via boot carry (not live meter copy).
         assert after["session"]["tokens_used"] == expected_tokens
-        assert getattr(srv._pilot, "_tokens_used") == 12_000
-        assert getattr(srv._pilot, "_tokens_in") == 8_000
-        assert getattr(srv._pilot, "_tokens_out") == 4_000
-        assert getattr(srv._pilot, "_tokens_cached") == 1_500
-        assert getattr(srv._pilot, "_worker_cost_usd") == 0.42
-        assert getattr(srv._pilot, "_worker_tokens_in") == 900
-        assert getattr(srv._pilot, "_worker_tokens_out") == 300
+        assert float(srv._BOOT_METER_CARRY["_tokens_used"]) == 12_000
+        assert float(srv._BOOT_METER_CARRY["_tokens_in"]) == 8_000
+        assert float(srv._BOOT_METER_CARRY["_tokens_out"]) == 4_000
+        assert float(srv._BOOT_METER_CARRY["_tokens_cached"]) == 1_500
+        assert float(srv._BOOT_METER_CARRY["_worker_cost_usd"]) == 0.42
+        assert float(srv._BOOT_METER_CARRY["_worker_tokens_in"]) == 900
+        assert float(srv._BOOT_METER_CARRY["_worker_tokens_out"]) == 300
+        # Replacement pilot starts clean so a later model rate cannot reprice.
+        assert getattr(srv._pilot, "_tokens_used") == 0
+        assert getattr(srv._pilot, "_tokens_in") == 0
+        assert getattr(srv._pilot, "_tokens_out") == 0
+        assert getattr(srv._pilot, "_tokens_cached") == 0
+        assert getattr(srv._pilot, "_worker_cost_usd") == 0.0
+        assert getattr(srv._pilot, "_worker_tokens_in") == 0
+        assert getattr(srv._pilot, "_worker_tokens_out") == 0
         assert after["session"]["est_cost_usd"] > 0
+        assert abs(after["session"]["est_cost_usd"] - before_cost) < 1e-9
     finally:
         # Global singleton -- restore so later /api/usage tests see a clean pilot.
         _restore_meters(srv._pilot, saved)
@@ -385,6 +396,114 @@ def test_fold_snapshots_cost_survives_model_reprice():
     finally:
         srv._runners = old_runners
         srv._pilot = old_pilot
+        srv._BOOT_METER_CARRY.clear()
+        srv._BOOT_METER_CARRY.update(saved_carry)
+        srv._BOOT_CARRY_COST_USD = saved_cost
+        httpd.shutdown()
+
+
+def test_idle_swap_snapshots_cost_survives_model_reprice():
+    """Idle pilot rebuild must freeze USD at old rates (not reprice live meters)."""
+    srv, httpd, port = _spin_server()
+    saved = _snapshot_meters(srv._pilot)
+    saved_carry = dict(srv._BOOT_METER_CARRY)
+    saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
+    saved_history = getattr(srv._pilot, "_history", None)
+    saved_auto = getattr(srv._pilot, "_auto_distill", False)
+    try:
+        _zero_boot_carry(srv)
+        expensive_in, expensive_out = 5.0, 25.0
+        cheap_in, cheap_out = 0.1, 0.3
+
+        srv._pilot._tokens_used = 1_000_000
+        srv._pilot._tokens_in = 1_000_000
+        srv._pilot._tokens_out = 0
+        srv._pilot._tokens_cached = 0
+        srv._pilot._worker_cost_usd = 0.0
+        srv._pilot._worker_tokens_in = 0
+        srv._pilot._worker_tokens_out = 0
+        # Continuity markers the idle path must still preserve.
+        srv._pilot._history = [{"role": "user", "content": "keep me"}]
+        srv._pilot._auto_distill = True
+
+        expected = srv._session_cost_split(srv._pilot, expensive_in, expensive_out)
+        assert expected == 5.0
+
+        def _expensive_for_runner(_runner):
+            return expensive_in, expensive_out
+
+        orig_runner_prices = srv._resolve_prices_for_runner
+        srv._resolve_prices_for_runner = _expensive_for_runner
+        try:
+            srv._rebuild_pilot_and_session()
+        finally:
+            srv._resolve_prices_for_runner = orig_runner_prices
+
+        assert abs(float(srv._BOOT_CARRY_COST_USD) - expected) < 1e-12
+        assert getattr(srv._pilot, "_tokens_used") == 0
+        assert getattr(srv._pilot, "_tokens_in") == 0
+        assert getattr(srv._pilot, "_history") == [{"role": "user", "content": "keep me"}]
+        assert getattr(srv._pilot, "_auto_distill") is True
+
+        # Cheap active rate must not reprice the snapshotted carry USD.
+        cost_after_swap = srv._boot_session_cost(cheap_in, cheap_out)
+        assert abs(cost_after_swap - expected) < 1e-12
+        legacy = srv._session_cost(1_000_000, 0, 0, cheap_in, cheap_out)
+        assert abs(legacy - 0.1) < 1e-12
+        assert abs(cost_after_swap - legacy) > 1.0
+    finally:
+        _restore_meters(srv._pilot, saved)
+        try:
+            srv._pilot._history = saved_history
+            srv._pilot._auto_distill = saved_auto
+        except Exception:
+            pass
+        srv._BOOT_METER_CARRY.clear()
+        srv._BOOT_METER_CARRY.update(saved_carry)
+        srv._BOOT_CARRY_COST_USD = saved_cost
+        httpd.shutdown()
+
+
+def test_idle_perform_pilot_swap_freezes_meters():
+    """``_perform_pilot_swap`` freezes meters into carry (idle path, not deferred)."""
+    srv, httpd, port = _spin_server()
+    saved = _snapshot_meters(srv._pilot)
+    saved_carry = dict(srv._BOOT_METER_CARRY)
+    saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
+    saved_driver = srv._cfg.driver
+    try:
+        _zero_boot_carry(srv)
+        expensive_in, expensive_out = 5.0, 25.0
+        cheap_in, cheap_out = 0.1, 0.3
+
+        srv._pilot._tokens_used = 1_000_000
+        srv._pilot._tokens_in = 1_000_000
+        srv._pilot._tokens_out = 0
+        srv._pilot._tokens_cached = 0
+        srv._pilot._worker_cost_usd = 0.0
+        srv._pilot._worker_tokens_in = 0
+        srv._pilot._worker_tokens_out = 0
+
+        expected = srv._session_cost_split(srv._pilot, expensive_in, expensive_out)
+
+        def _expensive_for_runner(_runner):
+            return expensive_in, expensive_out
+
+        orig_runner_prices = srv._resolve_prices_for_runner
+        srv._resolve_prices_for_runner = _expensive_for_runner
+        try:
+            # Same driver rebuild exercises the freeze path without needing a
+            # second catalog model; mirrors idle swap when the pilot is not busy.
+            srv._perform_pilot_swap(srv._cfg.driver)
+        finally:
+            srv._resolve_prices_for_runner = orig_runner_prices
+
+        assert abs(float(srv._BOOT_CARRY_COST_USD) - expected) < 1e-12
+        assert getattr(srv._pilot, "_tokens_in") == 0
+        assert abs(srv._boot_session_cost(cheap_in, cheap_out) - expected) < 1e-12
+    finally:
+        _restore_meters(srv._pilot, saved)
+        srv._cfg.driver = saved_driver
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
         srv._BOOT_CARRY_COST_USD = saved_cost

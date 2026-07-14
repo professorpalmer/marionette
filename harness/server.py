@@ -2239,12 +2239,12 @@ def _consume_resume_pending(idle: bool) -> bool:
 
 
 def _copy_pilot_meters(old_pilot: Any, new_pilot: Any) -> None:
-    """Carry process-lifetime cost meters across a SAME-view pilot rebuild/swap.
+    """Copy cost meters onto a replacement runner (legacy / explicit opt-in).
 
-    Used only when a rebuild replaces the active view's runner in place
-    (``_rebuild_pilot_and_session`` / model swap). New runners created on
-    attach/create must start at zero -- boot-pill totals come from
-    ``_BOOT_METER_CARRY`` + sum of live runners, not from copying meters.
+    Idle model swap and same-view rebuild no longer use this -- they freeze
+    meters into ``_BOOT_METER_CARRY`` / ``_BOOT_CARRY_COST_USD`` at the old
+    rates instead, so historical ``est_cost_usd`` cannot jump when the new
+    model is cheaper or dearer. Prefer ``_freeze_pilot_meters_into_boot_carry``.
     """
     for attr in _BOOT_METER_ATTRS:
         try:
@@ -2263,19 +2263,51 @@ def _resolve_active_prices() -> tuple:
         return 0.5, 2.0
 
 
-def _fold_runner_meters_into_boot_carry(session_id: str, runner: Any) -> None:
-    """Add a dropped/evicted runner's meters into the process-lifetime carry.
+def _resolve_prices_for_runner(runner: Any) -> tuple:
+    """Per-Mtok prices for a runner's bound driver (fallback: active / defaults).
+
+    Idle swap may have already retargeted ``_cfg.driver`` before rebuild; price
+    historical meters from the runner's frozen ``config.driver`` when present.
+    """
+    try:
+        cfg = getattr(runner, "config", None)
+        driver = getattr(cfg, "driver", None) if cfg is not None else None
+        if driver:
+            from pmharness.registry import resolve_price
+            price_in, price_out = resolve_price(driver)
+            return float(price_in), float(price_out)
+    except Exception:
+        pass
+    return _resolve_active_prices()
+
+
+def _fold_runner_meters_into_boot_carry(
+    session_id: str,
+    runner: Any,
+    *,
+    price_in: Optional[float] = None,
+    price_out: Optional[float] = None,
+) -> None:
+    """Add a runner's meters into the process-lifetime carry.
 
     Snapshots priced USD at fold-time rates so later model swaps cannot reprice
     historical tokens. Zeros the runner's meters after folding so a lingering
     ``_pilot`` pointer cannot double-count with carry in ``_boot_usage_meters``.
+
+    Optional ``price_in`` / ``price_out`` override active rates (idle model-swap
+    freezes at the OLD pilot's prices even if ``_cfg.driver`` already changed).
     """
     global _BOOT_CARRY_COST_USD
     del session_id  # reserved for diagnostics; meters are process-scoped
     try:
-        price_in, price_out = _resolve_active_prices()
+        if price_in is None or price_out is None:
+            resolved_in, resolved_out = _resolve_active_prices()
+            if price_in is None:
+                price_in = resolved_in
+            if price_out is None:
+                price_out = resolved_out
         _BOOT_CARRY_COST_USD = float(_BOOT_CARRY_COST_USD or 0.0) + float(
-            _session_cost_split(runner, price_in, price_out)
+            _session_cost_split(runner, float(price_in), float(price_out))
         )
     except Exception:
         pass
@@ -2293,6 +2325,17 @@ def _fold_runner_meters_into_boot_carry(session_id: str, runner: Any) -> None:
         _persist_boot_usage(fold_live=False)
     except Exception:
         pass
+
+
+def _freeze_pilot_meters_into_boot_carry(runner: Any) -> None:
+    """Idle rebuild/swap: snapshot live meters into carry at the runner's rates.
+
+    Does not remove the runner from the registry -- callers replace the same
+    view after freezing. Zeros folded meters so the replacement starts clean
+    and ``_boot_session_cost`` cannot reprice history at the new model rate.
+    """
+    pin, pout = _resolve_prices_for_runner(runner)
+    _fold_runner_meters_into_boot_carry("", runner, price_in=pin, price_out=pout)
 
 
 # Wire after definition so boot construction above can create the registry first.
@@ -2383,8 +2426,10 @@ def _bind_pilot_services(pilot: Any) -> None:
 def _build_conversational_pilot(*, copy_meters_from: Any = None) -> ConversationalSession:
     """Construct a ConversationalSession with a frozen per-runner config copy.
 
-    ``copy_meters_from`` is only for SAME-view rebuild/swap. Attach/create must
-    omit it so new runners start at zero for boot-pill accounting.
+    New runners start at zero meters -- idle rebuild/swap freezes spend into
+    boot carry instead of copying token counters. ``copy_meters_from`` may
+    still opt into legacy meter copy + auto-distill continuity; attach/create
+    must omit it.
     """
     new_pilot = ConversationalSession(_runner_config_snapshot())
     _bind_pilot_services(new_pilot)
@@ -2670,8 +2715,11 @@ def _live_pilot_driver() -> str:
 
 
 def _perform_pilot_swap(model: str) -> None:
-    """Rebuild the active pilot onto ``model``, preserving history/meters/MCP.
+    """Rebuild the active pilot onto ``model``, preserving history/MCP.
 
+    Freezes cost meters into boot carry at the OLD pilot's rates before the
+    rebuild so historical ``est_cost_usd`` cannot jump when the new model is
+    cheaper or dearer. Token meters are not copied onto the replacement.
     Caller must ensure the pilot is not mid-turn. Raises on build failure.
     """
     global _pilot
@@ -2679,15 +2727,18 @@ def _perform_pilot_swap(model: str) -> None:
         old_history = getattr(_pilot, "_history", None)
         old_auto_distill = getattr(_pilot, "_auto_distill", False)
         old_pilot = _pilot
+        # Freeze spend at old rates before retargeting _cfg.driver.
+        try:
+            _freeze_pilot_meters_into_boot_carry(old_pilot)
+        except Exception:
+            pass
         _cfg.driver = model
         _apply_model_context_window()
-        # Frozen per-runner config; meters copied because this replaces
-        # the SAME view's runner (not a new attach).
+        # Frozen per-runner config; meters already in carry -- start clean.
         _pilot = ConversationalSession(_runner_config_snapshot())
         if old_history is not None:
             _pilot._history = old_history
         _pilot._auto_distill = old_auto_distill
-        _copy_pilot_meters(old_pilot, _pilot)
         _pilot._mcp = _mcp
         try:
             _bind_pilot_services(_pilot)
@@ -2700,6 +2751,7 @@ def _perform_pilot_swap(model: str) -> None:
             pass
         active_id = _sessions.active or _runners.active_view_id
         if active_id:
+            # notify=False: meters already frozen above; drop must not re-fold.
             _runners.drop(active_id, notify=False)
             _runners.get_or_create(active_id, lambda: _pilot)
             _runners.set_active_view(active_id)
@@ -2773,17 +2825,21 @@ def _rebuild_pilot_and_session():
         old_history = _pilot._history
         old_auto_distill = getattr(_pilot, "_auto_distill", False)
         old_pilot = _pilot
+        # Freeze at the OLD runner's bound rates (``_cfg.driver`` may already
+        # point at the new model). Replacement starts with zero cost meters.
+        try:
+            _freeze_pilot_meters_into_boot_carry(old_pilot)
+        except Exception:
+            pass
         _session = new_session
         _pilot = new_pilot
         _pilot._history = old_history
         _pilot._auto_distill = old_auto_distill
-        _copy_pilot_meters(old_pilot, _pilot)
         _bind_pilot_services(_pilot)
         _sync_pilot_session_id()
         if active_id:
             # Replace only this view's registry entry; leave other runners alone.
-            # notify=False: meters were copied onto the replacement, so folding
-            # the old runner into boot carry would double-count.
+            # notify=False: meters already frozen above; drop must not re-fold.
             _runners.drop(active_id, notify=False)
             _runners.get_or_create(active_id, lambda: _pilot)
             _runners.set_active_view(active_id)
@@ -7584,9 +7640,10 @@ class Handler(BaseHTTPRequestHandler):
         """Hot-swap the pilot model (the whole point: your key -> your pilot).
 
         Preserves the in-flight conversation: history, auto-distill, and MCP are
-        carried onto the rebuilt pilot (mirrors _rebuild_pilot_and_session). A
-        bare rebuild dropped history, so swapping mid-conversation silently reset
-        the context to empty.
+        carried onto the rebuilt pilot (mirrors _rebuild_pilot_and_session).
+        Cost meters freeze into boot carry at the old rates (not copied / not
+        repriced). A bare rebuild dropped history, so swapping mid-conversation
+        silently reset the context to empty.
 
         Hermes-style mid-turn: while a turn is streaming we do NOT rebuild (that
         would orphan the live stream). Instead we stage the choice on ``_cfg`` +
