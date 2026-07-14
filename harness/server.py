@@ -46,6 +46,13 @@ from .session_runners import (
     LeaseExhaustedError,
     build_lease_exhausted_payload,
 )
+from .deferred_attach import (
+    DeferredPilotPlaceholder,
+    defer_cold_attach_enabled,
+    is_deferred_placeholder,
+    normalize_transcript_payload,
+    schedule_deferred_build,
+)
 from .autobudget import AutoBudget
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd, _ensure_node_on_path
 from .diag import note as _diag
@@ -2475,12 +2482,26 @@ def _lease_exhausted_body(exc: Optional[BaseException] = None) -> dict:
     )
 
 
-def _attach_view(session_id: str, *, factory=None, load_transcript_on_create: bool = True) -> Any:
+def _attach_view(
+    session_id: str,
+    *,
+    factory=None,
+    load_transcript_on_create: bool = True,
+    defer_cold_build: Optional[bool] = None,
+) -> Any:
     """Point the UI at ``session_id`` via the runner registry.
 
-    get_or_create under the lease; set_active_view; assign global ``_pilot``
-    (and pin ``_session.state_dir``). Loads the session transcript when the
-    runner is newly created or when switching to a different view.
+    Warm path (runner already exists): set_active_view + assign global ``_pilot``
+    without calling the factory.
+
+    Cold path: get_or_create under the lease. When ``defer_cold_build=True``
+    and ``HARNESS_DEFER_COLD_ATTACH`` is not off, register an idle
+    ``DeferredPilotPlaceholder`` with the disk transcript and schedule
+    ``ConversationalSession`` construction off the response path (Hermes
+    ``_schedule_agent_build``). Opt-in only -- default callers stay synchronous.
+    Turn-start paths must call ``_ensure_active_pilot_ready`` so chats never
+    race a half-built pilot.
+
     Raises ``LeaseExhaustedError`` when a new runner is required but every
     lease slot holds a busy runner.
     """
@@ -2488,8 +2509,99 @@ def _attach_view(session_id: str, *, factory=None, load_transcript_on_create: bo
     if not session_id:
         raise ValueError("session_id required to attach view")
 
-    prev_view = _runners.active_view_id
-    created = _runners.get(session_id) is None
+    # --- Warm fast path: never rebuild; never interrupt other runners. ---
+    existing = _runners.get(session_id)
+    if existing is not None:
+        _runners.set_active_view(session_id)
+        with _pilot_swap_lock:
+            _pilot = existing
+            try:
+                _session.state_dir = _pilot.state_dir
+            except Exception:
+                pass
+            _bind_pilot_services(_pilot)
+            _sync_pilot_session_id()
+        return _pilot
+
+    created = True
+    # Opt-in only: callers that need Hermes-style cold attach pass
+    # defer_cold_build=True (sessions/switch, create, workspace/open). Other
+    # paths stay synchronous so rebuild/meter tests are not raced.
+    want_defer = (
+        factory is None
+        and defer_cold_build is True
+        and defer_cold_attach_enabled()
+    )
+
+    history: Any = []
+    if load_transcript_on_create:
+        history = load_transcript(_sessions_state_dir(), session_id)
+    transcript_payload = normalize_transcript_payload(history)
+
+    if want_defer:
+        placeholder = DeferredPilotPlaceholder(
+            session_id=session_id,
+            state_dir=_sessions_state_dir(),
+            transcript=transcript_payload,
+        )
+        placeholder._pending_history = history
+
+        def _factory():
+            return placeholder
+
+        runner = _runners.get_or_create(session_id, _factory)
+        _runners.set_active_view(session_id)
+        with _pilot_swap_lock:
+            _pilot = runner
+            try:
+                _session.state_dir = _pilot.state_dir
+            except Exception:
+                pass
+            _bind_pilot_services(_pilot)
+            _sync_pilot_session_id()
+
+        def _build():
+            return _build_conversational_pilot()
+
+        def _on_done(real: Any) -> None:
+            global _pilot, _session
+            try:
+                _bind_pilot_services(real)
+                if load_transcript_on_create and history:
+                    real.load_history(history)
+                real.harness_session_id = session_id
+            except Exception as e:
+                _diag("server.deferred_pilot_hydrate", e)
+                placeholder.mark_failed(e)
+                return
+            with _pilot_swap_lock:
+                current = _runners.get(session_id)
+                if current is not placeholder:
+                    # View dropped or replaced while building — abandon swap.
+                    placeholder.mark_ready(real)
+                    return
+                try:
+                    _runners.replace(session_id, real, notify=False)
+                except Exception as e:
+                    _diag("server.deferred_pilot_replace", e)
+                    placeholder.mark_failed(e)
+                    return
+                if _runners.active_view_id == session_id:
+                    _pilot = real
+                    try:
+                        _session.state_dir = real.state_dir
+                    except Exception:
+                        pass
+                    _bind_pilot_services(real)
+                    _sync_pilot_session_id()
+            placeholder.mark_ready(real)
+
+        def _on_error(exc: BaseException) -> None:
+            _diag("server.deferred_pilot_build", exc, msg=f"sid={session_id}")
+            placeholder.mark_failed(exc)
+
+        schedule_deferred_build(_build, on_done=_on_done, on_error=_on_error)
+        return runner
 
     def _factory():
         if factory is not None:
@@ -2510,10 +2622,48 @@ def _attach_view(session_id: str, *, factory=None, load_transcript_on_create: bo
         # Existing runners already hold live history (including in-flight turns).
         # Only hydrate from disk when the runner was just created.
         if created and load_transcript_on_create:
-            history = load_transcript(_sessions_state_dir(), session_id)
             _pilot.load_history(history)
         _sync_pilot_session_id()
     return _pilot
+
+
+def _ensure_active_pilot_ready(*, timeout: float = 120.0) -> Any:
+    """Block until the active view's deferred cold build finishes (if any).
+
+    No-op for warm / sync runners. Raises on timeout or build failure so turn
+    starts never execute against a half-built placeholder.
+    """
+    global _pilot, _session
+    pilot = _pilot
+    if not is_deferred_placeholder(pilot):
+        return pilot
+    real = pilot.ensure_ready(timeout=timeout)
+    with _pilot_swap_lock:
+        # Background swap usually already updated _pilot; repair if not.
+        if is_deferred_placeholder(_pilot):
+            _pilot = real
+            try:
+                _session.state_dir = real.state_dir
+            except Exception:
+                pass
+            _bind_pilot_services(real)
+            _sync_pilot_session_id()
+        elif _runners.active_view_id == getattr(real, "harness_session_id", None):
+            # Prefer registry live runner when active view matches.
+            live = _runners.get(_runners.active_view_id or "")
+            if live is not None and not is_deferred_placeholder(live):
+                _pilot = live
+    return _pilot
+
+
+def _attach_view_transcript_payload(runner: Any, session_id: str) -> dict[str, list]:
+    """Transcript for attach/switch responses (live runner, else disk)."""
+    try:
+        if runner is not None and hasattr(runner, "export_transcript_data"):
+            return normalize_transcript_payload(runner.export_transcript_data())
+    except Exception as e:
+        _diag("server.attach_transcript_export", e)
+    return normalize_transcript_payload(load_transcript(_sessions_state_dir(), session_id))
 
 
 def _save_active_transcript() -> None:
@@ -2792,6 +2942,8 @@ def _ensure_pilot_matches_driver(target: str | None = None) -> bool:
     False when the pilot is busy (caller should not start a conflicting turn
     under a mismatched driver -- the deferred choice waits).
     """
+    # Cold-attach may still be building; never start a turn on a placeholder.
+    _ensure_active_pilot_ready()
     want = (target or _cfg.driver or "").strip()
     if not want:
         return True
@@ -2822,6 +2974,8 @@ def _rebuild_pilot_and_session():
     error to the caller to show, instead of taking down the process.
     """
     global _session, _pilot, _cfg
+    # Finish any deferred cold build before touching _history / meters.
+    _ensure_active_pilot_ready()
     active_id = _sessions.active or _runners.active_view_id
     if active_id:
         existing = _runners.get(active_id)
@@ -4414,7 +4568,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if _sessions.active:
                 try:
-                    _attach_view(_sessions.active)
+                    _attach_view(_sessions.active, defer_cold_build=True)
                 except LeaseExhaustedError as e:
                     _cfg.repo = prev_repo
                     _cfg.driver = prev_driver
@@ -4706,6 +4860,7 @@ class Handler(BaseHTTPRequestHandler):
                     _attach_view(
                         sid,
                         load_transcript_on_create=False,
+                        defer_cold_build=True,
                     )
                     _pilot.load_history([])
                 except LeaseExhaustedError as e:
@@ -4785,7 +4940,7 @@ class Handler(BaseHTTPRequestHandler):
                             _codegraph_status = "unsupported"
 
                 try:
-                    _attach_view(_sessions.active)
+                    _attach_view(_sessions.active, defer_cold_build=True)
                 except LeaseExhaustedError as e:
                     if prev_active:
                         try:
@@ -4802,6 +4957,11 @@ class Handler(BaseHTTPRequestHandler):
 
                 res["repo"] = _cfg.repo
                 res["codegraph"] = _get_codegraph_status(_cfg.repo) if _cfg.repo else "none"
+                # Hermes-style: idle + transcript on the switch response so the
+                # UI can paint before deferred ConversationalSession lands.
+                active_id = _sessions.active or ""
+                res["state"] = _runners.status(active_id) if active_id else "missing"
+                res["transcript"] = _attach_view_transcript_payload(_pilot, active_id)
 
             return self._send(200, json.dumps(res))
         if path == "/api/sessions/delete":

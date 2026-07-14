@@ -209,6 +209,33 @@ class SessionRunnerRegistry:
                 pass
         return runner
 
+    def replace(self, session_id: str, runner: Any, *, notify: bool = False) -> Optional[Any]:
+        """Swap the runner for an existing ``session_id`` without changing order.
+
+        Used when a deferred cold-attach placeholder is upgraded to a real
+        ``ConversationalSession``. Preserves ``active_view_id``. When
+        ``notify`` is True, ``on_drop`` receives the previous runner (usually
+        False for placeholder→real so meters are not folded).
+        """
+        old = self._runners.get(session_id)
+        if old is None:
+            if len(self._runners) >= self._max:
+                self._evict_idle_oldest_first()
+            if len(self._runners) >= self._max:
+                raise LeaseExhaustedError(
+                    "session runner lease exhausted: all concurrent sessions are busy"
+                )
+            self._runners[session_id] = runner
+            self._order.append(session_id)
+            return None
+        self._runners[session_id] = runner
+        if notify and self._on_drop is not None:
+            try:
+                self._on_drop(session_id, old)
+            except Exception:
+                pass
+        return old
+
     def set_active_view(self, session_id: str) -> None:
         self._active_view_id = session_id
 
@@ -238,6 +265,10 @@ class SessionRunnerRegistry:
                 break
             runner = self._runners.get(sid)
             if runner is None:
+                continue
+            # Never evict a deferred cold-attach shell mid-build — the lease
+            # slot is held until the real ConversationalSession lands (or fails).
+            if getattr(runner, "defer_building", False):
                 continue
             if _is_busy(runner):
                 continue
