@@ -34,8 +34,18 @@ def _driver() -> BedrockDriver:
     return BedrockDriver("bedrock:claude", "anthropic.claude-sonnet-4-20250514-v1:0")
 
 
+def _ensure_pm_bedrock_chat_stream_attr():
+    """Older PyPI wheels may lack ``bedrock_chat_stream``; unittest.patch needs it."""
+    import puppetmaster.bedrock as pm_bedrock
+
+    if not hasattr(pm_bedrock, "bedrock_chat_stream"):
+        pm_bedrock.bedrock_chat_stream = None  # type: ignore[attr-defined]
+    return pm_bedrock
+
+
 def _force_local_converse_stream():
     """Hide PM ``bedrock_chat_stream`` so the in-driver ConverseStream path runs."""
+    _ensure_pm_bedrock_chat_stream_attr()
     return patch("puppetmaster.bedrock.bedrock_chat_stream", None)
 
 
@@ -247,6 +257,7 @@ def test_chat_stream_falls_back_on_stream_failure(monkeypatch):
     deltas = []
     hints = []
 
+    _ensure_pm_bedrock_chat_stream_attr()
     with patch(
         "puppetmaster.bedrock.resolve_bedrock_credentials",
         return_value=SimpleNamespace(kind="bearer"),
@@ -302,6 +313,7 @@ def test_prefers_bedrock_chat_stream_when_present(monkeypatch):
             },
         )
 
+    _ensure_pm_bedrock_chat_stream_attr()
     with patch(
         "puppetmaster.bedrock.resolve_bedrock_credentials",
         return_value=SimpleNamespace(kind="bearer"),
@@ -350,6 +362,7 @@ def test_pm_stream_routes_kind_and_preserves_cache(monkeypatch):
             },
         )
 
+    _ensure_pm_bedrock_chat_stream_attr()
     with patch(
         "puppetmaster.bedrock.resolve_bedrock_credentials",
         return_value=SimpleNamespace(kind="bearer"),

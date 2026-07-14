@@ -279,11 +279,19 @@ describe("StatusBar usage pills", () => {
   });
 });
 
+const emptyUsageSession = {
+  tokens_used: 0,
+  est_cost_usd: 0,
+  driver: "",
+  price_in: 0,
+  price_out: 0,
+};
+
 describe("StatusBar runtime status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWorkspaces.mockResolvedValue([]);
-    mockGetUsage.mockResolvedValue({ session: null, jobs: [] });
+    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
     mockSessions.mockResolvedValue([{ id: "sess-1", title: "Test", created: 0, active: true }]);
   });
 
@@ -348,7 +356,7 @@ describe("StatusBar panel toggle shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWorkspaces.mockResolvedValue([]);
-    mockGetUsage.mockResolvedValue({ session: null, jobs: [] });
+    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
     mockGetSessionState.mockResolvedValue({
       state: "idle",
       pending_swarms: false,

@@ -368,27 +368,31 @@ export function shouldPollChatEvents(opts: {
   return opts.detachedBusy;
 }
 
-/** True when GET /api/chat/events reports the ring is unavailable (not catch-up). */
-export function isChatEventReplayMiss(replay: {
+/** Fields checked when classifying a chatEvents miss vs empty catch-up. */
+export type ChatEventReplayMissFields = {
   ok?: boolean;
   missed?: boolean;
-}): boolean {
+  available?: boolean;
+  code?: string;
+  generation?: number;
+};
+
+/** True when GET /api/chat/events reports the ring is unavailable (not catch-up). */
+export function isChatEventReplayMiss(replay: ChatEventReplayMissFields): boolean {
   if (replay.missed === true) return true;
   if (replay.ok === false) return true;
+  if (replay.available === false) return true;
   return false;
 }
 
 /** Whether a replay response should advance lastAppliedCursor. */
-export function shouldAdvanceReplayCursor(replay: {
-  ok?: boolean;
-  missed?: boolean;
-}): boolean {
+export function shouldAdvanceReplayCursor(replay: ChatEventReplayMissFields): boolean {
   return !isChatEventReplayMiss(replay);
 }
 
 /** Refresh ring generation pin after a replay miss. */
 export function ringGenerationAfterReplayMiss(
-  replay: { code?: string; generation?: number },
+  replay: ChatEventReplayMissFields,
   current: number | undefined,
 ): number | undefined {
   if (
@@ -408,10 +412,7 @@ export function ringGenerationAfterReplayMiss(
  * On ring miss / generation mismatch, fall back to disk transcript hydrate
  * (busy-poll skips sessionTranscript while chatEvents poll owns the turn).
  */
-export function shouldHydrateTranscriptOnReplayMiss(replay: {
-  ok?: boolean;
-  missed?: boolean;
-}): boolean {
+export function shouldHydrateTranscriptOnReplayMiss(replay: ChatEventReplayMissFields): boolean {
   return isChatEventReplayMiss(replay);
 }
 
