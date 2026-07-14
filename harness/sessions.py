@@ -516,6 +516,12 @@ def save_transcript(state_dir: str, session_id: str, messages: Any) -> None:
         os.replace(tmp, p)
     except Exception:
         pass
+    # Best-effort FTS index update — never raise on the hot persist path.
+    try:
+        from .session_fts import index_session_transcript
+        index_session_transcript(state_dir, safe_sid, messages)
+    except Exception:
+        pass
 
 
 def load_transcript(state_dir: str, session_id: str) -> Any:

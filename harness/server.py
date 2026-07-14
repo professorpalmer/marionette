@@ -2558,6 +2558,11 @@ def _remove_session_transcript(sid: str) -> None:
             os.remove(p)
         except Exception as e:
             _diag("server.session_delete_transcript", e, msg=f"sid={safe_sid}")
+    try:
+        from .session_fts import remove_session_from_index
+        remove_session_from_index(state_dir, safe_sid)
+    except Exception as e:
+        _diag("server.session_delete_fts", e, msg=f"sid={safe_sid}")
 
 
 def _handle_session_delete(sid: str) -> tuple[int, dict]:
@@ -7460,6 +7465,19 @@ class Handler(BaseHTTPRequestHandler):
                 query=query,
                 limit=limit,
                 state_dir=_sessions_state_dir(),
+            )))
+        if u.path == "/api/sessions/search":
+            q = parse_qs(u.query)
+            query = (q.get("q", [""])[0] or q.get("query", [""])[0] or "").strip()
+            try:
+                limit = int((q.get("limit", ["20"])[0] or "20"))
+            except ValueError:
+                limit = 20
+            from .session_fts import search_sessions
+            return self._send(200, json.dumps(search_sessions(
+                _sessions_state_dir(),
+                query,
+                limit=limit,
             )))
         if u.path == "/api/auto":
             q = parse_qs(u.query)
