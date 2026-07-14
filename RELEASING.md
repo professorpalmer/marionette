@@ -1,12 +1,20 @@
 # Releasing Marionette
 
-Marionette runs from a source checkout -- there is no packaged `.app`, no DMG,
-and no notarization. Every install is a git clone with a per-machine `.venv` and
-a locally built renderer (the Hermes model). A "release" therefore just means
-"the tracked branch moved forward"; users pick it up with the in-app
-**Update & Relaunch** pill.
+Marionette has two distribution paths that converge on the same source checkout:
+
+1. **Source installer** -- the curl/irm scripts clone the repo, build a
+   per-machine `.venv`, and install a `marionette` launcher. This is the Hermes
+   model: every checkout tracks `main` and self-updates in place.
+2. **Thin Electron shell** -- optional signed installers (DMG, `.exe`, AppImage)
+   published on GitHub Releases. The packaged app bootstraps the same clone +
+   venv on first launch; it does not bundle Python or a frozen backend.
+
+A "release" therefore means the tracked branch moved forward **and**, when a
+version tag is pushed, CI builds and uploads the platform installers.
 
 ## How an update reaches everyone
+
+### Source checkouts
 
 The status-bar update pill runs the in-place source updater
 (`webapp/electron/update-bridge.cjs`, pure helpers in `update-*.cjs`, unit tested
@@ -18,21 +26,31 @@ via `npm run test:electron`):
 - `npm run build` (retry once) to rebuild the renderer,
 - relaunch (backend torn down first so it comes back on the new code).
 
-So merging to `main` is the entire distribution mechanism. There is nothing to
-sign, upload, or per-arch build: Intel + Apple Silicon Macs and Linux all run the
-same source, and native modules (`better-sqlite3`) compile locally at install.
+Merging to `main` is the distribution mechanism for source installs. Native
+modules (`better-sqlite3`) compile locally at install time on macOS (Intel +
+Apple Silicon), Linux, and Windows.
 
-## Cutting a version tag (optional, cosmetic)
+### Packaged shell users
 
-Tags/versions exist only so `app.getVersion()` and the update pill show a
-human-readable version -- they are not required for delivery.
+Users who installed from a GitHub Release get the same in-app update pill once
+the shell has bootstrapped its checkout. Fresh installs download the latest
+tagged installer from Releases.
+
+## Cutting a version tag
+
+Tags/versions label what checkouts and installers report via `app.getVersion()`.
+Pushing a `v*` tag triggers `.github/workflows/release.yml`: the offline test
+suite must pass, then macOS, Windows, and Linux Electron shells are built and
+uploaded to the GitHub Release (DMG/zip, `.exe`, AppImage, blockmaps, and
+`latest*.yml` auto-update metadata).
 
 ```bash
 bash scripts/release.sh X.Y.Z "release notes"
 ```
 
 This bumps `webapp/package.json`, commits `release: vX.Y.Z`, tags it, pushes
-`main` + the tag, and cuts a notes-only GitHub Release (no attached binary).
+`main` + the tag, and creates/updates the GitHub Release notes. CI attaches the
+platform binaries when the workflow completes.
 
 ## Diverged / self-edited checkouts
 

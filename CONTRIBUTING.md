@@ -30,7 +30,7 @@ Or set up a checkout by hand. Backend (uv provides Python per `.python-version`)
 
 ```bash
 uv venv .venv
-uv pip install --python .venv -e . puppetmaster-ai
+uv pip install --python .venv -e . "puppetmaster-ai>=1.19.3"
 .venv/bin/python -m pytest -q          # full offline suite -- must be green
 ```
 
@@ -57,10 +57,12 @@ runs from source.
 
 ## How updates reach users (contributing IS the release)
 
-Marionette self-updates from git, Hermes-style: every checkout tracks `main` and
-shows an `update (N)` pill when it's behind, then pulls + rebuilds + relaunches
-in place. So **merging a green PR to `main` ships your change to the whole circle**
-on their next relaunch -- no DMG, no per-arch build.
+Marionette self-updates from git, Hermes-style: every source checkout tracks
+`main` and shows an `update (N)` pill when it's behind, then pulls + rebuilds +
+relaunches in place. So **merging a green PR to `main` ships your change to every
+source install** on their next relaunch. Tagged releases also rebuild the thin
+Electron installers (macOS, Windows, Linux) via CI; those users pick up changes
+after bootstrap + update or by installing a newer Release.
 
 Keep `main` releasable: it must build (`npm run build`) and pass CI, because a
 red `main` is what everyone's checkout tries to pull. The updater fast-forwards
@@ -68,6 +70,10 @@ only, so never force-push `main`.
 
 ## Releases
 
-See `RELEASING.md`. Distribution is the git self-update above; cutting a version
-tag (`scripts/release.sh X.Y.Z`) is optional and only sets the human-readable
-version -- there is no binary to attach.
+See `RELEASING.md`. Distribution is primarily the git self-update above; cutting
+a version tag (`scripts/release.sh X.Y.Z`) also triggers CI to build and attach
+the platform Electron installers to the GitHub Release.
+
+Toolchain note: CodeGraph's native module needs a C/C++ compiler -- Xcode Command
+Line Tools on macOS, `build-essential` on Linux, Visual Studio Build Tools on
+Windows.

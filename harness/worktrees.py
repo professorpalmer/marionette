@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import json
 import logging
 import subprocess
@@ -152,19 +153,11 @@ def _cwd_under(cwd: str, worktree: str) -> bool:
         return False
 
 
-def _worktree_pid_cwds_posix() -> list[tuple[int, str]]:
-    """Best-effort enumeration of (pid, cwd) via lsof. Returns [] on any error."""
+def _parse_lsof_cwd_output(stdout: str) -> list[tuple[int, str]]:
+    """Parse ``lsof -Fpn`` cwd lines into (pid, cwd) pairs."""
     out_pairs: list[tuple[int, str]] = []
-    try:
-        # -Fn emits n<cwd>, -Fp emits p<pid>; -d cwd restricts to the cwd fd.
-        p = subprocess.run(
-            ["lsof", "-a", "-d", "cwd", "-Fpn"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-        )
-    except Exception:
-        return out_pairs
     cur_pid: Optional[int] = None
-    for line in (p.stdout or "").splitlines():
+    for line in (stdout or "").splitlines():
         if not line:
             continue
         tag, val = line[0], line[1:]
@@ -176,6 +169,61 @@ def _worktree_pid_cwds_posix() -> list[tuple[int, str]]:
         elif tag == "n" and cur_pid is not None:
             out_pairs.append((cur_pid, val))
     return out_pairs
+
+
+def _worktree_pid_cwds_lsof() -> Optional[list[tuple[int, str]]]:
+    """Run lsof for cwd enumeration. None when lsof is missing, slow, or denied."""
+    try:
+        # -Fn emits n<cwd>, -Fp emits p<pid>; -d cwd restricts to the cwd fd.
+        p = subprocess.run(
+            ["lsof", "-a", "-d", "cwd", "-Fpn"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        )
+    except Exception:
+        return None
+    if p.returncode != 0:
+        return None
+    return _parse_lsof_cwd_output(p.stdout)
+
+
+def _worktree_pid_cwds_proc_linux() -> list[tuple[int, str]]:
+    """Best-effort /proc/<pid>/cwd enumeration on Linux. Returns [] on any error."""
+    out_pairs: list[tuple[int, str]] = []
+    try:
+        proc_root = "/proc"
+        if not os.path.isdir(proc_root):
+            return out_pairs
+        for name in os.listdir(proc_root):
+            if not name.isdigit():
+                continue
+            try:
+                pid = int(name)
+            except ValueError:
+                continue
+            cwd_link = os.path.join(proc_root, name, "cwd")
+            try:
+                cwd = os.readlink(cwd_link)
+            except OSError:
+                continue
+            if cwd:
+                out_pairs.append((pid, cwd))
+    except Exception:
+        return out_pairs
+    return out_pairs
+
+
+def _worktree_pid_cwds_posix() -> list[tuple[int, str]]:
+    """Best-effort enumeration of (pid, cwd) on POSIX.
+
+    macOS: lsof only (/proc is absent). Linux: lsof first, then /proc fallback
+    when lsof is missing, slow, or denied. Never raises.
+    """
+    lsof_pairs = _worktree_pid_cwds_lsof()
+    if lsof_pairs is not None:
+        return lsof_pairs
+    if sys.platform == "linux":
+        return _worktree_pid_cwds_proc_linux()
+    return []
 
 
 def _worktree_pid_cwds_windows() -> list[tuple[int, str]]:

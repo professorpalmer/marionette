@@ -442,6 +442,8 @@ class ConversationalSession(ToolDispatchMixin):
         self._wiki_prepared_hwm = 0  # findings count at last prepare, dedupe re-runs
         # optional MCP integration -- set by the server so the pilot can call MCP tools
         self._mcp = None
+        # optional server hook: bust wiki graph/status cache after in-process ingest
+        self._on_wiki_ingest = None
         from .tool_discovery import ToolCatalog
         self._tool_catalog = ToolCatalog()
         self._checkpoints = CheckpointStore(config.repo)
@@ -7265,6 +7267,16 @@ class ConversationalSession(ToolDispatchMixin):
         finally:
             self._busy.release()
 
+    def _after_wiki_ingest(self) -> None:
+        """Notify server after a successful wiki write so graph/status cache refreshes."""
+        cb = getattr(self, "_on_wiki_ingest", None)
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            pass  # best-effort, like ingest itself
+
     def _maybe_ingest(self, user_message: str, prose: list, findings: list) -> None:
         """Auto-ingest a session digest to the wiki when enabled and there are
         real findings worth capturing. Never fires the orchestrator (token-spend)."""
@@ -7278,8 +7290,10 @@ class ConversationalSession(ToolDispatchMixin):
         try:
             digest = session_digest(user_message, prose, findings)
             slug = f"harness-{_slugify(user_message)}"
-            self._wiki.ingest(slug, digest, note="auto-captured by pm-harness",
-                              run_orchestrator=False)
+            r = self._wiki.ingest(slug, digest, note="auto-captured by pm-harness",
+                                  run_orchestrator=False)
+            if getattr(r, "ok", False):
+                self._after_wiki_ingest()
         except Exception:
             pass  # wiki capture is best-effort; never break the conversation
 
@@ -7342,6 +7356,8 @@ class ConversationalSession(ToolDispatchMixin):
                     count += 1
             except Exception:
                 continue
+        if count > 0:
+            self._after_wiki_ingest()
         return count
 
     def _build_transcript_digest(self) -> str:

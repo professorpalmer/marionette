@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.60, deliberately pre-1.0. Vetted privately before any wider release.
+> Status: v0.9.61, deliberately pre-1.0. Vetted privately before any wider release.
 
 ## Documentation
 
@@ -22,7 +22,7 @@ Start here, then follow the map:
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The three-pane app, the pilot loop, module map, data flow. |
 | [DISTILLER_ARCHITECTURE.md](DISTILLER_ARCHITECTURE.md) | How completed sessions distill into durable skills/rules and wiki pages. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, conventions, how self-updating works for contributors. |
-| [RELEASING.md](RELEASING.md) | The source-run release model (why there is no binary to ship). |
+| [RELEASING.md](RELEASING.md) | Dual distribution: source installer plus optional thin Electron shell; tagging and GitHub Releases. |
 | [AGENTS.md](AGENTS.md) | Rules for agents/contributors working in this repo. |
 | [DEMO.md](DEMO.md) | A guided walkthrough of the harness in action. |
 | [FINDINGS.md](FINDINGS.md) | Research-rig findings: which models can drive the harness. |
@@ -94,7 +94,7 @@ The cost thesis is measured, not asserted:
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
 | **Honest token economics** | Prompt caching across Anthropic/OpenAI/Gemini with a stable + moving cache breakpoint, cost billed at the real cache-read discount, and the context meter driven by the driver's actual token usage -- so cost and context reflect reality and the status bar shows the dollars caching saved you. Savings-gated tool-output offload, absolute-token compaction advice, and optional per-turn output budgets (`+Nk` / `+Nk!`) cut waste without hiding results. |
 | **Append-only context mode** | For local and cache-discounting providers, keeps the system prompt prefix byte-stable across turns and appends dynamic context in a trailer so provider KV caches reuse the heavy prefix -- real-dollar savings on long sessions. |
-| **Cost transparency** | The status bar is the single session-total surface: pilot spend plus every delegated swarm/worker job, priced at each job's actual model rate when usage is known. Unknown models fall back to the live OpenRouter price map (public `/models` feed, disk-cached), then to the router's pre-flight estimate -- never silently $0. The swarm panel shows per-job tokens and cost on each card only (no duplicate footer). |
+| **Cost transparency** | The status bar shows **process-wide** spend (pilot plus every delegated swarm/worker job in this backend process), priced at each job's actual model rate when usage is known. Unknown models fall back to the live OpenRouter price map (public `/models` feed, disk-cached), then to the router's pre-flight estimate -- never silently $0. The Swarm pane shows **per-repo session** spend on each job card (scoped to the active workspace), not a second copy of the status-bar total. |
 | **Full-auto mode** | Unattended objective pursuit bounded by an AutoBudget governor (max swarms / tokens / seconds / idle), with a non-bypassable command safety guard. |
 | **Command safety guard** | In full-auto, irreversible/remote/escalating shell commands (recursive deletes, ssh/scp, curl-pipe-to-shell, force-push, sudo, disk writes, key exfil) are screened and blocked; interactive co-working is untouched. Configurable per-command timeout (default 120s; 0/off = unbounded for long sessions). |
 
@@ -179,19 +179,24 @@ marionette doctor     # re-check the environment
 marionette update     # git pull + rebuild
 ```
 
-### How distribution works (source-run, no binary to download)
+### How distribution works (two paths, same app)
 
-There is no DMG, `.exe`, or notarized installer to grab -- and that is by design,
-not a gap. Marionette runs from a source checkout on every machine: the installer
-above clones the repo, builds a per-machine venv, and drops a `marionette`
-launcher on your PATH. A "release" is simply `main` moving forward.
+**Path 1 -- source installer (recommended for contributors and power users).**
+The curl/irm installers above clone the repo, build a per-machine venv, and
+drop a `marionette` launcher on your PATH. Updates are in-app: the status-bar
+`update` pill runs `git pull` + rebuild + relaunch, so merging to `main` reaches
+every source checkout on the next click. Because Marionette can edit its own
+source, the updater stashes + reapplies local self-edits and flags a diverged
+fork instead of failing silently.
 
-Updates are in-app and instant to ship: the status-bar `update` pill runs
-`git pull` + rebuild + relaunch, so merging to `main` reaches everyone on their
-next click -- no per-arch build, upload, or signing step. Because Marionette can
-edit its own source, the updater stashes + reapplies local self-edits and flags a
-diverged fork instead of failing silently. Version tags exist only so the app can
-show a human-readable version; see [RELEASING.md](RELEASING.md).
+**Path 2 -- thin Electron shell (optional).** GitHub Releases also ship signed
+installers (DMG on macOS, `.exe` on Windows, AppImage on Linux). The packaged
+app is a thin shell: on first launch it clones/bootstraps the same source tree
+and venv, then runs the identical backend and renderer. You get a normal desktop
+installer without a bundled Python runtime.
+
+Both paths run from the same checkout after bootstrap. Version tags label what
+you are on; see [RELEASING.md](RELEASING.md).
 
 ## Run it (contributor / dev)
 
@@ -208,8 +213,9 @@ bash scripts/dev.sh          # same as: marionette dev
 ```
 
 Requirements: `git`, a C/C++ toolchain (Xcode Command Line Tools on macOS,
-`build-essential` on Linux) for CodeGraph's native module, and Node >= 20. `uv`
-provides Python; `marionette doctor` verifies the whole environment.
+`build-essential` on Linux, Visual Studio Build Tools on Windows) for CodeGraph's
+native module, and Node >= 20. `uv` provides Python; `marionette doctor` verifies
+the whole environment.
 
 Research rig (offline, no keys):
 
@@ -227,7 +233,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 |---|---|
 | `OPENROUTER_API_KEY` | Default reach: the whole field through one endpoint. |
 | `GEMINI_API_KEY` | Optional dedicated vision key. Not required -- vision also falls back to any provider key you already have that exposes a vision model. |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock BYOK (Settings can also load `~/.aws`). Pilots and agentic swarms use Converse; model pickers discover the account allow-list; prompt-cache hits feed the same token/cost/`cache_savings_usd` meters as Anthropic/OpenRouter. |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock BYOK (Settings can also load `~/.aws`). Pilots and agentic swarms use Converse + ConverseStream (live thinking/tool/text deltas); model pickers discover the account allow-list; prompt-cache hits feed the same token/cost/`cache_savings_usd` meters as Anthropic/OpenRouter. |
 | `HARNESS_VLM_REACH` / `HARNESS_VLM_MODEL` | Explicit vision-sidecar override (e.g. `openrouter` for an open VLM) and its model. |
 | `HARNESS_DRIVER` | Pilot model id. |
 | `HARNESS_STATE_DIR` | State home for sessions, transcripts, prompt queue, keys. Defaults to a stable `~/.pmharness/state` so history survives restarts. |

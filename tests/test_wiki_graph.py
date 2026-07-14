@@ -378,3 +378,49 @@ def test_wiki_handoff_returns_loopback_setup_url():
         assert "return=" in data["setup_url"]
     finally:
         httpd.shutdown()
+
+
+def test_in_process_ingest_prepared_pages_clears_graph_cache(monkeypatch):
+    """Direct pilot.ingest_prepared_pages must bust graph cache like the HTTP route."""
+    from harness.wiki import WikiResult
+
+    httpd, port, srv = _server()
+    try:
+        srv._wiki_graph_cache["stale"] = (999999.0, {"status": "ok"})
+        pilot = srv._pilot
+        pilot._wiki.base_url = "https://wiki.example.com"
+        pilot._wiki.token = "tok"
+        monkeypatch.setattr(
+            pilot._wiki, "ingest", lambda *a, **k: WikiResult(True, rel_path="x.md")
+        )
+        count = pilot.ingest_prepared_pages(
+            [{"kind": "concept", "title": "t", "body": "b"}]
+        )
+        assert count == 1
+        assert not srv._wiki_graph_cache
+    finally:
+        httpd.shutdown()
+
+
+def test_maybe_ingest_clears_graph_cache(monkeypatch):
+    """Auto _maybe_ingest must bust graph cache after a successful wiki write."""
+    from harness.wiki import WikiResult
+
+    httpd, port, srv = _server()
+    try:
+        srv._wiki_graph_cache["stale"] = (999999.0, {"status": "ok"})
+        pilot = srv._pilot
+        pilot._wiki.base_url = "https://wiki.example.com"
+        pilot._wiki.token = "tok"
+        pilot._wiki_auto = True
+        monkeypatch.setattr(
+            pilot._wiki, "ingest", lambda *a, **k: WikiResult(True, rel_path="x.md")
+        )
+        pilot._maybe_ingest(
+            "How does auth work?",
+            ["checked middleware"],
+            [{"type": "finding", "headline": "Auth uses JWT"}],
+        )
+        assert not srv._wiki_graph_cache
+    finally:
+        httpd.shutdown()

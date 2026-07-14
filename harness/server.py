@@ -60,10 +60,12 @@ CACHE_READ_MULTIPLIER = 0.1
 # UI detaches, _sse_pump keeps draining the turn and RETAINS recent frames here
 # so GET /api/chat/events?since=cursor can replay what was missed. Cap + TTL
 # keep memory bounded across long detached turns.
-# Miss contract: when the ring is absent or the requested generation is stale,
-# the endpoint returns ok:false with code ring_miss / generation_mismatch
-# (plus missed:true, available:false) -- never ok:true with an empty events
-# list, which clients would misread as a successful catch-up.
+# Miss contract: when the ring is absent, the requested generation is stale, or
+# cap/TTL prune left a hole after ``since`` (oldest retained > since+1, or the
+# ring is empty while the high-water cursor is still ahead), the endpoint
+# returns ok:false with code ring_miss / generation_mismatch / cursor_gap
+# (plus missed:true, available:false) -- never ok:true with a contiguous-looking
+# replay that skips cursors, which clients would misread as successful catch-up.
 _SSE_RING_CAP = 512
 _SSE_RING_TTL = 300.0  # seconds
 _SSE_RING_MAX_SESSIONS = 32
@@ -118,20 +120,38 @@ class SseEventRing:
             self._entries.popleft()
 
     def since(self, cursor: int = 0) -> dict:
-        """Return frames with cursor > ``cursor`` (oldest retained first)."""
+        """Return frames with cursor > ``cursor`` (oldest retained first).
+
+        When ``since > 0`` and prune left a hole (oldest retained cursor >
+        since+1, or retained empty while this generation's high-water cursor is
+        still ahead of ``since``), sets ``gap`` so callers can refuse a
+        contiguous-looking ok:true replay.
+        """
         try:
             since_c = int(cursor or 0)
         except (TypeError, ValueError):
             since_c = 0
         with self._lock:
             self._prune_unlocked()
-            events = [e for c, _ts, e in self._entries if c > since_c]
+            gap = False
+            if since_c > 0:
+                if not self._entries:
+                    # Generation still live but nothing retained — client is
+                    # behind the high-water mark with no replay available.
+                    if self._cursor > since_c:
+                        gap = True
+                else:
+                    oldest = self._entries[0][0]
+                    if oldest > since_c + 1:
+                        gap = True
+            events = [] if gap else [e for c, _ts, e in self._entries if c > since_c]
             return {
                 "session_id": self.session_id,
                 "generation": self.generation,
                 "cursor": self._cursor,
                 "events": events,
                 "retained": len(self._entries),
+                "gap": gap,
             }
 
 
@@ -2313,6 +2333,7 @@ def _bind_pilot_services(pilot: Any) -> None:
     """Attach shared MCP / session-store handles to a runner."""
     pilot._mcp = _mcp
     pilot._session_store = _sessions
+    pilot._on_wiki_ingest = _clear_wiki_graph_cache
 
 
 def _build_conversational_pilot(*, copy_meters_from: Any = None) -> ConversationalSession:
@@ -2951,6 +2972,9 @@ def _wiki_cache_key(client) -> str:
 
 def _clear_wiki_graph_cache() -> None:
     _wiki_graph_cache.clear()
+
+
+_pilot._on_wiki_ingest = _clear_wiki_graph_cache
 
 
 def _mint_wiki_connect_nonce() -> str:
@@ -7107,6 +7131,20 @@ class Handler(BaseHTTPRequestHandler):
                     "retained": 0,
                 }))
             payload = ring.since(since_c)
+            if payload.pop("gap", False):
+                # Cap/TTL prune punched a hole after ``since`` — refuse so the
+                # client hydrates instead of advancing past dropped frames.
+                return self._send(200, json.dumps({
+                    "ok": False,
+                    "code": "cursor_gap",
+                    "missed": True,
+                    "available": False,
+                    "session_id": sid,
+                    "generation": ring.generation,
+                    "cursor": int(payload.get("cursor") or 0),
+                    "events": [],
+                    "retained": int(payload.get("retained") or 0),
+                }))
             payload["ok"] = True
             payload["missed"] = False
             payload["available"] = True

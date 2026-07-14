@@ -1,32 +1,13 @@
-# React + TypeScript + Vite
+# Marionette webapp
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The shipping Marionette desktop UI: Electron main/preload (`electron/`) plus the
+React renderer (`src/`). The stdlib Python backend in `harness/server.py` streams
+SSE events to this renderer.
 
-Currently, two official plugins are available:
+**Run (dev):** from repo root, `marionette dev` or `cd webapp && npm run electron:dev`.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+**Build:** `npm run build` (renderer only) or `npm run dist` (packaged shell).
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+See the repo [README](../README.md) and [ARCHITECTURE.md](../ARCHITECTURE.md) for
+the full system map. Do not edit `harness/web/` for product UI work -- that tree
+is the legacy browser fallback only.

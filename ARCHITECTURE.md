@@ -131,11 +131,14 @@ prompts and prior conversation survive a backend restart.
 
 ## 7. Surfaces
 
-- **GUI** (`harness/server.py` + `harness/web/`): a stdlib HTTP + SSE server
-  serving a three-pane dark UI (Cursor 3.0 / Hermes style): left nav + driver
-  card + session jobs; center driver-loop conversation; right durable-state
-  artifacts. Image upload (button + drag/drop), distinct error cards, inline
-  vision events, history reload.
+- **GUI** (`webapp/` + `harness/server.py`): the shipping UI is the Electron
+  app in `webapp/` (React renderer, IPC bridges, three-pane layout). The stdlib
+  HTTP + SSE backend streams session events to the renderer. `harness/web/` is a
+  legacy browser fallback only (`docs/LEGACY_FRONTEND.md`); new UI work belongs
+  in `webapp/src`. Mid-turn SSE reattach: if the renderer drops the live stream,
+  `GET /api/chat/events?since=<cursor>` replays from a bounded per-generation
+  ring; `ring_miss`, `generation_mismatch`, or `cursor_gap` responses trigger a
+  hydrate path instead of silently skipping events.
 - **CLI** (`harness/cli.py`): one entrypoint with subcommands --
   `harness "<task>"` (run), `harness gui` (UI), `harness eval` (the Stage 1-4
   ladder), `harness doctor` (health check), `harness --version`. Run flags:
@@ -163,6 +166,10 @@ The cost thesis is enforced with real accounting, not estimates:
   steep discount (`CACHE_READ_MULTIPLIER = 0.1`) inside `_session_cost` /
   `_job_cost`, and surfaces the dollars saved via `_cache_savings` ->
   `cache_savings_usd` in job/session payloads.
+- **Two spend surfaces.** The status bar aggregates **process-wide** pilot +
+  delegated-job spend for the running backend. The Swarm pane shows **per-repo
+  session** spend on each job card (`/api/swarm/live?repo=...`); it is scoped to
+  the active workspace, not a duplicate footer total.
 - **Real-usage context meter.** `harness/conversation.py` tracks
   `_last_prompt_tokens` from actual provider usage, so the context gauge reflects
   measured prompt size rather than a heuristic.
@@ -196,7 +203,8 @@ was caught by the eval's own token instrumentation and never reported.
 pmharness/        research rig (validates the driver layer)
   intent.py         DriverIntent contract + validator + parser
   bridge.py         intent -> Orchestrator.run -> normalized result
-  drivers/          Driver protocol; OpenAICompat (Kimi/GLM/...), Anthropic, stubs
+  drivers/          Driver protocol; OpenAICompat (Kimi/GLM/...), Anthropic,
+                    BedrockDriver (Converse/ConverseStream), stubs
   registry.py       data-driven catalog.json (license, price, vision, tier)
   battery* / scoring* / runner* / episode*   the Stage 1-4 evals
   ledger.py         append-only SQLite results

@@ -69,6 +69,25 @@ def test_sse_ring_cap_evicts_oldest():
     # Cursor ids keep advancing even after eviction.
     assert payload["cursor"] == 5
     assert payload["events"][0]["cursor"] == 3
+    assert payload.get("gap") is False
+
+
+def test_sse_ring_cap_prune_reports_cursor_gap():
+    """After cap eviction, since inside the hole must not look contiguous."""
+    server._sse_ring_clear_for_tests()
+    ring = server.SseEventRing("sess-gap-cap", generation=1, cap=3, ttl=60.0)
+    for i in range(5):
+        ring.append("token", {"i": i})
+    # Retained cursors are 3,4,5. Client last saw cursor 1 → hole at 2.
+    gap = ring.since(1)
+    assert gap["gap"] is True
+    assert gap["events"] == []
+    assert gap["retained"] == 3
+    assert gap["cursor"] == 5
+    # Contiguous since (oldest retained == since+1) is fine.
+    ok = ring.since(2)
+    assert ok["gap"] is False
+    assert [e["cursor"] for e in ok["events"]] == [3, 4, 5]
 
 
 def test_sse_ring_ttl_evicts_expired(monkeypatch):
@@ -79,6 +98,29 @@ def test_sse_ring_ttl_evicts_expired(monkeypatch):
     ring.append("token", {"n": 2})
     payload = ring.since(0)
     assert [e["data"]["n"] for e in payload["events"]] == [2]
+    assert payload.get("gap") is False
+
+
+def test_sse_ring_empty_after_prune_reports_cursor_gap():
+    """Empty retained with high-water still ahead of since is a gap, not catch-up."""
+    server._sse_ring_clear_for_tests()
+    ring = server.SseEventRing("sess-gap-empty", generation=1, cap=2, ttl=0.05)
+    ring.append("token", {"n": 1})
+    ring.append("token", {"n": 2})
+    time.sleep(0.08)
+    # Force TTL prune via since(0); retained empties but cursor high-water remains.
+    emptied = ring.since(0)
+    assert emptied["retained"] == 0
+    assert emptied["cursor"] == 2
+    assert emptied.get("gap") is False  # since=0 never reports gap
+    behind = ring.since(1)
+    assert behind["gap"] is True
+    assert behind["events"] == []
+    assert behind["cursor"] == 2
+    # Fully caught up with an empty ring is not a gap.
+    caught_up = ring.since(2)
+    assert caught_up["gap"] is False
+    assert caught_up["events"] == []
 
 
 def test_sse_ring_begin_bumps_generation_and_lookup():
@@ -235,6 +277,48 @@ def test_api_chat_events_ring_miss_and_generation_mismatch():
         assert mismatch["available"] is False
         assert mismatch["generation"] == ring.generation
         assert mismatch["events"] == []
+    finally:
+        httpd.shutdown()
+
+
+def test_api_chat_events_cursor_gap_after_cap_prune():
+    """Cap prune holes return cursor_gap — never ok:true with skipped cursors."""
+    server._sse_ring_clear_for_tests()
+    ring = server._sse_ring_begin("sess-gap")
+    # Override cap on the live ring so five appends leave a hole after since=1.
+    ring.cap = 3
+    for i in range(5):
+        ring.append("token", {"i": i})
+
+    httpd, port = _api_server()
+    try:
+        body = json.loads(
+            _get(
+                port,
+                "/api/chat/events?session=sess-gap&since=1&generation=%d" % ring.generation,
+                token=server._TOKEN,
+            ).read().decode()
+        )
+        assert body["ok"] is False
+        assert body["code"] == "cursor_gap"
+        assert body["missed"] is True
+        assert body["available"] is False
+        assert body["events"] == []
+        assert body["generation"] == ring.generation
+        assert body["cursor"] == 5
+        assert body["retained"] == 3
+
+        # Contiguous since still replays successfully.
+        ok = json.loads(
+            _get(
+                port,
+                "/api/chat/events?session=sess-gap&since=2&generation=%d" % ring.generation,
+                token=server._TOKEN,
+            ).read().decode()
+        )
+        assert ok["ok"] is True
+        assert ok.get("missed") is False
+        assert [e["cursor"] for e in ok["events"]] == [3, 4, 5]
     finally:
         httpd.shutdown()
 

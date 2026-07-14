@@ -24,7 +24,8 @@ def test_gemini_supports_streaming():
         model="gemini-3.5-flash",
         api_key_env="GEMINI_API_KEY"
     )
-    assert driver.supports_streaming is False
+    assert driver.supports_streaming is True
+    assert callable(driver.chat_stream)
 
 
 def test_gemini_sanitize_schema():

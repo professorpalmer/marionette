@@ -141,3 +141,121 @@ def test_worktree_pid_cwds_routes_to_posix_branch(monkeypatch):
 
     assert wt._worktree_pid_cwds() == []
     assert calls == ["posix"]
+
+
+def test_parse_lsof_cwd_output():
+    stdout = "p12345\nn/tmp/worktree\np67890\nn/home/user\n"
+    assert wt._parse_lsof_cwd_output(stdout) == [
+        (12345, "/tmp/worktree"),
+        (67890, "/home/user"),
+    ]
+    assert wt._parse_lsof_cwd_output("") == []
+    assert wt._parse_lsof_cwd_output("pnotanint\nn/ignored\n") == []
+
+
+def test_posix_lsof_success_returns_parsed_pairs(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        assert cmd[:4] == ["lsof", "-a", "-d", "cwd"]
+        return subprocess.CompletedProcess(
+            cmd, 0, "p4242\nn/var/wt/sub\n", "",
+        )
+
+    monkeypatch.setattr(wt.subprocess, "run", fake_run)
+    assert wt._worktree_pid_cwds_lsof() == [(4242, "/var/wt/sub")]
+
+
+def test_posix_lsof_success_empty_skips_proc_fallback(monkeypatch):
+    proc_called: list[bool] = []
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def fake_proc():
+        proc_called.append(True)
+        return [(999, "/proc/fallback")]
+
+    monkeypatch.setattr(wt.subprocess, "run", fake_run)
+    monkeypatch.setattr(wt, "_worktree_pid_cwds_proc_linux", fake_proc)
+    monkeypatch.setattr(wt.sys, "platform", "linux")
+
+    assert wt._worktree_pid_cwds_posix() == []
+    assert proc_called == []
+
+
+def test_posix_lsof_failure_linux_falls_back_to_proc(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("lsof")
+
+    def fake_proc():
+        return [(111, "/wt/orphan"), (222, "/elsewhere")]
+
+    monkeypatch.setattr(wt.subprocess, "run", fake_run)
+    monkeypatch.setattr(wt, "_worktree_pid_cwds_proc_linux", fake_proc)
+    monkeypatch.setattr(wt.sys, "platform", "linux")
+
+    assert wt._worktree_pid_cwds_posix() == [(111, "/wt/orphan"), (222, "/elsewhere")]
+
+
+def test_posix_lsof_nonzero_linux_falls_back_to_proc(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, "", "permission denied")
+
+    def fake_proc():
+        return [(333, "/wt/from-proc")]
+
+    monkeypatch.setattr(wt.subprocess, "run", fake_run)
+    monkeypatch.setattr(wt, "_worktree_pid_cwds_proc_linux", fake_proc)
+    monkeypatch.setattr(wt.sys, "platform", "linux")
+
+    assert wt._worktree_pid_cwds_posix() == [(333, "/wt/from-proc")]
+
+
+def test_posix_lsof_failure_darwin_returns_empty(monkeypatch):
+    proc_called: list[bool] = []
+
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("lsof")
+
+    def fake_proc():
+        proc_called.append(True)
+        return [(444, "/should-not-run")]
+
+    monkeypatch.setattr(wt.subprocess, "run", fake_run)
+    monkeypatch.setattr(wt, "_worktree_pid_cwds_proc_linux", fake_proc)
+    monkeypatch.setattr(wt.sys, "platform", "darwin")
+
+    assert wt._worktree_pid_cwds_posix() == []
+    assert proc_called == []
+
+
+def test_proc_linux_enumerates_cwds(monkeypatch):
+    def fake_listdir(path):
+        assert path.replace("\\", "/") == "/proc"
+        return ["1", "self", "4242", "not-a-pid", "5678"]
+
+    def fake_isdir(path):
+        return path.replace("\\", "/") == "/proc"
+
+    def fake_readlink(path):
+        norm = path.replace("\\", "/")
+        if norm == "/proc/4242/cwd":
+            return "/tmp/worktree-a"
+        if norm == "/proc/5678/cwd":
+            raise PermissionError("denied")
+        raise OSError("missing")
+
+    monkeypatch.setattr("harness.worktrees.os.listdir", fake_listdir)
+    monkeypatch.setattr("harness.worktrees.os.path.isdir", fake_isdir)
+    monkeypatch.setattr("harness.worktrees.os.readlink", fake_readlink)
+
+    assert wt._worktree_pid_cwds_proc_linux() == [(4242, "/tmp/worktree-a")]
+
+
+def test_proc_linux_returns_empty_on_error(monkeypatch):
+    monkeypatch.setattr("harness.worktrees.os.path.isdir", lambda path: True)
+    monkeypatch.setattr(
+        "harness.worktrees.os.listdir",
+        lambda path: (_ for _ in ()).throw(OSError("boom")),
+    )
+
+    assert wt._worktree_pid_cwds_proc_linux() == []

@@ -409,22 +409,27 @@ export function ringGenerationAfterReplayMiss(
 }
 
 /**
- * On ring miss / generation mismatch, fall back to disk transcript hydrate
- * (busy-poll skips sessionTranscript while chatEvents poll owns the turn).
+ * On ring miss / generation mismatch / cursor gap, fall back to disk transcript
+ * hydrate (busy-poll skips sessionTranscript while chatEvents poll owns the turn).
  */
 export function shouldHydrateTranscriptOnReplayMiss(replay: ChatEventReplayMissFields): boolean {
   return isChatEventReplayMiss(replay);
 }
 
 /**
- * Cursor after a replay miss. Ring eviction / generation change means our
- * `since` is no longer contiguous — reset so the next poll can catch up.
+ * Cursor after a replay miss. Ring eviction / generation change / cursor gap
+ * means our `since` is no longer contiguous — reset so the next poll can
+ * catch up (or hydrate from disk).
  */
 export function cursorAfterReplayMiss(
   replay: { code?: string },
   current: number,
 ): number {
-  if (replay.code === "ring_miss" || replay.code === "generation_mismatch") {
+  if (
+    replay.code === "ring_miss"
+    || replay.code === "generation_mismatch"
+    || replay.code === "cursor_gap"
+  ) {
     return 0;
   }
   return current;
@@ -448,15 +453,20 @@ const CHAT_EVENTS_POLL_MS = 1000;
 const SESSION_LEASE_EXHAUSTED_MESSAGE =
   "This session could not start — too many sessions are busy right now. Wait a moment or stop another turn, then try again.";
 
-/** True when WorkspaceChip open failed because session runner leases are full. */
-function isWorkspaceOpenLeaseExhausted(err: unknown): boolean {
+/** True when WorkspaceChip open failed because session runner leases are full.
+ * Mirrors LeftRail.isLeaseExhaustedError — duplicated here to avoid a
+ * Conversation ↔ LeftRail circular import (LeftRail imports this file). */
+export function isWorkspaceOpenLeaseExhausted(err: unknown): boolean {
   if (!err) return false;
   const e = err as { message?: string; code?: string; error?: string; status?: number };
   if (e.code === "lease_exhausted") return true;
   const msg = String(e.message || e.error || err || "");
   if (/lease_exhausted/i.test(msg)) return true;
-  if (e.status === 409) return true;
-  if (/\/api\/workspace\/open\s*->\s*409\b/i.test(msg)) return true;
+  if (/session runner lease exhausted/i.test(msg)) return true;
+  // postJSON throws before parsing the body: "/api/workspace/open -> 409"
+  if (/\/api\/(?:sessions\/(?:switch|create)|workspace\/open)\s*->\s*409\b/i.test(msg)) {
+    return true;
+  }
   return false;
 }
 
