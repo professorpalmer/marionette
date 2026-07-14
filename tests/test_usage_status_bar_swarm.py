@@ -781,7 +781,9 @@ def test_api_usage_tokens_used_is_pilot_only_plus_job_tokens(tmp_path, monkeypat
         live = json.loads(
             _api_get(port, f"/api/swarm/live?repo={scoped}", server._TOKEN).read().decode()
         )
-        assert live["session"]["tokens_used"] == pilot_only + job_tokens
+        # Repo-scoped live excludes the active pilot's process meters; only
+        # that repo's stamped session spend + store jobs (here: jobs only).
+        assert live["session"]["tokens_used"] == job_tokens
         assert live["session"]["tokens_cached"] == 100_000
         assert abs(live["session"]["cache_savings_usd"] - 0.0) < 1e-9
         assert abs(live["session"]["cache_saved_usd_swarm"] - 0.27) < 1e-9

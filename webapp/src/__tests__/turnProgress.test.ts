@@ -3,6 +3,7 @@ import {
   deriveBusyProgress,
   formatBusyElapsed,
   investigatingHeadline,
+  itemsInCurrentTurn,
   shortenGoal,
 } from "../lib/turnProgress";
 import {
@@ -40,6 +41,32 @@ describe("deriveBusyProgress", () => {
   it("returns empty label when idle", () => {
     const p = deriveBusyProgress([msg("user", "hi")], "idle", null);
     expect(p.label).toBe("");
+  });
+
+  it("surfaces tool_prep while waiting for the first card", () => {
+    const items: Item[] = [
+      msg("user", "diagnose"),
+      { kind: "tool_prep", name: "read_file" },
+    ];
+    const p = deriveBusyProgress(items, "thinking", 12_000);
+    expect(p.label).toContain("thinking");
+    expect(p.label).toContain("read file");
+    expect(p.label).toContain("12s");
+    expect(p.pill).toContain("read file");
+  });
+
+  it("includes thinking and tool_prep kinds in the current turn", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      { kind: "thinking", text: "Let me check", streaming: true },
+      { kind: "tool_prep", name: "grep" },
+    ];
+    const turn = itemsInCurrentTurn(items);
+    expect(turn).toHaveLength(2);
+    expect(turn[0].kind).toBe("thinking");
+    expect((turn[0] as { streaming?: boolean }).streaming).toBe(true);
+    expect(turn[1].kind).toBe("tool_prep");
+    expect((turn[1] as { name: string }).name).toBe("grep");
   });
 });
 

@@ -18,6 +18,7 @@ const os = require("node:os");
 const crypto = require("node:crypto");
 const { readLiveUpdateMarker } = require("./update-marker.cjs");
 const { isInstallComplete, runBootstrap, reinjectPortableTools } = require("./bootstrap.cjs");
+const { buildUpdaterEnv, windowsShellEnv } = require("./update-env.cjs");
 
 // Must run before any git/npm/uv child spawns: on Windows the portable tools
 // installed by first-run bootstrap are only on PATH in-memory, per process.
@@ -286,9 +287,12 @@ function wireWikiConnectNavigation(contents) {
 let _shellEnvCache = null;
 function loginShellEnv() {
   if (_shellEnvCache !== null) return _shellEnvCache;
+  // Windows GUI launches inherit a stripped PATH; recover registry + profile dirs.
+  if (process.platform === "win32") {
+    _shellEnvCache = windowsShellEnv();
+    return _shellEnvCache;
+  }
   _shellEnvCache = {};
-  // Only needed on macOS/Linux GUI launches; on Windows the env is already full.
-  if (process.platform === "win32") return _shellEnvCache;
   try {
     const { execFileSync } = require("node:child_process");
     const shellPath = process.env.SHELL || "/bin/zsh";
@@ -936,7 +940,6 @@ ipcMain.on("harness:stream", (event, channelId, apiPath) => {
 const { registerFsBridge } = require("./fs-bridge.cjs");
 const { registerGitBridge } = require("./git-bridge.cjs");
 const { registerUpdateBridge } = require("./update-bridge.cjs");
-const { buildUpdaterEnv } = require("./update-env.cjs");
 registerFsBridge(ipcMain);
 registerGitBridge(ipcMain);
 // One delivery model (StatusBar's update pill): Marionette always runs from a
@@ -1513,14 +1516,14 @@ app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return; // a prior instance owns the backend
   registerMarionetteProtocol();
   configureBrowserSession();
-  // A Finder/Dock launch inherits a minimal launchd PATH that omits Homebrew and
-  // Node version managers, so the FIRST-RUN bootstrap (git/node/uv discovery) can
-  // wrongly fail with "Node too old / not found" even when the user has a modern
-  // Node in their terminal (real report: Homebrew Node v26 rejected). Merge the
-  // user's real login-shell PATH into this process BEFORE bootstrap so tool
-  // discovery matches their terminal. bootstrap.cjs also hydrates PATH as a
-  // second layer of defense.
-  if (isPackaged && process.platform !== "win32") {
+  // A GUI launch (Finder/Dock on macOS, Start menu on Windows) inherits a minimal
+  // PATH that omits Homebrew, Node version managers, npm globals, and uv -- so the
+  // FIRST-RUN bootstrap (git/node/uv discovery) can wrongly fail with "Node too
+  // old / not found" even when the user has a modern Node in their terminal.
+  // Merge the user's real login-shell PATH into this process BEFORE bootstrap so
+  // tool discovery matches their terminal. bootstrap.cjs also hydrates PATH as a
+  // second layer of defense on macOS/Linux.
+  if (isPackaged) {
     try {
       const shellPath = loginShellEnv().PATH;
       if (shellPath) {
@@ -1528,7 +1531,7 @@ app.whenReady().then(async () => {
         const extra = String(shellPath).split(path.delimiter).filter((p) => p && !have.has(p));
         if (extra.length) process.env.PATH = extra.join(path.delimiter) + path.delimiter + (process.env.PATH || "");
       }
-    } catch { /* fall back to bootstrap's hydratePath() */ }
+    } catch { /* fall back to bootstrap's hydratePath() / reinjectPortableTools() */ }
   }
   if (isPackaged) {
     try { await ensurePackagedCheckout(); } catch (e) {

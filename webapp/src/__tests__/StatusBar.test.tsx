@@ -1,21 +1,25 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import StatusBar from "../components/StatusBar";
+import StatusBar, { deriveFooterRuntimeStatus } from "../components/StatusBar";
 import { api } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
   api: {
     getUsage: vi.fn(),
     workspaces: vi.fn(),
+    getSessionState: vi.fn(),
+    sessions: vi.fn(),
   },
 }));
 
 vi.mock("../lib/transport", () => ({
-  isDesktop: false,
+  isDesktop: () => false,
 }));
 
 const mockGetUsage = vi.mocked(api.getUsage);
 const mockWorkspaces = vi.mocked(api.workspaces);
+const mockGetSessionState = vi.mocked(api.getSessionState);
+const mockSessions = vi.mocked(api.sessions);
 
 const statusBarProps = {
   config: null,
@@ -25,10 +29,56 @@ const statusBarProps = {
   onToggleRight: vi.fn(),
 };
 
+describe("deriveFooterRuntimeStatus", () => {
+  it("returns ready when idle with no running runner", () => {
+    expect(deriveFooterRuntimeStatus({
+      state: "idle",
+      pending_swarms: false,
+      runners: { "sess-1": "idle" },
+    })).toBe("ready");
+  });
+
+  it("returns thinking when the active session runner is running", () => {
+    expect(deriveFooterRuntimeStatus({
+      state: "idle",
+      pending_swarms: false,
+      runners: { "sess-1": "running" },
+    })).toBe("thinking");
+  });
+
+  it("returns thinking when a background session runner is running", () => {
+    expect(deriveFooterRuntimeStatus({
+      state: "idle",
+      pending_swarms: false,
+      runners: { "sess-1": "idle", "sess-2": "running" },
+    })).toBe("thinking");
+  });
+
+  it("returns thinking when pilot state is thinking", () => {
+    expect(deriveFooterRuntimeStatus({
+      state: "thinking",
+      pending_swarms: false,
+    })).toBe("thinking");
+  });
+
+  it("returns busy when swarms are pending", () => {
+    expect(deriveFooterRuntimeStatus({
+      state: "idle",
+      pending_swarms: true,
+    })).toBe("busy");
+  });
+});
+
 describe("StatusBar usage pills", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWorkspaces.mockResolvedValue([]);
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+    });
+    mockSessions.mockResolvedValue([]);
   });
 
   it("shows a single saved pill combining cache and compaction dollars", async () => {
@@ -113,6 +163,27 @@ describe("StatusBar usage pills", () => {
     await waitFor(() => {
       expect(screen.getByText("~$0.05")).toBeInTheDocument();
     });
+  });
+
+  it("labels process-wide spend to distinguish from Swarm pane session spend", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 1500,
+        est_cost_usd: 0.05,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("process")).toBeInTheDocument();
+    });
+    expect(screen.getByTitle(/Process-wide token usage/i)).toBeInTheDocument();
+    expect(screen.getByTitle(/Swarm pane shows per-repo session spend/i)).toBeInTheDocument();
   });
 
   it("shows the boot cost cluster when tokens are zero but swarm dollars exist", async () => {
@@ -205,5 +276,91 @@ describe("StatusBar usage pills", () => {
     // Cluster must still show the prior non-zero spend.
     expect(screen.getByText("~$0.05")).toBeInTheDocument();
     expect(screen.getByText("1.5k tok")).toBeInTheDocument();
+  });
+});
+
+describe("StatusBar runtime status", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockGetUsage.mockResolvedValue({ session: null, jobs: [] });
+    mockSessions.mockResolvedValue([{ id: "sess-1", title: "Test", created: 0, active: true }]);
+  });
+
+  it("shows ready when the active session runner is idle", async () => {
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: { "sess-1": "idle" },
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("ready")).toBeInTheDocument();
+    });
+  });
+
+  it("shows thinking when the active session runner is running", async () => {
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: { "sess-1": "running" },
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("thinking")).toBeInTheDocument();
+    });
+  });
+
+  it("shows thinking when a background session runner is running", async () => {
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: { "sess-1": "idle", "sess-2": "running" },
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("thinking")).toBeInTheDocument();
+    });
+  });
+
+  it("shows busy when swarms are pending", async () => {
+    mockGetSessionState.mockResolvedValue({
+      state: "awaiting_swarm",
+      pending_swarms: true,
+      runners: { "sess-1": "idle" },
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("busy")).toBeInTheDocument();
+    });
+  });
+});
+
+describe("StatusBar panel toggle shortcuts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockGetUsage.mockResolvedValue({ session: null, jobs: [] });
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+    });
+    mockSessions.mockResolvedValue([]);
+  });
+
+  it("uses Ctrl/Cmd titles for panel toggle buttons", () => {
+    render(<StatusBar {...statusBarProps} />);
+
+    expect(screen.getByTitle("Toggle sessions panel (Ctrl/Cmd+B)")).toBeInTheDocument();
+    expect(screen.getByTitle("Toggle right panel (Ctrl/Cmd+J)")).toBeInTheDocument();
   });
 });

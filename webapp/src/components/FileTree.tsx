@@ -156,6 +156,22 @@ function toast(msg: string) {
   window.dispatchEvent(new CustomEvent("harness-toast", { detail: msg }));
 }
 
+type WorkspaceListingCap = {
+  total?: number;
+  capped?: number;
+};
+
+function formatListingCapMessage(meta: WorkspaceListingCap): string {
+  const { total, capped } = meta;
+  if (typeof total === "number" && typeof capped === "number" && total > capped) {
+    return `Showing ${capped.toLocaleString()} of ${total.toLocaleString()} files`;
+  }
+  if (typeof capped === "number") {
+    return `File listing capped at ${capped.toLocaleString()} files`;
+  }
+  return "File listing is capped for large workspaces";
+}
+
 function notifyTreeMutated(paths?: { deleted?: string; renamed?: { from: string; to: string } }) {
   window.dispatchEvent(new Event("harness-file-edited"));
   window.dispatchEvent(new Event("harness-file-saved"));
@@ -182,6 +198,7 @@ export default function FileTree() {
   const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
   const [namePrompt, setNamePrompt] = useState<NamePromptState | null>(null);
   const [nameValue, setNameValue] = useState("");
+  const [listingCap, setListingCap] = useState<WorkspaceListingCap | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const loadGenRef = useRef(0);
   const rootNodesRef = useRef<FileNode[]>([]);
@@ -211,8 +228,14 @@ export default function FileTree() {
         const tree = buildTree(res.files);
         setRootNodes(tree);
         setError(null);
+        setListingCap(
+          res.truncated
+            ? { total: res.total, capped: res.capped }
+            : null,
+        );
       } else {
         setError("Failed to get workspace files");
+        setListingCap(null);
       }
     } catch (err: any) {
       if (gen !== loadGenRef.current) return;
@@ -500,6 +523,12 @@ export default function FileTree() {
           <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
         </button>
       </div>
+
+      {listingCap && (
+        <div className="text-[10px] text-muted px-3 py-1.5 shrink-0 border-b border-edge/20">
+          {formatListingCapMessage(listingCap)}
+        </div>
+      )}
 
       <div
         className="flex-1 overflow-y-auto px-2 py-2 flex flex-col gap-0.5"

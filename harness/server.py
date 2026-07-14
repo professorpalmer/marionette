@@ -13,11 +13,12 @@ import os
 import time
 import threading
 import queue
+from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import secrets as _secrets
 from pathlib import Path
-from typing import Any
+from typing import Any, Deque, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 import tempfile
 import uuid
@@ -54,6 +55,162 @@ from .secure_files import restrict_dir_to_owner, restrict_to_owner
 # the full input rate. 0.1 is the published cache-read ratio and is
 # conservative (some providers go lower), so we never *under*-count spend.
 CACHE_READ_MULTIPLIER = 0.1
+
+# Mid-turn SSE reattach: bounded per-session/per-generation event ring. When the
+# UI detaches, _sse_pump keeps draining the turn and RETAINS recent frames here
+# so GET /api/chat/events?since=cursor can replay what was missed. Cap + TTL
+# keep memory bounded across long detached turns.
+# Miss contract: when the ring is absent or the requested generation is stale,
+# the endpoint returns ok:false with code ring_miss / generation_mismatch
+# (plus missed:true, available:false) -- never ok:true with an empty events
+# list, which clients would misread as a successful catch-up.
+_SSE_RING_CAP = 512
+_SSE_RING_TTL = 300.0  # seconds
+_SSE_RING_MAX_SESSIONS = 32
+
+# Short-TTL cache for /api/usage boot-pill aggregation (StatusBar polls ~10s).
+# Building the response walks every boot-repo job store; serve a hot copy for a
+# few seconds like /api/codegraph status.
+_usage_response_cache: Dict[str, Tuple[float, dict]] = {}
+# Burst dedupe only. StatusBar polls ~10s — a TTL near that interval freezes the
+# boot pill across polls (and poisons hermetic pytest order). Keep this short.
+_USAGE_RESPONSE_TTL = 2.0
+_usage_response_lock = threading.Lock()
+
+
+class SseEventRing:
+    """Bounded cursor-addressable SSE frame buffer for one turn generation."""
+
+    def __init__(
+        self,
+        session_id: str,
+        generation: int,
+        *,
+        cap: int = _SSE_RING_CAP,
+        ttl: float = _SSE_RING_TTL,
+    ):
+        self.session_id = session_id or ""
+        self.generation = int(generation)
+        self.cap = max(1, int(cap))
+        self.ttl = float(ttl)
+        self._lock = threading.Lock()
+        self._cursor = 0
+        # (cursor, monotonic_ts, event_dict)
+        self._entries: Deque[Tuple[int, float, dict]] = deque()
+
+    def append(self, kind: str, data: Any = None, turn: Any = None) -> int:
+        """Append one logical SSE event; returns its cursor id."""
+        with self._lock:
+            self._cursor += 1
+            now = time.monotonic()
+            ev: dict = {"cursor": self._cursor, "kind": kind, "data": data if data is not None else {}}
+            if turn is not None:
+                ev["turn"] = turn
+            self._entries.append((self._cursor, now, ev))
+            self._prune_unlocked(now)
+            return self._cursor
+
+    def _prune_unlocked(self, now: Optional[float] = None) -> None:
+        now = time.monotonic() if now is None else now
+        while self._entries and (now - self._entries[0][1]) > self.ttl:
+            self._entries.popleft()
+        while len(self._entries) > self.cap:
+            self._entries.popleft()
+
+    def since(self, cursor: int = 0) -> dict:
+        """Return frames with cursor > ``cursor`` (oldest retained first)."""
+        try:
+            since_c = int(cursor or 0)
+        except (TypeError, ValueError):
+            since_c = 0
+        with self._lock:
+            self._prune_unlocked()
+            events = [e for c, _ts, e in self._entries if c > since_c]
+            return {
+                "session_id": self.session_id,
+                "generation": self.generation,
+                "cursor": self._cursor,
+                "events": events,
+                "retained": len(self._entries),
+            }
+
+
+# session_id -> generation counter; (session_id, generation) -> ring
+_sse_ring_generation: Dict[str, int] = {}
+_sse_rings: Dict[Tuple[str, int], SseEventRing] = {}
+_sse_rings_lock = threading.Lock()
+
+
+def _sse_ring_begin(session_id: str) -> SseEventRing:
+    """Start a new generation ring for ``session_id`` (drops prior gens)."""
+    sid = session_id or ""
+    with _sse_rings_lock:
+        gen = int(_sse_ring_generation.get(sid, 0) or 0) + 1
+        _sse_ring_generation[sid] = gen
+        # Drop older generations for this session.
+        for key in list(_sse_rings.keys()):
+            if key[0] == sid:
+                _sse_rings.pop(key, None)
+        ring = SseEventRing(sid, gen)
+        _sse_rings[(sid, gen)] = ring
+        # Bound global ring count (oldest keys first).
+        while len(_sse_rings) > _SSE_RING_MAX_SESSIONS:
+            oldest = next(iter(_sse_rings))
+            _sse_rings.pop(oldest, None)
+        return ring
+
+
+def _sse_ring_lookup(
+    session_id: str,
+    generation: Optional[int] = None,
+) -> Optional[SseEventRing]:
+    """Resolve the live ring for a session (latest gen if generation omitted)."""
+    sid = session_id or ""
+    with _sse_rings_lock:
+        if generation is not None:
+            try:
+                gen = int(generation)
+            except (TypeError, ValueError):
+                return None
+            return _sse_rings.get((sid, gen))
+        gen = _sse_ring_generation.get(sid)
+        if gen is None:
+            return None
+        return _sse_rings.get((sid, gen))
+
+
+def _sse_ring_clear_for_tests() -> None:
+    """Reset ring state between hermetic tests."""
+    with _sse_rings_lock:
+        _sse_rings.clear()
+        _sse_ring_generation.clear()
+
+
+def _usage_cache_get(key: str) -> Optional[dict]:
+    # Hermetic tests share the process-global cache across cases; never serve
+    # a prior test's /api/usage payload.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+    now = time.monotonic()
+    with _usage_response_lock:
+        hit = _usage_response_cache.get(key)
+        if not hit:
+            return None
+        expiry, payload = hit
+        if expiry <= now:
+            _usage_response_cache.pop(key, None)
+            return None
+        return payload
+
+
+def _usage_cache_put(key: str, payload: dict) -> None:
+    with _usage_response_lock:
+        _usage_response_cache[key] = (time.monotonic() + _USAGE_RESPONSE_TTL, payload)
+
+
+def _usage_cache_clear_for_tests() -> None:
+    with _usage_response_lock:
+        _usage_response_cache.clear()
 
 
 def _session_cost(t_in: float, t_out: float, cached: float,
@@ -320,6 +477,35 @@ def _active_session_total(session_job_ids, arts_getter, registry) -> Any:
     }
 
 
+def _repo_session_stamped_meters(repo_root: str) -> dict:
+    """Persisted session meters for sessions visible under ``repo_root``.
+
+    Used by repo-scoped ``/api/swarm/live`` so session spend reflects that
+    workspace's stamped chat/local-worker dollars without folding in the
+    active pilot's process-global meters (which may belong to another repo).
+    Store-job dollars stay out of these meters by design -- callers add them
+    from the scoped job list separately.
+    """
+    root = (repo_root or "").strip()
+    if not root:
+        return {"est_cost_usd": 0.0, "tokens_used": 0}
+    state_dir = ""
+    try:
+        state_dir = getattr(_cfg, "state_dir", "") or ""
+    except Exception:
+        state_dir = ""
+    cost = 0.0
+    tokens = 0
+    try:
+        rows = _sessions.list(workspace_root=root, state_dir=state_dir)
+    except Exception:
+        rows = []
+    for row in rows or []:
+        cost += float(row.get("estimated_cost_usd") or 0.0)
+        tokens += int(row.get("input_tokens") or 0) + int(row.get("output_tokens") or 0)
+    return {"est_cost_usd": round(cost, 6), "tokens_used": tokens}
+
+
 def _sync_pilot_session_id() -> None:
     """Keep the pilot's savings-ledger session scope aligned with SessionStore."""
     try:
@@ -498,10 +684,11 @@ def _job_status_is_terminal(status: str) -> bool:
 
 
 def _slim_swarm_list_artifacts(raw_arts, state_obj) -> list:
-    """Keep only what collapsed Finished cards need: ROUTING + verdict rows.
+    """Keep only what live/finished cards need: ROUTING + verdict rows.
 
     Full FINDING/RISK/DECISION streams are fetched on expand via /api/artifacts.
-    With ~20 finished jobs, shipping every finding on each poll was the tracker lag.
+    Applied to both in-progress and terminal jobs on /api/swarm/live so polls
+    stay cheap while a swarm is still running.
     """
     try:
         from puppetmaster.models import ArtifactType
@@ -4185,6 +4372,9 @@ class Handler(BaseHTTPRequestHandler):
             # One-click approve: file the locally-orchestrated pages into the wiki.
             pages = body.get("pages") or []
             count = _pilot.ingest_prepared_pages(pages)
+            # Same cache bust as connect/disconnect -- ingested pages change the
+            # tenant graph/status the UI polls.
+            _clear_wiki_graph_cache()
             return self._send(200, json.dumps({"ok": count > 0, "ingested": count}))
         if path == "/api/models/toggle":
             from . import model_visibility as _mv
@@ -5626,8 +5816,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
             repo = _cfg.repo
             if not repo or not os.path.isdir(repo):
-                return self._send(200, json.dumps({"files": []}))
+                return self._send(200, json.dumps({
+                    "files": [], "truncated": False, "total": 0, "capped": 0,
+                }))
             files_list = []
+            total = 0
+            path_cap = 2000
             skip_dirs = {".git", "node_modules", ".venv", ".codegraph", "dist", "build", ".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache", ".idea", ".vscode", "venv", ".next", "coverage", ".hermes", "release", "backend-dist"}
             repo_abs = os.path.abspath(repo)
             for root, dirs, files in os.walk(repo_abs):
@@ -5639,12 +5833,16 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     # Forward slashes: the renderer's file tree and @-mention
                     # matching expect one separator on every platform.
-                    files_list.append(rel_path.replace(os.sep, "/"))
-                    if len(files_list) >= 2000:
-                        break
-                if len(files_list) >= 2000:
-                    break
-            return self._send(200, json.dumps({"files": sorted(files_list)}))
+                    total += 1
+                    if len(files_list) < path_cap:
+                        files_list.append(rel_path.replace(os.sep, "/"))
+            truncated = total > path_cap
+            return self._send(200, json.dumps({
+                "files": sorted(files_list),
+                "truncated": truncated,
+                "total": total,
+                "capped": path_cap if truncated else total,
+            }))
 
         if u.path == "/api/workspace/symbols":
             if self._guard():
@@ -6237,6 +6435,7 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
+            repo_override = parse_qs(u.query).get("repo", [""])[0]
             # Resolve real per-Mtok pricing for the active driver: eval-catalog
             # native rates first, then the live OpenRouter price map (so picker
             # specs like 'anthropic:claude-opus-4-8' show the true $5/$25 instead
@@ -6250,6 +6449,18 @@ class Handler(BaseHTTPRequestHandler):
             # just the active view -- so attaching another session never drops
             # spend that already happened on a background runner.
             _boot_meters = _boot_usage_meters()
+            # Cache key includes cheap meter fingerprints so a turn that burns
+            # tokens invalidates the burst cache without waiting for TTL.
+            _usage_cache_key = "%s|%s|%s|%s|%s" % (
+                (repo_override or "").strip() or (_cfg.repo or ""),
+                ",".join(sorted(_BOOT_REPOS)) if _BOOT_REPOS else "",
+                int(_boot_meters.get("_tokens_used", 0) or 0),
+                int(_boot_meters.get("_tokens_cached", 0) or 0),
+                round(float(_boot_meters.get("_worker_cost_usd", 0) or 0.0), 6),
+            )
+            _cached_usage = _usage_cache_get(_usage_cache_key)
+            if _cached_usage is not None:
+                return self._send(200, json.dumps(_cached_usage))
             tokens_used = int(_boot_meters.get("_tokens_used", 0) or 0)
             _t_in = int(_boot_meters.get("_tokens_in", 0) or 0)
             _t_out = int(_boot_meters.get("_tokens_out", 0) or 0)
@@ -6273,7 +6484,7 @@ class Handler(BaseHTTPRequestHandler):
                     partition_jobs_by_store,
                 )
 
-                repo_override = parse_qs(u.query).get("repo", [""])[0]
+                # repo_override already parsed above for the usage cache key.
                 # Boot-pill swarm dollars: merge epoch-windowed jobs across every
                 # workspace opened this process (not only active _cfg.repo).
                 # session_total below still uses the active-workspace set.
@@ -6437,6 +6648,10 @@ class Handler(BaseHTTPRequestHandler):
                 _persist_boot_usage(fold_live=False)
             except Exception:
                 pass
+            try:
+                _usage_cache_put(_usage_cache_key, response_data)
+            except Exception:
+                pass
             return self._send(200, json.dumps(response_data))
         if u.path == "/api/artifacts":
             q = parse_qs(u.query)
@@ -6519,24 +6734,18 @@ class Handler(BaseHTTPRequestHandler):
                     job_store = cli_store if j.get("source") == "cli" and cli_store else store
                     raw_arts = (arts_by_job.get(jid, []) if arts_by_job is not None
                                 else _retry_on_locked(lambda: job_store.list_artifacts(jid)))
-                    # Terminal jobs: slim artifact list (routing + verdicts only).
-                    # Running jobs keep the full stream so findings appear live.
-                    # Expand fetches /api/artifacts for the rest.
+                    # Live poll always ships slim artifacts (routing + verdicts).
+                    # Full FINDING/RISK streams land on expand via /api/artifacts
+                    # -- same for in-progress and terminal so StatusBar/SwarmPane
+                    # polls stay cheap while a swarm is still running.
                     job_status = j.get("status", "")
                     terminal = _job_status_is_terminal(str(job_status))
                     try:
-                        if terminal:
-                            artifacts_list = _slim_swarm_list_artifacts(raw_arts, state_obj)
-                            artifacts_complete = False
-                        elif hasattr(state_obj, "format_artifacts"):
-                            artifacts_list = state_obj.format_artifacts(raw_arts)
-                            artifacts_complete = True
-                        else:
-                            artifacts_list = state_obj.job_artifacts(jid)
-                            artifacts_complete = True
+                        artifacts_list = _slim_swarm_list_artifacts(raw_arts, state_obj)
+                        artifacts_complete = False
                     except Exception:
                         artifacts_list = []
-                        artifacts_complete = not terminal
+                        artifacts_complete = False
 
                     tokens, est_cost_usd = _job_swarm_accounting(raw_arts, registry)
                     # Per-task meters from raw artifacts (before slim) so worker
@@ -6645,25 +6854,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 _diag("server.jobs_list_merge_local", e)
             
-            tokens_used = int(getattr(_pilot, "_tokens_used", 0) or 0)
-            # Accurate split: input tokens at price_in, output at price_out, with
-            # cached prompt tokens re-billed at the cache-read discount. Falls
-            # back to a single-rate estimate if the in/out split isn't tracked.
-            _t_in = getattr(_pilot, "_tokens_in", 0)
-            _t_out = getattr(_pilot, "_tokens_out", 0)
-            _t_cached = int(getattr(_pilot, "_tokens_cached", 0) or 0)
-            _w_in = int(getattr(_pilot, "_worker_tokens_in", 0) or 0)
-            _w_out = int(getattr(_pilot, "_worker_tokens_out", 0) or 0)
-            est_session_cost = _session_cost_split(_pilot, price_in, price_out)
-            # Add swarm store-job spend from the scoped job list only.
-            try:
-                est_session_cost += sum(
-                    float(j.get("est_cost_usd") or 0.0)
-                    for j in res_jobs
-                    if not str(j.get("id") or "").startswith("local-")
-                )
-            except Exception:
-                pass
+            # Explicit ?repo= scopes the session block to that workspace's swarm
+            # jobs + its session-stamped meters. Never fold the active pilot's
+            # process-global meters in -- those may belong to another workspace.
+            # Unscoped polls (no repo query) keep active-workspace pilot + jobs.
+            repo_scoped = bool((repo_override or "").strip())
 
             # Mid-run savings: sum per-job routing/cache meters so the live
             # session block matches /api/usage (pilot cache stays separate).
@@ -6671,10 +6866,12 @@ class Handler(BaseHTTPRequestHandler):
             live_cache_saved = 0.0
             swarm_cached = 0
             job_tokens_sum = 0
+            store_job_cost = 0.0
             try:
                 for j in res_jobs:
                     if str(j.get("id") or "").startswith("local-"):
                         continue
+                    store_job_cost += float(j.get("est_cost_usd") or 0.0)
                     live_routing_saved += float(j.get("routing_saved_usd") or 0.0)
                     live_cache_saved += float(j.get("cache_saved_usd") or 0.0)
                     swarm_cached += int(j.get("tokens_cached") or 0)
@@ -6682,11 +6879,45 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-            # Same token parity as /api/usage: pilot-only + store job tokens.
-            tokens_used = max(0, tokens_used - _w_in - _w_out) + job_tokens_sum
-            pilot_only_cached = max(0, _t_cached - min(_t_cached, swarm_cached))
-            tokens_cached = pilot_only_cached + swarm_cached
-            _cache_savings_usd = _cache_savings(pilot_only_cached, price_in)
+            if repo_scoped:
+                stamped = _repo_session_stamped_meters(scoped_repo)
+                est_session_cost = float(stamped.get("est_cost_usd") or 0.0) + store_job_cost
+                tokens_used = int(stamped.get("tokens_used") or 0) + job_tokens_sum
+                # In-flight local jobs are not yet in persisted session meters;
+                # fold their live row costs in. Terminal locals are already in
+                # stamped meters (via _worker_cost_usd -> accumulate_meters).
+                try:
+                    for j in res_jobs:
+                        if not str(j.get("id") or "").startswith("local-"):
+                            continue
+                        status = str(j.get("status") or "").lower()
+                        if status in ("completed", "failed", "cancelled", "complete"):
+                            continue
+                        est_session_cost += float(j.get("est_cost_usd") or 0.0)
+                        tokens_used += int(j.get("tokens") or 0)
+                except Exception:
+                    pass
+                tokens_cached = swarm_cached
+                _cache_savings_usd = 0.0
+                tool_savings = {}
+            else:
+                tokens_used = int(getattr(_pilot, "_tokens_used", 0) or 0)
+                # Accurate split: input tokens at price_in, output at price_out, with
+                # cached prompt tokens re-billed at the cache-read discount. Falls
+                # back to a single-rate estimate if the in/out split isn't tracked.
+                _t_cached = int(getattr(_pilot, "_tokens_cached", 0) or 0)
+                _w_in = int(getattr(_pilot, "_worker_tokens_in", 0) or 0)
+                _w_out = int(getattr(_pilot, "_worker_tokens_out", 0) or 0)
+                est_session_cost = _session_cost_split(_pilot, price_in, price_out)
+                # Add swarm store-job spend from the scoped job list only.
+                # Local provider jobs are already inside _worker_cost_usd.
+                est_session_cost += store_job_cost
+                # Same token parity as /api/usage: pilot-only + store job tokens.
+                tokens_used = max(0, tokens_used - _w_in - _w_out) + job_tokens_sum
+                pilot_only_cached = max(0, _t_cached - min(_t_cached, swarm_cached))
+                tokens_cached = pilot_only_cached + swarm_cached
+                _cache_savings_usd = _cache_savings(pilot_only_cached, price_in)
+                tool_savings = _tool_output_savings_fields(price_in)
 
             response_data = {
                 "session": {
@@ -6700,7 +6931,7 @@ class Handler(BaseHTTPRequestHandler):
                     "cache_savings_usd": round(_cache_savings_usd, 6),
                     "routing_saved_usd": round(live_routing_saved, 6),
                     "cache_saved_usd_swarm": round(live_cache_saved, 6),
-                    **_tool_output_savings_fields(price_in),
+                    **tool_savings,
                 },
                 "jobs": res_jobs
             }
@@ -6828,6 +7059,58 @@ class Handler(BaseHTTPRequestHandler):
             plan_val = q.get("plan", ["false"])[0].lower() in ("true", "1", "yes")
             resume_val = q.get("resume", ["false"])[0].lower() in ("true", "1", "yes")
             return self._stream_chat(message, imgs, plan=plan_val, resume=resume_val)
+        if u.path == "/api/chat/events":
+            # Mid-turn reattach replay: return retained SSE frames since ``since``.
+            if self._guard():
+                return
+            q = parse_qs(u.query)
+            qtok = q.get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            sid = (q.get("session", [""])[0] or "").strip() or (
+                _sessions.active or getattr(_pilot, "harness_session_id", "") or ""
+            )
+            since_raw = q.get("since", ["0"])[0]
+            try:
+                since_c = int(since_raw or 0)
+            except (TypeError, ValueError):
+                since_c = 0
+            gen_raw = q.get("generation", [""])[0]
+            generation = None
+            if gen_raw not in ("", None):
+                try:
+                    generation = int(gen_raw)
+                except (TypeError, ValueError):
+                    return self._send(400, json.dumps({"error": "generation must be an integer"}))
+            ring = _sse_ring_lookup(sid, generation)
+            if ring is None:
+                # Distinguish a missing ring from a stale generation so clients
+                # do not treat an empty ok:true replay as a successful catch-up.
+                miss_code = "ring_miss"
+                current_gen = 0
+                with _sse_rings_lock:
+                    live_gen = _sse_ring_generation.get(sid)
+                    if live_gen is not None:
+                        current_gen = int(live_gen)
+                        if generation is not None and int(generation) != current_gen:
+                            miss_code = "generation_mismatch"
+                return self._send(200, json.dumps({
+                    "ok": False,
+                    "code": miss_code,
+                    "missed": True,
+                    "available": False,
+                    "session_id": sid,
+                    "generation": current_gen if miss_code == "generation_mismatch"
+                    else (generation if generation is not None else 0),
+                    "cursor": 0,
+                    "events": [],
+                    "retained": 0,
+                }))
+            payload = ring.since(since_c)
+            payload["ok"] = True
+            payload["missed"] = False
+            payload["available"] = True
+            return self._send(200, json.dumps(payload))
         if u.path == "/api/terminal/stream":
             q = parse_qs(u.query)
             return self._stream_terminal(q.get("id", [""])[0])
@@ -7028,13 +7311,17 @@ class Handler(BaseHTTPRequestHandler):
             # so the pump can keep draining instead of gen.close()-aborting mid-yield.
             return False
 
-    def _sse_pump(self, gen, frame_for_event, *, on_event=None, write_done: bool = True) -> bool:
+    def _sse_pump(self, gen, frame_for_event, *, on_event=None, write_done: bool = True,
+                  ring: Optional[SseEventRing] = None) -> bool:
         """Pump a turn generator over SSE with Hermes-style detach semantics.
 
         While the UI is attached, each event is written. On client disconnect we
-        keep consuming the generator (dropping frames) so the pilot turn finishes
-        and releases _busy -- we never call _pilot.cancel() here. Explicit Stop
-        still goes through /api/session/interrupt.
+        keep consuming the generator so the pilot turn finishes and releases
+        _busy -- we never call _pilot.cancel() here. Explicit Stop still goes
+        through /api/session/interrupt.
+
+        When ``ring`` is provided, every event (including those after detach) is
+        retained in the bounded per-generation buffer for /api/chat/events replay.
 
         Returns True if the client detached mid-stream.
         """
@@ -7043,12 +7330,26 @@ class Handler(BaseHTTPRequestHandler):
             for ev in gen:
                 if on_event is not None:
                     on_event(ev)
+                if ring is not None:
+                    try:
+                        ring.append(
+                            getattr(ev, "kind", "event"),
+                            getattr(ev, "data", None) or {},
+                            getattr(ev, "turn", None),
+                        )
+                    except Exception:
+                        pass
                 if detached:
                     continue
                 if not self._sse_write(frame_for_event(ev)):
                     detached = True
             if write_done and not detached:
                 self._sse_write(b"data: {\"kind\": \"done\"}\n\n")
+            if write_done and ring is not None:
+                try:
+                    ring.append("done", {})
+                except Exception:
+                    pass
         finally:
             # Exhausted generators are a no-op; if the turn raised, close still
             # runs the generator finally so the session lock cannot leak.
@@ -7090,12 +7391,14 @@ class Handler(BaseHTTPRequestHandler):
         ctx = {"session_id": turn_sid, "prompt": prompt, "pilot": turn_pilot}
         run_hooks("preRun", ctx)
         gen = _session.run(prompt, images=images or None)
+        ring = _sse_ring_begin(turn_sid)
         try:
             self._sse_pump(
                 gen,
                 lambda ev: (
                     f"data: {json.dumps({'kind': ev.kind, 'turn': ev.turn, 'data': ev.data})}\n\n"
                 ).encode(),
+                ring=ring,
             )
         finally:
             run_hooks("postRun", ctx)
@@ -7144,10 +7447,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             # Detach != cancel: closing the EventSource must not stop the
             # governor. Explicit Stop uses /api/session/interrupt -> cancel().
+            ring = _sse_ring_begin(turn_sid)
             self._sse_pump(
                 gen,
                 lambda ev: f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode(),
                 on_event=_maybe_checkpoint,
+                ring=ring,
             )
         finally:
             _finalize_turn(ctx)
@@ -7394,16 +7699,22 @@ class Handler(BaseHTTPRequestHandler):
                 last_ckpt = time.monotonic()
 
         try:
+            ring = _sse_ring_begin(turn_sid)
             detached = self._sse_pump(
                 gen,
                 lambda ev: f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode(),
                 on_event=_maybe_checkpoint,
                 write_done=False,
+                ring=ring,
             )
             # After a chat turn streams its events, also drain ready swarm results
-            # (drop frames if the UI already detached).
+            # (retain + drop-write if the UI already detached).
             for ev in turn_pilot.drain_swarm_results():
                 _maybe_checkpoint(ev)
+                try:
+                    ring.append(ev.kind, ev.data or {}, getattr(ev, "turn", None))
+                except Exception:
+                    pass
                 if detached:
                     continue
                 if not self._sse_write(
@@ -7412,6 +7723,10 @@ class Handler(BaseHTTPRequestHandler):
                     detached = True
             if not detached:
                 self._sse_write(b"data: {\"kind\": \"done\"}\n\n")
+            try:
+                ring.append("done", {})
+            except Exception:
+                pass
         finally:
             _finalize_turn(ctx)
 

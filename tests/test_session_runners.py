@@ -7,7 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from harness.session_runners import LeaseExhaustedError, SessionRunnerRegistry
+from harness.session_runners import (
+    LeaseExhaustedError,
+    SessionRunnerRegistry,
+    _is_busy,
+)
 
 
 def _busy_runner() -> SimpleNamespace:
@@ -18,6 +22,18 @@ def _busy_runner() -> SimpleNamespace:
 
 def _idle_runner() -> SimpleNamespace:
     return SimpleNamespace(_busy=threading.Lock(), _state="idle")
+
+
+def _awaiting_swarm_runner() -> SimpleNamespace:
+    """Mirrors ConversationalSession: _state idle, turn free, swarms pending."""
+    return SimpleNamespace(
+        _busy=threading.Lock(),
+        _state="idle",
+        is_turn_busy=lambda: False,
+        has_pending_swarms=lambda: True,
+        state=lambda: "awaiting_swarm",
+        _swarm_futures={"fut-1"},
+    )
 
 
 def test_two_runners_both_busy_one_active_view():
@@ -99,3 +115,75 @@ def test_drop_on_drop_callback_and_notify_false():
     assert reg.get("y") is None
     assert r2 is not None
     assert reg.active_view_id is None
+
+
+def test_awaiting_swarm_reports_running_via_statuses():
+    """Pending swarms must not look idle: _state can stay idle while swarms run."""
+    reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+    reg.get_or_create("swarm", _awaiting_swarm_runner)
+    assert reg.status("swarm") == "running"
+    assert reg.statuses() == {"swarm": "running"}
+
+
+def test_is_busy_pending_swarms_despite_idle_turn_and_state():
+    runner = _awaiting_swarm_runner()
+    assert _is_busy(runner) is True
+
+
+def test_is_busy_awaiting_swarm_via_state_when_has_pending_missing():
+    """state() == awaiting_swarm is enough when has_pending_swarms is absent."""
+    runner = SimpleNamespace(
+        _busy=threading.Lock(),
+        _state="idle",
+        is_turn_busy=lambda: False,
+        state=lambda: "awaiting_swarm",
+    )
+    assert _is_busy(runner) is True
+
+
+def test_is_busy_swarm_futures_attr_fallback():
+    """Non-empty _swarm_futures counts as busy without public swarm helpers."""
+    runner = SimpleNamespace(
+        _busy=threading.Lock(),
+        _state="idle",
+        is_turn_busy=lambda: False,
+        _swarm_futures={"a"},
+    )
+    assert _is_busy(runner) is True
+
+
+def test_is_busy_stop_holds_idle_still_idle_without_swarms():
+    """is_turn_busy False must not resurrect via locked _busy (Stop path)."""
+    lock = threading.Lock()
+    lock.acquire()
+    runner = SimpleNamespace(
+        _busy=lock,
+        _state="thinking",
+        is_turn_busy=lambda: False,
+        has_pending_swarms=lambda: False,
+    )
+    assert _is_busy(runner) is False
+
+
+def test_is_busy_stop_holds_idle_but_pending_swarm_still_busy():
+    lock = threading.Lock()
+    lock.acquire()
+    runner = SimpleNamespace(
+        _busy=lock,
+        _state="thinking",
+        is_turn_busy=lambda: False,
+        has_pending_swarms=lambda: True,
+    )
+    assert _is_busy(runner) is True
+
+
+def test_awaiting_swarm_runner_not_evicted_as_idle():
+    """Lease eviction must retain swarm-waiting runners (they are busy)."""
+    reg = SessionRunnerRegistry(max_concurrent_sessions=2)
+    reg.get_or_create("swarm", _awaiting_swarm_runner)
+    reg.get_or_create("busy", _busy_runner)
+
+    with pytest.raises(LeaseExhaustedError):
+        reg.get_or_create("new", _idle_runner)
+
+    assert set(reg.ids()) == {"swarm", "busy"}

@@ -29,19 +29,59 @@ def _max_concurrent_from_env(default: int = DEFAULT_MAX_CONCURRENT_SESSIONS) -> 
     return max(1, n)
 
 
+def _pending_swarm_busy(runner: Any) -> bool:
+    """True when the runner is waiting on swarm futures.
+
+    ConversationalSession.state() can return ``awaiting_swarm`` while ``_state``
+    stays ``idle`` and ``is_turn_busy()`` is False. Without this check,
+    ``statuses()`` reports idle and LeftRail/StatusBar dots lie.
+    """
+    has_pending = getattr(runner, "has_pending_swarms", None)
+    if callable(has_pending):
+        try:
+            if bool(has_pending()):
+                return True
+        except Exception:
+            pass
+    state_fn = getattr(runner, "state", None)
+    if callable(state_fn):
+        try:
+            if state_fn() == "awaiting_swarm":
+                return True
+        except Exception:
+            pass
+    futures = getattr(runner, "_swarm_futures", None)
+    if futures is not None:
+        try:
+            if len(futures) > 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def _is_busy(runner: Any) -> bool:
     """Duck-typed busy check: prefer ``is_turn_busy()``, else lock / state.
 
     ConversationalSession.is_turn_busy() reports False after an explicit Stop
     even while an abandoned generator still holds ``_busy``, so the runners
     poll does not flip the UI back to thinking.
+
+    Pending swarm futures are busy even when the turn lock is free and
+    ``_state`` is idle (see ``_pending_swarm_busy``).
     """
     fn = getattr(runner, "is_turn_busy", None)
     if callable(fn):
         try:
-            return bool(fn())
+            if bool(fn()):
+                return True
         except Exception:
             pass
+        else:
+            # is_turn_busy said False (incl. Stop-holds-idle): do not resurrect
+            # via _busy/_state, but pending swarms still count as busy.
+            return _pending_swarm_busy(runner)
+
     busy = getattr(runner, "_busy", None)
     if busy is not None:
         locked = getattr(busy, "locked", None)
@@ -50,7 +90,7 @@ def _is_busy(runner: Any) -> bool:
     state = getattr(runner, "_state", None)
     if state is not None and state != "idle":
         return True
-    return False
+    return _pending_swarm_busy(runner)
 
 
 class SessionRunnerRegistry:

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, filterForgottenRecent, purgeSessionFromRootCaches, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, filterForgottenRecent, isLeaseExhaustedError, purgeSessionFromRootCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -262,5 +262,27 @@ describe("LeftRail session list contracts", () => {
       workspacesCacheKey("C:\\Projects\\dugout"),
     );
     expect(workspacesCacheKey("")).toBe("workspaces:__none__");
+  });
+
+  it("isLeaseExhaustedError detects postJSON 409 and lease_exhausted code", () => {
+    expect(isLeaseExhaustedError(new Error("/api/sessions/switch -> 409"))).toBe(true);
+    expect(isLeaseExhaustedError(new Error("/api/workspace/open -> 409"))).toBe(true);
+    expect(isLeaseExhaustedError(new Error("/api/sessions/create -> 409"))).toBe(true);
+    expect(isLeaseExhaustedError({ code: "lease_exhausted", error: "busy" })).toBe(true);
+    expect(isLeaseExhaustedError(new Error("lease_exhausted: all slots busy"))).toBe(true);
+    expect(
+      isLeaseExhaustedError(new Error("session runner lease exhausted: all concurrent sessions are busy")),
+    ).toBe(true);
+    expect(isLeaseExhaustedError(new Error("/api/sessions/switch -> 500"))).toBe(false);
+    expect(isLeaseExhaustedError(new Error("/api/other -> 409"))).toBe(false);
+    expect(SESSION_LEASE_EXHAUSTED_MESSAGE).toMatch(/too many sessions are busy/i);
+  });
+
+  it("isLeaseExhaustedError rejects unrelated 409 conflicts", () => {
+    expect(isLeaseExhaustedError({ status: 409 })).toBe(false);
+    expect(isLeaseExhaustedError({ status: 409, error: "pilot busy, try again" })).toBe(false);
+    expect(isLeaseExhaustedError({ status: 409, error: "Path already exists" })).toBe(false);
+    expect(isLeaseExhaustedError({ status: 409, code: "busy" })).toBe(false);
+    expect(isLeaseExhaustedError({ status: 409, code: "lease_exhausted" })).toBe(true);
   });
 });

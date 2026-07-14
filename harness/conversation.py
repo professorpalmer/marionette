@@ -16,7 +16,9 @@ Transcript model:
   transcript never enters a worker. Conversation and investigation are decoupled.
 
 Events yielded (for GUI/CLI):
-- ("thinking", {text})                         -> unused (post-answer reasoning suppressed)
+- ("thinking", {text, delta?})                 -> live reasoning deltas (delta=true);
+                                                 post-answer envelope thinking is not emitted
+- ("tool_prep", {name})                        -> tool name assembling before action_start
 - ("message", {role:"assistant", text})        -> pilot prose (conversation)
 - ("action_start", {id, kind, goal, cwd})      -> a collapsible card opens
 - ("action_result", {id, job_id, num, types,   -> the card's body (artifacts)
@@ -3091,7 +3093,9 @@ class ConversationalSession(ToolDispatchMixin):
                                         self._elide_stale_reads(self._history[1:]),
                                         tools=tools_schema,
                                         system=sys_prompt,
-                                        on_delta=lambda delta: q.put(("delta", delta))
+                                        on_delta=lambda delta: q.put(("delta", delta)),
+                                        on_reasoning_delta=lambda delta: q.put(("reasoning", delta)),
+                                        on_tool_hint=lambda name: q.put(("tool_hint", name)),
                                     )
                                     q.put(("done", r))
                                 except Exception as ex:
@@ -3106,6 +3110,8 @@ class ConversationalSession(ToolDispatchMixin):
                             # instead of streaming ugly JSON then dumping the parsed
                             # prose all at once. streamed_prose tracks what we showed
                             # so the final `message` can skip re-emitting it.
+                            # Reasoning + tool-name hints paint live so a long
+                            # GLM/OR "thinking" wait is not a blank spinner.
                             say_extractor = StreamingSayExtractor()
                             streamed_prose = []
                             while True:
@@ -3115,6 +3121,12 @@ class ConversationalSession(ToolDispatchMixin):
                                     if clean:
                                         streamed_prose.append(clean)
                                         yield ConvEvent("message_delta", {"text": clean})
+                                elif kind == "reasoning":
+                                    if val:
+                                        yield ConvEvent("thinking", {"text": val, "delta": True})
+                                elif kind == "tool_hint":
+                                    if val:
+                                        yield ConvEvent("tool_prep", {"name": str(val)})
                                 elif kind == "done":
                                     resp = val
                                     break

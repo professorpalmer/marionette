@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, useCallback, memo } from "react";
+import { useLayoutEffect, useRef, useState, useCallback, useEffect, memo } from "react";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -48,7 +48,8 @@ export type Card = {
 export type Item =
   | { kind: "msg"; msg: Msg }
   | { kind: "card"; card: Card }
-  | { kind: "thinking"; text: string }
+  | { kind: "thinking"; text: string; streaming?: boolean }
+  | { kind: "tool_prep"; name: string }
   | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
@@ -60,7 +61,7 @@ export type Item =
 
 export type GroupedItem =
   | { kind: "msg"; msg: Msg }
-  | { kind: "thinking"; text: string }
+  | { kind: "thinking"; text: string; streaming?: boolean }
   | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
@@ -73,7 +74,7 @@ export type GroupedItem =
 
 type ActivityItem =
   | { kind: "card"; card: Card }
-  | { kind: "thinking"; text: string }
+  | { kind: "thinking"; text: string; streaming?: boolean }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
@@ -104,6 +105,8 @@ function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): Groupe
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (item.kind === "thinking" && (!item.text || !item.text.trim())) continue;
+    // tool_prep is busy-footer only -- never a transcript row.
+    if (item.kind === "tool_prep") continue;
 
     if (item.kind === "msg") {
       // Cursor-tight model: intermediate per-step narration -- an assistant
@@ -450,7 +453,13 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       );
     } else if (it.kind === "thinking") {
-      return <ThinkingBlock key={key} text={it.text} />;
+      return (
+        <ThinkingBlock
+          key={key}
+          text={it.text}
+          live={Boolean(it.streaming)}
+        />
+      );
     } else if (it.kind === "activity_group") {
       return (
         <ActivityGroup
@@ -599,6 +608,7 @@ function ActivityGroup({
       return next;
     });
   };
+  const autoOpenedRef = useRef(false);
 
   const cards = items.filter((it) => it.kind === "card") as { kind: "card"; card: Card }[];
   const cgItems = items.filter((it) => it.kind === "codegraph_context") as { kind: "codegraph_context"; symbols: number; query: string }[];
@@ -614,7 +624,18 @@ function ActivityGroup({
   ) as { kind: "msg"; msg: Msg }[];
   const thinkingItems = items.filter(
     (it) => it.kind === "thinking" && (it as { kind: "thinking"; text: string }).text.trim()
-  ) as { kind: "thinking"; text: string }[];
+  ) as { kind: "thinking"; text: string; streaming?: boolean }[];
+  const liveThinking = thinkingItems.some((t) => t.streaming);
+
+  // Auto-open once while tools run or reasoning streams so live Thought text is
+  // visible without re-toggling on every token (scroll thrash).
+  useEffect(() => {
+    if ((anyRunning || liveThinking) && !autoOpenedRef.current) {
+      autoOpenedRef.current = true;
+      setOpen(true);
+      __activityOpen.set(groupId, true);
+    }
+  }, [anyRunning, liveThinking, groupId]);
 
   // A group with NO tool actions, no narration AND no reasoning (just a lone
   // CodeGraph chip from the per-step auto-injection) would render a misleading
@@ -653,7 +674,15 @@ function ActivityGroup({
 
   const renderInner = (it: typeof items[number], idx: number) => {
     if (it.kind === "card") return <ActionCard key={idx} card={it.card} onToggle={() => onToggleCard(it.card)} />;
-    if (it.kind === "thinking") return <ThinkingBlock key={idx} text={it.text} />;
+    if (it.kind === "thinking") {
+      return (
+        <ThinkingBlock
+          key={idx}
+          text={it.text}
+          live={Boolean((it as { streaming?: boolean }).streaming)}
+        />
+      );
+    }
     if (it.kind === "msg") {
       // Per-step micro-narration inside the collapsible tool-call breakdown.
       // Render through <Markdown> (not raw whitespace-pre-wrap) so code blocks,
@@ -748,13 +777,18 @@ function ActivityGroup({
 }
 
 
-function ThinkingBlock({ text }: { text: string }) {
+function ThinkingBlock({ text, live = false }: { text: string; live?: boolean }) {
   // Cursor/Hermes-style compression: reasoning collapses to a single header line
   // by default (a faint preview of the first line hints at the content), and
   // expands into a height-capped, scrollable window rather than dumping its full
   // height inline. Unbounded inline reasoning is what used to blow up the window
   // and bury the actual answer, so the compact default is the legibility win.
-  const [expanded, setExpanded] = useState(false);
+  // While live-streaming, keep expanded and render plain text -- full markdown +
+  // syntax highlight on every delta was a major CPU sink.
+  const [expanded, setExpanded] = useState(live);
+  useEffect(() => {
+    if (live) setExpanded(true);
+  }, [live]);
 
   if (!text || !text.trim()) {
     return null;
@@ -771,14 +805,20 @@ function ThinkingBlock({ text }: { text: string }) {
         title={expanded ? "Collapse reasoning" : "Expand reasoning"}
       >
         {expanded ? <ChevronDown size={9} className="text-faint/70 shrink-0" /> : <ChevronRight size={9} className="text-faint/70 shrink-0" />}
-        <span className="shrink-0">reasoning</span>
+        <span className="shrink-0">{live ? "thinking" : "reasoning"}</span>
         {!expanded && (
           <span className="ml-1 truncate normal-case tracking-normal font-sans text-faint/50">{preview}</span>
         )}
       </button>
       {expanded && (
         <div className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] leading-[1.65] max-w-[92%] max-h-[34dvh]">
-          <Markdown text={text} />
+          {live ? (
+            <pre className="whitespace-pre-wrap font-sans text-[11px] leading-[1.65] text-faint/85 m-0">
+              {text}
+            </pre>
+          ) : (
+            <Markdown text={text} />
+          )}
         </div>
       )}
     </div>

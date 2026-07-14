@@ -44,7 +44,8 @@ class FakeStreamingDriver:
         else:
             return DriverResponse(text="Done.", meta={"tool_calls": [], "reasoning": ""})
 
-    def chat_stream(self, messages, *, tools=None, system=None, on_delta):
+    def chat_stream(self, messages, *, tools=None, system=None, on_delta,
+                    on_reasoning_delta=None, on_tool_hint=None):
         self.chat_stream_called = True
         self.calls += 1
 
@@ -161,15 +162,25 @@ def test_driver_chat_stream_assembly():
         urllib.request.urlopen = lambda req, timeout=None: fake_resp
 
         deltas = []
+        reasoning = []
+        tools = []
         def on_delta(d):
             deltas.append(d)
+        def on_reasoning(d):
+            reasoning.append(d)
+        def on_tool(name):
+            tools.append(name)
 
         resp = driver.chat_stream(
             messages=[{"role": "user", "content": "hi"}],
-            on_delta=on_delta
+            on_delta=on_delta,
+            on_reasoning_delta=on_reasoning,
+            on_tool_hint=on_tool,
         )
 
         assert deltas == ["Hello", " world"]
+        assert reasoning == ["Thinking..."]
+        assert tools == ["read_", "read_file"]
         assert resp.text == "Hello world"
         assert resp.tokens_in == 10
         assert resp.tokens_out == 20
@@ -235,3 +246,51 @@ def test_conversational_loop_worker_no_streaming():
 
     assert s.pilot.chat_called
     assert not s.pilot.chat_stream_called
+
+
+class _LiveReasoningPilot:
+    """Streams reasoning + tool hint before prose -- the opaque-spinner case."""
+
+    supports_streaming = True
+    name = "live-reasoning"
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, *, tools=None, system=None):
+        raise AssertionError("chat() must not be used when streaming is available")
+
+    def chat_stream(self, messages, *, tools=None, system=None, on_delta,
+                    on_reasoning_delta=None, on_tool_hint=None):
+        self.calls += 1
+        if on_reasoning_delta:
+            on_reasoning_delta("Let me pull the latest from GitHub")
+            on_reasoning_delta(" and check the wiki.")
+        if on_tool_hint:
+            on_tool_hint("read_file")
+        on_delta("Here is the summary.")
+        return DriverResponse(
+            text="Here is the summary.",
+            tokens_out=12,
+            meta={"tool_calls": [], "reasoning": "Let me pull the latest from GitHub and check the wiki."},
+        )
+
+
+def test_live_reasoning_and_tool_prep_events():
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    s = ConversationalSession(cfg)
+    s.pilot = _LiveReasoningPilot()
+
+    events = list(s.send("Summarize Kotoba"))
+    thinking = [e for e in events if e.kind == "thinking"]
+    assert len(thinking) == 2
+    assert thinking[0].data.get("delta") is True
+    assert "GitHub" in thinking[0].data["text"]
+    assert thinking[1].data.get("delta") is True
+
+    tool_prep = [e for e in events if e.kind == "tool_prep"]
+    assert len(tool_prep) == 1
+    assert tool_prep[0].data["name"] == "read_file"
+
+    deltas = [e for e in events if e.kind == "message_delta"]
+    assert deltas and deltas[0].data["text"] == "Here is the summary."

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SwarmPane from "../components/SwarmPane";
 import { api, type SwarmLive } from "../lib/api";
+import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 
 vi.mock("../lib/api", async (importOriginal) => {
@@ -20,18 +21,29 @@ vi.mock("../lib/api", async (importOriginal) => {
 const mockSwarmLive = vi.mocked(api.swarmLive);
 const mockArtifacts = vi.mocked(api.artifacts);
 
-function liveJob(overrides: Partial<SwarmLive["jobs"][number]> = {}): SwarmLive {
+function liveJob(
+  jobOverrides: Partial<SwarmLive["jobs"][number]> = {},
+  sessionOverrides: Partial<SwarmLive["session"]> = {},
+): SwarmLive {
   return {
-    session: { tokens_used: 0, est_cost_usd: 0 },
+    session: { tokens_used: 0, est_cost_usd: 0, ...sessionOverrides },
     jobs: [
       {
         id: "job-1",
         goal: "Audit auth flow",
         status: "running",
-        ...overrides,
+        ...jobOverrides,
       },
     ],
   };
+}
+
+function finishedJob(
+  id: string,
+  goal: string,
+  overrides: Partial<SwarmLive["jobs"][number]> = {},
+): SwarmLive {
+  return liveJob({ id, goal, status: "complete", adapter: "agentic", ...overrides });
 }
 
 describe("SwarmPane model badge", () => {
@@ -380,6 +392,102 @@ describe("SwarmPane worker tokens and cost", () => {
   });
 });
 
+describe("SwarmPane worker progress", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("labels failed workers separately from completed ones", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-mixed",
+        status: "running",
+        goal: "Mixed worker outcomes",
+        tasks: [
+          { id: "t1", role: "a", instruction: "", status: "completed", adapter: "agentic" },
+          { id: "t2", role: "b", instruction: "", status: "failed", adapter: "agentic" },
+          { id: "t3", role: "c", instruction: "", status: "running", adapter: "agentic" },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Workers (3)")).toBeInTheDocument();
+      expect(screen.getByText("2/3 · 1 failed")).toBeInTheDocument();
+    });
+  });
+});
+
+describe("SwarmPane session spend", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("shows session tokens and cost in the tracker header when present", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({}, { tokens_used: 42_500, est_cost_usd: 0.1234 }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle(/Estimated token usage and cost for this project/)).toHaveTextContent("42,500t");
+      expect(screen.getByTitle(/Estimated token usage and cost for this project/)).toHaveTextContent("$0.1234");
+      expect(screen.getByTitle(/Estimated token usage and cost for this project/)).toHaveTextContent("session");
+    });
+  });
+
+  it("omits the session spend line when totals are zero", async () => {
+    mockSwarmLive.mockResolvedValue(liveJob());
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Swarm Tracker")).toBeInTheDocument();
+    });
+    expect(screen.queryByTitle(/Estimated token usage and cost for this project/)).not.toBeInTheDocument();
+  });
+
+  it("updates session spend when a poll returns new session totals", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pollCount = 0;
+      mockSwarmLive.mockImplementation(async () => {
+        pollCount += 1;
+        if (pollCount <= 2) {
+          return liveJob({}, { tokens_used: 1_000, est_cost_usd: 0.01 });
+        }
+        return liveJob({}, { tokens_used: 9_000, est_cost_usd: 0.09 });
+      });
+
+      render(<SwarmPane />);
+
+      await waitFor(() => {
+        expect(screen.getByTitle(/Estimated token usage and cost for this project/)).toHaveTextContent("1,000t");
+      });
+
+      await vi.advanceTimersByTimeAsync(6000);
+
+      await waitFor(() => {
+        expect(screen.getByTitle(/Estimated token usage and cost for this project/)).toHaveTextContent("9,000t");
+        expect(screen.getByTitle(/Estimated token usage and cost for this project/)).toHaveTextContent("$0.0900");
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("SwarmPane external (CLI) source badge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -439,5 +547,88 @@ describe("SwarmPane external (CLI) source badge", () => {
         "Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace",
       ),
     ).toBeNull();
+  });
+});
+
+describe("SwarmPane repo-scoped dismiss", () => {
+  const REPO_A = "C:\\Users\\pwall\\Projects\\repo-a";
+  const REPO_B = "C:\\Users\\pwall\\Projects\\repo-b";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+    dispatchProjectSelected(REPO_A);
+    mockSwarmLive.mockImplementation(async (repo?: string) => {
+      if (repo === REPO_B) {
+        return finishedJob("shared-job", "Repo B finished swarm");
+      }
+      return finishedJob("shared-job", "Repo A finished swarm");
+    });
+  });
+
+  async function openFinishedSection() {
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+  }
+
+  it("keeps dismiss state scoped to the active repo", async () => {
+    render(<SwarmPane />);
+    await openFinishedSection();
+    await screen.findByText("Repo A finished swarm");
+
+    fireEvent.click(screen.getByTitle("Hide all finished runs from the tracker (stays in Puppetmaster history)"));
+
+    await waitFor(() => {
+      expect(screen.getByText("All swarm jobs cleared")).toBeInTheDocument();
+    });
+
+    dispatchProjectSelected(REPO_B);
+    clearSWRCache();
+
+    await waitFor(() => {
+      expect(screen.getByText("Repo B finished swarm")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("All swarm jobs cleared")).not.toBeInTheDocument();
+  });
+
+  it("persists dismissed ids per repo across remounts", async () => {
+    const { unmount } = render(<SwarmPane />);
+    await openFinishedSection();
+    await screen.findByText("Repo A finished swarm");
+
+    fireEvent.click(screen.getByTitle("Hide all finished runs from the tracker (stays in Puppetmaster history)"));
+    await waitFor(() => expect(screen.getByText("All swarm jobs cleared")).toBeInTheDocument());
+
+    unmount();
+    clearSWRCache();
+    dispatchProjectSelected(REPO_A);
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByText("All swarm jobs cleared")).toBeInTheDocument();
+    });
+
+    const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v2") || "{}");
+    expect(stored[REPO_A]).toEqual(["shared-job"]);
+    expect(stored[REPO_B]).toBeUndefined();
+  });
+
+  it("migrates the legacy global dismiss blob into the default view only", async () => {
+    localStorage.setItem("swarm.dismissed.v1", JSON.stringify(["legacy-job"]));
+    dispatchProjectSelected("");
+
+    mockSwarmLive.mockResolvedValue(finishedJob("legacy-job", "Legacy finished swarm"));
+
+    render(<SwarmPane />);
+    await waitFor(() => {
+      expect(screen.getByText("All swarm jobs cleared")).toBeInTheDocument();
+    });
+
+    expect(localStorage.getItem("swarm.dismissed.v1")).toBeNull();
+    const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v2") || "{}");
+    expect(stored.__default__).toEqual(["legacy-job"]);
   });
 });

@@ -7,15 +7,46 @@
 
 export type StreamEvent = { kind: string; data?: any };
 
+/** One retained SSE frame from GET /api/chat/events (mid-turn reattach). */
+export type ChatEventFrame = {
+  cursor: number;
+  kind: string;
+  data?: any;
+  turn?: number;
+};
+
+/** Replay payload for mid-turn SSE reattach (Conversation will consume later). */
+export type ChatEventReplay = {
+  ok?: boolean;
+  missed?: boolean;
+  available?: boolean;
+  code?: "ring_miss" | "generation_mismatch" | string;
+  session_id: string;
+  generation: number;
+  cursor: number;
+  events: ChatEventFrame[];
+  retained?: number;
+};
+
+/** Build the tokened URL for chat event replay / reattach. */
+export function chatEventsPath(opts: {
+  session?: string;
+  since?: number;
+  generation?: number;
+} = {}): string {
+  const params = new URLSearchParams();
+  if (opts.session) params.set("session", opts.session);
+  if (opts.since != null) params.set("since", String(opts.since));
+  if (opts.generation != null) params.set("generation", String(opts.generation));
+  const q = params.toString();
+  return withToken(`/api/chat/events${q ? `?${q}` : ""}`);
+}
+
 /** Live Electron preload bridge (do not freeze at module import). */
 export function getHarnessIpc(): any {
   if (typeof window === "undefined") return null;
   return (window as any).harnessIPC || null;
 }
-
-// Snapshot for StatusBar / SourceControl gating. Reveal no longer depends on
-// this -- it falls back to POST /api/file/reveal when the bridge is missing.
-const ipc: any = getHarnessIpc();
 
 // Per-process auth token (defense-in-depth against unauthenticated localhost
 // access). Electron injects window.__HARNESS_TOKEN__; the served web page reads
@@ -52,7 +83,8 @@ export function isTransientHarnessConnError(err: unknown): boolean {
 
 /** Like getJSON but returns parsed JSON for non-2xx responses instead of throwing. */
 export async function getJSONSoft<T = any>(path: string): Promise<T> {
-  if (ipc?.getJSON) return ipc.getJSON(path);
+  const bridge = getHarnessIpc();
+  if (bridge?.getJSON) return bridge.getJSON(path);
   const r = await fetch(path, { headers: { "X-Harness-Token": authToken() } });
   const body = await r.json().catch(() => ({}));
   if (!r.ok && body && typeof body === "object" && !("ok" in body)) {
@@ -65,14 +97,16 @@ export async function getJSONSoft<T = any>(path: string): Promise<T> {
 }
 
 export async function getJSON<T = any>(path: string): Promise<T> {
-  if (ipc?.getJSON) return ipc.getJSON(path);
+  const bridge = getHarnessIpc();
+  if (bridge?.getJSON) return bridge.getJSON(path);
   const r = await fetch(path, { headers: { "X-Harness-Token": authToken() } });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
   return r.json();
 }
 
 export async function postJSON<T = any>(path: string, body: any): Promise<T> {
-  if (ipc?.postJSON) return ipc.postJSON(path, body);
+  const bridge = getHarnessIpc();
+  if (bridge?.postJSON) return bridge.postJSON(path, body);
   const r = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Harness-Token": authToken() },
@@ -94,7 +128,8 @@ export function stream(
   onDone?: () => void,
   onError?: (e: any) => void
 ): () => void {
-  if (ipc?.stream) return ipc.stream(path, onEvent, onDone, onError);
+  const bridge = getHarnessIpc();
+  if (bridge?.stream) return bridge.stream(path, onEvent, onDone, onError);
   const es = new EventSource(withToken(path));
   es.onmessage = (m) => {
     let ev: StreamEvent;
@@ -111,9 +146,10 @@ export function stream(
 // process, which POSTs a multipart body to the loopback backend. On the web build
 // (real same-origin server) we use a normal multipart fetch.
 export async function uploadFile(file: File): Promise<{ path: string; name: string }[]> {
-  if (ipc?.uploadFile) {
+  const bridge = getHarnessIpc();
+  if (bridge?.uploadFile) {
     const buf = await file.arrayBuffer();
-    return ipc.uploadFile({ name: file.name, type: file.type, bytes: new Uint8Array(buf) });
+    return bridge.uploadFile({ name: file.name, type: file.type, bytes: new Uint8Array(buf) });
   }
   const fd = new FormData();
   fd.append("file", file);
@@ -217,34 +253,78 @@ function workspaceRelFromAbs(repoRoot: string, abs: string): string {
   return normAbs;
 }
 export const nativeGit = {
-  status: (repo: string): Promise<any> =>
-    ipc?.git?.status ? ipc.git.status(repo) : Promise.resolve({ ok: false, error: "web build" }),
-  diff: (repo: string, file?: string): Promise<any> =>
-    ipc?.git?.diff ? ipc.git.diff(repo, file) : Promise.resolve({ ok: false, error: "web build" }),
-  branches: (repo: string): Promise<any> =>
-    ipc?.git?.branches ? ipc.git.branches(repo) : Promise.resolve({ ok: false, error: "web build" }),
-  stageFile: (repo: string, file: string): Promise<any> =>
-    ipc?.git?.stageFile ? ipc.git.stageFile(repo, file) : Promise.resolve({ ok: false, error: "web build" }),
-  unstageFile: (repo: string, file: string): Promise<any> =>
-    ipc?.git?.unstageFile ? ipc.git.unstageFile(repo, file) : Promise.resolve({ ok: false, error: "web build" }),
-  stageAll: (repo: string): Promise<any> =>
-    ipc?.git?.stageAll ? ipc.git.stageAll(repo) : Promise.resolve({ ok: false, error: "web build" }),
-  unstageAll: (repo: string): Promise<any> =>
-    ipc?.git?.unstageAll ? ipc.git.unstageAll(repo) : Promise.resolve({ ok: false, error: "web build" }),
-  commit: (repo: string, message: string): Promise<any> =>
-    ipc?.git?.commit ? ipc.git.commit(repo, message) : Promise.resolve({ ok: false, error: "web build" }),
-  diffStaged: (repo: string, file?: string): Promise<any> =>
-    ipc?.git?.diffStaged ? ipc.git.diffStaged(repo, file) : Promise.resolve({ ok: false, error: "web build" }),
-  applyHunk: (repo: string, patchText: string, reverse?: boolean): Promise<any> =>
-    ipc?.git?.applyHunk ? ipc.git.applyHunk(repo, patchText, reverse) : Promise.resolve({ ok: false, error: "web build" }),
+  status: (repo: string): Promise<any> => {
+    const bridge = getHarnessIpc();
+    return bridge?.git?.status
+      ? bridge.git.status(repo)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  diff: (repo: string, file?: string): Promise<any> => {
+    const bridge = getHarnessIpc();
+    return bridge?.git?.diff
+      ? bridge.git.diff(repo, file)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  branches: (repo: string): Promise<any> => {
+    const bridge = getHarnessIpc();
+    return bridge?.git?.branches
+      ? bridge.git.branches(repo)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  stageFile: (repo: string, file: string): Promise<any> => {
+    const bridge = getHarnessIpc();
+    return bridge?.git?.stageFile
+      ? bridge.git.stageFile(repo, file)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  unstageFile: (repo: string, file: string): Promise<any> => {
+    const bridge = getHarnessIpc();
+    return bridge?.git?.unstageFile
+      ? bridge.git.unstageFile(repo, file)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  stageAll: (repo: string): Promise<any> => {
+    const bridge = getHarnessIpc();
+    return bridge?.git?.stageAll
+      ? bridge.git.stageAll(repo)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  unstageAll: (repo: string): Promise<any> => {
+    const bridge = getHarnessIpc();
+    return bridge?.git?.unstageAll
+      ? bridge.git.unstageAll(repo)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  commit: (repo: string, message: string): Promise<any> => {
+    const bridge = getHarnessIpc();
+    return bridge?.git?.commit
+      ? bridge.git.commit(repo, message)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  diffStaged: (repo: string, file?: string): Promise<any> => {
+    const bridge = getHarnessIpc();
+    return bridge?.git?.diffStaged
+      ? bridge.git.diffStaged(repo, file)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
+  applyHunk: (repo: string, patchText: string, reverse?: boolean): Promise<any> => {
+    const bridge = getHarnessIpc();
+    return bridge?.git?.applyHunk
+      ? bridge.git.applyHunk(repo, patchText, reverse)
+      : Promise.resolve({ ok: false, error: "web build" });
+  },
 };
 
-export const isDesktop = !!ipc;
+/** True when the Electron preload bridge is available (live check, not import-time). */
+export function isDesktop(): boolean {
+  return !!getHarnessIpc();
+}
 
 // Native folder picker. Electron: OS dialog via IPC. Web: prompt fallback.
 export async function pickFolder(): Promise<string | null> {
-  if (ipc && typeof ipc.pickFolder === "function") {
-    try { return await ipc.pickFolder(); } catch { return null; }
+  const bridge = getHarnessIpc();
+  if (bridge && typeof bridge.pickFolder === "function") {
+    try { return await bridge.pickFolder(); } catch { return null; }
   }
   const p = (typeof window !== "undefined") ? window.prompt("Absolute path to folder:") : null;
   return p && p.trim() ? p.trim() : null;

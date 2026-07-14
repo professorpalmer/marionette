@@ -317,6 +317,8 @@ class OpenAICompatDriver:
         system: str | None = None,
         on_delta: Callable[[str], None],
         session_id: str | None = None,
+        on_reasoning_delta: Callable[[str], None] | None = None,
+        on_tool_hint: Callable[[str], None] | None = None,
     ) -> DriverResponse:
         url = f"{self.base_url}/chat/completions"
         full_messages = []
@@ -400,10 +402,19 @@ class OpenAICompatDriver:
                                     on_delta(content_delta)
                                     full_text += content_delta
 
-                                # Reasoning delta
-                                reasoning_delta = delta.get("reasoning") or delta.get("reasoning_content") or ""
+                                # Reasoning delta -- forward live so the UI can
+                                # paint Thought while tokens climb (GLM/OR
+                                # often stream reasoning before content).
+                                reasoning_delta = (
+                                    delta.get("reasoning")
+                                    or delta.get("reasoning_content")
+                                    or ""
+                                )
                                 if reasoning_delta:
+                                    stream_started = True
                                     reasoning_pieces.append(reasoning_delta)
+                                    if on_reasoning_delta is not None:
+                                        on_reasoning_delta(reasoning_delta)
 
                                 # Tool calls delta
                                 delta_tool_calls = delta.get("tool_calls") or []
@@ -411,13 +422,15 @@ class OpenAICompatDriver:
                                     idx = tc.get("index")
                                     if idx is None:
                                         continue
+                                    tc_func = tc.get("function") or {}
+                                    name_piece = tc_func.get("name") or ""
                                     if idx not in assembled_tool_calls:
                                         assembled_tool_calls[idx] = {
                                             "id": tc.get("id") or "",
                                             "type": tc.get("type") or "function",
                                             "function": {
-                                                "name": tc.get("function", {}).get("name") or "",
-                                                "arguments": tc.get("function", {}).get("arguments") or ""
+                                                "name": name_piece,
+                                                "arguments": tc_func.get("arguments") or ""
                                             }
                                         }
                                     else:
@@ -426,12 +439,16 @@ class OpenAICompatDriver:
                                             existing["id"] = tc.get("id")
                                         if tc.get("type"):
                                             existing["type"] = tc.get("type")
-
-                                        tc_func = tc.get("function") or {}
-                                        if tc_func.get("name"):
-                                            existing["function"]["name"] += tc_func["name"]
+                                        if name_piece:
+                                            existing["function"]["name"] += name_piece
                                         if tc_func.get("arguments"):
                                             existing["function"]["arguments"] += tc_func["arguments"]
+
+                                    # Hint only when the name advanced this chunk
+                                    # (arguments-only deltas would otherwise spam).
+                                    _hint = assembled_tool_calls[idx]["function"]["name"]
+                                    if name_piece and _hint and on_tool_hint is not None:
+                                        on_tool_hint(_hint)
 
                                 chunk_finish_reason = choice.get("finish_reason")
                                 if chunk_finish_reason:

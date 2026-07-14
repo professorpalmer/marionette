@@ -267,12 +267,51 @@ export function transcriptFingerprint(items: Item[]): string {
     } else if (it.kind === "swarm_result") {
       fp += `|s:${it.job_id}:${it.applied ? 1 : 0}`;
     } else if (it.kind === "thinking") {
-      fp += `|t:${(it.text || "").length}`;
+      fp += `|t:${(it.text || "").length}:${(it as { streaming?: boolean }).streaming ? 1 : 0}`;
+    } else if (it.kind === "tool_prep") {
+      fp += `|p:${String((it as { name?: string }).name || "")}`;
     } else {
       fp += `|o:${it.kind}`;
     }
   }
   return fp;
+}
+
+/** Drop streaming:true from live reasoning rows once the phase ends. */
+function finalizeStreamingThinking(items: Item[]): Item[] {
+  return items.map((it) =>
+    it.kind === "thinking" && it.streaming
+      ? { kind: "thinking" as const, text: it.text }
+      : it
+  );
+}
+
+/** Append/update the open streaming reasoning row for the current turn. */
+function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "msg" && it.msg.role === "user") break;
+    if (it.kind === "thinking" && it.streaming) {
+      const copy = items.slice();
+      copy[i] = { kind: "thinking", text: it.text + chunk, streaming: true };
+      return copy;
+    }
+  }
+  return [...items, { kind: "thinking", text: chunk, streaming: true }];
+}
+
+/** Replace or append the latest tool_prep hint for the current turn. */
+function upsertToolPrep(items: Item[], name: string): Item[] {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "msg" && it.msg.role === "user") break;
+    if (it.kind === "tool_prep") {
+      const copy = items.slice();
+      copy[i] = { kind: "tool_prep", name };
+      return copy;
+    }
+  }
+  return [...items, { kind: "tool_prep", name }];
 }
 
 /**
@@ -288,6 +327,152 @@ export function composerStatusFromRunner(
   if (localStreamActive || !activeSessionId) return null;
   if (runners?.[activeSessionId] === "running") return "thinking";
   return "idle";
+}
+
+/** Advance last-applied SSE ring cursor after a chatEvents replay batch. */
+export function nextAppliedCursor(
+  lastApplied: number,
+  frames: { cursor: number }[],
+  replayCursor?: number,
+): number {
+  let next = lastApplied;
+  for (const frame of frames) {
+    if (typeof frame.cursor === "number" && frame.cursor > next) {
+      next = frame.cursor;
+    }
+  }
+  if (typeof replayCursor === "number" && replayCursor > next) {
+    next = replayCursor;
+  }
+  return next;
+}
+
+/** Terminal SSE kinds that end a turn (stop mid-turn reattach polling). */
+export function isTerminalStreamKind(kind: string): boolean {
+  return (
+    kind === "assistant_done"
+    || kind === "done"
+    || kind === "error"
+    || kind === "auto_halt"
+  );
+}
+
+/** Whether a detached-busy session should keep polling chatEvents. */
+export function shouldPollChatEvents(opts: {
+  detachedBusy: boolean;
+  localStreamActive: boolean;
+  userStopped: boolean;
+  sawTerminal: boolean;
+}): boolean {
+  if (opts.sawTerminal || opts.userStopped || opts.localStreamActive) return false;
+  return opts.detachedBusy;
+}
+
+/** True when GET /api/chat/events reports the ring is unavailable (not catch-up). */
+export function isChatEventReplayMiss(replay: {
+  ok?: boolean;
+  missed?: boolean;
+}): boolean {
+  if (replay.missed === true) return true;
+  if (replay.ok === false) return true;
+  return false;
+}
+
+/** Whether a replay response should advance lastAppliedCursor. */
+export function shouldAdvanceReplayCursor(replay: {
+  ok?: boolean;
+  missed?: boolean;
+}): boolean {
+  return !isChatEventReplayMiss(replay);
+}
+
+/** Refresh ring generation pin after a replay miss. */
+export function ringGenerationAfterReplayMiss(
+  replay: { code?: string; generation?: number },
+  current: number | undefined,
+): number | undefined {
+  if (
+    replay.code === "generation_mismatch"
+    && typeof replay.generation === "number"
+    && replay.generation > 0
+  ) {
+    return replay.generation;
+  }
+  if (replay.code === "ring_miss") {
+    return undefined;
+  }
+  return current;
+}
+
+/**
+ * On ring miss / generation mismatch, fall back to disk transcript hydrate
+ * (busy-poll skips sessionTranscript while chatEvents poll owns the turn).
+ */
+export function shouldHydrateTranscriptOnReplayMiss(replay: {
+  ok?: boolean;
+  missed?: boolean;
+}): boolean {
+  return isChatEventReplayMiss(replay);
+}
+
+/**
+ * Cursor after a replay miss. Ring eviction / generation change means our
+ * `since` is no longer contiguous — reset so the next poll can catch up.
+ */
+export function cursorAfterReplayMiss(
+  replay: { code?: string },
+  current: number,
+): number {
+  if (replay.code === "ring_miss" || replay.code === "generation_mismatch") {
+    return 0;
+  }
+  return current;
+}
+
+/** Map a retained ring frame to the live stream-event shape. */
+export function chatFrameToStreamEvent(frame: {
+  kind: string;
+  data?: any;
+}): { kind: string; data?: any } {
+  return { kind: frame.kind, data: frame.data };
+}
+
+/** Bounded interval for mid-turn chatEvents reattach while detached-busy. */
+const CHAT_EVENTS_POLL_MS = 1000;
+
+/**
+ * Same copy as LeftRail.SESSION_LEASE_EXHAUSTED_MESSAGE — duplicated here to
+ * avoid a Conversation ↔ LeftRail circular import (LeftRail imports this file).
+ */
+const SESSION_LEASE_EXHAUSTED_MESSAGE =
+  "This session could not start — too many sessions are busy right now. Wait a moment or stop another turn, then try again.";
+
+/** True when WorkspaceChip open failed because session runner leases are full. */
+function isWorkspaceOpenLeaseExhausted(err: unknown): boolean {
+  if (!err) return false;
+  const e = err as { message?: string; code?: string; error?: string; status?: number };
+  if (e.code === "lease_exhausted") return true;
+  const msg = String(e.message || e.error || err || "");
+  if (/lease_exhausted/i.test(msg)) return true;
+  if (e.status === 409) return true;
+  if (/\/api\/workspace\/open\s*->\s*409\b/i.test(msg)) return true;
+  return false;
+}
+
+type MentionListingCap = {
+  total?: number;
+  capped?: number;
+};
+
+function formatMentionListingCapMessage(meta: MentionListingCap): string {
+  const { total, capped } = meta;
+  if (typeof total === "number" && typeof capped === "number" && total > capped) {
+    return `Showing ${capped.toLocaleString()} of ${total.toLocaleString()} files`;
+  }
+  if (typeof capped === "number") {
+    return `File listing capped at ${capped.toLocaleString()} files`;
+  }
+  return "File listing is capped for large workspaces";
 }
 
 export default function Conversation({ config, activeSessionId, onArtifacts, onJobChange }: {
@@ -310,6 +495,24 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // SSE ownership: ignore late events after detach / session switch.
   const streamSessionIdRef = useRef<string | null>(null);
   const streamGenRef = useRef(0);
+  // Mid-turn reattach: last applied /api/chat/events ring cursor (incremental).
+  const lastAppliedCursorRef = useRef(0);
+  // Ring generation from the last successful chatEvents replay (pin subsequent polls).
+  const ringGenerationRef = useRef<number | undefined>(undefined);
+  // setInterval handle for light chatEvents poll while detached-busy (no EventSource).
+  const chatEventsPollTimerRef = useRef<number | null>(null);
+  // Shared live-SSE + reattach event applicator (assigned where handlers live).
+  const applyStreamEventRef = useRef<(ev: { kind: string; data?: any }) => void>(() => {});
+  const flushTypewriterRef = useRef<() => void>(() => {});
+  const maybeRunQueuedResumeRef = useRef<() => void>(() => {});
+  const maybeDrainQueueRef = useRef<() => void>(() => {});
+
+  const clearChatEventsPoll = () => {
+    if (chatEventsPollTimerRef.current != null) {
+      window.clearInterval(chatEventsPollTimerRef.current);
+      chatEventsPollTimerRef.current = null;
+    }
+  };
 
   const [openTabs, setOpenTabs] = useState<{ path: string; isDirty: boolean; line?: number; col?: number }[]>([]);
   const [activeTab, setActiveTab] = useState<string>("chat");
@@ -601,6 +804,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
   // Ergonomics states
   const [allFiles, setAllFiles] = useState<string[]>([]);
+  const [mentionListingCap, setMentionListingCap] = useState<MentionListingCap | null>(null);
   const [mentionSearch, setMentionSearch] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState<number>(-1);
   const [filteredFiles, setFilteredFiles] = useState<string[]>([]);
@@ -978,6 +1182,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     }
     localStreamActiveRef.current = false;
     detachedBusyRef.current = false;
+    // Reset mid-turn reattach cursor/poll so the next session starts clean.
+    clearChatEventsPoll();
+    lastAppliedCursorRef.current = 0;
+    ringGenerationRef.current = undefined;
     // Drop the typewriter loop without flushing into items (would race the
     // cache hydrate below). Authoritative text comes back via sessionTranscript.
     if (typeRafRef.current != null) {
@@ -1107,6 +1315,157 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         } else {
           mergeAndEmit([]);
         }
+
+        // Mid-turn reattach: if the runner is still busy and we have no local
+        // EventSource, replay retained SSE frames through the same handler path
+        // as live streaming, then lightly poll until the turn settles.
+        const reattachSid = activeSessionId;
+        const reattachGen = streamGenRef.current;
+        const pullChatEvents = async (generationMismatchRetried = false): Promise<boolean> => {
+          if (cancelled) return false;
+          if (loadGen !== transcriptLoadGenRef.current) return false;
+          if (streamGenRef.current !== reattachGen) return false;
+          if (cachedSessionIdRef.current !== reattachSid) return false;
+          if (localStreamActiveRef.current || userStoppedRef.current) return false;
+          try {
+            const replay = await api.chatEvents({
+              session: reattachSid,
+              since: lastAppliedCursorRef.current,
+              ...(ringGenerationRef.current != null
+                ? { generation: ringGenerationRef.current }
+                : {}),
+            });
+            if (cancelled) return false;
+            if (loadGen !== transcriptLoadGenRef.current) return false;
+            if (streamGenRef.current !== reattachGen) return false;
+            if (cachedSessionIdRef.current !== reattachSid) return false;
+            if (localStreamActiveRef.current || userStoppedRef.current) return false;
+
+            if (isChatEventReplayMiss(replay)) {
+              const prevGen = ringGenerationRef.current;
+              ringGenerationRef.current = ringGenerationAfterReplayMiss(replay, prevGen);
+              // Evicted / wrong-generation frames: do not treat as catch-up.
+              lastAppliedCursorRef.current = cursorAfterReplayMiss(
+                replay,
+                lastAppliedCursorRef.current,
+              );
+              // Busy-poll skips disk refresh while chatEvents poll is armed —
+              // hydrate once (per miss) so mid-turn UI does not freeze.
+              if (shouldHydrateTranscriptOnReplayMiss(replay)) {
+                const missHydrateGen = ++runnerBusyPollGenRef.current;
+                const missSid = reattachSid;
+                void api.sessionTranscript(missSid).then((tres) => {
+                  if (missHydrateGen !== runnerBusyPollGenRef.current) return;
+                  if (cancelled) return;
+                  if (loadGen !== transcriptLoadGenRef.current) return;
+                  if (streamGenRef.current !== reattachGen) return;
+                  if (cachedSessionIdRef.current !== missSid) return;
+                  if (localStreamActiveRef.current) return;
+                  const loadedItems = transcriptResponseToItems(tres);
+                  const fp = transcriptFingerprint(loadedItems);
+                  if (fp === transcriptFpRef.current) return;
+                  transcriptFpRef.current = fp;
+                  setItems(loadedItems);
+                  itemsRef.current = loadedItems;
+                  transcriptCacheBySessionId.set(missSid, { items: [...loadedItems] });
+                  setTranscriptStale(false);
+                  // Keep detached-busy chrome; do not clear status / poll.
+                }).catch(() => {});
+              }
+              if (
+                replay.code === "generation_mismatch"
+                && !generationMismatchRetried
+                && ringGenerationRef.current != null
+                && ringGenerationRef.current !== prevGen
+              ) {
+                return pullChatEvents(true);
+              }
+              return shouldPollChatEvents({
+                detachedBusy: detachedBusyRef.current,
+                localStreamActive: localStreamActiveRef.current,
+                userStopped: userStoppedRef.current,
+                sawTerminal: false,
+              });
+            }
+
+            if (typeof replay.generation === "number" && replay.generation > 0) {
+              ringGenerationRef.current = replay.generation;
+            }
+
+            let sawTerminal = false;
+            const frames = Array.isArray(replay.events) ? replay.events : [];
+            for (const frame of frames) {
+              if (streamGenRef.current !== reattachGen) return false;
+              if (cachedSessionIdRef.current !== reattachSid) return false;
+              applyStreamEventRef.current(chatFrameToStreamEvent(frame));
+              if (isTerminalStreamKind(frame.kind)) sawTerminal = true;
+            }
+            if (shouldAdvanceReplayCursor(replay)) {
+              lastAppliedCursorRef.current = nextAppliedCursor(
+                lastAppliedCursorRef.current,
+                frames,
+                replay.cursor,
+              );
+            }
+
+            if (sawTerminal) {
+              flushTypewriterRef.current();
+              detachedBusyRef.current = false;
+              clearChatEventsPoll();
+              maybeRunQueuedResumeRef.current();
+              maybeDrainQueueRef.current();
+              return false;
+            }
+            return shouldPollChatEvents({
+              detachedBusy: detachedBusyRef.current,
+              localStreamActive: localStreamActiveRef.current,
+              userStopped: userStoppedRef.current,
+              sawTerminal: false,
+            });
+          } catch {
+            return shouldPollChatEvents({
+              detachedBusy: detachedBusyRef.current,
+              localStreamActive: localStreamActiveRef.current,
+              userStopped: userStoppedRef.current,
+              sawTerminal: false,
+            });
+          }
+        };
+
+        const startChatEventsReattach = async () => {
+          if (cancelled || localStreamActiveRef.current || userStoppedRef.current) return;
+          let running = detachedBusyRef.current;
+          if (!running) {
+            try {
+              const st = await api.getSessionState();
+              if (cancelled) return;
+              if (cachedSessionIdRef.current !== reattachSid) return;
+              running = st?.runners?.[reattachSid] === "running";
+              if (running) {
+                detachedBusyRef.current = true;
+                setStatus((prev) =>
+                  prev === "thinking" || prev === "executing" || prev === "streaming"
+                    ? prev
+                    : "thinking"
+                );
+              }
+            } catch {
+              return;
+            }
+          }
+          if (!running) return;
+
+          const keepPolling = await pullChatEvents();
+          if (!keepPolling || cancelled) return;
+          if (streamGenRef.current !== reattachGen) return;
+          if (chatEventsPollTimerRef.current != null) return;
+          chatEventsPollTimerRef.current = window.setInterval(() => {
+            void pullChatEvents().then((cont) => {
+              if (!cont) clearChatEventsPoll();
+            });
+          }, CHAT_EVENTS_POLL_MS);
+        };
+        void startChatEventsReattach();
       })
       .catch(() => {
         if (loadGen !== transcriptLoadGenRef.current) return;
@@ -1122,6 +1481,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
     return () => {
       cancelled = true;
+      clearChatEventsPoll();
     };
   }, [activeSessionId]);
 
@@ -1134,6 +1494,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       // Stop must stick: ignore runners=running while the abandoned generator
       // unwinds; keep chrome idle until the user sends again.
       detachedBusyRef.current = false;
+      clearChatEventsPoll();
       setStatus((prev) =>
         prev === "thinking" || prev === "executing" || prev === "streaming"
           ? "idle"
@@ -1154,6 +1515,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             ? prev
             : "thinking"
         );
+        // While chatEvents reattach poll owns mid-turn UI, skip disk replace
+        // that would wipe in-flight deltas not yet persisted.
+        if (chatEventsPollTimerRef.current != null) return;
         // Slice C: while detached-but-busy, refresh transcript so eventual
         // dump lands without blanking thinking chrome.
         const pollGen = ++runnerBusyPollGenRef.current;
@@ -1175,6 +1539,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (detachedBusyRef.current) {
         // Runner went idle after a detached busy view -- finalize + refresh.
         detachedBusyRef.current = false;
+        clearChatEventsPoll();
         setStatus("idle");
         setCompactingStatus(null);
         return api.sessionTranscript(sid)
@@ -1251,6 +1616,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       .then((res) => {
         if (res && res.files) {
           setAllFiles(res.files);
+          setMentionListingCap(
+            res.truncated
+              ? { total: res.total, capped: res.capped }
+              : null,
+          );
         }
       })
       .catch((err) => {
@@ -1794,7 +2164,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const findStreamingBubbleIdx = (p: Item[]): number => {
     for (let i = p.length - 1; i >= 0; i--) {
       const it = p[i];
-      if (it.kind === "card" || it.kind === "thinking" || it.kind === "codegraph_context") continue;
+      if (it.kind === "card" || it.kind === "thinking" || it.kind === "tool_prep" || it.kind === "codegraph_context") continue;
       if (it.kind === "msg") {
         const m = (it as { kind: "msg"; msg: Msg }).msg;
         if (m.role === "assistant" && m.streaming) return i;
@@ -1865,52 +2235,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       typeRafRef.current = null;
     }
   };
+  flushTypewriterRef.current = flushTypewriter;
 
-  const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false, resume: boolean = false, imagesOverride?: { path: string; name: string; previewUrl: string }[]) => {
-    // Stale transcript = prior session still on screen while B hydrates.
-    // Never send into the wrong session.
-    if (transcriptStale && !resume) return;
-    if (!resume) {
-      // Real user/autopilot send clears the Stop hold so thinking can run again.
-      userStoppedRef.current = false;
-    } else if (userStoppedRef.current) {
-      // Keep-alive after Stop must not re-arm the turn.
-      resumeQueuedRef.current = false;
-      return;
-    }
-    planTurnRef.current = usePlan;
-    turnSettledRef.current = false;
-    // imagesOverride lets the idle queue-drain path (maybeDrainQueue) carry a
-    // queued prompt's image attachments even though they were never placed in
-    // the live attachedImages composer state.
-    const imgsToSend = resume ? [] : (imagesOverride ? imagesOverride : [...attachedImages]);
-    const imgPaths = imgsToSend.map((img) => img.path);
-    if (!resume) {
-      // A resume turn carries no new user message -- the pilot is continuing off
-      // a finished background job, so we don't add a user bubble or send images.
-      setAttachedImages([]);
-      setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: msg, images: imgsToSend } }]);
-    }
-    setStatus("thinking");
-    const streamer = resume
-      ? (cb: any, done: any, err: any) => api.resume(cb, done, err)
-      : useAuto
-      ? (cb: any, done: any, err: any) => api.auto(msg, cb, done, err)
-      : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths);
-    localStreamActiveRef.current = true;
-    detachedBusyRef.current = false;
-    const streamSid = activeSessionId;
-    const streamGen = ++streamGenRef.current;
-    streamSessionIdRef.current = streamSid;
-    const streamLive = () =>
-      streamGenRef.current === streamGen
-      && streamSessionIdRef.current === streamSid
-      && cachedSessionIdRef.current === streamSid;
-    cancelRef.current = streamer((ev: any) => {
-      // Drop late events after session switch / SSE detach so tool cards from
-      // session A never append onto B (bleed) or re-append onto A (infinite
-      // Investigated repeats while the busy poll also replaces from disk).
-      if (!streamLive()) return;
+  // Shared path for live SSE and mid-turn chatEvents reattach. Callers must
+  // enforce session/generation guards before invoking.
+  const applyStreamEvent = (ev: { kind: string; data?: any }) => {
       const d = ev.data || {};
       if (ev.kind === "compacting") {
         setCompactingStatus(d.message || "Summarizing chat context");
@@ -1957,11 +2286,29 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setItems((p) => [...p, { kind: "compaction" as const, before_tokens: d.before_tokens, after_tokens: d.after_tokens }]);
         window.dispatchEvent(new Event("harness-context-changed"));
       } else if (ev.kind === "thinking") {
-        // Ignore post-answer reasoning events. The answer is already shown;
-        // a trailing REASONING block is redundant and we no longer request
-        // reasoning tokens from OpenAI-compat pilots by default.
+        // Live reasoning deltas (delta:true) paint mid-turn so GLM/OR token
+        // climbs are visible. Full post-answer reasoning dumps (no delta) stay
+        // suppressed -- the answer is already on screen.
         setCompactingStatus(null);
-        setStatus("thinking");
+        const chunk = String(d.text || "");
+        const painting = Boolean(d.delta) ? Boolean(chunk) : Boolean(chunk.trim());
+        if (!painting) return;
+        setStatus((prev) =>
+          prev === "streaming" || prev === "executing" ? prev : "thinking"
+        );
+        if (d.delta && chunk) {
+          setItems((p) => upsertStreamingThinking(p, chunk));
+        } else if (chunk.trim()) {
+          setItems((p) => [...p, { kind: "thinking", text: chunk }]);
+        }
+      } else if (ev.kind === "tool_prep") {
+        const name = String(d.name || "").trim();
+        if (!name) return;
+        setCompactingStatus(null);
+        setStatus((prev) =>
+          prev === "streaming" || prev === "executing" ? prev : "thinking"
+        );
+        setItems((p) => upsertToolPrep(p, name));
       } else if (ev.kind === "message_delta") {
         setCompactingStatus(null);
         setStatus("streaming");
@@ -1971,10 +2318,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         // landed after it -- same scan as appendStreamingText, so deltas never
         // fork a duplicate bubble mid-turn.
         setItems((p) => {
-          if (findStreamingBubbleIdx(p) >= 0) {
-            return p;
+          const base = finalizeStreamingThinking(p);
+          if (findStreamingBubbleIdx(base) >= 0) {
+            return base;
           }
-          return [...p, { kind: "msg", msg: { role: "assistant", text: "", streaming: true, isPlan: planTurnRef.current } }];
+          return [...base, { kind: "msg", msg: { role: "assistant", text: "", streaming: true, isPlan: planTurnRef.current } }];
         });
         typeBufRef.current += (d.text || "");
         startTypewriter();
@@ -2010,8 +2358,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setItems((p0) => {
           // A pilot message must never adopt a worker's ephemeral stream: drop a
           // trailing worker-stream preview before finalizing the pilot's own text.
-          const p = (p0.length > 0 && p0[p0.length - 1].kind === "msg" && (p0[p0.length - 1] as { kind: "msg"; msg: Msg }).msg.workerStream)
-            ? p0.slice(0, -1) : p0;
+          const p = finalizeStreamingThinking(
+            (p0.length > 0 && p0[p0.length - 1].kind === "msg" && (p0[p0.length - 1] as { kind: "msg"; msg: Msg }).msg.workerStream)
+              ? p0.slice(0, -1) : p0
+          );
           // Find the pilot's open streaming bubble, scanning back PAST any tool
           // cards / reasoning / codegraph chips that landed after it. Only
           // checking the very last item lost the race when action_start events
@@ -2022,7 +2372,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           let streamIdx = -1;
           for (let i = p.length - 1; i >= 0; i--) {
             const it = p[i];
-            if (it.kind === "card" || it.kind === "thinking" || it.kind === "codegraph_context") continue;
+            if (it.kind === "card" || it.kind === "thinking" || it.kind === "tool_prep" || it.kind === "codegraph_context") continue;
             if (it.kind === "msg") {
               const m = (it as { kind: "msg"; msg: Msg }).msg;
               if (m.role === "assistant" && m.streaming && !m.workerStream) streamIdx = i;
@@ -2057,10 +2407,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setCompactingStatus(null);
         setStatus("executing");
         setItems((p) => {
+          const base = finalizeStreamingThinking(p);
           // Idempotent: a late/replayed action_start with the same id must not
           // stack another card (session-switch SSE race → infinite Investigated).
-          if (p.some((it) => it.kind === "card" && it.card.id === d.id)) return p;
-          return [...p, { kind: "card", card: {
+          if (base.some((it) => it.kind === "card" && it.card.id === d.id)) return base;
+          return [...base, { kind: "card", card: {
           // Default tool cards to collapsed always: they used to mount open while
           // running and snap shut on action_result, which read as a flicker.
           // Start collapsed; the user can click to expand (onToggleCard).
@@ -2201,6 +2552,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (ev.kind === "assistant_done") {
         turnSettledRef.current = true;
         setStatus("done");
+        setItems((p) => finalizeStreamingThinking(p));
         fetchContextUsage();
         // The backend derives a session title from the first user message
         // (set_title_if_default). Tell the sidebar to refetch so the auto-named
@@ -2213,6 +2565,56 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setStatus("error");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
       }
+  };
+  applyStreamEventRef.current = applyStreamEvent;
+
+  const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false, resume: boolean = false, imagesOverride?: { path: string; name: string; previewUrl: string }[]) => {
+    // Stale transcript = prior session still on screen while B hydrates.
+    // Never send into the wrong session.
+    if (transcriptStale && !resume) return;
+    if (!resume) {
+      // Real user/autopilot send clears the Stop hold so thinking can run again.
+      userStoppedRef.current = false;
+    } else if (userStoppedRef.current) {
+      // Keep-alive after Stop must not re-arm the turn.
+      resumeQueuedRef.current = false;
+      return;
+    }
+    planTurnRef.current = usePlan;
+    turnSettledRef.current = false;
+    // imagesOverride lets the idle queue-drain path (maybeDrainQueue) carry a
+    // queued prompt's image attachments even though they were never placed in
+    // the live attachedImages composer state.
+    const imgsToSend = resume ? [] : (imagesOverride ? imagesOverride : [...attachedImages]);
+    const imgPaths = imgsToSend.map((img) => img.path);
+    if (!resume) {
+      // A resume turn carries no new user message -- the pilot is continuing off
+      // a finished background job, so we don't add a user bubble or send images.
+      setAttachedImages([]);
+      setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: msg, images: imgsToSend } }]);
+    }
+    setStatus("thinking");
+    const streamer = resume
+      ? (cb: any, done: any, err: any) => api.resume(cb, done, err)
+      : useAuto
+      ? (cb: any, done: any, err: any) => api.auto(msg, cb, done, err)
+      : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths);
+    clearChatEventsPoll();
+    localStreamActiveRef.current = true;
+    detachedBusyRef.current = false;
+    const streamSid = activeSessionId;
+    const streamGen = ++streamGenRef.current;
+    streamSessionIdRef.current = streamSid;
+    const streamLive = () =>
+      streamGenRef.current === streamGen
+      && streamSessionIdRef.current === streamSid
+      && cachedSessionIdRef.current === streamSid;
+    cancelRef.current = streamer((ev: any) => {
+      // Drop late events after session switch / SSE detach so tool cards from
+      // session A never append onto B (bleed) or re-append onto A (infinite
+      // Investigated repeats while the busy poll also replaces from disk).
+      if (!streamLive()) return;
+      applyStreamEvent(ev);
     }, () => {
          if (!streamLive()) return;
          flushTypewriter();
@@ -2306,6 +2708,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       void kick();
     }, 60);
   };
+  maybeDrainQueueRef.current = maybeDrainQueue;
 
   // Keep-alive driver: after a turn ends, if a background swarm finished while it
   // was running (resumeQueuedRef), fire a continuation turn so the pilot assesses
@@ -2330,6 +2733,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       executeSendRef.current("", false, false, true);
     }, 60);
   };
+  maybeRunQueuedResumeRef.current = maybeRunQueuedResume;
 
   // A pilot_resume can also arrive via the swarm-results poll while the session is
   // idle (the common background-job case). Trigger a continuation immediately.
@@ -2503,6 +2907,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     turnSettledRef.current = true;
     resumeQueuedRef.current = false;
     detachedBusyRef.current = false;
+    clearChatEventsPoll();
+    // Invalidate in-flight reattach pulls / late SSE frames.
+    streamGenRef.current += 1;
     cancelRef.current?.();
     cancelRef.current = null;
     localStreamActiveRef.current = false;
@@ -3181,7 +3588,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             )}
 
             {/* Mention autocomplete dropdown */}
-            {mentionSearch !== null && (filteredFiles.length > 0 || symbolResults.length > 0) && (
+            {mentionSearch !== null && (filteredFiles.length > 0 || symbolResults.length > 0 || mentionListingCap) && (
               <div className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[250px] w-[340px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
                 {filteredFiles.length > 0 && (
                   <>
@@ -3246,6 +3653,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                 {filteredFiles.length > 0 && symbolResults.length === 0 && codegraphStatus === "indexing" && (
                   <div className="px-3 py-1 text-[10px] text-muted/60 select-none italic text-right">
                     symbols indexing...
+                  </div>
+                )}
+
+                {mentionListingCap && (
+                  <div className="px-3 py-1.5 text-[10px] text-muted border-t border-edge/20 select-none">
+                    {formatMentionListingCapMessage(mentionListingCap)}
                   </div>
                 )}
               </div>
@@ -3470,12 +3883,18 @@ function WorkspaceChip() {
       if ((res as any).ok) {
         refresh();
         window.dispatchEvent(new Event("harness-config-changed"));
+      } else if ((res as { code?: string }).code === "lease_exhausted") {
+        setOpenError(SESSION_LEASE_EXHAUSTED_MESSAGE);
       } else {
         // A stale recent (deleted/moved folder) used to no-op silently here.
         setOpenError((res as any).error || `Could not open ${base(p)}`);
       }
     } catch (err) {
-      setOpenError((err as Error)?.message || `Could not open ${base(p)}`);
+      if (isWorkspaceOpenLeaseExhausted(err)) {
+        setOpenError(SESSION_LEASE_EXHAUSTED_MESSAGE);
+      } else {
+        setOpenError((err as Error)?.message || `Could not open ${base(p)}`);
+      }
     }
   };
   const browse = async () => {

@@ -104,23 +104,67 @@ function taskState(t: Task): "running" | "done" | "fail" | "idle" {
 
 // Dismissed job ids are VIEW state, never a deletion: the durable Puppetmaster
 // store (and the PM dashboard) remain the archive, so anything hidden here is
-// still recallable there. Persisted so a cleared tracker stays clean across
-// reloads, soft-capped so a very long-lived install can't grow it unbounded.
-const DISMISS_KEY = "swarm.dismissed.v1";
+// still recallable there. Persisted per active repo so clearing the tracker in
+// one project does not hide jobs when viewing another. Soft-capped per repo so
+// a very long-lived install can't grow it unbounded.
+const DISMISS_KEY_V1 = "swarm.dismissed.v1";
+const DISMISS_KEY = "swarm.dismissed.v2";
+const DISMISS_CAP = 2000;
 
-function loadDismissed(): Set<string> {
+type DismissStore = Record<string, string[]>;
+
+function repoDismissKey(repo?: string): string {
+  return repo || "__default__";
+}
+
+function readDismissStore(): DismissStore {
   try {
     const raw = localStorage.getItem(DISMISS_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(arr) ? arr : []);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as DismissStore;
+      }
+    }
   } catch {
-    return new Set();
+    // Fall through to v1 migration / empty store.
+  }
+  return migrateDismissV1();
+}
+
+/** One-time import of the pre-Wave-4 global blob into the unscoped default view. */
+function migrateDismissV1(): DismissStore {
+  try {
+    const raw = localStorage.getItem(DISMISS_KEY_V1);
+    if (!raw) return {};
+    const arr = JSON.parse(raw);
+    const ids = Array.isArray(arr)
+      ? arr.filter((id): id is string => typeof id === "string")
+      : [];
+    const store: DismissStore = ids.length > 0 ? { [repoDismissKey()]: ids } : {};
+    try {
+      if (ids.length > 0) localStorage.setItem(DISMISS_KEY, JSON.stringify(store));
+      localStorage.removeItem(DISMISS_KEY_V1);
+    } catch {
+      // localStorage full/unavailable -- in-memory dismiss still works.
+    }
+    return store;
+  } catch {
+    return {};
   }
 }
 
-function saveDismissed(ids: Set<string>): void {
+function loadDismissed(repo?: string): Set<string> {
+  const store = readDismissStore();
+  const ids = store[repoDismissKey(repo)] || [];
+  return new Set(Array.isArray(ids) ? ids : []);
+}
+
+function saveDismissed(repo: string | undefined, ids: Set<string>): void {
   try {
-    localStorage.setItem(DISMISS_KEY, JSON.stringify([...ids].slice(-2000)));
+    const store = readDismissStore();
+    store[repoDismissKey(repo)] = [...ids].slice(-DISMISS_CAP);
+    localStorage.setItem(DISMISS_KEY, JSON.stringify(store));
   } catch {
     // localStorage full/unavailable -- dismissal still works for this session.
   }
@@ -130,10 +174,8 @@ function saveDismissed(ids: Set<string>): void {
 // the payload can be ~1MB; JSON.stringify-diffing it (or blindly setData every
 // poll) re-renders the whole tree for no delta and blocks the main thread. We
 // hash only the fields the UI actually draws -- job/task status, counts, tokens,
-// cost, and compact-token meters -- so an unchanged poll skips the re-render.
-// Artifacts are append-only in a run, so their count is a sound proxy for
-// "new finding landed". Session savings live on the StatusBar scorecard, not
-// per-row meters.
+// cost, compact-token meters, dead-run failure text, activity timestamps, and
+// artifact headlines -- so an unchanged poll skips the re-render.
 function swarmSignature(res: SwarmLive | null): string {
   if (!res) return "";
   const parts: string[] = [];
@@ -143,16 +185,26 @@ function swarmSignature(res: SwarmLive | null): string {
     parts.push(
       `${j.id}:${j.status}:${tasks.length}:${arts.length}` +
       `:${j.tokens ?? 0}:${(j.est_cost_usd ?? 0).toFixed(4)}` +
-      `:${j.tool_output_tokens_saved ?? 0}:${j.source ?? "harness"}`,
+      `:${j.tool_output_tokens_saved ?? 0}:${j.source ?? "harness"}` +
+      `:${j.dead_run_failure ?? ""}:${j.updated_at ?? ""}`,
     );
     for (const t of tasks) {
       parts.push(
         `${t.id}=${t.status}:${t.tokens ?? 0}:${(t.est_cost_usd ?? 0).toFixed(4)}`,
       );
     }
+    for (const a of arts) {
+      parts.push(
+        `A:${(a.type || "").slice(0, 8)}:${(a.headline || "").slice(0, 120)}:${a.result ?? ""}`,
+      );
+    }
   }
   const s = res.session;
-  if (s) parts.push(`S:${s.driver ?? ""}`);
+  if (s) {
+    parts.push(
+      `S:${s.driver ?? ""}:${s.tokens_used ?? 0}:${(s.est_cost_usd ?? 0).toFixed(4)}`,
+    );
+  }
   return parts.join("|");
 }
 
@@ -328,13 +380,21 @@ function WorkerProgress({ tasks }: { tasks: Task[] }) {
   if (total === 0) return null;
   const done = tasks.filter((t) => taskState(t) === "done").length;
   const failed = tasks.filter((t) => taskState(t) === "fail").length;
-  const pct = Math.round(((done + failed) / total) * 100);
+  const donePct = Math.round((done / total) * 100);
+  const failedPct = Math.round((failed / total) * 100);
   return (
     <div className="flex items-center gap-2">
-      <div className="flex-1 h-1.5 bg-panel2 border border-edge/50 rounded-full overflow-hidden">
-        <div className="h-full bg-good transition-all duration-500" style={{ width: `${pct}%` }} />
+      <div className="flex-1 h-1.5 bg-panel2 border border-edge/50 rounded-full overflow-hidden flex">
+        {donePct > 0 && (
+          <div className="h-full bg-good transition-all duration-500" style={{ width: `${donePct}%` }} />
+        )}
+        {failedPct > 0 && (
+          <div className="h-full bg-risk transition-all duration-500" style={{ width: `${failedPct}%` }} />
+        )}
       </div>
-      <span className="text-[9px] text-faint tabular-nums shrink-0">{done + failed}/{total}</span>
+      <span className={`text-[9px] tabular-nums shrink-0 ${failed > 0 ? "text-risk/80" : "text-faint"}`}>
+        {done + failed}/{total}{failed > 0 ? ` · ${failed} failed` : ""}
+      </span>
     </div>
   );
 }
@@ -350,7 +410,11 @@ export default function SwarmPane() {
   const [expandedFindings, setExpandedFindings] = useState<Record<string, boolean>>({});
   // Findings section open/closed per job. Default open (missing key); user toggle sticks.
   const [findingsOpen, setFindingsOpen] = useState<Record<string, boolean>>({});
-  const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
+  const scopedRepo = selectedProjectRoot || undefined;
+  const scopedRepoRef = useRef(scopedRepo);
+  scopedRepoRef.current = scopedRepo;
+
+  const [dismissed, setDismissed] = useState<Set<string>>(() => loadDismissed(scopedRepo));
   const [finishedOpen, setFinishedOpen] = useState(false);
   // Job ids we have asked the backend to cancel. Held in local view state so the
   // row can show a subtle 'cancelling...' affordance immediately, before the next
@@ -365,7 +429,13 @@ export default function SwarmPane() {
   const toggleTask = (id: string) => setExpandedTasks((p) => ({ ...p, [id]: !p[id] }));
   const toggleFinding = (id: string) => setExpandedFindings((p) => ({ ...p, [id]: !p[id] }));
 
-  useEffect(() => { saveDismissed(dismissed); }, [dismissed]);
+  useEffect(() => {
+    setDismissed(loadDismissed(scopedRepo));
+  }, [scopedRepo]);
+
+  useEffect(() => {
+    saveDismissed(scopedRepoRef.current, dismissed);
+  }, [dismissed]);
 
   useEffect(() => {
     const onProject = (e: Event) => {
@@ -375,8 +445,6 @@ export default function SwarmPane() {
     window.addEventListener("harness-project-selected", onProject);
     return () => window.removeEventListener("harness-project-selected", onProject);
   }, []);
-
-  const scopedRepo = selectedProjectRoot || undefined;
 
   // Holds latest live payload so the SWR fetcher / poll can merge without
   // wiping artifacts hydrated via /api/artifacts on expand.
@@ -568,6 +636,11 @@ export default function SwarmPane() {
     });
   const restoreDismissed = () => setDismissed(new Set());
   const hiddenCount = allJobs.length - visibleJobs.length;
+
+  const sessionSpend = data?.session;
+  const sessionTokens = Number(sessionSpend?.tokens_used ?? 0);
+  const sessionCost = Number(sessionSpend?.est_cost_usd ?? 0);
+  const showSessionSpend = sessionSpend && (sessionTokens > 0 || sessionCost > 0);
 
   // One card renderer, reused by both the running list and the Finished
   // accordion. Defined in-scope so it closes over the expand/dismiss state
@@ -1011,10 +1084,23 @@ export default function SwarmPane() {
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
           <Network size={11} className="text-faint/70" />
           <span>Swarm Tracker</span>
+          {isShowingStale && !isTransitioning && (
+            <span className="text-[9px] normal-case tracking-normal text-faint/70 italic">refreshing…</span>
+          )}
           {isTransitioning && <Loader2 size={10} className="animate-spin text-muted shrink-0" />}
           {visibleJobs.length > 0 && <span className="text-faint/60 normal-case tracking-normal">({visibleJobs.length})</span>}
         </div>
         <div className="flex items-center gap-2.5 text-[10px]">
+          {showSessionSpend && (
+            <span
+              className="text-muted font-mono flex items-center gap-1.5 tabular-nums"
+              title="Estimated token usage and cost for this project in the current session"
+            >
+              {sessionTokens > 0 && <span>{sessionTokens.toLocaleString()}t</span>}
+              <span className="text-good/90">{formatCost(sessionCost)}</span>
+              <span className="text-faint/70 normal-case font-sans tracking-normal">session</span>
+            </span>
+          )}
           {anyRunning && (
             <span className="flex items-center gap-1 text-accent">
               <Loader2 size={10} className="animate-spin" /> {runningCount} running

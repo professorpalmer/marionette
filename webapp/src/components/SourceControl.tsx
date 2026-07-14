@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { GitBranch, FileCode, RefreshCw, X, Plus, Minus } from "lucide-react";
 import { nativeGit, isDesktop } from "../lib/transport";
 import { api } from "../lib/api";
+import { lastSelectedProjectRoot } from "../lib/panelTransition";
 
 interface ChangedFile {
   status: string;
@@ -14,12 +15,13 @@ interface Branch {
 }
 
 export default function SourceControl() {
-  const [repoPath, setRepoPath] = useState<string>(".");
+  const [repoPath, setRepoPath] = useState<string>(() => lastSelectedProjectRoot() || ".");
   const [branches, setBranches] = useState<Branch[]>([]);
   const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([]);
-  
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const loadGenRef = useRef(0);
 
   // Diff states
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -34,7 +36,21 @@ export default function SourceControl() {
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitStatus, setCommitStatus] = useState<string | null>(null);
 
-  const loadGitStatus = async (path: string) => {
+  const clearGitUiState = useCallback(() => {
+    setBranches([]);
+    setChangedFiles([]);
+    setSelectedFile(null);
+    setViewingStagedDiff(false);
+    setDiffText(null);
+    setDiffError(null);
+    setError(null);
+    setCommitMessage("");
+    setCommitError(null);
+    setCommitStatus(null);
+  }, []);
+
+  const loadGitStatus = useCallback(async (path: string) => {
+    const gen = ++loadGenRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -42,6 +58,8 @@ export default function SourceControl() {
         nativeGit.status(path),
         nativeGit.branches(path),
       ]);
+
+      if (gen !== loadGenRef.current) return;
 
       if (statusRes.ok) {
         setChangedFiles(statusRes.files || []);
@@ -53,30 +71,56 @@ export default function SourceControl() {
         setBranches(branchesRes.branches || []);
       }
     } catch (err: any) {
+      if (gen !== loadGenRef.current) return;
       setError(err.message || "Error running git operations");
     } finally {
-      setLoading(false);
+      if (gen === loadGenRef.current) setLoading(false);
     }
-  };
+  }, []);
+
+  const reloadFromConfig = useCallback(async () => {
+    try {
+      const cfg = await api.config();
+      const path = cfg.repo || ".";
+      setRepoPath(path);
+      clearGitUiState();
+      await loadGitStatus(path);
+    } catch (err: any) {
+      setError(err.message || "Error getting config");
+    }
+  }, [clearGitUiState, loadGitStatus]);
 
   useEffect(() => {
-    if (!isDesktop) return;
+    if (!isDesktop()) return;
 
-    let active = true;
-    async function init() {
-      try {
-        const cfg = await api.config();
-        const path = cfg.repo || ".";
-        if (!active) return;
-        setRepoPath(path);
-        await loadGitStatus(path);
-      } catch (err: any) {
-        if (active) setError(err.message || "Error getting config");
-      }
-    }
-    init();
-    return () => { active = false; };
-  }, []);
+    void reloadFromConfig();
+
+    const onProject = (e: Event) => {
+      const path = (e as CustomEvent<string>).detail;
+      if (typeof path !== "string") return;
+      clearGitUiState();
+      setRepoPath(path);
+      void loadGitStatus(path);
+    };
+
+    // Debounce: open_project + relocate_session both fire config-changed in one
+    // turn; one refresh after the dust settles is enough.
+    let debounceTimer: number | null = null;
+    const onConfig = () => {
+      if (debounceTimer != null) window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(() => {
+        void reloadFromConfig();
+      }, 180);
+    };
+
+    window.addEventListener("harness-project-selected", onProject);
+    window.addEventListener("harness-config-changed", onConfig);
+    return () => {
+      if (debounceTimer != null) window.clearTimeout(debounceTimer);
+      window.removeEventListener("harness-project-selected", onProject);
+      window.removeEventListener("harness-config-changed", onConfig);
+    };
+  }, [clearGitUiState, loadGitStatus, reloadFromConfig]);
 
   const refreshDiff = async (file: string, isStaged: boolean) => {
     setDiffLoading(true);
@@ -324,7 +368,7 @@ export default function SourceControl() {
     }
   }
 
-  if (!isDesktop) {
+  if (!isDesktop()) {
     return (
       <div className="flex items-center justify-center h-full p-4 text-center bg-panel">
         <div className="text-[11px] text-muted uppercase tracking-wider">

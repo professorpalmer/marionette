@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "lucide-react";
-import { api, type CodegraphStatus, type WikiStatusData } from "../lib/api";
+import { api, type CodegraphStatus, type WikiGraphData, type WikiStatusData } from "../lib/api";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import McpPane from "./McpPane";
@@ -8,6 +8,30 @@ import McpPane from "./McpPane";
 // Re-enable when a better presentation exists. Artifacts stay fully
 // logged/stored on the backend; this flag is display-only.
 const SHOW_ARTIFACTS = false;
+
+/** Wiki status/graph are process-global (wiki.json) — not per-project. */
+const WIKI_SWR_KEY = "__global__";
+
+/** Top pages/entities by total link degree — compact strip, not a force graph. */
+function topWikiNodesByLinkCount(
+  nodes: WikiGraphData["nodes"],
+  edges: WikiGraphData["edges"],
+  limit = 5,
+): { id: string; title: string; section?: string; links: number }[] {
+  const degree = new Map<string, number>();
+  for (const e of edges) {
+    degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
+    degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
+  }
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  return [...degree.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([id, links]) => {
+      const node = byId.get(id);
+      return { id, title: node?.title?.trim() || id, section: node?.section, links };
+    });
+}
 
 export default function StatePane({ artifacts }: {
   artifacts: { type: string; headline: string; confidence?: number; id?: string; created_by?: string; [key: string]: any }[];
@@ -45,16 +69,35 @@ export default function StatePane({ artifacts }: {
     isShowingStale: wikiStale,
     revalidate: revalidateWiki,
   } = useStaleWhileRevalidate<WikiStatusData>(
-    `wiki-status:${projectRoot || "__global__"}`,
+    `wiki-status:${WIKI_SWR_KEY}`,
     () => api.getWikiStatus(),
     { enabled: true },
   );
 
+  // Collapse prefs must be declared before graph lazy-fetch (enabled: wikiOpen).
+  const [cgOpen, setCgOpen] = useState(() => localStorage.getItem("pmharness.statePane.cgOpen") === "1");
+  const [wikiOpen, setWikiOpen] = useState(() => localStorage.getItem("pmharness.statePane.wikiOpen") === "1");
+
+  const wikiOkForGraph = wiki?.status === "ok";
+
+  // Full graph is owner/private only — lazy-fetch when the Wiki strip expands.
+  const {
+    data: wikiGraph,
+    isValidating: wikiGraphValidating,
+    revalidate: revalidateWikiGraph,
+  } = useStaleWhileRevalidate<WikiGraphData>(
+    `wiki-graph:${WIKI_SWR_KEY}`,
+    () => api.getWikiGraph(),
+    { enabled: wikiOpen && wikiOkForGraph },
+  );
+
+  const wikiTopLinked = wikiGraph?.status === "ok" && wikiGraph.nodes?.length
+    ? topWikiNodesByLinkCount(wikiGraph.nodes, wikiGraph.edges ?? [])
+    : [];
+
   // Telemetry (CodeGraph / Wiki) is collapsed by default so it reads as a quiet
   // status line, not a wall of stats competing with the actual findings. The
   // full metrics are one click away. Preference persists per user.
-  const [cgOpen, setCgOpen] = useState(() => localStorage.getItem("pmharness.statePane.cgOpen") === "1");
-  const [wikiOpen, setWikiOpen] = useState(() => localStorage.getItem("pmharness.statePane.wikiOpen") === "1");
   // MCP defaults open so it fills the State pane dead space under CodeGraph/Wiki.
   const [mcpOpen, setMcpOpen] = useState(() => localStorage.getItem("pmharness.statePane.mcpOpen") !== "0");
   const [mcpSummary, setMcpSummary] = useState({ total: 0, running: 0 });
@@ -75,6 +118,7 @@ export default function StatePane({ artifacts }: {
     const onChange = () => {
       void revalidateCg();
       void revalidateWiki();
+      if (wikiOpen && wikiOkForGraph) void revalidateWikiGraph();
     };
     window.addEventListener("harness-config-changed", onChange);
     window.addEventListener("harness-new-session", onChange);
@@ -82,7 +126,7 @@ export default function StatePane({ artifacts }: {
       window.removeEventListener("harness-config-changed", onChange);
       window.removeEventListener("harness-new-session", onChange);
     };
-  }, [revalidateCg, revalidateWiki]);
+  }, [revalidateCg, revalidateWiki, revalidateWikiGraph, wikiOpen, wikiOkForGraph]);
 
   // Open the hosted wiki in the in-app Browser tab so a disconnected user has a
   // one-click path to create (or self-host) their portable LLM wiki. Mirrors the
@@ -630,6 +674,43 @@ export default function StatePane({ artifacts }: {
                       </div>
                     </div>
                   </div>
+
+                  {wikiGraphValidating && !wikiGraph ? (
+                    <div className="flex items-center gap-1.5 text-faint text-[9px]">
+                      <Loader2 className="w-2.5 h-2.5 animate-spin shrink-0" />
+                      Loading graph…
+                    </div>
+                  ) : wikiGraph?.status === "error" ? (
+                    <div className="text-[9px] text-risk/90 leading-snug">
+                      {wikiGraph.error || "Could not load wiki graph"}
+                    </div>
+                  ) : wikiGraph?.status === "needs_auth" ? (
+                    <div className="text-[9px] text-warn leading-snug">
+                      {wikiGraph.hint || "Owner token required for graph preview"}
+                    </div>
+                  ) : wikiTopLinked.length > 0 ? (
+                    <div>
+                      <div className="text-faint text-[9px] uppercase tracking-wide mb-1">Top linked</div>
+                      <ul className="space-y-0.5">
+                        {wikiTopLinked.map((node) => (
+                          <li
+                            key={node.id}
+                            className="flex items-baseline gap-1.5 text-[9px] text-muted leading-snug"
+                            title={node.id}
+                          >
+                            <span className="truncate flex-1 min-w-0">
+                              {node.title}
+                              {node.section ? <span className="text-faint"> · {node.section}</span> : null}
+                            </span>
+                            <span className="tabular-nums text-faint shrink-0">{node.links}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : wikiGraph?.status === "ok" && (wikiGraph.edges?.length ?? 0) === 0 ? (
+                    <div className="text-[9px] text-faint italic">No links in graph yet</div>
+                  ) : null}
+
                   <div className="flex items-center justify-between gap-2">
                     {wiki?.base_url
                       ? <span className="text-[8px] text-faint truncate">{wiki.base_url}</span>
@@ -643,12 +724,15 @@ export default function StatePane({ artifacts }: {
                         Disconnect
                       </button>
                       <button
-                        onClick={() => void revalidateWiki()}
-                        disabled={wikiValidating}
+                        onClick={() => {
+                          void revalidateWiki();
+                          void revalidateWikiGraph();
+                        }}
+                        disabled={wikiValidating || wikiGraphValidating}
                         className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center"
                         title="Refresh Wiki Stats"
                       >
-                        <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
+                        <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating || wikiGraphValidating ? "animate-spin" : ""}`} />
                       </button>
                     </div>
                   </div>

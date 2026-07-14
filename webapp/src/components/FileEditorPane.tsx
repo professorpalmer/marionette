@@ -152,6 +152,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [readOnly, setReadOnly] = useState(false);
+  const [contentTruncated, setContentTruncated] = useState(false);
   const [kind, setKind] = useState<EditorKind>("code");
   const [textMode, setTextMode] = useState<TextBinaryMode>("code");
   const [binaryMeta, setBinaryMeta] = useState<BinaryMeta | null>(null);
@@ -286,6 +287,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
       setLoading(true);
       setError(null);
       setBinaryMeta(null);
+      setContentTruncated(false);
       setTextMode("code");
       try {
         const res = await api.readFile(path);
@@ -298,6 +300,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           setContent(res.content || "");
           setOriginalContent(res.content || "");
           setReadOnly(!!res.truncated);
+          setContentTruncated(!!res.truncated);
           setIsDirty(false);
           onDirtyChangeRef.current(false);
           if (pendingJumpRef.current?.line != null) {
@@ -520,6 +523,14 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           {(readOnly || !isTextEditable) && (
             <span className="px-1.5 py-0.5 rounded bg-panel2 border border-edge text-[9px] font-mono uppercase text-muted tracking-wider select-none shrink-0">
               Read-only
+            </span>
+          )}
+          {contentTruncated && (
+            <span
+              className="text-[10px] text-muted truncate min-w-0"
+              title="This file exceeds the 1 MB read cap. Shown content may be incomplete."
+            >
+              Exceeded 1 MB read cap; content may be incomplete.
             </span>
           )}
         </div>

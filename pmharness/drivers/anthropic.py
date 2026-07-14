@@ -366,8 +366,16 @@ class AnthropicDriver:
 
         return with_retry(_call)
 
-    def chat_stream(self, messages: list, *, tools: list | None = None,
-                    system: str | None = None, on_delta=None) -> DriverResponse:
+    def chat_stream(
+        self,
+        messages: list,
+        *,
+        tools: list | None = None,
+        system: str | None = None,
+        on_delta=None,
+        on_reasoning_delta=None,
+        on_tool_hint=None,
+    ) -> DriverResponse:
         """Streaming counterpart of chat() over Anthropic's SSE Messages API.
         Emits text deltas via on_delta(str) as they arrive, while assembling the
         full text + native tool_use calls so the return value matches chat()
@@ -422,6 +430,9 @@ class AnthropicDriver:
                                 "name": block.get("name") or "",
                                 "args": "",
                             }
+                            _hint = tool_blocks[idx]["name"]
+                            if _hint and on_tool_hint is not None:
+                                on_tool_hint(_hint)
 
                     elif etype == "content_block_delta":
                         idx = evt.get("index")
@@ -432,6 +443,10 @@ class AnthropicDriver:
                             if piece:
                                 full_text_pieces.append(piece)
                                 on_delta(piece)
+                        elif dtype == "thinking_delta":
+                            piece = delta.get("thinking") or ""
+                            if piece and on_reasoning_delta is not None:
+                                on_reasoning_delta(piece)
                         elif dtype == "input_json_delta":
                             # Streamed tool-call arguments (partial JSON).
                             if idx in tool_blocks:

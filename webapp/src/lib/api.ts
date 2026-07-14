@@ -1,5 +1,24 @@
 // Typed harness API -- thin wrappers over the transport seam.
-import { getJSON, getJSONSoft, postJSON, stream, withToken, uploadFile, type StreamEvent } from "./transport";
+import {
+  getJSON,
+  getJSONSoft,
+  postJSON,
+  stream,
+  withToken,
+  uploadFile,
+  chatEventsPath,
+  type StreamEvent,
+  type ChatEventReplay as TransportChatEventReplay,
+} from "./transport";
+
+export type { ChatEventFrame } from "./transport";
+
+/** Mid-turn SSE ring replay payload (miss fields from GET /api/chat/events). */
+export type ChatEventReplay = TransportChatEventReplay & {
+  missed?: boolean;
+  available?: boolean;
+  code?: "ring_miss" | "generation_mismatch" | string;
+};
 
 export type Config = {
   driver: string; reach: string; budget: number;
@@ -114,8 +133,8 @@ export type Job = {
   // /api/jobs sends an artifact COUNT; embedded views may send the full list.
   // Use the /api/artifacts endpoint to fetch details for a job.
   artifacts?: Artifact[] | number;
-  // False on /api/swarm/live for terminal jobs (slim routing+verdicts only).
-  // Expand fetches /api/artifacts and flips this true. Running jobs stay true.
+  // False on /api/swarm/live (slim routing+verdicts for in-progress and terminal).
+  // Expand fetches /api/artifacts and flips this true.
   artifacts_complete?: boolean;
   // Server-computed before slim: all workers failed/blocked with no real work.
   dead_run_failure?: string | null;
@@ -651,6 +670,9 @@ export const api = {
   // the result and continues on its own -- even without autopilot.
   resume: (onEvent: (e: StreamEvent) => void, onDone?: () => void, onError?: (e: any) => void) =>
     stream("/api/chat?resume=true", onEvent, onDone, onError),
+  /** Mid-turn SSE reattach: replay retained frames since ``since`` cursor. */
+  chatEvents: (opts?: { session?: string; since?: number; generation?: number }) =>
+    getJSON<ChatEventReplay>(chatEventsPath(opts || {})),
   mcp: () => getJSON<{ servers: any[]; tools: any[] }>("/api/mcp"),
   mcpCatalog: () => getJSON<{ catalog: Record<string, any> }>("/api/mcp/catalog"),
   mcpAdd: (name: string, command?: string, args?: string[], env?: Record<string, string>, url?: string) => {
@@ -736,7 +758,10 @@ export const api = {
   openWorkspace: (path: string) => postJSON<{ ok: boolean; repo: string; branch: string; is_git: boolean; codegraph: "indexing" | "ready" | "unsupported" | "needs_scope" | "none" | "pending"; active_session?: string }>("/api/workspace/open", { path }),
   forgetWorkspace: (path: string) => postJSON<{ ok: boolean; recents: string[]; cleared_active?: boolean; repo?: string }>("/api/workspace/forget", { path }),
   getWorkspace: () => getJSON<WorkspaceInfo>("/api/workspace"),
-  getWorkspaceFiles: () => getJSON<{ files: string[] }>(withToken("/api/workspace/files")),
+  getWorkspaceFiles: () =>
+    getJSON<{ files: string[]; truncated?: boolean; total?: number; capped?: number }>(
+      withToken("/api/workspace/files"),
+    ),
   searchSymbols: (q: string) => getJSON<{ symbols: { name: string; kind: string; path: string; line: number }[]; status?: string }>(withToken("/api/workspace/symbols?q=" + encodeURIComponent(q))),
   readFile: (path: string) =>
     getJSONSoft<{

@@ -1,9 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { Circle, GitBranch, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle, RefreshCw, Zap } from "lucide-react";
-import { api, type Config, type UsageData } from "../lib/api";
+import { api, type Config, type SessionState, type UsageData } from "../lib/api";
 import { isDesktop } from "../lib/transport";
+import { usePolling } from "../lib/usePolling";
 import CostBreakdown from "./CostBreakdown";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
+
+type FooterRuntimeStatus = "ready" | "thinking" | "busy";
+
+/** Mirror Conversation/LeftRail: pilot state + any session runner liveness. */
+export function deriveFooterRuntimeStatus(
+  sessionState: SessionState | null,
+): FooterRuntimeStatus {
+  if (!sessionState) return "ready";
+  if (sessionState.state === "awaiting_swarm" || sessionState.pending_swarms) return "busy";
+  if (sessionState.state === "thinking") return "thinking";
+  const hasRunningRunner = Object.values(sessionState.runners ?? {}).some(
+    (status) => status === "running",
+  );
+  if (hasRunningRunner) return "thinking";
+  return "ready";
+}
 
 // Bottom status strip (Hermes shell/statusbar pattern): runtime health, active
 // workspace branch, pilot model, spend, and panel toggles. Job inventory lives
@@ -21,6 +38,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
   const [update, setUpdate] = useState<{ behind: number; branch: string; version: string } | null>(null);
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [sessionState, setSessionState] = useState<SessionState | null>(null);
 
   // Transient toast (e.g. a refused model switch). Auto-dismisses; never blocks.
   useEffect(() => {
@@ -154,6 +172,12 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     }).catch(() => {});
   }, [config]);
 
+  // Poll runner/pilot liveness so the footer reflects real busy state (LeftRail
+  // uses the same endpoint on the same cadence for per-session dots).
+  usePolling(() => api.getSessionState()
+    .then((stateRes) => { if (stateRes) setSessionState(stateRes); })
+    .catch(() => {}), 4000);
+
   useEffect(() => {
     fetchUsage();
     const interval = setInterval(fetchUsage, 10000);
@@ -207,20 +231,31 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
   };
 
   const showUsage = usage && (usage.tokens_used > 0 || usage.est_cost_usd > 0);
+  const runtimeStatus = deriveFooterRuntimeStatus(sessionState);
+  const runtimeReady = runtimeStatus === "ready";
 
   return (
     <div className="flex items-center gap-3 px-3 h-6 border-t border-edge bg-panel text-[10px] text-muted select-none">
-      <button onClick={onToggleLeft} title="Toggle sessions panel (Cmd+B)"
+      <button onClick={onToggleLeft} title="Toggle sessions panel (Ctrl/Cmd+B)"
         className={`p-0.5 rounded hover:bg-panel2 ${leftOpen ? "text-txt" : "text-muted"}`}><PanelLeft size={12} /></button>
-      <button onClick={onToggleRight} title="Toggle right panel (Cmd+J)"
+      <button onClick={onToggleRight} title="Toggle right panel (Ctrl/Cmd+J)"
         className={`p-0.5 rounded hover:bg-panel2 ${rightOpen ? "text-txt" : "text-muted"}`}><PanelRight size={12} /></button>
       <span className="w-px h-3 bg-edge" />
-      <span className="flex items-center gap-1 text-good"><Circle size={7} className="fill-good text-good" /> ready</span>
+      <span
+        className={`flex items-center gap-1 ${runtimeReady ? "text-good" : "text-accent"}`}
+        title={runtimeReady ? "Idle" : runtimeStatus === "busy" ? "Swarm or background work in progress" : "Session runner active"}
+      >
+        <Circle
+          size={7}
+          className={runtimeReady ? "fill-good text-good" : "fill-accent text-accent animate-pulse"}
+        />
+        {runtimeStatus}
+      </span>
       {branch && <span className="flex items-center gap-1"><GitBranch size={10} />{branch}</span>}
       {showUsage && (
         <>
           <span className="w-px h-3 bg-edge/40" />
-          <span className="flex items-center gap-1.5 text-muted/80" title="Token usage and estimated cost for this app launch (survives backend restart; resets on full quit)">
+          <span className="flex items-center gap-1.5 text-muted/80" title="Process-wide token usage and estimated cost since app launch (not repo session spend in Swarm pane; survives backend restart; resets on full quit)">
             <Coins size={10} className="text-faint" />
             <span>{formatTokens(usage.tokens_used)} tok</span>
             {(() => {
@@ -263,15 +298,16 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
             {/* The estimated cost is now a click/hover trigger for a compact
                 routing-value breakdown (why this model / what it saved). It
                 stays a plain figure when there is nothing meaningful to expand. */}
-            <span className="relative inline-flex items-center" ref={costRef}>
+            <span className="relative inline-flex items-center gap-1" ref={costRef}>
               <button
                 type="button"
                 onClick={() => setCostOpen((v) => !v)}
-                title="Estimated spend for this app launch -- click for the full cost breakdown"
+                title="Process-wide estimated spend since app launch -- click for the full cost breakdown (Swarm pane shows per-repo session spend)"
                 className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-good/40 hover:text-good transition cursor-pointer"
               >
                 ~{formatCost(usage.est_cost_usd)}
               </button>
+              <span className="text-faint/70 normal-case font-sans tracking-normal">process</span>
               {costOpen && (
                 <div className="absolute bottom-full right-0 mb-1.5 z-50">
                   <CostBreakdown
@@ -343,7 +379,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
           <span>update{update.behind ? ` (${update.behind})` : ""}</span>
         </button>
       ) : null}
-      <span className="text-muted/60">{isDesktop ? "desktop" : "web"}</span>
+      <span className="text-muted/60">{isDesktop() ? "desktop" : "web"}</span>
     </div>
   );
 }

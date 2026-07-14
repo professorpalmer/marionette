@@ -135,6 +135,9 @@ def test_session_total_includes_swarm_store_job_cost(monkeypatch):
             monkeypatch.setattr(
                 srv, "_job_swarm_accounting", lambda arts, registry: (50_000, 0.37)
             )
+            # Bust the short-TTL /api/usage boot-pill cache so the monkeypatched
+            # accounting is visible on the next GET (StatusBar polls ~10s apart).
+            srv._usage_cache_clear_for_tests()
 
             usage = json.loads(_get(port, "/api/usage", headers=headers).read().decode())
             assert abs(usage["session"]["est_cost_usd"] - (baseline + 0.37)) < 1e-6

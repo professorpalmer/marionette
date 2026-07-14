@@ -8,6 +8,25 @@ import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import { writeTranscriptCache } from "./Conversation";
 
+/** User-facing copy when concurrent session runner leases are full. */
+export const SESSION_LEASE_EXHAUSTED_MESSAGE =
+  "This session could not start — too many sessions are busy right now. Wait a moment or stop another turn, then try again.";
+
+/** True when switch/open/create failed because all session runner leases are busy. */
+export function isLeaseExhaustedError(err: unknown): boolean {
+  if (!err) return false;
+  const e = err as { message?: string; code?: string; error?: string; status?: number };
+  if (e.code === "lease_exhausted") return true;
+  const msg = String(e.message || e.error || err || "");
+  if (/lease_exhausted/i.test(msg)) return true;
+  if (/session runner lease exhausted/i.test(msg)) return true;
+  // postJSON throws before parsing the body: "/api/sessions/switch -> 409"
+  if (/\/api\/(?:sessions\/(?:switch|create)|workspace\/open)\s*->\s*409\b/i.test(msg)) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Stable PROJECTS rail order: keep recents as-is, append currentRepo only when
  * it is not already present (slash/case-insensitive). Never force the active
@@ -254,6 +273,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const [opening, setOpening] = useState(false);
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null);
+  const [sessionActivationNotice, setSessionActivationNotice] = useState<string | null>(null);
   const codegraphByRepoRef = useRef<Record<string, string>>({});
   const [railTab, setRailTab] = useState<"projects" | "sessions">(() => {
     try {
@@ -453,7 +473,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return () => window.removeEventListener("focus", onFocus);
   }, [workspaceInfo?.codegraph_status, revalidateWorkspace]);
 
-  const handleOpenProject = async (path: string) => {
+  const handleOpenProject = async (path: string): Promise<boolean> => {
     setOpening(true);
     try {
       const res = await api.openWorkspace(path);
@@ -473,11 +493,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         dispatchProjectSelected(res.repo);
         await Promise.all([revalidateWorkspace(), revalidateWorkspaces(), revalidateSessions()]);
         window.dispatchEvent(new Event("harness-config-changed"));
+        return true;
+      }
+      if ((res as { code?: string }).code === "lease_exhausted") {
+        notifySessionActivationBlocked(res);
       } else {
         alert("Failed to open directory: " + (res as any).error);
       }
+      return false;
     } catch (err: any) {
-      alert("Error opening directory: " + (err?.error || err?.message || err));
+      if (!notifySessionActivationBlocked(err)) {
+        alert("Error opening directory: " + (err?.error || err?.message || err));
+      }
+      return false;
     } finally {
       setOpening(false);
     }
@@ -531,6 +559,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const toast = (msg: string) => {
     window.dispatchEvent(new CustomEvent("harness-toast", { detail: msg }));
+  };
+
+  const notifySessionActivationBlocked = (err: unknown): boolean => {
+    if (!isLeaseExhaustedError(err)) return false;
+    const msg = SESSION_LEASE_EXHAUSTED_MESSAGE;
+    setSessionActivationNotice(msg);
+    toast(msg);
+    return true;
   };
 
   const switchWs = async (name: string) => {
@@ -612,6 +648,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       if (railTab === "sessions") {
         void refreshBankSessions();
       }
+    } catch (err) {
+      notifySessionActivationBlocked(err);
     } finally {
       setSwitchingSessionId(null);
     }
@@ -670,23 +708,28 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   }, [revalidateWorkspace, revalidateWorkspaces]);
 
   const newSession = async (inProjectPath?: string) => {
-    // createSession always uses the active _cfg.repo. When the user has
-    // selected a different (often empty) project, open that workspace first
-    // so the new session lands there instead of the current active root.
-    const target = (inProjectPath || selectedProjectPath || "").trim();
-    const current = (workspaceInfo?.repo || "").trim();
-    if (target && (!current || !repoPathsEqual(target, current))) {
-      await handleOpenProject(target);
-    } else if (target) {
-      setExpandedProjects((prev) => ({ ...prev, [target]: true }));
+    try {
+      // createSession always uses the active _cfg.repo. When the user has
+      // selected a different (often empty) project, open that workspace first
+      // so the new session lands there instead of the current active root.
+      const target = (inProjectPath || selectedProjectPath || "").trim();
+      const current = (workspaceInfo?.repo || "").trim();
+      if (target && (!current || !repoPathsEqual(target, current))) {
+        const opened = await handleOpenProject(target);
+        if (!opened) return;
+      } else if (target) {
+        setExpandedProjects((prev) => ({ ...prev, [target]: true }));
+      }
+      const created = await api.createSession();
+      // Seed an empty warm-cache entry before Conversation's switch effect runs
+      // so it never paints the previous session's transcript under this id.
+      if (created?.id) {
+        writeTranscriptCache(created.id, []);
+      }
+      await refreshSessionsRef.current();
+    } catch (err) {
+      notifySessionActivationBlocked(err);
     }
-    const created = await api.createSession();
-    // Seed an empty warm-cache entry before Conversation's switch effect runs
-    // so it never paints the previous session's transcript under this id.
-    if (created?.id) {
-      writeTranscriptCache(created.id, []);
-    }
-    await refreshSessionsRef.current();
   };
   useEffect(() => {
     const onNew = () => { void newSession(); };
@@ -939,6 +982,24 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         >
           {opening ? "Opening…" : "Open Folder..."}
         </button>
+        {sessionActivationNotice && (
+          <div
+            role="status"
+            className="rounded-md border border-warn/40 bg-warn/10 px-2.5 py-2 text-[11px] leading-snug text-txt"
+          >
+            <div className="flex items-start gap-2">
+              <p className="flex-1 min-w-0">{sessionActivationNotice}</p>
+              <button
+                type="button"
+                onClick={() => setSessionActivationNotice(null)}
+                className="shrink-0 text-[10px] text-muted hover:text-txt font-semibold"
+                aria-label="Dismiss"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       </div>
 

@@ -140,6 +140,70 @@ test("buildUpdaterEnv: an empty shell env leaves the base PATH intact", () => {
   assert.equal(merged.PATH, basePath);
 });
 
+test("mergePathStrings: order-preserving de-duplication across segments", () => {
+  const joinPath = (...dirs) => dirs.join(path.delimiter);
+  const merged = env.mergePathStrings(
+    joinPath("C:\\tools", "C:\\bin"),
+    joinPath("C:\\bin", "C:\\extra"),
+  );
+  const parts = merged.split(path.delimiter);
+  assert.deepEqual(parts, ["C:\\tools", "C:\\bin", "C:\\extra"]);
+});
+
+test("parseRegQueryPath: extracts PATH value from reg query output", () => {
+  const sample = [
+    "",
+    "HKEY_CURRENT_USER\\Environment",
+    "    PATH    REG_EXPAND_SZ    %USERPROFILE%\\bin;C:\\Windows",
+    "",
+  ].join("\r\n");
+  assert.equal(
+    env.parseRegQueryPath(sample),
+    "%USERPROFILE%\\bin;C:\\Windows",
+  );
+});
+
+test("expandWinEnv: expands %VAR% tokens against a supplied env map", () => {
+  const expanded = env.expandWinEnv("%USERPROFILE%\\bin;%APPDATA%\\npm", {
+    USERPROFILE: "C:\\Users\\dev",
+    APPDATA: "C:\\Users\\dev\\AppData\\Roaming",
+  });
+  assert.equal(
+    expanded,
+    "C:\\Users\\dev\\bin;C:\\Users\\dev\\AppData\\Roaming\\npm",
+  );
+});
+
+test("windowsProfilePathCandidates: includes npm, uv, and portable tool dirs", () => {
+  const home = "C:\\Users\\dev";
+  const candidates = env.windowsProfilePathCandidates({
+    USERPROFILE: home,
+    LOCALAPPDATA: `${home}\\AppData\\Local`,
+    APPDATA: `${home}\\AppData\\Roaming`,
+    NVM_SYMLINK: "C:\\Program Files\\nodejs",
+  });
+  assert.ok(candidates.includes(`${home}\\AppData\\Roaming\\npm`));
+  assert.ok(candidates.includes(`${home}\\.local\\bin`));
+  assert.ok(candidates.includes(`${home}\\AppData\\Local\\marionette\\tools\\node`));
+  assert.ok(candidates.includes("C:\\Program Files\\nodejs"));
+});
+
+test("windowsShellEnv: merges profile, registry, and inherited PATH on win32", () => {
+  if (process.platform !== "win32") return;
+  const shellEnv = env.windowsShellEnv({
+    USERPROFILE: process.env.USERPROFILE,
+    LOCALAPPDATA: process.env.LOCALAPPDATA,
+    APPDATA: process.env.APPDATA,
+    PATH: process.env.PATH,
+  });
+  assert.ok(shellEnv.PATH, "expected a merged PATH on Windows");
+  const parts = shellEnv.PATH.split(path.delimiter);
+  assert.ok(parts.length >= 1);
+  for (const seg of process.env.PATH.split(path.delimiter)) {
+    if (seg) assert.ok(parts.includes(seg), `inherited segment missing: ${seg}`);
+  }
+});
+
 test("isTrackedSelfEditLine: ignores untracked files and CodeGraph metadata", () => {
   assert.equal(bridge.isTrackedSelfEditLine("?? scratch.txt"), false);
   assert.equal(bridge.isTrackedSelfEditLine(" M results/run.sqlite"), false);

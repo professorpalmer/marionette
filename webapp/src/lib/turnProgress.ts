@@ -18,6 +18,8 @@ export type TurnCard = {
 export type TurnItem =
   | { kind: "msg"; msg: { role: string; text: string; streaming?: boolean } }
   | { kind: "card"; card: TurnCard }
+  | { kind: "tool_prep"; name: string }
+  | { kind: "thinking"; text: string; streaming?: boolean }
   | { kind: string; [key: string]: unknown };
 
 export type BusyProgress = {
@@ -94,6 +96,14 @@ export function deriveBusyProgress(
   const runningKind = (running?.kind || "").replace(/_/g, " ").trim();
   const runningGoal = shortenGoal(running?.goal || "");
 
+  let toolPrep = "";
+  for (const it of [...itemsInCurrentTurn(items)].reverse()) {
+    if (it.kind === "tool_prep") {
+      toolPrep = String((it as { name?: string }).name || "").replace(/_/g, " ").trim();
+      break;
+    }
+  }
+
   let phase = "idle";
   if (status === "thinking") phase = "thinking";
   else if (status === "streaming") phase = "streaming";
@@ -123,6 +133,7 @@ export function deriveBusyProgress(
 
   if (runningKind) parts.push(runningKind);
   else if (runningGoal) parts.push(runningGoal);
+  else if (toolPrep) parts.push(toolPrep);
   if (step > 0) parts.push(`step ${step}`);
   if (elapsed) parts.push(elapsed);
 
@@ -132,6 +143,7 @@ export function deriveBusyProgress(
 
   const pillParts: string[] = [phase];
   if (runningKind) pillParts.push(runningKind);
+  else if (toolPrep) pillParts.push(toolPrep);
   if (step > 0) pillParts.push(`${step}`);
   if (elapsed) pillParts.push(elapsed);
 

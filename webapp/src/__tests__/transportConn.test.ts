@@ -1,5 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { isTransientHarnessConnError } from "../lib/transport";
+import { getHarnessIpc, isDesktop, isTransientHarnessConnError } from "../lib/transport";
+
+describe("isDesktop", () => {
+  it("reflects late preload injection instead of import-time snapshot", () => {
+    const w = window as any;
+    const prev = w.harnessIPC;
+    delete w.harnessIPC;
+    expect(isDesktop()).toBe(false);
+    w.harnessIPC = { getJSON: () => Promise.resolve({}) };
+    expect(isDesktop()).toBe(true);
+    if (prev === undefined) delete w.harnessIPC;
+    else w.harnessIPC = prev;
+  });
+});
+
+describe("getHarnessIpc", () => {
+  it("returns the live window.harnessIPC reference", () => {
+    const w = window as any;
+    const prev = w.harnessIPC;
+    const bridge = { stream: () => () => {} };
+    w.harnessIPC = bridge;
+    expect(getHarnessIpc()).toBe(bridge);
+    if (prev === undefined) delete w.harnessIPC;
+    else w.harnessIPC = prev;
+  });
+});
 
 describe("isTransientHarnessConnError", () => {
   it("matches Electron harness:getJSON ECONNREFUSED wrappers", () => {
