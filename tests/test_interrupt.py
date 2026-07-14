@@ -52,6 +52,88 @@ def test_interrupt_endpoint_token_guarded(tmp_path):
         httpd.shutdown()
 
 
+def test_interrupt_session_id_targets_non_active_runner():
+    """Wave 2: optional session_id interrupts a background runner, not the active pilot."""
+    from types import SimpleNamespace
+    from harness.session_runners import SessionRunnerRegistry
+
+    httpd, port, srv = _server()
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    try:
+        interrupted = []
+
+        def _make_runner(label):
+            return SimpleNamespace(
+                interrupt=lambda label=label: interrupted.append(label),
+                _busy=threading.Lock(),
+                _state="executing",
+            )
+
+        # Hold busy locks so registry status reports running.
+        runner_active = _make_runner("active")
+        runner_active._busy.acquire()
+        runner_bg = _make_runner("background")
+        runner_bg._busy.acquire()
+
+        a = srv._sessions.create(title="Active")
+        b = srv._sessions.create(title="Background")
+        sid_a, sid_b = a["id"], b["id"]
+
+        reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+        reg.get_or_create(sid_a, lambda: runner_active)
+        reg.get_or_create(sid_b, lambda: runner_bg)
+        reg.set_active_view(sid_a)
+        srv._runners = reg
+        srv._pilot = runner_active
+        srv._sessions.switch(sid_a)
+
+        resp = _post(
+            port,
+            "/api/session/interrupt",
+            {"session_id": sid_b},
+            {
+                "Content-Type": "application/json",
+                "X-Harness-Token": srv._TOKEN,
+            },
+        )
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+        assert data.get("ok") is True
+        assert interrupted == ["background"]
+        # Active view / pilot untouched.
+        assert srv._pilot is runner_active
+        assert reg.active_view_id == sid_a
+        assert reg.get(sid_a) is runner_active
+        assert reg.get(sid_b) is runner_bg
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        httpd.shutdown()
+
+
+def test_interrupt_unknown_session_id_returns_404():
+    httpd, port, srv = _server()
+    try:
+        try:
+            _post(
+                port,
+                "/api/session/interrupt",
+                {"session_id": "does-not-exist"},
+                {
+                    "Content-Type": "application/json",
+                    "X-Harness-Token": srv._TOKEN,
+                },
+            )
+            assert False, "should have failed with 404"
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+            body = json.loads(e.read().decode())
+            assert body.get("ok") is False
+    finally:
+        httpd.shutdown()
+
+
 def test_send_loop_with_cancel_preset_halts_quickly():
     config = HarnessConfig()
     session = ConversationalSession(config)

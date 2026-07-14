@@ -4867,7 +4867,26 @@ class Handler(BaseHTTPRequestHandler):
             mid = _stash_put(message, images)
             return self._send(200, json.dumps({"id": mid}))
         if path == "/api/session/interrupt":
-            _pilot.interrupt()
+            # Optional session_id targets a background runner without attaching
+            # its view. Omitted => active pilot (backward compatible).
+            sid = (body.get("session_id") or "").strip()
+            if not sid:
+                try:
+                    qs = parse_qs(urlparse(self.path).query)
+                    sid = (qs.get("session_id") or [""])[0].strip()
+                except Exception:
+                    sid = ""
+            if sid:
+                target = _runners.get(sid)
+                if target is None:
+                    return self._send(
+                        404,
+                        json.dumps({"ok": False, "error": "session runner not found"}),
+                    )
+                target.interrupt()
+            else:
+                if _pilot is not None:
+                    _pilot.interrupt()
             return self._send(200, json.dumps({"ok": True}))
         if path == "/api/session/rewind":
             # Hermes-style message edit: truncate transcript at a user turn,

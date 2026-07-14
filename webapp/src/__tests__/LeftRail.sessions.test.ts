@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, purgeSessionFromRootCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, purgeSessionFromRootCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -312,5 +312,12 @@ describe("LeftRail session list contracts", () => {
       }),
     ).toMatch(/"Beta"/);
     expect(formatLeaseExhaustedMessage({ code: "lease_exhausted" })).toBe(SESSION_LEASE_EXHAUSTED_MESSAGE);
+  });
+
+  it("shouldOfferBackgroundStop only for running non-active rows", () => {
+    expect(shouldOfferBackgroundStop("running", false)).toBe(true);
+    expect(shouldOfferBackgroundStop("running", true)).toBe(false);
+    expect(shouldOfferBackgroundStop("idle", false)).toBe(false);
+    expect(shouldOfferBackgroundStop(undefined, false)).toBe(false);
   });
 });

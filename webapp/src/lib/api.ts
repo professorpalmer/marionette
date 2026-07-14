@@ -572,7 +572,12 @@ export const api = {
   },
   sessionTranscript: (session: string) => getJSON<{ history: any[]; display?: any[]; job_ids?: string[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
   getSessionState: () => getJSON<SessionState>(withToken("/api/session/state")),
-  interruptSession: () => postJSON<{ ok: boolean }>("/api/session/interrupt", {}),
+  /** Hard-stop a turn. Pass sessionId to target a background runner without view attach. */
+  interruptSession: (sessionId?: string) =>
+    postJSON<{ ok: boolean }>(
+      "/api/session/interrupt",
+      sessionId ? { session_id: sessionId } : {},
+    ),
   rewindSession: (userOrdinal: number) =>
     postJSON<{
       ok: boolean;

@@ -114,6 +114,14 @@ export function workspacesCacheKey(repo: string): string {
   return `workspaces:${repo || "__none__"}`;
 }
 
+/** True when LeftRail should offer Stop without forcing a view attach. */
+export function shouldOfferBackgroundStop(
+  status: "running" | "idle" | undefined,
+  isActive: boolean,
+): boolean {
+  return status === "running" && !isActive;
+}
+
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
   jobsRefresh: number;
   onSessionChange?: (id: string) => void;
@@ -124,6 +132,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     y: number;
     sessionId: string;
     archived: boolean;
+    running: boolean;
   } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [projectContextMenu, setProjectContextMenu] = useState<{
@@ -851,7 +860,17 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       y: e.clientY,
       sessionId: s.id,
       archived: !!s.archived,
+      running: runners[s.id] === "running",
     });
+  };
+
+  const stopBackgroundSession = async (sessionId: string) => {
+    try {
+      await api.interruptSession(sessionId);
+      setRunners((prev) => ({ ...prev, [sessionId]: "idle" }));
+    } catch (err) {
+      console.error("Failed to interrupt background session:", err);
+    }
   };
 
   const activeSessions = sessions.filter((s) => !s.archived);
@@ -1359,7 +1378,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                   ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
                                   : <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />}
                                 <span className="flex-1 min-w-0 truncate">{s.title || "Untitled"}</span>
-                                <RunnerStatusDot status={runners[s.id]} />
+                                <RunnerStatusDot
+                                  status={runners[s.id]}
+                                  stoppable={shouldOfferBackgroundStop(runners[s.id], !!s.active)}
+                                  onStop={() => { void stopBackgroundSession(s.id); }}
+                                />
                               </button>
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
@@ -1691,6 +1714,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
+          {contextMenu.running && (
+            <>
+              <button
+                onClick={async () => {
+                  await stopBackgroundSession(contextMenu.sessionId);
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+              >
+                Stop
+              </button>
+              <div className="border-t border-edge my-1" />
+            </>
+          )}
           <button
             onClick={() => {
               handleExport(contextMenu.sessionId, "md");
@@ -1940,10 +1977,34 @@ function JobStatusIcon({ status }: { status: JobStatus }) {
   return <Circle size={12} className="text-muted shrink-0" />;
 }
 
-/** Compact running/idle indicator for a session row. Hidden when status unknown. */
-function RunnerStatusDot({ status }: { status?: "running" | "idle" }) {
+/** Compact running/idle indicator for a session row. Hidden when status unknown.
+ *  When stoppable (running + non-active), click Stops that runner without view attach. */
+function RunnerStatusDot({
+  status,
+  stoppable,
+  onStop,
+}: {
+  status?: "running" | "idle";
+  stoppable?: boolean;
+  onStop?: () => void;
+}) {
   if (!status) return null;
   const running = status === "running";
+  if (stoppable && running && onStop) {
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          onStop();
+        }}
+        className="w-1.5 h-1.5 rounded-full shrink-0 bg-accent hover:ring-2 hover:ring-accent/40 transition"
+        title="Stop (free lease slot)"
+        aria-label="Stop background session"
+      />
+    );
+  }
   return (
     <span
       className={`w-1.5 h-1.5 rounded-full shrink-0 ${running ? "bg-accent" : "bg-muted/50"}`}
