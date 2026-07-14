@@ -8,6 +8,7 @@ import { pickFolder, revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspa
 import FileEditorPane from "./FileEditorPane";
 import { TranscriptList, type Item, type Msg, type Card } from "./TranscriptList";
 import { deriveBusyProgress } from "../lib/turnProgress";
+import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
 
 /**
  * Session-switch transcript hydrate: decide what to show while the target
@@ -2565,10 +2566,8 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setStatus("done");
         setItems((p) => finalizeStreamingThinking(p));
         fetchContextUsage();
-        // The backend derives a session title from the first user message
-        // (set_title_if_default). Tell the sidebar to refetch so the auto-named
-        // session shows up immediately, Cursor/Hermes-style, instead of staying
-        // "New session" until reload.
+        // Backend may also set_title_if_default; refresh meters/title if the
+        // optimistic first-send rename missed or the server derived a different slug.
         window.dispatchEvent(new Event("harness-config-changed"));
       } else if (ev.kind === "error") {
         turnSettledRef.current = true;
@@ -2603,6 +2602,16 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       // a finished background job, so we don't add a user bubble or send images.
       setAttachedImages([]);
       setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: msg, images: imgsToSend } }]);
+      const hasPriorUserTurn = itemsRef.current.some(
+        (it) => it.kind === "msg" && it.msg.role === "user",
+      );
+      if (activeSessionId && msg.trim() && !hasPriorUserTurn) {
+        void renameDefaultSessionIfNeeded(
+          activeSessionId,
+          msg,
+          repoRoot || config?.repo,
+        );
+      }
     }
     setStatus("thinking");
     const streamer = resume

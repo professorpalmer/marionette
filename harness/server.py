@@ -307,6 +307,10 @@ _BOOT_METER_ATTRS = (
     "_worker_tokens_out",
 )
 _BOOT_METER_CARRY: dict[str, float] = {attr: 0.0 for attr in _BOOT_METER_ATTRS}
+# Priced USD folded with dropped runners at fold-time rates. Token meters in
+# carry stay for display; cost must NOT be recomputed at a later pilot rate
+# after a model swap (that would silently reprice historical spend).
+_BOOT_CARRY_COST_USD: float = 0.0
 # Every workspace opened this process -- boot-pill swarm dollars merge
 # epoch-windowed jobs across these repos, not only the active _cfg.repo.
 _BOOT_REPOS: set[str] = set()
@@ -386,6 +390,7 @@ def _persist_boot_usage(*, fold_live: bool = False, force: bool = False) -> None
                     attr: float(_BOOT_METER_CARRY.get(attr, 0.0) or 0.0)
                     for attr in _BOOT_METER_ATTRS
                 }
+                cost_snap = float(_BOOT_CARRY_COST_USD or 0.0)
             else:
                 try:
                     carry_snap = {
@@ -398,10 +403,16 @@ def _persist_boot_usage(*, fold_live: bool = False, force: bool = False) -> None
                         attr: float(_BOOT_METER_CARRY.get(attr, 0.0) or 0.0)
                         for attr in _BOOT_METER_ATTRS
                     }
+                try:
+                    price_in, price_out = _resolve_active_prices()
+                    cost_snap = float(_boot_session_cost(price_in, price_out))
+                except Exception:
+                    cost_snap = float(_BOOT_CARRY_COST_USD or 0.0)
             payload = {
                 "app_run_id": run_id,
                 "cost_epoch": _COST_EPOCH.isoformat(),
                 "carry": carry_snap,
+                "carry_cost_usd": cost_snap,
                 "repos": sorted(_BOOT_REPOS),
                 "saved_at": now,
             }
@@ -418,7 +429,7 @@ def _persist_boot_usage(*, fold_live: bool = False, force: bool = False) -> None
 
 def _restore_boot_usage() -> bool:
     """Reload boot meters when this backend shares the Electron app-run id."""
-    global _COST_EPOCH, _BOOT_USAGE_RESTORED
+    global _COST_EPOCH, _BOOT_USAGE_RESTORED, _BOOT_CARRY_COST_USD
     if _BOOT_USAGE_RESTORED:
         return False
     _BOOT_USAGE_RESTORED = True
@@ -448,6 +459,10 @@ def _restore_boot_usage() -> bool:
                     _BOOT_METER_CARRY[attr] = float(carry.get(attr, 0.0) or 0.0)
                 except Exception:
                     pass
+        try:
+            _BOOT_CARRY_COST_USD = float(data.get("carry_cost_usd", 0.0) or 0.0)
+        except Exception:
+            _BOOT_CARRY_COST_USD = 0.0
         for repo in data.get("repos") or []:
             try:
                 if repo and os.path.isdir(str(repo)):
@@ -2238,13 +2253,32 @@ def _copy_pilot_meters(old_pilot: Any, new_pilot: Any) -> None:
             pass
 
 
+def _resolve_active_prices() -> tuple:
+    """Per-Mtok (price_in, price_out) for the active driver; safe defaults on failure."""
+    try:
+        from pmharness.registry import resolve_price
+        price_in, price_out = resolve_price(_cfg.driver)
+        return float(price_in), float(price_out)
+    except Exception:
+        return 0.5, 2.0
+
+
 def _fold_runner_meters_into_boot_carry(session_id: str, runner: Any) -> None:
     """Add a dropped/evicted runner's meters into the process-lifetime carry.
 
-    Zeros the runner's meters after folding so a lingering ``_pilot`` pointer
-    cannot double-count with carry in ``_boot_usage_meters``.
+    Snapshots priced USD at fold-time rates so later model swaps cannot reprice
+    historical tokens. Zeros the runner's meters after folding so a lingering
+    ``_pilot`` pointer cannot double-count with carry in ``_boot_usage_meters``.
     """
+    global _BOOT_CARRY_COST_USD
     del session_id  # reserved for diagnostics; meters are process-scoped
+    try:
+        price_in, price_out = _resolve_active_prices()
+        _BOOT_CARRY_COST_USD = float(_BOOT_CARRY_COST_USD or 0.0) + float(
+            _session_cost_split(runner, price_in, price_out)
+        )
+    except Exception:
+        pass
     for attr in _BOOT_METER_ATTRS:
         try:
             add = float(getattr(runner, attr, 0) or 0)
@@ -2302,18 +2336,28 @@ def _boot_usage_meters() -> dict[str, float]:
 
 
 def _boot_session_cost(price_in: float, price_out: float) -> float:
-    """Sum per-pilot ``_session_cost_split`` over carry (as a virtual pilot) + live runners.
+    """Sum snapshotted carry USD + per-live-runner ``_session_cost_split``.
 
-    Pricing each live runner separately keeps worker dollars at each worker's
-    own model rate. Carry is priced as a synthetic pilot at the active rate
-    (same approximation as a single-runner process after eviction).
+    Carry dollars are frozen at fold-time rates (see ``_BOOT_CARRY_COST_USD``).
+    Live runners still price at the active rate. Legacy carry with token meters
+    but no snapshotted USD (pre-upgrade / tests) falls back to pricing carry
+    tokens at the supplied rate.
     """
     from types import SimpleNamespace
 
-    carry_pilot = SimpleNamespace(**{
-        attr: _BOOT_METER_CARRY.get(attr, 0.0) for attr in _BOOT_METER_ATTRS
-    })
-    total = float(_session_cost_split(carry_pilot, price_in, price_out))
+    carry_cost = float(_BOOT_CARRY_COST_USD or 0.0)
+    if carry_cost == 0.0:
+        # Legacy / test path: meters stuffed into carry without a fold snapshot.
+        has_carry = any(
+            float(_BOOT_METER_CARRY.get(attr, 0.0) or 0.0) != 0.0
+            for attr in _BOOT_METER_ATTRS
+        )
+        if has_carry:
+            carry_pilot = SimpleNamespace(**{
+                attr: _BOOT_METER_CARRY.get(attr, 0.0) for attr in _BOOT_METER_ATTRS
+            })
+            carry_cost = float(_session_cost_split(carry_pilot, price_in, price_out))
+    total = carry_cost
     try:
         live = list(_runners.runners())
     except Exception:
@@ -5563,8 +5607,36 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
+            qargs = parse_qs(u.query)
+            if qargs.get("repo", [""])[0].strip():
+                from .git_workspace import workspace_status
+                return self._send(200, json.dumps(workspace_status(_cfg.repo, qargs.get("repo", [""])[0])))
             from .git_provision import get_status
             return self._send(200, json.dumps(get_status()))
+        if u.path == "/api/git/branches":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            qargs = parse_qs(u.query)
+            from .git_workspace import workspace_branches
+            return self._send(200, json.dumps(workspace_branches(_cfg.repo, qargs.get("repo", [""])[0])))
+        if u.path == "/api/git/diff":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            qargs = parse_qs(u.query)
+            from .git_workspace import workspace_diff
+            staged = qargs.get("staged", ["0"])[0].strip().lower() in ("1", "true", "yes")
+            return self._send(200, json.dumps(workspace_diff(
+                _cfg.repo,
+                qargs.get("repo", [""])[0],
+                qargs.get("file", [""])[0].strip() or None,
+                staged=staged,
+            )))
         if u.path == "/api/session/state":
             if self._guard():
                 return
@@ -5738,13 +5810,18 @@ class Handler(BaseHTTPRequestHandler):
                 file_size = os.path.getsize(full_path)
                 truncated = False
                 max_bytes = 1024 * 1024
-                if file_size > max_bytes:
-                    truncated = True
-                    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read(max_bytes)
-                else:
-                    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
+                # Read as bytes then decode: text-mode f.read(n) is characters,
+                # so a UTF-8 file over the byte gate could return more than
+                # max_bytes of encoded payload (or mis-label truncation).
+                with open(full_path, "rb") as f:
+                    if file_size > max_bytes:
+                        truncated = True
+                        raw = f.read(max_bytes)
+                    else:
+                        raw = f.read()
+                # errors="ignore" drops a trailing partial multibyte sequence
+                # when the byte cap splits a character; replace would inject U+FFFD.
+                content = raw.decode("utf-8", errors="ignore")
                 return self._send(200, json.dumps({
                     "ok": True,
                     "path": rel_posix or rel_path,
@@ -5844,8 +5921,12 @@ class Handler(BaseHTTPRequestHandler):
                     "files": [], "truncated": False, "total": 0, "capped": 0,
                 }))
             files_list = []
-            total = 0
-            path_cap = 2000
+            try:
+                path_cap = int(os.environ.get("HARNESS_WORKSPACE_FILES_CAP", "2000") or "2000")
+            except ValueError:
+                path_cap = 2000
+            if path_cap < 1:
+                path_cap = 2000
             skip_dirs = {".git", "node_modules", ".venv", ".codegraph", "dist", "build", ".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache", ".idea", ".vscode", "venv", ".next", "coverage", ".hermes", "release", "backend-dist"}
             repo_abs = os.path.abspath(repo)
             for root, dirs, files in os.walk(repo_abs):
@@ -5857,12 +5938,16 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     # Forward slashes: the renderer's file tree and @-mention
                     # matching expect one separator on every platform.
-                    total += 1
-                    if len(files_list) < path_cap:
-                        files_list.append(rel_path.replace(os.sep, "/"))
+                    files_list.append(rel_path.replace(os.sep, "/"))
+            # Collect fully, then sort, then cap — so the kept set is the
+            # alphabetical head, not an os.walk-order biased sample.
+            files_list.sort()
+            total = len(files_list)
             truncated = total > path_cap
+            if truncated:
+                files_list = files_list[:path_cap]
             return self._send(200, json.dumps({
-                "files": sorted(files_list),
+                "files": files_list,
                 "truncated": truncated,
                 "total": total,
                 "capped": path_cap if truncated else total,

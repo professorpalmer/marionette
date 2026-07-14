@@ -8,9 +8,15 @@ from .base import Driver, DriverResponse, SYSTEM_PROMPT
 AGGREGATOR_SYSTEM_PROMPT = "You are an aggregator that synthesizes the best single answer from multiple proposer candidates, reconciling disagreements and avoiding simple concatenation."
 
 
-class MoADriver:
-    supports_streaming = False
+def _driver_supports_chat_stream(driver) -> bool:
+    """True when *driver* exposes an explicit streaming capability and chat_stream."""
+    return (
+        getattr(driver, "supports_streaming", False) is True
+        and callable(getattr(driver, "chat_stream", None))
+    )
 
+
+class MoADriver:
     def __init__(
         self,
         name: str,
@@ -37,6 +43,13 @@ class MoADriver:
 
         self.proposer_drivers = [self.builder(p, reach=self.reach) for p in self.proposer_names]
         self.aggregator_driver = self.builder(self.aggregator_name, reach=self.reach)
+        self.supports_streaming = _driver_supports_chat_stream(self.aggregator_driver)
+
+    def _stream_driver(self):
+        """Return the member driver whose chat_stream path MoA delegates to."""
+        if _driver_supports_chat_stream(self.aggregator_driver):
+            return self.aggregator_driver
+        return None
 
     def complete(self, task_prompt: str, *, system: str = SYSTEM_PROMPT) -> DriverResponse:
         futures = {}
@@ -198,6 +211,131 @@ class MoADriver:
         agg_prompt += "Please synthesize these proposals into the single best reply. Reconcile disagreements, improve accuracy, and provide a single cohesive output. Do not just concatenate them."
 
         agg_response = self.aggregator_driver.complete(agg_prompt, system=AGGREGATOR_SYSTEM_PROMPT)
+
+        total_tokens_in = (agg_response.tokens_in or 0) + proposer_tokens_in
+        total_tokens_out = (agg_response.tokens_out or 0) + proposer_tokens_out
+
+        moa_meta = {
+            "proposers": self.proposer_names,
+            "aggregator": self.aggregator_name,
+            "proposer_tokens_in": proposer_tokens_in,
+            "proposer_tokens_out": proposer_tokens_out,
+            "n_proposers_ok": len(successful_proposers),
+        }
+
+        merged_meta = dict(agg_response.meta) if agg_response.meta else {}
+        merged_meta["moa"] = moa_meta
+        merged_meta["tool_calls"] = []
+
+        return DriverResponse(
+            text=agg_response.text,
+            tokens_in=total_tokens_in,
+            tokens_out=total_tokens_out,
+            latency_ms=agg_response.latency_ms,
+            model=self.name,
+            error=agg_response.error,
+            meta=merged_meta,
+        )
+
+    def chat_stream(
+        self,
+        messages: list,
+        *,
+        tools: Optional[list] = None,
+        system: Optional[str] = None,
+        on_delta=None,
+        on_reasoning_delta=None,
+        on_tool_hint=None,
+    ) -> DriverResponse:
+        if tools:
+            return DriverResponse(
+                text="",
+                model=self.name,
+                error="MoA is a planner/review virtual-model and cannot be used as the tool-calling executor; use a single strong model for execution",
+            )
+
+        if on_delta is None:
+            on_delta = lambda _t: None
+
+        futures = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            for prop in self.proposer_drivers:
+                fut = executor.submit(prop.chat, messages, tools=None, system=system)
+                futures[fut] = prop
+
+            responses = []
+            for fut in concurrent.futures.as_completed(futures):
+                prop = futures[fut]
+                try:
+                    resp = fut.result()
+                    responses.append((prop, resp))
+                except Exception as e:
+                    responses.append((prop, DriverResponse(text="", error=str(e), model=prop.name)))
+
+        successful_proposers = []
+        proposer_tokens_in = 0
+        proposer_tokens_out = 0
+        errors = []
+
+        resp_by_prop = {p: r for p, r in responses}
+        for prop in self.proposer_drivers:
+            resp = resp_by_prop.get(prop)
+            if not resp:
+                continue
+            proposer_tokens_in += resp.tokens_in or 0
+            proposer_tokens_out += resp.tokens_out or 0
+            if resp.error:
+                errors.append(f"{prop.name}: {resp.error}")
+            else:
+                successful_proposers.append((prop.name, resp.text))
+
+        if not successful_proposers:
+            err_msg = "all MoA proposers failed: " + "; ".join(errors)
+            return DriverResponse(
+                text="",
+                tokens_in=proposer_tokens_in,
+                tokens_out=proposer_tokens_out,
+                model=self.name,
+                error=err_msg,
+                meta={
+                    "moa": {
+                        "proposers": self.proposer_names,
+                        "aggregator": self.aggregator_name,
+                        "proposer_tokens_in": proposer_tokens_in,
+                        "proposer_tokens_out": proposer_tokens_out,
+                        "n_proposers_ok": 0,
+                    },
+                    "tool_calls": [],
+                },
+            )
+
+        flat_history = []
+        for msg in messages:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            flat_history.append(f"{role.upper()}: {content}")
+        flat_history_str = "\n".join(flat_history)
+
+        agg_prompt = f"Original conversation history:\n{flat_history_str}\n\nHere are candidate answers proposed by different models:\n\n"
+        for i, (p_name, text) in enumerate(successful_proposers, 1):
+            agg_prompt += f"Proposal {i} ({p_name}):\n{text}\n\n"
+        agg_prompt += "Please synthesize these proposals into the single best reply. Reconcile disagreements, improve accuracy, and provide a single cohesive output. Do not just concatenate them."
+
+        stream_driver = self._stream_driver()
+        agg_messages = [{"role": "user", "content": agg_prompt}]
+        if stream_driver is not None:
+            agg_response = stream_driver.chat_stream(
+                agg_messages,
+                tools=None,
+                system=AGGREGATOR_SYSTEM_PROMPT,
+                on_delta=on_delta,
+                on_reasoning_delta=on_reasoning_delta,
+                on_tool_hint=on_tool_hint,
+            )
+        else:
+            agg_response = self.aggregator_driver.complete(agg_prompt, system=AGGREGATOR_SYSTEM_PROMPT)
+            if agg_response.text and not agg_response.error:
+                on_delta(agg_response.text)
 
         total_tokens_in = (agg_response.tokens_in or 0) + proposer_tokens_in
         total_tokens_out = (agg_response.tokens_out or 0) + proposer_tokens_out

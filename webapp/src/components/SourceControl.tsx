@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { GitBranch, FileCode, RefreshCw, X, Plus, Minus } from "lucide-react";
-import { nativeGit, isDesktop } from "../lib/transport";
+import { nativeGit, gitWritesAvailable } from "../lib/transport";
 import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 
@@ -35,6 +35,7 @@ export default function SourceControl() {
   const [commitLoading, setCommitLoading] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitStatus, setCommitStatus] = useState<string | null>(null);
+  const readOnly = !gitWritesAvailable();
 
   const clearGitUiState = useCallback(() => {
     setBranches([]);
@@ -91,8 +92,6 @@ export default function SourceControl() {
   }, [clearGitUiState, loadGitStatus]);
 
   useEffect(() => {
-    if (!isDesktop()) return;
-
     void reloadFromConfig();
 
     const onProject = (e: Event) => {
@@ -368,18 +367,13 @@ export default function SourceControl() {
     }
   }
 
-  if (!isDesktop()) {
-    return (
-      <div className="flex items-center justify-center h-full p-4 text-center bg-panel">
-        <div className="text-[11px] text-muted uppercase tracking-wider">
-          Source control requires the desktop app
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col h-full overflow-hidden bg-panel">
+      {readOnly && (
+        <div className="text-[10px] text-muted px-3 py-1.5 border-b border-edge/30 bg-panel2/40 uppercase tracking-wider">
+          Read-only — stage and commit require the desktop app
+        </div>
+      )}
       <div className="text-[10px] text-muted px-3 pt-2 uppercase tracking-wider flex items-center justify-between shrink-0">
         <span>Git Status</span>
         <button
@@ -424,7 +418,7 @@ export default function SourceControl() {
           <div className="flex flex-col">
             <div className="text-[9px] uppercase tracking-wider text-muted mb-1.5 font-semibold flex items-center justify-between">
               <span>Staged ({stagedFiles.length})</span>
-              {stagedFiles.length > 0 && (
+              {stagedFiles.length > 0 && !readOnly && (
                 <button
                   onClick={handleUnstageAll}
                   className="text-[9px] text-muted hover:text-accent font-medium uppercase tracking-wider transition"
@@ -457,6 +451,7 @@ export default function SourceControl() {
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5">
+                      {!readOnly && (
                       <button
                         onClick={(e) => handleUnstageFile(e, file.path)}
                         className="opacity-0 group-hover:opacity-100 transition p-0.5 hover:bg-panel3 border border-edge/30 rounded text-muted hover:text-risk"
@@ -464,6 +459,7 @@ export default function SourceControl() {
                       >
                         <Minus size={10} />
                       </button>
+                      )}
                       <span
                         className={`text-[9px] font-mono font-semibold px-1 rounded border uppercase ${style.text}`}
                         title={style.label}
@@ -481,7 +477,7 @@ export default function SourceControl() {
           <div className="flex flex-col">
             <div className="text-[9px] uppercase tracking-wider text-muted mb-1.5 font-semibold flex items-center justify-between">
               <span>Changes ({unstagedFiles.length})</span>
-              {unstagedFiles.length > 0 && (
+              {unstagedFiles.length > 0 && !readOnly && (
                 <button
                   onClick={handleStageAll}
                   className="text-[9px] text-muted hover:text-accent font-medium uppercase tracking-wider transition"
@@ -514,6 +510,7 @@ export default function SourceControl() {
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5">
+                      {!readOnly && (
                       <button
                         onClick={(e) => handleStageFile(e, file.path)}
                         className="opacity-0 group-hover:opacity-100 transition p-0.5 hover:bg-panel3 border border-edge/30 rounded text-muted hover:text-good"
@@ -521,6 +518,7 @@ export default function SourceControl() {
                       >
                         <Plus size={10} />
                       </button>
+                      )}
                       <span
                         className={`text-[9px] font-mono font-semibold px-1 rounded border uppercase ${style.text}`}
                         title={style.label}
@@ -536,6 +534,7 @@ export default function SourceControl() {
         </div>
       </div>
 
+      {!readOnly && (
       <div className="border-t border-edge/30 p-3 bg-panel/50 flex flex-col gap-2 shrink-0">
         <textarea
           value={commitMessage}
@@ -558,6 +557,7 @@ export default function SourceControl() {
         </div>
         {commitError && <div className="text-[10px] text-risk mt-1">{commitError}</div>}
       </div>
+      )}
 
       <div className="h-1/2 border-t border-edge flex flex-col overflow-hidden bg-panel2 shrink-0">
         <div className="flex items-center justify-between px-3 py-1.5 border-b border-edge bg-panel select-none shrink-0">
@@ -606,12 +606,14 @@ export default function SourceControl() {
                     <span className="text-[10px] font-mono text-accent font-semibold">
                       {hunk.header}
                     </span>
+                    {!readOnly && (
                     <button
                       onClick={() => handleApplyHunk(hunk, viewingStagedDiff)}
                       className="opacity-0 group-hover/hunk:opacity-100 transition px-2 py-0.5 bg-panel2 border border-edge/60 hover:border-accent/40 rounded text-[9px] text-muted hover:text-accent font-medium"
                     >
                       {viewingStagedDiff ? "Unstage hunk" : "Stage hunk"}
                     </button>
+                    )}
                   </div>
                   <div className="p-2 space-y-0.5">
                     {hunk.lines.slice(1).map((line, idx) => renderDiffLine(line, idx))}

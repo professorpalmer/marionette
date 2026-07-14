@@ -174,8 +174,8 @@ function saveDismissed(repo: string | undefined, ids: Set<string>): void {
 // the payload can be ~1MB; JSON.stringify-diffing it (or blindly setData every
 // poll) re-renders the whole tree for no delta and blocks the main thread. We
 // hash only the fields the UI actually draws -- job/task status, counts, tokens,
-// cost, compact-token meters, dead-run failure text, activity timestamps, and
-// artifact headlines -- so an unchanged poll skips the re-render.
+// cost, savings, compact-token meters, dead-run failure text, activity
+// timestamps, and artifact headlines -- so an unchanged poll skips the re-render.
 function swarmSignature(res: SwarmLive | null): string {
   if (!res) return "";
   const parts: string[] = [];
@@ -185,7 +185,11 @@ function swarmSignature(res: SwarmLive | null): string {
     parts.push(
       `${j.id}:${j.status}:${tasks.length}:${arts.length}` +
       `:${j.tokens ?? 0}:${(j.est_cost_usd ?? 0).toFixed(4)}` +
-      `:${j.tool_output_tokens_saved ?? 0}:${j.source ?? "harness"}` +
+      `:${j.tool_output_tokens_saved ?? 0}` +
+      `:${(j.routing_saved_usd ?? 0).toFixed(4)}` +
+      `:${(j.cache_saved_usd ?? 0).toFixed(4)}` +
+      `:${(j.tool_output_savings_usd ?? 0).toFixed(4)}` +
+      `:${j.source ?? "harness"}` +
       `:${j.dead_run_failure ?? ""}:${j.updated_at ?? ""}`,
     );
     for (const t of tasks) {
@@ -202,7 +206,12 @@ function swarmSignature(res: SwarmLive | null): string {
   const s = res.session;
   if (s) {
     parts.push(
-      `S:${s.driver ?? ""}:${s.tokens_used ?? 0}:${(s.est_cost_usd ?? 0).toFixed(4)}`,
+      `S:${s.driver ?? ""}:${s.tokens_used ?? 0}:${(s.est_cost_usd ?? 0).toFixed(4)}` +
+      `:${(s.routing_saved_usd ?? 0).toFixed(4)}` +
+      `:${(s.cache_saved_usd_swarm ?? 0).toFixed(4)}` +
+      `:${(s.cache_savings_usd ?? 0).toFixed(4)}` +
+      `:${s.tool_output_tokens_saved ?? 0}` +
+      `:${(s.tool_output_savings_usd ?? 0).toFixed(4)}`,
     );
   }
   return parts.join("|");
@@ -325,6 +334,47 @@ function jobCompactTokens(j: Job): number {
 
 function formatCost(cost: number): string {
   return cost > 0 ? `$${cost.toFixed(4)}` : "$0";
+}
+
+function positiveUsd(n?: number): number {
+  return typeof n === "number" && isFinite(n) && n > 0 ? n : 0;
+}
+
+type SavingsParts = { routing: number; cache: number; compact: number; total: number };
+
+function jobSavings(j: Job): SavingsParts {
+  const routing = positiveUsd(j.routing_saved_usd);
+  const cache = positiveUsd(j.cache_saved_usd);
+  const compact = positiveUsd(j.tool_output_savings_usd);
+  return { routing, cache, compact, total: routing + cache + compact };
+}
+
+function sessionSavings(s: SwarmLive["session"]): SavingsParts {
+  const routing = positiveUsd(s.routing_saved_usd);
+  const cache = positiveUsd(s.cache_saved_usd_swarm) + positiveUsd(s.cache_savings_usd);
+  const compact = positiveUsd(s.tool_output_savings_usd);
+  return { routing, cache, compact, total: routing + cache + compact };
+}
+
+function savingsDetail(parts: SavingsParts): string {
+  return [
+    parts.routing > 0 ? `routing vs frontier baseline (~${formatCost(parts.routing)})` : "",
+    parts.cache > 0 ? `prompt-cache (~${formatCost(parts.cache)})` : "",
+    parts.compact > 0 ? `tool-output compaction (~${formatCost(parts.compact)})` : "",
+  ].filter(Boolean).join("  ·  ");
+}
+
+function SavingsChip({ parts, className }: { parts: SavingsParts; className?: string }) {
+  if (parts.total <= 0) return null;
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 px-1 py-px rounded-full bg-good/10 border border-good/20 text-good/80 tabular-nums ${className ?? ""}`}
+      title={`Saved vs no caching, routing, or compaction: ${savingsDetail(parts)}`}
+    >
+      <span className="text-good/60" aria-hidden="true">{"\u2193"}</span>
+      {formatCost(parts.total)} saved
+    </span>
+  );
 }
 
 // The four visible phases of a swarm's life. A job advances left-to-right; the
@@ -640,7 +690,8 @@ export default function SwarmPane() {
   const sessionSpend = data?.session;
   const sessionTokens = Number(sessionSpend?.tokens_used ?? 0);
   const sessionCost = Number(sessionSpend?.est_cost_usd ?? 0);
-  const showSessionSpend = sessionSpend && (sessionTokens > 0 || sessionCost > 0);
+  const sessionSavingsParts = sessionSpend ? sessionSavings(sessionSpend) : { routing: 0, cache: 0, compact: 0, total: 0 };
+  const showSessionSpend = sessionSpend && (sessionTokens > 0 || sessionCost > 0 || sessionSavingsParts.total > 0);
 
   // One card renderer, reused by both the running list and the Finished
   // accordion. Defined in-scope so it closes over the expand/dismiss state
@@ -671,6 +722,7 @@ export default function SwarmPane() {
       .replace(/^(?:agentic|native)\//i, "")
       .trim() || adapter;
     const terminal = isTerminal(j);
+    const savings = jobSavings(j);
 
     const toggle = () => {
       const next = !isExpanded;
@@ -720,13 +772,14 @@ export default function SwarmPane() {
               </Tooltip>
             </div>
             <div className="flex items-center gap-3 shrink-0 text-[10px] pl-2">
-              {(terminal || jobCost(j) > 0 || jobTokens(j) > 0 || jobCompactTokens(j) > 0) && (
+              {(terminal || jobCost(j) > 0 || jobTokens(j) > 0 || jobCompactTokens(j) > 0 || savings.total > 0) && (
                 <span className="text-muted font-mono flex items-center gap-1.5">
                   {jobTokens(j) > 0 && <span>{jobTokens(j).toLocaleString()}t</span>}
                   {jobCompactTokens(j) > 0 && (
                     <span className="text-accent/90">{jobCompactTokens(j).toLocaleString()} compact</span>
                   )}
                   <span className="text-good/90">{formatCost(jobCost(j))}</span>
+                  <SavingsChip parts={savings} className="text-[9px] font-sans" />
                 </span>
               )}
               {/* Kill: running jobs only. Best-effort cooperative cancel on the
@@ -1094,10 +1147,11 @@ export default function SwarmPane() {
           {showSessionSpend && (
             <span
               className="text-muted font-mono flex items-center gap-1.5 tabular-nums"
-              title="Estimated token usage and cost for this project in the current session"
+              title="Estimated token usage, cost, and savings for this project in the current session"
             >
               {sessionTokens > 0 && <span>{sessionTokens.toLocaleString()}t</span>}
-              <span className="text-good/90">{formatCost(sessionCost)}</span>
+              {sessionCost > 0 && <span className="text-good/90">{formatCost(sessionCost)}</span>}
+              <SavingsChip parts={sessionSavingsParts} className="text-[9px] font-sans" />
               <span className="text-faint/70 normal-case font-sans tracking-normal">session</span>
             </span>
           )}

@@ -252,24 +252,58 @@ function workspaceRelFromAbs(repoRoot: string, abs: string): string {
   if (a.startsWith(r + "/")) return normAbs.slice(normRoot.length).replace(/^\//, "");
   return normAbs;
 }
+
+function gitHttpPath(
+  endpoint: "status" | "branches" | "diff",
+  repo: string,
+  extra?: Record<string, string>,
+): string {
+  const params = new URLSearchParams({ repo: repo || "." });
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (v != null && v !== "") params.set(k, v);
+    }
+  }
+  return withToken(`/api/git/${endpoint}?${params.toString()}`);
+}
+
+async function tryNativeGit<T extends { ok?: boolean }>(
+  ipcCall: (() => Promise<T>) | null,
+  httpPath: string,
+): Promise<T> {
+  if (ipcCall) {
+    try {
+      const res = await ipcCall();
+      if (res?.ok) return res;
+    } catch {
+      // fall through to harness HTTP
+    }
+  }
+  return getJSONSoft<T>(httpPath);
+}
+
+/** True when native git write IPC is available (stage/commit/hunk apply). */
+export function gitWritesAvailable(): boolean {
+  const bridge = getHarnessIpc();
+  return !!(bridge?.git?.status && bridge?.git?.stageFile);
+}
+
 export const nativeGit = {
   status: (repo: string): Promise<any> => {
     const bridge = getHarnessIpc();
-    return bridge?.git?.status
-      ? bridge.git.status(repo)
-      : Promise.resolve({ ok: false, error: "web build" });
+    const ipc = bridge?.git?.status ? () => bridge.git.status(repo) : null;
+    return tryNativeGit(ipc, gitHttpPath("status", repo));
   },
   diff: (repo: string, file?: string): Promise<any> => {
     const bridge = getHarnessIpc();
-    return bridge?.git?.diff
-      ? bridge.git.diff(repo, file)
-      : Promise.resolve({ ok: false, error: "web build" });
+    const ipc = bridge?.git?.diff ? () => bridge.git.diff(repo, file) : null;
+    const extra = file ? { file } : undefined;
+    return tryNativeGit(ipc, gitHttpPath("diff", repo, extra));
   },
   branches: (repo: string): Promise<any> => {
     const bridge = getHarnessIpc();
-    return bridge?.git?.branches
-      ? bridge.git.branches(repo)
-      : Promise.resolve({ ok: false, error: "web build" });
+    const ipc = bridge?.git?.branches ? () => bridge.git.branches(repo) : null;
+    return tryNativeGit(ipc, gitHttpPath("branches", repo));
   },
   stageFile: (repo: string, file: string): Promise<any> => {
     const bridge = getHarnessIpc();
@@ -303,9 +337,10 @@ export const nativeGit = {
   },
   diffStaged: (repo: string, file?: string): Promise<any> => {
     const bridge = getHarnessIpc();
-    return bridge?.git?.diffStaged
-      ? bridge.git.diffStaged(repo, file)
-      : Promise.resolve({ ok: false, error: "web build" });
+    const ipc = bridge?.git?.diffStaged ? () => bridge.git.diffStaged(repo, file) : null;
+    const extra: Record<string, string> = { staged: "1" };
+    if (file) extra.file = file;
+    return tryNativeGit(ipc, gitHttpPath("diff", repo, extra));
   },
   applyHunk: (repo: string, patchText: string, reverse?: boolean): Promise<any> => {
     const bridge = getHarnessIpc();

@@ -50,12 +50,14 @@ def _restore_meters(pilot, snap):
 def _zero_boot_carry(srv):
     for attr in _METER_ATTRS:
         srv._BOOT_METER_CARRY[attr] = 0.0
+    srv._BOOT_CARRY_COST_USD = 0.0
 
 
 def test_rebuild_pilot_preserves_usage_meters():
     srv, httpd, port = _spin_server()
     saved = _snapshot_meters(srv._pilot)
     saved_carry = dict(srv._BOOT_METER_CARRY)
+    saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     try:
         _zero_boot_carry(srv)
         srv._pilot._tokens_used = 12_000
@@ -90,8 +92,8 @@ def test_rebuild_pilot_preserves_usage_meters():
         _restore_meters(srv._pilot, saved)
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
+        srv._BOOT_CARRY_COST_USD = saved_cost
         httpd.shutdown()
-
 
 def test_usage_sums_across_sessions_and_survives_reattach(tmp_path):
     """Spend on A, attach B in another repo, spend on B, switch back -- pill = A+B."""
@@ -101,6 +103,7 @@ def test_usage_sums_across_sessions_and_survives_reattach(tmp_path):
     old_repo = srv._cfg.repo
     old_env = os.environ.get("HARNESS_REPO")
     saved_carry = dict(srv._BOOT_METER_CARRY)
+    saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     saved_repos = set(srv._BOOT_REPOS)
     try:
         _zero_boot_carry(srv)
@@ -181,6 +184,7 @@ def test_usage_sums_across_sessions_and_survives_reattach(tmp_path):
             os.environ["HARNESS_REPO"] = old_env
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
+        srv._BOOT_CARRY_COST_USD = saved_cost
         srv._BOOT_REPOS.clear()
         srv._BOOT_REPOS.update(saved_repos)
         httpd.shutdown()
@@ -196,6 +200,7 @@ def test_tool_output_savings_survive_attach_to_other_session(tmp_path):
     old_sid = getattr(srv._pilot, "harness_session_id", "")
     old_env = os.environ.get("HARNESS_REPO")
     saved_carry = dict(srv._BOOT_METER_CARRY)
+    saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     saved_repos = set(srv._BOOT_REPOS)
     try:
         _zero_boot_carry(srv)
@@ -277,6 +282,7 @@ def test_tool_output_savings_survive_attach_to_other_session(tmp_path):
             os.environ["HARNESS_REPO"] = old_env
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
+        srv._BOOT_CARRY_COST_USD = saved_cost
         srv._BOOT_REPOS.clear()
         srv._BOOT_REPOS.update(saved_repos)
         httpd.shutdown()
@@ -288,6 +294,7 @@ def test_drop_folds_meters_into_boot_carry():
     old_runners = srv._runners
     old_pilot = srv._pilot
     saved_carry = dict(srv._BOOT_METER_CARRY)
+    saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
     try:
         _zero_boot_carry(srv)
         reg = SessionRunnerRegistry(
@@ -309,6 +316,7 @@ def test_drop_folds_meters_into_boot_carry():
         dropped = reg.drop(sid)
         assert dropped is not None
         assert float(srv._BOOT_METER_CARRY["_tokens_used"]) == 9_000
+        assert float(srv._BOOT_CARRY_COST_USD) > 0.0
 
         # No live runners with meters; carry alone must still report spend.
         after = _get_usage(port, srv._TOKEN)
@@ -318,4 +326,66 @@ def test_drop_folds_meters_into_boot_carry():
         srv._pilot = old_pilot
         srv._BOOT_METER_CARRY.clear()
         srv._BOOT_METER_CARRY.update(saved_carry)
+        srv._BOOT_CARRY_COST_USD = saved_cost
+        httpd.shutdown()
+
+
+def test_fold_snapshots_cost_survives_model_reprice():
+    """Folded carry USD must not be recomputed at a later pilot rate."""
+    import types
+
+    srv, httpd, port = _spin_server()
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    saved_carry = dict(srv._BOOT_METER_CARRY)
+    saved_cost = float(getattr(srv, "_BOOT_CARRY_COST_USD", 0.0) or 0.0)
+    try:
+        _zero_boot_carry(srv)
+        # Expensive fold-time rates: $5 / $25 per Mtok.
+        expensive_in, expensive_out = 5.0, 25.0
+        cheap_in, cheap_out = 0.1, 0.3
+
+        runner = types.SimpleNamespace(
+            _tokens_used=1_000_000,
+            _tokens_in=1_000_000,
+            _tokens_out=0,
+            _tokens_cached=0,
+            _worker_cost_usd=0.0,
+            _worker_tokens_in=0,
+            _worker_tokens_out=0,
+        )
+        expected = srv._session_cost_split(runner, expensive_in, expensive_out)
+        assert expected == 5.0  # 1M input tokens at $5/Mtok
+
+        def _expensive_prices():
+            return expensive_in, expensive_out
+
+        orig_resolve = srv._resolve_active_prices
+        srv._resolve_active_prices = _expensive_prices
+        try:
+            srv._fold_runner_meters_into_boot_carry("sess", runner)
+        finally:
+            srv._resolve_active_prices = orig_resolve
+
+        assert abs(float(srv._BOOT_CARRY_COST_USD) - expected) < 1e-12
+        # After fold the runner meters are zeroed; no live spend.
+        reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+        srv._runners = reg
+        # Active pilot at zero so only carry contributes.
+        for attr in _METER_ATTRS:
+            setattr(srv._pilot, attr, 0 if attr != "_worker_cost_usd" else 0.0)
+
+        # Reprice at a cheap rate — snapshotted carry must stay at $5.
+        cost_after_swap = srv._boot_session_cost(cheap_in, cheap_out)
+        assert abs(cost_after_swap - expected) < 1e-12
+        # Contrast: legacy reprice of carry tokens would be $0.10.
+        legacy = srv._session_cost(1_000_000, 0, 0, cheap_in, cheap_out)
+        assert abs(legacy - 0.1) < 1e-12
+        assert abs(cost_after_swap - legacy) > 1.0
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._BOOT_METER_CARRY.clear()
+        srv._BOOT_METER_CARRY.update(saved_carry)
+        srv._BOOT_CARRY_COST_USD = saved_cost
         httpd.shutdown()
