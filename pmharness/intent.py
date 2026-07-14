@@ -4,7 +4,7 @@ from __future__ import annotations
 Puppetmaster. This is the contract the whole thesis rests on. A driver that
 cannot reliably emit a valid DriverIntent cannot run the harness, full stop.
 
-Kept deliberately small and unambiguous: three actions, a handful of fields.
+Kept deliberately small and unambiguous: a handful of actions and fields.
 The model is judged on whether it can hit this target, not on prose.
 """
 
@@ -13,9 +13,31 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
 
-# The three things a driver can decide to do at any step. "answer" is
-# load-bearing for the token thesis: a good driver does NOT swarm trivia.
-VALID_ACTIONS = ("run_swarm", "answer", "stop")
+# Actions a driver can decide to take at any step. "answer" is load-bearing
+# for the token thesis: a good driver does NOT swarm trivia. "run_prewalk" is
+# the plan-then-cheap implement path (Puppetmaster prewalk / start_prewalk).
+VALID_ACTIONS = ("run_swarm", "run_prewalk", "answer", "stop")
+
+# Actions that dispatch real Puppetmaster work (vs terminal answer/stop).
+DISPATCH_ACTIONS = frozenset({"run_swarm", "run_prewalk"})
+
+# Goal phrasing that means plan-then-implement (prewalk), not a read-only swarm.
+# Deterministic substring match -- no model, no PM -- so classification stays a
+# pure function of the goal text (unit-testable, hermetic).
+_PREWALK_SIGNALS = (
+    "prewalk",
+    "pre-walk",
+    "plan then implement",
+    "plan-then-implement",
+    "plan then cheap",
+    "plan-then-cheap",
+    "plan then code",
+    "plan then edit",
+    "plan and then implement",
+    "plan and implement",
+    "plan first then implement",
+    "quality plan then cheap",
+)
 
 # Worker modes Puppetmaster's Orchestrator.run accepts.
 VALID_WORKER_MODES = ("subprocess", "inline", "daemon")
@@ -114,6 +136,33 @@ _FULL_AUDIT_ROLES = [
     "pipeline-mapper",
     "decision-explainer",
 ]
+
+
+def is_prewalk_goal(goal: str) -> bool:
+    """True when the goal asks for plan-then-implement (Puppetmaster prewalk).
+
+    Pure and deterministic -- a function of the goal text only. Used by callers
+    that classify a free-form user ask before building a DriverIntent, and by
+    the bridge when deciding how to execute heavy work.
+    """
+    text = (goal or "").lower().strip()
+    if not text:
+        return False
+    return any(signal in text for signal in _PREWALK_SIGNALS)
+
+
+def classify_dispatch_action(goal: str) -> Optional[str]:
+    """Map a free-form goal to a dispatch action the bridge understands.
+
+    Returns ``"run_prewalk"`` for plan-then-implement asks, ``"run_swarm"`` for
+    other non-empty goals, or ``None`` when the goal is empty. Pure -- no PM.
+    """
+    text = (goal or "").strip()
+    if not text:
+        return None
+    if is_prewalk_goal(text):
+        return "run_prewalk"
+    return "run_swarm"
 
 
 def infer_roles(goal: str) -> list:
@@ -215,8 +264,8 @@ def validate_intent(payload: Any) -> DriverIntent:
     if goal is not None:
         goal = str(goal).strip() or None
 
-    if action == "run_swarm" and not goal:
-        raise IntentError("action=run_swarm requires a non-empty goal")
+    if action in DISPATCH_ACTIONS and not goal:
+        raise IntentError(f"action={action} requires a non-empty goal")
 
     rationale = str(payload.get("rationale", "") or "").strip()
 
@@ -286,9 +335,12 @@ def parse_intent_text(text: str) -> dict:
 
 
 INTENT_JSON_SCHEMA_HINT = {
-    "action": "one of run_swarm | answer | stop",
-    "goal": "string; REQUIRED when action=run_swarm; the swarm objective",
-    "roles": f"optional list; subset of {list(KNOWN_ROLES)}",
+    "action": "one of run_swarm | run_prewalk | answer | stop",
+    "goal": (
+        "string; REQUIRED when action=run_swarm or run_prewalk; "
+        "the swarm / plan-then-implement objective"
+    ),
+    "roles": f"optional list; subset of {list(KNOWN_ROLES)} (run_swarm only)",
     "worker_mode": "optional; one of subprocess | inline | daemon (default subprocess)",
     "rationale": "one sentence on why this action",
 }

@@ -82,6 +82,49 @@ def test_valid_run_swarm():
     assert i.worker_mode == "subprocess"
 
 
+def test_valid_run_prewalk():
+    i = validate_intent({
+        "action": "run_prewalk",
+        "goal": "plan then implement the cache fix",
+    })
+    assert i.action == "run_prewalk"
+    assert i.goal == "plan then implement the cache fix"
+
+
+def test_run_prewalk_requires_goal():
+    with pytest.raises(IntentError):
+        validate_intent({"action": "run_prewalk"})
+
+
+def test_is_prewalk_goal_detects_plan_then_implement():
+    from pmharness.intent import is_prewalk_goal, classify_dispatch_action
+
+    for goal in (
+        "prewalk: add a settings toggle",
+        "Plan then implement the retry helper",
+        "Please plan-then-cheap the auth refactor",
+        "plan and implement the logging cleanup",
+        "quality plan then cheap implement of the parser",
+    ):
+        assert is_prewalk_goal(goal), goal
+        assert classify_dispatch_action(goal) == "run_prewalk", goal
+
+
+def test_is_prewalk_goal_rejects_ordinary_asks():
+    from pmharness.intent import is_prewalk_goal, classify_dispatch_action
+
+    for goal in (
+        "Audit the platform for quality",
+        "Where is the login handler defined?",
+        "Implement the cache fix",
+        "",
+    ):
+        assert not is_prewalk_goal(goal), goal
+    assert classify_dispatch_action("Audit the platform") == "run_swarm"
+    assert classify_dispatch_action("Implement the cache fix") == "run_swarm"
+    assert classify_dispatch_action("") is None
+
+
 def test_run_swarm_requires_goal():
     with pytest.raises(IntentError):
         validate_intent({"action": "run_swarm"})

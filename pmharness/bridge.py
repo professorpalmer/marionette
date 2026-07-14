@@ -388,6 +388,151 @@ def _hoist_auth_risks(compact: list) -> list:
     return auth + rest if auth else compact
 
 
+def _prewalk_timeout_seconds() -> int:
+    """Timeout shared by plan + implement stages (CLI default is 900s)."""
+    import os as _os
+    try:
+        return max(60, int(_os.environ.get("HARNESS_PREWALK_TIMEOUT", "900")))
+    except (TypeError, ValueError):
+        return 900
+
+
+def _prewalk_allow_dirty() -> bool:
+    """Match conversation.py implement dispatch: dirty trees allowed by default."""
+    import os as _os
+    raw = (_os.environ.get("HARNESS_ALLOW_DIRTY", "1") or "1").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _prewalk_allow_non_worktree() -> bool:
+    import os as _os
+    raw = (_os.environ.get("HARNESS_ALLOW_NON_WORKTREE", "1") or "1").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _resolve_prewalk_implement_adapter(requested: str = "") -> str:
+    """Pick an edit-capable implement adapter (same gate as PM CLI prewalk)."""
+    from puppetmaster import platform_lock
+    from puppetmaster.workers import pick_implement_adapter
+
+    enabled = platform_lock.enabled_adapters()
+    return pick_implement_adapter(enabled, requested or None)
+
+
+def _build_prewalk_cli_argv(
+    goal: str,
+    *,
+    cwd: str,
+    allow_dirty: bool = True,
+    allow_non_worktree: bool = True,
+    adapter: str = "",
+    plan_adapter: str = "",
+    timeout_seconds: Optional[int] = None,
+    worker_mode: str = "subprocess",
+    label: str = "",
+) -> list:
+    """Build ``python -m puppetmaster prewalk ...`` argv (sans interpreter).
+
+    Kept as a pure command builder so tests can assert the CLI shape without
+    spawning Cursor / a live worker.
+    """
+    cmd = ["prewalk", goal, "--cwd", cwd or "."]
+    if adapter:
+        cmd.extend(["--adapter", adapter])
+    if plan_adapter:
+        cmd.extend(["--plan-adapter", plan_adapter])
+    if timeout_seconds is not None:
+        cmd.extend(["--timeout-seconds", str(int(timeout_seconds))])
+    if allow_dirty:
+        cmd.append("--allow-dirty")
+    if allow_non_worktree:
+        cmd.append("--allow-non-worktree")
+    if worker_mode:
+        cmd.extend(["--worker-mode", worker_mode])
+    if label:
+        cmd.extend(["--label", label])
+    return cmd
+
+
+def _execute_prewalk(
+    intent: DriverIntent,
+    *,
+    store: Any,
+    repo_cwd: str,
+    worker_mode: Optional[str],
+    job_label: str,
+    session_id: str,
+) -> BridgeResult:
+    """Start a plan-then-cheap prewalk via Puppetmaster's library entry.
+
+    Mirrors ``python -m puppetmaster prewalk``: ``build_prewalk_specs`` +
+    ``Orchestrator.run``. Prefer the library path over a CLI subprocess so the
+    bridge stays in-process like run_swarm (no second orchestrator).
+    """
+    import os as _os
+    from puppetmaster.orchestrator import Orchestrator
+    from puppetmaster.prewalk import build_prewalk_specs
+    from harness.job_scoping import stamp_task_payload
+
+    requested = (
+        _os.environ.get("HARNESS_IMPLEMENT_ADAPTER", "")
+        or _os.environ.get("HARNESS_PREWALK_ADAPTER", "")
+        or ""
+    ).strip()
+    implement_adapter = _resolve_prewalk_implement_adapter(requested)
+    plan_adapter = (
+        _os.environ.get("HARNESS_PREWALK_PLAN_ADAPTER", "local") or "local"
+    ).strip()
+    timeout = _prewalk_timeout_seconds()
+    allow_dirty = _prewalk_allow_dirty()
+    allow_non_worktree = _prewalk_allow_non_worktree()
+
+    specs = build_prewalk_specs(
+        intent.goal or "",
+        repo_cwd or ".",
+        plan_adapter=plan_adapter,
+        implement_adapter=implement_adapter,
+        plan_timeout_seconds=timeout,
+        implement_timeout_seconds=timeout,
+        allow_dirty=allow_dirty,
+        allow_non_worktree=allow_non_worktree,
+    )
+    # Stamp session/cwd on each payload the same way swarm workers do, so
+    # job scoping and /api/swarm/live attribution stay consistent.
+    for spec in specs:
+        payload = dict(getattr(spec, "payload", None) or {})
+        stamped = stamp_task_payload(
+            payload, session_id=session_id or "", cwd=repo_cwd or ""
+        )
+        try:
+            spec.payload = stamped
+        except Exception:
+            # WorkerSpec may be frozen/mocked; best-effort only.
+            pass
+
+    mode = worker_mode or intent.worker_mode or "subprocess"
+    result = Orchestrator(store).run(
+        intent.goal,
+        specs=specs,
+        worker_mode=mode,
+        label=job_label,
+    )
+    artifacts = list(result.artifacts)
+    compact = _hoist_auth_risks([_compact_artifact(a) for a in artifacts])
+    compact = _promote_degraded_prose(compact)
+    return BridgeResult(
+        job_id=result.job.id,
+        status=str(result.job.status),
+        mode=str(result.mode),
+        num_artifacts=len(artifacts),
+        artifact_types=sorted({str(a.type) for a in artifacts}),
+        summary=result.summary or "",
+        artifacts=compact,
+        auth_failure=_auth_failure_note(compact),
+        adapter=f"prewalk:{implement_adapter}",
+    )
+
+
 def execute_intent(
     intent: DriverIntent,
     *,
@@ -398,8 +543,10 @@ def execute_intent(
     cwd: Optional[str] = None,
     repo: Optional[str] = None,
 ) -> Optional[BridgeResult]:
-    """Run a run_swarm intent against Puppetmaster. Returns None for non-swarm
-    actions (answer/stop) since there is nothing to execute.
+    """Run a dispatch intent against Puppetmaster.
+
+    Handles ``run_swarm`` (read-only analysis) and ``run_prewalk`` (plan-then-
+    cheap implement). Returns None for terminal actions (answer/stop).
 
     Imports of puppetmaster are local so the schema/validation layer stays
     importable with zero PM dependency (keeps unit tests fast and hermetic).
@@ -414,10 +561,10 @@ def execute_intent(
     switch cannot retarget a busy runner's swarm. When set, ``HARNESS_REPO``
     is temporarily aligned for the duration of the call and restored after.
     """
-    if intent.action != "run_swarm":
+    if intent.action not in ("run_swarm", "run_prewalk"):
         return None
     if not intent.goal:
-        raise ValueError("cannot execute run_swarm intent without a goal")
+        raise ValueError(f"cannot execute {intent.action} intent without a goal")
 
     import os as _os
     from puppetmaster.store_factory import create_store
@@ -438,6 +585,23 @@ def execute_intent(
         env_patched = True
 
     try:
+        repo_cwd = explicit_cwd or _os.environ.get("HARNESS_REPO", "").strip()
+
+        if intent.action == "run_prewalk":
+            if not repo_cwd:
+                raise ValueError(
+                    "run_prewalk requires a workspace cwd "
+                    "(pass cwd=/repo or set HARNESS_REPO)"
+                )
+            return _execute_prewalk(
+                intent,
+                store=store,
+                repo_cwd=repo_cwd,
+                worker_mode=worker_mode,
+                job_label=job_label,
+                session_id=session_id or "",
+            )
+
         # Swarm adapter selection (safety-first):
         #   demo (default)  -> built-in local demo adapter: deterministic, free, no
         #                      real code analysis. The substrate for driver eval.
@@ -448,7 +612,6 @@ def execute_intent(
         #                      stamp read_only=True -- a triple guard so a real run
         #                      can NEVER edit a target repo (safe even on live repos).
         swarm_adapter = (_os.environ.get("HARNESS_SWARM_ADAPTER", "demo") or "demo").lower()
-        repo_cwd = explicit_cwd or _os.environ.get("HARNESS_REPO", "").strip()
 
         if swarm_adapter == "agentic" and repo_cwd:
             # Standalone path: run READ-ONLY analysis workers on the built-in
