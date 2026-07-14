@@ -87,6 +87,30 @@ def _none_advice() -> dict[str, Any]:
         "l1_bytes": 0,
         "l3_reclaimed_bytes": 0,
         "reasons": [],
+        "needs_intervention": False,
+        "warning_reason": "",
+    }
+
+
+def _intervention_fields(level: str, reasons: list[str], l3_reclaimed: int) -> dict[str, Any]:
+    """Durable UI badge fields when pressure or reclaim needs attention.
+
+    ``soon`` / ``now`` always flag intervention. High L3 reclaim with an
+    attention level means compaction already ran under pressure -- keep the
+    warning so the UI stays honest after the event.
+    """
+    needs = level in ("soon", "now")
+    warning = ""
+    if needs:
+        if reasons:
+            warning = reasons[0]
+        elif l3_reclaimed > 0:
+            warning = "history compaction ran under context pressure"
+        else:
+            warning = "context pressure needs attention"
+    return {
+        "needs_intervention": needs,
+        "warning_reason": warning,
     }
 
 
@@ -160,13 +184,15 @@ def assess_layer_pressure(snapshot: dict, max_context_tokens: int) -> dict[str, 
             f"session state exceeds 5 MB with warm context at {pct} percent of budget"
         )
 
-    return {
+    advice = {
         "level": level,
         "hot_ratio": hot_ratio,
         "l1_bytes": l1_bytes,
         "l3_reclaimed_bytes": l3_reclaimed,
         "reasons": reasons,
     }
+    advice.update(_intervention_fields(level, reasons, l3_reclaimed))
+    return advice
 
 
 def advice_payload(

@@ -60,6 +60,8 @@ def test_hot_now_boundary_at():
     advice = assess_layer_pressure(_snapshot(l0), budget)
     assert advice["level"] == "now"
     assert advice["reasons"]
+    assert advice["needs_intervention"] is True
+    assert advice["warning_reason"] == advice["reasons"][0]
 
 
 def test_hot_soon_boundary_below():
@@ -67,6 +69,8 @@ def test_hot_soon_boundary_below():
     l0 = int(budget * 4 * (_HOT_SOON_RATIO - 0.01))
     advice = assess_layer_pressure(_snapshot(l0), budget)
     assert advice["level"] == "none"
+    assert advice["needs_intervention"] is False
+    assert advice["warning_reason"] == ""
 
 
 def test_hot_soon_boundary_at():
@@ -75,6 +79,29 @@ def test_hot_soon_boundary_at():
     advice = assess_layer_pressure(_snapshot(l0), budget)
     assert advice["level"] == "soon"
     assert "hot context" in advice["reasons"][0]
+    assert advice["needs_intervention"] is True
+    assert "hot context" in advice["warning_reason"]
+
+
+def test_needs_intervention_false_when_calm():
+    advice = assess_layer_pressure(_snapshot(0), 1000)
+    assert advice["level"] == "none"
+    assert advice["needs_intervention"] is False
+    assert advice["warning_reason"] == ""
+
+
+def test_needs_intervention_with_reclaim_under_pressure():
+    """High reclaim + soon level keeps a durable intervention warning."""
+    budget = 1000
+    l0 = int(budget * 4 * _HOT_SOON_RATIO)
+    advice = assess_layer_pressure(
+        _snapshot(l0, l3_before=50_000, l3_after=10_000),
+        budget,
+    )
+    assert advice["level"] == "soon"
+    assert advice["l3_reclaimed_bytes"] == 40_000
+    assert advice["needs_intervention"] is True
+    assert advice["warning_reason"]
 
 
 def test_l1_pressure_boundary_below_bytes():

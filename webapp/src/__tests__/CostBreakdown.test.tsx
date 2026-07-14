@@ -16,7 +16,12 @@ const baseData: CostBreakdownData = {
   evals_recorded: 5,
   evals_failed: 1,
   memory_layers: { L1: { bytes: 2048 } },
-  compaction_advice: { level: "soon", reasons: ["L1 nearing limit"] },
+  compaction_advice: {
+    level: "soon",
+    reasons: ["L1 nearing limit"],
+    needs_intervention: true,
+    warning_reason: "L1 nearing limit",
+  },
   price_in: 3,
   price_out: 15,
 };
@@ -38,8 +43,28 @@ describe("CostBreakdown", () => {
     expect(screen.getByText("Offloaded outputs")).toBeInTheDocument();
     expect(screen.getByText("Checks recorded")).toBeInTheDocument();
     expect(screen.getByText("Memory layers")).toBeInTheDocument();
-    expect(screen.getByText("Compaction advice")).toBeInTheDocument();
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
     expect(screen.getByText(/soon — L1 nearing limit/)).toBeInTheDocument();
+  });
+
+  it("shows intervention badge from needs_intervention even without level reasons", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.01,
+          compaction_advice: {
+            level: "now",
+            needs_intervention: true,
+            warning_reason: "hot context at 80 percent of budget",
+            reasons: [],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText(/now — hot context at 80 percent of budget/)).toBeInTheDocument();
   });
 
   it("renders routing and combined prompt-cache savings when positive", () => {

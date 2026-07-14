@@ -28,7 +28,10 @@ export type CostBreakdownData = {
     l1_bytes?: number;
     l3_reclaimed_bytes?: number;
     reasons?: string[];
+    needs_intervention?: boolean;
+    warning_reason?: string;
   };
+  history_compaction_ran?: boolean;
   price_in?: number;
   price_out?: number;
 };
@@ -114,12 +117,20 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       ? data.memory_layers.L1.bytes
       : 0;
   const compactionAdviceLevel = data.compaction_advice?.level;
-  const showCompactionAdvice =
-    compactionAdviceLevel === "soon" || compactionAdviceLevel === "now";
+  const needsIntervention =
+    data.compaction_advice?.needs_intervention === true ||
+    compactionAdviceLevel === "soon" ||
+    compactionAdviceLevel === "now";
+  const showCompactionAdvice = needsIntervention;
   const compactionAdviceReason =
-    showCompactionAdvice && Array.isArray(data.compaction_advice?.reasons) && data.compaction_advice.reasons.length > 0
-      ? data.compaction_advice.reasons[0]
+    showCompactionAdvice
+      ? (data.compaction_advice?.warning_reason ||
+          (Array.isArray(data.compaction_advice?.reasons) && data.compaction_advice.reasons.length > 0
+            ? data.compaction_advice.reasons[0]
+            : "") ||
+          (data.history_compaction_ran ? "history compaction ran under context pressure" : ""))
       : "";
+  const interventionLabel = needsIntervention ? "Needs attention" : "Compaction advice";
 
   const layerLabel = (id: string) => {
     const layer = data.memory_layers?.[id];
@@ -206,10 +217,14 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       ) : null}
 
       {showCompactionAdvice ? (
-        <div className="flex items-center justify-between mb-1 text-faint">
-          <span>Compaction advice</span>
-          <span className="tabular-nums text-right">
-            {compactionAdviceLevel}
+        <div
+          className="flex items-center justify-between mb-1 rounded px-1.5 py-1 -mx-0.5 bg-amber-500/10 border border-amber-500/25 text-amber-200/90"
+          role="status"
+          title={compactionAdviceReason || "Context pressure needs attention"}
+        >
+          <span className="font-medium">{interventionLabel}</span>
+          <span className="tabular-nums text-right max-w-[55%]">
+            {compactionAdviceLevel || "warn"}
             {compactionAdviceReason ? ` — ${compactionAdviceReason}` : ""}
           </span>
         </div>

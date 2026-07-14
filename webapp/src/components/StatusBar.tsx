@@ -328,6 +328,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                       evals_failed: usage.evals_failed,
                       memory_layers: usage.memory_layers,
                       compaction_advice: usage.compaction_advice,
+                      history_compaction_ran: usage.history_compaction_ran,
                       price_in: usage.price_in,
                       price_out: usage.price_out,
                     }}

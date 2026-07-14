@@ -358,7 +358,10 @@ export type UsageData = {
       l1_bytes?: number;
       l3_reclaimed_bytes?: number;
       reasons?: string[];
+      needs_intervention?: boolean;
+      warning_reason?: string;
     };
+    history_compaction_ran?: boolean;
   };
   // Lifetime running total for the active chat session (persisted across
   // app restarts/updates, unlike `session` which is boot-scoped).

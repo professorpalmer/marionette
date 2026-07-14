@@ -129,9 +129,17 @@ def history_compaction_payload(
     state_dir: str,
     session_id: str,
 ) -> dict:
-    """Compact fields for usage/session APIs."""
+    """Compact fields for usage/session APIs.
+
+    When compaction has already run this session, surface a soft honesty flag
+    so the UI can show that history was rewritten (OMP-style intervention cue).
+    Full pressure badges still come from ``compaction_advice``.
+    """
     summary = summarize_history_compactions(state_dir, session_id or None)
-    return {
+    payload: dict = {
         "history_compactions": summary.record_count,
         "history_tokens_saved": summary.tokens_saved,
     }
+    if summary.record_count > 0:
+        payload["history_compaction_ran"] = True
+    return payload
