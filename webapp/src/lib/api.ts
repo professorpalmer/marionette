@@ -10,8 +10,14 @@ import {
   type StreamEvent,
   type ChatEventReplay as TransportChatEventReplay,
 } from "./transport";
+import {
+  buildSessionSearchQuery,
+  normalizeSessionSearchHits,
+  type SessionSearchHit,
+} from "./sessionSearch";
 
 export type { ChatEventFrame } from "./transport";
+export type { SessionSearchHit } from "./sessionSearch";
 
 /** Mid-turn SSE ring replay payload (miss fields from GET /api/chat/events). */
 export type ChatEventReplay = TransportChatEventReplay & {
@@ -553,6 +559,13 @@ export const api = {
     if (opts?.query) params.set("q", opts.query);
     if (opts?.limit != null) params.set("limit", String(opts.limit));
     return getJSON<Session[]>(`/api/sessions?${params.toString()}`);
+  },
+  /** FTS5 session recall (Wave D). Empty query returns [] without calling the API. */
+  searchSessions: async (query: string, limit = 20): Promise<SessionSearchHit[]> => {
+    const qs = buildSessionSearchQuery(query, limit);
+    if (!qs) return [];
+    const raw = await getJSON<unknown>(`/api/sessions/search?${qs}`);
+    return normalizeSessionSearchHits(raw);
   },
   sessionTranscript: (session: string) => getJSON<{ history: any[]; display?: any[]; job_ids?: string[] }>(withToken(`/api/sessions/transcript?session=${encodeURIComponent(session)}`)),
   getSessionState: () => getJSON<SessionState>(withToken("/api/session/state")),

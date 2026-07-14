@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, XCircle, Trash2, Brush } from "lucide-react";
+import { GitBranch, Plus, MessageSquare, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, CheckCircle2, Circle, XCircle, Trash2, Brush, Search, X } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job, type Artifact } from "../lib/api";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
+import { mapSessionSearchHits, type SessionSearchRow } from "../lib/sessionSearch";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import { writeTranscriptCache } from "./Conversation";
@@ -284,6 +285,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   });
   const [bankSessions, setBankSessions] = useState<Session[]>([]);
   const [bankLoading, setBankLoading] = useState(false);
+  const [sessionSearchQuery, setSessionSearchQuery] = useState("");
+  const [sessionSearchRows, setSessionSearchRows] = useState<SessionSearchRow[]>([]);
+  const [sessionSearchLoading, setSessionSearchLoading] = useState(false);
+  const sessionSearchReqId = useRef(0);
 
   const currentRepoRef = useRef("");
   // Assigned after projects + SWR hooks exist; early handlers (rename) call through this.
@@ -672,6 +677,46 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     void refreshBankSessions();
   }, [railTab, refreshBankSessions, jobsRefresh]);
 
+  // Debounced FTS search on the Sessions tab. Empty query restores the bank list.
+  // Soft-fail: errors clear results without a sticky error banner.
+  useEffect(() => {
+    if (railTab !== "sessions") return;
+    const trimmed = sessionSearchQuery.trim();
+    if (!trimmed) {
+      sessionSearchReqId.current += 1;
+      setSessionSearchRows([]);
+      setSessionSearchLoading(false);
+      return;
+    }
+    setSessionSearchLoading(true);
+    const reqId = ++sessionSearchReqId.current;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const hits = await api.searchSessions(trimmed, 20);
+          if (reqId !== sessionSearchReqId.current) return;
+          const titleById: Record<string, string> = {};
+          for (const s of bankSessions) {
+            if (s?.id) titleById[s.id] = s.title || "";
+          }
+          for (const s of sessions) {
+            if (s?.id && titleById[s.id] == null) titleById[s.id] = s.title || "";
+          }
+          setSessionSearchRows(mapSessionSearchHits(hits, titleById));
+        } catch {
+          if (reqId !== sessionSearchReqId.current) return;
+          setSessionSearchRows([]);
+        } finally {
+          if (reqId === sessionSearchReqId.current) setSessionSearchLoading(false);
+        }
+      })();
+    }, 250);
+    return () => window.clearTimeout(timer);
+    // Titles resolve from latest bank/local sessions at fire time; omit them as
+    // deps so SWR/bank refresh does not re-hit FTS for the same query.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [railTab, sessionSearchQuery]);
+
   useEffect(() => {
     const onRelocated = (e: Event) => {
       const root = String((e as CustomEvent).detail?.workspace_root || "").trim();
@@ -1034,38 +1079,98 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
       {/* GLOBAL SESSIONS BANK */}
       {railTab === "sessions" && (
-        <Section title="Recent" headerSpinner={bankLoading}>
-          {bankSessions.length === 0 && !bankLoading && <Empty>No sessions</Empty>}
-          <div className="space-y-0.5 pb-2">
-            {bankSessions.map((s) => {
-              const root = s.workspace_root || s.repo || "";
-              const label = getWorkspaceBasename(root) || "Home";
-              const isActive = !!s.active;
-              return (
+        <>
+          <div className="px-3 pt-2 pb-1">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-faint" size={12} />
+              <input
+                type="search"
+                value={sessionSearchQuery}
+                onChange={(e) => setSessionSearchQuery(e.target.value)}
+                placeholder="Search sessions..."
+                aria-label="Search sessions"
+                className="w-full bg-panel border border-edge rounded text-[11px] text-txt
+                           pl-7 pr-7 py-1.5 outline-none focus:border-accent placeholder:text-faint"
+              />
+              {sessionSearchQuery.trim() ? (
                 <button
-                  key={s.id}
                   type="button"
-                  disabled={!!switchingSessionId || opening}
-                  onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
-                  className={`w-full text-left px-2 py-1.5 rounded transition min-w-0 disabled:opacity-60 ${
-                    isActive ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
-                  }`}
-                  title={`${s.title}\n${root}`}
+                  onClick={() => setSessionSearchQuery("")}
+                  aria-label="Clear session search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-txt"
                 >
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    {switchingSessionId === s.id
-                      ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
-                      : null}
-                    <div className={`text-[12.5px] truncate flex-1 ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
-                      {s.title || "Untitled"}
-                    </div>
-                  </div>
-                  <div className="text-[10px] text-faint truncate font-mono">{label}</div>
+                  <X size={12} />
                 </button>
-              );
-            })}
+              ) : null}
+            </div>
           </div>
-        </Section>
+          {sessionSearchQuery.trim() ? (
+            <Section title="Results" headerSpinner={sessionSearchLoading}>
+              {!sessionSearchLoading && sessionSearchRows.length === 0 && (
+                <Empty>No matches</Empty>
+              )}
+              <div className="space-y-0.5 pb-2">
+                {sessionSearchRows.map((row) => (
+                  <button
+                    key={row.id}
+                    type="button"
+                    disabled={!!switchingSessionId || opening}
+                    onClick={() => { if (!switchingSessionId) void switchSession(row.id); }}
+                    className={`w-full text-left px-2 py-1.5 rounded transition min-w-0 disabled:opacity-60 ${
+                      switchingSessionId === row.id ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
+                    }`}
+                    title={row.snippet ? `${row.title}\n${row.snippet}` : row.title}
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {switchingSessionId === row.id
+                        ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                        : null}
+                      <div className="text-[12.5px] truncate flex-1 text-muted">
+                        {row.title}
+                      </div>
+                    </div>
+                    {row.snippet ? (
+                      <div className="text-[10px] text-faint truncate">{row.snippet}</div>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </Section>
+          ) : (
+            <Section title="Recent" headerSpinner={bankLoading}>
+              {bankSessions.length === 0 && !bankLoading && <Empty>No sessions</Empty>}
+              <div className="space-y-0.5 pb-2">
+                {bankSessions.map((s) => {
+                  const root = s.workspace_root || s.repo || "";
+                  const label = getWorkspaceBasename(root) || "Home";
+                  const isActive = !!s.active;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      disabled={!!switchingSessionId || opening}
+                      onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                      className={`w-full text-left px-2 py-1.5 rounded transition min-w-0 disabled:opacity-60 ${
+                        isActive ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
+                      }`}
+                      title={`${s.title}\n${root}`}
+                    >
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        {switchingSessionId === s.id
+                          ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                          : null}
+                        <div className={`text-[12.5px] truncate flex-1 ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
+                          {s.title || "Untitled"}
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-faint truncate font-mono">{label}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </Section>
+          )}
+        </>
       )}
 
       {/* PROJECTS SECTION */}
