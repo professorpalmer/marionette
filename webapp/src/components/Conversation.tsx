@@ -901,11 +901,8 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         : turnOpen && (status === "idle" || status === "done")
           ? "thinking"
           : status;
-  const composerBusy =
-    agentLoopOpen
-    || status === "thinking"
-    || status === "executing"
-    || status === "streaming";
+  // Same latch as agentLoopOpen — Steer/Stop stay up for the whole turn.
+  const composerBusy = agentLoopOpen;
   // True while this Conversation owns a live SSE stream for the active session.
   // Runner-poll busy chrome must not clobber local streaming status, and must
   // not force idle while SSE is still attached.
