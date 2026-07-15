@@ -2701,14 +2701,19 @@ class ConversationalSession(ToolDispatchMixin):
                     aid = ev.data.get("id")
                     if aid:
                         action_starts[aid] = time.time()
-                        pending_cards[aid] = {
+                        card = {
                             "type": "card",
                             "id": aid,
                             "kind": ev.data.get("kind"),
                             "goal": ev.data.get("goal"),
                             "cwd": ev.data.get("cwd"),
-                            "result": None
+                            # None = still running. Append immediately so session
+                            # transcript polls / reattach see the tool row instead
+                            # of wiping the live Investigating UI mid-command.
+                            "result": None,
                         }
+                        pending_cards[aid] = card
+                        self._display_transcript.append(card)
                 elif ev.kind == "action_result":
                     aid = ev.data.get("id")
                     if aid and aid in action_starts:
@@ -2732,9 +2737,23 @@ class ConversationalSession(ToolDispatchMixin):
                         for key in ["job_id", "num", "types", "adapter", "artifacts", "error", "duration_ms", "chars"]:
                             if key in ev.data:
                                 res_data[key] = ev.data[key]
+                        # In-place update of the action_start row (already in display).
                         card["result"] = res_data
-                        self._display_transcript.append(card)
                         del pending_cards[aid]
+                    elif aid:
+                        # Result without a tracked start -- still persist a card.
+                        res_data = {}
+                        for key in ["job_id", "num", "types", "adapter", "artifacts", "error", "duration_ms", "chars"]:
+                            if key in ev.data:
+                                res_data[key] = ev.data[key]
+                        self._display_transcript.append({
+                            "type": "card",
+                            "id": aid,
+                            "kind": ev.data.get("kind"),
+                            "goal": ev.data.get("goal"),
+                            "cwd": ev.data.get("cwd"),
+                            "result": res_data,
+                        })
                 
                 if ev.kind == "assistant_done":
                     self._turn_count += 1

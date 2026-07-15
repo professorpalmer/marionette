@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   dedupeDisplayItems,
+  mergeTranscriptItems,
+  shouldPreferLocalTranscript,
   transcriptFingerprint,
   transcriptResponseToItems,
 } from "../components/Conversation";
@@ -77,5 +79,82 @@ describe("transcriptResponseToItems", () => {
       ],
     });
     expect(items.filter((i) => i.kind === "card")).toHaveLength(1);
+  });
+
+  it("marks result-null display cards as running (in-flight action_start)", () => {
+    const items = transcriptResponseToItems({
+      display: [
+        { type: "message", role: "user", text: "go" },
+        { type: "card", id: "a1", goal: "pytest", kind: "run_command", result: null },
+      ],
+    });
+    const c = items.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(c.card.running).toBe(true);
+    expect(c.card.result).toBeUndefined();
+  });
+});
+
+describe("shouldPreferLocalTranscript / mergeTranscriptItems", () => {
+  it("keeps local when remote is missing a running card (no Investigating blink)", () => {
+    const local: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "card",
+        card: {
+          id: "run-1",
+          goal: "pytest",
+          cwd: null,
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+    const remote: Item[] = [msg("user", "go"), msg("assistant", "narration only")];
+    expect(shouldPreferLocalTranscript(local, remote)).toBe(true);
+    const merged = mergeTranscriptItems(local, remote);
+    expect(merged.some((i) => i.kind === "card" && i.card.id === "run-1")).toBe(true);
+  });
+
+  it("takes remote result when the same card finished on disk", () => {
+    const local: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "run-1",
+          goal: "pytest",
+          cwd: null,
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+    const remote: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "run-1",
+          goal: "pytest",
+          cwd: null,
+          kind: "run_command",
+          running: false,
+          open: false,
+          result: { adapter: "local", duration_ms: 12 },
+        },
+      },
+    ];
+    // Remote still has the card id — do not prefer-local solely for running.
+    expect(shouldPreferLocalTranscript(local, remote)).toBe(false);
+    const merged = mergeTranscriptItems(local, remote);
+    const c = merged[0] as Extract<Item, { kind: "card" }>;
+    expect(c.card.running).toBe(false);
+    expect(c.card.result?.duration_ms).toBe(12);
+  });
+
+  it("prefers local when remote has fewer completed cards", () => {
+    const local: Item[] = [card("a"), card("b"), card("c")];
+    const remote: Item[] = [card("a")];
+    expect(shouldPreferLocalTranscript(local, remote)).toBe(true);
   });
 });

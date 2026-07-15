@@ -77,6 +77,10 @@ def test_display_transcript_typed_cards():
         assert len(display[2]["result"]["artifacts"]) == 1
         assert "Read 20 chars" in display[2]["result"]["artifacts"][0]["headline"]
 
+        # Card row must exist in display as soon as action_start fires (result
+        # starts null, then fills in-place). Regression: mid-turn transcript
+        # polls used to omit in-flight tools and wiped the Investigating UI.
+
         assert display[3]["type"] == "message"
         assert display[3]["role"] == "assistant"
         assert display[3]["text"] == "All done!"

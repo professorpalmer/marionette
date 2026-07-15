@@ -7,7 +7,11 @@ import PilotPicker from "./PilotPicker";
 import { pickFolder, revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../lib/transport";
 import FileEditorPane from "./FileEditorPane";
 import { TranscriptList, type Item, type Msg, type Card } from "./TranscriptList";
-import { deriveBusyProgress, turnLooksAnswerComplete } from "../lib/turnProgress";
+import {
+  deriveBusyProgress,
+  turnHasLiveInvestigation,
+  turnLooksAnswerComplete,
+} from "../lib/turnProgress";
 import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
 
 /**
@@ -185,6 +189,8 @@ export function transcriptResponseToItems(res: {
   if (res.display && res.display.length > 0) {
     loadedItems = res.display.map((m: any) => {
       if (m.type === "card") {
+        // result == null means still in flight (persisted at action_start).
+        const pending = m.result == null;
         return {
           kind: "card" as const,
           card: {
@@ -192,9 +198,9 @@ export function transcriptResponseToItems(res: {
             goal: m.goal,
             cwd: m.cwd || null,
             kind: m.kind,
-            running: false,
+            running: pending,
             open: false,
-            result: m.result || undefined
+            result: pending ? undefined : (m.result || undefined)
           }
         };
       } else if (m.type === "swarm_result") {
@@ -253,6 +259,84 @@ export function dedupeDisplayItems(items: Item[]): Item[] {
     out.push(item);
   }
   return out;
+}
+
+function _cardCount(items: Item[]): number {
+  let n = 0;
+  for (const it of items) if (it.kind === "card") n += 1;
+  return n;
+}
+
+function _runningCardIds(items: Item[]): Set<string> {
+  const ids = new Set<string>();
+  for (const it of items) {
+    if (it.kind === "card" && it.card.running && it.card.id) {
+      ids.add(String(it.card.id));
+    }
+  }
+  return ids;
+}
+
+/**
+ * True when applying `remote` (sessionTranscript poll) would erase live tool
+ * rows the SSE stream already painted -- the Investigating blink / disappear
+ * bug while run_command is still going.
+ */
+export function shouldPreferLocalTranscript(local: Item[], remote: Item[]): boolean {
+  const localRunning = _runningCardIds(local);
+  if (localRunning.size > 0) {
+    for (const id of localRunning) {
+      const rem = remote.find((it) => it.kind === "card" && it.card.id === id);
+      if (!rem) return true;
+      // Remote still pending (result null → running) or completed: ok to take remote.
+    }
+  }
+  // Never shrink the tool timeline mid-session; poll payloads can lag saves.
+  if (_cardCount(local) > _cardCount(remote)) return true;
+  return false;
+}
+
+/**
+ * Merge a disk/API transcript into the live feed without dropping in-flight
+ * cards. Prefer remote message text when ids match; keep local-only cards.
+ */
+export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
+  if (!shouldPreferLocalTranscript(local, remote)) return remote;
+  const remoteByCardId = new Map<string, Extract<Item, { kind: "card" }>>();
+  for (const it of remote) {
+    if (it.kind === "card" && it.card.id) {
+      remoteByCardId.set(String(it.card.id), it);
+    }
+  }
+  const merged = local.map((it) => {
+    if (it.kind !== "card" || !it.card.id) return it;
+    const rem = remoteByCardId.get(String(it.card.id));
+    if (!rem) return it;
+    // Remote finished the tool -- take its result, drop running.
+    if (!rem.card.running && rem.card.result) {
+      return {
+        kind: "card" as const,
+        card: {
+          ...it.card,
+          running: false,
+          result: rem.card.result,
+          goal: rem.card.goal || it.card.goal,
+          kind: rem.card.kind || it.card.kind,
+        },
+      };
+    }
+    return it;
+  });
+  // Append remote cards the local feed never saw (reattach gap).
+  const localIds = new Set(
+    local.filter((it) => it.kind === "card" && it.card.id).map((it) => String((it as Extract<Item, { kind: "card" }>).card.id)),
+  );
+  for (const it of remote) {
+    if (it.kind === "card" && it.card.id && !localIds.has(String(it.card.id))) {
+      merged.push(it);
+    }
+  }
+  return merged;
 }
 
 /** Cheap content fingerprint so busy-poll refresh can skip identical payloads. */
@@ -783,18 +867,29 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     return () => window.clearInterval(id);
   }, [busyStartedAt]);
   const busyElapsedMs = busyStartedAt != null ? Math.max(0, busyNow - busyStartedAt) : null;
+  const liveInvestigation = turnHasLiveInvestigation(items);
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
-  // T5: answer already painted — treat chrome as idle while SSE status lags.
-  // Never force idle during executing: tool gaps between write_file steps were
-  // flipping the header to idle while Investigating / Stop stayed live.
-  const answerChromeIdle =
-    turnLooksAnswerComplete(items)
-    && (status === "thinking" || status === "streaming");
   // True while visible items belong to a prior session (or are awaiting hydrate).
   // Dims the feed and blocks send so stale A is never treated as B.
   const [transcriptStale, setTranscriptStale] = useState(false);
   const transcriptStaleRef = useRef(false);
   useEffect(() => { transcriptStaleRef.current = transcriptStale; }, [transcriptStale]);
+  // T5: answer already painted — treat chrome as idle while SSE status lags.
+  // Never force idle during executing or while a tool/thinking row is live —
+  // those were flipping the header to idle while Investigating / Stop stayed.
+  const answerChromeIdle =
+    !liveInvestigation
+    && turnLooksAnswerComplete(items)
+    && (status === "thinking" || status === "streaming");
+  // Runner/SSE can briefly report idle while a card is still running (or the
+  // reverse). Prefer the investigation truth for the header pill.
+  const pillStatus: string = transcriptStale
+    ? "switching…"
+    : answerChromeIdle
+      ? "idle"
+      : liveInvestigation && (status === "idle" || status === "done")
+        ? "executing"
+        : status;
   // True while this Conversation owns a live SSE stream for the active session.
   // Runner-poll busy chrome must not clobber local streaming status, and must
   // not force idle while SSE is still attached.
@@ -1489,12 +1584,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                   if (cachedSessionIdRef.current !== missSid) return;
                   if (localStreamActiveRef.current) return;
                   const loadedItems = transcriptResponseToItems(tres);
-                  const fp = transcriptFingerprint(loadedItems);
+                  const next = mergeTranscriptItems(itemsRef.current, loadedItems);
+                  const fp = transcriptFingerprint(next);
                   if (fp === transcriptFpRef.current) return;
                   transcriptFpRef.current = fp;
-                  setItems(loadedItems);
-                  itemsRef.current = loadedItems;
-                  transcriptCacheBySessionId.set(missSid, { items: [...loadedItems] });
+                  setItems(next);
+                  itemsRef.current = next;
+                  transcriptCacheBySessionId.set(missSid, { items: [...next] });
                   setTranscriptStale(false);
                   // Keep detached-busy chrome; do not clear status / poll.
                 }).catch(() => {});
@@ -1653,18 +1749,25 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
           if (cachedSessionIdRef.current !== sid) return;
           if (localStreamActiveRef.current) return;
           const loadedItems = transcriptResponseToItems(tres);
-          const fp = transcriptFingerprint(loadedItems);
+          const local = itemsRef.current;
+          const next = mergeTranscriptItems(local, loadedItems);
+          const fp = transcriptFingerprint(next);
           // Identical payload: keep existing object identities so React does not
           // remount every Investigated/card row (the periodic blink).
           if (fp === transcriptFpRef.current) return;
           transcriptFpRef.current = fp;
-          setItems(loadedItems);
-          itemsRef.current = loadedItems;
-          transcriptCacheBySessionId.set(sid, { items: [...loadedItems] });
+          setItems(next);
+          itemsRef.current = next;
+          transcriptCacheBySessionId.set(sid, { items: [...next] });
           setTranscriptStale(false);
         }).catch(() => {});
       } else if (detachedBusyRef.current) {
         // Runner went idle after a detached busy view -- finalize + refresh.
+        // Do not clear busy chrome while live tool rows are still painted;
+        // a lagging runners map was wiping Investigating → idle mid-command.
+        if (turnHasLiveInvestigation(itemsRef.current)) {
+          return;
+        }
         detachedBusyRef.current = false;
         clearChatEventsPoll();
         setStatus("idle");
@@ -1674,12 +1777,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             if (cachedSessionIdRef.current !== sid) return;
             if (localStreamActiveRef.current) return;
             const loadedItems = transcriptResponseToItems(tres);
-            const fp = transcriptFingerprint(loadedItems);
+            const next = mergeTranscriptItems(itemsRef.current, loadedItems);
+            const fp = transcriptFingerprint(next);
             if (fp === transcriptFpRef.current) return;
             transcriptFpRef.current = fp;
-            setItems(loadedItems);
-            itemsRef.current = loadedItems;
-            transcriptCacheBySessionId.set(sid, { items: [...loadedItems] });
+            setItems(next);
+            itemsRef.current = next;
+            transcriptCacheBySessionId.set(sid, { items: [...next] });
             setTranscriptStale(false);
           })
           .catch(() => {});
@@ -3110,9 +3214,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         </span>
         <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
           <StatusPill
-            status={transcriptStale ? "switching…" : answerChromeIdle ? "idle" : status}
+            status={pillStatus}
             detail={
-              !transcriptStale && !answerChromeIdle && busyProgress.label
+              !transcriptStale && !answerChromeIdle && pillStatus !== "idle" && busyProgress.label
                 ? busyProgress.pill
                 : undefined
             }

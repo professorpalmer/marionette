@@ -632,11 +632,13 @@ function ActivityGroup({
   onToggleCard: (card: Card) => void;
   groupId: string;
 }) {
-  // Compact-by-default: a whole investigation collapses to one summary line
-  // (Cursor-style "Investigated -- N steps"), expandable to the full list.
-  // Seed from the module map so a remount (e.g. thinking-only -> first card
-  // arrives) does not yank an explicitly opened group shut mid-stream.
-  const [open, setOpen] = useState(() => __activityOpen.get(groupId) ?? false);
+  // Tool-bearing investigations start OPEN (Cursor/Hermes: see every write /
+  // run as it happens). Pure Thought/reasoning stays collapsed. Seed from the
+  // module map so a remount does not yank an explicit toggle mid-stream.
+  const [open, setOpen] = useState(() => {
+    if (__activityOpen.has(groupId)) return Boolean(__activityOpen.get(groupId));
+    return items.some((it) => it.kind === "card");
+  });
   const toggleOpen = () => {
     setOpen((v) => {
       const next = !v;
@@ -931,21 +933,69 @@ function nodeToText(node: any): string {
   return "";
 }
 
+/** Pull a file-ish path from a tree / listing line (`├── poll_loop.py  # note`). */
+function pathTokenInCodeLine(line: string): { before: string; path: string; after: string } | null {
+  const m = line.match(/^(.*?)((?:[\w.-]+[\\/])*[\w.-]+\.\w{1,8})(\s*(?:#.*)?)$/);
+  if (!m) return null;
+  const path = m[2];
+  if (!looksLikePathInlineCode(path) && !looksLikePathInlineCode(path.split(/[\\/]/).pop() || "")) {
+    return null;
+  }
+  return { before: m[1], path, after: m[3] || "" };
+}
+
 function FencedCodeBlock({ className, children, ...props }: any) {
   const [copied, setCopied] = useState(false);
   const codeText = nodeToText(children).replace(/\n$/, "");
-  
+  const lines = codeText.split("\n");
+  const pathLines = lines.filter((ln) => pathTokenInCodeLine(ln)).length;
+  // Directory trees / file lists: make paths open in the editor on click.
+  const clickableTree = pathLines >= 2 || (lines.length <= 4 && pathLines >= 1);
+
   const handleCopy = () => {
     navigator.clipboard.writeText(codeText);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };
-  
+
   return (
     <div className="relative group/code my-2">
-      <code className={`${className || ""} block bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90`} {...props}>
-        {children}
-      </code>
+      {clickableTree ? (
+        <pre
+          className={`${className || ""} block bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90 m-0 whitespace-pre`}
+          {...props}
+        >
+          {lines.map((line, i) => {
+            const tok = pathTokenInCodeLine(line);
+            if (!tok) {
+              return <span key={i}>{line}{i < lines.length - 1 ? "\n" : ""}</span>;
+            }
+            return (
+              <span key={i}>
+                {tok.before}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openAgentFile(tok.path);
+                  }}
+                  title={`Open ${tok.path}`}
+                  className="text-accent/90 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0 font-inherit"
+                >
+                  {tok.path}
+                </button>
+                {tok.after}
+                {i < lines.length - 1 ? "\n" : ""}
+              </span>
+            );
+          })}
+        </pre>
+      ) : (
+        <code className={`${className || ""} block bg-panel/80 border border-accent/20 rounded-md p-3 pr-10 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90`} {...props}>
+          {children}
+        </code>
+      )}
       <button
         onClick={handleCopy}
         className="absolute right-2 top-2 p-1 rounded bg-panel2/80 hover:bg-panel2 text-faint hover:text-muted border border-edge opacity-0 group-hover/code:opacity-100 transition-opacity"
