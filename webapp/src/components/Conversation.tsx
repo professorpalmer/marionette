@@ -785,9 +785,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   const busyElapsedMs = busyStartedAt != null ? Math.max(0, busyNow - busyStartedAt) : null;
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
   // T5: answer already painted — treat chrome as idle while SSE status lags.
+  // Never force idle during executing: tool gaps between write_file steps were
+  // flipping the header to idle while Investigating / Stop stayed live.
   const answerChromeIdle =
     turnLooksAnswerComplete(items)
-    && (status === "thinking" || status === "executing" || status === "streaming");
+    && (status === "thinking" || status === "streaming");
   // True while visible items belong to a prior session (or are awaiting hydrate).
   // Dims the feed and blocks send so stale A is never treated as B.
   const [transcriptStale, setTranscriptStale] = useState(false);

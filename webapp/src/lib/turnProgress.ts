@@ -230,15 +230,27 @@ function turnHasThinking(items: TurnItem[]): boolean {
 /**
  * True when the current turn already shows a finished assistant answer and
  * nothing is still live (tools / thinking stream / tool_prep). Used to clear
- * busy chrome while SSE status lags on thinking/executing/streaming.
+ * busy chrome while SSE status lags on thinking/streaming after the final
+ * answer — not between mid-turn tool steps.
+ *
+ * Mid-turn narration ("Let me write the files") followed by cards used to look
+ * "complete" in the gaps between tool calls (no card.running), which blinked
+ * the header StatusPill back to idle while Stop/Steer and Investigating stayed
+ * live. Only treat the turn as done when the last assistant bubble is AFTER
+ * any investigation activity (cards / thinking / tool_prep).
  */
 export function turnLooksAnswerComplete(items: TurnItem[]): boolean {
   const turn = itemsInCurrentTurn(items);
+  let lastAssistantIdx = -1;
   let lastAssistant: { text?: string; streaming?: boolean } | null = null;
-  for (const it of turn) {
+  for (let i = 0; i < turn.length; i++) {
+    const it = turn[i];
     if (it.kind === "msg") {
       const msg = (it as { msg: { role: string; text?: string; streaming?: boolean } }).msg;
-      if (msg.role === "assistant") lastAssistant = msg;
+      if (msg.role === "assistant") {
+        lastAssistantIdx = i;
+        lastAssistant = msg;
+      }
     }
   }
   if (!lastAssistant || !(lastAssistant.text || "").trim()) return false;
@@ -250,6 +262,22 @@ export function turnLooksAnswerComplete(items: TurnItem[]): boolean {
     if (
       it.kind === "thinking"
       && (it as { streaming?: boolean }).streaming === true
+    ) {
+      return false;
+    }
+  }
+
+  // Investigation still in progress (or between tool steps): anything after the
+  // last assistant means that bubble was mid-turn narration, not the answer.
+  for (let i = lastAssistantIdx + 1; i < turn.length; i++) {
+    const it = turn[i];
+    if (
+      it.kind === "card"
+      || it.kind === "tool_prep"
+      || it.kind === "thinking"
+      || it.kind === "swarm_result"
+      || it.kind === "checkpoint"
+      || it.kind === "codegraph_context"
     ) {
       return false;
     }

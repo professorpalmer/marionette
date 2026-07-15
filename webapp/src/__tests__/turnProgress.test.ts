@@ -219,6 +219,22 @@ describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
     expect(shouldShowBusyFooter(items, "executing")).toBe(true);
   });
 
+  it("is false between tool steps after mid-turn narration (no idle blink)", () => {
+    // Narration + finished write, next tool not started yet — header used to
+    // flash idle because nothing was card.running.
+    const items: Item[] = [
+      msg("user", "scaffold"),
+      msg("assistant", "Let me lay down the core files:"),
+      card("1", "README.md", "write_file", false),
+      card("2", "src/index.ts", "write_file", false),
+    ];
+    expect(turnLooksAnswerComplete(items)).toBe(false);
+    expect(shouldShowBusyFooter(items, "executing")).toBe(true);
+    const p = deriveBusyProgress(items, "executing", 90_000);
+    expect(p.phase).not.toBe("idle");
+    expect(p.pill).not.toBe("idle");
+  });
+
   it("is false while thinking is streaming", () => {
     const items: Item[] = [
       msg("user", "go"),
