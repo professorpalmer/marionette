@@ -90,17 +90,27 @@ describe("deriveBusyProgress", () => {
     expect(p.label).not.toContain("Waiting on provider");
   });
 
-  it("clears busy labels when answer is complete despite lagging status (T5)", () => {
+  it("clears busy labels when pure-chat answer is complete despite lagging status (T5)", () => {
     const items: Item[] = [
-      msg("user", "diagnose"),
-      card("1", "a.ts", "read_file", false),
-      msg("assistant", "Here is the fix."),
+      msg("user", "hi"),
+      msg("assistant", "Hello — here is a quick answer."),
     ];
     const p = deriveBusyProgress(items, "thinking", 20_000);
     expect(p.phase).toBe("idle");
     expect(p.label).toBe("");
     expect(p.pill).toBe("idle");
     expect(p.label.toLowerCase()).not.toContain("thinking");
+  });
+
+  it("keeps busy labels after tools when status lags (no idle blink)", () => {
+    const items: Item[] = [
+      msg("user", "diagnose"),
+      card("1", "a.ts", "read_file", false),
+      msg("assistant", "Here is the fix."),
+    ];
+    const p = deriveBusyProgress(items, "thinking", 20_000);
+    expect(p.phase).not.toBe("idle");
+    expect(p.pill).not.toBe("idle");
   });
 
   it("includes thinking and tool_prep kinds in the current turn", () => {
@@ -179,27 +189,59 @@ describe("turnHasLiveInvestigation", () => {
     expect(turnHasLiveInvestigation(items)).toBe(true);
   });
 
-  it("is false when tools finished", () => {
+  it("is false when tools finished and the agent loop is closed", () => {
     const items: Item[] = [
       msg("user", "go"),
       card("1", "a.ts", "read_file", false),
     ];
     expect(turnHasLiveInvestigation(items)).toBe(false);
+    expect(turnHasLiveInvestigation(items, false)).toBe(false);
+  });
+
+  it("stays live between tool steps while the agent loop is open", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      card("1", "a.ts", "read_file", false),
+    ];
+    expect(turnHasLiveInvestigation(items, true)).toBe(true);
   });
 });
 
 describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
-  it("is true when last assistant text is done and nothing is live", () => {
+  it("is true for pure chat when assistant text is done (T5)", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      msg("assistant", "Final answer."),
+    ];
+    expect(turnLooksAnswerComplete(items)).toBe(true);
+    expect(shouldShowBusyFooter(items, "thinking")).toBe(false);
+    expect(shouldShowBusyFooter(items, "streaming")).toBe(false);
+  });
+
+  it("is false after tools even when assistant narration looks final", () => {
+    // Same shape as a finished tool turn — must NOT early-idle between steps.
     const items: Item[] = [
       msg("user", "go"),
       card("1", "a.ts", "read_file", false),
       { kind: "thinking", text: "done thinking", streaming: false },
       msg("assistant", "Final answer."),
     ];
-    expect(turnLooksAnswerComplete(items)).toBe(true);
-    expect(shouldShowBusyFooter(items, "thinking")).toBe(false);
-    expect(shouldShowBusyFooter(items, "executing")).toBe(false);
-    expect(shouldShowBusyFooter(items, "streaming")).toBe(false);
+    expect(turnLooksAnswerComplete(items)).toBe(false);
+    expect(shouldShowBusyFooter(items, "thinking")).toBe(true);
+    expect(shouldShowBusyFooter(items, "executing")).toBe(true);
+  });
+
+  it("is false when narration follows finished cards (gap before next tool)", () => {
+    const items: Item[] = [
+      msg("user", "fix"),
+      card("1", "server.py", "edit_file", false),
+      msg("assistant", "Now the bigger fix — never use the queue."),
+    ];
+    expect(turnLooksAnswerComplete(items)).toBe(false);
+    expect(turnHasLiveInvestigation(items, true)).toBe(true);
+    expect(turnHasLiveInvestigation(items, false)).toBe(false);
+    const p = deriveBusyProgress(items, "thinking", 30_000);
+    expect(p.pill).not.toBe("idle");
   });
 
   it("is false while the assistant bubble is still streaming", () => {

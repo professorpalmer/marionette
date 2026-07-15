@@ -122,7 +122,9 @@ function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): Groupe
       // collapsed activity box as a tight muted line, instead of a full standalone
       // bubble that spams the transcript and scrolls the view. Only user messages
       // and the FINAL assistant answer break out standalone at full size.
-      if (item.msg.role === "assistant" && intermediateItems.has(item) && !item.msg.streaming) {
+      // Fold mid-investigation assistants (including live streaming narration)
+      // into the activity box so the bubble does not jump in/out between tools.
+      if (item.msg.role === "assistant" && intermediateItems.has(item)) {
         currentGroup.push(item);
       } else {
         flush();
@@ -273,6 +275,11 @@ export type TranscriptListProps = {
   plan: boolean;
   /** Wall-clock ms since the current busy turn began (for elapsed on the footer). */
   busyElapsedMs?: number | null;
+  /**
+   * Sticky open-turn latch from Conversation (true until assistant_done / Stop).
+   * Keeps mid-turn narration folded into Investigating between tool batches.
+   */
+  turnOpen?: boolean;
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   onEditMessage: (idx: number, originalText: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
@@ -289,6 +296,7 @@ export const TranscriptList = memo(function TranscriptList({
   auto,
   plan,
   busyElapsedMs = null,
+  turnOpen = false,
   scrollContainerRef,
   onEditMessage,
   onExecuteSend,
@@ -296,6 +304,12 @@ export const TranscriptList = memo(function TranscriptList({
   onSetCard,
   onExecutePlan,
 }: TranscriptListProps) {
+  const agentLoopOpen =
+    turnOpen
+    || status === "thinking"
+    || status === "executing"
+    || status === "streaming";
+
   const intermediateItems = new Set<Item>();
   let hasSeenCardOrAssistantMsgInTurn = false;
   for (let j = items.length - 1; j >= 0; j--) {
@@ -309,6 +323,37 @@ export const TranscriptList = memo(function TranscriptList({
       hasSeenCardOrAssistantMsgInTurn = true;
     } else if (item.kind === "card") {
       hasSeenCardOrAssistantMsgInTurn = true;
+    }
+  }
+
+  // While the agent loop is open, the trailing assistant after tools is still
+  // mid-turn narration — not the final answer. The backward pass above only
+  // marks assistants that already have a card AFTER them; between tool batches
+  // there is no card yet, so those bubbles used to stand alone and lurch the
+  // fold (and cut off Steer). Fold every current-turn assistant when tools ran.
+  if (agentLoopOpen) {
+    let turnStart = 0;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "msg" && it.msg.role === "user") {
+        turnStart = i + 1;
+        break;
+      }
+    }
+    let turnHasCards = false;
+    for (let i = turnStart; i < items.length; i++) {
+      if (items[i].kind === "card") {
+        turnHasCards = true;
+        break;
+      }
+    }
+    if (turnHasCards) {
+      for (let i = turnStart; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind === "msg" && it.msg.role === "assistant") {
+          intermediateItems.add(it);
+        }
+      }
     }
   }
 
@@ -371,6 +416,14 @@ export const TranscriptList = memo(function TranscriptList({
     }
   }
 
+  let lastActivityGroupIdx = -1;
+  for (let gi = grouped.length - 1; gi >= 0; gi--) {
+    if (grouped[gi].kind === "activity_group") {
+      lastActivityGroupIdx = gi;
+      break;
+    }
+  }
+
   const list = grouped.map((it, i) => {
     if (i < hiddenCount) return null;
     const key = stableItemKey(it, i);
@@ -392,7 +445,7 @@ export const TranscriptList = memo(function TranscriptList({
       const isEditing = editingIndex === rawIdx;
 
       const isLastAssistant = rawIdx === lastAssistantRawIdx;
-      const isNotBusy = status === "idle" || status === "done" || status === "error";
+      const isNotBusy = !agentLoopOpen && (status === "idle" || status === "done" || status === "error");
       const onRegenerate = (isLastAssistant && isNotBusy && lastUserText)
         ? () => { onExecuteSend(lastUserText, auto, plan); }
         : undefined;
@@ -502,6 +555,7 @@ export const TranscriptList = memo(function TranscriptList({
           key={key}
           groupId={key}
           items={it.items}
+          loopOpen={agentLoopOpen && i === lastActivityGroupIdx}
           onToggleCard={(card) => onSetCard(card.id, { open: !card.open })}
         />
       );
@@ -512,7 +566,7 @@ export const TranscriptList = memo(function TranscriptList({
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
   // Hide flat busy footer while investigation rows own the status surface (T1),
   // or when the assistant answer already looks complete despite SSE lag (T5).
-  const hideBusyFooter = turnHasLiveInvestigation(items);
+  const hideBusyFooter = turnHasLiveInvestigation(items, agentLoopOpen);
   const showBusyFooter = shouldShowBusyFooter(items, status) && !hideBusyFooter;
   // Hermes StreamStall: after STREAM_STALL_MS with no transcript growth while
   // still busy, resurface a quiet "still working" cue (covers long tool think
@@ -659,10 +713,13 @@ function ActivityGroup({
   items,
   onToggleCard,
   groupId,
+  loopOpen = false,
 }: {
   items: ActivityItem[];
   onToggleCard: (card: Card) => void;
   groupId: string;
+  /** True while this is the current turn's fold and the agent loop is still open. */
+  loopOpen?: boolean;
 }) {
   // Tool-bearing investigations start OPEN (Cursor/Hermes: see every write /
   // run as it happens). Pure Thought/reasoning stays collapsed. Seed from the
@@ -685,6 +742,8 @@ function ActivityGroup({
   const swarmResults = items.filter((it) => it.kind === "swarm_result") as { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }[];
   const actionCount = cards.length;
   const anyRunning = cards.some((c) => c.card.running);
+  // Keep Investigating across gaps between tool steps (loop still open).
+  const investigating = anyRunning || (loopOpen && actionCount > 0);
   const runningCard = [...cards].reverse().find((c) => c.card.running)?.card;
   const runningKind = toolFocusPhrase(runningCard?.kind || "");
   const runningGoal = shortenGoal(runningCard?.goal || "");
@@ -700,11 +759,11 @@ function ActivityGroup({
   // toggled this group. A prior remount reset autoOpenedRef and re-forced open
   // on every tool call -- expand clicked shut, then snapped open again.
   useEffect(() => {
-    if (!(anyRunning || liveThinking)) return;
+    if (!(anyRunning || liveThinking || investigating)) return;
     if (__activityOpen.has(groupId)) return;
     setOpen(true);
     __activityOpen.set(groupId, true);
-  }, [anyRunning, liveThinking, groupId]);
+  }, [anyRunning, liveThinking, investigating, groupId]);
 
   // A group with NO tool actions, no narration AND no reasoning (just a lone
   // CodeGraph chip from the per-step auto-injection) would render a misleading
@@ -727,7 +786,7 @@ function ActivityGroup({
   );
   const stepHeadline = investigatingHeadline(
     actionCount,
-    anyRunning,
+    investigating,
     runningKind,
     runningGoal,
     kindSummary,
@@ -809,11 +868,11 @@ function ActivityGroup({
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-panel2/20 border border-edge/30 hover:bg-panel2/40 transition text-[11px] text-muted w-fit select-none"
       >
         {open ? <ChevronDown size={11} className="text-faint/70" /> : <ChevronRight size={11} className="text-faint/70" />}
-        {anyRunning ? <Loader2 size={11} className="animate-spin text-faint" /> : <Share2 size={10} className="text-faint/70" />}
+        {investigating ? <Loader2 size={11} className="animate-spin text-faint" /> : <Share2 size={10} className="text-faint/70" />}
         {actionCount > 0 ? (
           <span
             className="text-txt/70 font-medium tracking-tight truncate max-w-[52ch] normal-case"
-            title={anyRunning ? (runningCard?.goal || stepHeadline) : stepHeadline}
+            title={investigating ? (runningCard?.goal || stepHeadline) : stepHeadline}
           >
             {stepHeadline}
           </span>

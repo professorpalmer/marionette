@@ -227,28 +227,35 @@ function turnHasThinking(items: TurnItem[]): boolean {
   return false;
 }
 
+/** True when the current turn already ran tools / tool_prep (agent loop). */
+export function turnHasInvestigationActivity(items: TurnItem[]): boolean {
+  for (const it of itemsInCurrentTurn(items)) {
+    if (it.kind === "card" || it.kind === "tool_prep") return true;
+  }
+  return false;
+}
+
 /**
  * True when the current turn already shows a finished assistant answer and
- * nothing is still live (tools / thinking stream / tool_prep). Used to clear
- * busy chrome while SSE status lags on thinking/streaming after the final
- * answer — not between mid-turn tool steps.
+ * nothing is still live. Used ONLY to clear busy chrome on pure chat turns
+ * while SSE status lags after the final answer (T5).
  *
- * Mid-turn narration ("Let me write the files") followed by cards used to look
- * "complete" in the gaps between tool calls (no card.running), which blinked
- * the header StatusPill back to idle while Stop/Steer and Investigating stayed
- * live. Only treat the turn as done when the last assistant bubble is AFTER
- * any investigation activity (cards / thinking / tool_prep).
+ * Tool-using turns MUST NOT be inferred complete from transcript shape:
+ * mid-turn narration after finished cards looks identical to a final answer,
+ * and treating it as complete blinks the header to idle and drops Steer
+ * between tool batches. Those turns stay busy until assistant_done / idle.
  */
 export function turnLooksAnswerComplete(items: TurnItem[]): boolean {
   const turn = itemsInCurrentTurn(items);
-  let lastAssistantIdx = -1;
+  // Agent / tool loops: never early-complete from shape alone.
+  if (turnHasInvestigationActivity(items)) return false;
+
   let lastAssistant: { text?: string; streaming?: boolean } | null = null;
   for (let i = 0; i < turn.length; i++) {
     const it = turn[i];
     if (it.kind === "msg") {
       const msg = (it as { msg: { role: string; text?: string; streaming?: boolean } }).msg;
       if (msg.role === "assistant") {
-        lastAssistantIdx = i;
         lastAssistant = msg;
       }
     }
@@ -257,27 +264,10 @@ export function turnLooksAnswerComplete(items: TurnItem[]): boolean {
   if (lastAssistant.streaming === true) return false;
 
   for (const it of turn) {
-    if (it.kind === "card" && (it as { card: TurnCard }).card?.running) return false;
     if (it.kind === "tool_prep") return false;
     if (
       it.kind === "thinking"
       && (it as { streaming?: boolean }).streaming === true
-    ) {
-      return false;
-    }
-  }
-
-  // Investigation still in progress (or between tool steps): anything after the
-  // last assistant means that bubble was mid-turn narration, not the answer.
-  for (let i = lastAssistantIdx + 1; i < turn.length; i++) {
-    const it = turn[i];
-    if (
-      it.kind === "card"
-      || it.kind === "tool_prep"
-      || it.kind === "thinking"
-      || it.kind === "swarm_result"
-      || it.kind === "checkpoint"
-      || it.kind === "codegraph_context"
     ) {
       return false;
     }
@@ -435,10 +425,18 @@ export function investigatingHeadline(
   return `Explored ${actionCount} step${actionCount === 1 ? "" : "s"}`;
 }
 
-/** True when the current turn's activity fold is actively investigating. */
-export function turnHasLiveInvestigation(items: TurnItem[]): boolean {
+/**
+ * True when the current turn's activity fold is actively investigating.
+ * Includes gaps between tool steps when the agent loop is still open
+ * (``agentLoopOpen``) so Investigating / Stop / Steer do not blink idle.
+ */
+export function turnHasLiveInvestigation(
+  items: TurnItem[],
+  agentLoopOpen: boolean = false,
+): boolean {
   for (const it of itemsInCurrentTurn(items)) {
     if (it.kind === "card" && (it as { card: TurnCard }).card?.running) return true;
+    if (it.kind === "tool_prep") return true;
     if (
       it.kind === "thinking"
       && (it as { streaming?: boolean; text?: string }).streaming
@@ -447,6 +445,8 @@ export function turnHasLiveInvestigation(items: TurnItem[]): boolean {
       return true;
     }
   }
+  // Between tool batches: cards exist, none running, loop still open.
+  if (agentLoopOpen && turnHasInvestigationActivity(items)) return true;
   return false;
 }
 

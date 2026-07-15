@@ -9,6 +9,7 @@ import FileEditorPane from "./FileEditorPane";
 import { TranscriptList, type Item, type Msg, type Card } from "./TranscriptList";
 import {
   deriveBusyProgress,
+  turnHasInvestigationActivity,
   turnHasLiveInvestigation,
   turnLooksAnswerComplete,
 } from "../lib/turnProgress";
@@ -867,29 +868,44 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     return () => window.clearInterval(id);
   }, [busyStartedAt]);
   const busyElapsedMs = busyStartedAt != null ? Math.max(0, busyNow - busyStartedAt) : null;
-  const liveInvestigation = turnHasLiveInvestigation(items);
+  // Sticky until assistant_done / error / Stop — never infer end-of-turn from
+  // transcript shape (mid-turn narration after tools looks like a final answer).
+  const [turnOpen, setTurnOpen] = useState(false);
+  const agentLoopOpen =
+    turnOpen
+    || status === "thinking"
+    || status === "executing"
+    || status === "streaming";
+  const liveInvestigation = turnHasLiveInvestigation(items, agentLoopOpen);
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
   // True while visible items belong to a prior session (or are awaiting hydrate).
   // Dims the feed and blocks send so stale A is never treated as B.
   const [transcriptStale, setTranscriptStale] = useState(false);
   const transcriptStaleRef = useRef(false);
   useEffect(() => { transcriptStaleRef.current = transcriptStale; }, [transcriptStale]);
-  // T5: answer already painted — treat chrome as idle while SSE status lags.
-  // Never force idle during executing or while a tool/thinking row is live —
-  // those were flipping the header to idle while Investigating / Stop stayed.
+  // T5: pure-chat only — tool turns never early-idle (see turnLooksAnswerComplete).
   const answerChromeIdle =
     !liveInvestigation
+    && !turnHasInvestigationActivity(items)
+    && !turnOpen
     && turnLooksAnswerComplete(items)
     && (status === "thinking" || status === "streaming");
   // Runner/SSE can briefly report idle while a card is still running (or the
-  // reverse). Prefer the investigation truth for the header pill.
+  // reverse). Prefer the investigation / open-turn truth for the header pill.
   const pillStatus: string = transcriptStale
     ? "switching…"
     : answerChromeIdle
       ? "idle"
       : liveInvestigation && (status === "idle" || status === "done")
         ? "executing"
-        : status;
+        : turnOpen && (status === "idle" || status === "done")
+          ? "thinking"
+          : status;
+  const composerBusy =
+    agentLoopOpen
+    || status === "thinking"
+    || status === "executing"
+    || status === "streaming";
   // True while this Conversation owns a live SSE stream for the active session.
   // Runner-poll busy chrome must not clobber local streaming status, and must
   // not force idle while SSE is still attached.
@@ -1476,6 +1492,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else {
         setTranscriptStale(true);
       }
+      setTurnOpen(false);
       setStatus("idle");
       setCompactingStatus(null);
       return;
@@ -1503,6 +1520,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       if (!activeSessionId) return;
       if (runners?.[activeSessionId] === "running") {
         detachedBusyRef.current = true;
+        setTurnOpen(true);
         setStatus((prev) =>
           prev === "thinking" || prev === "executing" || prev === "streaming"
             ? prev
@@ -1511,6 +1529,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (prevId !== activeSessionId) {
         // Switching to an idle session: clear busy chrome from the prior view.
         detachedBusyRef.current = false;
+        setTurnOpen(false);
         setStatus("idle");
         setCompactingStatus(null);
       }
@@ -1777,6 +1796,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       const running = runners[sid] === "running";
       if (running) {
         detachedBusyRef.current = true;
+        setTurnOpen(true);
         setStatus((prev) =>
           prev === "thinking" || prev === "executing" || prev === "streaming"
             ? prev
@@ -1809,11 +1829,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         // Runner went idle after a detached busy view -- finalize + refresh.
         // Do not clear busy chrome while live tool rows are still painted;
         // a lagging runners map was wiping Investigating → idle mid-command.
-        if (turnHasLiveInvestigation(itemsRef.current)) {
+        if (turnHasLiveInvestigation(itemsRef.current, true)) {
           return;
         }
         detachedBusyRef.current = false;
         clearChatEventsPoll();
+        setTurnOpen(false);
         setStatus("idle");
         setCompactingStatus(null);
         return api.sessionTranscript(sid)
@@ -2155,8 +2176,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   };
 
   const handleEditMessage = (idx: number, originalText: string) => {
-    const isBusy = status === "thinking" || status === "executing" || status === "streaming";
-    if (isBusy || editBusy) {
+    if (composerBusy || editBusy) {
       setEditNotice("Stop the current turn before editing a prior message.");
       return;
     }
@@ -2783,6 +2803,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         }
       } else if (ev.kind === "auto_halt") {
         turnSettledRef.current = true;
+        setTurnOpen(false);
         setStatus("done");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "HALT: " + (d.reason || "") } }]);
       } else if (ev.kind === "swarm_pending") {
@@ -2826,6 +2847,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         refreshQueue();
       } else if (ev.kind === "assistant_done") {
         turnSettledRef.current = true;
+        setTurnOpen(false);
         setStatus("done");
         setItems((p) => finalizeStreamingThinking(p));
         fetchContextUsage();
@@ -2834,6 +2856,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         window.dispatchEvent(new Event("harness-config-changed"));
       } else if (ev.kind === "error") {
         turnSettledRef.current = true;
+        setTurnOpen(false);
         setCompactingStatus(null);
         setStatus("error");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
@@ -2876,6 +2899,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         );
       }
     }
+    setTurnOpen(true);
     setStatus("thinking");
     const streamer = resume
       ? (cb: any, done: any, err: any) => api.resume(cb, done, err)
@@ -2905,6 +2929,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
          // so the UI never looks like a silent hang after "thinking".
          if (!turnSettledRef.current && !userStoppedRef.current) {
            turnSettledRef.current = true;
+           setTurnOpen(false);
            setStatus("error");
            setItems((p) => [...p, {
              kind: "msg",
@@ -2914,6 +2939,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
              },
            }]);
          } else {
+           setTurnOpen(false);
            setStatus("done");
          }
          cancelRef.current = null;
@@ -2927,6 +2953,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
          flushTypewriter();
          if (!turnSettledRef.current && !userStoppedRef.current) {
            turnSettledRef.current = true;
+           setTurnOpen(false);
            setItems((p) => [...p, {
              kind: "msg",
              msg: {
@@ -2938,6 +2965,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
          } else if (!userStoppedRef.current) {
            // EventSource often fires onerror when the stream closes after a
            // normal assistant_done -- do not paint a false error over success.
+           setTurnOpen(false);
            setStatus((prev) => (prev === "error" ? prev : "done"));
          }
          cancelRef.current = null;
@@ -3151,9 +3179,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     setEditingIndex(null);
     setEditNotice(canRevertEdit ? "Edited — Revert restores the previous turns." : null);
 
-    const isBusy = status === "thinking" || status === "executing" || status === "streaming";
-
-    if (isBusy) {
+    if (composerBusy) {
       // Snapshot the attached image paths BEFORE clearing input/attachments or
       // making the async call, so we never read a stale/cleared closure value
       // and images are never silently dropped from the steer request. The
@@ -3197,6 +3223,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     cancelRef.current = null;
     localStreamActiveRef.current = false;
     flushTypewriter();
+    setTurnOpen(false);
     setStatus("idle");
     setCompactingStatus(null);
     api.interruptSession().catch((e) => console.error("Failed to interrupt session on backend:", e));
@@ -3440,6 +3467,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             auto={auto}
             plan={plan}
             busyElapsedMs={busyElapsedMs}
+            turnOpen={turnOpen}
             scrollContainerRef={feedRef}
             onEditMessage={stableEditMessage}
             onExecuteSend={stableExecuteSend}
@@ -4081,7 +4109,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
                   <ListChecks size={9} />Queue
                 </button>
               )}
-              {status === "thinking" || status === "executing" || status === "streaming"
+              {composerBusy
                 ? <>
                     <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
                     <button onClick={send} disabled={transcriptStale || (!input.trim() && attachedImages.length === 0)}
