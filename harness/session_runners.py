@@ -102,7 +102,12 @@ def _is_busy(runner: Any) -> bool:
 
     Pending swarm futures are busy even when the turn lock is free and
     ``_state`` is idle (see ``_pending_swarm_busy``).
+
+    Deferred cold-attach shells mid-build also count as busy: eviction already
+    skips them, and lease_exhausted busy lists must not report them idle.
     """
+    if getattr(runner, "defer_building", False):
+        return True
     fn = getattr(runner, "is_turn_busy", None)
     if callable(fn):
         try:
@@ -243,6 +248,8 @@ class SessionRunnerRegistry:
         runner = self._runners.get(session_id)
         if runner is None:
             return "missing"
+        # defer_building shells count as busy via _is_busy so lease_exhausted
+        # busy lists and StatusBar dots are not idle-looking mid cold-attach.
         return "running" if _is_busy(runner) else "idle"
 
     def statuses(self) -> dict[str, str]:

@@ -337,7 +337,7 @@ def test_switch_response_includes_idle_transcript(tmp_path, monkeypatch):
             payload = json.loads(resp.read().decode())
             assert payload.get("ok") is True
             assert payload.get("active") == sid_b
-            assert payload.get("state") == "idle"
+            assert payload.get("state") == "running"
             assert payload.get("transcript", {}).get("history", [])[0]["content"] == "from-disk"
             assert is_deferred_placeholder(srv._pilot)
             # Build still blocked — proves switch did not wait on ConversationalSession.
@@ -398,3 +398,283 @@ def test_registry_replace_and_skip_deferred_eviction():
     old = reg.replace("s1", real, notify=False)
     assert old is ph
     assert reg.get("s1") is real
+
+
+def test_history_for_pilot_swap_prefers_placeholder_transcript():
+    """Empty _history must not win over non-empty export_history / transcript."""
+    import harness.server as srv
+
+    turns = [
+        {"role": "user", "content": "keep-me"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    ph = DeferredPilotPlaceholder(
+        session_id="s1",
+        state_dir="/tmp",
+        transcript={"history": turns, "display": [], "job_ids": []},
+    )
+    assert ph._history == []
+    assert srv._history_for_pilot_swap(ph) == turns
+
+
+def test_perform_pilot_swap_preserves_deferred_transcript(tmp_path, monkeypatch):
+    """Idle pilot swap must not wipe placeholder turns (T1)."""
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    old_state = srv._cfg.state_dir
+    old_driver = srv._cfg.driver
+    try:
+        state_dir = str(tmp_path)
+        srv._cfg.state_dir = state_dir
+        reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+        srv._runners = reg
+
+        a = srv._sessions.create(title="Swap")
+        sid = a["id"]
+        turns = [
+            {"role": "user", "content": "keep-me"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        marker = {"history": turns, "display": turns[:1], "job_ids": []}
+        save_transcript(state_dir, sid, marker)
+
+        real = _idle_runner(sid=sid, history=marker)
+        gate = threading.Event()
+
+        def blocked_build():
+            gate.wait(timeout=5.0)
+            return real
+
+        with patch.object(srv, "_build_conversational_pilot", side_effect=blocked_build):
+            out = srv._attach_view(sid, defer_cold_build=True)
+            assert is_deferred_placeholder(out)
+            # Turns live on the placeholder transcript, not _history.
+            assert out._history == []
+            assert out.export_history() == turns
+            gate.set()
+            ready = out.ensure_ready(timeout=5.0)
+            assert ready is real
+            assert real._history == turns
+
+        replacement = _idle_runner(sid=sid)
+
+        def _make_replacement(*_a, **_k):
+            return replacement
+
+        with patch.object(srv, "ConversationalSession", side_effect=_make_replacement):
+            srv._perform_pilot_swap(srv._cfg.driver or "test-driver")
+
+        assert srv._pilot is replacement
+        assert replacement._history == turns
+        assert reg.get(sid) is replacement
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._cfg.state_dir = old_state
+        srv._cfg.driver = old_driver
+
+
+def test_failed_deferred_attach_rebuilds_on_reattach(tmp_path, monkeypatch):
+    """mark_failed must not stick forever — next attach drops and rebuilds (T2)."""
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    old_state = srv._cfg.state_dir
+    try:
+        state_dir = str(tmp_path)
+        srv._cfg.state_dir = state_dir
+        reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+        srv._runners = reg
+
+        a = srv._sessions.create(title="Fail")
+        sid = a["id"]
+        builds = {"n": 0}
+
+        def flaky_build():
+            builds["n"] += 1
+            if builds["n"] == 1:
+                raise RuntimeError("cold build boom")
+            return _idle_runner(sid=sid)
+
+        with patch.object(srv, "_build_conversational_pilot", side_effect=flaky_build):
+            out = srv._attach_view(sid, defer_cold_build=True)
+            assert is_deferred_placeholder(out)
+            with pytest.raises(RuntimeError, match="cold build boom"):
+                out.ensure_ready(timeout=5.0)
+            assert out.build_error is not None
+            assert reg.get(sid) is out
+            assert out.defer_building is False
+
+            # Warm re-attach must drop the failed shell and start a fresh build.
+            out2 = srv._attach_view(sid, defer_cold_build=True)
+            assert is_deferred_placeholder(out2)
+            assert out2 is not out
+            assert out2.build_error is None
+            ready = out2.ensure_ready(timeout=5.0)
+            assert builds["n"] == 2
+            assert reg.get(sid) is ready
+            assert not is_deferred_placeholder(ready)
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._cfg.state_dir = old_state
+
+
+def test_building_placeholder_reports_busy_for_lease(tmp_path, monkeypatch):
+    """Building shells must show running in statuses / lease_exhausted (T3)."""
+    from harness.session_runners import _is_busy, build_lease_exhausted_payload
+
+    ph = DeferredPilotPlaceholder(session_id="s1", state_dir="/tmp", transcript=[])
+    assert ph.defer_building is True
+    assert ph.state() == "building"
+    assert ph.is_turn_busy() is True
+    assert _is_busy(ph) is True
+
+    reg = SessionRunnerRegistry(max_concurrent_sessions=1)
+    reg.get_or_create("s1", lambda: ph)
+    assert reg.status("s1") == "running"
+    payload = build_lease_exhausted_payload(reg)
+    assert payload["busy_session_ids"] == ["s1"]
+
+    with pytest.raises(LeaseExhaustedError):
+        reg.get_or_create("s2", lambda: _idle_runner(sid="s2"))
+
+
+def test_mutation_apis_gate_on_deferred_ready(tmp_path, monkeypatch):
+    """Rewind / compact / steer wait on ensure_ready (no AttributeError) (T4)."""
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    srv, httpd, port = _spin_server()
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    old_state = srv._cfg.state_dir
+    try:
+        state_dir = str(tmp_path)
+        srv._cfg.state_dir = state_dir
+        reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+        srv._runners = reg
+
+        a = srv._sessions.create(title="Mut")
+        sid = a["id"]
+        turns = [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+        ]
+        save_transcript(
+            state_dir,
+            sid,
+            {"history": turns, "display": turns, "job_ids": []},
+        )
+
+        # Real ConversationalSession so rewind/compact methods exist after ready.
+        real = srv._build_conversational_pilot()
+        real.load_history({"history": turns, "display": turns, "job_ids": []})
+        real.harness_session_id = sid
+        gate = threading.Event()
+
+        def blocked_build():
+            gate.wait(timeout=5.0)
+            return real
+
+        with patch.object(srv, "_build_conversational_pilot", side_effect=blocked_build):
+            srv._attach_view(sid, defer_cold_build=True)
+            assert is_deferred_placeholder(srv._pilot)
+            srv._sessions.switch(sid)
+
+            # Release build shortly after requests land so ensure_ready succeeds.
+            def _release():
+                time.sleep(0.05)
+                gate.set()
+
+            threading.Thread(target=_release, daemon=True).start()
+
+            resp = _post(
+                port,
+                "/api/session/rewind",
+                {"user_ordinal": 1},
+                srv._TOKEN,
+            )
+            assert resp.status == 200
+            body = json.loads(resp.read().decode())
+            assert body.get("ok") is True
+            assert not is_deferred_placeholder(srv._pilot)
+
+            # Compact + steer against the now-ready pilot (no AttributeError).
+            resp2 = _post(port, "/api/session/compact", {}, srv._TOKEN)
+            assert resp2.status == 200
+            assert json.loads(resp2.read().decode()).get("ok") is True
+
+            resp3 = _post(
+                port, "/api/session/steer", {"text": "nudge"}, srv._TOKEN
+            )
+            assert resp3.status == 200
+            assert json.loads(resp3.read().decode()).get("ok") is True
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._cfg.state_dir = old_state
+        httpd.shutdown()
+
+
+def test_mutation_apis_409_when_deferred_build_fails(tmp_path, monkeypatch):
+    """Failed cold build → mutation APIs return clear 409, not AttributeError."""
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    srv, httpd, port = _spin_server()
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    old_state = srv._cfg.state_dir
+    try:
+        state_dir = str(tmp_path)
+        srv._cfg.state_dir = state_dir
+        reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+        srv._runners = reg
+
+        a = srv._sessions.create(title="FailMut")
+        sid = a["id"]
+
+        def boom():
+            raise RuntimeError("build dead")
+
+        with patch.object(srv, "_build_conversational_pilot", side_effect=boom):
+            srv._attach_view(sid, defer_cold_build=True)
+            srv._sessions.switch(sid)
+            # Wait until mark_failed latches.
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                ph = srv._runners.get(sid)
+                if (
+                    is_deferred_placeholder(ph)
+                    and getattr(ph, "build_error", None) is not None
+                ):
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("build_error never set")
+
+            try:
+                _post(
+                    port,
+                    "/api/session/rewind",
+                    {"user_ordinal": 0},
+                    srv._TOKEN,
+                )
+                raise AssertionError("expected HTTPError 409")
+            except urllib.error.HTTPError as e:
+                assert e.code == 409
+                err = json.loads(e.read().decode())
+                assert err.get("code") == "pilot_not_ready"
+                assert "build" in (err.get("error") or "").lower()
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._cfg.state_dir = old_state
+        httpd.shutdown()

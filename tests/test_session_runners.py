@@ -206,3 +206,22 @@ def test_build_lease_exhausted_payload_includes_capacity_and_busy_ids():
     assert payload["busy_session_ids"] == ["a", "b"]
     assert payload["busy_session_titles"] == ["Alpha", "Beta"]
     assert "lease exhausted" in payload["error"].lower()
+
+
+def test_defer_building_placeholder_counts_as_busy_for_lease():
+    """Building deferred shells must not look idle in statuses / busy lists."""
+    from harness.deferred_attach import DeferredPilotPlaceholder
+
+    ph = DeferredPilotPlaceholder(session_id="build", state_dir="/tmp", transcript=[])
+    assert _is_busy(ph) is True
+    assert ph.state() == "building"
+
+    reg = SessionRunnerRegistry(max_concurrent_sessions=1)
+    reg.get_or_create("build", lambda: ph)
+    assert reg.status("build") == "running"
+    payload = build_lease_exhausted_payload(reg, titles_by_id={"build": "Building"})
+    assert payload["busy_session_ids"] == ["build"]
+    assert payload["busy_session_titles"] == ["Building"]
+
+    with pytest.raises(LeaseExhaustedError):
+        reg.get_or_create("other", _idle_runner)

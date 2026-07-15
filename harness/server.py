@@ -2512,16 +2512,25 @@ def _attach_view(
     # --- Warm fast path: never rebuild; never interrupt other runners. ---
     existing = _runners.get(session_id)
     if existing is not None:
-        _runners.set_active_view(session_id)
-        with _pilot_swap_lock:
-            _pilot = existing
-            try:
-                _session.state_dir = _pilot.state_dir
-            except Exception:
-                pass
-            _bind_pilot_services(_pilot)
-            _sync_pilot_session_id()
-        return _pilot
+        # Failed deferred cold build sticks warm forever unless we drop it —
+        # mark_failed clears defer_building but leaves the shell in the registry.
+        if (
+            is_deferred_placeholder(existing)
+            and getattr(existing, "build_error", None) is not None
+        ):
+            _runners.drop(session_id, notify=False)
+            existing = None
+        else:
+            _runners.set_active_view(session_id)
+            with _pilot_swap_lock:
+                _pilot = existing
+                try:
+                    _session.state_dir = _pilot.state_dir
+                except Exception:
+                    pass
+                _bind_pilot_services(_pilot)
+                _sync_pilot_session_id()
+            return _pilot
 
     created = True
     # Opt-in only: callers that need Hermes-style cold attach pass
@@ -2668,6 +2677,23 @@ def _ensure_active_pilot_ready(*, timeout: float = 120.0) -> Any:
             if live is not None and not is_deferred_placeholder(live):
                 _pilot = live
     return _pilot
+
+
+def _gate_active_pilot_ready(*, timeout: float = 120.0) -> Optional[dict]:
+    """Ensure the active pilot is a real ConversationalSession.
+
+    Returns a JSON error body for a 409 when the deferred build is still
+    running / failed; ``None`` when the pilot is ready to mutate.
+    """
+    try:
+        _ensure_active_pilot_ready(timeout=timeout)
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "code": "pilot_not_ready",
+        }
+    return None
 
 
 def _attach_view_transcript_payload(runner: Any, session_id: str) -> dict[str, list]:
@@ -2905,6 +2931,36 @@ def _live_pilot_driver() -> str:
         return ""
 
 
+def _history_for_pilot_swap(pilot: Any) -> Any:
+    """History to copy onto a replacement pilot (prefer live transcript).
+
+    Deferred placeholders keep turns in ``_transcript`` with ``_history=[]``.
+    Prefer non-empty ``export_history`` / ``export_transcript_data`` so an idle
+    swap cannot wipe the session (mirror hydrate-prefer-live from v0.9.67).
+    """
+    old_history = getattr(pilot, "_history", None)
+    if old_history:
+        return old_history
+    try:
+        exported = None
+        export_history = getattr(pilot, "export_history", None)
+        if callable(export_history):
+            exported = export_history()
+        if not exported:
+            export_transcript = getattr(pilot, "export_transcript_data", None)
+            if callable(export_transcript):
+                data = export_transcript()
+                if isinstance(data, dict):
+                    exported = data.get("history") or []
+                elif isinstance(data, list):
+                    exported = data
+        if exported:
+            return list(exported)
+    except Exception as e:
+        _diag("server.pilot_swap_history_export", e)
+    return old_history
+
+
 def _perform_pilot_swap(model: str) -> None:
     """Rebuild the active pilot onto ``model``, preserving history/MCP.
 
@@ -2914,8 +2970,14 @@ def _perform_pilot_swap(model: str) -> None:
     Caller must ensure the pilot is not mid-turn. Raises on build failure.
     """
     global _pilot
+    # Finish deferred cold build before reading history — placeholders keep
+    # turns in _transcript with empty _history; copying that would wipe disk.
+    if is_deferred_placeholder(_pilot) or callable(
+        getattr(_pilot, "ensure_ready", None)
+    ):
+        _ensure_active_pilot_ready()
     with _pilot_swap_lock:
-        old_history = getattr(_pilot, "_history", None)
+        old_history = _history_for_pilot_swap(_pilot)
         old_auto_distill = getattr(_pilot, "_auto_distill", False)
         old_pilot = _pilot
         # Freeze spend at old rates before retargeting _cfg.driver.
@@ -4171,6 +4233,9 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=_delayed_self_terminate, daemon=True).start()
             return
         if path == "/api/session/compact":
+            not_ready = _gate_active_pilot_ready()
+            if not_ready is not None:
+                return self._send(409, json.dumps(not_ready))
             before = _pilot._estimate_context_tokens()
             orig_tokens = getattr(_cfg, "max_context_tokens", 96000)
             _cfg.max_context_tokens = 1
@@ -4971,8 +5036,9 @@ class Handler(BaseHTTPRequestHandler):
 
                 res["repo"] = _cfg.repo
                 res["codegraph"] = _get_codegraph_status(_cfg.repo) if _cfg.repo else "none"
-                # Hermes-style: idle + transcript on the switch response so the
-                # UI can paint before deferred ConversationalSession lands.
+                # Hermes-style: runner status + transcript on the switch response
+                # so the UI can paint before deferred ConversationalSession lands.
+                # Building placeholders report running (lease/busy honesty).
                 active_id = _sessions.active or ""
                 res["state"] = _runners.status(active_id) if active_id else "missing"
                 res["transcript"] = _attach_view_transcript_payload(_pilot, active_id)
@@ -5068,6 +5134,9 @@ class Handler(BaseHTTPRequestHandler):
             # auto-send. Prefer user_ordinal (stable across UI-only items).
             if not _pilot:
                 return self._send(404, json.dumps({"ok": False, "error": "no active session"}))
+            not_ready = _gate_active_pilot_ready()
+            if not_ready is not None:
+                return self._send(409, json.dumps(not_ready))
             result = None
             if body.get("user_ordinal") is not None:
                 try:
@@ -5094,6 +5163,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/session/rewind/restore":
             if not _pilot:
                 return self._send(404, json.dumps({"ok": False, "error": "no active session"}))
+            not_ready = _gate_active_pilot_ready()
+            if not_ready is not None:
+                return self._send(409, json.dumps(not_ready))
             result = _pilot.restore_rewind_stash()
             if not result.get("ok"):
                 code = 409 if result.get("code") == "busy" else 400
@@ -5120,6 +5192,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "missing text"}))
             if not _pilot:
                 return self._send(404, json.dumps({"error": "no active session"}))
+            not_ready = _gate_active_pilot_ready()
+            if not_ready is not None:
+                return self._send(409, json.dumps(not_ready))
             # Validate every image path lives inside the upload dir (mirror
             # /api/session/queue, /api/run, and /api/chat validation).
             valid_imgs = []
@@ -5150,6 +5225,9 @@ class Handler(BaseHTTPRequestHandler):
             # complete turn once the current one finishes. Never raises.
             if not _pilot:
                 return self._send(404, json.dumps({"error": "no active session"}))
+            not_ready = _gate_active_pilot_ready()
+            if not_ready is not None:
+                return self._send(409, json.dumps(not_ready))
             # DELETE-style body: {clear: true} clears the queue; {id: "..."}
             # removes a single item. We accept these via POST so the browser
             # transport shim (which lacks a DELETE helper) can drive both.

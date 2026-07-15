@@ -94,13 +94,20 @@ class DeferredPilotPlaceholder:
         return self._ready.is_set()
 
     def is_turn_busy(self) -> bool:
-        return False
+        # Building shells occupy a lease slot; never report idle mid-build.
+        return self._defer_building
 
     def state(self) -> str:
+        if self._defer_building:
+            return "building"
         return "idle"
 
     def has_pending_swarms(self) -> bool:
         return False
+
+    def interrupt(self) -> None:
+        """No-op: cold build has no in-flight turn to cancel (Stop must not 500)."""
+        return
 
     def export_transcript_data(self) -> dict[str, list]:
         return {
