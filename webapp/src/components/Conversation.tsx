@@ -278,27 +278,40 @@ export function transcriptFingerprint(items: Item[]): string {
   return fp;
 }
 
+let __thinkingIdSeq = 0;
+function newThinkingId(): string {
+  __thinkingIdSeq += 1;
+  return `th-${Date.now().toString(36)}-${__thinkingIdSeq}`;
+}
+
 /** Drop streaming:true from live reasoning rows once the phase ends. */
-function finalizeStreamingThinking(items: Item[]): Item[] {
+export function finalizeStreamingThinking(items: Item[]): Item[] {
   return items.map((it) =>
     it.kind === "thinking" && it.streaming
-      ? { kind: "thinking" as const, text: it.text }
+      ? { kind: "thinking" as const, text: it.text, id: it.id || newThinkingId() }
       : it
   );
 }
 
-/** Append/update the open streaming reasoning row for the current turn. */
-function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
+/** Append/update the open streaming reasoning row for the current turn.
+ * Preserves a durable `id` across token upserts so the ActivityGroup React key
+ * (and expand/scroll state) does not remount on every thinking delta. */
+export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     if (it.kind === "msg" && it.msg.role === "user") break;
     if (it.kind === "thinking" && it.streaming) {
       const copy = items.slice();
-      copy[i] = { kind: "thinking", text: it.text + chunk, streaming: true };
+      copy[i] = {
+        kind: "thinking",
+        text: it.text + chunk,
+        streaming: true,
+        id: it.id || newThinkingId(),
+      };
       return copy;
     }
   }
-  return [...items, { kind: "thinking", text: chunk, streaming: true }];
+  return [...items, { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() }];
 }
 
 /** Replace or append a provisional running card for tool_prep so ActivityGroup
@@ -1205,8 +1218,33 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       pinnedToBottomRef.current =
         el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     };
+    // Unpin on the first upward wheel/touch before the next thinking token
+    // re-runs stick-to-bottom -- otherwise long reasoning streams keep yanking
+    // the feed back to the end and the user cannot scroll the Thought block.
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) pinnedToBottomRef.current = false;
+    };
+    let touchY: number | null = null;
+    const onTouchStart = (e: TouchEvent) => {
+      touchY = e.touches[0]?.clientY ?? null;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY;
+      if (touchY != null && y != null && y > touchY + 2) {
+        pinnedToBottomRef.current = false;
+      }
+      touchY = y ?? touchY;
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+    };
   }, []);
   useEffect(() => {
     const el = feedRef.current;
@@ -2386,7 +2424,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         if (d.delta && chunk) {
           setItems((p) => upsertStreamingThinking(p, chunk));
         } else if (chunk.trim()) {
-          setItems((p) => [...p, { kind: "thinking", text: chunk }]);
+          setItems((p) => [...p, { kind: "thinking", text: chunk, id: newThinkingId() }]);
         }
       } else if (ev.kind === "tool_prep") {
         const name = String(d.name || "").trim();
@@ -2865,7 +2903,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setInput("");
         setEditingIndex(null);
         setStatus("thinking");
-        setItems((p) => [...p, { kind: "thinking", text: "Compacting session context on backend..." }]);
+        setItems((p) => [...p, { kind: "thinking", text: "Compacting session context on backend...", id: newThinkingId() }]);
         api.compactSession()
           .then((res) => {
             setStatus("done");

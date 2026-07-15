@@ -53,7 +53,7 @@ export type Card = {
 export type Item =
   | { kind: "msg"; msg: Msg }
   | { kind: "card"; card: Card }
-  | { kind: "thinking"; text: string; streaming?: boolean }
+  | { kind: "thinking"; text: string; streaming?: boolean; id?: string }
   | { kind: "tool_prep"; name: string }
   | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
@@ -66,7 +66,7 @@ export type Item =
 
 export type GroupedItem =
   | { kind: "msg"; msg: Msg }
-  | { kind: "thinking"; text: string; streaming?: boolean }
+  | { kind: "thinking"; text: string; streaming?: boolean; id?: string }
   | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
@@ -79,7 +79,7 @@ export type GroupedItem =
 
 type ActivityItem =
   | { kind: "card"; card: Card }
-  | { kind: "thinking"; text: string; streaming?: boolean }
+  | { kind: "thinking"; text: string; streaming?: boolean; id?: string }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
@@ -163,22 +163,49 @@ function objKey(obj: object): string {
 // replace the lead item's object identity, which changed the React key, remounted
 // ActivityGroup, and reset useState(false) -- the "blinks itself closed" bug.
 const __activityOpen = new Map<string, boolean>();
+// Reasoning expand preference (user click) survives remounts / live→idle flips.
+const __thinkingExpanded = new Map<string, boolean>();
+// Alias every durable member of an investigation onto one canon key so a
+// thinking-only group does not remount when the first tool card arrives (and
+// the reverse). Streaming used to key off objKey(thinking) which changed every
+// token and remounted the fold -- expand clicked shut, inner scroll stuck at top.
+const __activityGroupCanon = new Map<string, string>();
 
-function activityGroupStableId(items: ActivityItem[], fallbackIndex: number): string {
-  // Prefer the first tool card's durable id -- setCard replaces the wrapper
-  // object on every patch, so object-identity keys remount on every result.
-  // ALWAYS suffix the group index: duplicate card ids in a corrupted/replayed
-  // transcript must not share one React key (that remounts one group across
-  // every sibling and looks like the same block repeating forever).
+/** Stable React key for one investigation fold. Exported for unit tests. */
+export function activityGroupStableId(items: ActivityItem[], fallbackIndex: number): string {
+  // Collect durable members (thinking ids first so a live reasoning stream that
+  // later grows tool cards keeps the same canon). ALWAYS suffix the group index:
+  // duplicate card ids in a corrupted/replayed transcript must not share one
+  // React key (that remounts one group across every sibling).
+  const members: string[] = [];
   for (const it of items) {
-    if (it.kind === "card" && it.card?.id) return `grp-card-${it.card.id}-${fallbackIndex}`;
+    if (it.kind === "thinking" && it.id) members.push(`t:${it.id}`);
   }
   for (const it of items) {
-    if (it.kind === "checkpoint") return `grp-ckpt-${it.id}-${fallbackIndex}`;
-    if (it.kind === "swarm_result") return `grp-swres-${it.job_id}-${fallbackIndex}`;
+    if (it.kind === "card" && it.card?.id) members.push(`c:${it.card.id}`);
   }
-  if (items[0]) return `grp-${objKey(items[0])}-${fallbackIndex}`;
-  return `grp-${fallbackIndex}`;
+  for (const it of items) {
+    if (it.kind === "checkpoint") members.push(`k:${it.id}`);
+    if (it.kind === "swarm_result") members.push(`s:${it.job_id}`);
+  }
+
+  let canon: string | undefined;
+  for (const m of members) {
+    const hit = __activityGroupCanon.get(m);
+    if (hit) {
+      canon = hit;
+      break;
+    }
+  }
+  if (!canon) {
+    canon = members[0]
+      ? `grp-${members[0]}`
+      : items[0]
+        ? `grp-${objKey(items[0])}`
+        : `grp-${fallbackIndex}`;
+  }
+  for (const m of members) __activityGroupCanon.set(m, canon);
+  return `${canon}-${fallbackIndex}`;
 }
 
 function stableItemKey(it: GroupedItem, i: number): string {
@@ -204,7 +231,7 @@ function stableItemKey(it: GroupedItem, i: number): string {
     case "steer":
       return `steer-${i}`;
     case "thinking":
-      return `think-${i}`;
+      return it.id ? `think-${it.id}` : `think-${i}`;
     default:
       return `item-${i}`;
   }
@@ -461,6 +488,7 @@ export const TranscriptList = memo(function TranscriptList({
       return (
         <ThinkingBlock
           key={key}
+          blockId={it.id || key}
           text={it.text}
           live={Boolean(it.streaming)}
         />
@@ -616,7 +644,6 @@ function ActivityGroup({
       return next;
     });
   };
-  const autoOpenedRef = useRef(false);
 
   const cards = items.filter((it) => it.kind === "card") as { kind: "card"; card: Card }[];
   const cgItems = items.filter((it) => it.kind === "codegraph_context") as { kind: "codegraph_context"; symbols: number; query: string }[];
@@ -632,17 +659,17 @@ function ActivityGroup({
   ) as { kind: "msg"; msg: Msg }[];
   const thinkingItems = items.filter(
     (it) => it.kind === "thinking" && (it as { kind: "thinking"; text: string }).text.trim()
-  ) as { kind: "thinking"; text: string; streaming?: boolean }[];
+  ) as { kind: "thinking"; text: string; streaming?: boolean; id?: string }[];
   const liveThinking = thinkingItems.some((t) => t.streaming);
 
-  // Auto-open once while tools run or reasoning streams so live Thought text is
-  // visible without re-toggling on every token (scroll thrash).
+  // Auto-open while tools/reasoning are live ONLY when the user has never
+  // toggled this group. A prior remount reset autoOpenedRef and re-forced open
+  // on every tool call -- expand clicked shut, then snapped open again.
   useEffect(() => {
-    if ((anyRunning || liveThinking) && !autoOpenedRef.current) {
-      autoOpenedRef.current = true;
-      setOpen(true);
-      __activityOpen.set(groupId, true);
-    }
+    if (!(anyRunning || liveThinking)) return;
+    if (__activityOpen.has(groupId)) return;
+    setOpen(true);
+    __activityOpen.set(groupId, true);
   }, [anyRunning, liveThinking, groupId]);
 
   // A group with NO tool actions, no narration AND no reasoning (just a lone
@@ -673,13 +700,17 @@ function ActivityGroup({
   );
 
   const renderInner = (it: typeof items[number], idx: number) => {
-    if (it.kind === "card") return <ActionCard key={idx} card={it.card} onToggle={() => onToggleCard(it.card)} />;
+    if (it.kind === "card") {
+      return <ActionCard key={it.card.id || `card-${idx}`} card={it.card} onToggle={() => onToggleCard(it.card)} />;
+    }
     if (it.kind === "thinking") {
+      const blockId = it.id || `${groupId}-think-${idx}`;
       return (
         <ThinkingBlock
-          key={idx}
+          key={blockId}
+          blockId={blockId}
           text={it.text}
-          live={Boolean((it as { streaming?: boolean }).streaming)}
+          live={Boolean(it.streaming)}
         />
       );
     }
@@ -690,14 +721,14 @@ function ActivityGroup({
       // transcript -- previously these folded messages lost all formatting.
       if (!it.msg.text || !it.msg.text.trim()) return null;
       return (
-        <div key={idx} className="text-[12px] text-muted/90 py-0.5 leading-relaxed">
+        <div key={objKey(it.msg)} className="text-[12px] text-muted/90 py-0.5 leading-relaxed">
           <Markdown text={it.msg.text} />
         </div>
       );
     }
     if (it.kind === "codegraph_context") {
       return (
-        <div key={idx} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/70 select-none" title={it.query ? `CodeGraph consulted for: ${it.query}` : "CodeGraph consulted"}>
+        <div key={`cg-${idx}-${it.symbols}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/70 select-none" title={it.query ? `CodeGraph consulted for: ${it.query}` : "CodeGraph consulted"}>
           <Share2 size={9} className="text-faint/60" />
           <span>CodeGraph consulted{it.symbols > 0 ? ` -- ${it.symbols} symbols` : ""}</span>
         </div>
@@ -705,7 +736,7 @@ function ActivityGroup({
     }
     if (it.kind === "checkpoint") {
       return (
-        <div key={idx} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none">
+        <div key={`ckpt-${it.id}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none">
           <History size={10} className="text-faint/70" />
           <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
         </div>
@@ -714,7 +745,7 @@ function ActivityGroup({
     if (it.kind === "swarm_result") {
       return (
         <SwarmResultCard
-          key={idx}
+          key={`swres-${it.job_id}`}
           applied={it.applied}
           files={it.files}
           summary={it.summary}
@@ -784,18 +815,45 @@ function ActivityGroup({
 }
 
 
-function ThinkingBlock({ text, live = false }: { text: string; live?: boolean }) {
+function ThinkingBlock({
+  text,
+  live = false,
+  blockId,
+}: {
+  text: string;
+  live?: boolean;
+  blockId: string;
+}) {
   // Cursor/Hermes-style compression: reasoning collapses to a single header line
   // by default (a faint preview of the first line hints at the content), and
   // expands into a height-capped, scrollable window rather than dumping its full
   // height inline. Unbounded inline reasoning is what used to blow up the window
   // and bury the actual answer, so the compact default is the legibility win.
-  // While live-streaming, keep expanded and render plain text -- full markdown +
-  // syntax highlight on every delta was a major CPU sink.
-  const [expanded, setExpanded] = useState(live);
+  // While live-streaming, render plain text -- full markdown + syntax highlight
+  // on every delta was a major CPU sink.
+  //
+  // Expand preference is sticky: never re-force open on live/tool updates once
+  // the user has toggled. Inner scroll stick-to-bottom follows new tokens only
+  // while the user stays pinned near the bottom of this box.
+  const [expanded, setExpanded] = useState(
+    () => __thinkingExpanded.get(blockId) ?? live,
+  );
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const pinnedInnerRef = useRef(true);
+
   useEffect(() => {
-    if (live) setExpanded(true);
-  }, [live]);
+    if (!live) return;
+    if (__thinkingExpanded.has(blockId)) return;
+    setExpanded(true);
+  }, [live, blockId]);
+
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || !expanded || !live) return;
+    if (pinnedInnerRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [text, expanded, live]);
 
   if (!text || !text.trim()) {
     return null;
@@ -806,7 +864,13 @@ function ThinkingBlock({ text, live = false }: { text: string; live?: boolean })
   return (
     <div className="flex flex-col w-full py-0.5 min-w-0">
       <button
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => {
+          setExpanded((v) => {
+            const next = !v;
+            __thinkingExpanded.set(blockId, next);
+            return next;
+          });
+        }}
         className="flex items-center gap-1 text-faint/70 hover:text-muted transition font-mono text-[10px] text-left w-full min-w-0 select-none uppercase tracking-wide"
         aria-expanded={expanded}
         title={expanded ? "Collapse reasoning" : "Expand reasoning"}
@@ -818,7 +882,29 @@ function ThinkingBlock({ text, live = false }: { text: string; live?: boolean })
         )}
       </button>
       {expanded && (
-        <div className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] leading-[1.65] max-w-[92%] max-h-[34dvh]">
+        <div
+          ref={bodyRef}
+          onScroll={() => {
+            const el = bodyRef.current;
+            if (!el) return;
+            pinnedInnerRef.current =
+              el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+          }}
+          onWheel={(e) => {
+            // Keep wheel deltas inside this capped pane so the outer transcript
+            // does not steal scroll while the user reads a long live thought.
+            const el = bodyRef.current;
+            if (!el) return;
+            const atTop = el.scrollTop <= 0;
+            const atBottom =
+              el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
+            if ((e.deltaY < 0 && !atTop) || (e.deltaY > 0 && !atBottom)) {
+              e.stopPropagation();
+            }
+            if (e.deltaY < 0) pinnedInnerRef.current = false;
+          }}
+          className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] leading-[1.65] max-w-[92%] max-h-[34dvh]"
+        >
           {live ? (
             <pre className="whitespace-pre-wrap font-sans text-[11px] leading-[1.65] text-faint/85 m-0">
               {text}

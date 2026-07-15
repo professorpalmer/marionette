@@ -1,6 +1,44 @@
-import { useEffect, useState } from "react";
-import { Plug, Play, Square, Trash2, Plus, Check, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Plug, Play, Square, Trash2, Plus, Check, X, ChevronDown, ChevronRight } from "lucide-react";
 import { api } from "../lib/api";
+
+const MCP_TOOLS_COLLAPSED_KEY = "pmharness.mcpPane.toolsCollapsed";
+const MCP_TOOLS_HEIGHT_KEY = "pmharness.mcpPane.toolsHeight.v1";
+const MCP_TOOLS_MIN_HEIGHT = 96;
+const MCP_TOOLS_DEFAULT_HEIGHT = 176; // ~max-h-44 legacy
+
+function loadMcpToolsCollapsed(): boolean {
+  try {
+    return localStorage.getItem(MCP_TOOLS_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function loadMcpToolsHeight(): number {
+  const fallback = MCP_TOOLS_DEFAULT_HEIGHT;
+  try {
+    const raw = localStorage.getItem(MCP_TOOLS_HEIGHT_KEY);
+    if (!raw) return fallback;
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    const conservativeMax =
+      typeof window === "undefined"
+        ? n
+        : Math.max(MCP_TOOLS_MIN_HEIGHT, Math.round(window.innerHeight * 0.5));
+    return Math.min(conservativeMax, Math.max(MCP_TOOLS_MIN_HEIGHT, n));
+  } catch {
+    return fallback;
+  }
+}
+
+function saveMcpToolsHeight(height: number): void {
+  try {
+    localStorage.setItem(MCP_TOOLS_HEIGHT_KEY, String(Math.round(height)));
+  } catch {
+    // localStorage full/unavailable -- height still works for this session.
+  }
+}
 
 // MCP server manager: add/start/stop/remove MCP servers and see their tools.
 // Embedded mode lives under State (CodeGraph / Wiki) so the right rail does not
@@ -11,6 +49,15 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
   const [catalog, setCatalog] = useState<Record<string, any>>({});
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState("");
+  const [toolsCollapsed, setToolsCollapsed] = useState(loadMcpToolsCollapsed);
+  const [toolsHeight, setToolsHeight] = useState(loadMcpToolsHeight);
+
+  const paneRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
+  const serversRef = useRef<HTMLDivElement>(null);
+  const toolsHeightRef = useRef(toolsHeight);
+  const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
+  toolsHeightRef.current = toolsHeight;
 
   const refresh = () => api.mcp().then((d) => { setServers(d.servers); setTools(d.tools); }).catch(() => {});
   useEffect(() => {
@@ -20,13 +67,84 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
     return () => clearInterval(t);
   }, []);
 
+  const getMaxToolsHeight = () => {
+    const pane = paneRef.current;
+    const header = headerRef.current;
+    const servers = serversRef.current;
+    if (!pane || !header || !servers) return MCP_TOOLS_MIN_HEIGHT;
+    // Sum servers children for natural content height (same trick as LeftRail
+    // Session Jobs -- scroll containers report scrollHeight >= rendered height).
+    const serversContent = Array.from(servers.children).reduce(
+      (sum, el) => sum + (el as HTMLElement).offsetHeight,
+      0,
+    );
+    // Keep a thin strip of the servers list visible when tools is dragged tall.
+    const serversReserve = Math.min(80, Math.max(40, serversContent));
+    const available = pane.clientHeight - header.offsetHeight - serversReserve;
+    return Math.max(MCP_TOOLS_MIN_HEIGHT, available);
+  };
+
+  const clampToolsHeight = (height: number) =>
+    Math.min(getMaxToolsHeight(), Math.max(MCP_TOOLS_MIN_HEIGHT, height));
+
+  useEffect(() => {
+    if (toolsCollapsed || tools.length === 0) return;
+    const clampToViewport = () => {
+      setToolsHeight((h) => clampToolsHeight(h));
+    };
+    clampToViewport();
+    window.addEventListener("resize", clampToViewport);
+    return () => window.removeEventListener("resize", clampToViewport);
+  }, [toolsCollapsed, tools.length, servers.length, adding]);
+
+  const onToolsResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (toolsCollapsed) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    resizeDragRef.current = { startY: e.clientY, startH: toolsHeightRef.current };
+  };
+
+  const onToolsResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizeDragRef.current) return;
+    // Drag up = taller tools panel (mirrors Session Jobs).
+    const delta = resizeDragRef.current.startY - e.clientY;
+    setToolsHeight(clampToolsHeight(resizeDragRef.current.startH + delta));
+  };
+
+  const finishToolsResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizeDragRef.current) return;
+    resizeDragRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    saveMcpToolsHeight(toolsHeightRef.current);
+  };
+
+  const toggleToolsCollapsed = () => {
+    setToolsCollapsed((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem(MCP_TOOLS_COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
   const start = async (n: string) => { setBusy(n); try { await api.mcpStart(n); await refresh(); } finally { setBusy(""); } };
   const stop = async (n: string) => { setBusy(n); try { await api.mcpStop(n); await refresh(); } finally { setBusy(""); } };
   const remove = async (n: string) => { setBusy(n); try { await api.mcpRemove(n); await refresh(); } finally { setBusy(""); } };
 
   return (
-    <div className={`flex flex-col text-[12px] ${embedded ? "h-full min-h-0" : "h-full"}`}>
-      <div className={`flex items-center justify-between shrink-0 ${embedded ? "px-2 py-1" : "px-3 py-2 border-b border-edge"}`}>
+    <div
+      ref={paneRef}
+      className={`flex flex-col text-[12px] ${embedded ? "h-full min-h-0" : "h-full"}`}
+    >
+      <div
+        ref={headerRef}
+        className={`flex items-center justify-between shrink-0 ${embedded ? "px-2 py-1" : "px-3 py-2 border-b border-edge"}`}
+      >
         {!embedded ? (
           <span className="uppercase tracking-wider text-[10px] text-faint font-medium flex items-center gap-1.5">
             <Plug size={11} /> MCP Servers
@@ -47,7 +165,10 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
         </button>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1.5">
+      <div
+        ref={serversRef}
+        className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1.5"
+      >
         {servers.length === 0 && !adding && (
           <div className={`text-faint text-[11px] text-center px-3 leading-relaxed ${embedded ? "mt-2" : "mt-6"}`}>
             No MCP servers yet. Add github, aws, vercel, a browser controller, or a Docker HTTP URL
@@ -82,14 +203,67 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
       </div>
 
       {tools.length > 0 && (
-        <div className="border-t border-edge p-2 max-h-44 overflow-y-auto shrink-0">
-          <div className="uppercase tracking-wider text-[10px] text-faint mb-1">Available tools ({tools.length})</div>
-          {tools.map((t) => (
-            <div key={t.qualified} className="py-1 border-b border-edge/20 last:border-none flex flex-wrap items-baseline gap-x-1.5 min-w-0">
-              <span className="text-accent font-mono text-[11px] truncate max-w-full" title={t.qualified}>{t.qualified}</span>
-              <span className="text-faint text-[10px] truncate max-w-full" title={t.description}>{t.description}</span>
+        <div
+          className="border-t border-edge/40 shrink-0 min-w-0 flex flex-col"
+          style={toolsCollapsed ? undefined : { height: toolsHeight }}
+        >
+          {!toolsCollapsed && (
+            <div
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="Resize available MCP tools panel"
+              onPointerDown={onToolsResizePointerDown}
+              onPointerMove={onToolsResizePointerMove}
+              onPointerUp={finishToolsResize}
+              onPointerCancel={finishToolsResize}
+              className="h-1.5 -mt-1.5 mb-0.5 cursor-row-resize touch-none flex items-center justify-center group shrink-0"
+            >
+              <div className="w-8 h-0.5 rounded-full bg-edge/80 group-hover:bg-muted/80 transition-colors" />
             </div>
-          ))}
+          )}
+          <div
+            className={`flex items-center justify-between px-2 mb-1 gap-2 min-w-0 shrink-0 ${
+              toolsCollapsed ? "pt-2.5 mt-0.5" : "pt-1 mt-0"
+            }`}
+          >
+            <button
+              onClick={toggleToolsCollapsed}
+              className="flex items-center gap-1 min-w-0 text-[11px] uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
+            >
+              {toolsCollapsed ? (
+                <ChevronRight size={11} className="shrink-0" />
+              ) : (
+                <ChevronDown size={11} className="shrink-0" />
+              )}
+              <span className="truncate">Available tools</span>
+              <span className="text-faint/70 normal-case tracking-normal shrink-0">
+                ({tools.length})
+              </span>
+            </button>
+          </div>
+          {!toolsCollapsed && (
+            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 pb-1.5">
+              {tools.map((t) => (
+                <div
+                  key={t.qualified}
+                  className="py-1 border-b border-edge/20 last:border-none flex flex-wrap items-baseline gap-x-1.5 min-w-0"
+                >
+                  <span
+                    className="text-accent font-mono text-[11px] truncate max-w-full"
+                    title={t.qualified}
+                  >
+                    {t.qualified}
+                  </span>
+                  <span
+                    className="text-faint text-[10px] truncate max-w-full"
+                    title={t.description}
+                  >
+                    {t.description}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
