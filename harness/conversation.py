@@ -58,6 +58,7 @@ from .pilot_guards import (
     guards_active,
     check_pilot_guards,
     check_cli_redirect,
+    check_backend_restart,
     cli_redirect_enabled,
     new_turn_guard_state,
     record_action_execution,
@@ -3537,6 +3538,9 @@ class ConversationalSession(ToolDispatchMixin):
                     act_goal = _a.get("mode") or "lsp"
                 elif act.kind == "call_mcp":
                     act_goal = act.tool
+                elif act.kind == "manage_mcp":
+                    _m = act.arguments or {}
+                    act_goal = f"{_m.get('action') or 'list'} {_m.get('name') or ''}".strip()
                 elif act.kind == "web_search":
                     act_goal = act.query
                 elif act.kind == "web_fetch":
@@ -3595,6 +3599,18 @@ class ConversationalSession(ToolDispatchMixin):
                     })
                     self._append_action_result(act, aid, err_msg, is_native)
                     continue
+
+                # Never let the pilot POST /api/restart mid-turn (drops SSE).
+                if act.kind == "run_command":
+                    restart_verdict = check_backend_restart(guard_state, act.kind, act)
+                    if restart_verdict.suppress:
+                        _diag_note(
+                            "pilot_guards",
+                            msg=f"{restart_verdict.reason} suppressed {act.kind}: {restart_verdict.message[:200]}",
+                        )
+                        yield ConvEvent("action_result", {"id": aid, "error": restart_verdict.message})
+                        self._append_action_result(act, aid, restart_verdict.message, is_native, ok=False)
+                        continue
 
                 # Kernel-force native Puppetmaster verbs: CLI redirect runs every turn
                 # (independent of broad-intent gate and other guard kill switches).
@@ -4439,6 +4455,37 @@ class ConversationalSession(ToolDispatchMixin):
                         "artifacts": [{"type": "mcp", "headline": f"{act.tool}: {text[:120]}"}],
                     })
                     self._append_action_result(act, aid, f"(mcp {act.tool} returned)\n{text[:2000]}", is_native)
+                    continue
+                if act.kind == "manage_mcp":
+                    if self._mcp is None:
+                        yield ConvEvent("action_result", {"id": aid, "error": "MCP not available"})
+                        self._append_action_result(act, aid, "(manage_mcp unavailable)", is_native)
+                        continue
+                    import json as _json_mcp
+                    args = act.arguments if isinstance(act.arguments, dict) else {}
+                    try:
+                        out = self._mcp.manage(
+                            str(args.get("action") or ""),
+                            name=str(args.get("name") or act.path or ""),
+                            url=str(args.get("url") or act.url or ""),
+                            command=str(args.get("command") or act.command or ""),
+                            args=args.get("args") if isinstance(args.get("args"), list) else None,
+                            env=args.get("env") if isinstance(args.get("env"), dict) else None,
+                        )
+                        text = _json_mcp.dumps(out, indent=2)[:4000]
+                    except Exception as e:
+                        yield ConvEvent("action_result", {"id": aid, "error": f"manage_mcp: {e}"})
+                        self._append_action_result(act, aid, f"(manage_mcp failed: {e})", is_native)
+                        continue
+                    headline = act_goal or "manage_mcp"
+                    yield ConvEvent("action_result", {
+                        "id": aid, "num": 1,
+                        "types": ["manage_mcp"], "adapter": "mcp", "mode": "tool",
+                        "artifacts": [{"type": "manage_mcp", "headline": headline}],
+                    })
+                    self._append_action_result(
+                        act, aid, f"(manage_mcp {headline} returned)\n{text}", is_native,
+                    )
                     continue
                 # ---- swarm branch --------------------------------------------
                 if act.kind == "run_swarm":

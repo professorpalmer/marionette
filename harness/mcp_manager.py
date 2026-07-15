@@ -145,6 +145,85 @@ class McpManager:
                 report[name] = f"error: {e}"
         return report
 
+    def manage(
+        self,
+        action: str,
+        *,
+        name: str = "",
+        url: str = "",
+        command: str = "",
+        args: Optional[List[str]] = None,
+        env: Optional[Dict[str, str]] = None,
+    ) -> dict:
+        """Pilot-facing add/start/stop/remove/list for MCP servers.
+
+        For Docker / streamable-HTTP servers prefer ``url`` only (secrets stay
+        in the container env, not mcp.json).
+        """
+        action = (action or "").strip().lower()
+        name = (name or "").strip()
+        if action == "list":
+            return {"ok": True, "servers": self.status()}
+        if action == "add":
+            if not name:
+                return {"ok": False, "error": "manage_mcp add requires name"}
+            url = (url or "").strip()
+            command = (command or "").strip()
+            if not url and not command:
+                return {
+                    "ok": False,
+                    "error": "manage_mcp add requires url (HTTP/Docker) or command (stdio)",
+                }
+            server: dict = {}
+            if url:
+                server["url"] = url
+            else:
+                server["command"] = command
+                if args:
+                    server["args"] = list(args)
+                if env:
+                    server["env"] = dict(env)
+            self.save_server(name, server)
+            try:
+                tools = self.start_server(name)
+                return {
+                    "ok": True,
+                    "name": name,
+                    "transport": "http" if url else "stdio",
+                    "tools": len(tools),
+                    "hint": "Visible under State → MCP. Call tools via call_mcp.",
+                }
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "name": name,
+                    "error": str(e),
+                    "saved": True,
+                    "hint": "Saved to mcp.json but start failed; fix the URL/command and manage_mcp start.",
+                }
+        if action == "start":
+            if not name:
+                return {"ok": False, "error": "manage_mcp start requires name"}
+            try:
+                tools = self.start_server(name)
+                return {"ok": True, "name": name, "tools": len(tools)}
+            except Exception as e:
+                return {"ok": False, "name": name, "error": str(e)}
+        if action == "stop":
+            if not name:
+                return {"ok": False, "error": "manage_mcp stop requires name"}
+            self.stop_server(name)
+            return {"ok": True, "name": name, "stopped": True}
+        if action == "remove":
+            if not name:
+                return {"ok": False, "error": "manage_mcp remove requires name"}
+            self.remove_server(name)
+            return {"ok": True, "name": name, "removed": True}
+        return {
+            "ok": False,
+            "error": f"unknown manage_mcp action {action!r} (list|add|start|stop|remove)",
+        }
+
     def stop_all(self) -> None:
         for name in list(self._clients):
             self.stop_server(name)

@@ -57,6 +57,7 @@ _PILOT_EXTRAS: Set[str] = {
     "search_codegraph",
     "search_files",
     "memory",
+    "manage_mcp",
     "open_project",
     "relocate_session",
     "session_bank",

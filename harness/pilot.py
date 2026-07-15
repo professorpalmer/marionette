@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "read_file", "write_file", "edit_file", "hash_edit", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "search_state", "search_tools", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project",
+VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "manage_mcp", "read_file", "write_file", "edit_file", "hash_edit", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "search_state", "search_tools", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project",
                       "relocate_session", "session_bank",
                       "lsp",
                       "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
@@ -122,6 +122,24 @@ class PilotAction:
             raise PilotError("route_task action requires a non-empty instruction")
         if self.kind == "call_mcp" and not (self.tool or "").strip():
             raise PilotError("call_mcp action requires a 'tool' (server.tool)")
+        if self.kind == "manage_mcp":
+            args = self.arguments if isinstance(self.arguments, dict) else {}
+            action = (args.get("action") or self.memory_action or "").strip().lower()
+            if action not in ("list", "add", "start", "stop", "remove"):
+                raise PilotError(
+                    "manage_mcp requires action=list|add|start|stop|remove"
+                )
+            if action in ("add", "start", "stop", "remove") and not (
+                args.get("name") or self.path or ""
+            ).strip():
+                raise PilotError(f"manage_mcp {action} requires name")
+            if action == "add":
+                url = (args.get("url") or self.url or "").strip()
+                command = (args.get("command") or self.command or "").strip()
+                if not url and not command:
+                    raise PilotError(
+                        "manage_mcp add requires url (HTTP/Docker) or command (stdio)"
+                    )
         if self.kind in ("read_file", "write_file", "view_image", "open_project") and not (self.path or "").strip():
             raise PilotError(f"{self.kind} action requires a 'path'")
         if self.kind == "relocate_session":
@@ -834,6 +852,55 @@ def build_tools_schema(
         }
     })
 
+    # 15. manage_mcp — wire Docker/HTTP/stdio MCP servers without shelling mcp.json
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "manage_mcp",
+            "description": (
+                "Add/start/stop/remove/list Marionette MCP servers (State → MCP / "
+                "~/.pmharness/mcp.json). For a Docker HTTP MCP (e.g. discord-mcp on "
+                ":8085), action=add with name + url=http://localhost:PORT/mcp — do NOT "
+                "put Discord tokens in mcp.json when the container already has them in "
+                "env. Prefer this over run_command edits to mcp.json. After add, tools "
+                "appear for call_mcp."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "add", "start", "stop", "remove"],
+                        "description": "MCP lifecycle operation",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Server id (required for add/start/stop/remove)",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "HTTP MCP endpoint (Docker/local), e.g. http://localhost:8085/mcp",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Stdio command (npx, uvx, ...) when not using url",
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Stdio args",
+                    },
+                    "env": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "Stdio env KEY→value (avoid pasting secrets into chat when possible)",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    })
+
     # Native browser / computer-use tools (raw CDP over local Chrome).
     # Model workflow: browser_navigate -> browser_snapshot (to get @e refs) ->
     # browser_click / browser_type on those refs.
@@ -1417,6 +1484,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `relocate_session`: move the current (or named) conversation into a project without starting a blank session. Requires `workspace_root` (or `path`); optional `session_id`, `title`.
 - `session_bank`: list/search prior sessions across workspaces, or read a transcript summary by `session_id`.
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
+- `manage_mcp`: wire MCP servers (list/add/start/stop/remove). For Docker HTTP MCP after `docker run`, call manage_mcp add with name + url=http://localhost:PORT/mcp — localhost is supported. Do not shell-edit ~/.pmharness/mcp.json. Keep bot tokens in the container env, not in chat or mcp.json when the image already reads DISCORD_TOKEN.
 
 MATCH EFFORT TO THE REQUEST (read this first):
 Not every message is a task. Greetings ("hi", "hello", "hey"), thanks, small
@@ -1452,7 +1520,7 @@ WHEN A PATCH DID NOT APPLY: If a result says "PATCH DID NOT APPLY", the stale di
 
 TWO FRONTENDS -- PICK THE RIGHT ONE (mandatory): This repo ships a desktop app whose UI is the React/TypeScript app under `webapp/src/` (entry `webapp/src/components/Conversation.tsx`). There is ALSO a legacy, browser-served stdlib GUI under `harness/web/` (`app.js`, `app.css`, `index.html`) that the desktop app does NOT use. For ANY UI, chat, streaming, or composer change to the shipping app, target `webapp/src/` -- NOT `harness/web/app.js`. Only touch `harness/web/` when the task explicitly names the legacy browser GUI. Verify which file actually implements a feature with CodeGraph before scoping an implement worker, so a UI task never lands on the dead-end frontend.
 
-LIVE SELF-EDITING (how your changes take effect): Marionette ALWAYS runs from the source checkout -- the backend is `python -m harness.cli` from the repo's venv, so your edits to this repo ARE the running code. Edits to backend Python (`harness/**`) require restarting the backend to load (Settings > Advanced > "Restart backend", or POST `/api/restart`); the conversation auto-resumes across the restart, so an in-flight turn is not lost. Never claim a fundamental/backend change is "live" without a restart -- state plainly that a restart is required and, when appropriate, trigger it. Edits to the React UI (`webapp/src/**`) land on the next renderer build (`npm run build` + reload); enable "Live UI (Vite HMR)" (Settings > Advanced) to serve the UI from a Vite dev server instead, so UI edits hot-reload INSTANTLY with no rebuild.
+LIVE SELF-EDITING (how your changes take effect): Marionette ALWAYS runs from the source checkout -- the backend is `python -m harness.cli` from the repo's venv, so your edits to this repo ARE the running code. Edits to backend Python (`harness/**`) require a backend reload to take effect -- tell the user to use Settings > Advanced > "Restart backend" AFTER this turn finishes. NEVER call POST `/api/restart` (or curl/Invoke-WebRequest to it, or `harness:restart`) during an active turn: that tears down the live SSE connection and aborts the chat ("Connection closed before the turn finished"). MCP wiring does not need a restart -- use `manage_mcp` (localhost/Docker HTTP MCP is allowed without env hatches). Never claim a fundamental/backend change is "live" without a user-driven restart. Edits to the React UI (`webapp/src/**`) land on the next renderer build (`npm run build` + reload); enable "Live UI (Vite HMR)" (Settings > Advanced) to serve the UI from a Vite dev server instead, so UI edits hot-reload INSTANTLY with no rebuild.
 
 EXECUTE, DON'T DICTATE (mandatory):
 You have a REAL terminal via `run_command` that runs in the user's workspace
@@ -1512,6 +1580,7 @@ You have direct access to the workspace and can explore/edit it using these real
 - `web_fetch`: read a web page's text contents. Requires `url`.
 - `read_pdf`: extract plain text from a local PDF file or PDF URL. Requires `path` or `url`.
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
+- `manage_mcp`: wire MCP servers (list/add/start/stop/remove). Docker HTTP MCP → add with url=http://localhost:PORT/mcp (loopback allowed). Prefer this over shelling mcp.json.
 
 NATIVE TOOL-CALLING (Primary Mode):
 If native tool calling (function calling) is enabled, you MUST invoke functions/tools directly rather than writing JSON envelopes. Keep your user-facing message content to a brief, friendly sentence (pure prose) describing your action or findings. Never paste tool outputs, command outputs, or full file contents into your message content.

@@ -23,6 +23,25 @@ from typing import Dict, List, Optional
 from .mcp_client import McpTool, McpError, PROTOCOL_VERSION, CLIENT_INFO
 
 
+def mcp_allow_private_urls() -> bool:
+    """Whether HTTP MCP may target loopback/LAN (Docker, local gateways).
+
+    MCP URLs are user-configured (State → MCP / mcp.json), so loopback and
+    private ranges are allowed by default. Cloud metadata stays blocked in
+    url_safety regardless. Opt out with ``PMHARNESS_MCP_ALLOW_PRIVATE=0``.
+    The rig-wide ``HARNESS_ALLOW_PRIVATE_URLS`` hatch still opens this path
+    when set.
+    """
+    from .url_safety import _is_truthy_value, allow_private_urls
+
+    if allow_private_urls():
+        return True
+    raw = os.environ.get("PMHARNESS_MCP_ALLOW_PRIVATE")
+    if raw is None or str(raw).strip() == "":
+        return True
+    return _is_truthy_value(raw)
+
+
 class _PinnedIPHTTPConnection(http.client.HTTPConnection):
     """HTTPConnection pinned to a specific IP (TOCTOU DNS-rebinding fix)."""
 
@@ -104,13 +123,10 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        from .url_safety import allow_private_urls, is_safe_url_pinned
+        from .url_safety import is_safe_url_pinned
 
-        mcp_hatch = os.environ.get("PMHARNESS_MCP_ALLOW_PRIVATE", "").strip().lower() in (
-            "1", "true", "yes", "on",
-        )
         ok, reason, _ = is_safe_url_pinned(
-            newurl, allow_private=mcp_hatch or allow_private_urls(),
+            newurl, allow_private=mcp_allow_private_urls(),
         )
         if not ok:
             raise urllib.error.HTTPError(
@@ -152,16 +168,12 @@ class HttpMcpClient:
         the hostname could not be resolved (the request then fails at connect
         time). Raises McpError if the URL is unsafe.
         """
-        from .url_safety import allow_private_urls, is_safe_url_pinned
+        from .url_safety import is_safe_url_pinned
 
-        # Honor both hatches: the MCP-specific var (documented for hosted MCP
-        # servers on a VPN/LAN) and the rig-wide one, so setting either yields
-        # one consistent posture instead of two half-open ones.
-        mcp_hatch = os.environ.get("PMHARNESS_MCP_ALLOW_PRIVATE", "").strip().lower() in (
-            "1", "true", "yes", "on",
-        )
+        # User-configured MCP endpoints (Docker localhost, LAN) are allowed by
+        # default; metadata stays blocked. See mcp_allow_private_urls().
         ok, reason, pinned_ip = is_safe_url_pinned(
-            url, allow_private=mcp_hatch or allow_private_urls()
+            url, allow_private=mcp_allow_private_urls(),
         )
         if ok:
             ip = pinned_ip or ""

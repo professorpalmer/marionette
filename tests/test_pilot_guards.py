@@ -13,6 +13,7 @@ from harness.pilot_guards import (
     SWARM_GATE_FULL_REDIRECT_CAP,
     SWARM_GATE_READ_ALLOWANCE,
     TurnGuardState,
+    check_backend_restart,
     check_cli_redirect,
     check_delegate_gate,
     check_iteration_budget,
@@ -22,6 +23,7 @@ from harness.pilot_guards import (
     cli_redirect_enabled,
     delegate_gate_enabled,
     guards_active,
+    is_backend_restart_command,
     is_broad_intent_user_message,
     is_exploration_command,
     is_native_exploration,
@@ -29,6 +31,7 @@ from harness.pilot_guards import (
     is_swarm_gate_blocked_exploration,
     iteration_budget_enabled,
     loop_guard_enabled,
+    mid_turn_restart_blocked,
     new_turn_guard_state,
     normalize_action_args,
     puppetmaster_cli_native_mapping,
@@ -722,3 +725,39 @@ def test_echo_not_blocked_on_narrow_turn():
     assert is_swarm_gate_blocked_exploration(state, "run_command", act) is False
     verdict = check_swarm_gate(state, "run_command", act)
     assert verdict.suppress is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'curl -X POST http://127.0.0.1:50076/api/restart -H "X-Harness-Token: abc"',
+        "Invoke-WebRequest -Uri http://localhost:8799/api/restart -Method POST",
+        "python -c \"...\" # then POST /api/restart",
+        "harness:restart",
+        "restart-backend",
+    ],
+)
+def test_mid_turn_backend_restart_suppressed(command, monkeypatch):
+    monkeypatch.delenv("HARNESS_ALLOW_MID_TURN_RESTART", raising=False)
+    assert mid_turn_restart_blocked() is True
+    assert is_backend_restart_command(command) is True
+    state = new_turn_guard_state("wire discord mcp")
+    act = _Act(kind="run_command", command=command)
+    verdict = check_backend_restart(state, "run_command", act)
+    assert verdict.suppress is True
+    assert verdict.reason == "mid_turn_restart"
+    assert "manage_mcp" in verdict.message
+
+
+def test_mid_turn_restart_kill_switch(monkeypatch):
+    monkeypatch.setenv("HARNESS_ALLOW_MID_TURN_RESTART", "1")
+    assert mid_turn_restart_blocked() is False
+    state = new_turn_guard_state("wire discord mcp")
+    act = _Act(kind="run_command", command="curl -X POST http://127.0.0.1/api/restart")
+    assert check_backend_restart(state, "run_command", act).suppress is False
+
+
+def test_ordinary_commands_not_restart(monkeypatch):
+    monkeypatch.delenv("HARNESS_ALLOW_MID_TURN_RESTART", raising=False)
+    assert is_backend_restart_command("docker restart discord-mcp") is False
+    assert is_backend_restart_command("curl http://127.0.0.1:8085/mcp") is False

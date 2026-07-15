@@ -8632,6 +8632,18 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
         sync_agentic_registry_safe()
         
         _maybe_auto_index_codegraph()
+        # Connect configured MCP servers (incl. local Docker HTTP) without
+        # blocking the GUI bind. Failures land on status().error for State→MCP.
+        def _boot_mcp() -> None:
+            try:
+                report = _mcp.start_all()
+                for _name, _res in report.items():
+                    if isinstance(_res, str):
+                        _diag("mcp.boot_error", name=_name, error=_res)
+            except Exception as _e:
+                _diag("mcp.boot_fail", error=str(_e))
+
+        threading.Thread(target=_boot_mcp, name="mcp-boot", daemon=True).start()
         srv.serve_forever()
     except SystemExit:
         raise

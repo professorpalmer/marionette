@@ -15,8 +15,9 @@ Per-turn guards wired before native tool dispatch:
 4. ITERATION BUDGET — hard cap on total tool calls per pilot turn.
 
 Disable via HARNESS_LOOP_GUARD=0 / HARNESS_SWARM_GATE=0 / HARNESS_DELEGATE_GATE=0 /
-HARNESS_PILOT_TOOL_BUDGET=0 / HARNESS_CLI_REDIRECT=0 (or numeric HARNESS_TURN_BUDGET >= 2
-for cap override).
+HARNESS_PILOT_TOOL_BUDGET=0 / HARNESS_CLI_REDIRECT=0 /
+HARNESS_ALLOW_MID_TURN_RESTART=1 (opt-in; mid-turn /api/restart is blocked by
+default) (or numeric HARNESS_TURN_BUDGET >= 2 for cap override).
 """
 
 import json
@@ -579,6 +580,60 @@ def check_cli_redirect(state: TurnGuardState, kind: str, act: Any) -> GuardVerdi
     )
 
 
+# Pilot must not POST /api/restart (or equivalent) mid-turn — that tears down
+# the SSE turn and surfaces as "[aborted] Connection closed…". MCP wiring and
+# env hatches never need a mid-turn restart; harness/** self-edits wait for the
+# user via Settings → Restart after the turn ends.
+_BACKEND_RESTART_RE = re.compile(
+    r"(?:"
+    r"/api/restart\b"
+    r"|"
+    r"\bapi[/\\]restart\b"
+    r"|"
+    r"harness:restart\b"
+    r"|"
+    r"\brestart[-_\s]?backend\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_BACKEND_RESTART_MESSAGE = (
+    "[suppressed: mid-turn backend restart] Do NOT call /api/restart (or "
+    "equivalent) during an active turn — it drops the live SSE connection and "
+    "aborts the chat. For Docker/local MCP: use manage_mcp (localhost HTTP is "
+    "allowed without a restart). For harness/** code that needs a reload: finish "
+    "the turn and tell the user to use Settings → Advanced → Restart backend. "
+    "Kill switch if you truly must: HARNESS_ALLOW_MID_TURN_RESTART=1."
+)
+
+
+def mid_turn_restart_blocked() -> bool:
+    """True when mid-turn backend restarts are refused (default)."""
+    raw = (os.environ.get("HARNESS_ALLOW_MID_TURN_RESTART") or "").strip().lower()
+    return raw not in ("1", "true", "yes", "on")
+
+
+def is_backend_restart_command(command: str) -> bool:
+    return bool(_BACKEND_RESTART_RE.search(command or ""))
+
+
+def check_backend_restart(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
+    """Soft-refuse run_command that would restart the harness mid-turn."""
+    del state
+    if not mid_turn_restart_blocked():
+        return GuardVerdict(False)
+    if kind != "run_command":
+        return GuardVerdict(False)
+    command = getattr(act, "command", "") or ""
+    if not is_backend_restart_command(command):
+        return GuardVerdict(False)
+    return GuardVerdict(
+        suppress=True,
+        reason="mid_turn_restart",
+        message=_BACKEND_RESTART_MESSAGE,
+    )
+
+
 def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
     if not loop_guard_enabled():
         return GuardVerdict(False)
@@ -711,6 +766,10 @@ def check_iteration_budget(state: TurnGuardState, kind: str, act: Any) -> GuardV
 
 def check_pilot_guards(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:
     """Apply CLI redirect, loop breaker, swarm gate, delegate gate, then budget."""
+    restart_verdict = check_backend_restart(state, kind, act)
+    if restart_verdict.suppress:
+        return restart_verdict
+
     cli_verdict = check_cli_redirect(state, kind, act)
     if cli_verdict.suppress:
         return cli_verdict

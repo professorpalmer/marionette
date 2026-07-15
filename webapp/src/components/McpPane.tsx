@@ -50,7 +50,8 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
       <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1.5">
         {servers.length === 0 && !adding && (
           <div className={`text-faint text-[11px] text-center px-3 leading-relaxed ${embedded ? "mt-2" : "mt-6"}`}>
-            No MCP servers yet. Add github, aws, vercel, a browser controller, or any custom server.
+            No MCP servers yet. Add github, aws, vercel, a browser controller, or a Docker HTTP URL
+            (e.g. http://localhost:8085/mcp).
           </div>
         )}
 

@@ -136,41 +136,39 @@ def test_sensitive_gets_require_token():
 
 
 def test_mcp_url_ssrf_blocking(monkeypatch):
+    # Default: user-configured MCP may use loopback/LAN (Docker). Metadata
+    # stays blocked. Opt out with PMHARNESS_MCP_ALLOW_PRIVATE=0.
     monkeypatch.delenv("PMHARNESS_MCP_ALLOW_PRIVATE", raising=False)
+    monkeypatch.delenv("HARNESS_ALLOW_PRIVATE_URLS", raising=False)
     from harness.mcp_http_client import HttpMcpClient
     from harness.mcp_client import McpError
 
-    # 1. 169.254.169.254 should be rejected
+    # 1. Cloud metadata always rejected
     with pytest.raises(McpError) as exc:
         HttpMcpClient("test", "http://169.254.169.254/")
     assert "blocked" in str(exc.value)
 
-    # 2. Localhost IP 127.0.0.1 should be rejected
-    with pytest.raises(McpError) as exc:
-        HttpMcpClient("test", "http://127.0.0.1:1/")
-    assert "blocked" in str(exc.value)
+    # 2. Loopback allowed by default (Docker discord-mcp etc.)
+    client = HttpMcpClient("test", "http://127.0.0.1:1/")
+    assert client.url == "http://127.0.0.1:1/"
+    client = HttpMcpClient("test", "http://localhost:8000/rpc")
+    assert client.url == "http://localhost:8000/rpc"
 
-    # 3. Localhost hostname should be rejected
-    with pytest.raises(McpError) as exc:
-        HttpMcpClient("test", "http://localhost:8000/rpc")
-    assert "blocked" in str(exc.value)
-
-    # 4. Valid public domain should be allowed by validator
+    # 3. Public domain still allowed
     client = HttpMcpClient("test", "https://example.com/mcp")
     assert client.url == "https://example.com/mcp"
 
-    # 5. With PMHARNESS_MCP_ALLOW_PRIVATE=1, local IP should be allowed
-    import os
-    os.environ["PMHARNESS_MCP_ALLOW_PRIVATE"] = "1"
-    try:
-        client = HttpMcpClient("test", "http://127.0.0.1:1/")
-        assert client.url == "http://127.0.0.1:1/"
-    finally:
-        del os.environ["PMHARNESS_MCP_ALLOW_PRIVATE"]
+    # 4. Opt-out restores strict SSRF (loopback blocked)
+    monkeypatch.setenv("PMHARNESS_MCP_ALLOW_PRIVATE", "0")
+    with pytest.raises(McpError) as exc:
+        HttpMcpClient("test", "http://127.0.0.1:1/")
+    assert "blocked" in str(exc.value)
+    with pytest.raises(McpError) as exc:
+        HttpMcpClient("test", "http://localhost:8000/rpc")
+    assert "blocked" in str(exc.value)
+    monkeypatch.delenv("PMHARNESS_MCP_ALLOW_PRIVATE")
 
-    # 6. Metadata endpoints the bespoke validator used to miss (now shared
-    #    with url_safety): hostnames and the AWS IPv6 metadata address. These
-    #    stay blocked even with the escape hatch set.
+    # 5. Metadata stays blocked even when private MCP is allowed
     monkeypatch.setenv("PMHARNESS_MCP_ALLOW_PRIVATE", "1")
     for bad in (
         "http://metadata.google.internal/computeMetadata/v1/",
@@ -181,12 +179,13 @@ def test_mcp_url_ssrf_blocking(monkeypatch):
             HttpMcpClient("test", bad)
     monkeypatch.delenv("PMHARNESS_MCP_ALLOW_PRIVATE")
 
-    # 7. The rig-wide hatch (HARNESS_ALLOW_PRIVATE_URLS) opens this client too
-    #    -- one env var, one posture.
+    # 6. Rig-wide hatch still opens the client when MCP opt-out is set
+    monkeypatch.setenv("PMHARNESS_MCP_ALLOW_PRIVATE", "0")
     monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
     client = HttpMcpClient("test", "http://127.0.0.1:1/")
     assert client.url == "http://127.0.0.1:1/"
     monkeypatch.delenv("HARNESS_ALLOW_PRIVATE_URLS")
+    monkeypatch.delenv("PMHARNESS_MCP_ALLOW_PRIVATE")
 
 
 def test_host_ok_loopback_forms():
