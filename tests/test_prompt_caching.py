@@ -72,11 +72,13 @@ def test_anthropic_prompt_caching_enabled(monkeypatch):
         }
     ]
 
-    # Check returned Response Meta values
+    # Check returned Response Meta values -- tokens_in is inclusive
+    # (uncached input_tokens + cache write + cache read).
     assert resp.meta.get("cache_write_tokens") == 80
     assert resp.meta.get("cache_read_tokens") == 10
-    assert resp.tokens_in == 100
+    assert resp.tokens_in == 190  # 100 + 80 + 10
     assert resp.tokens_out == 50
+    assert resp.meta.get("cache_write_1h_tokens") == 80
 
 
 def test_anthropic_prompt_caching_disabled(monkeypatch):
@@ -151,6 +153,7 @@ def test_openai_compat_prompt_caching(monkeypatch):
             "usage": {
                 "prompt_tokens": 120,
                 "completion_tokens": 40,
+                "cost": 0.0123,
                 "prompt_tokens_details": {
                     "cached_tokens": 90
                 }
@@ -170,9 +173,11 @@ def test_openai_compat_prompt_caching(monkeypatch):
 
     resp_complete = driver.complete("Hello", system="system prompt")
     assert resp_complete.meta.get("cache_read_tokens") == 90
+    assert resp_complete.meta.get("provider_cost_usd") == pytest.approx(0.0123)
 
     resp_chat = driver.chat(messages=[{"role": "user", "content": "Hello"}], system="system prompt")
     assert resp_chat.meta.get("cache_read_tokens") == 90
+    assert resp_chat.meta.get("provider_cost_usd") == pytest.approx(0.0123)
 
 
 def test_openai_compat_prompt_caching_missing(monkeypatch):
@@ -235,6 +240,7 @@ def test_openai_compat_chat_stream_prompt_caching(monkeypatch):
                 "usage": {
                     "prompt_tokens": 120,
                     "completion_tokens": 40,
+                    "cost": 0.0042,
                     "prompt_tokens_details": {
                         "cached_tokens": 85
                     }
@@ -269,6 +275,7 @@ def test_openai_compat_chat_stream_prompt_caching(monkeypatch):
 
     assert "".join(deltas) == "Hello world!"
     assert resp_stream.meta.get("cache_read_tokens") == 85
+    assert resp_stream.meta.get("provider_cost_usd") == pytest.approx(0.0042)
 
 
 def _count_cache_markers(body: dict) -> int:

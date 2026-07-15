@@ -342,6 +342,8 @@ export type UsageData = {
   session: {
     tokens_used: number;
     est_cost_usd: number;
+    /** provider = billed usage.cost; estimated = token*catalog; mixed = both. */
+    cost_source?: "provider" | "estimated" | "mixed";
     driver: string;
     price_in: number;
     price_out: number;

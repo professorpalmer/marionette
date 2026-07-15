@@ -122,6 +122,41 @@ class OpenAICompatDriver:
         )
         return cached, written
 
+    @staticmethod
+    def _cost_from_usage(usage: dict):
+        """Return provider-billed USD from a usage blob, or None if absent.
+
+        OpenRouter always includes ``usage.cost`` (credits charged to the
+        account). Prefer this over token*catalog math -- cache-read multipliers
+        and registry prices drift from what was actually billed.
+        """
+        usage = usage or {}
+        raw = usage.get("cost")
+        if raw is None:
+            return None
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if val != val or val < 0.0:  # NaN or negative
+            return None
+        return val
+
+    @classmethod
+    def _usage_meta(cls, usage: dict) -> dict:
+        """Shared cache + billed-cost fields for DriverResponse.meta."""
+        usage = usage or {}
+        cached_tokens, cache_write_tokens = cls._cache_fields_from_usage(usage)
+        meta = {
+            "cache_read_tokens": cached_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "raw_usage": usage,
+        }
+        cost = cls._cost_from_usage(usage)
+        if cost is not None:
+            meta["provider_cost_usd"] = cost
+        return meta
+
     def complete(
         self,
         task_prompt: str,
@@ -179,19 +214,17 @@ class OpenAICompatDriver:
                     latency_ms=latency,
                 )
             usage = raw.get("usage", {}) or {}
-            cached_tokens, cache_write_tokens = self._cache_fields_from_usage(usage)
+            meta = self._usage_meta(usage)
+            meta["raw_finish"] = (
+                raw["choices"][0].get("finish_reason") if raw.get("choices") else None
+            )
             return DriverResponse(
                 text=text,
                 tokens_in=int(usage.get("prompt_tokens", 0) or 0),
                 tokens_out=int(usage.get("completion_tokens", 0) or 0),
                 latency_ms=latency,
                 model=self.name,
-                meta={
-                    "raw_finish": raw["choices"][0].get("finish_reason") if raw.get("choices") else None,
-                    "cache_read_tokens": cached_tokens,
-                    "cache_write_tokens": cache_write_tokens,
-                    "raw_usage": usage,
-                },
+                meta=meta,
             )
 
         return with_retry(_call)
@@ -290,21 +323,19 @@ class OpenAICompatDriver:
             pure_text = strip_think_blocks(text)
 
             usage = raw.get("usage", {}) or {}
-            cached_tokens, cache_write_tokens = self._cache_fields_from_usage(usage)
+            meta = self._usage_meta(usage)
+            meta.update({
+                "tool_calls": tool_calls,
+                "reasoning": reasoning,
+                "finish_reason": finish_reason,
+            })
             return DriverResponse(
                 text=pure_text,
                 tokens_in=int(usage.get("prompt_tokens", 0) or 0),
                 tokens_out=int(usage.get("completion_tokens", 0) or 0),
                 latency_ms=latency,
                 model=self.name,
-                meta={
-                    "tool_calls": tool_calls,
-                    "reasoning": reasoning,
-                    "finish_reason": finish_reason,
-                    "cache_read_tokens": cached_tokens,
-                    "cache_write_tokens": cache_write_tokens,
-                    "raw_usage": usage,
-                },
+                meta=meta,
             )
 
         return with_retry(_call)
@@ -363,6 +394,7 @@ class OpenAICompatDriver:
             tokens_out = 0
             cached_tokens = 0
             cache_write_tokens = 0
+            provider_cost_usd = None
             stream_started = False
 
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -389,6 +421,9 @@ class OpenAICompatDriver:
                                 cached_tokens, cache_write_tokens = self._cache_fields_from_usage(
                                     chunk_usage
                                 )
+                                step_cost = self._cost_from_usage(chunk_usage)
+                                if step_cost is not None:
+                                    provider_cost_usd = step_cost
 
                             choices = chunk.get("choices") or []
                             if choices:
@@ -492,20 +527,23 @@ class OpenAICompatDriver:
 
             tool_calls = [assembled_tool_calls[i] for i in sorted(assembled_tool_calls.keys())]
 
+            meta = {
+                "tool_calls": tool_calls,
+                "reasoning": reasoning,
+                "finish_reason": finish_reason,
+                "stream_started": stream_started,
+                "cache_read_tokens": cached_tokens,
+                "cache_write_tokens": cache_write_tokens,
+            }
+            if provider_cost_usd is not None:
+                meta["provider_cost_usd"] = provider_cost_usd
             return DriverResponse(
                 text=pure_text,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 latency_ms=latency,
                 model=self.name,
-                meta={
-                    "tool_calls": tool_calls,
-                    "reasoning": reasoning,
-                    "finish_reason": finish_reason,
-                    "stream_started": stream_started,
-                    "cache_read_tokens": cached_tokens,
-                    "cache_write_tokens": cache_write_tokens,
-                },
+                meta=meta,
             )
 
         return with_retry(_call)

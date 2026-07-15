@@ -59,13 +59,15 @@ from .diag import note as _diag
 from .secure_files import restrict_dir_to_owner, restrict_to_owner
 
 
-# Prompt-cache reads are billed at a steep discount vs fresh input tokens:
-# Anthropic prompt caching and OpenAI/Gemini cached-input reads are ~10% of the
-# normal input price. We meter cache_read_tokens separately (see
-# ConversationalSession) and re-bill that slice at this multiplier instead of
-# the full input rate. 0.1 is the published cache-read ratio and is
-# conservative (some providers go lower), so we never *under*-count spend.
+# Prompt-cache FALLBACK multipliers (used only when the provider did not return
+# usage.cost). OpenRouter billed USD is preferred whenever present.
+# Anthropic/Bedrock published rates: reads ~0.1x, 5m writes 1.25x, 1h writes 2x.
+# OpenAI/Gemini implicit cache is usually read-only (write bucket stays 0).
 CACHE_READ_MULTIPLIER = 0.1
+CACHE_WRITE_5M_MULTIPLIER = 1.25
+CACHE_WRITE_1H_MULTIPLIER = 2.0
+# Undifferentiated cache_write_tokens (no TTL split) billed at the 5m write rate.
+CACHE_WRITE_MULTIPLIER = CACHE_WRITE_5M_MULTIPLIER
 
 # Mid-turn SSE reattach: bounded per-session/per-generation event ring. When the
 # UI detaches, _sse_pump keeps draining the turn and RETAINS recent frames here
@@ -244,23 +246,67 @@ def _usage_cache_clear_for_tests() -> None:
         _usage_response_cache.clear()
 
 
-def _session_cost(t_in: float, t_out: float, cached: float,
-                  price_in: float, price_out: float) -> float:
+def _session_cost(
+    t_in: float,
+    t_out: float,
+    cached: float,
+    price_in: float,
+    price_out: float,
+    cache_write: float = 0.0,
+    cache_write_5m: float = 0.0,
+    cache_write_1h: float = 0.0,
+) -> float:
     """Deterministic session cost from tokens + per-Mtok prices.
 
-    Cached prompt tokens are a subset of ``t_in`` and are billed at the
-    cache-read discount rather than full input price. Falls back to pricing the
-    whole total at ``price_out`` when no in/out split is available (completion
-    dominates cost, so this is the least-wrong single-rate estimate)."""
-    if t_in or t_out:
-        cached = max(0.0, min(float(cached), float(t_in)))
-        uncached_in = max(0.0, float(t_in) - cached)
-        return ((uncached_in / 1.0e6) * price_in
-                + (cached / 1.0e6) * price_in * CACHE_READ_MULTIPLIER
-                + (float(t_out) / 1.0e6) * price_out)
+    ``t_in`` is the FULL prompt token total (uncached + cache read + cache
+    write). Cache-read / cache-write buckets are peeled out of that total and
+    billed at their multipliers; the remainder is full-price input. Falls back
+    to pricing the combined total at ``price_out`` when no in/out split is
+    available (completion dominates cost, so this is the least-wrong
+    single-rate estimate)."""
+    t_in = float(t_in or 0.0)
+    t_out = float(t_out or 0.0)
+    cached = max(0.0, float(cached or 0.0))
+    w5 = max(0.0, float(cache_write_5m or 0.0))
+    w1 = max(0.0, float(cache_write_1h or 0.0))
+    w_u = max(0.0, float(cache_write or 0.0))
+    if w5 or w1:
+        split = w5 + w1
+        # Prefer TTL splits; drop overlapping undifferentiated write totals.
+        if w_u <= split + 0.5:
+            w_u = 0.0
+        else:
+            w_u = max(0.0, w_u - split)
+    if t_in or t_out or cached or w5 or w1 or w_u:
+        cached = min(cached, t_in)
+        remain = max(0.0, t_in - cached)
+        w1 = min(w1, remain)
+        remain -= w1
+        w5 = min(w5, remain)
+        remain -= w5
+        w_u = min(w_u, remain)
+        remain -= w_u
+        uncached_in = remain
+        return (
+            (uncached_in / 1.0e6) * price_in
+            + (cached / 1.0e6) * price_in * CACHE_READ_MULTIPLIER
+            + (w5 / 1.0e6) * price_in * CACHE_WRITE_5M_MULTIPLIER
+            + (w1 / 1.0e6) * price_in * CACHE_WRITE_1H_MULTIPLIER
+            + (w_u / 1.0e6) * price_in * CACHE_WRITE_MULTIPLIER
+            + (t_out / 1.0e6) * price_out
+        )
     # No split tracked: price the combined total at the output rate.
-    total = float(t_in) + float(t_out)
+    total = t_in + t_out
     return (total / 1.0e6) * price_out
+
+
+def _pilot_write_buckets(pilot: Any) -> tuple:
+    """Return (cache_write, write_5m, write_1h) meters for a pilot-like object."""
+    return (
+        int(getattr(pilot, "_tokens_cache_write", 0) or 0),
+        int(getattr(pilot, "_tokens_cache_write_5m", 0) or 0),
+        int(getattr(pilot, "_tokens_cache_write_1h", 0) or 0),
+    )
 
 
 def _session_cost_split(pilot: Any, price_in: float, price_out: float) -> float:
@@ -271,25 +317,93 @@ def _session_cost_split(pilot: Any, price_in: float, price_out: float) -> float:
     pricing them at the pilot rate under-reports cost when a worker ran on a
     pricier model (e.g. opus at $5/$25 vs a cheap pilot). So we subtract the
     worker token split from the pilot-priced portion and add _worker_cost_usd.
-    getattr defaults keep OLD sessions (no worker split) identical to before."""
+
+    When the pilot accumulated OpenRouter (or similar) ``usage.cost`` into
+    ``_provider_cost_usd``, that billed USD is ground truth for the covered
+    token slice; any remaining uncovered pilot tokens fall back to the
+    cache-aware catalog estimate. getattr defaults keep OLD sessions (no
+    worker / provider split) identical to before."""
     t_in = int(getattr(pilot, "_tokens_in", 0) or 0)
     t_out = int(getattr(pilot, "_tokens_out", 0) or 0)
     t_cached = int(getattr(pilot, "_tokens_cached", 0) or 0)
+    t_write, t_write_5m, t_write_1h = _pilot_write_buckets(pilot)
     w_in = int(getattr(pilot, "_worker_tokens_in", 0) or 0)
     w_out = int(getattr(pilot, "_worker_tokens_out", 0) or 0)
     w_cost = float(getattr(pilot, "_worker_cost_usd", 0.0) or 0.0)
+    provider_cost = float(getattr(pilot, "_provider_cost_usd", 0.0) or 0.0)
+    billed_in = int(getattr(pilot, "_provider_billed_tokens_in", 0) or 0)
+    billed_out = int(getattr(pilot, "_provider_billed_tokens_out", 0) or 0)
+    billed_cached = int(getattr(pilot, "_provider_billed_tokens_cached", 0) or 0)
+    billed_write = int(getattr(pilot, "_provider_billed_tokens_cache_write", 0) or 0)
+    billed_write_5m = int(getattr(pilot, "_provider_billed_tokens_cache_write_5m", 0) or 0)
+    billed_write_1h = int(getattr(pilot, "_provider_billed_tokens_cache_write_1h", 0) or 0)
     pilot_in = max(0, t_in - w_in)
     pilot_out = max(0, t_out - w_out)
-    # Cached tokens are a subset of pilot input; clamp so cache discount never
-    # exceeds the pilot input we are actually pricing here.
+    # Cached / write tokens are subsets of pilot input; clamp so discounts /
+    # premiums never exceed the pilot input we are actually pricing here.
     pilot_cached = max(0, min(t_cached, pilot_in))
-    return _session_cost(pilot_in, pilot_out, pilot_cached, price_in, price_out) + w_cost
+    pilot_write = max(0, min(t_write, pilot_in))
+    pilot_write_5m = max(0, min(t_write_5m, pilot_in))
+    pilot_write_1h = max(0, min(t_write_1h, pilot_in))
+    if billed_in > 0 or billed_out > 0:
+        rem_in = max(0, pilot_in - billed_in)
+        rem_out = max(0, pilot_out - billed_out)
+        rem_cached = max(0, min(max(0, pilot_cached - billed_cached), rem_in))
+        rem_write = max(0, min(max(0, pilot_write - billed_write), rem_in))
+        rem_w5 = max(0, min(max(0, pilot_write_5m - billed_write_5m), rem_in))
+        rem_w1 = max(0, min(max(0, pilot_write_1h - billed_write_1h), rem_in))
+        return (
+            provider_cost
+            + _session_cost(
+                rem_in, rem_out, rem_cached, price_in, price_out,
+                cache_write=rem_write,
+                cache_write_5m=rem_w5,
+                cache_write_1h=rem_w1,
+            )
+            + w_cost
+        )
+    return (
+        _session_cost(
+            pilot_in, pilot_out, pilot_cached, price_in, price_out,
+            cache_write=pilot_write,
+            cache_write_5m=pilot_write_5m,
+            cache_write_1h=pilot_write_1h,
+        )
+        + w_cost
+    )
 
 
 def _cache_savings(cached: float, price_in: float) -> float:
     """USD saved by billing ``cached`` prompt tokens at the cache-read discount
-    instead of the full input price."""
+    instead of the full input price (catalog-rate fallback estimate).
+
+    Cache-write premiums are a cost, not a saving -- they are excluded here."""
     return (float(cached) / 1.0e6) * price_in * (1.0 - CACHE_READ_MULTIPLIER)
+
+
+def _cost_source_label(pilot_like: Any) -> str:
+    """How pilot spend was derived: provider | mixed | estimated."""
+    billed_in = int(getattr(pilot_like, "_provider_billed_tokens_in", 0) or 0)
+    billed_out = int(getattr(pilot_like, "_provider_billed_tokens_out", 0) or 0)
+    if billed_in <= 0 and billed_out <= 0:
+        return "estimated"
+    t_in = int(getattr(pilot_like, "_tokens_in", 0) or 0)
+    t_out = int(getattr(pilot_like, "_tokens_out", 0) or 0)
+    w_in = int(getattr(pilot_like, "_worker_tokens_in", 0) or 0)
+    w_out = int(getattr(pilot_like, "_worker_tokens_out", 0) or 0)
+    pilot_in = max(0, t_in - w_in)
+    pilot_out = max(0, t_out - w_out)
+    if billed_in >= pilot_in and billed_out >= pilot_out:
+        return "provider"
+    return "mixed"
+
+
+def _boot_cost_source() -> str:
+    """Aggregate cost_source across carry + live runners."""
+    from types import SimpleNamespace
+
+    totals = _boot_usage_meters()
+    return _cost_source_label(SimpleNamespace(**totals))
 
 
 # Cost epoch for THIS app run. The swarm store (SQLite) persists across
@@ -313,9 +427,19 @@ _BOOT_METER_ATTRS = (
     "_tokens_in",
     "_tokens_out",
     "_tokens_cached",
+    "_tokens_cache_write",
+    "_tokens_cache_write_5m",
+    "_tokens_cache_write_1h",
     "_worker_cost_usd",
     "_worker_tokens_in",
     "_worker_tokens_out",
+    "_provider_cost_usd",
+    "_provider_billed_tokens_in",
+    "_provider_billed_tokens_out",
+    "_provider_billed_tokens_cached",
+    "_provider_billed_tokens_cache_write",
+    "_provider_billed_tokens_cache_write_5m",
+    "_provider_billed_tokens_cache_write_1h",
 )
 _BOOT_METER_CARRY: dict[str, float] = {attr: 0.0 for attr in _BOOT_METER_ATTRS}
 # Priced USD folded with dropped runners at fold-time rates. Token meters in
@@ -2326,7 +2450,7 @@ def _fold_runner_meters_into_boot_carry(
         try:
             add = float(getattr(runner, attr, 0) or 0)
             _BOOT_METER_CARRY[attr] = float(_BOOT_METER_CARRY.get(attr, 0.0) or 0.0) + add
-            if attr == "_worker_cost_usd":
+            if attr in ("_worker_cost_usd", "_provider_cost_usd"):
                 setattr(runner, attr, 0.0)
             else:
                 setattr(runner, attr, 0)
@@ -6908,12 +7032,13 @@ class Handler(BaseHTTPRequestHandler):
             _boot_meters = _boot_usage_meters()
             # Cache key includes cheap meter fingerprints so a turn that burns
             # tokens invalidates the burst cache without waiting for TTL.
-            _usage_cache_key = "%s|%s|%s|%s|%s" % (
+            _usage_cache_key = "%s|%s|%s|%s|%s|%s" % (
                 (repo_override or "").strip() or (_cfg.repo or ""),
                 ",".join(sorted(_BOOT_REPOS)) if _BOOT_REPOS else "",
                 int(_boot_meters.get("_tokens_used", 0) or 0),
                 int(_boot_meters.get("_tokens_cached", 0) or 0),
                 round(float(_boot_meters.get("_worker_cost_usd", 0) or 0.0), 6),
+                round(float(_boot_meters.get("_provider_cost_usd", 0) or 0.0), 6),
             )
             _cached_usage = _usage_cache_get(_usage_cache_key)
             if _cached_usage is not None:
@@ -7076,10 +7201,18 @@ class Handler(BaseHTTPRequestHandler):
             pilot_only_cached = max(0, _t_cached - min(_t_cached, swarm_cached))
             tokens_cached = pilot_only_cached + swarm_cached
             _cache_savings_usd = _cache_savings(pilot_only_cached, price_in)
+            _usage_cost_source = _boot_cost_source()
+            # Swarm store dollars are still catalog/usage-priced; do not claim
+            # the whole pill is provider-billed when those are folded in.
+            if swarm_cost > 0 and _usage_cost_source == "provider":
+                _usage_cost_source = "mixed"
             response_data = {
                 "session": {
                     "tokens_used": tokens_used,
                     "est_cost_usd": round(est_session_cost, 6),
+                    # provider = OpenRouter usage.cost (etc.); estimated =
+                    # token*catalog fallback; mixed = both slices present.
+                    "cost_source": _usage_cost_source,
                     "driver": _cfg.driver,
                     "price_in": price_in,
                     "price_out": price_out,
@@ -7376,10 +7509,18 @@ class Handler(BaseHTTPRequestHandler):
                 _cache_savings_usd = _cache_savings(pilot_only_cached, price_in)
                 tool_savings = _tool_output_savings_fields(price_in)
 
+            if repo_scoped:
+                _live_cost_source = "estimated"
+            else:
+                try:
+                    _live_cost_source = _cost_source_label(_pilot) if _pilot is not None else "estimated"
+                except Exception:
+                    _live_cost_source = "estimated"
             response_data = {
                 "session": {
                     "tokens_used": tokens_used,
                     "est_cost_usd": round(est_session_cost, 6),
+                    "cost_source": _live_cost_source,
                     "driver": _cfg.driver,
                     # Prompt-cache hits (billed at the cache-read discount) so the
                     # UI can show how much input was served near-free -- proof the

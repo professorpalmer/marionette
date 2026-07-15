@@ -17,6 +17,39 @@ from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
 
 
+def _anthropic_usage_fields(usage: dict | None) -> dict:
+    """Normalize Anthropic usage into inclusive prompt totals + TTL write splits.
+
+    Anthropic reports a *disjoint* partition:
+      input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+    Our session cost meters expect an inclusive ``tokens_in`` (sum of all three)
+    with cache read/write peeled back out at their published multipliers.
+    """
+    usage = usage or {}
+    uncached = int(usage.get("input_tokens", 0) or 0)
+    cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+    creation = usage.get("cache_creation") or {}
+    write_5m = int(creation.get("ephemeral_5m_input_tokens", 0) or 0)
+    write_1h = int(creation.get("ephemeral_1h_input_tokens", 0) or 0)
+    if cache_write and not (write_5m or write_1h):
+        # API omitted the TTL breakdown -- infer from our request default
+        # (HARNESS_ANTHROPIC_CACHE_TTL, default 1h).
+        ttl = (os.environ.get("HARNESS_ANTHROPIC_CACHE_TTL") or "1h").strip().lower()
+        if ttl in ("5m", "5min", "off", "0", "false", "no"):
+            write_5m = cache_write
+        else:
+            write_1h = cache_write
+    return {
+        "tokens_in": uncached + cache_write + cache_read,
+        "tokens_out": int(usage.get("output_tokens", 0) or 0),
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+        "cache_write_5m_tokens": write_5m,
+        "cache_write_1h_tokens": write_1h,
+    }
+
+
 class AnthropicDriver:
     supports_streaming = True
 
@@ -97,18 +130,18 @@ class AnthropicDriver:
             except (AttributeError, TypeError):
                 return DriverResponse(text="", model=self.name,
                                       error=f"unexpected response: {str(raw)[:300]}", latency_ms=latency)
-            usage = raw.get("usage", {}) or {}
-            cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
-            cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+            usage_fields = _anthropic_usage_fields(raw.get("usage", {}) or {})
             return DriverResponse(
                 text=text,
-                tokens_in=int(usage.get("input_tokens", 0) or 0),
-                tokens_out=int(usage.get("output_tokens", 0) or 0),
+                tokens_in=usage_fields["tokens_in"],
+                tokens_out=usage_fields["tokens_out"],
                 latency_ms=latency, model=self.name,
                 meta={
                     "stop_reason": raw.get("stop_reason"),
-                    "cache_write_tokens": cache_write,
-                    "cache_read_tokens": cache_read,
+                    "cache_write_tokens": usage_fields["cache_write_tokens"],
+                    "cache_read_tokens": usage_fields["cache_read_tokens"],
+                    "cache_write_5m_tokens": usage_fields["cache_write_5m_tokens"],
+                    "cache_write_1h_tokens": usage_fields["cache_write_1h_tokens"],
                 },
             )
 
@@ -345,22 +378,22 @@ class AnthropicDriver:
 
             pure_text = strip_think_blocks(full_text)
 
-            usage = raw.get("usage", {}) or {}
-            cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
-            cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+            usage_fields = _anthropic_usage_fields(raw.get("usage", {}) or {})
 
             return DriverResponse(
                 text=pure_text,
-                tokens_in=int(usage.get("input_tokens", 0) or 0),
-                tokens_out=int(usage.get("output_tokens", 0) or 0),
+                tokens_in=usage_fields["tokens_in"],
+                tokens_out=usage_fields["tokens_out"],
                 latency_ms=latency,
                 model=self.name,
                 meta={
                     "tool_calls": tool_calls,
                     "reasoning": reasoning,
                     "finish_reason": raw.get("stop_reason") or "",
-                    "cache_write_tokens": cache_write,
-                    "cache_read_tokens": cache_read,
+                    "cache_write_tokens": usage_fields["cache_write_tokens"],
+                    "cache_read_tokens": usage_fields["cache_read_tokens"],
+                    "cache_write_5m_tokens": usage_fields["cache_write_5m_tokens"],
+                    "cache_write_1h_tokens": usage_fields["cache_write_1h_tokens"],
                 }
             )
 
@@ -393,10 +426,7 @@ class AnthropicDriver:
         full_text_pieces = []
         # tool_use blocks assembled by content-block index.
         tool_blocks: dict = {}
-        tokens_in = 0
-        tokens_out = 0
-        cache_write = 0
-        cache_read = 0
+        usage_fields = _anthropic_usage_fields({})
         stop_reason = ""
 
         try:
@@ -417,9 +447,7 @@ class AnthropicDriver:
 
                     if etype == "message_start":
                         usage = (evt.get("message") or {}).get("usage") or {}
-                        tokens_in = int(usage.get("input_tokens", 0) or 0)
-                        cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
-                        cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+                        usage_fields = _anthropic_usage_fields(usage)
 
                     elif etype == "content_block_start":
                         idx = evt.get("index")
@@ -454,7 +482,42 @@ class AnthropicDriver:
 
                     elif etype == "message_delta":
                         usage = evt.get("usage") or {}
-                        tokens_out = int(usage.get("output_tokens", tokens_out) or tokens_out)
+                        if usage.get("output_tokens") is not None:
+                            usage_fields["tokens_out"] = int(
+                                usage.get("output_tokens", 0) or 0
+                            )
+                        # Some streams only finalize cache counters on delta.
+                        if (
+                            usage.get("cache_creation_input_tokens") is not None
+                            or usage.get("cache_read_input_tokens") is not None
+                            or usage.get("input_tokens") is not None
+                        ):
+                            merged = {
+                                "input_tokens": usage.get(
+                                    "input_tokens",
+                                    max(
+                                        0,
+                                        usage_fields["tokens_in"]
+                                        - usage_fields["cache_write_tokens"]
+                                        - usage_fields["cache_read_tokens"],
+                                    ),
+                                ),
+                                "output_tokens": usage_fields["tokens_out"],
+                                "cache_creation_input_tokens": usage.get(
+                                    "cache_creation_input_tokens",
+                                    usage_fields["cache_write_tokens"],
+                                ),
+                                "cache_read_input_tokens": usage.get(
+                                    "cache_read_input_tokens",
+                                    usage_fields["cache_read_tokens"],
+                                ),
+                                "cache_creation": usage.get("cache_creation"),
+                            }
+                            out_keep = usage_fields["tokens_out"]
+                            usage_fields = _anthropic_usage_fields(merged)
+                            usage_fields["tokens_out"] = int(
+                                usage.get("output_tokens", out_keep) or out_keep
+                            )
                         sr = (evt.get("delta") or {}).get("stop_reason")
                         if sr:
                             stop_reason = sr
@@ -511,16 +574,18 @@ class AnthropicDriver:
 
         return DriverResponse(
             text=pure_text,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
+            tokens_in=usage_fields["tokens_in"],
+            tokens_out=usage_fields["tokens_out"],
             latency_ms=latency,
             model=self.name,
             meta={
                 "tool_calls": tool_calls,
                 "reasoning": reasoning,
                 "finish_reason": stop_reason,
-                "cache_write_tokens": cache_write,
-                "cache_read_tokens": cache_read,
+                "cache_write_tokens": usage_fields["cache_write_tokens"],
+                "cache_read_tokens": usage_fields["cache_read_tokens"],
+                "cache_write_5m_tokens": usage_fields["cache_write_5m_tokens"],
+                "cache_write_1h_tokens": usage_fields["cache_write_1h_tokens"],
                 "stream_started": bool(full_text_pieces),
             },
         )

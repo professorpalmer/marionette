@@ -9,6 +9,7 @@
 export type CostBreakdownData = {
   tokens_used: number;
   est_cost_usd: number;
+  cost_source?: "provider" | "estimated" | "mixed";
   tokens_cached?: number;
   cache_savings_usd?: number;
   routing_saved_usd?: number;
@@ -62,6 +63,9 @@ function fmtBytes(num: number): string {
 
 export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   const est = isFinite(data.est_cost_usd) ? data.est_cost_usd : 0;
+  const billed = data.cost_source === "provider";
+  const spendLabel = billed ? "Billed spend" : data.cost_source === "mixed" ? "Spend (mixed)" : "Estimated spend";
+  const spendPrefix = billed ? "" : "~";
   const cacheSavings =
     typeof data.cache_savings_usd === "number" && isFinite(data.cache_savings_usd) && data.cache_savings_usd > 0
       ? data.cache_savings_usd
@@ -142,11 +146,11 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
     <div className="w-[260px] rounded-md border border-edge bg-panel shadow-lg p-3 text-[11px] text-txt">
       <div className="text-[10px] uppercase tracking-wide text-faint mb-2">Session cost</div>
 
-      {/* (a) Session estimated cost. Always shown when a positive figure exists. */}
+      {/* (a) Session spend. Provider-billed when OpenRouter (etc.) returned usage.cost. */}
       {est > 0 ? (
         <div className="flex items-center justify-between mb-1">
-          <span className="text-muted">Estimated spend</span>
-          <span className="text-good font-medium tabular-nums">~{fmtCost(est)}</span>
+          <span className="text-muted">{spendLabel}</span>
+          <span className="text-good font-medium tabular-nums">{spendPrefix}{fmtCost(est)}</span>
         </div>
       ) : null}
 

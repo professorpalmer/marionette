@@ -6,10 +6,16 @@ verifiable in isolation.
 """
 import pytest
 
+from types import SimpleNamespace
+
 from harness.server import (
     CACHE_READ_MULTIPLIER,
+    CACHE_WRITE_5M_MULTIPLIER,
+    CACHE_WRITE_1H_MULTIPLIER,
     _session_cost,
+    _session_cost_split,
     _cache_savings,
+    _cost_source_label,
     _job_cost,
 )
 
@@ -92,3 +98,118 @@ def test_job_cost_unknown_split_uses_output_rate():
     # And explicitly not the old blended number.
     blended = ((PRICE_IN + PRICE_OUT) / 2.0) * tokens / 1.0e6
     assert cost != blended
+
+
+def test_provider_cost_preferred_over_catalog_estimate():
+    # Catalog estimate would be huge; provider receipt is ground truth.
+    pilot = SimpleNamespace(
+        _tokens_in=1_000_000,
+        _tokens_out=10_000,
+        _tokens_cached=900_000,
+        _worker_tokens_in=0,
+        _worker_tokens_out=0,
+        _worker_cost_usd=0.0,
+        _provider_cost_usd=2.54,
+        _provider_billed_tokens_in=1_000_000,
+        _provider_billed_tokens_out=10_000,
+        _provider_billed_tokens_cached=900_000,
+    )
+    catalog = _session_cost(1_000_000, 10_000, 900_000, PRICE_IN, PRICE_OUT)
+    assert catalog != pytest.approx(2.54)
+    assert _session_cost_split(pilot, PRICE_IN, PRICE_OUT) == pytest.approx(2.54)
+    assert _cost_source_label(pilot) == "provider"
+
+
+def test_provider_cost_plus_uncovered_estimate_and_workers():
+    # Half the pilot tokens lacked usage.cost (legacy turn); price that slice.
+    pilot = SimpleNamespace(
+        _tokens_in=200_000,
+        _tokens_out=20_000,
+        _tokens_cached=50_000,
+        _worker_tokens_in=0,
+        _worker_tokens_out=0,
+        _worker_cost_usd=0.40,
+        _provider_cost_usd=1.10,
+        _provider_billed_tokens_in=100_000,
+        _provider_billed_tokens_out=10_000,
+        _provider_billed_tokens_cached=40_000,
+    )
+    rem = _session_cost(100_000, 10_000, 10_000, PRICE_IN, PRICE_OUT)
+    assert _session_cost_split(pilot, PRICE_IN, PRICE_OUT) == pytest.approx(1.10 + rem + 0.40)
+    assert _cost_source_label(pilot) == "mixed"
+
+
+def test_cost_source_estimated_without_provider_meters():
+    pilot = SimpleNamespace(
+        _tokens_in=10_000,
+        _tokens_out=1_000,
+        _tokens_cached=0,
+        _worker_tokens_in=0,
+        _worker_tokens_out=0,
+        _provider_billed_tokens_in=0,
+        _provider_billed_tokens_out=0,
+    )
+    assert _cost_source_label(pilot) == "estimated"
+
+
+def test_cache_write_5m_billed_at_premium():
+    # 100k write @ 1.25x, rest uncached -- must exceed full-price-on-all-input.
+    t_in = 200_000
+    write = 100_000
+    cost = _session_cost(
+        t_in, 0, 0, PRICE_IN, PRICE_OUT,
+        cache_write_5m=write,
+    )
+    expected = (
+        ((t_in - write) / 1.0e6) * PRICE_IN
+        + (write / 1.0e6) * PRICE_IN * CACHE_WRITE_5M_MULTIPLIER
+    )
+    assert cost == pytest.approx(expected)
+    assert cost > (t_in / 1.0e6) * PRICE_IN
+
+
+def test_cache_write_1h_billed_at_2x():
+    t_in = 100_000
+    cost = _session_cost(
+        t_in, 0, 0, PRICE_IN, PRICE_OUT,
+        cache_write_1h=t_in,
+    )
+    assert cost == pytest.approx((t_in / 1.0e6) * PRICE_IN * CACHE_WRITE_1H_MULTIPLIER)
+
+
+def test_anthropic_style_read_plus_write_estimate():
+    # Inclusive total: 50 uncached + 100k read + 20k 1h-write.
+    uncached, cached, write = 50_000, 100_000, 20_000
+    t_in = uncached + cached + write
+    cost = _session_cost(
+        t_in, 1_000, cached, PRICE_IN, PRICE_OUT,
+        cache_write_1h=write,
+    )
+    expected = (
+        (uncached / 1.0e6) * PRICE_IN
+        + (cached / 1.0e6) * PRICE_IN * CACHE_READ_MULTIPLIER
+        + (write / 1.0e6) * PRICE_IN * CACHE_WRITE_1H_MULTIPLIER
+        + (1_000 / 1.0e6) * PRICE_OUT
+    )
+    assert cost == pytest.approx(expected)
+
+
+def test_session_cost_split_includes_write_premium():
+    pilot = SimpleNamespace(
+        _tokens_in=120_000,
+        _tokens_out=0,
+        _tokens_cached=0,
+        _tokens_cache_write=20_000,
+        _tokens_cache_write_5m=20_000,
+        _tokens_cache_write_1h=0,
+        _worker_tokens_in=0,
+        _worker_tokens_out=0,
+        _worker_cost_usd=0.0,
+        _provider_billed_tokens_in=0,
+        _provider_billed_tokens_out=0,
+    )
+    expected = _session_cost(
+        120_000, 0, 0, PRICE_IN, PRICE_OUT,
+        cache_write=20_000, cache_write_5m=20_000,
+    )
+    assert _session_cost_split(pilot, PRICE_IN, PRICE_OUT) == pytest.approx(expected)

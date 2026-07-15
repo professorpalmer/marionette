@@ -115,11 +115,15 @@ def test_anthropic_chat_tools_and_system(monkeypatch):
     # Assert tool_choice auto
     assert body_data["tool_choice"] == {"type": "auto"}
 
-    # Assert usage metadata
+    # Assert usage metadata -- tokens_in is the inclusive prompt total
+    # (uncached + cache write + cache read), matching Anthropic billing.
     assert resp.meta.get("cache_write_tokens") == 50
     assert resp.meta.get("cache_read_tokens") == 20
-    assert resp.tokens_in == 120
+    assert resp.tokens_in == 190  # 120 + 50 + 20
     assert resp.tokens_out == 40
+    # Default harness TTL is 1h when the API omits cache_creation splits.
+    assert resp.meta.get("cache_write_1h_tokens") == 50
+    assert resp.meta.get("cache_write_5m_tokens") == 0
 
 def test_anthropic_chat_message_translation(monkeypatch):
     driver = AnthropicDriver(

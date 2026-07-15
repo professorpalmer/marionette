@@ -284,6 +284,9 @@ class BedrockDriver:
                 "finish_reason": getattr(turn, "finish_reason", "") or "",
                 "cache_write_tokens": cache_write,
                 "cache_read_tokens": cache_read,
+                # Bedrock Converse does not split 5m/1h; bill writes at 1.25x.
+                "cache_write_5m_tokens": cache_write,
+                "cache_write_1h_tokens": 0,
             },
         )
 
@@ -686,6 +689,8 @@ class BedrockDriver:
                 "finish_reason": stop_reason,
                 "cache_write_tokens": cache_write,
                 "cache_read_tokens": cache_read,
+                "cache_write_5m_tokens": cache_write,
+                "cache_write_1h_tokens": 0,
                 "stream_started": stream_started,
             },
         )

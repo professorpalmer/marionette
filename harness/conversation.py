@@ -473,6 +473,10 @@ class ConversationalSession(ToolDispatchMixin):
         self._tokens_in: int = 0   # cumulative prompt tokens (for accurate cost)
         self._tokens_out: int = 0  # cumulative completion tokens
         self._tokens_cached: int = 0  # cumulative prompt tokens served from cache
+        # Cache-write tokens (Anthropic/Bedrock); billed at a premium vs input.
+        self._tokens_cache_write: int = 0
+        self._tokens_cache_write_5m: int = 0
+        self._tokens_cache_write_1h: int = 0
         # Delegated-worker cost tracked as DOLLARS at each worker's OWN model
         # rate, plus a parallel token split, so the session cost is not computed
         # by repricing worker tokens at the (possibly much cheaper) pilot rate.
@@ -483,6 +487,16 @@ class ConversationalSession(ToolDispatchMixin):
         self._worker_cost_usd: float = 0.0
         self._worker_tokens_in: int = 0
         self._worker_tokens_out: int = 0
+        # Provider-billed pilot spend (OpenRouter ``usage.cost``). When present,
+        # /api/usage prefers this over token*catalog estimates for the covered
+        # token slice so session spend matches the provider receipt.
+        self._provider_cost_usd: float = 0.0
+        self._provider_billed_tokens_in: int = 0
+        self._provider_billed_tokens_out: int = 0
+        self._provider_billed_tokens_cached: int = 0
+        self._provider_billed_tokens_cache_write: int = 0
+        self._provider_billed_tokens_cache_write_5m: int = 0
+        self._provider_billed_tokens_cache_write_1h: int = 0
         # The governing AutoBudget for the CURRENT fully-auto run, if any. Set
         # by run_auto for the duration of the run and cleared afterward. When
         # present it is threaded (as a child()) into every worker/swarm spawned
@@ -3194,22 +3208,66 @@ class ConversationalSession(ToolDispatchMixin):
                 # the driver's actual number over the chars//4 heuristic.
                 if _t_in > 0:
                     self._last_prompt_tokens = _t_in
-                # Cache-read credit: all three drivers report prompt-prefix cache
-                # hits (Anthropic breakpoints / OpenAI + Gemini implicit) in
-                # meta.cache_read_tokens. Accumulate so the UI can show how much
-                # input was served near-free -- proof we are not token-hungry.
+                # Cache read/write credit: drivers report prompt-prefix cache
+                # hits (and Anthropic/Bedrock writes) in meta. Reads save; writes
+                # cost a premium -- both feed the same _session_cost formula.
                 try:
                     _meta = getattr(resp, "meta", None) or {}
                     _cache_delta = int(_meta.get("cache_read_tokens", 0) or 0)
+                    _write_delta = int(_meta.get("cache_write_tokens", 0) or 0)
+                    _write_5m = int(_meta.get("cache_write_5m_tokens", 0) or 0)
+                    _write_1h = int(_meta.get("cache_write_1h_tokens", 0) or 0)
                     self._tokens_cached += _cache_delta
+                    self._tokens_cache_write += _write_delta
+                    self._tokens_cache_write_5m += _write_5m
+                    self._tokens_cache_write_1h += _write_1h
                 except Exception:
+                    _meta = {}
                     _cache_delta = 0
+                    _write_delta = 0
+                    _write_5m = 0
+                    _write_1h = 0
                 try:
                     from pmharness.registry import resolve_price
                     _price_in, _price_out = resolve_price(self.config.driver)
                 except Exception:
                     _price_in, _price_out = 0.0, 0.0
-                _pilot_cost = (_t_in * float(_price_in) + _t_out * float(_price_out)) / 1_000_000.0
+                # Prefer provider-billed USD (OpenRouter usage.cost) when the
+                # driver surfaced it. Otherwise price this step with the same
+                # cache-aware formula /api/usage uses -- never full-price the
+                # cached slice, and bill writes at the published premium.
+                _provider_step = _meta.get("provider_cost_usd")
+                _pilot_cost = None
+                if _provider_step is not None:
+                    try:
+                        _cand = float(_provider_step)
+                        if _cand == _cand and _cand >= 0.0:
+                            _pilot_cost = _cand
+                            self._provider_cost_usd += _cand
+                            self._provider_billed_tokens_in += _t_in
+                            self._provider_billed_tokens_out += _t_out
+                            self._provider_billed_tokens_cached += _cache_delta
+                            self._provider_billed_tokens_cache_write += _write_delta
+                            self._provider_billed_tokens_cache_write_5m += _write_5m
+                            self._provider_billed_tokens_cache_write_1h += _write_1h
+                    except (TypeError, ValueError):
+                        _pilot_cost = None
+                if _pilot_cost is None:
+                    try:
+                        from harness.server import _session_cost
+                        _pilot_cost = float(
+                            _session_cost(
+                                _t_in, _t_out, _cache_delta, _price_in, _price_out,
+                                cache_write=_write_delta,
+                                cache_write_5m=_write_5m,
+                                cache_write_1h=_write_1h,
+                            )
+                        )
+                    except Exception:
+                        _pilot_cost = (
+                            (_t_in * float(_price_in) + _t_out * float(_price_out))
+                            / 1_000_000.0
+                        )
                 self._accumulate_session_meters(
                     input_tokens=_t_in,
                     output_tokens=_t_out,
