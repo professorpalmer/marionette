@@ -449,3 +449,44 @@ export function turnHasLiveInvestigation(items: TurnItem[]): boolean {
   }
   return false;
 }
+
+/** Hermes StreamStall: seconds of no transcript growth while still busy. */
+export const STREAM_STALL_MS = 2000;
+
+/**
+ * Cheap activity signal for stall detection. Changes when tools/thinking/text
+ * grow; stable during a long quiet run_command so the stall cue can reappear.
+ */
+export function streamActivityKey(items: TurnItem[], status: BusyStatus): string {
+  let cards = 0;
+  let running = 0;
+  let thinkLen = 0;
+  let msgLen = 0;
+  for (const it of items) {
+    if (it.kind === "card") {
+      cards += 1;
+      if ((it as { card: TurnCard }).card?.running) running += 1;
+    } else if (it.kind === "thinking") {
+      thinkLen += String((it as { text?: string }).text || "").length;
+    } else if (it.kind === "msg") {
+      const msg = (it as { msg: { role: string; text?: string } }).msg;
+      if (msg.role === "assistant") msgLen += (msg.text || "").length;
+    } else if (it.kind === "tool_prep") {
+      cards += 1;
+      running += 1;
+    }
+  }
+  return `${status}|n${items.length}|c${cards}|r${running}|t${thinkLen}|m${msgLen}`;
+}
+
+/** True when the turn is busy and the activity key has been quiet long enough. */
+export function streamStallVisible(
+  status: BusyStatus,
+  stalled: boolean,
+  compacting: boolean,
+): boolean {
+  if (compacting || !stalled) return false;
+  return (
+    status === "thinking" || status === "executing" || status === "streaming"
+  );
+}

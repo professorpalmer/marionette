@@ -21,6 +21,9 @@ import {
   investigatingHeadline,
   shortenGoal,
   shouldShowBusyFooter,
+  STREAM_STALL_MS,
+  streamActivityKey,
+  streamStallVisible,
   toolFocusPhrase,
   toolRowLabel,
   turnHasLiveInvestigation,
@@ -511,6 +514,24 @@ export const TranscriptList = memo(function TranscriptList({
   // or when the assistant answer already looks complete despite SSE lag (T5).
   const hideBusyFooter = turnHasLiveInvestigation(items);
   const showBusyFooter = shouldShowBusyFooter(items, status) && !hideBusyFooter;
+  // Hermes StreamStall: after STREAM_STALL_MS with no transcript growth while
+  // still busy, resurface a quiet "still working" cue (covers long tool think
+  // time when the Investigating spinner is collapsed or between steps).
+  const activityKey = streamActivityKey(items, status);
+  const [stalled, setStalled] = useState(false);
+  useEffect(() => {
+    const busy =
+      status === "thinking" || status === "executing" || status === "streaming";
+    if (!busy || compactingStatus) {
+      setStalled(false);
+      return;
+    }
+    setStalled(false);
+    const id = window.setTimeout(() => setStalled(true), STREAM_STALL_MS);
+    return () => window.clearTimeout(id);
+  }, [activityKey, status, compactingStatus]);
+  const showStall = streamStallVisible(status, stalled, Boolean(compactingStatus));
+
   return (
     <>
       {hiddenCount > 0 && (
@@ -537,6 +558,17 @@ export const TranscriptList = memo(function TranscriptList({
           <Loader2 size={12} className="animate-spin text-muted shrink-0" />
           <span className="truncate font-mono text-[11.5px] tracking-tight">
             {busyProgress.label || (status === "thinking" ? "Waiting on provider…" : status === "streaming" ? "streaming..." : "running...")}
+          </span>
+        </div>
+      )}
+      {showStall && !showBusyFooter && (
+        <div
+          className="flex items-center gap-1.5 py-1 text-[12px] text-muted/90 select-none mt-1 pl-0.5 min-w-0"
+          data-testid="stream-stall"
+        >
+          <Loader2 size={12} className="animate-spin text-faint shrink-0" />
+          <span className="truncate font-mono text-[11.5px] tracking-tight">
+            Still working…
           </span>
         </div>
       )}
@@ -933,12 +965,15 @@ function nodeToText(node: any): string {
   return "";
 }
 
-/** Pull a file-ish path from a tree / listing line (`├── poll_loop.py  # note`). */
+/** Pull a file-ish path from a tree / listing line (`├── poll_loop.py:12  # note`). */
 function pathTokenInCodeLine(line: string): { before: string; path: string; after: string } | null {
-  const m = line.match(/^(.*?)((?:[\w.-]+[\\/])*[\w.-]+\.\w{1,8})(\s*(?:#.*)?)$/);
+  const m = line.match(
+    /^(.*?)((?:[\w.-]+[\\/])*[\w.-]+\.\w{1,8}(?::\d+){0,2})(\s*(?:#.*)?)$/,
+  );
   if (!m) return null;
   const path = m[2];
-  if (!looksLikePathInlineCode(path) && !looksLikePathInlineCode(path.split(/[\\/]/).pop() || "")) {
+  const bare = path.replace(/(?::\d+){1,2}$/, "");
+  if (!looksLikePathInlineCode(bare) && !looksLikePathInlineCode(bare.split(/[\\/]/).pop() || "")) {
     return null;
   }
   return { before: m[1], path, after: m[3] || "" };

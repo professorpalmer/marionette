@@ -9,6 +9,8 @@ import {
   shouldShowBusyFooter,
   toolFocusPhrase,
   toolRowLabel,
+  streamActivityKey,
+  streamStallVisible,
   turnHasLiveInvestigation,
   turnLooksAnswerComplete,
 } from "../lib/turnProgress";
@@ -305,6 +307,25 @@ describe("formatBusyElapsed", () => {
   it("formats seconds and minutes", () => {
     expect(formatBusyElapsed(4_000)).toBe("4s");
     expect(formatBusyElapsed(65_000)).toBe("1m 5s");
+  });
+});
+
+describe("streamStallVisible / streamActivityKey (Hermes stall cue)", () => {
+  it("is visible only when busy, stalled, and not compacting", () => {
+    expect(streamStallVisible("executing", true, false)).toBe(true);
+    expect(streamStallVisible("thinking", true, false)).toBe(true);
+    expect(streamStallVisible("idle", true, false)).toBe(false);
+    expect(streamStallVisible("executing", false, false)).toBe(false);
+    expect(streamStallVisible("executing", true, true)).toBe(false);
+  });
+
+  it("changes activity key when a running card appears", () => {
+    const before = streamActivityKey([msg("user", "go")], "thinking");
+    const after = streamActivityKey(
+      [msg("user", "go"), card("1", "pytest", "run_command", true)],
+      "executing",
+    );
+    expect(after).not.toBe(before);
   });
 });
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Pencil, FileText, X, Code, Share2, Image as ImageIcon, Brain } from "lucide-react";
 import { api, type Config } from "../lib/api";
 import { panelOpacityClass } from "../lib/panelTransition";
@@ -1308,10 +1308,17 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   // the bottom (which re-pins). A programmatic scroll-to-bottom lands at the
   // bottom, so it never un-pins itself, and there is no fight with the stream.
   const pinnedToBottomRef = useRef(true);
+  // Hermes session-switch settle: while true, force-glue to bottom and ignore
+  // unpin until layout height stabilizes (avoids ~10 scroll jumps on hydrate).
+  const scrollSettlingRef = useRef(false);
   useEffect(() => {
     const el = feedRef.current;
     if (!el) return;
     const onScroll = () => {
+      if (scrollSettlingRef.current) {
+        pinnedToBottomRef.current = true;
+        return;
+      }
       pinnedToBottomRef.current =
         el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     };
@@ -1319,6 +1326,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     // re-runs stick-to-bottom -- otherwise long reasoning streams keep yanking
     // the feed back to the end and the user cannot scroll the Thought block.
     const onWheel = (e: WheelEvent) => {
+      if (scrollSettlingRef.current) return;
       if (e.deltaY < 0) pinnedToBottomRef.current = false;
     };
     let touchY: number | null = null;
@@ -1328,7 +1336,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     const onTouchMove = (e: TouchEvent) => {
       const y = e.touches[0]?.clientY;
       if (touchY != null && y != null && y > touchY + 2) {
-        pinnedToBottomRef.current = false;
+        if (!scrollSettlingRef.current) pinnedToBottomRef.current = false;
       }
       touchY = y ?? touchY;
     };
@@ -1346,10 +1354,46 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   useEffect(() => {
     const el = feedRef.current;
     if (!el) return;
-    if (pinnedToBottomRef.current) {
+    if (pinnedToBottomRef.current || scrollSettlingRef.current) {
       el.scrollTo(0, el.scrollHeight);
     }
   }, [items]);
+
+  // On session switch: stop follow thrash, glue to true bottom until height is
+  // stable for ~5 frames, then re-lock stick-to-bottom (Hermes list.tsx settle).
+  useLayoutEffect(() => {
+    const el = feedRef.current;
+    if (!el || !activeSessionId) return;
+    pinnedToBottomRef.current = true;
+    scrollSettlingRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    let frame = 0;
+    let stableFrames = 0;
+    let lastHeight = el.scrollHeight;
+    let rafId = 0;
+    const settle = () => {
+      const node = feedRef.current;
+      if (!node) {
+        scrollSettlingRef.current = false;
+        return;
+      }
+      const height = node.scrollHeight;
+      stableFrames = height === lastHeight ? stableFrames + 1 : 0;
+      lastHeight = height;
+      node.scrollTop = height;
+      pinnedToBottomRef.current = true;
+      if (stableFrames >= 5 || ++frame > 90) {
+        scrollSettlingRef.current = false;
+        return;
+      }
+      rafId = requestAnimationFrame(settle);
+    };
+    rafId = requestAnimationFrame(settle);
+    return () => {
+      cancelAnimationFrame(rafId);
+      scrollSettlingRef.current = false;
+    };
+  }, [activeSessionId]);
 
   const fetchContextUsage = () => {
     if (!activeSessionId) return;
