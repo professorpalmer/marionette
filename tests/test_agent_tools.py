@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -251,3 +252,53 @@ def test_read_file_on_directory_returns_listing():
         assert ok_file is True and status_file == "success"
         assert "export" in val_file
         assert "path is a directory" not in val_file
+
+
+def test_nested_workspace_read_file_allows_git_toplevel_parent():
+    """Workspace nested under a git clone can read_file the parent README.
+
+    Writes stay confined to the open workspace; paths outside the git toplevel
+    remain path_traversal.
+    """
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as state:
+        root = os.path.realpath(tmp)
+        subprocess.run(
+            ["git", "init"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        nested = os.path.join(root, "Ashita", "addons", "kotoba")
+        os.makedirs(nested)
+        readme = os.path.join(root, "README.md")
+        with open(readme, "w", encoding="utf-8") as f:
+            f.write("# ffxiAddons parent readme\n")
+        sibling = os.path.join(root, "Ashita", "addons", "other", "note.txt")
+        os.makedirs(os.path.dirname(sibling))
+        with open(sibling, "w", encoding="utf-8") as f:
+            f.write("sibling\n")
+
+        cfg = HarnessConfig(
+            repo=os.path.realpath(nested),
+            swarm_adapter="demo",
+            state_dir=os.path.realpath(state),
+        )
+        session = ConversationalSession(cfg)
+
+        ok, status, val = session._do_read_file(_ReadAct(path=readme))
+        assert ok, f"parent README under git toplevel should be readable, got {status}: {val}"
+        assert "ffxiAddons parent readme" in val
+
+        ok_sib, status_sib, val_sib = session._do_read_file(_ReadAct(path=sibling))
+        assert ok_sib, f"sibling under git toplevel should be readable, got {status_sib}: {val_sib}"
+        assert "sibling" in val_sib
+
+        # True escape outside the git clone is still rejected.
+        outside = os.path.join(os.path.dirname(root), "escape-outside.txt")
+        bad = session._do_read_file(_ReadAct(path=outside))
+        assert bad[0] is False and bad[1] == "path_traversal"
+
+        # Writes/edits stay confined to the nested workspace (not the git root).
+        assert not is_safe_path(readme, cfg.repo)
+        assert is_safe_path(os.path.join(cfg.repo, "local.txt"), cfg.repo)

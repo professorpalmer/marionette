@@ -16,9 +16,14 @@ import {
   autolinkAgentText,
 } from "../lib/agentLinks";
 import {
+  aggregateExplorationSummary,
   deriveBusyProgress,
   investigatingHeadline,
   shortenGoal,
+  shouldShowBusyFooter,
+  toolFocusPhrase,
+  toolRowLabel,
+  turnHasLiveInvestigation,
 } from "../lib/turnProgress";
 
 export type Msg = {
@@ -473,8 +478,11 @@ export const TranscriptList = memo(function TranscriptList({
     return null;
   });
 
-  const isBusy = status === "thinking" || status === "executing" || status === "streaming";
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
+  // Hide flat busy footer while investigation rows own the status surface (T1),
+  // or when the assistant answer already looks complete despite SSE lag (T5).
+  const hideBusyFooter = turnHasLiveInvestigation(items);
+  const showBusyFooter = shouldShowBusyFooter(items, status) && !hideBusyFooter;
   return (
     <>
       {hiddenCount > 0 && (
@@ -493,14 +501,14 @@ export const TranscriptList = memo(function TranscriptList({
           <span>{compactingStatus}</span>
         </div>
       )}
-      {isBusy && !compactingStatus && (
+      {showBusyFooter && !compactingStatus && (
         <div
           className="flex items-center gap-1.5 py-1 text-[12px] text-muted select-none mt-1 pl-0.5 min-w-0"
           title={busyProgress.runningGoal || busyProgress.label}
         >
           <Loader2 size={12} className="animate-spin text-muted shrink-0" />
           <span className="truncate font-mono text-[11.5px] tracking-tight">
-            {busyProgress.label || (status === "thinking" ? "thinking..." : status === "streaming" ? "streaming..." : "running...")}
+            {busyProgress.label || (status === "thinking" ? "Waiting on provider…" : status === "streaming" ? "streaming..." : "running...")}
           </span>
         </div>
       )}
@@ -617,7 +625,7 @@ function ActivityGroup({
   const actionCount = cards.length;
   const anyRunning = cards.some((c) => c.card.running);
   const runningCard = [...cards].reverse().find((c) => c.card.running)?.card;
-  const runningKind = (runningCard?.kind || "").replace(/_/g, " ").trim();
+  const runningKind = toolFocusPhrase(runningCard?.kind || "");
   const runningGoal = shortenGoal(runningCard?.goal || "");
   const narrationMsgs = items.filter(
     (it) => it.kind === "msg" && (it as { kind: "msg"; msg: Msg }).msg.text.trim()
@@ -652,18 +660,10 @@ function ActivityGroup({
         ? thinkingItems[thinkingItems.length - 1].text.trim().split("\n", 1)[0]
         : "");
 
-  // Build a tight one-line summary of what kinds of actions ran.
-  const kindCounts: Record<string, number> = {};
-  for (const c of cards) {
-    const k = c.card.kind || "action";
-    kindCounts[k] = (kindCounts[k] || 0) + 1;
-  }
-  const kindLabel = (k: string) => k.replace(/_/g, " ");
-  const kindSummary = Object.entries(kindCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([k, n]) => `${n} ${kindLabel(k)}${n === 1 ? "" : "s"}`)
-    .join(", ");
+  // Cursor-style kind buckets ("3 files, 1 search") for Explored / Investigating.
+  const kindSummary = aggregateExplorationSummary(
+    cards.map((c) => c.card.kind || "action"),
+  );
   const stepHeadline = investigatingHeadline(
     actionCount,
     anyRunning,
@@ -745,18 +745,25 @@ function ActivityGroup({
       >
         {open ? <ChevronDown size={11} className="text-faint/70" /> : <ChevronRight size={11} className="text-faint/70" />}
         {anyRunning ? <Loader2 size={11} className="animate-spin text-faint" /> : <Share2 size={10} className="text-faint/70" />}
-        <span className="text-txt/70 font-medium tracking-tight">
-          {swarmResults.length > 0 && actionCount === 0
-            ? "Swarm"
-            : actionCount > 0 ? (anyRunning ? "Investigating" : "Investigated") : "Thought"}
-        </span>
-        <span className="text-faint truncate max-w-[46ch] normal-case" title={anyRunning ? (runningCard?.goal || stepHeadline) : undefined}>
-          {swarmResults.length > 0 && actionCount === 0
-            ? `${swarmResults.length} result${swarmResults.length === 1 ? "" : "s"}`
-            : actionCount > 0
-            ? stepHeadline
-            : narrationPreview}
-        </span>
+        {actionCount > 0 ? (
+          <span
+            className="text-txt/70 font-medium tracking-tight truncate max-w-[52ch] normal-case"
+            title={anyRunning ? (runningCard?.goal || stepHeadline) : stepHeadline}
+          >
+            {stepHeadline}
+          </span>
+        ) : (
+          <>
+            <span className="text-txt/70 font-medium tracking-tight">
+              {swarmResults.length > 0 ? "Swarm" : "Thought"}
+            </span>
+            <span className="text-faint truncate max-w-[46ch] normal-case">
+              {swarmResults.length > 0
+                ? `${swarmResults.length} result${swarmResults.length === 1 ? "" : "s"}`
+                : narrationPreview}
+            </span>
+          </>
+        )}
         {cgItems.length > 0 && (
           <span className="ml-0.5 text-faint/70">+ CodeGraph</span>
         )}
@@ -1183,7 +1190,8 @@ function Bubble({
 }
 
 function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
-  const toolName = card.kind || "swarm";
+  const toolName = toolRowLabel(card.kind || "");
+  const goalPreview = shortenGoal(card.goal || "", 56);
   const meta = getCardMeta(card);
 
   // Hermes tool-row spec: monochrome. Success is SILENT (no glyph -- the row
@@ -1244,11 +1252,11 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
                   : "Focus terminal"
               }
             >
-              {card.goal}
+              {goalPreview || card.goal}
             </span>
           ) : (
             <span className="text-faint/85 truncate max-w-[70%] font-normal" title={card.goal}>
-              {card.goal}
+              {goalPreview || card.goal}
             </span>
           )}
         </div>

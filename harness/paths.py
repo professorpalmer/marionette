@@ -17,6 +17,14 @@ via ``allow_equal`` so each call site keeps its correct, intended behavior.
 from __future__ import annotations
 
 import os
+import subprocess
+import threading
+from typing import Optional
+
+# Cache git toplevel lookups by resolved workspace path. Nested workspaces under
+# the same clone hit this on every read_file; subprocess cost is not worth repeating.
+_git_toplevel_lock = threading.Lock()
+_git_toplevel_cache: dict[str, Optional[str]] = {}
 
 
 def _resolve(path: str) -> str:
@@ -124,6 +132,44 @@ def is_git_restricted_path(rel_posix: str) -> bool:
     """
     parts = [p for p in rel_posix.replace("\\", "/").split("/") if p and p != "."]
     return ".git" in parts
+
+
+def git_toplevel(repo: str) -> Optional[str]:
+    """Return the git work-tree toplevel containing ``repo``, or None.
+
+    Uses ``git rev-parse --show-toplevel``. When the open workspace is a nested
+    subdirectory of a larger clone, callers can widen *read* roots to this
+    toplevel while keeping writes confined to ``repo``. Results are cached by
+    resolved path (including a negative cache when not inside a work tree).
+    """
+    if not repo:
+        return None
+    try:
+        key = _resolve(repo)
+    except Exception:
+        key = os.path.normpath(os.path.abspath(repo))
+    with _git_toplevel_lock:
+        if key in _git_toplevel_cache:
+            return _git_toplevel_cache[key]
+    toplevel: Optional[str] = None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", key, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if proc.returncode == 0:
+            out = (proc.stdout or "").strip()
+            if out:
+                toplevel = _resolve(out)
+    except Exception:
+        toplevel = None
+    with _git_toplevel_lock:
+        _git_toplevel_cache[key] = toplevel
+    return toplevel
 
 
 def resolve_workspace_path(repo: str, user_path: str) -> tuple[str, str]:

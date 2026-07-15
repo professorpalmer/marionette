@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, purgeSessionFromRootCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, projectSessionsEmptyState, purgeSessionFromRootCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -319,5 +319,61 @@ describe("LeftRail session list contracts", () => {
     expect(shouldOfferBackgroundStop("running", true)).toBe(false);
     expect(shouldOfferBackgroundStop("idle", false)).toBe(false);
     expect(shouldOfferBackgroundStop(undefined, false)).toBe(false);
+  });
+
+  it("browse-select does not rail-wide switch when only jobs are transitioning", () => {
+    // Selecting an already-listed project changes the jobs SWR key. That must
+    // not dim the PROJECTS rail or dispatch harness-project-switching.
+    expect(
+      isRailWideSwitching({
+        opening: false,
+        switchingSessionId: null,
+        workspaceTransitioning: false,
+        sessionsTransitioning: false,
+      }),
+    ).toBe(false);
+
+    expect(
+      isRailWideSwitching({
+        opening: true,
+        switchingSessionId: null,
+        workspaceTransitioning: false,
+        sessionsTransitioning: false,
+      }),
+    ).toBe(true);
+    expect(
+      isRailWideSwitching({
+        opening: false,
+        switchingSessionId: "sess-1",
+        workspaceTransitioning: false,
+        sessionsTransitioning: false,
+      }),
+    ).toBe(true);
+    expect(
+      isRailWideSwitching({
+        opening: false,
+        switchingSessionId: null,
+        workspaceTransitioning: true,
+        sessionsTransitioning: false,
+      }),
+    ).toBe(true);
+    expect(
+      isRailWideSwitching({
+        opening: false,
+        switchingSessionId: null,
+        workspaceTransitioning: false,
+        sessionsTransitioning: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("project session empty state is stale-while-revalidate (not jobs-gated)", () => {
+    // Ready + empty => New session CTA, even if jobs/other fetches are in flight.
+    expect(projectSessionsEmptyState(true, true)).toBe("empty");
+    expect(projectSessionsEmptyState(true, false)).toBe("empty");
+    // Not ready + selected/expanded => scoped spinner on that row only.
+    expect(projectSessionsEmptyState(false, true)).toBe("loading");
+    // Not ready + not selected => stay blank (no "No sessions" flash).
+    expect(projectSessionsEmptyState(false, false)).toBe("pending");
   });
 });

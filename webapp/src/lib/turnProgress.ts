@@ -23,7 +23,7 @@ export type TurnItem =
   | { kind: string; [key: string]: unknown };
 
 export type BusyProgress = {
-  /** Short phase word: thinking / running / streaming */
+  /** Short phase word: waiting / thinking / running / streaming */
   phase: string;
   /** Full scannable line for the transcript footer */
   label: string;
@@ -33,6 +33,135 @@ export type BusyProgress = {
   runningGoal: string;
   runningKind: string;
 };
+
+/** Cursor-style row label for a tool card (Read / Grep / Run / Query wiki). */
+export function toolRowLabel(kind: string): string {
+  const k = (kind || "").toLowerCase().replace(/-/g, "_").trim();
+  const known: Record<string, string> = {
+    read_file: "Read",
+    write_file: "Write",
+    edit_file: "Edit",
+    apply_hashline: "Edit",
+    hash_edit: "Edit",
+    grep: "Grep",
+    search: "Search",
+    glob: "Glob",
+    run_command: "Run",
+    run_terminal: "Run",
+    query_wiki: "Query wiki",
+    wiki: "Query wiki",
+    web_fetch: "Fetch",
+    codegraph_search: "Query",
+    codegraph_context: "Query",
+    codegraph: "Query",
+    view_image: "View",
+    open_project: "Open",
+    relocate_session: "Relocate",
+  };
+  if (known[k]) return known[k];
+  if (!k) return "Tool";
+  return k
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Soft focus phrase for live headlines ("run command", "read file"). */
+export function toolFocusPhrase(kind: string): string {
+  const label = toolRowLabel(kind);
+  if (!label || label === "Tool") return (kind || "").replace(/_/g, " ").trim();
+  return label.toLowerCase();
+}
+
+type ExplorationBucket =
+  | "files"
+  | "searches"
+  | "commands"
+  | "edits"
+  | "wiki"
+  | "fetches"
+  | "other";
+
+/** Bucket a tool kind into Cursor-style exploration categories. */
+export function explorationBucket(kind: string): ExplorationBucket {
+  const k = (kind || "").toLowerCase().replace(/-/g, "_").trim();
+  if (
+    k === "read_file"
+    || k === "view_image"
+    || k === "open_project"
+    || k.startsWith("read_")
+  ) {
+    return "files";
+  }
+  if (
+    k === "write_file"
+    || k === "edit_file"
+    || k === "hash_edit"
+    || k === "apply_hashline"
+    || k.startsWith("write_")
+    || k.startsWith("edit_")
+  ) {
+    return "edits";
+  }
+  if (
+    k === "grep"
+    || k === "search"
+    || k === "glob"
+    || k.includes("grep")
+    || k.includes("search")
+    || k.includes("codegraph")
+  ) {
+    return "searches";
+  }
+  if (
+    k === "run_command"
+    || k === "run_terminal"
+    || k.includes("command")
+    || k.includes("terminal")
+    || k.startsWith("run_")
+  ) {
+    return "commands";
+  }
+  if (k.includes("wiki")) return "wiki";
+  if (k.includes("fetch") || k === "web_fetch") return "fetches";
+  return "other";
+}
+
+const BUCKET_LABELS: Record<ExplorationBucket, [string, string]> = {
+  files: ["file", "files"],
+  searches: ["search", "searches"],
+  commands: ["command", "commands"],
+  edits: ["edit", "edits"],
+  wiki: ["wiki query", "wiki queries"],
+  fetches: ["fetch", "fetches"],
+  other: ["step", "steps"],
+};
+
+const BUCKET_ORDER: ExplorationBucket[] = [
+  "files",
+  "searches",
+  "commands",
+  "edits",
+  "wiki",
+  "fetches",
+  "other",
+];
+
+/** Aggregate card kinds into "3 files, 1 search" (Cursor explored summary). */
+export function aggregateExplorationSummary(kinds: string[]): string {
+  const counts: Partial<Record<ExplorationBucket, number>> = {};
+  for (const kind of kinds) {
+    const b = explorationBucket(kind);
+    counts[b] = (counts[b] || 0) + 1;
+  }
+  const parts: string[] = [];
+  for (const b of BUCKET_ORDER) {
+    const n = counts[b];
+    if (!n) continue;
+    const [one, many] = BUCKET_LABELS[b];
+    parts.push(`${n} ${n === 1 ? one : many}`);
+  }
+  return parts.join(", ");
+}
 
 /** Items after the last user message (current turn), or all if none. */
 export function itemsInCurrentTurn(items: TurnItem[]): TurnItem[] {
@@ -79,9 +208,72 @@ export function formatBusyElapsed(ms: number): string {
   return mRem ? `${hr}h ${mRem}m` : `${hr}h`;
 }
 
+function turnHasAssistantText(items: TurnItem[]): boolean {
+  for (const it of itemsInCurrentTurn(items)) {
+    if (it.kind === "msg") {
+      const msg = (it as { msg: { role: string; text?: string } }).msg;
+      if (msg.role === "assistant" && (msg.text || "").trim()) return true;
+    }
+  }
+  return false;
+}
+
+function turnHasThinking(items: TurnItem[]): boolean {
+  for (const it of itemsInCurrentTurn(items)) {
+    if (it.kind === "thinking" && String((it as { text?: string }).text || "").trim()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True when the current turn already shows a finished assistant answer and
+ * nothing is still live (tools / thinking stream / tool_prep). Used to clear
+ * busy chrome while SSE status lags on thinking/executing/streaming.
+ */
+export function turnLooksAnswerComplete(items: TurnItem[]): boolean {
+  const turn = itemsInCurrentTurn(items);
+  let lastAssistant: { text?: string; streaming?: boolean } | null = null;
+  for (const it of turn) {
+    if (it.kind === "msg") {
+      const msg = (it as { msg: { role: string; text?: string; streaming?: boolean } }).msg;
+      if (msg.role === "assistant") lastAssistant = msg;
+    }
+  }
+  if (!lastAssistant || !(lastAssistant.text || "").trim()) return false;
+  if (lastAssistant.streaming === true) return false;
+
+  for (const it of turn) {
+    if (it.kind === "card" && (it as { card: TurnCard }).card?.running) return false;
+    if (it.kind === "tool_prep") return false;
+    if (
+      it.kind === "thinking"
+      && (it as { streaming?: boolean }).streaming === true
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether the transcript busy footer should render for this status + items.
+ * False when the answer already looks complete despite a lagging busy status.
+ */
+export function shouldShowBusyFooter(items: TurnItem[], status: BusyStatus): boolean {
+  const busy =
+    status === "thinking" || status === "executing" || status === "streaming";
+  if (!busy) return false;
+  if (turnLooksAnswerComplete(items)) return false;
+  return true;
+}
+
 /**
  * Derive the live busy line from transcript cards + stream status.
  * When idle/done/error, returns empty labels (caller hides the row).
+ * Pre-token TTFT: "Waiting on provider…" until reasoning or tools start.
+ * Post-answer SSE lag: empty labels once the assistant bubble looks complete.
  */
 export function deriveBusyProgress(
   items: TurnItem[],
@@ -104,22 +296,55 @@ export function deriveBusyProgress(
     }
   }
 
+  const hasSignal =
+    cards.length > 0
+    || Boolean(toolPrep)
+    || turnHasThinking(items)
+    || turnHasAssistantText(items);
+
   let phase = "idle";
-  if (status === "thinking") phase = "thinking";
-  else if (status === "streaming") phase = "streaming";
-  else if (status === "executing" || running) phase = "running";
-  else if (busy) phase = "thinking";
+  if (status === "streaming") phase = "streaming";
+  else if (running || status === "executing") phase = "running";
+  else if (busy && !hasSignal) phase = "waiting";
+  else if (status === "thinking" || busy) phase = "thinking";
 
   const elapsed =
     busy && elapsedMs != null && elapsedMs >= 1000
       ? formatBusyElapsed(elapsedMs)
       : "";
 
+  // T5: answer already on screen — clear busy labels even if status lags.
+  if (busy && turnLooksAnswerComplete(items)) {
+    return {
+      phase: "idle",
+      label: "",
+      pill: "idle",
+      step,
+      runningGoal,
+      runningKind,
+    };
+  }
+
   if (!busy) {
     return {
       phase,
       label: "",
       pill: String(status || "idle"),
+      step,
+      runningGoal,
+      runningKind,
+    };
+  }
+
+  // T3: honesty before first token / tool — do not pretend we are "thinking".
+  if (!hasSignal) {
+    const waiting = elapsed
+      ? `Waiting on provider… · ${elapsed}`
+      : "Waiting on provider…";
+    return {
+      phase: "waiting",
+      label: waiting,
+      pill: waiting,
       step,
       runningGoal,
       runningKind,
@@ -137,8 +362,6 @@ export function deriveBusyProgress(
   if (step > 0) parts.push(`step ${step}`);
   if (elapsed) parts.push(elapsed);
 
-  // Avoid "running · goal · step N" doubling the goal when kind is empty
-  // but we already pushed goal -- handled above (kind preferred).
   const label = parts.join(" · ");
 
   const pillParts: string[] = [phase];
@@ -158,7 +381,9 @@ export function deriveBusyProgress(
 }
 
 /**
- * One-line summary for an open Investigating header while a tool is mid-flight.
+ * Cursor-style Investigating / Explored headline for the activity fold.
+ * Live: "Investigating · run command …" (or kind counts).
+ * Done: "Explored 3 files, 1 search".
  */
 export function investigatingHeadline(
   actionCount: number,
@@ -173,8 +398,26 @@ export function investigatingHeadline(
       ? runningGoal
         ? `${runningKind} ${runningGoal}`
         : runningKind
-      : runningGoal || "tool";
-    return `step ${actionCount} · ${focus}`;
+      : runningGoal || "";
+    if (focus) return `Investigating · ${focus}`;
+    if (kindSummary) return `Investigating · ${kindSummary}`;
+    return "Investigating…";
   }
-  return `${actionCount} step${actionCount === 1 ? "" : "s"}${kindSummary ? ` -- ${kindSummary}` : ""}`;
+  if (kindSummary) return `Explored ${kindSummary}`;
+  return `Explored ${actionCount} step${actionCount === 1 ? "" : "s"}`;
+}
+
+/** True when the current turn's activity fold is actively investigating. */
+export function turnHasLiveInvestigation(items: TurnItem[]): boolean {
+  for (const it of itemsInCurrentTurn(items)) {
+    if (it.kind === "card" && (it as { card: TurnCard }).card?.running) return true;
+    if (
+      it.kind === "thinking"
+      && (it as { streaming?: boolean; text?: string }).streaming
+      && String((it as { text?: string }).text || "").trim()
+    ) {
+      return true;
+    }
+  }
+  return false;
 }

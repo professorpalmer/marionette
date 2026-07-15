@@ -364,7 +364,9 @@ def build_tools_schema(
     from .hash_edit import hash_edit_enabled as _hash_edit_on
     read_desc = (
         "Read a file's contents. For large files, use start_line and limit. "
-        "Prefer search_codegraph/search_files to explore code structure."
+        "Prefer search_codegraph/search_files to explore code structure. "
+        "When the workspace is nested under a larger git root, read_file may "
+        "read anywhere under that git toplevel (prefer that over shell cd/type)."
     )
     if _hash_edit_on():
         read_desc += (
@@ -1394,7 +1396,7 @@ PILOT_SYSTEM = """You are the pilot of a Puppetmaster-orchestrated coding harnes
 You talk directly with the user like a senior engineer pairing with them.
 
 You have direct access to a local CodeGraph-indexed workspace and can explore/edit it using these real actions:
-- `read_file`: read a file's contents from the workspace. Requires `path`, with optional `start_line` and `limit` for large files.
+- `read_file`: read a file's contents from the workspace (and, when nested, anywhere under the git toplevel — prefer that over shell `cd`/`type`). Requires `path`, with optional `start_line` and `limit` for large files.
 - `edit_file`: make a targeted edit to an existing file by replacing an exact substring. Requires `path`, `old_str`, and `new_str`. STRONGLY PREFERRED over write_file for editing existing files.
 - `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
 - `run_command`: run a terminal shell command. Requires `command`.

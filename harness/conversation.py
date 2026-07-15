@@ -38,7 +38,7 @@ from dataclasses import dataclass, field, replace as _dc_replace
 from typing import Iterator, Optional, Any
 
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd
-from .paths import path_within
+from .paths import git_toplevel, path_within
 
 from pmharness import registry as reg
 from . import providers as prov
@@ -143,10 +143,13 @@ def _is_stub_tool_result(msg: dict) -> bool:
 
 def _clamp_tool_result(text: str, max_chars: Optional[int] = None) -> str:
     if max_chars is None:
+        # Slightly tighter than the old 24k default so nested-repo scan dumps
+        # (list_dir / shell type / large reads) hit spill sooner; env override
+        # and context_budget's 8k default still win when set / used elsewhere.
         try:
-            max_chars = int(os.environ.get("HARNESS_MAX_TOOL_RESULT_CHARS", "24000"))
+            max_chars = int(os.environ.get("HARNESS_MAX_TOOL_RESULT_CHARS", "16000"))
         except ValueError:
-            max_chars = 24000
+            max_chars = 16000
     if len(text) <= max_chars:
         return text
     head_len = max_chars // 2
@@ -2053,17 +2056,29 @@ class ConversationalSession(ToolDispatchMixin):
                 pass
 
     def _read_allowed_roots(self) -> list:
-        """Roots read_file may read from: the open workspace, plus the app's own
+        """Roots read_file may read from: the open workspace, its git toplevel
+        when the workspace is nested inside a larger clone, plus the app's own
         results-spill dir. Oversized tool outputs (a big web_fetch, a long
         command) are persisted to {state_dir}/pmharness-results/<id>.txt and the
         model is explicitly told to read them back with read_file. That dir lives
         outside the workspace (a temp pilot-XXXX dir when no state_dir is set), so
         without whitelisting it every such read was rejected as path traversal --
         the pilot was told to read a file it was then refused, and stranded. Only
-        reads get this extra root; writes/edits stay workspace-confined."""
+        reads get these extra roots; writes/edits stay workspace-confined."""
         roots = []
         if self.config.repo:
             roots.append(self.config.repo)
+            try:
+                toplevel = git_toplevel(self.config.repo)
+            except Exception:
+                toplevel = None
+            if toplevel and not any(
+                path_within(toplevel, root, allow_equal=True) for root in roots
+            ):
+                # Workspace is a subdirectory of the clone (e.g. addon under a
+                # monorepo). Allow reading siblings / parent README under the
+                # git root; true escapes outside toplevel + spill still fail.
+                roots.append(toplevel)
         try:
             spill_root = os.path.join(
                 os.path.abspath(self._state_dir_or_tempdir), "pmharness-results"

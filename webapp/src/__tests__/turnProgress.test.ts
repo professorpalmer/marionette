@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  aggregateExplorationSummary,
   deriveBusyProgress,
   formatBusyElapsed,
   investigatingHeadline,
   itemsInCurrentTurn,
   shortenGoal,
+  shouldShowBusyFooter,
+  toolFocusPhrase,
+  toolRowLabel,
+  turnHasLiveInvestigation,
+  turnLooksAnswerComplete,
 } from "../lib/turnProgress";
 import {
+  clearToolPrepPlaceholders,
   deduplicateAssistantNarration,
+  upsertToolPrep,
 } from "../components/Conversation";
 import type { Item } from "../components/TranscriptList";
 
@@ -55,6 +63,44 @@ describe("deriveBusyProgress", () => {
     expect(p.pill).toContain("read file");
   });
 
+  it("says Waiting on provider before first token or tool (T3)", () => {
+    const items: Item[] = [msg("user", "diagnose")];
+    const p = deriveBusyProgress(items, "thinking", 8_000);
+    expect(p.phase).toBe("waiting");
+    expect(p.label).toBe("Waiting on provider… · 8s");
+    expect(p.pill).toBe("Waiting on provider… · 8s");
+    expect(p.label.toLowerCase()).not.toContain("thinking");
+  });
+
+  it("omits elapsed under 1s while waiting on provider", () => {
+    const p = deriveBusyProgress([msg("user", "hi")], "thinking", 400);
+    expect(p.label).toBe("Waiting on provider…");
+  });
+
+  it("uses thinking once reasoning tokens arrive", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      { kind: "thinking", text: "Let me check", streaming: true },
+    ];
+    const p = deriveBusyProgress(items, "thinking", 3_000);
+    expect(p.phase).toBe("thinking");
+    expect(p.label).toContain("thinking");
+    expect(p.label).not.toContain("Waiting on provider");
+  });
+
+  it("clears busy labels when answer is complete despite lagging status (T5)", () => {
+    const items: Item[] = [
+      msg("user", "diagnose"),
+      card("1", "a.ts", "read_file", false),
+      msg("assistant", "Here is the fix."),
+    ];
+    const p = deriveBusyProgress(items, "thinking", 20_000);
+    expect(p.phase).toBe("idle");
+    expect(p.label).toBe("");
+    expect(p.pill).toBe("idle");
+    expect(p.label.toLowerCase()).not.toContain("thinking");
+  });
+
   it("includes thinking and tool_prep kinds in the current turn", () => {
     const items: Item[] = [
       msg("user", "go"),
@@ -70,15 +116,172 @@ describe("deriveBusyProgress", () => {
   });
 });
 
-describe("investigatingHeadline / shortenGoal", () => {
-  it("shows current tool while investigating", () => {
+describe("investigatingHeadline / exploration summary", () => {
+  it("shows Investigating focus while tools run", () => {
     expect(
-      investigatingHeadline(3, true, "read file", "config.txt", "3 reads"),
-    ).toBe("step 3 · read file config.txt");
+      investigatingHeadline(3, true, "read", "config.txt", "3 files"),
+    ).toBe("Investigating · read config.txt");
+  });
+
+  it("falls back to kind counts while live without a focus tool", () => {
+    expect(
+      investigatingHeadline(3, true, "", "", "2 files, 1 search"),
+    ).toBe("Investigating · 2 files, 1 search");
+  });
+
+  it("aggregates Explored summary when done", () => {
+    expect(
+      investigatingHeadline(4, false, "", "", "3 files, 1 search"),
+    ).toBe("Explored 3 files, 1 search");
+  });
+
+  it("buckets kinds Cursor-style", () => {
+    expect(
+      aggregateExplorationSummary([
+        "read_file",
+        "read_file",
+        "read_file",
+        "grep",
+        "run_command",
+      ]),
+    ).toBe("3 files, 1 search, 1 command");
+  });
+
+  it("maps tool kinds to row labels", () => {
+    expect(toolRowLabel("read_file")).toBe("Read");
+    expect(toolRowLabel("grep")).toBe("Grep");
+    expect(toolRowLabel("run_command")).toBe("Run");
+    expect(toolRowLabel("query_wiki")).toBe("Query wiki");
+    expect(toolFocusPhrase("run_command")).toBe("run");
   });
 
   it("shortens path tails", () => {
     expect(shortenGoal("a/b/c/very-long-name-that-exceeds-limit.lua", 20).endsWith("…")).toBe(true);
+  });
+});
+
+describe("turnHasLiveInvestigation", () => {
+  it("is true while a card is running", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      card("1", "a.ts", "read_file", true),
+    ];
+    expect(turnHasLiveInvestigation(items)).toBe(true);
+  });
+
+  it("is true while thinking streams", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      { kind: "thinking", text: "hmm", streaming: true },
+    ];
+    expect(turnHasLiveInvestigation(items)).toBe(true);
+  });
+
+  it("is false when tools finished", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      card("1", "a.ts", "read_file", false),
+    ];
+    expect(turnHasLiveInvestigation(items)).toBe(false);
+  });
+});
+
+describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
+  it("is true when last assistant text is done and nothing is live", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      card("1", "a.ts", "read_file", false),
+      { kind: "thinking", text: "done thinking", streaming: false },
+      msg("assistant", "Final answer."),
+    ];
+    expect(turnLooksAnswerComplete(items)).toBe(true);
+    expect(shouldShowBusyFooter(items, "thinking")).toBe(false);
+    expect(shouldShowBusyFooter(items, "executing")).toBe(false);
+    expect(shouldShowBusyFooter(items, "streaming")).toBe(false);
+  });
+
+  it("is false while the assistant bubble is still streaming", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      msg("assistant", "partial…", true),
+    ];
+    expect(turnLooksAnswerComplete(items)).toBe(false);
+    expect(shouldShowBusyFooter(items, "streaming")).toBe(true);
+  });
+
+  it("is false while a card is running", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      msg("assistant", "Working on it."),
+      card("1", "a.ts", "read_file", true),
+    ];
+    expect(turnLooksAnswerComplete(items)).toBe(false);
+    expect(shouldShowBusyFooter(items, "executing")).toBe(true);
+  });
+
+  it("is false while thinking is streaming", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      msg("assistant", "Earlier note."),
+      { kind: "thinking", text: "more", streaming: true },
+    ];
+    expect(turnLooksAnswerComplete(items)).toBe(false);
+    expect(shouldShowBusyFooter(items, "thinking")).toBe(true);
+  });
+
+  it("is false while tool_prep is active", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      msg("assistant", "Next I will grep."),
+      { kind: "tool_prep", name: "grep" },
+    ];
+    expect(turnLooksAnswerComplete(items)).toBe(false);
+    expect(shouldShowBusyFooter(items, "thinking")).toBe(true);
+  });
+
+  it("is false with no assistant text yet (T3 waiting still shows)", () => {
+    const items: Item[] = [msg("user", "go")];
+    expect(turnLooksAnswerComplete(items)).toBe(false);
+    expect(shouldShowBusyFooter(items, "thinking")).toBe(true);
+  });
+
+  it("returns false for shouldShowBusyFooter when status is idle", () => {
+    const items: Item[] = [msg("user", "go"), msg("assistant", "done")];
+    expect(shouldShowBusyFooter(items, "idle")).toBe(false);
+  });
+});
+
+describe("upsertToolPrep promotes into ActivityGroup cards", () => {
+  it("adds a provisional running card as soon as tool_prep arrives", () => {
+    const items: Item[] = [msg("user", "diagnose")];
+    const out = upsertToolPrep(items, "run_command");
+    const cards = out.filter((i) => i.kind === "card") as Extract<Item, { kind: "card" }>[];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].card.id).toBe("tool-prep:run_command");
+    expect(cards[0].card.running).toBe(true);
+    expect(cards[0].card.kind).toBe("run_command");
+    expect(out.some((i) => i.kind === "tool_prep")).toBe(true);
+    expect(turnHasLiveInvestigation(out)).toBe(true);
+  });
+
+  it("replaces a prior prep card when the next tool_prep arrives", () => {
+    const once = upsertToolPrep([msg("user", "go")], "read_file");
+    const twice = upsertToolPrep(once, "grep");
+    const cards = twice.filter((i) => i.kind === "card") as Extract<Item, { kind: "card" }>[];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].card.id).toBe("tool-prep:grep");
+  });
+
+  it("clears prep placeholders before a real action_start card", () => {
+    const prepped = upsertToolPrep([msg("user", "go")], "read_file");
+    const cleared = clearToolPrepPlaceholders(prepped);
+    expect(cleared.some((i) => i.kind === "tool_prep")).toBe(false);
+    expect(cleared.some((i) => i.kind === "card")).toBe(false);
+    const withReal = [
+      ...cleared,
+      card("real-1", "src/a.ts", "read_file", true),
+    ];
+    expect(withReal.filter((i) => i.kind === "card")).toHaveLength(1);
   });
 });
 

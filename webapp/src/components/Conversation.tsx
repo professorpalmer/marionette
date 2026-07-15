@@ -7,7 +7,7 @@ import PilotPicker from "./PilotPicker";
 import { pickFolder, revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../lib/transport";
 import FileEditorPane from "./FileEditorPane";
 import { TranscriptList, type Item, type Msg, type Card } from "./TranscriptList";
-import { deriveBusyProgress } from "../lib/turnProgress";
+import { deriveBusyProgress, turnLooksAnswerComplete } from "../lib/turnProgress";
 import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
 
 /**
@@ -301,18 +301,57 @@ function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
   return [...items, { kind: "thinking", text: chunk, streaming: true }];
 }
 
-/** Replace or append the latest tool_prep hint for the current turn. */
-function upsertToolPrep(items: Item[], name: string): Item[] {
+/** Replace or append a provisional running card for tool_prep so ActivityGroup
+ * appears as soon as tools start assembling -- not only after action_start. */
+export function upsertToolPrep(items: Item[], name: string): Item[] {
+  const prepId = `tool-prep:${name}`;
+  const card = {
+    id: prepId,
+    goal: name.replace(/_/g, " "),
+    cwd: null as string | null,
+    kind: name,
+    running: true,
+    open: false,
+  };
+  let lastUser = -1;
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
-    if (it.kind === "msg" && it.msg.role === "user") break;
-    if (it.kind === "tool_prep") {
-      const copy = items.slice();
-      copy[i] = { kind: "tool_prep", name };
-      return copy;
+    if (it.kind === "msg" && it.msg.role === "user") {
+      lastUser = i;
+      break;
     }
   }
-  return [...items, { kind: "tool_prep", name }];
+  const turnStart = lastUser + 1;
+  // Drop prior tool_prep footer hints and stale prep cards in this turn, then
+  // append one provisional card (keeps ActivityGroup + busy helpers in sync).
+  const next = items.filter((it, i) => {
+    if (i < turnStart) return true;
+    if (it.kind === "tool_prep") return false;
+    if (
+      it.kind === "card"
+      && typeof it.card.id === "string"
+      && it.card.id.startsWith("tool-prep:")
+    ) {
+      return false;
+    }
+    return true;
+  });
+  return [...next, { kind: "card" as const, card }, { kind: "tool_prep" as const, name }];
+}
+
+/** Strip provisional tool-prep cards (and footer hints) before a real action_start. */
+export function clearToolPrepPlaceholders(items: Item[]): Item[] {
+  return items.filter((it) => {
+    if (it.kind === "tool_prep") return false;
+    if (
+      it.kind === "card"
+      && typeof it.card.id === "string"
+      && it.card.id.startsWith("tool-prep:")
+    ) {
+      return false;
+    }
+    return true;
+  });
 }
 
 /**
@@ -732,6 +771,10 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   }, [busyStartedAt]);
   const busyElapsedMs = busyStartedAt != null ? Math.max(0, busyNow - busyStartedAt) : null;
   const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
+  // T5: answer already painted — treat chrome as idle while SSE status lags.
+  const answerChromeIdle =
+    turnLooksAnswerComplete(items)
+    && (status === "thinking" || status === "executing" || status === "streaming");
   // True while visible items belong to a prior session (or are awaiting hydrate).
   // Dims the feed and blocks send so stale A is never treated as B.
   const [transcriptStale, setTranscriptStale] = useState(false);
@@ -2451,7 +2494,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setCompactingStatus(null);
         setStatus("executing");
         setItems((p) => {
-          const base = finalizeStreamingThinking(p);
+          const base = clearToolPrepPlaceholders(finalizeStreamingThinking(p));
           // Idempotent: a late/replayed action_start with the same id must not
           // stack another card (session-switch SSE race → infinite Investigated).
           if (base.some((it) => it.kind === "card" && it.card.id === d.id)) return base;
@@ -3027,8 +3070,12 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         </span>
         <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
           <StatusPill
-            status={transcriptStale ? "switching…" : status}
-            detail={!transcriptStale && busyProgress.label ? busyProgress.pill : undefined}
+            status={transcriptStale ? "switching…" : answerChromeIdle ? "idle" : status}
+            detail={
+              !transcriptStale && !answerChromeIdle && busyProgress.label
+                ? busyProgress.pill
+                : undefined
+            }
           />
         </div>
       </header>

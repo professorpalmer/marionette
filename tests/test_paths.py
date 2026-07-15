@@ -6,15 +6,27 @@ checks that disagreed on whether the parent dir is "inside" itself. is_safe_path
 delegate to path_within, so the difference is one explicit flag, not a fork.
 """
 import os
+import subprocess
 import tempfile
 
 from harness.paths import (
+    git_toplevel,
     is_git_restricted_path,
     path_within,
     resolve_workspace_path,
 )
 from harness.conversation import is_safe_path
 from harness.worktrees import _is_confined
+
+
+def _git_init(repo: str) -> None:
+    subprocess.run(
+        ["git", "init"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_path_within_boundary_semantics():
@@ -124,3 +136,51 @@ def test_is_git_restricted_path():
     assert is_git_restricted_path(".gitignore") is False
     assert is_git_restricted_path(".github/workflows/ci.yml") is False
     assert is_git_restricted_path("src/file.py") is False
+
+
+def test_git_toplevel_none_outside_work_tree():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.realpath(tmp)
+        assert git_toplevel(root) is None
+        assert git_toplevel("") is None
+
+
+def test_git_toplevel_nested_workspace():
+    """Nested workspace under a clone reports the clone root (Windows casing ok)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.realpath(tmp)
+        _git_init(root)
+        nested = os.path.join(root, "Ashita", "addons", "kotoba")
+        os.makedirs(nested)
+
+        top = git_toplevel(nested)
+        assert top is not None
+        assert os.path.normcase(top) == os.path.normcase(root)
+
+        # Same answer from the toplevel itself; cache must stay consistent.
+        assert os.path.normcase(git_toplevel(root) or "") == os.path.normcase(root)
+
+        # Forward-slash form (agent-reported Windows paths) still resolves.
+        fwd = nested.replace("\\", "/")
+        top_fwd = git_toplevel(fwd)
+        assert top_fwd is not None
+        assert os.path.normcase(top_fwd) == os.path.normcase(root)
+
+
+def test_nested_read_allow_via_path_within():
+    """Parent README under the same git root is inside the toplevel root."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.realpath(tmp)
+        _git_init(root)
+        nested = os.path.join(root, "sub", "ws")
+        os.makedirs(nested)
+        readme = os.path.join(root, "README.md")
+        with open(readme, "w", encoding="utf-8") as f:
+            f.write("# parent\n")
+
+        top = git_toplevel(nested)
+        assert top is not None
+        assert path_within(readme, top, allow_equal=True) is True
+        assert path_within(readme, nested, allow_equal=True) is False
+        outside = os.path.realpath(os.path.join(root, "..", "escape-outside.txt"))
+        assert path_within(outside, top, allow_equal=True) is False

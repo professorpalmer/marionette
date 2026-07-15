@@ -214,7 +214,9 @@ class ToolDispatchMixin:
         else:
             if not os.path.isabs(target_path):
                 target_path = os.path.join(self.config.repo, target_path)
-        if not is_safe_path(target_path, self.config.repo):
+        # Same read roots as read_file (workspace + git toplevel + spill).
+        # Writes/edits stay confined to config.repo only.
+        if not any(is_safe_path(target_path, root) for root in self._read_allowed_roots()):
             return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
         try:
             if not os.path.exists(target_path):

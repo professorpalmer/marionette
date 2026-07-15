@@ -122,6 +122,38 @@ export function shouldOfferBackgroundStop(
   return status === "running" && !isActive;
 }
 
+/**
+ * Rail-wide dim / project-switching signal. Browse-selecting an already-listed
+ * project must not trip this — jobs SWR key changes on select and used to flash
+ * the whole PROJECTS tree. Only real open/switch/session activation dims the rail.
+ */
+export function isRailWideSwitching(flags: {
+  opening: boolean;
+  switchingSessionId: string | null;
+  workspaceTransitioning: boolean;
+  sessionsTransitioning: boolean;
+}): boolean {
+  return (
+    flags.opening
+    || !!flags.switchingSessionId
+    || flags.workspaceTransitioning
+    || flags.sessionsTransitioning
+  );
+}
+
+/**
+ * Per-project empty-state: spinner only until that root's sessions resolve.
+ * Never gate on rail-wide / jobs transitioning (that hid the New session CTA
+ * and blinked "Loading sessions..." on first expand of a listed project).
+ */
+export function projectSessionsEmptyState(
+  sessionsReady: boolean,
+  showRowLoading: boolean,
+): "loading" | "pending" | "empty" {
+  if (sessionsReady) return "empty";
+  return showRowLoading ? "loading" : "pending";
+}
+
 export default function LeftRail({ jobsRefresh, onSessionChange }: {
   jobsRefresh: number;
   onSessionChange?: (id: string) => void;
@@ -427,10 +459,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     { enabled: !!selectedProjectPath },
   );
 
-  // Dim only on real transitions (key change / first load), never on background
-  // polls of already-current data -- polling dims read as UI "blinking".
-  const panelSwitching =
-    opening || !!switchingSessionId || workspaceTransitioning || sessionsTransitioning || jobsTransitioning;
+  // Dim only on real workspace/session activation — never on jobs fetch that
+  // follows browse-select of an already-listed project (that was the PROJECTS blink).
+  const panelSwitching = isRailWideSwitching({
+    opening,
+    switchingSessionId,
+    workspaceTransitioning,
+    sessionsTransitioning,
+  });
 
   useEffect(() => {
     dispatchProjectSwitching(panelSwitching);
@@ -1250,7 +1286,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             const cgLabel = cgStatus ? codegraphBadgeLabel(cgStatus) : "";
             const showCgBadge = !!cgLabel && (isCurrentActive || isSelected);
             const sessionsReady = sessionsResolvedFor(projectPath);
-            
+            const sessionsEmptyState = projectSessionsEmptyState(sessionsReady, isSelected);
+
             return (
               <div
                 key={projectPath}
@@ -1318,21 +1355,18 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   )}
                 </div>
 
-                {/* Sessions (Expandable inline) */}
+                {/* Sessions (Expandable inline) — stale-while-revalidate: keep
+                    gold selection + expansion; fill rows when cache arrives.
+                    Scoped loading on this row only (not rail-wide dim). */}
                 {isExpanded && (
-                  <div className={`pl-4 pr-1 pb-1.5 space-y-0.5 border-l border-edge/30 ml-3.5 mt-0.5 min-w-0 overflow-hidden ${panelOpacityClass(panelSwitching && isSelected)}`}>
+                  <div className={`pl-4 pr-1 pb-1.5 space-y-0.5 border-l border-edge/30 ml-3.5 mt-0.5 min-w-0 overflow-hidden ${panelOpacityClass(!sessionsReady && isSelected)}`}>
                     {projectSessions.length === 0 ? (
-                      !sessionsReady || (panelSwitching && isSelected) ? (
-                        // Never flash "No sessions" before the per-root fetch
-                        // resolves -- show nothing (or a spinner while the
-                        // selected row is mid-transition).
-                        panelSwitching && isSelected ? (
-                          <div className="text-[11px] text-faint italic px-2 py-1 flex items-center gap-1.5">
-                            <Loader2 size={10} className="animate-spin shrink-0" />
-                            Loading sessions...
-                          </div>
-                        ) : null
-                      ) : (
+                      sessionsEmptyState === "loading" ? (
+                        <div className="text-[11px] text-faint italic px-2 py-1 flex items-center gap-1.5">
+                          <Loader2 size={10} className="animate-spin shrink-0" />
+                          Loading sessions...
+                        </div>
+                      ) : sessionsEmptyState === "pending" ? null : (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -1541,7 +1575,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           session doesn't swallow the left rail. Vertically resizable via the
           grab handle above the header. */}
       <div
-        className={`px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col ${panelOpacityClass(panelSwitching, jobsStale)}`}
+        className={`px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col ${panelOpacityClass(panelSwitching || jobsTransitioning, jobsStale)}`}
         style={sessionJobsCollapsed ? undefined : { height: sessionJobsHeight }}
       >
         {!sessionJobsCollapsed && (
