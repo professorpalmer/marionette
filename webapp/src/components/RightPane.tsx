@@ -12,6 +12,7 @@ import DiffReviewPane from "./DiffReviewPane";
 import SwarmPane from "./SwarmPane";
 import ErrorBoundary from "./ErrorBoundary";
 import { api, type PendingReview } from "../lib/api";
+import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
 
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm";
@@ -164,6 +165,21 @@ export default function RightPane({ artifacts, onOpenWizard }: {
   });
 
   const [reviews, setReviews] = useState<PendingReview[]>([]);
+  // Live swarm activity for the Swarm tab light -- so a running job is visible
+  // even when the tracker tab itself is not open.
+  const [swarmRunning, setSwarmRunning] = useState(0);
+  const [swarmRepo, setSwarmRepo] = useState<string | undefined>(
+    () => lastSelectedProjectRoot() || undefined,
+  );
+
+  useEffect(() => {
+    const onProject = (e: Event) => {
+      const path = (e as CustomEvent<string>).detail;
+      if (typeof path === "string") setSwarmRepo(path || undefined);
+    };
+    window.addEventListener("harness-project-selected", onProject);
+    return () => window.removeEventListener("harness-project-selected", onProject);
+  }, []);
 
   const fetchReviews = () => {
     return api.getReviews()
@@ -175,7 +191,23 @@ export default function RightPane({ artifacts, onOpenWizard }: {
       .catch((err) => console.error("Failed to load reviews:", err));
   };
 
+  const fetchSwarmActivity = () => {
+    return api.swarmLive(swarmRepo)
+      .then((data) => {
+        const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
+        const n = jobs.filter((j) => {
+          const s = (j.status || "").toLowerCase();
+          return s.includes("run") || s.includes("progress") || s.includes("active");
+        }).length;
+        setSwarmRunning(n);
+      })
+      .catch(() => {
+        /* keep last known; tab light is best-effort */
+      });
+  };
+
   usePolling(fetchReviews, 4000);
+  usePolling(fetchSwarmActivity, 4000);
 
   const updateSplitState = (updater: Partial<SplitState> | ((prev: SplitState) => SplitState)) => {
     setSplitState(prev => {
@@ -386,6 +418,8 @@ export default function RightPane({ artifacts, onOpenWizard }: {
                     onDragEnd={handleDragEnd}
                     className={draggedTab === tabName ? "opacity-30" : ""}
                     badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
+                    live={tabName === "swarm" && swarmRunning > 0}
+                    liveTitle={swarmRunning > 0 ? `${swarmRunning} swarm job${swarmRunning === 1 ? "" : "s"} running` : undefined}
                   />
                 </Fragment>
               );
@@ -477,6 +511,8 @@ export default function RightPane({ artifacts, onOpenWizard }: {
                       onDragEnd={handleDragEnd}
                       className={draggedTab === tabName ? "opacity-30" : ""}
                       badge={tabName === "review" && reviews.length > 0 ? reviews.length : undefined}
+                      live={tabName === "swarm" && swarmRunning > 0}
+                      liveTitle={swarmRunning > 0 ? `${swarmRunning} swarm job${swarmRunning === 1 ? "" : "s"} running` : undefined}
                     />
                   </Fragment>
                 );
@@ -521,7 +557,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
   );
 }
 
-function TabBtn({ active, onClick, icon, label, showLabel, draggable, onDragStart, onDragOver, onDragEnd, className, badge }: {
+function TabBtn({ active, onClick, icon, label, showLabel, draggable, onDragStart, onDragOver, onDragEnd, className, badge, live, liveTitle }: {
   active: boolean;
   onClick: () => void;
   icon: React.ReactNode;
@@ -533,6 +569,9 @@ function TabBtn({ active, onClick, icon, label, showLabel, draggable, onDragStar
   onDragEnd?: (e: React.DragEvent) => void;
   className?: string;
   badge?: number;
+  /** Pulsing activity light (e.g. Swarm running) -- distinct from a count badge. */
+  live?: boolean;
+  liveTitle?: string;
 }) {
   const btnRef = useRef<HTMLButtonElement | null>(null);
 
@@ -542,11 +581,14 @@ function TabBtn({ active, onClick, icon, label, showLabel, draggable, onDragStar
     }
   }, [active]);
 
+  const tip = live && liveTitle ? `${label} — ${liveTitle}` : label;
+
   return (
     <button
       ref={btnRef}
       onClick={onClick}
-      title={label}
+      title={tip}
+      aria-label={tip}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
@@ -560,6 +602,12 @@ function TabBtn({ active, onClick, icon, label, showLabel, draggable, onDragStar
           <span className="absolute -top-1.5 -right-1.5 bg-accent text-panel text-[8px] font-bold h-3.5 w-3.5 flex items-center justify-center rounded-full border border-panel">
             {badge}
           </span>
+        )}
+        {live && badge === undefined && (
+          <span
+            className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
+            aria-hidden
+          />
         )}
       </span>
       {showLabel && <span className="text-[10px] tracking-wider select-none">{label}</span>}

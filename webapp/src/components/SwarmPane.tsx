@@ -1123,7 +1123,16 @@ export default function SwarmPane() {
           aggregate counts, so it reads as a dashboard even at rest. */}
       <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-edge/60 select-none">
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
-          <Network size={11} className="text-faint/70" />
+          <span className="relative inline-flex">
+            <Network size={11} className={anyRunning ? "text-accent" : "text-faint/70"} />
+            {anyRunning ? (
+              <span
+                className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
+                title={`${runningCount} running`}
+                aria-hidden
+              />
+            ) : null}
+          </span>
           <span>Swarm Tracker</span>
           {isShowingStale && !isTransitioning && (
             <span className="text-[9px] normal-case tracking-normal text-faint/70 italic">refreshing…</span>
