@@ -307,7 +307,9 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                 title={
                   usage.cost_source === "provider"
                     ? "Process-wide billed spend since app launch (provider usage.cost) -- click for the full cost breakdown"
-                    : "Process-wide estimated spend since app launch -- click for the full cost breakdown (Swarm pane shows per-repo session spend)"
+                    : usage.cost_source === "plan_estimated"
+                      ? "Process-wide plan-credit estimate since app launch (subscription pilots; not an API receipt) -- click for the full cost breakdown"
+                      : "Process-wide estimated spend since app launch -- click for the full cost breakdown (Swarm pane shows per-repo session spend)"
                 }
                 className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-good/40 hover:text-good transition cursor-pointer"
               >

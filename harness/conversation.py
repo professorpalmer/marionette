@@ -328,6 +328,29 @@ from .state import DurableState
 _HARD_PILOT_STEPS_DEFAULT = 40  # safety cap on pilot<->swarm round-trips per user message
 
 
+def _driver_is_plan_billing(driver_spec: str) -> bool:
+    """True when the pilot burns a subscription (not a metered API key)."""
+    prov = (driver_spec or "").split(":", 1)[0].strip().lower()
+    return prov in ("cursor-cli", "cursor-agent", "openai-codex", "xai-oauth", "nous")
+
+
+def _friendly_pilot_model_name(model_id: str) -> str:
+    """Human label for common OpenAI family ids (Luna / Sol / Terra, …)."""
+    import re
+    mid = (model_id or "").strip()
+    if not mid:
+        return ""
+    m = re.match(
+        r"^(?:openai/)?gpt-(\d+(?:\.\d+)?)-(sol|terra|luna)(-pro)?(?:-|$)",
+        mid,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        ver, family, pro = m.group(1), m.group(2).title(), (" Pro" if m.group(3) else "")
+        return f"{family} {ver}{pro}"
+    return ""
+
+
 def _hard_pilot_steps() -> int:
     """Live-read the step cap so test isolation (conftest deleting the env var)
     actually takes effect even if the module was imported while the app had
@@ -497,6 +520,13 @@ class ConversationalSession(ToolDispatchMixin):
         self._provider_billed_tokens_cache_write: int = 0
         self._provider_billed_tokens_cache_write_5m: int = 0
         self._provider_billed_tokens_cache_write_1h: int = 0
+        # Subscription / plan pilots (Cursor CLI, ChatGPT Codex, …) burn credits
+        # rather than API dollars. Cost UI labels these ``plan_estimated`` when
+        # no provider usage.cost receipt is available.
+        self._plan_billing: bool = _driver_is_plan_billing(
+            getattr(getattr(self, "config", None), "driver", "") or ""
+        )
+        self._price_source: str = ""
         # The governing AutoBudget for the CURRENT fully-auto run, if any. Set
         # by run_auto for the duration of the run and cleared afterward. When
         # present it is threaded (as a child()) into every worker/swarm spawned
@@ -1363,6 +1393,44 @@ class ConversationalSession(ToolDispatchMixin):
         except Exception:
             return ""
 
+    def _pilot_identity_system_note(self) -> str:
+        """Authoritative pilot/model id for identity questions.
+
+        ChatGPT / Claude deployments often refuse to name themselves. Marionette
+        chose the model for this request — inject that fact so "what model are
+        you?" is answerable instead of a hedged "I don't know".
+        """
+        try:
+            spec = str(getattr(self.config, "driver", "") or "").strip()
+            if not spec:
+                return ""
+            api_model = ""
+            try:
+                api_model = str(getattr(self.pilot, "model", "") or "").strip()
+            except Exception:
+                api_model = ""
+            picker_model = spec.split(":", 1)[1] if ":" in spec else spec
+            model_id = api_model or picker_model
+            friendly = _friendly_pilot_model_name(model_id)
+            lines = [
+                "PILOT IDENTITY (authoritative for this Marionette session — "
+                "re-read every turn):",
+                f"- Configured pilot: {spec}",
+                f"- API model id sent on the wire: {model_id}",
+            ]
+            if friendly and friendly.lower() not in model_id.lower():
+                lines.append(f"- Common name: {friendly}")
+            lines.append(
+                "When the user asks which model / deployment you are, answer with "
+                "the API model id"
+                + (f" (also known as {friendly})" if friendly else "")
+                + ". Do not claim you lack access to the deployment name — "
+                "Marionette selected this model for the request."
+            )
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
     def _turn_budget_exhausted(self) -> bool:
         try:
             if not self._turn_budget or not self._turn_budget.get("hard"):
@@ -1525,6 +1593,9 @@ class ConversationalSession(ToolDispatchMixin):
             turn_note = self._turn_budget_system_note()
             if turn_note:
                 parts.append(turn_note)
+            identity_note = self._pilot_identity_system_note()
+            if identity_note:
+                parts.append(identity_note)
             if not parts:
                 return message
             return message + self._TURN_CONTEXT_TRAILER + "\n\n".join(parts)
@@ -1536,6 +1607,9 @@ class ConversationalSession(ToolDispatchMixin):
             return self._frozen_system_prompt
         try:
             sys_prompt = base_sys
+            identity_note = self._pilot_identity_system_note()
+            if identity_note:
+                sys_prompt += "\n\n" + identity_note
             mcp_section = _format_mcp_tools_section(
                 self._mcp,
                 self._tool_catalog,
@@ -3109,6 +3183,9 @@ class ConversationalSession(ToolDispatchMixin):
                     turn_note = self._turn_budget_system_note()
                     if turn_note:
                         sys_prompt += "\n\n" + turn_note
+                    identity_note = self._pilot_identity_system_note()
+                    if identity_note:
+                        sys_prompt += "\n\n" + identity_note
                     adapter_note = self._active_adapters_system_note()
                     if adapter_note:
                         sys_prompt += "\n\n" + adapter_note
@@ -3227,11 +3304,22 @@ class ConversationalSession(ToolDispatchMixin):
                     _write_delta = 0
                     _write_5m = 0
                     _write_1h = 0
+                if str(_meta.get("billing") or "").lower() == "plan":
+                    self._plan_billing = True
                 try:
-                    from pmharness.registry import resolve_price
-                    _price_in, _price_out = resolve_price(self.config.driver)
+                    from pmharness.registry import resolve_price_with_source
+                    _price_in, _price_out, _price_src = resolve_price_with_source(
+                        self.config.driver
+                    )
+                    self._price_source = str(_price_src or "")
                 except Exception:
-                    _price_in, _price_out = 0.0, 0.0
+                    try:
+                        from pmharness.registry import resolve_price
+                        _price_in, _price_out = resolve_price(self.config.driver)
+                    except Exception:
+                        _price_in, _price_out = 0.0, 0.0
+                    _price_src = "default"
+                    self._price_source = _price_src
                 # Prefer provider-billed USD (OpenRouter usage.cost) when the
                 # driver surfaced it. Otherwise price this step with the same
                 # cache-aware formula /api/usage uses -- never full-price the

@@ -63,12 +63,13 @@ def test_consume_sse_assembles_text_and_usage():
         b'data: {"type":"response.output_text.delta","delta":"hel"}\n',
         b'data: {"type":"response.output_text.delta","delta":"lo"}\n',
         b'data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"hello"}]}}\n',
-        b'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}\n',
+        b'data: {"type":"response.completed","response":{"status":"completed","model":"gpt-5.6-luna","usage":{"input_tokens":2,"output_tokens":1}}}\n',
     ]
     raw = _consume_codex_sse(lines)
     assert raw["status"] == "completed"
     assert raw["output_text"] == "hello"
     assert raw["usage"]["input_tokens"] == 2
+    assert raw["model"] == "gpt-5.6-luna"
     text, _, _ = _extract_text_and_tools(raw)
     assert text == "hello"
 

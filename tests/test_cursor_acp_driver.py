@@ -123,7 +123,13 @@ class _FakeProc:
                         },
                     },
                 )
-                self._reply(mid, {"stopReason": "end_turn"})
+                self._reply(
+                    mid,
+                    {
+                        "stopReason": "end_turn",
+                        "usage": {"inputTokens": 120, "outputTokens": 8},
+                    },
+                )
             elif method == "initialized":
                 continue
             elif mid is not None:
@@ -251,6 +257,9 @@ def test_driver_uses_acp_when_session_works(monkeypatch):
     )
     assert resp.text == "pong-ok"
     assert resp.meta.get("cursor_acp") is True
+    assert resp.meta.get("billing") == "plan"
     assert resp.meta.get("tool_calls") == []
+    assert resp.tokens_in == 120
+    assert resp.tokens_out == 8
     assert deltas == ["pong", "-ok"]
     drv.close()

@@ -373,8 +373,8 @@ export type UsageData = {
   session: {
     tokens_used: number;
     est_cost_usd: number;
-    /** provider = billed usage.cost; estimated = token*catalog; mixed = both. */
-    cost_source?: "provider" | "estimated" | "mixed";
+    /** provider = billed usage.cost; estimated = token*catalog; mixed = both; plan_estimated = subscription credits (no API receipt). */
+    cost_source?: "provider" | "estimated" | "mixed" | "plan_estimated";
     driver: string;
     price_in: number;
     price_out: number;

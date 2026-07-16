@@ -9,7 +9,7 @@
 export type CostBreakdownData = {
   tokens_used: number;
   est_cost_usd: number;
-  cost_source?: "provider" | "estimated" | "mixed";
+  cost_source?: "provider" | "estimated" | "mixed" | "plan_estimated";
   tokens_cached?: number;
   cache_savings_usd?: number;
   routing_saved_usd?: number;
@@ -64,7 +64,13 @@ function fmtBytes(num: number): string {
 export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   const est = isFinite(data.est_cost_usd) ? data.est_cost_usd : 0;
   const billed = data.cost_source === "provider";
-  const spendLabel = billed ? "Billed spend" : data.cost_source === "mixed" ? "Spend (mixed)" : "Estimated spend";
+  const spendLabel = billed
+    ? "Billed spend"
+    : data.cost_source === "mixed"
+      ? "Spend (mixed)"
+      : data.cost_source === "plan_estimated"
+        ? "Plan spend (est.)"
+        : "Estimated spend";
   const spendPrefix = billed ? "" : "~";
   const cacheSavings =
     typeof data.cache_savings_usd === "number" && isFinite(data.cache_savings_usd) && data.cache_savings_usd > 0

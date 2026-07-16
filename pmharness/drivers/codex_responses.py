@@ -156,12 +156,15 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
 
 
 def _usage_ints(usage: Any) -> Tuple[int, int]:
-    if not isinstance(usage, dict):
-        return 0, 0
-    return (
-        int(usage.get("input_tokens", 0) or 0),
-        int(usage.get("output_tokens", 0) or 0),
-    )
+    from .token_usage import coerce_token_usage
+    tin, tout, _cost = coerce_token_usage(usage)
+    return tin, tout
+
+
+def _usage_cost(usage: Any) -> Any:
+    from .token_usage import coerce_token_usage
+    _tin, _tout, cost = coerce_token_usage(usage)
+    return cost
 
 
 def _consume_codex_sse(
@@ -182,6 +185,7 @@ def _consume_codex_sse(
     terminal_status = "completed"
     terminal_usage: Any = None
     terminal_error: Any = None
+    terminal_model: Optional[str] = None
     saw_terminal = False
     stream_error: Optional[str] = None
 
@@ -269,6 +273,9 @@ def _consume_codex_sse(
                 rstatus = resp_obj.get("status")
                 if isinstance(rstatus, str) and rstatus:
                     terminal_status = rstatus
+                mid = resp_obj.get("model")
+                if isinstance(mid, str) and mid.strip():
+                    terminal_model = mid.strip()
                 if event_type == "response.failed":
                     terminal_error = resp_obj.get("error") or resp_obj
             if event_type == "response.completed":
@@ -329,6 +336,7 @@ def _consume_codex_sse(
         "output_text": assembled_text,
         "usage": terminal_usage if isinstance(terminal_usage, dict) else {},
         "error": err_msg,
+        "model": terminal_model,
     }
 
 
@@ -512,18 +520,29 @@ class CodexResponsesDriver:
                 text = raw["output_text"]
             usage = raw.get("usage") or {}
             tin, tout = _usage_ints(usage)
+            meta = {
+                "tool_calls": tool_calls,
+                "finish_reason": finish,
+                "raw_usage": usage,
+                "api_mode": "codex_responses",
+                # ChatGPT subscription burn — $ is estimate unless usage carries cost.
+                "billing": "plan",
+                "requested_model": self.model,
+            }
+            cost = _usage_cost(usage)
+            if cost is not None:
+                meta["provider_cost_usd"] = cost
+            # Echo the model the backend actually served when present.
+            served = raw.get("model")
+            if isinstance(served, str) and served.strip():
+                meta["served_model"] = served.strip()
             return DriverResponse(
                 text=text,
                 tokens_in=tin,
                 tokens_out=tout,
                 latency_ms=(time.time() - t0) * 1000.0,
                 model=self.name,
-                meta={
-                    "tool_calls": tool_calls,
-                    "finish_reason": finish,
-                    "raw_usage": usage,
-                    "api_mode": "codex_responses",
-                },
+                meta=meta,
             )
 
         return with_retry(_call)

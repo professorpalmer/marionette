@@ -53,25 +53,57 @@ def price(name: str) -> tuple:
     to the eval catalog (exact native rates for benchmarked models); otherwise
     (None, None). For provider:model picker specs like 'anthropic:claude-opus-4-8'
     the live map supplies real published rates when the catalog has no entry."""
+    pin, pout, _src = price_with_source(name)
+    return (pin, pout)
+
+
+def price_with_source(name: str) -> tuple:
+    """Like price() but also returns how the rate was chosen.
+
+    Source is one of: ``live``, ``live_alias``, ``catalog``, or ``None`` when
+    unresolved (caller should apply defaults and label ``default``).
+    """
     live = _resolve_live_price(name)
     if live is not None:
-        return live
+        # Distinguish direct slug hits from plan-model alias fallbacks.
+        src = "live_alias" if _live_hit_via_alias(name, live) else "live"
+        return (live[0], live[1], src)
     try:
         m = _entry(name)
         pin, pout = m.get("price_in"), m.get("price_out")
         if pin is not None and pout is not None:
-            return (pin, pout)
+            return (pin, pout, "catalog")
     except Exception:
         pass
-    return (None, None)
+    # Catalog may key the bare model id without provider prefix.
+    if ":" in (name or ""):
+        bare = name.split(":", 1)[1]
+        try:
+            m = _entry(bare)
+            pin, pout = m.get("price_in"), m.get("price_out")
+            if pin is not None and pout is not None:
+                return (pin, pout, "catalog")
+        except Exception:
+            pass
+    return (None, None, None)
 
 
 def resolve_price(name: str, default_in: float = 0.5, default_out: float = 2.0) -> tuple:
     """price() with a numeric fallback, for the cost estimator UI."""
-    pin, pout = price(name)
+    pin, pout, _src = price_with_source(name)
     if pin is None or pout is None:
         return (default_in, default_out)
     return (pin, pout)
+
+
+def resolve_price_with_source(
+    name: str, default_in: float = 0.5, default_out: float = 2.0
+) -> tuple:
+    """resolve_price plus source label (``live`` / ``live_alias`` / ``catalog`` / ``default``)."""
+    pin, pout, src = price_with_source(name)
+    if pin is None or pout is None:
+        return (default_in, default_out, "default")
+    return (pin, pout, src or "live")
 
 
 # ---- live OpenRouter context-window map (cached) --------------------------
@@ -153,13 +185,73 @@ def _fetch_live_windows() -> dict:
     return out
 
 
-def _resolve_live_price(name: str):
-    """Best live OpenRouter (price_in, price_out) per Mtok for `name`, mirroring
-    _resolve_live_window's slug matching. Returns None if no live match."""
-    _live_windows()  # ensure the fetch ran (populates _PRICE_MEM as a side effect)
-    live = _PRICE_MEM
-    if not live:
-        return None
+# Plan / proprietary model ids → OpenRouter slugs for estimate-only pricing.
+# Order matters: first live hit wins. These are NOT billed rates for plan
+# pilots (Cursor/Codex burn subscription credits); they only keep the $ meter
+# honest-ish when the provider never returns usage.cost.
+_PLAN_MODEL_OR_ALIASES = {
+    "composer-2.5": (
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-sonnet-4",
+        "anthropic/claude-3.7-sonnet",
+    ),
+    "composer-2.5-fast": (
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-3.5-sonnet",
+    ),
+    "composer-1": ("anthropic/claude-3.5-sonnet", "anthropic/claude-3-sonnet"),
+    "cursor-grok-4.5-high": ("x-ai/grok-4", "x-ai/grok-4-fast", "x-ai/grok-3"),
+    "cursor-grok-4.5-medium": ("x-ai/grok-4-fast", "x-ai/grok-4", "x-ai/grok-3"),
+    "cursor-grok-4.5-low": ("x-ai/grok-4-fast", "x-ai/grok-3-mini"),
+    "claude-opus-4-8-thinking-high": (
+        "anthropic/claude-opus-4.8",
+        "anthropic/claude-opus-4",
+        "anthropic/claude-opus-4.1",
+    ),
+    "claude-opus-4-8-high": (
+        "anthropic/claude-opus-4.8",
+        "anthropic/claude-opus-4",
+    ),
+    "claude-4.5-sonnet-thinking": (
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-sonnet-4",
+    ),
+    "claude-4.5-sonnet": (
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-sonnet-4",
+    ),
+    "sonnet-4": ("anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4.5"),
+    "sonnet-4-thinking": ("anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4.5"),
+    "gpt-5.5-high": ("openai/gpt-5.5", "openai/gpt-5"),
+    "gpt-5.6-sol-medium": ("openai/gpt-5.6-sol", "openai/gpt-5"),
+    "gpt-5.4-high": ("openai/gpt-5.4", "openai/gpt-5"),
+    "gpt-5": ("openai/gpt-5",),
+    "gpt-5.3-codex": ("openai/gpt-5", "openai/o3"),
+    "gpt-5.3-codex-spark": ("openai/gpt-5-mini", "openai/gpt-5"),
+}
+
+
+def _plan_alias_candidates(model: str) -> list:
+    """Ordered OpenRouter slug candidates for a bare plan-model id."""
+    out = []
+    aliases = _PLAN_MODEL_OR_ALIASES.get(model) or ()
+    out.extend(aliases)
+    # Heuristic prefixing when the bare id looks like a public model family.
+    low = (model or "").lower()
+    if low.startswith("claude") or low.startswith("sonnet") or low.startswith("opus"):
+        out.append(f"anthropic/{model}")
+    elif low.startswith("gpt-") or low.startswith("o1") or low.startswith("o3") or low.startswith("o4"):
+        out.append(f"openai/{model}")
+    elif "grok" in low:
+        out.append(f"x-ai/{model}")
+        # Strip cursor- prefix variants.
+        if low.startswith("cursor-"):
+            out.append(f"x-ai/{model[len('cursor-'):]}")
+    return out
+
+
+def _live_price_candidates(name: str) -> list:
+    """Ordered OpenRouter slug candidates for a driver/picker spec."""
     candidates = []
     try:
         ent = _entry(name)
@@ -167,9 +259,53 @@ def _resolve_live_price(name: str):
             candidates.append(ent["openrouter"])
     except Exception:
         pass
-    if ":" in name:
-        candidates.append(name.split(":", 1)[1])
+    provider = ""
+    model = name
+    if ":" in (name or ""):
+        provider, model = name.split(":", 1)
+        candidates.append(model)
+        try:
+            ent = _entry(model)
+            if ent.get("openrouter"):
+                candidates.append(ent["openrouter"])
+        except Exception:
+            pass
+        prov = (provider or "").strip().lower()
+        if prov in ("openai", "openai-codex"):
+            candidates.append(f"openai/{model}")
+        elif prov == "anthropic":
+            candidates.append(f"anthropic/{model}")
+        elif prov in ("xai", "xai-oauth"):
+            candidates.append(f"x-ai/{model}")
+        elif prov == "google":
+            candidates.append(f"google/{model}")
+        elif prov in ("cursor-cli", "cursor-agent"):
+            candidates.extend(_plan_alias_candidates(model))
+        # Codex / OAuth plan models also benefit from family aliases.
+        if prov in ("openai-codex", "nous", "xai-oauth"):
+            candidates.extend(_plan_alias_candidates(model))
+    else:
+        candidates.extend(_plan_alias_candidates(name))
     candidates.append(name)
+    # Dedupe preserving order.
+    seen = set()
+    ordered = []
+    for c in candidates:
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        ordered.append(c)
+    return ordered
+
+
+def _resolve_live_price(name: str):
+    """Best live OpenRouter (price_in, price_out) per Mtok for `name`, mirroring
+    _resolve_live_window's slug matching. Returns None if no live match."""
+    _live_windows()  # ensure the fetch ran (populates _PRICE_MEM as a side effect)
+    live = _PRICE_MEM
+    if not live:
+        return None
+    candidates = _live_price_candidates(name)
     for c in candidates:
         if c in live:
             return live[c]
@@ -182,6 +318,38 @@ def _resolve_live_price(name: str):
             best = pair
             best_len = len(slug)
     return best
+
+
+def _live_hit_via_alias(name: str, pair: tuple) -> bool:
+    """True when the live hit came from a plan alias, not a direct slug."""
+    live = _PRICE_MEM
+    if not live or pair is None:
+        return False
+    # Direct candidates (no plan-alias list): catalog openrouter, bare model,
+    # provider/model prefix, full name.
+    direct = []
+    try:
+        ent = _entry(name)
+        if ent.get("openrouter"):
+            direct.append(ent["openrouter"])
+    except Exception:
+        pass
+    if ":" in (name or ""):
+        provider, model = name.split(":", 1)
+        direct.append(model)
+        prov = provider.strip().lower()
+        if prov in ("openai", "openai-codex"):
+            direct.append(f"openai/{model}")
+        elif prov == "anthropic":
+            direct.append(f"anthropic/{model}")
+        elif prov in ("xai", "xai-oauth"):
+            direct.append(f"x-ai/{model}")
+    direct.append(name)
+    for c in direct:
+        if c in live and live[c] == pair:
+            return False
+    # If pair matches only via alias / heuristic → alias.
+    return True
 
 
 def _restore_prices_from_disk(disk: dict) -> None:

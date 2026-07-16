@@ -43,6 +43,22 @@ def test_resolve_price_live_for_picker_spec(monkeypatch):
     assert (pin, pout) == (5.0, 30.0)
 
 
+def test_resolve_price_cursor_cli_via_plan_alias(monkeypatch):
+    monkeypatch.setattr(reg, "_PRICE_MEM", {"x-ai/grok-4": (0.2, 0.5)})
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    pin, pout, src = reg.resolve_price_with_source("cursor-cli:cursor-grok-4.5-high")
+    assert (pin, pout) == (0.2, 0.5)
+    assert src == "live_alias"
+
+
+def test_resolve_price_openai_codex_prefixes_openai_slug(monkeypatch):
+    monkeypatch.setattr(reg, "_PRICE_MEM", {"openai/gpt-5.6-sol": (1.25, 10.0)})
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    pin, pout, src = reg.resolve_price_with_source("openai-codex:gpt-5.6-sol")
+    assert (pin, pout) == (1.25, 10.0)
+    assert src in ("live", "live_alias")
+
+
 def test_price_cache_roundtrip_restores_prices(monkeypatch):
     # Prices persisted in the disk cache must restore into _PRICE_MEM.
     monkeypatch.setattr(reg, "_PRICE_MEM", {})

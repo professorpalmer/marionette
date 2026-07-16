@@ -382,10 +382,12 @@ def _cache_savings(cached: float, price_in: float) -> float:
 
 
 def _cost_source_label(pilot_like: Any) -> str:
-    """How pilot spend was derived: provider | mixed | estimated."""
+    """How pilot spend was derived: provider | mixed | estimated | plan_estimated."""
     billed_in = int(getattr(pilot_like, "_provider_billed_tokens_in", 0) or 0)
     billed_out = int(getattr(pilot_like, "_provider_billed_tokens_out", 0) or 0)
     if billed_in <= 0 and billed_out <= 0:
+        if getattr(pilot_like, "_plan_billing", False):
+            return "plan_estimated"
         return "estimated"
     t_in = int(getattr(pilot_like, "_tokens_in", 0) or 0)
     t_out = int(getattr(pilot_like, "_tokens_out", 0) or 0)
@@ -398,12 +400,29 @@ def _cost_source_label(pilot_like: Any) -> str:
     return "mixed"
 
 
+_BOOT_PLAN_BILLING: bool = False
+
+
 def _boot_cost_source() -> str:
     """Aggregate cost_source across carry + live runners."""
     from types import SimpleNamespace
 
     totals = _boot_usage_meters()
-    return _cost_source_label(SimpleNamespace(**totals))
+    label = _cost_source_label(SimpleNamespace(**totals))
+    if label != "estimated":
+        return label
+    if _BOOT_PLAN_BILLING:
+        return "plan_estimated"
+    try:
+        live = list(_runners.runners())
+    except Exception:
+        live = []
+    if _pilot is not None and id(_pilot) not in {id(r) for r in live}:
+        live.append(_pilot)
+    for runner in live:
+        if getattr(runner, "_plan_billing", False):
+            return "plan_estimated"
+    return "estimated"
 
 
 # Cost epoch for THIS app run. The swarm store (SQLite) persists across
@@ -548,6 +567,7 @@ def _persist_boot_usage(*, fold_live: bool = False, force: bool = False) -> None
                 "cost_epoch": _COST_EPOCH.isoformat(),
                 "carry": carry_snap,
                 "carry_cost_usd": cost_snap,
+                "plan_billing": bool(_BOOT_PLAN_BILLING),
                 "repos": sorted(_BOOT_REPOS),
                 "saved_at": now,
             }
@@ -564,7 +584,7 @@ def _persist_boot_usage(*, fold_live: bool = False, force: bool = False) -> None
 
 def _restore_boot_usage() -> bool:
     """Reload boot meters when this backend shares the Electron app-run id."""
-    global _COST_EPOCH, _BOOT_USAGE_RESTORED, _BOOT_CARRY_COST_USD
+    global _COST_EPOCH, _BOOT_USAGE_RESTORED, _BOOT_CARRY_COST_USD, _BOOT_PLAN_BILLING
     if _BOOT_USAGE_RESTORED:
         return False
     _BOOT_USAGE_RESTORED = True
@@ -598,6 +618,10 @@ def _restore_boot_usage() -> bool:
             _BOOT_CARRY_COST_USD = float(data.get("carry_cost_usd", 0.0) or 0.0)
         except Exception:
             _BOOT_CARRY_COST_USD = 0.0
+        try:
+            _BOOT_PLAN_BILLING = bool(data.get("plan_billing", False))
+        except Exception:
+            _BOOT_PLAN_BILLING = False
         for repo in data.get("repos") or []:
             try:
                 if repo and os.path.isdir(str(repo)):
@@ -2432,7 +2456,7 @@ def _fold_runner_meters_into_boot_carry(
     Optional ``price_in`` / ``price_out`` override active rates (idle model-swap
     freezes at the OLD pilot's prices even if ``_cfg.driver`` already changed).
     """
-    global _BOOT_CARRY_COST_USD
+    global _BOOT_CARRY_COST_USD, _BOOT_PLAN_BILLING
     del session_id  # reserved for diagnostics; meters are process-scoped
     try:
         if price_in is None or price_out is None:
@@ -2446,6 +2470,8 @@ def _fold_runner_meters_into_boot_carry(
         )
     except Exception:
         pass
+    if getattr(runner, "_plan_billing", False):
+        _BOOT_PLAN_BILLING = True
     for attr in _BOOT_METER_ATTRS:
         try:
             add = float(getattr(runner, attr, 0) or 0)

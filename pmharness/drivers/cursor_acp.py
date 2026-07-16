@@ -27,6 +27,7 @@ from .cursor_cli import (
     _messages_to_prompt,
     resolve_agent_exec,
 )
+from .token_usage import coerce_token_usage
 
 
 def cursor_acp_enabled() -> bool:
@@ -469,6 +470,7 @@ class WarmAcpSession:
         transport = self.ensure()
         assert self.session_id
         chunks: List[str] = []
+        usage_blobs: List[Any] = []
 
         def _on_update(params: dict) -> None:
             thought = _extract_thought_text(params)
@@ -492,6 +494,8 @@ class WarmAcpSession:
                         on_delta(piece)
                     except Exception:
                         pass
+            # Accumulate any usage the agent streams (partial or final).
+            usage_blobs.append(params)
 
         transport.set_session_update_handler(_on_update)
         try:
@@ -520,11 +524,17 @@ class WarmAcpSession:
                 if isinstance(val, str) and val.strip():
                     final_text = val
                     break
+        usage_blobs.append(result)
+        usage_blobs.append(resp)
+        tin, tout, cost = coerce_token_usage(*usage_blobs)
         return {
             "text": final_text,
             "stop_reason": stop,
             "session_id": self.session_id,
             "result": result,
+            "tokens_in": tin,
+            "tokens_out": tout,
+            "provider_cost_usd": cost,
         }
 
 
@@ -624,19 +634,32 @@ class CursorAcpDriver:
             if tr is None or not tr.alive():
                 self._session.close()
             raise RuntimeError(self._acp_fail_reason)
+        tin = int(out.get("tokens_in") or 0)
+        tout = int(out.get("tokens_out") or 0)
+        meta = {
+            "tool_calls": [],
+            "session_id": out.get("session_id") or "",
+            "cursor_cli": True,
+            "cursor_acp": True,
+            "cursor_cli_internal_tools": [],
+            "host_tools_ignored": True,
+            "stop_reason": out.get("stop_reason"),
+            # Plan credits — $ meter is estimate-only unless agent returns cost.
+            "billing": "plan",
+        }
+        cost = out.get("provider_cost_usd")
+        if cost is not None:
+            try:
+                meta["provider_cost_usd"] = float(cost)
+            except (TypeError, ValueError):
+                pass
         return DriverResponse(
             text=str(out.get("text") or ""),
+            tokens_in=tin,
+            tokens_out=tout,
             latency_ms=(time.time() - t0) * 1000.0,
             model=self.name,
-            meta={
-                "tool_calls": [],
-                "session_id": out.get("session_id") or "",
-                "cursor_cli": True,
-                "cursor_acp": True,
-                "cursor_cli_internal_tools": [],
-                "host_tools_ignored": True,
-                "stop_reason": out.get("stop_reason"),
-            },
+            meta=meta,
         )
 
     def _run_stream(

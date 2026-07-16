@@ -152,6 +152,20 @@ def test_cost_source_estimated_without_provider_meters():
     assert _cost_source_label(pilot) == "estimated"
 
 
+def test_cost_source_plan_estimated_for_subscription_pilots():
+    pilot = SimpleNamespace(
+        _tokens_in=10_000,
+        _tokens_out=1_000,
+        _tokens_cached=0,
+        _worker_tokens_in=0,
+        _worker_tokens_out=0,
+        _provider_billed_tokens_in=0,
+        _provider_billed_tokens_out=0,
+        _plan_billing=True,
+    )
+    assert _cost_source_label(pilot) == "plan_estimated"
+
+
 def test_cache_write_5m_billed_at_premium():
     # 100k write @ 1.25x, rest uncached -- must exceed full-price-on-all-input.
     t_in = 200_000

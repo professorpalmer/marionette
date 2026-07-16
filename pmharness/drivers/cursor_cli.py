@@ -634,9 +634,10 @@ class CursorCliDriver:
                     stderr = ""
 
             latency = (time.time() - t0) * 1000.0
-            usage = parsed.get("usage") or {}
-            tokens_in = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
-            tokens_out = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+            from .token_usage import coerce_token_usage
+            tokens_in, tokens_out, provider_cost = coerce_token_usage(
+                parsed.get("usage"), parsed
+            )
 
             err = parsed.get("error")
             if proc.returncode not in (0, None) and not err and not parsed.get("text"):
@@ -658,7 +659,10 @@ class CursorCliDriver:
                 "pool_rotate": False,
                 "prompt_via_file": bool(prompt_file),
                 "host_tools_ignored": True,
+                "billing": "plan",
             }
+            if provider_cost is not None:
+                meta["provider_cost_usd"] = provider_cost
 
             return DriverResponse(
                 text=parsed.get("text") or "",

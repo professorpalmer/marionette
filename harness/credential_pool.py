@@ -372,7 +372,10 @@ def add_api_key(
 def remove_entry(provider: str, entry_id: str) -> bool:
     with _lock:
         pool = load_pool(provider)
-        return pool.remove_entry(entry_id)
+        ok = pool.remove_entry(entry_id)
+        if ok:
+            _mirror_pool_token_to_env(provider, pool)
+        return ok
 
 
 def list_all_pools_public() -> Dict[str, Any]:
@@ -584,6 +587,7 @@ _PROVIDER_TO_ENV = {
 # Additional env vars to mirror so classic pilots see OAuth tokens.
 _PROVIDER_TO_ENV_EXTRAS: Dict[str, tuple[str, ...]] = {
     "xai-oauth": ("XAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_TOKEN",),
 }
 
 
@@ -638,7 +642,11 @@ def resolve_entry_for_env(env_name: str) -> Optional[PooledCredential]:
 
 
 def _mirror_pool_token_to_env(provider: str, pool: Optional[CredentialPool] = None) -> None:
-    """Best-effort: put a healthy pool token into process env for preflight/UI."""
+    """Best-effort: put a healthy pool token into process env for preflight/UI.
+
+    When the pool has no healthy token (e.g. after Sign out), clear the mirrored
+    env vars so status / preflight stop reporting the account as signed in.
+    """
     env_names = []
     primary = env_var_for_provider(provider)
     if primary:
@@ -657,6 +665,8 @@ def _mirror_pool_token_to_env(provider: str, pool: Optional[CredentialPool] = No
                 for env_name in env_names:
                     os.environ[env_name] = tok
                 return
+        for env_name in env_names:
+            os.environ.pop(env_name, None)
     except Exception as e:
         _diag("credential_pool.mirror_env", e)
 
