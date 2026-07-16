@@ -4170,6 +4170,13 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/memory/propose/accept", "/api/memory/propose/dismiss",
                       "/api/settings", "/api/providers/probe", "/api/providers/key", "/api/wiki/config",
                       "/api/wiki/disconnect", "/api/wiki/handoff", "/api/bedrock",
+                      "/api/auth/pools", "/api/auth/pools/add", "/api/auth/pools/remove",
+                      "/api/auth/pools/strategy", "/api/auth/pools/reset",
+                      "/api/auth/oauth/start", "/api/auth/oauth/poll",
+                      "/api/auth/oauth/complete", "/api/auth/oauth/cancel",
+                      "/api/auth/cursor-cli/status", "/api/auth/cursor-cli/login",
+                      "/api/auth/cursor-cli/trust",
+                      "/api/auth/cursor-cli/logout", "/api/auth/cursor-cli/models",
                       "/api/platform", "/api/reviews/apply", "/api/reviews/dismiss",
                       "/api/registry", "/api/roles", "/api/pilot/validate",
                       "/api/worktrees/add", "/api/worktrees/remove",
@@ -5478,6 +5485,228 @@ class Handler(BaseHTTPRequestHandler):
             from .auto_registry import sync_agentic_registry_safe
             sync_agentic_registry_safe()
             return self._send(200, json.dumps({"ok": True, **res}))
+        if path == "/api/auth/pools":
+            from .credential_pool import list_all_pools_public, list_pool_public, known_pool_providers
+            pname = str(body.get("provider", "")).strip()
+            if pname:
+                return self._send(200, json.dumps(list_pool_public(pname)))
+            return self._send(200, json.dumps({
+                **list_all_pools_public(),
+                "providers": known_pool_providers(),
+            }))
+        if path == "/api/auth/pools/add":
+            from .credential_pool import add_api_key, list_pool_public
+            pname = str(body.get("provider", "")).strip()
+            auth_type = str(body.get("type", "api_key")).strip().lower()
+            if not pname:
+                return self._send(400, json.dumps({"error": "provider required"}))
+            if auth_type != "api_key":
+                return self._send(400, json.dumps({
+                    "error": "oauth add via /api/auth/oauth/start (not yet wired); "
+                             "use type=api_key for now",
+                }))
+            key = str(body.get("api_key", "")).strip()
+            label = str(body.get("label", "")).strip()
+            if not key:
+                return self._send(400, json.dumps({"error": "api_key required"}))
+            try:
+                entry = add_api_key(pname, key, label=label)
+            except ValueError as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            # Mirror into keys.json so classic has_key / env paths stay honest
+            # for the first (or latest) key of providers that use set_api_key.
+            try:
+                if pname in (
+                    "openrouter", "openai", "anthropic", "xai", "google",
+                    "groq", "deepseek", "mistral", "cursor",
+                ):
+                    set_api_key(pname, key)
+            except Exception as e:
+                _diag("server.auth_pool_mirror_key", e)
+            pub = list_pool_public(pname)
+            return self._send(200, json.dumps({"ok": True, "entry_id": entry.id, **pub}))
+        if path == "/api/auth/pools/remove":
+            from .credential_pool import remove_entry, list_pool_public
+            pname = str(body.get("provider", "")).strip()
+            eid = str(body.get("entry_id", "")).strip()
+            if not pname or not eid:
+                return self._send(400, json.dumps({"error": "provider and entry_id required"}))
+            ok = remove_entry(pname, eid)
+            return self._send(200, json.dumps({"ok": ok, **list_pool_public(pname)}))
+        if path == "/api/auth/pools/strategy":
+            from .credential_pool import set_strategy, list_pool_public, SUPPORTED_STRATEGIES
+            pname = str(body.get("provider", "")).strip()
+            strategy = str(body.get("strategy", "")).strip()
+            if not pname or strategy not in SUPPORTED_STRATEGIES:
+                return self._send(400, json.dumps({
+                    "error": f"provider + strategy in {sorted(SUPPORTED_STRATEGIES)} required",
+                }))
+            set_strategy(pname, strategy)
+            return self._send(200, json.dumps({"ok": True, **list_pool_public(pname)}))
+        if path == "/api/auth/pools/reset":
+            from .credential_pool import load_pool, list_pool_public
+            pname = str(body.get("provider", "")).strip()
+            if not pname:
+                return self._send(400, json.dumps({"error": "provider required"}))
+            load_pool(pname).reset_cooldowns()
+            return self._send(200, json.dumps({"ok": True, **list_pool_public(pname)}))
+        if path == "/api/auth/oauth/start":
+            pname = str(body.get("provider", "")).strip()
+            label = str(body.get("label", "")).strip()
+            try:
+                if pname == "openai-codex":
+                    from .oauth_codex import start_codex_device_login
+                    res = start_codex_device_login(label=label)
+                elif pname == "anthropic":
+                    from .oauth_anthropic import start_anthropic_pkce_login
+                    res = start_anthropic_pkce_login(label=label)
+                elif pname == "xai-oauth":
+                    from .oauth_xai import start_xai_device_login
+                    res = start_xai_device_login(label=label)
+                elif pname == "nous":
+                    from .oauth_nous import start_nous_device_login
+                    res = start_nous_device_login(label=label)
+                else:
+                    return self._send(400, json.dumps({
+                        "error": f"oauth start unsupported for {pname!r} "
+                                 "(openai-codex, anthropic, xai-oauth, nous)",
+                    }))
+            except Exception as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            return self._send(200, json.dumps({"ok": True, **res}))
+        if path == "/api/auth/oauth/poll":
+            sid = str(body.get("session_id", "")).strip()
+            pname = str(body.get("provider", "")).strip()
+            if not sid:
+                return self._send(400, json.dumps({"error": "session_id required"}))
+            try:
+                if pname == "xai-oauth":
+                    from .oauth_xai import poll_xai_device_login
+                    res = poll_xai_device_login(sid)
+                    done_provider = "xai-oauth"
+                elif pname == "nous":
+                    from .oauth_nous import poll_nous_device_login
+                    res = poll_nous_device_login(sid)
+                    done_provider = "nous"
+                else:
+                    from .oauth_codex import poll_codex_device_login
+                    res = poll_codex_device_login(sid)
+                    done_provider = "openai-codex"
+            except Exception as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            if res.get("status") == "done":
+                from .credential_pool import list_pool_public
+                res = {**res, **list_pool_public(done_provider)}
+            return self._send(200, json.dumps(res))
+        if path == "/api/auth/oauth/complete":
+            # Anthropic PKCE paste-the-code completion (and future paste flows).
+            sid = str(body.get("session_id", "")).strip()
+            code = str(body.get("code") or body.get("auth_code") or "").strip()
+            pname = str(body.get("provider", "anthropic")).strip()
+            if not sid or not code:
+                return self._send(400, json.dumps({
+                    "error": "session_id and code required",
+                }))
+            if pname != "anthropic":
+                return self._send(400, json.dumps({
+                    "error": "oauth complete currently supports anthropic only",
+                }))
+            try:
+                from .oauth_anthropic import complete_anthropic_pkce_login
+                res = complete_anthropic_pkce_login(sid, code)
+            except Exception as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            if res.get("status") == "done":
+                from .credential_pool import list_pool_public
+                res = {**res, **list_pool_public("anthropic")}
+            return self._send(200, json.dumps(res))
+        if path == "/api/auth/oauth/cancel":
+            sid = str(body.get("session_id", "")).strip()
+            pname = str(body.get("provider", "")).strip()
+            if not sid:
+                return self._send(400, json.dumps({"error": "session_id required"}))
+            try:
+                if pname == "xai-oauth":
+                    from .oauth_xai import cancel_xai_device_login
+                    res = cancel_xai_device_login(sid)
+                elif pname == "nous":
+                    from .oauth_nous import cancel_nous_device_login
+                    res = cancel_nous_device_login(sid)
+                elif pname == "anthropic":
+                    from .oauth_anthropic import cancel_anthropic_pkce_login
+                    res = cancel_anthropic_pkce_login(sid)
+                else:
+                    from .oauth_codex import cancel_codex_device_login
+                    res = cancel_codex_device_login(sid)
+            except Exception as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            return self._send(200, json.dumps({"ok": True, **res}))
+        if path == "/api/auth/cursor-cli/status":
+            from .cursor_cli_auth import get_status
+            try:
+                # Refresh after Sign-in / Refresh status button; otherwise
+                # Settings re-opens reuse the short TTL cache.
+                refresh = bool(body.get("refresh")) if isinstance(body, dict) else False
+                res = get_status(refresh=refresh)
+            except Exception as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            return self._send(200, json.dumps(res))
+        if path == "/api/auth/cursor-cli/login":
+            from .cursor_cli_auth import start_login
+            try:
+                ws = ""
+                if isinstance(body, dict):
+                    ws = (
+                        body.get("workspace")
+                        or body.get("workspace_root")
+                        or body.get("repo")
+                        or ""
+                    )
+                if not str(ws).strip():
+                    ws = getattr(_cfg, "repo", None) or os.environ.get("HARNESS_REPO") or ""
+                res = start_login(workspace=str(ws).strip() or None)
+            except Exception as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            status = 200 if res.get("ok") else 400
+            return self._send(status, json.dumps(res))
+        if path == "/api/auth/cursor-cli/trust":
+            from .cursor_cli_auth import ensure_workspace_trusted
+            try:
+                ws = ""
+                if isinstance(body, dict):
+                    ws = (
+                        body.get("workspace")
+                        or body.get("workspace_root")
+                        or body.get("repo")
+                        or ""
+                    )
+                if not str(ws).strip():
+                    ws = getattr(_cfg, "repo", None) or os.environ.get("HARNESS_REPO") or ""
+                res = ensure_workspace_trusted(str(ws).strip() or None)
+            except Exception as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            status = 200 if res.get("ok") else 400
+            return self._send(status, json.dumps(res))
+        if path == "/api/auth/cursor-cli/logout":
+            from .cursor_cli_auth import logout
+            try:
+                res = logout()
+            except Exception as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            status = 200 if res.get("ok") else 400
+            return self._send(status, json.dumps(res))
+        if path == "/api/auth/cursor-cli/models":
+            from .cursor_cli_auth import list_models, get_status
+            try:
+                st = get_status()
+                models = list_models(live=True) if st.get("installed") else []
+            except Exception as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            return self._send(200, json.dumps({
+                "ok": True,
+                "models": [{"id": m} for m in models],
+                "auth_kind": "cursor_account",
+            }))
         if path == "/api/wiki/handoff":
             # Mint a one-shot nonce and return a setup URL that carries a
             # loopback return target. Prefer this over marionette:// so Windows
@@ -5688,6 +5917,10 @@ class Handler(BaseHTTPRequestHandler):
                         _set_env_setting("HARNESS_MAX_PILOT_STEPS", str(max(1, int(raw))))
                     except (ValueError, TypeError):
                         return self._send(400, json.dumps({"error": "Invalid maxPilotSteps"}))
+            if "reasoning_effort" in body:
+                from harness.reasoning_effort import normalize_reasoning_effort
+                normalized = normalize_reasoning_effort(body["reasoning_effort"])
+                _set_env_setting("HARNESS_CODEX_REASONING_EFFORT", normalized)
 
             return self._send(200, json.dumps(_get_settings_dict()))
 
@@ -6538,13 +6771,18 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/models/catalog":
             if self._guard():
                 return
-            qtok = parse_qs(u.query).get("token", [""])[0]
+            q = parse_qs(u.query)
+            qtok = q.get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
             from . import model_visibility as _mv
+            force = (q.get("refresh", [""])[0] or "").strip().lower() in ("1", "true", "yes")
+            # One force pass (Cursor `agent models` is multi-second); derive the
+            # keyed-only catalog from the full list so we don't spawn twice.
+            all_cat = _mv.catalog(available_only=False, force=force)
             return self._send(200, json.dumps({
-                "catalog": _mv.catalog(available_only=True),
-                "all": _mv.catalog(available_only=False),
+                "catalog": [c for c in all_cat if c.get("available")],
+                "all": all_cat,
                 "enabled": _mv.get_enabled(),
             }))
         if u.path == "/api/codegraph":
@@ -6790,13 +7028,20 @@ class Handler(BaseHTTPRequestHandler):
                 _agentic_ready = agentic_available()
             except Exception:
                 _edit_engine, _agentic_ready = "native", False
+            try:
+                from .reasoning_effort import current_reasoning_effort
+                _reasoning_effort = current_reasoning_effort()
+            except Exception:
+                _reasoning_effort = "low"
             return self._send(200, json.dumps({
                 "driver": _cfg.driver, "reach": _cfg.reach,
                 "budget": _cfg.budget, "state_dir": _session.state_dir,
                 "models": _available_pilots(), "repo": _cfg.repo,
                 "swarm_adapter": _cfg.swarm_adapter,
                 "edit_engine": _edit_engine, "agentic_ready": _agentic_ready,
-                "preflight": _session.preflight()}))
+                "preflight": _session.preflight(),
+                "reasoning_effort": _reasoning_effort,
+            }))
         if u.path == "/api/wiki/config":
             if self._guard():
                 return
@@ -6811,6 +7056,23 @@ class Handler(BaseHTTPRequestHandler):
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
             return self._send(200, json.dumps(get_bedrock_status()))
+        if u.path == "/api/auth/pools":
+            if self._guard():
+                return
+            qtok = parse_qs(u.query).get("token", [""])[0]
+            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
+                return self._send(403, json.dumps({"error": "missing or bad token"}))
+            from .credential_pool import (
+                list_all_pools_public, list_pool_public, known_pool_providers,
+            )
+            qs = parse_qs(u.query)
+            pname = (qs.get("provider") or [""])[0].strip()
+            if pname:
+                return self._send(200, json.dumps(list_pool_public(pname)))
+            return self._send(200, json.dumps({
+                **list_all_pools_public(),
+                "providers": known_pool_providers(),
+            }))
         if u.path == "/api/wiki/graph":
             if self._guard():
                 return
@@ -7001,8 +7263,14 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            with _pilot._pending_reviews_lock:
-                reviews_list = list(_pilot._pending_reviews.values())
+            # Cold-attach placeholder has no review queue yet.
+            lock = getattr(_pilot, "_pending_reviews_lock", None)
+            pending = getattr(_pilot, "_pending_reviews", None)
+            if lock is None or pending is None:
+                reviews_list = []
+            else:
+                with lock:
+                    reviews_list = list(pending.values())
             return self._send(200, json.dumps(reviews_list))
         if u.path == "/api/platform":
             return self._send(200, json.dumps(_get_platform_adapters()))
@@ -8566,6 +8834,7 @@ def _available_pilots():
 
 def _get_settings_dict():
     from harness.hash_edit import hash_edit_enabled
+    from harness.reasoning_effort import current_reasoning_effort
 
     reach = _cfg.reach
     status = get_api_key_status(reach)
@@ -8584,6 +8853,7 @@ def _get_settings_dict():
         "hash_edit_enabled": hash_edit_enabled(),
         "commandTimeout": (os.environ.get("HARNESS_COMMAND_TIMEOUT", "").strip() or "120"),
         "maxPilotSteps": (os.environ.get("HARNESS_MAX_PILOT_STEPS", "").strip() or "40"),
+        "reasoning_effort": current_reasoning_effort(),
         "state_dir": _session.state_dir,
         "repo": _cfg.repo,
         "has_api_key": status["has_key"],
