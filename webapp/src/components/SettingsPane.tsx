@@ -1,10 +1,103 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, ChevronDown, Plus, Trash2, ExternalLink, Search, X } from "lucide-react";
-import { api, type Settings, type UsageData, type PlatformAdapter, type GitStatus, type ProviderInfo, type BedrockStatus } from "../lib/api";
+import {
+  api,
+  type Settings,
+  type UsageData,
+  type PlatformAdapter,
+  type GitStatus,
+  type ProviderInfo,
+  type BedrockStatus,
+  type AuthPoolsResponse,
+} from "../lib/api";
 import SkillsPane from "./SkillsPane";
 import MemoryPane from "./MemoryPane";
 
 export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "advanced";
+
+const SETTINGS_SECTION_OPEN_KEY = "pmharness.settings.sectionOpen";
+
+function loadSettingsSectionOpen(id: string, defaultOpen: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(SETTINGS_SECTION_OPEN_KEY);
+    if (!raw) return defaultOpen;
+    const map = JSON.parse(raw) as Record<string, boolean>;
+    if (typeof map[id] === "boolean") return map[id];
+  } catch {
+    /* ignore */
+  }
+  return defaultOpen;
+}
+
+function persistSettingsSectionOpen(id: string, open: boolean) {
+  try {
+    const raw = localStorage.getItem(SETTINGS_SECTION_OPEN_KEY);
+    const map = (raw ? JSON.parse(raw) : {}) as Record<string, boolean>;
+    map[id] = open;
+    localStorage.setItem(SETTINGS_SECTION_OPEN_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Collapsible settings block — chevron title + optional summary; persists open state. */
+function SettingsCollapse({
+  id,
+  title,
+  summary,
+  defaultOpen = true,
+  forceOpen = false,
+  className = "space-y-2 border-t border-edge pt-3",
+  onFirstOpen,
+  children,
+}: {
+  id: string;
+  title: string;
+  summary?: string;
+  defaultOpen?: boolean;
+  forceOpen?: boolean;
+  className?: string;
+  onFirstOpen?: () => void;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(() => loadSettingsSectionOpen(id, defaultOpen));
+  const shown = forceOpen || open;
+  const firstOpenCalled = useRef(false);
+
+  useEffect(() => {
+    if (shown && onFirstOpen && !firstOpenCalled.current) {
+      firstOpenCalled.current = true;
+      onFirstOpen();
+    }
+  }, [shown, onFirstOpen]);
+
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((v) => {
+            const next = !v;
+            persistSettingsSectionOpen(id, next);
+            return next;
+          });
+        }}
+        className="w-full flex items-center justify-between gap-2 text-left focus:outline-none group"
+      >
+        <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1.5 min-w-0 group-hover:text-txt transition">
+          {shown ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
+          <span className="truncate">{title}</span>
+          {summary ? (
+            <span className="normal-case tracking-normal font-normal text-faint/80 shrink-0">
+              · {summary}
+            </span>
+          ) : null}
+        </span>
+      </button>
+      {shown ? <div className="space-y-2">{children}</div> : null}
+    </div>
+  );
+}
 
 export default function SettingsPane({ onOpenWizard, section = "general" }: { onOpenWizard: () => void; section?: SettingsSection }) {
   const show = (s: SettingsSection) => section === s;
@@ -22,7 +115,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   // gate() combines the section visibility with the keyword filter and records
   // whether anything survived so we can render a "no matches" line.
   const gate = (s: SettingsSection, keywords: string) => {
-    const ok = active(s) && matches(keywords);
+    const needsSettings = s !== "providers";
+    const ok = active(s) && matches(keywords) && (!needsSettings || settings !== null);
     if (ok) anyShown = true;
     return ok;
   };
@@ -53,13 +147,32 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   
   // Platform Adapter states
   const [platformAdapters, setPlatformAdapters] = useState<PlatformAdapter[]>([]);
-  const [showAdvancedAdapters, setShowAdvancedAdapters] = useState(false);
   const [platformError, setPlatformError] = useState("");
 
   // Per-provider key management states
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [provKeyInput, setProvKeyInput] = useState<Record<string, string>>({});
   const [provBusy, setProvBusy] = useState<string>("");
+
+  // Hermes-style credential pools (multi-key / rotate on plan limit)
+  const [authPools, setAuthPools] = useState<AuthPoolsResponse | null>(null);
+  const [poolBusy, setPoolBusy] = useState("");
+  const [poolProvider, setPoolProvider] = useState("cursor");
+  const [poolKeyInput, setPoolKeyInput] = useState("");
+  const [poolLabelInput, setPoolLabelInput] = useState("");
+  const POOL_FOCUS = ["cursor", "cursor-cli", "openrouter", "anthropic", "openai", "openai-codex", "xai-oauth", "nous"] as const;
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const [oauthHint, setOauthHint] = useState("");
+  const [oauthSessionId, setOauthSessionId] = useState("");
+  const [oauthPasteCode, setOauthPasteCode] = useState("");
+  const oauthAbortRef = useRef(false);
+  const [cursorCliStatus, setCursorCliStatus] = useState<{
+    installed?: boolean;
+    authenticated?: boolean;
+    label?: string;
+    error?: string;
+    binary?: string | null;
+  } | null>(null);
 
   // AWS Bedrock BYOK (multi-field; separate from single-key providers)
   const [bedrock, setBedrock] = useState<BedrockStatus | null>(null);
@@ -169,50 +282,35 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   };
 
   useEffect(() => {
+    // Always need core settings to leave the Loading gate.
     api.settings()
       .then(setSettings)
       .catch((err) => {
         setError("Failed to load settings");
         console.error(err);
       });
-
-    api.getWikiConfig()
-      .then((w) => { setWikiCfg(w); setWikiBase(w.api_base || ""); })
-      .catch(() => {});
-    api.getUsage()
-      .then(setUsage)
-      .catch((err) => {
-        console.error("Failed to load usage statistics", err);
-      });
-
-    api.getPlatform()
-      .then((res) => setPlatformAdapters(res.adapters))
-      .catch((err) => {
-        setPlatformError("platform settings unavailable");
-        console.error("Failed to load platform adapters", err);
-      });
-
-    api.providers()
-      .then(setProviders)
-      .catch((err) => console.error("Failed to load providers", err));
-
-    api.getBedrockStatus()
-      .then((b) => {
-        setBedrock(b);
-        setBedrockRegion(b.aws_region || "");
-        setBedrockRegionAlt(b.bedrock_region || "");
-        setBedrockModelId(b.model_id || "");
-      })
-      .catch((err) => console.error("Failed to load Bedrock status", err));
-
-    api.getGitStatus()
-      .then(setGitStatus)
-      .catch((err) => {
-        console.error("Failed to load Git status", err);
-      });
-
-    loadHooks();
   }, []);
+
+  // Section-scoped loads: notifications/advanced only on demand (providers
+  // section uses per-collapse onFirstOpen lazy loads).
+  const searchActive = filter.trim().length > 0;
+  useEffect(() => {
+    const wantNotify = section === "notifications" || searchActive;
+    const wantAdvanced = section === "advanced" || searchActive;
+
+    if (wantNotify) {
+      api.getUsage()
+        .then(setUsage)
+        .catch((err) => console.error("Failed to load usage statistics", err));
+    }
+
+    if (wantAdvanced) {
+      api.getWikiConfig()
+        .then((w) => { setWikiCfg(w); setWikiBase(w.api_base || ""); })
+        .catch(() => {});
+      loadHooks();
+    }
+  }, [section, searchActive]);
 
   useEffect(() => {
     let timer: any = null;
@@ -285,6 +383,344 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   const refreshProviders = async () => {
     try { setProviders(await api.providers()); } catch (e) { console.error(e); }
+  };
+
+  const refreshAuthPools = async () => {
+    try { setAuthPools(await api.getAuthPools()); } catch (e) { console.error(e); }
+  };
+
+  const loadSignInData = () => {
+    api.getAuthPools()
+      .then(setAuthPools)
+      .catch((err) => console.error("Failed to load auth pools", err));
+    api.getCursorCliStatus({ refresh: false })
+      .then(setCursorCliStatus)
+      .catch((err) => console.error("Failed to load Cursor CLI status", err));
+  };
+
+  const loadProvidersList = () => {
+    api.providers()
+      .then(setProviders)
+      .catch((err) => console.error("Failed to load providers", err));
+  };
+
+  const loadAuthPoolsIfNeeded = () => {
+    if (authPools !== null) return;
+    api.getAuthPools()
+      .then(setAuthPools)
+      .catch((err) => console.error("Failed to load auth pools", err));
+  };
+
+  const loadBedrockData = () => {
+    api.getBedrockStatus()
+      .then((b) => {
+        setBedrock(b);
+        setBedrockRegion(b.aws_region || "");
+        setBedrockRegionAlt(b.bedrock_region || "");
+        setBedrockModelId(b.model_id || "");
+      })
+      .catch((err) => console.error("Failed to load Bedrock status", err));
+  };
+
+  const loadPlatformData = () => {
+    api.getPlatform()
+      .then((res) => setPlatformAdapters(res.adapters))
+      .catch((err) => {
+        setPlatformError("platform settings unavailable");
+        console.error("Failed to load platform adapters", err);
+      });
+  };
+
+  const loadGitData = () => {
+    api.getGitStatus()
+      .then(setGitStatus)
+      .catch((err) => console.error("Failed to load Git status", err));
+  };
+
+  const PLAN_POOL_PROVIDERS = ["cursor-cli", "openai-codex", "anthropic", "xai-oauth", "nous"] as const;
+  const poolEntriesFor = (provider: string) =>
+    (authPools?.pools || []).find((x) => x.provider === provider)?.entries || [];
+  const planAccountStatusLine = (provider: string) => {
+    const entries = poolEntriesFor(provider);
+    if (entries.length) {
+      const e = entries[0];
+      return `Signed in as ${e.label || e.masked || provider}`;
+    }
+    return "Not signed in";
+  };
+
+  const handleAddPoolKey = async () => {
+    const key = poolKeyInput.trim();
+    if (!key || !poolProvider) return;
+    setPoolBusy(poolProvider);
+    try {
+      await api.addAuthPoolKey(poolProvider, key, poolLabelInput.trim() || undefined);
+      setPoolKeyInput("");
+      setPoolLabelInput("");
+      await refreshAuthPools();
+      await refreshProviders();
+      window.dispatchEvent(new Event("harness-config-changed"));
+    } catch (e) {
+      console.error("Failed to add pool key", e);
+      setError("Failed to add pool key");
+    } finally {
+      setPoolBusy("");
+    }
+  };
+
+  const handleRemovePoolEntry = async (provider: string, entryId: string) => {
+    setPoolBusy(provider);
+    try {
+      await api.removeAuthPoolEntry(provider, entryId);
+      await refreshAuthPools();
+    } catch (e) {
+      console.error("Failed to remove pool entry", e);
+    } finally {
+      setPoolBusy("");
+    }
+  };
+
+  const handlePoolStrategy = async (provider: string, strategy: string) => {
+    setPoolBusy(provider);
+    try {
+      await api.setAuthPoolStrategy(provider, strategy);
+      await refreshAuthPools();
+    } catch (e) {
+      console.error("Failed to set pool strategy", e);
+    } finally {
+      setPoolBusy("");
+    }
+  };
+
+  const handleDeviceOAuthSignIn = async (provider: "openai-codex" | "xai-oauth" | "nous", labelFallback: string) => {
+    oauthAbortRef.current = false;
+    setOauthBusy(true);
+    setOauthHint("");
+    setOauthSessionId("");
+    setError("");
+    try {
+      const start = await api.startAuthOAuth(provider, poolLabelInput.trim() || undefined);
+      if (!start.session_id || !start.user_code) {
+        throw new Error(start.error || "oauth start failed");
+      }
+      setOauthSessionId(start.session_id);
+      setOauthHint(`Enter code ${start.user_code} at ${start.verification_uri}`);
+      try {
+        window.open(start.verification_uri_complete || start.verification_uri, "_blank");
+      } catch {
+        /* ignore */
+      }
+      const deadline = Date.now() + (start.expires_in || 900) * 1000;
+      const intervalMs = Math.max(1, start.interval || 5) * 1000;
+      while (Date.now() < deadline) {
+        if (oauthAbortRef.current) {
+          setOauthHint("Sign-in cancelled — click Sign in to try again.");
+          return;
+        }
+        await new Promise((r) => setTimeout(r, intervalMs));
+        if (oauthAbortRef.current) {
+          setOauthHint("Sign-in cancelled — click Sign in to try again.");
+          return;
+        }
+        const poll = await api.pollAuthOAuth(start.session_id, provider);
+        if (poll.status === "done") {
+          setOauthHint(`Signed in as ${poll.label || labelFallback}`);
+          setOauthSessionId("");
+          await refreshAuthPools();
+          await refreshProviders();
+          setPoolProvider(provider);
+          window.dispatchEvent(new Event("harness-config-changed"));
+          return;
+        }
+        if (poll.status === "error") {
+          throw new Error(poll.error || "oauth failed");
+        }
+      }
+      throw new Error("Login timed out — click Sign in to try again.");
+    } catch (e: any) {
+      console.error(`${provider} OAuth failed`, e);
+      const msg = e?.message || e?.error || `${provider} sign-in failed`;
+      setError(msg);
+      setOauthSessionId("");
+      // Keep a retry-friendly hint (device-code toggle is a common first-time miss).
+      setOauthHint(
+        /device|enabled|access code|chatgpt settings/i.test(msg)
+          ? "Enable ChatGPT device / Codex login codes, then Sign in again."
+          : "Sign-in failed — fix the issue above, then Sign in again.",
+      );
+    } finally {
+      setOauthBusy(false);
+      oauthAbortRef.current = false;
+    }
+  };
+
+  const handleCancelOAuth = () => {
+    oauthAbortRef.current = true;
+    const sid = oauthSessionId;
+    if (sid) {
+      api.cancelAuthOAuth(sid, poolProvider).catch(() => { /* best-effort */ });
+    }
+    setOauthSessionId("");
+    setOauthPasteCode("");
+    setOauthBusy(false);
+    setOauthHint("Sign-in cancelled — click Sign in to try again.");
+  };
+
+  const handleCodexSignIn = async () => handleDeviceOAuthSignIn("openai-codex", "chatgpt-codex");
+  const handleXaiSignIn = async () => handleDeviceOAuthSignIn("xai-oauth", "xai-oauth");
+  const handleNousSignIn = async () => handleDeviceOAuthSignIn("nous", "nous");
+
+  const refreshCursorCliStatus = async (opts?: { refresh?: boolean }) => {
+    try {
+      const st = await api.getCursorCliStatus({ refresh: opts?.refresh !== false });
+      setCursorCliStatus(st);
+      return st;
+    } catch (e: any) {
+      setCursorCliStatus({
+        installed: false,
+        authenticated: false,
+        error: e?.message || "status check failed",
+      });
+      return null;
+    }
+  };
+
+  const handleCursorCliSignIn = async () => {
+    oauthAbortRef.current = false;
+    setOauthBusy(true);
+    setOauthHint("");
+    setError("");
+    const workspace = (settings?.repo || "").trim();
+    try {
+      const start = await api.startCursorCliLogin(
+        workspace ? { workspace } : undefined,
+      );
+      if (!start.ok && start.error) {
+        throw new Error(start.error);
+      }
+      setOauthHint(
+        start.hint
+        || (start.launched
+          ? "Complete Cursor account login in the opened window, then wait…"
+          : `Run \`${start.command || "agent login"}\` in a terminal, then wait…`),
+      );
+      const deadline = Date.now() + (start.expires_in || 900) * 1000;
+      const intervalMs = Math.max(2, start.poll_interval || 3) * 1000;
+      while (Date.now() < deadline) {
+        if (oauthAbortRef.current) {
+          setOauthHint("Sign-in cancelled — click Sign in to try again.");
+          return;
+        }
+        await new Promise((r) => setTimeout(r, intervalMs));
+        if (oauthAbortRef.current) {
+          setOauthHint("Sign-in cancelled — click Sign in to try again.");
+          return;
+        }
+        const st = await refreshCursorCliStatus();
+        if (st?.authenticated) {
+          // Headless Agent CLI requires workspace trust; bundle it into Sign in.
+          let trustNote = "";
+          try {
+            const trust = await api.trustCursorCliWorkspace(
+              workspace ? { workspace } : undefined,
+            );
+            if (trust.trusted) {
+              trustNote = trust.workspace
+                ? ` · workspace trusted (${trust.workspace})`
+                : " · workspace trusted";
+            } else if (trust.error) {
+              trustNote = " · workspace trust pending (pilot still passes --trust)";
+            }
+          } catch {
+            trustNote = " · workspace trust pending (pilot still passes --trust)";
+          }
+          setOauthHint(`Signed in as ${st.label || "Cursor account"}${trustNote}`);
+          await refreshProviders();
+          setPoolProvider("cursor-cli");
+          window.dispatchEvent(new Event("harness-config-changed"));
+          return;
+        }
+        if (st && st.installed === false) {
+          throw new Error(st.error || "Cursor Agent CLI not installed");
+        }
+      }
+      throw new Error("Login timed out — finish agent login, then Sign in again.");
+    } catch (e: any) {
+      console.error("Cursor CLI login failed", e);
+      setError(e?.message || e?.error || "Cursor CLI sign-in failed");
+      setOauthHint("Sign-in failed — install/login via Cursor Agent CLI, then try again.");
+    } finally {
+      setOauthBusy(false);
+      oauthAbortRef.current = false;
+    }
+  };
+
+  const handleCursorCliLogout = async () => {
+    setOauthBusy(true);
+    try {
+      await api.logoutCursorCli();
+      setOauthHint("Signed out of Cursor account.");
+      await refreshCursorCliStatus();
+      await refreshProviders();
+      window.dispatchEvent(new Event("harness-config-changed"));
+    } catch (e: any) {
+      setError(e?.message || "Cursor CLI logout failed");
+    } finally {
+      setOauthBusy(false);
+    }
+  };
+
+  const handleAnthropicSignIn = async () => {
+    oauthAbortRef.current = false;
+    setOauthBusy(true);
+    setOauthHint("");
+    setOauthPasteCode("");
+    setOauthSessionId("");
+    setError("");
+    try {
+      const start = await api.startAuthOAuth("anthropic", poolLabelInput.trim() || undefined) as any;
+      if (!start.session_id || !start.auth_url) {
+        throw new Error(start.error || "oauth start failed");
+      }
+      setOauthSessionId(start.session_id);
+      setOauthHint("Browser opened — authorize, then paste the code below (code#state).");
+      try {
+        window.open(start.auth_url, "_blank");
+      } catch {
+        setOauthHint(`Open ${start.auth_url} then paste the code below.`);
+      }
+      // Stay busy until paste-complete or Cancel (parity with device flows).
+    } catch (e: any) {
+      console.error("Anthropic OAuth start failed", e);
+      setError(e?.message || e?.error || "Claude sign-in failed to start");
+      setOauthHint("Sign-in failed — click Sign in (Claude Max) to try again.");
+      setOauthBusy(false);
+    }
+  };
+
+  const handleAnthropicComplete = async () => {
+    const code = oauthPasteCode.trim();
+    if (!oauthSessionId || !code) return;
+    setOauthBusy(true);
+    setError("");
+    try {
+      const res = await api.completeAuthOAuth(oauthSessionId, code, "anthropic");
+      if (res.status !== "done") {
+        throw new Error(res.error || "oauth complete failed");
+      }
+      setOauthHint(`Signed in as ${res.label || "claude-max"}`);
+      setOauthPasteCode("");
+      setOauthSessionId("");
+      await refreshAuthPools();
+      await refreshProviders();
+      setPoolProvider("anthropic");
+      window.dispatchEvent(new Event("harness-config-changed"));
+    } catch (e: any) {
+      console.error("Anthropic OAuth complete failed", e);
+      setError(e?.message || e?.error || "Claude sign-in failed");
+    } finally {
+      setOauthBusy(false);
+    }
   };
 
   const handleSaveBedrock = async () => {
@@ -433,7 +869,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     }
   };
 
-  if (!settings) {
+  const canRenderWithoutSettings = section === "providers" || searchActive;
+  if (!settings && !canRenderWithoutSettings) {
     return (
       <div className="flex flex-col h-full text-[12px] p-4 text-faint">
         {error ? error : "Loading settings..."}
@@ -488,7 +925,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       </div>
 
       <div className="space-y-4">
-        {gate("general", "provider model setup wizard api keys routing") && (<>
+        {gate("general", "provider model setup wizard api keys routing") && settings && (<>
         {/* Wizard Button */}
         <div className="space-y-1.5 border-b border-edge/65 pb-3">
           <button
@@ -503,7 +940,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("general", "driver model select") && (<>
+        {gate("general", "driver model select") && settings && (<>
         {/* Driver Select */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -527,7 +964,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("general", "budget steps per run") && (<>
+        {gate("general", "budget steps per run") && settings && (<>
         {/* Budget Stepper / Number */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -556,7 +993,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("general", "auto-distill distillation toggle") && (<>
+        {gate("general", "auto-distill distillation toggle") && settings && (<>
         {/* Auto Distill Toggle */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -582,7 +1019,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("general", "hash edit hash-anchored experimental") && (<>
+        {gate("general", "hash edit hash-anchored experimental") && settings && (<>
         {/* Hash-anchored edits (experimental) */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -608,7 +1045,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("general", "review edits diff review toggle") && (<>
+        {gate("general", "review edits diff review toggle") && settings && (<>
         {/* Diff Review Toggle */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -634,7 +1071,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("general", "auto-verify edits typecheck syntax check self-correct diagnostics") && (<>
+        {gate("general", "auto-verify edits typecheck syntax check self-correct diagnostics") && settings && (<>
         {/* Auto-Verify Edits Toggle */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -661,7 +1098,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("safety", "full-auto safety command guard timeout max investigation steps") && (<>
+        {gate("safety", "full-auto safety command guard timeout max investigation steps") && settings && (<>
         {/* Full-Auto Safety: command guard + timeout */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -726,13 +1163,232 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("providers", "sign in subscription oauth chatgpt codex claude max cursor xai grok nous plan account login") && (<>
+        <SettingsCollapse
+          id="sign-in"
+          title="Sign in"
+          defaultOpen={true}
+          forceOpen={!!q}
+          onFirstOpen={loadSignInData}
+          className="space-y-2"
+          summary={(() => {
+            let n = 0;
+            if (poolEntriesFor("openai-codex").length) n++;
+            if (poolEntriesFor("anthropic").length) n++;
+            if (cursorCliStatus?.authenticated) n++;
+            if (poolEntriesFor("xai-oauth").length) n++;
+            if (poolEntriesFor("nous").length) n++;
+            return n > 0 ? `${n} signed in` : "plan accounts";
+          })()}
+        >
+          <p className="text-[10px] text-muted leading-normal">
+            Log in with the subscription you already pay for. No API key required.
+          </p>
+          <div className="space-y-1.5">
+            <div className="bg-panel2 border border-edge/50 rounded p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-txt font-medium text-[11px]">ChatGPT Codex</span>
+                <span className="text-faint text-[10px] font-mono truncate">
+                  {planAccountStatusLine("openai-codex")}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap mt-1.5">
+                <button
+                  type="button"
+                  onClick={handleCodexSignIn}
+                  disabled={oauthBusy}
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                >
+                  {oauthBusy ? "Waiting for browser..." : "Sign in"}
+                </button>
+                {oauthBusy ? (
+                  <button
+                    type="button"
+                    onClick={handleCancelOAuth}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  >
+                    Cancel
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="bg-panel2 border border-edge/50 rounded p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-txt font-medium text-[11px]">Claude Max</span>
+                <span className="text-faint text-[10px] font-mono truncate">
+                  {planAccountStatusLine("anthropic")}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap mt-1.5">
+                <button
+                  type="button"
+                  onClick={handleAnthropicSignIn}
+                  disabled={oauthBusy}
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                >
+                  {oauthBusy ? "Waiting for code..." : "Sign in"}
+                </button>
+                {oauthBusy || oauthSessionId ? (
+                  <button
+                    type="button"
+                    onClick={handleCancelOAuth}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  >
+                    Cancel
+                  </button>
+                ) : null}
+              </div>
+              {oauthSessionId ? (
+                <div className="flex items-center gap-2 mt-1.5">
+                  <input
+                    type="text"
+                    value={oauthPasteCode}
+                    onChange={(e) => setOauthPasteCode(e.target.value)}
+                    placeholder="paste authorization code#state"
+                    className="flex-1 bg-panel border border-edge rounded px-2 py-1 text-[11px] font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAnthropicComplete}
+                    disabled={oauthBusy || !oauthPasteCode.trim()}
+                    className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                  >
+                    Complete
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="bg-panel2 border border-edge/50 rounded p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-txt font-medium text-[11px]">Cursor CLI (plan)</span>
+                <span className="text-faint text-[10px] font-mono truncate">
+                  {cursorCliStatus?.installed === false
+                    ? (cursorCliStatus.error || "agent binary not found")
+                    : cursorCliStatus?.authenticated
+                      ? `Signed in as ${cursorCliStatus.label || "Cursor account"}`
+                      : (cursorCliStatus?.error || "Not signed in")}
+                </span>
+              </div>
+              <p className="text-[10px] text-muted mt-1 leading-normal">
+                Burns Cursor plan credits via the local Agent CLI. Requires the `agent` binary on PATH.
+              </p>
+              <div className="flex items-center gap-2 flex-wrap mt-1.5">
+                <button
+                  type="button"
+                  onClick={handleCursorCliSignIn}
+                  disabled={oauthBusy}
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                >
+                  {oauthBusy ? "Waiting for login..." : "Sign in"}
+                </button>
+                {cursorCliStatus?.authenticated ? (
+                  <button
+                    type="button"
+                    onClick={handleCursorCliLogout}
+                    disabled={oauthBusy}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                  >
+                    Sign out
+                  </button>
+                ) : null}
+                {oauthBusy ? (
+                  <button
+                    type="button"
+                    onClick={handleCancelOAuth}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  >
+                    Cancel
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => { refreshCursorCliStatus(); }}
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                >
+                  Refresh status
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-panel2 border border-edge/50 rounded p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-txt font-medium text-[11px]">xAI SuperGrok</span>
+                <span className="text-faint text-[10px] font-mono truncate">
+                  {planAccountStatusLine("xai-oauth")}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap mt-1.5">
+                <button
+                  type="button"
+                  onClick={handleXaiSignIn}
+                  disabled={oauthBusy}
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                >
+                  {oauthBusy ? "Waiting for browser..." : "Sign in"}
+                </button>
+                {oauthBusy ? (
+                  <button
+                    type="button"
+                    onClick={handleCancelOAuth}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  >
+                    Cancel
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="bg-panel2 border border-edge/50 rounded p-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-txt font-medium text-[11px]">Nous</span>
+                <span className="text-faint text-[10px] font-mono truncate">
+                  {planAccountStatusLine("nous")}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap mt-1.5">
+                <button
+                  type="button"
+                  onClick={handleNousSignIn}
+                  disabled={oauthBusy}
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                >
+                  {oauthBusy ? "Waiting for browser..." : "Sign in"}
+                </button>
+                {oauthBusy ? (
+                  <button
+                    type="button"
+                    onClick={handleCancelOAuth}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  >
+                    Cancel
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+          {oauthHint ? (
+            <p className="text-[10px] text-accent font-mono leading-normal">{oauthHint}</p>
+          ) : null}
+        </SettingsCollapse>
+        </>)}
         {gate("providers", "providers api keys connect disconnect per-provider key management") && (<>
         {/* Per-provider key management: connect/disconnect each provider independently */}
-        <div className="space-y-2">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
-            Providers
-          </label>
-          <div className="text-[10px] text-muted mb-1">
+        <SettingsCollapse
+          id="api-keys"
+          title="API keys"
+          defaultOpen={false}
+          forceOpen={!!q}
+          onFirstOpen={loadProvidersList}
+          className="space-y-2"
+          summary={(() => {
+            const list = providers.filter((p) => p.name !== "bedrock");
+            const n = list.filter((p) => p.has_key && !p.disconnected).length;
+            return `${n}/${list.length} connected`;
+          })()}
+        >
+          <div className="text-[10px] text-muted">
             Connect or disconnect each provider independently. Keys imported from your environment get an on/off toggle -- flip one off to stop using it without losing the key, for easy swapping (e.g. work vs. personal).
           </div>
           <div className="space-y-1.5">
@@ -815,22 +1471,197 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               );
             })}
           </div>
-        </div>
+        </SettingsCollapse>
 
+        </>)}
+        {gate("providers", "credential pool rotate cursor openrouter anthropic openai api key accounts") && (<>
+        <SettingsCollapse
+          id="credential-pools"
+          title="Credential pools"
+          defaultOpen={false}
+          forceOpen={!!q}
+          onFirstOpen={loadAuthPoolsIfNeeded}
+          summary={(() => {
+            const pools = authPools?.pools || [];
+            const entries = pools.reduce((n, p) => n + (p.entries?.length || 0), 0);
+            if (!entries) return "empty";
+            return `${entries} key${entries === 1 ? "" : "s"} · ${pools.length} provider${pools.length === 1 ? "" : "s"}`;
+          })()}
+        >
+          <p className="text-[10px] text-muted leading-normal">
+            Add multiple API keys for the same provider. On plan-limit / 429 / 402 the pilot
+            rotates to the next healthy entry (prompt cache may reset on rotate).
+            Plan accounts (ChatGPT Codex, Claude Max, Cursor CLI, xAI, Nous) come from
+            Sign in above — pools are for multi-key rotate only. When every entry is
+            exhausted, the turn fails until a cooldown expires or you add another key.
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {POOL_FOCUS.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setPoolProvider(p)}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-colors ${
+                  poolProvider === p
+                    ? "bg-accent/15 border-accent/40 text-accent"
+                    : "bg-panel2 border-edge text-muted hover:bg-panel"
+                }`}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-1.5 bg-panel2 border border-edge/50 rounded p-2">
+            {(PLAN_POOL_PROVIDERS as readonly string[]).includes(poolProvider) ? (
+              <>
+                <p className="text-[10px] font-mono text-faint">
+                  {poolProvider === "cursor-cli"
+                    ? (cursorCliStatus?.installed === false
+                      ? (cursorCliStatus.error || "agent binary not found")
+                      : cursorCliStatus?.authenticated
+                        ? `Signed in as ${cursorCliStatus.label || "Cursor account"}`
+                        : (cursorCliStatus?.error || "Not signed in"))
+                    : planAccountStatusLine(poolProvider)}
+                </p>
+                <p className="text-[10px] text-muted">
+                  <span className="text-accent">Sign in above</span> to connect your plan account.
+                </p>
+                <select
+                  value={
+                    (authPools?.pools || []).find((x) => x.provider === poolProvider)?.strategy
+                    || "fill_first"
+                  }
+                  onChange={(e) => handlePoolStrategy(poolProvider, e.target.value)}
+                  className="bg-panel border border-edge rounded px-1.5 py-0.5 text-[10px] text-muted"
+                >
+                  {(authPools?.strategies || ["fill_first", "round_robin", "least_used", "random"]).map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+                {(() => {
+                  const pool = (authPools?.pools || []).find((x) => x.provider === poolProvider);
+                  const entries = pool?.entries || [];
+                  if (!entries.length) {
+                    return (
+                      <p className="text-[10px] text-faint italic">No pooled credentials for {poolProvider} yet.</p>
+                    );
+                  }
+                  return (
+                    <ul className="space-y-1 pt-1 border-t border-edge/40">
+                      {entries.map((e) => (
+                        <li key={e.id} className="flex items-center justify-between gap-2 text-[10px]">
+                          <div className="min-w-0">
+                            <span className="font-medium text-txt">{e.label || e.id}</span>
+                            <span className="text-faint font-mono ml-1.5">{e.masked}</span>
+                            <span className={`ml-1.5 uppercase tracking-wider text-[8px] ${
+                              e.last_status === "exhausted" ? "text-risk" : "text-good"
+                            }`}>
+                              {e.last_status || "ok"}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemovePoolEntry(poolProvider, e.id)}
+                            className="text-risk/80 hover:text-risk text-[10px] shrink-0"
+                          >
+                            remove
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  );
+                })()}
+              </>
+            ) : (
+              <>
+            <input
+              type="password"
+              value={poolKeyInput}
+              onChange={(e) => setPoolKeyInput(e.target.value)}
+              placeholder={`${poolProvider} API key`}
+              className="w-full bg-panel border border-edge rounded px-2 py-1 text-[11px] font-mono"
+            />
+            <input
+              type="text"
+              value={poolLabelInput}
+              onChange={(e) => setPoolLabelInput(e.target.value)}
+              placeholder="label (optional, e.g. cursor-plan-a)"
+              className="w-full bg-panel border border-edge rounded px-2 py-1 text-[11px]"
+            />
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={handleAddPoolKey}
+                disabled={!!poolBusy || !poolKeyInput.trim()}
+                className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+              >
+                {poolBusy === poolProvider ? "Adding..." : "Add to pool"}
+              </button>
+              <select
+                value={
+                  (authPools?.pools || []).find((x) => x.provider === poolProvider)?.strategy
+                  || "fill_first"
+                }
+                onChange={(e) => handlePoolStrategy(poolProvider, e.target.value)}
+                className="bg-panel border border-edge rounded px-1.5 py-0.5 text-[10px] text-muted"
+              >
+                {(authPools?.strategies || ["fill_first", "round_robin", "least_used", "random"]).map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+            {(() => {
+              const pool = (authPools?.pools || []).find((x) => x.provider === poolProvider);
+              const entries = pool?.entries || [];
+              if (!entries.length) {
+                return (
+                  <p className="text-[10px] text-faint italic">No pooled credentials for {poolProvider} yet.</p>
+                );
+              }
+              return (
+                <ul className="space-y-1 pt-1 border-t border-edge/40">
+                  {entries.map((e) => (
+                    <li key={e.id} className="flex items-center justify-between gap-2 text-[10px]">
+                      <div className="min-w-0">
+                        <span className="font-medium text-txt">{e.label || e.id}</span>
+                        <span className="text-faint font-mono ml-1.5">{e.masked}</span>
+                        <span className={`ml-1.5 uppercase tracking-wider text-[8px] ${
+                          e.last_status === "exhausted" ? "text-risk" : "text-good"
+                        }`}>
+                          {e.last_status || "ok"}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemovePoolEntry(poolProvider, e.id)}
+                        className="text-risk/80 hover:text-risk text-[10px] shrink-0"
+                      >
+                        remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              );
+            })()}
+              </>
+            )}
+          </div>
+        </SettingsCollapse>
         </>)}
         {gate("providers", "bedrock aws amazon bearer access key region inference profile") && (<>
         {/* AWS Bedrock BYOK -- multi-field credentials for agentic/PM workers */}
-        <div className="space-y-2 border-t border-edge pt-3">
-          <div className="flex items-center justify-between gap-2">
-            <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
-              AWS Bedrock
-            </label>
-            <span className={`text-[10px] font-mono ${bedrock?.configured ? "text-good" : "text-faint"}`}>
-              {bedrock?.configured
-                ? `configured - ${bedrock.auth_mode || "credentials"}`
-                : "not configured"}
-            </span>
-          </div>
+        <SettingsCollapse
+          id="bedrock"
+          title="AWS Bedrock"
+          defaultOpen={false}
+          forceOpen={!!q}
+          onFirstOpen={loadBedrockData}
+          summary={
+            bedrock?.configured
+              ? `configured · ${bedrock.auth_mode || "credentials"}`
+              : "not configured"
+          }
+        >
           <p className="text-[10px] text-muted leading-normal">
             Preferred: paste an <span className="font-mono text-faint">AWS_BEARER_TOKEN_BEDROCK</span>.
             Or use access key + secret (+ optional session token). Credentials are injected into
@@ -915,25 +1746,26 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               ) : null}
             </div>
           </div>
-        </div>
+        </SettingsCollapse>
 
         </>)}
         {gate("providers", "platform adapters control cli claude codex openai cursor") && (<>
         {/* Platform Adapters Control (ADVANCED -- optional) */}
-        <div className="space-y-3 border-t border-edge pt-3">
-          <button
-            onClick={() => setShowAdvancedAdapters((v) => !v)}
-            className="flex items-center gap-1.5 w-full text-left"
-          >
-            <ChevronRight size={12} className={`text-faint transition-transform ${showAdvancedAdapters ? "rotate-90" : ""}`} />
-            <span className="uppercase tracking-wider text-[10px] text-faint font-semibold">External Worker Platforms</span>
-            <span className="text-[9px] text-muted normal-case tracking-normal">(advanced / optional)</span>
-          </button>
-          {showAdvancedAdapters && (<>
-          <p className="text-[10px] text-muted leading-normal pl-4">
+        <SettingsCollapse
+          id="external-platforms"
+          title="External Worker Platforms"
+          defaultOpen={false}
+          forceOpen={!!q}
+          onFirstOpen={loadPlatformData}
+          summary={(() => {
+            const on = platformAdapters.filter((a) => a.enabled).length;
+            return on > 0 ? `${on} on · advanced` : "advanced / optional";
+          })()}
+        >
+          <p className="text-[10px] text-muted leading-normal">
             By default, implement/parallel workers run on the built-in provider worker (your configured API key, in an isolated worktree) -- no external CLI needed. These adapters let you instead delegate worker runs to an external coding-agent CLI (Cursor, Claude Code, Codex) when it is installed. Optional.
           </p>
-          
+
           {platformError ? (
             <p className="text-[10px] text-muted italic">{platformError}</p>
           ) : platformAdapters.length === 0 ? (
@@ -982,8 +1814,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               </p>
             </div>
           )}
-          </>)}
-        </div>
+        </SettingsCollapse>
 
         </>)}
         {gate("notifications", "observability queue notifications sound desktop messages") && (<>
@@ -1329,7 +2160,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("general", "system info version read-only") && (<>
+        {gate("general", "system info version read-only") && settings && (<>
         {/* Read-Only Info */}
         <div className="border-t border-edge pt-3 space-y-2.5">
           <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -1370,10 +2201,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </>)}
         {gate("providers", "github wiki repo provisioning git connect device flow") && (<>
         {/* GitHub & Wiki Repo Provisioning */}
-        <div className="border-t border-edge pt-3 space-y-2">
-          <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
-            GitHub / Wiki Repo
-          </div>
+        <SettingsCollapse
+          id="github-wiki"
+          title="GitHub / Wiki Repo"
+          defaultOpen={false}
+          forceOpen={!!q}
+          onFirstOpen={loadGitData}
+          summary={gitStatus?.connected ? "connected" : "not connected"}
+        >
           {gitError && (
             <div className="text-risk text-[10px] font-semibold bg-risk/10 border border-risk/30 rounded p-2">
               {gitError}
@@ -1485,7 +2320,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               )}
             </div>
           )}
-        </div>
+        </SettingsCollapse>
 
         </>)}
         {gate("advanced", "wiki graph portable-llm-wiki api base token") && (<>

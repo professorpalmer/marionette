@@ -33,7 +33,9 @@ export type Config = {
   swarm_adapter?: string;
   edit_engine?: "agentic" | "native";
   agentic_ready?: boolean;
+  reasoning_effort?: ReasoningEffort;
 };
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type Settings = {
   driver: string;
   reach: string;
@@ -46,6 +48,7 @@ export type Settings = {
   hash_edit_enabled?: boolean;
   commandTimeout?: string;
   maxPilotSteps?: string;
+  reasoning_effort?: ReasoningEffort;
   wiki_auto?: boolean;
   state_dir: string;
   repo: string;
@@ -79,6 +82,33 @@ export type BedrockCredentials = {
   AWS_REGION?: string;
   BEDROCK_REGION?: string;
   BEDROCK_MODEL_ID?: string;
+};
+
+export type PoolEntryPublic = {
+  id: string;
+  label: string;
+  auth_type: string;
+  source: string;
+  priority: number;
+  last_status?: string;
+  last_error_code?: number | null;
+  last_error_message?: string | null;
+  request_count?: number;
+  masked?: string;
+  has_refresh?: boolean;
+};
+
+export type AuthPoolPublic = {
+  provider: string;
+  strategy: string;
+  oauth_capable?: boolean;
+  entries: PoolEntryPublic[];
+};
+
+export type AuthPoolsResponse = {
+  pools: AuthPoolPublic[];
+  strategies?: string[];
+  providers?: string[];
 };
 
 export type PendingReviewHunk = {
@@ -208,7 +238,8 @@ export type SessionState = {
   // signal to auto-continue after a backend restart (self-edit apply).
   resume_pending?: boolean;
   // Per-session runner liveness from SessionRunnerRegistry (multi-session Phase B).
-  runners?: Record<string, "running" | "idle">;
+  // "attaching" = deferred cold pilot build (not a user turn — no thinking chrome).
+  runners?: Record<string, "running" | "idle" | "attaching" | "missing">;
   // Active VIEW session id — StatusBar must not treat background runners as
   // the active view thinking.
   active_view_id?: string | null;
@@ -514,6 +545,112 @@ export const api = {
     postJSON<BedrockStatus & { ok?: boolean }>("/api/bedrock", creds),
   clearBedrockCredentials: () =>
     postJSON<BedrockStatus & { ok?: boolean }>("/api/bedrock", { clear: true }),
+  getAuthPools: () => getJSON<AuthPoolsResponse>("/api/auth/pools"),
+  getAuthPool: (provider: string) =>
+    getJSON<AuthPoolPublic>(`/api/auth/pools?provider=${encodeURIComponent(provider)}`),
+  addAuthPoolKey: (provider: string, api_key: string, label?: string) =>
+    postJSON<AuthPoolPublic & { ok?: boolean; entry_id?: string }>("/api/auth/pools/add", {
+      provider,
+      type: "api_key",
+      api_key,
+      label: label || "",
+    }),
+  removeAuthPoolEntry: (provider: string, entry_id: string) =>
+    postJSON<AuthPoolPublic & { ok?: boolean }>("/api/auth/pools/remove", {
+      provider,
+      entry_id,
+    }),
+  setAuthPoolStrategy: (provider: string, strategy: string) =>
+    postJSON<AuthPoolPublic & { ok?: boolean }>("/api/auth/pools/strategy", {
+      provider,
+      strategy,
+    }),
+  resetAuthPool: (provider: string) =>
+    postJSON<AuthPoolPublic & { ok?: boolean }>("/api/auth/pools/reset", { provider }),
+  startAuthOAuth: (provider: string, label?: string) =>
+    postJSON<{
+      ok?: boolean;
+      session_id: string;
+      provider: string;
+      user_code?: string;
+      verification_uri?: string;
+      verification_uri_complete?: string;
+      auth_url?: string;
+      flow?: string;
+      interval?: number;
+      expires_in?: number;
+      hint?: string;
+      error?: string;
+    }>("/api/auth/oauth/start", { provider, label: label || "" }),
+  pollAuthOAuth: (session_id: string, provider?: string) =>
+    postJSON<{
+      status: "pending" | "done" | "error";
+      provider?: string;
+      entry_id?: string;
+      label?: string;
+      error?: string;
+      user_code?: string;
+      verification_uri?: string;
+      entries?: PoolEntryPublic[];
+    }>("/api/auth/oauth/poll", { session_id, provider: provider || "" }),
+  completeAuthOAuth: (session_id: string, code: string, provider = "anthropic") =>
+    postJSON<{
+      status: "pending" | "done" | "error";
+      provider?: string;
+      entry_id?: string;
+      label?: string;
+      error?: string;
+      entries?: PoolEntryPublic[];
+    }>("/api/auth/oauth/complete", { session_id, code, provider }),
+  cancelAuthOAuth: (session_id: string, provider?: string) =>
+    postJSON<{ ok?: boolean; status?: string; cleared?: boolean; error?: string }>(
+      "/api/auth/oauth/cancel",
+      { session_id, provider: provider || "" },
+    ),
+  getCursorCliStatus: (opts?: { refresh?: boolean }) =>
+    postJSON<{
+      ok?: boolean;
+      installed?: boolean;
+      authenticated?: boolean;
+      binary?: string | null;
+      label?: string;
+      error?: string;
+      install_hint?: string;
+      auth_kind?: string;
+    }>("/api/auth/cursor-cli/status", { refresh: !!opts?.refresh }),
+  startCursorCliLogin: (opts?: { workspace?: string }) =>
+    postJSON<{
+      ok?: boolean;
+      launched?: boolean;
+      command?: string;
+      hint?: string;
+      error?: string;
+      install_hint?: string;
+      poll_interval?: number;
+      expires_in?: number;
+      auth_kind?: string;
+      workspace?: string | null;
+    }>("/api/auth/cursor-cli/login", {
+      workspace: opts?.workspace || "",
+      workspace_root: opts?.workspace || "",
+    }),
+  trustCursorCliWorkspace: (opts?: { workspace?: string }) =>
+    postJSON<{
+      ok?: boolean;
+      trusted?: boolean;
+      workspace?: string | null;
+      error?: string;
+    }>("/api/auth/cursor-cli/trust", {
+      workspace: opts?.workspace || "",
+      workspace_root: opts?.workspace || "",
+    }),
+  logoutCursorCli: () =>
+    postJSON<{ ok?: boolean; error?: string }>("/api/auth/cursor-cli/logout", {}),
+  getCursorCliModels: () =>
+    postJSON<{ ok?: boolean; models?: { id: string }[]; auth_kind?: string; error?: string }>(
+      "/api/auth/cursor-cli/models",
+      {},
+    ),
   getRegistry: () => getJSON<{ models: RegistryModel[] }>("/api/registry"),
   saveRegistry: (models: RegistryModel[]) => postJSON<{ ok: boolean; models: RegistryModel[] }>("/api/registry", { models }),
   getRoles: () => getJSON<RolesConfig>("/api/roles"),
@@ -711,7 +848,10 @@ export const api = {
   skills: () => getJSON<any[]>("/api/skills"),
   skillDistill: () => postJSON<{ skill?: any; rules?: any }>("/api/skills/distill", {}),
   wikiIngestPrepared: (pages: any[]) => postJSON<{ ok: boolean; ingested: number }>("/api/wiki/ingest-prepared", { pages }),
-  modelCatalog: () => getJSON<ModelCatalogResponse>("/api/models/catalog"),
+  modelCatalog: (opts?: { refresh?: boolean }) =>
+    getJSON<ModelCatalogResponse>(
+      opts?.refresh ? "/api/models/catalog?refresh=1" : "/api/models/catalog",
+    ),
   toggleModel: (spec: string, enabled: boolean) =>
     postJSON<{ ok: boolean; enabled: string[]; driver?: string; driver_changed?: boolean }>(
       "/api/models/toggle",

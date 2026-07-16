@@ -9,7 +9,7 @@ const NAV: { id: PageId; label: string; icon: any }[] = [
   { id: "models", label: "Models", icon: Cpu },
   { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "safety", label: "Safety", icon: ShieldCheck },
-  { id: "providers", label: "Providers & Keys", icon: Zap },
+  { id: "providers", label: "Accounts & Keys", icon: Zap },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "advanced", label: "Advanced", icon: Wrench },
   { id: "about", label: "About", icon: Info },

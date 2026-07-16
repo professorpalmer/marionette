@@ -19,10 +19,10 @@ export default function ModelsSettingsPage() {
   // collapsed so Anthropic/OpenAI/xAI are reachable without endless scroll.
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({});
 
-  const load = async () => {
+  const load = async (opts?: { refresh?: boolean }) => {
     setLoading(true);
     try {
-      const res = await api.modelCatalog();
+      const res = await api.modelCatalog({ refresh: !!opts?.refresh });
       setCatalog(res.catalog || []);
     } catch {
       setCatalog([]);
@@ -110,8 +110,8 @@ export default function ModelsSettingsPage() {
           </p>
         </div>
         <button
-          onClick={load}
-          title="Refresh"
+          onClick={() => load({ refresh: true })}
+          title="Refresh live model catalogs (Cursor Agent CLI, Codex, …)"
           className="p-1.5 rounded-md border border-edge/40 text-muted hover:text-txt hover:bg-panel2 transition"
         >
           <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
