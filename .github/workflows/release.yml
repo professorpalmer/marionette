@@ -84,16 +84,64 @@ jobs:
           npm ci
           npm run dist -- --${{ matrix.platform }}
 
-      - name: Upload release artifacts
-        uses: softprops/action-gh-release@v3
+      # Stage installers as Actions artifacts. Do NOT call the Releases API from
+      # the matrix — three parallel softprops uploads race and flake hard when
+      # GitHub returns HTML 503/unicorn pages for /releases.
+      - name: Stage installer artifacts
+        uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: installer-${{ matrix.platform }}
+          path: |
             webapp/release/*.dmg
             webapp/release/*.zip
             webapp/release/*.exe
             webapp/release/*.AppImage
             webapp/release/*.blockmap
             webapp/release/latest*.yml
-          fail_on_unmatched_files: false
+          if-no-files-found: warn
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download staged installers
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: installer-*
+          merge-multiple: true
+
+      - name: Upload assets to GitHub Release (retry on API flakes)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          mapfile -t ASSETS < <(find dist -type f \( \
+            -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o \
+            -name '*.AppImage' -o -name '*.blockmap' -o -name 'latest*.yml' \
+          ) | sort)
+          if [ "${#ASSETS[@]}" -eq 0 ]; then
+            echo "No installer assets found under dist/" >&2
+            find dist -type f | head -n 50 || true
+            exit 1
+          fi
+          echo "Uploading ${#ASSETS[@]} asset(s) to $TAG:"
+          printf '  %s\n' "${ASSETS[@]}"
+
+          # Ensure the release row exists (notes may already be present).
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --generate-notes
+          fi
+
+          for attempt in 1 2 3 4 5 6 7 8; do
+            echo "release upload attempt ${attempt}/8"
+            if gh release upload "$TAG" "${ASSETS[@]}" --clobber; then
+              echo "Upload succeeded"
+              exit 0
+            fi
+            sleep $((attempt * 20))
+          done
+          echo "Exhausted retries uploading release assets" >&2
+          exit 1
