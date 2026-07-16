@@ -64,16 +64,22 @@ def test_provider_aliases():
 
 
 def test_build_pilot_selects_cursor_cli_driver(monkeypatch):
+    from pmharness.drivers.cursor_acp import CursorAcpDriver
     from pmharness.drivers.cursor_cli import CursorCliDriver
     monkeypatch.setenv("CURSOR_CLI_LOGIN", "1")
     monkeypatch.setattr(
         "harness.cursor_cli_auth.is_authenticated",
         lambda: True,
     )
+    # Default: warm ACP wrapper (falls back to --print internally).
+    monkeypatch.delenv("HARNESS_CURSOR_ACP", raising=False)
     d = prov.build_pilot("cursor-cli:auto")
-    assert isinstance(d, CursorCliDriver)
+    assert isinstance(d, CursorAcpDriver)
     assert d.model == "auto"
     assert d.supports_streaming is True
+    monkeypatch.setenv("HARNESS_CURSOR_ACP", "0")
+    d2 = prov.build_pilot("cursor-cli:auto")
+    assert isinstance(d2, CursorCliDriver)
 
 
 def test_available_pilots_include_cursor_cli_when_authed(monkeypatch):
