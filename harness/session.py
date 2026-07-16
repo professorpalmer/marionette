@@ -93,18 +93,36 @@ class Session:
     def preflight(self) -> Optional[str]:
         """Return an actionable error string if the driver cannot run (missing
         key), else None. Lets surfaces fail clearly instead of stack-tracing on
-        the first API call."""
+        the first API call.
+
+        OAuth / multi-key credentials live in the auth pool and may not be
+        exported as env vars yet -- treat a healthy pool entry as satisfying
+        the driver's ``api_key_env`` (e.g. OPENAI_CODEX_TOKEN via openai-codex).
+        """
         import os
         d = self.driver
         env = getattr(d, "api_key_env", None)
-        if env and not os.environ.get(env, "").strip():
-            reach = self.config.reach
-            hint = ("set OPENROUTER_API_KEY" if reach == "openrouter"
-                    else f"set {env}")
-            return (f"Driver '{self.config.driver}' needs an API key but {env} is "
-                    f"not set. {hint}, or use HARNESS_DRIVER=stub-oracle-v2 for a "
-                    f"no-key demo.")
-        return None
+        if not env:
+            return None
+        if os.environ.get(env, "").strip():
+            return None
+        try:
+            from .credential_pool import credential_satisfied, peek_token_for_env
+            if credential_satisfied(env):
+                # Mirror so subsequent env-only checks / child tools see it
+                # (includes OAuth sibling pools, e.g. xai-oauth → XAI_API_KEY).
+                tok = peek_token_for_env(env)
+                if tok:
+                    os.environ[env] = tok
+                return None
+        except Exception:
+            pass
+        reach = self.config.reach
+        hint = ("set OPENROUTER_API_KEY" if reach == "openrouter"
+                else f"set {env}")
+        return (f"Driver '{self.config.driver}' needs an API key but {env} is "
+                f"not set. {hint}, or use HARNESS_DRIVER=stub-oracle-v2 for a "
+                f"no-key demo.")
 
     def run(self, prompt: str, images: Optional[list] = None) -> Iterator[SessionEvent]:
         """Drive the loop, yielding an event per step. The GUI consumes this.

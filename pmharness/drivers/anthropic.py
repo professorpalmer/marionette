@@ -70,15 +70,49 @@ class AnthropicDriver:
         self.send_temperature = send_temperature
         self.timeout = timeout
         self.enable_prompt_cache = enable_prompt_cache
+        self._pool_provider: str | None = None
+        self._pool_entry_id: str | None = None
 
     def _prompt_cache_on(self) -> bool:
         return bool(self.enable_prompt_cache) and prompt_cache_enabled()
 
     def _key(self) -> str:
+        """Resolve API key: credential pool first, then process env."""
+        self._pool_provider = None
+        self._pool_entry_id = None
+        try:
+            from harness.credential_pool import resolve_entry_for_env
+            entry = resolve_entry_for_env(self.api_key_env)
+            if entry is not None and entry.runtime_token:
+                self._pool_provider = entry.provider
+                self._pool_entry_id = entry.id
+                return entry.runtime_token
+        except Exception:
+            pass
         key = os.environ.get(self.api_key_env, "").strip()
         if not key:
             raise RuntimeError(f"missing API key in env var {self.api_key_env}")
         return key
+
+    def _pool_rotate_on_http_error(self, code: int, detail: str) -> str | None:
+        if not self._pool_provider or not self._pool_entry_id:
+            return None
+        if code not in (401, 402, 429):
+            return None
+        try:
+            from harness.credential_pool import report_failure
+            nxt = report_failure(
+                self._pool_provider,
+                self._pool_entry_id,
+                status_code=code,
+                message=detail or "",
+            )
+            if nxt:
+                self._key()
+                return nxt
+        except Exception:
+            pass
+        return None
 
     def complete(self, task_prompt: str, *, system: str = SYSTEM_PROMPT) -> DriverResponse:
         url = f"{self.base_url}/messages"
@@ -97,27 +131,41 @@ class AnthropicDriver:
         if self.temperature is not None and self.send_temperature:
             body["temperature"] = self.temperature
         data = json.dumps(body).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": self._key(),
-            "anthropic-version": self.version,
-        }
-        if self._prompt_cache_on():
-            headers["anthropic-beta"] = "prompt-caching-2024-07-31"
 
         def _call() -> DriverResponse:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            headers = self._headers()
             t0 = time.time()
-            try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    raw = json.loads(resp.read().decode("utf-8"))
-            except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:500]
-                return DriverResponse(text="", model=self.name, error=f"HTTP {e.code}: {detail}",
-                                      latency_ms=(time.time() - t0) * 1000.0)
-            except Exception as e:
-                return DriverResponse(text="", model=self.name, error=repr(e),
-                                      latency_ms=(time.time() - t0) * 1000.0)
+            raw = None
+            for attempt in range(2):
+                try:
+                    req = urllib.request.Request(
+                        url, data=data, headers=headers, method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                    break
+                except urllib.error.HTTPError as e:
+                    detail = e.read().decode("utf-8", "replace")[:500]
+                    if attempt == 0:
+                        nxt = self._pool_rotate_on_http_error(e.code, detail)
+                        if nxt:
+                            headers = self._headers()
+                            continue
+                    return DriverResponse(
+                        text="", model=self.name,
+                        error=f"HTTP {e.code}: {detail}",
+                        latency_ms=(time.time() - t0) * 1000.0,
+                    )
+                except Exception as e:
+                    return DriverResponse(
+                        text="", model=self.name, error=repr(e),
+                        latency_ms=(time.time() - t0) * 1000.0,
+                    )
+            if raw is None:
+                return DriverResponse(
+                    text="", model=self.name, error="empty response",
+                    latency_ms=(time.time() - t0) * 1000.0,
+                )
             latency = (time.time() - t0) * 1000.0
             try:
                 # content is a list of blocks; take the first text block
@@ -304,36 +352,68 @@ class AnthropicDriver:
         return body
 
     def _headers(self) -> dict:
+        key = self._key()
         headers = {
             "Content-Type": "application/json",
-            "x-api-key": self._key(),
             "anthropic-version": self.version,
         }
-        if self._prompt_cache_on():
-            headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+        # OAuth / setup tokens need Bearer + beta; API keys use x-api-key.
+        try:
+            from harness.oauth_anthropic import is_anthropic_oauth_token
+            oauth = is_anthropic_oauth_token(key)
+        except Exception:
+            oauth = key.startswith("sk-ant-oat") or key.startswith("eyJ") or key.startswith("cc-")
+        if oauth:
+            headers["Authorization"] = f"Bearer {key}"
+            headers["x-app"] = "cli"
+            headers["User-Agent"] = "claude-code/2.1.200"
+            betas = ["claude-code-20250219", "oauth-2025-04-20"]
+            if self._prompt_cache_on():
+                betas.append("prompt-caching-2024-07-31")
+            headers["anthropic-beta"] = ",".join(betas)
+        else:
+            headers["x-api-key"] = key
+            if self._prompt_cache_on():
+                headers["anthropic-beta"] = "prompt-caching-2024-07-31"
         return headers
 
     def chat(self, messages: list, *, tools: list | None = None, system: str | None = None) -> DriverResponse:
         url = f"{self.base_url}/messages"
         body = self._build_body(messages, tools, system)
         data = json.dumps(body).encode("utf-8")
-        headers = self._headers()
 
         def _call() -> DriverResponse:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            headers = self._headers()
             t0 = time.time()
-            try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    raw = json.loads(resp.read().decode("utf-8"))
-            except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:500]
+            raw = None
+            for attempt in range(2):
+                try:
+                    req = urllib.request.Request(
+                        url, data=data, headers=headers, method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                    break
+                except urllib.error.HTTPError as e:
+                    detail = e.read().decode("utf-8", "replace")[:500]
+                    if attempt == 0:
+                        nxt = self._pool_rotate_on_http_error(e.code, detail)
+                        if nxt:
+                            headers = self._headers()
+                            continue
+                    return DriverResponse(
+                        text="", model=self.name,
+                        error=f"HTTP {e.code}: {detail}",
+                        latency_ms=(time.time() - t0) * 1000.0,
+                    )
+                except Exception as e:
+                    return DriverResponse(
+                        text="", model=self.name, error=repr(e),
+                        latency_ms=(time.time() - t0) * 1000.0,
+                    )
+            if raw is None:
                 return DriverResponse(
-                    text="", model=self.name, error=f"HTTP {e.code}: {detail}",
-                    latency_ms=(time.time() - t0) * 1000.0,
-                )
-            except Exception as e:
-                return DriverResponse(
-                    text="", model=self.name, error=repr(e),
+                    text="", model=self.name, error="empty response",
                     latency_ms=(time.time() - t0) * 1000.0,
                 )
 
@@ -533,6 +613,16 @@ class AnthropicDriver:
 
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:500]
+            if not full_text_pieces:
+                nxt = self._pool_rotate_on_http_error(e.code, detail)
+                if nxt:
+                    return self.chat_stream(
+                        messages,
+                        tools=tools,
+                        system=system,
+                        on_delta=on_delta,
+                        on_reasoning_delta=on_reasoning_delta,
+                    )
             return DriverResponse(
                 text="", model=self.name, error=f"HTTP {e.code}: {detail}",
                 latency_ms=(time.time() - t0) * 1000.0,

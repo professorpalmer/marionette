@@ -16,6 +16,9 @@ transport/agent core, which is coupled to its conversation loop and prompt-cache
 machinery the bounded pilot does not need. Our transport stays the thin
 OpenAICompatDriver / AnthropicDriver already in pmharness/drivers/.
 
+cursor-cli is Marionette-native (no Hermes profile): local `agent` CLI
+stream-json + `agent login` session auth — not CURSOR_API_KEY pool rotate.
+
 MIT License text: https://github.com/NousResearch/hermes-agent (LICENSE).
 """
 
@@ -68,10 +71,28 @@ class Provider:
                 return bedrock_credential_token()
             except Exception:
                 return None
+        if self.name == "cursor-cli":
+            # Sentinel only: real auth is `agent login` / `agent status`.
+            try:
+                from .cursor_cli_auth import login_token_if_ready
+                return login_token_if_ready()
+            except Exception:
+                return None
         for ev in self.env_vars:
             v = os.environ.get(ev, "").strip()
             if v:
                 return v
+        try:
+            from .credential_pool import peek_token, peek_token_for_env
+            for ev in self.env_vars:
+                tok = peek_token_for_env(ev)
+                if tok:
+                    return tok
+            tok = peek_token(self.name)
+            if tok:
+                return tok
+        except Exception:
+            pass
         return None
 
     def key_env(self) -> Optional[str]:
@@ -84,15 +105,27 @@ class Provider:
                     and (os.environ.get("AWS_SECRET_ACCESS_KEY") or "").strip()):
                 return "AWS_ACCESS_KEY_ID"
             return None
+        if self.name == "cursor-cli":
+            return "CURSOR_CLI_LOGIN" if self.key() else None
         for ev in self.env_vars:
             if os.environ.get(ev, "").strip():
                 return ev
+        # Pool-only credentials still need a stable env name for drivers
+        # (includes OAuth sibling pools, e.g. xai-oauth for XAI_API_KEY).
+        try:
+            from .credential_pool import credential_satisfied, has_healthy_credential
+            for ev in self.env_vars:
+                if credential_satisfied(ev):
+                    return ev
+            if has_healthy_credential(self.name) and self.env_vars:
+                return self.env_vars[0]
+        except Exception:
+            pass
         return None
 
     @property
     def available(self) -> bool:
         return self.key() is not None
-
 
 # ── Provider profiles (data adapted from Hermes model-provider plugins, MIT) ──
 # OpenRouter intentionally first: one key fans out to the whole open field.
@@ -133,6 +166,63 @@ PROVIDERS = (
             "gpt-5.4-mini",
         ),
         vision_model="gpt-5.6-luna",
+    ),
+    Provider(
+        name="openai-codex", aliases=("codex-plan", "chatgpt-codex"),
+        env_vars=("OPENAI_CODEX_TOKEN",),
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_mode="codex_responses", display_name="ChatGPT Codex (OAuth)",
+        # ChatGPT Codex OAuth catalog (Hermes-aligned). Live fetch from
+        # chatgpt.com/backend-api/codex/models merges on top when signed in.
+        pilot_models=(
+            "gpt-5.6-sol",
+            "gpt-5.6-sol-pro",
+            "gpt-5.6-terra",
+            "gpt-5.6-terra-pro",
+            "gpt-5.6-luna",
+            "gpt-5.6-luna-pro",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+            "o3",
+            "o4-mini",
+        ),
+        vision_model="gpt-5.4",
+    ),
+    # Cursor Agent CLI plan pilot. Distinct from platform which('cursor') and
+    # from CURSOR_API_KEY credential pools. Availability = agent binary + login.
+    Provider(
+        name="cursor-cli", aliases=("cursor-agent",),
+        env_vars=("CURSOR_CLI_LOGIN",),
+        base_url="",
+        api_mode="cursor_cli", display_name="Cursor CLI (plan)",
+        pilot_models=(
+            "composer-2.5",
+            "composer-2.5-fast",
+            "cursor-grok-4.5-high",
+            "cursor-grok-4.5-medium",
+            "cursor-grok-4.5-low",
+            "claude-opus-4-8-thinking-high",
+            "claude-opus-4-8-high",
+            "gpt-5.5-high",
+            "gpt-5.6-sol-medium",
+            "gpt-5.4-high",
+            "claude-4.5-sonnet-thinking",
+            "claude-4.5-sonnet",
+            "sonnet-4",
+            "sonnet-4-thinking",
+            "gpt-5",
+            "composer-1",
+        ),
+    ),
+    Provider(
+        name="nous", aliases=("nousresearch",),
+        env_vars=("NOUS_API_KEY",),
+        base_url="https://inference-api.nousresearch.com/v1",
+        api_mode="chat_completions", display_name="Nous Portal (OAuth)",
+        pilot_models=("Hermes-3-Llama-3.1-70B", "Hermes-4-70B"),
     ),
     Provider(
         name="gemini", aliases=("google", "google-gemini"),
@@ -320,11 +410,19 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         pname, model = spec.split(":", 1)
         provider = get_provider(pname)
     if provider is None:
-        # resolve a bare model name to a provider that lists it
-        for p in available_providers():
-            if model in p.pilot_models:
-                provider = p
+        # Resolve a bare model name to a provider that lists it. Prefer
+        # openai-codex over openai when both advertise the same id so a
+        # ChatGPT plan OAuth burn isn't shadowed by OPENAI_API_KEY.
+        candidates = [p for p in available_providers() if model in p.pilot_models]
+        for preferred in ("openai-codex",):
+            for p in candidates:
+                if p.name == preferred:
+                    provider = p
+                    break
+            if provider is not None:
                 break
+        if provider is None and candidates:
+            provider = candidates[0]
     if provider is None:
         # last resort: OpenRouter (one key, whole field) if present.
         # Translate a catalog short-name (e.g. "qwen3-coder-30b") to its real
@@ -369,6 +467,26 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         from pmharness.drivers.bedrock import BedrockDriver
         return _finalize_driver(
             BedrockDriver(name=spec, model=model, max_tokens=max_tokens)
+        )
+    if provider.api_mode == "codex_responses":
+        from pmharness.drivers.codex_responses import CodexResponsesDriver
+        return _finalize_driver(
+            CodexResponsesDriver(
+                name=spec,
+                model=model,
+                base_url=provider.base_url,
+                api_key_env=key_env or "OPENAI_CODEX_TOKEN",
+                max_tokens=max_tokens,
+            )
+        )
+    if provider.api_mode == "cursor_cli":
+        from pmharness.drivers.cursor_cli import CursorCliDriver
+        # Workspace trust / --workspace follow the open project (HARNESS_REPO).
+        cwd = (os.environ.get("HARNESS_REPO") or "").strip() or None
+        return _finalize_driver(
+            CursorCliDriver(
+                name=spec, model=model, max_tokens=max_tokens, cwd=cwd,
+            )
         )
     return _finalize_driver(
         OpenAICompatDriver(name=spec, model=model, base_url=provider.base_url,

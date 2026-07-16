@@ -53,12 +53,49 @@ class OpenAICompatDriver:
         self.extra_headers = extra_headers or {}
         self.enable_reasoning = enable_reasoning
         self.session_id = session_id
+        # Set by _key() when a credential-pool entry is selected.
+        self._pool_provider: str | None = None
+        self._pool_entry_id: str | None = None
 
     def _key(self) -> str:
+        """Resolve API key: credential pool first, then process env."""
+        self._pool_provider = None
+        self._pool_entry_id = None
+        try:
+            from harness.credential_pool import resolve_entry_for_env
+            entry = resolve_entry_for_env(self.api_key_env)
+            if entry is not None and entry.runtime_token:
+                self._pool_provider = entry.provider
+                self._pool_entry_id = entry.id
+                return entry.runtime_token
+        except Exception:
+            pass
         key = os.environ.get(self.api_key_env, "").strip()
         if not key:
             raise RuntimeError(f"missing API key in env var {self.api_key_env}")
         return key
+
+    def _pool_rotate_on_http_error(self, code: int, detail: str) -> str | None:
+        """On 429 plan-limit / 402 / auth fail, rotate pool and return next key."""
+        if not self._pool_provider or not self._pool_entry_id:
+            return None
+        if code not in (401, 402, 429):
+            return None
+        try:
+            from harness.credential_pool import report_failure
+            nxt = report_failure(
+                self._pool_provider,
+                self._pool_entry_id,
+                status_code=code,
+                message=detail or "",
+            )
+            if nxt:
+                # Re-select so _pool_entry_id tracks the new entry
+                self._key()
+                return nxt
+        except Exception:
+            pass
+        return None
 
     def _reasoning_unsupported(self, code: int, detail: str) -> bool:
         """True when an endpoint rejected the OpenRouter-style `reasoning` field.
@@ -181,27 +218,47 @@ class OpenAICompatDriver:
             session_id=session_id,
         )
         data = json.dumps(body).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._key()}",
-        }
-        headers.update(self.extra_headers)
 
         def _call() -> DriverResponse:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._key()}",
+            }
+            headers.update(self.extra_headers)
             t0 = time.time()
-            try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    raw = json.loads(resp.read().decode("utf-8"))
-            except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:500]
+            raw = None
+            last_err = None
+            for attempt in range(2):
+                try:
+                    req = urllib.request.Request(
+                        url, data=data, headers=headers, method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                    last_err = None
+                    break
+                except urllib.error.HTTPError as e:
+                    detail = e.read().decode("utf-8", "replace")[:500]
+                    last_err = (e.code, detail)
+                    if attempt == 0:
+                        nxt = self._pool_rotate_on_http_error(e.code, detail)
+                        if nxt:
+                            headers["Authorization"] = f"Bearer {self._key()}"
+                            continue
+                    return DriverResponse(
+                        text="", model=self.name,
+                        error=f"HTTP {e.code}: {detail}",
+                        latency_ms=(time.time() - t0) * 1000.0,
+                    )
+                except Exception as e:  # network, timeout, json
+                    return DriverResponse(
+                        text="", model=self.name, error=repr(e),
+                        latency_ms=(time.time() - t0) * 1000.0,
+                    )
+            if last_err is not None:
+                code, detail = last_err
                 return DriverResponse(
-                    text="", model=self.name, error=f"HTTP {e.code}: {detail}",
-                    latency_ms=(time.time() - t0) * 1000.0,
-                )
-            except Exception as e:  # network, timeout, json
-                return DriverResponse(
-                    text="", model=self.name, error=repr(e),
+                    text="", model=self.name, error=f"HTTP {code}: {detail}",
                     latency_ms=(time.time() - t0) * 1000.0,
                 )
 
@@ -262,15 +319,16 @@ class OpenAICompatDriver:
         )
 
         data = json.dumps(body).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._key()}",
-        }
-        headers.update(self.extra_headers)
 
         def _call() -> DriverResponse:
             nonlocal data
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._key()}",
+            }
+            headers.update(self.extra_headers)
             t0 = time.time()
+            raw = None
             try:
                 req = urllib.request.Request(url, data=data, headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -289,17 +347,63 @@ class OpenAICompatDriver:
                             raw = json.loads(resp.read().decode("utf-8"))
                     except urllib.error.HTTPError as e2:
                         d2 = e2.read().decode("utf-8", "replace")[:500]
-                        return DriverResponse(text="", model=self.name,
-                                              error=f"HTTP {e2.code}: {d2}",
-                                              latency_ms=(time.time() - t0) * 1000.0)
+                        nxt = self._pool_rotate_on_http_error(e2.code, d2)
+                        if nxt:
+                            headers["Authorization"] = f"Bearer {self._key()}"
+                            try:
+                                req = urllib.request.Request(
+                                    url, data=data, headers=headers, method="POST",
+                                )
+                                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                                    raw = json.loads(resp.read().decode("utf-8"))
+                            except urllib.error.HTTPError as e3:
+                                d3 = e3.read().decode("utf-8", "replace")[:500]
+                                return DriverResponse(
+                                    text="", model=self.name,
+                                    error=f"HTTP {e3.code}: {d3}",
+                                    latency_ms=(time.time() - t0) * 1000.0,
+                                )
+                            except Exception as e3:
+                                return DriverResponse(
+                                    text="", model=self.name, error=repr(e3),
+                                    latency_ms=(time.time() - t0) * 1000.0,
+                                )
+                        else:
+                            return DriverResponse(
+                                text="", model=self.name,
+                                error=f"HTTP {e2.code}: {d2}",
+                                latency_ms=(time.time() - t0) * 1000.0,
+                            )
                     except Exception as e2:
                         return DriverResponse(text="", model=self.name, error=repr(e2),
                                               latency_ms=(time.time() - t0) * 1000.0)
                 else:
-                    return DriverResponse(
-                        text="", model=self.name, error=f"HTTP {e.code}: {detail}",
-                        latency_ms=(time.time() - t0) * 1000.0,
-                    )
+                    nxt = self._pool_rotate_on_http_error(e.code, detail)
+                    if nxt:
+                        headers["Authorization"] = f"Bearer {self._key()}"
+                        try:
+                            req = urllib.request.Request(
+                                url, data=data, headers=headers, method="POST",
+                            )
+                            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                                raw = json.loads(resp.read().decode("utf-8"))
+                        except urllib.error.HTTPError as e2:
+                            d2 = e2.read().decode("utf-8", "replace")[:500]
+                            return DriverResponse(
+                                text="", model=self.name,
+                                error=f"HTTP {e2.code}: {d2}",
+                                latency_ms=(time.time() - t0) * 1000.0,
+                            )
+                        except Exception as e2:
+                            return DriverResponse(
+                                text="", model=self.name, error=repr(e2),
+                                latency_ms=(time.time() - t0) * 1000.0,
+                            )
+                    else:
+                        return DriverResponse(
+                            text="", model=self.name, error=f"HTTP {e.code}: {detail}",
+                            latency_ms=(time.time() - t0) * 1000.0,
+                        )
             except Exception as e:
                 return DriverResponse(
                     text="", model=self.name, error=repr(e),
@@ -378,13 +482,13 @@ class OpenAICompatDriver:
         )
 
         data = json.dumps(body).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._key()}",
-        }
-        headers.update(self.extra_headers)
 
         def _call() -> DriverResponse:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._key()}",
+            }
+            headers.update(self.extra_headers)
             t0 = time.time()
             full_text = ""
             reasoning_pieces = []
@@ -501,6 +605,19 @@ class OpenAICompatDriver:
                     return self.chat(
                         messages, tools=tools, system=system, session_id=session_id,
                     )
+                # Pool rotate only before any tokens streamed (same safety rule).
+                if not stream_started:
+                    nxt = self._pool_rotate_on_http_error(e.code, detail)
+                    if nxt:
+                        return self.chat_stream(
+                            messages,
+                            tools=tools,
+                            system=system,
+                            on_delta=on_delta,
+                            session_id=session_id,
+                            on_reasoning_delta=on_reasoning_delta,
+                            on_tool_hint=on_tool_hint,
+                        )
                 return DriverResponse(
                     text="", model=self.name, error=f"HTTP {e.code}: {detail}",
                     latency_ms=(time.time() - t0) * 1000.0,

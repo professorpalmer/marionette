@@ -19,7 +19,17 @@ def _isolate_disconnected(monkeypatch):
     # when the state-dir file is missing.
     with open(os.path.join(state, "disconnected.json"), "w", encoding="utf-8") as f:
         f.write("[]")
+    try:
+        from harness import credential_pool as cp
+        cp.clear_pools_for_tests()
+    except Exception:
+        pass
     yield
+    try:
+        from harness import credential_pool as cp
+        cp.clear_pools_for_tests()
+    except Exception:
+        pass
 
 
 def test_attribution_present():
@@ -30,9 +40,13 @@ def test_attribution_present():
 def test_detection_from_env(monkeypatch):
     for ev in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
                "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "GLM_API_KEY",
+               "OPENAI_CODEX_TOKEN", "NOUS_API_KEY", "XAI_API_KEY",
+               "XAI_OAUTH_TOKEN", "MINIMAX_API_KEY", "NVIDIA_API_KEY",
+               "GOOGLE_API_KEY", "ANTHROPIC_TOKEN", "ZAI_API_KEY", "Z_AI_API_KEY",
                "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
-               "AWS_SECRET_ACCESS_KEY"):
+               "AWS_SECRET_ACCESS_KEY", "CURSOR_CLI_LOGIN"):
         monkeypatch.delenv(ev, raising=False)
+    monkeypatch.setattr("harness.cursor_cli_auth.is_authenticated", lambda: False)
     assert prov.available_providers() == []
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xxx")
     names = [p.name for p in prov.available_providers()]
@@ -46,6 +60,46 @@ def test_provider_aliases():
     assert prov.get_provider("claude").name == "anthropic"
     assert prov.get_provider("glm").name == "zai"
     assert prov.get_provider("grok").name == "xai"
+    assert prov.get_provider("cursor-agent").name == "cursor-cli"
+
+
+def test_build_pilot_selects_cursor_cli_driver(monkeypatch):
+    from pmharness.drivers.cursor_cli import CursorCliDriver
+    monkeypatch.setenv("CURSOR_CLI_LOGIN", "1")
+    monkeypatch.setattr(
+        "harness.cursor_cli_auth.is_authenticated",
+        lambda: True,
+    )
+    d = prov.build_pilot("cursor-cli:auto")
+    assert isinstance(d, CursorCliDriver)
+    assert d.model == "auto"
+    assert d.supports_streaming is True
+
+
+def test_available_pilots_include_cursor_cli_when_authed(monkeypatch):
+    for ev in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+               "DEEPSEEK_API_KEY", "GLM_API_KEY", "MINIMAX_API_KEY",
+               "XAI_API_KEY", "XAI_OAUTH_TOKEN", "NVIDIA_API_KEY",
+               "ZAI_API_KEY", "Z_AI_API_KEY", "GOOGLE_API_KEY",
+               "ANTHROPIC_TOKEN", "OPENAI_CODEX_TOKEN", "NOUS_API_KEY",
+               "OPENROUTER_API_KEY", "AWS_BEARER_TOKEN_BEDROCK",
+               "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CURSOR_CLI_LOGIN"):
+        monkeypatch.delenv(ev, raising=False)
+    monkeypatch.setattr("harness.cursor_cli_auth.is_authenticated", lambda: True)
+    monkeypatch.setenv("CURSOR_CLI_LOGIN", "1")
+    # Avoid live `agent models` spawn during unit test.
+    monkeypatch.setenv("PMHARNESS_LIVE_MODELS", "0")
+    pilots = prov.available_pilots()
+    assert any(p.startswith("cursor-cli:") for p in pilots)
+    assert not any(p.startswith("cursor:") for p in pilots)
+
+
+def test_platform_cursor_adapter_distinct_from_cursor_cli():
+    """Platform implement adapter stays which('cursor'); pilot is cursor-cli."""
+    p = prov.get_provider("cursor-cli")
+    assert p is not None
+    assert p.api_mode == "cursor_cli"
+    assert prov.get_provider("cursor") is None  # no provider named bare cursor
 
 
 def test_build_pilot_selects_anthropic_driver(monkeypatch):
@@ -71,8 +125,10 @@ def test_build_pilot_no_key_raises(monkeypatch):
                "ZAI_API_KEY", "Z_AI_API_KEY", "MINIMAX_API_KEY", "XAI_API_KEY",
                "NVIDIA_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_TOKEN",
                "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
-               "AWS_SECRET_ACCESS_KEY"):
+               "AWS_SECRET_ACCESS_KEY", "CURSOR_CLI_LOGIN", "OPENAI_CODEX_TOKEN",
+               "NOUS_API_KEY"):
         monkeypatch.delenv(ev, raising=False)
+    monkeypatch.setattr("harness.cursor_cli_auth.is_authenticated", lambda: False)
     try:
         prov.build_pilot("anthropic:claude-opus-4-8")
         assert False, "should raise ProviderError"
@@ -83,15 +139,40 @@ def test_build_pilot_no_key_raises(monkeypatch):
 def test_available_pilots_are_provider_scoped(monkeypatch):
     for ev in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
                "DEEPSEEK_API_KEY", "GLM_API_KEY", "MINIMAX_API_KEY",
-               "XAI_API_KEY", "NVIDIA_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
-               "GOOGLE_API_KEY", "ANTHROPIC_TOKEN",
+               "XAI_API_KEY", "XAI_OAUTH_TOKEN", "NVIDIA_API_KEY",
+               "ZAI_API_KEY", "Z_AI_API_KEY", "GOOGLE_API_KEY",
+               "ANTHROPIC_TOKEN", "OPENAI_CODEX_TOKEN", "NOUS_API_KEY",
                "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
-               "AWS_SECRET_ACCESS_KEY"):
+               "AWS_SECRET_ACCESS_KEY", "CURSOR_CLI_LOGIN"):
         monkeypatch.delenv(ev, raising=False)
+    monkeypatch.setattr("harness.cursor_cli_auth.is_authenticated", lambda: False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-xxx")
     pilots = prov.available_pilots()
     assert all(p.startswith("openrouter:") or p == "moa-planner" or p.startswith("moa:") for p in pilots)
     assert len(pilots) >= 3
+
+
+def test_build_pilot_bare_gpt55_prefers_openai_codex(monkeypatch):
+    """Bare gpt-5.5 must not shadow ChatGPT Codex OAuth with OPENAI_API_KEY."""
+    from harness import credential_pool as cp
+    from pmharness.drivers.codex_responses import CodexResponsesDriver
+
+    for ev in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+               "OPENAI_CODEX_TOKEN", "GEMINI_API_KEY"):
+        monkeypatch.delenv(ev, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-oai-xxx")
+    cp.clear_pools_for_tests()
+    cp.add_oauth_entry(
+        "openai-codex",
+        access_token="eyJhbGciOiJub25lIn0.e30.",
+        label="codex",
+    )
+    try:
+        d = prov.build_pilot("gpt-5.5")
+        assert isinstance(d, CodexResponsesDriver)
+        assert d.model == "gpt-5.5"
+    finally:
+        cp.clear_pools_for_tests()
 
 
 def test_build_pilot_selects_bedrock_driver(monkeypatch):

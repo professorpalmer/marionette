@@ -453,6 +453,27 @@ def get_api_key_status(reach: str) -> dict:
         # Non-bedrock structured entries are not single-string API keys.
         return {"has_key": False, "masked": ""}
     if not key:
+        # Credential-pool OAuth / multi-key entries count as configured.
+        try:
+            from .credential_pool import has_healthy_credential, peek_token, list_pool_public
+            # openai-codex / xai-oauth use their own pool ids; classic "xai"
+            # reach also accepts SuperGrok OAuth in the xai-oauth pool.
+            pool_names = [reach]
+            if reach == "xai":
+                pool_names.append("xai-oauth")
+            for pool_name in pool_names:
+                if has_healthy_credential(pool_name):
+                    tok = peek_token(pool_name) or ""
+                    if len(tok) <= 8:
+                        return {"has_key": True, "masked": "...."}
+                    return {"has_key": True, "masked": "...." + tok[-4:]}
+            # Anthropic OAuth lives in anthropic pool; also check aliases
+            pub = list_pool_public(reach)
+            if pub.get("entries"):
+                e0 = pub["entries"][0]
+                return {"has_key": True, "masked": e0.get("masked") or "...."}
+        except Exception:
+            pass
         return {"has_key": False, "masked": ""}
     # Never reveal any portion of a short key; only show last 4 of a sufficiently
     # long one. A short/garbage key is fully masked rather than echoed back.
@@ -478,6 +499,13 @@ def set_api_key(reach: str, value: str):
         os.environ[env_var] = value
         # Reconnecting clears the explicit-disconnect flag.
         unmark_disconnected(reach)
+        # Keep the credential pool in sync so multi-key rotation can include
+        # keys pasted via the classic Settings form.
+        try:
+            from .credential_pool import add_api_key
+            add_api_key(reach, value, label=f"{reach}-settings")
+        except Exception:
+            pass
     else:
         clear_api_key(reach)
 

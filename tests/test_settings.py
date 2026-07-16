@@ -48,6 +48,8 @@ def test_settings_get_returns_expected_shape():
         assert "auto_distill" in data
         assert "hash_edit_enabled" in data
         assert "wiki_auto" in data
+        assert "reasoning_effort" in data
+        assert data["reasoning_effort"] == "low"
         assert "state_dir" in data
         assert "repo" in data
     finally:
@@ -106,6 +108,46 @@ def test_settings_post_updates_settings_successfully():
             port,
             "/api/settings",
             {"hash_edit_enabled": initial_hash_edit},
+            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        )
+        assert restore_resp.status == 200
+    finally:
+        httpd.shutdown()
+
+
+def test_settings_post_persists_reasoning_effort(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    httpd, port, srv = _server()
+    try:
+        post_resp = _post(
+            port,
+            "/api/settings",
+            {"reasoning_effort": "xhigh"},
+            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        )
+        assert post_resp.status == 200
+        post_data = json.loads(post_resp.read().decode())
+        assert post_data["reasoning_effort"] == "xhigh"
+
+        get_data = json.loads(_get(port, "/api/settings").read().decode())
+        assert get_data["reasoning_effort"] == "xhigh"
+
+        import os
+        assert os.environ.get("HARNESS_CODEX_REASONING_EFFORT") == "xhigh"
+
+        env_path = os.path.join(str(tmp_path), "env_settings.json")
+        assert os.path.exists(env_path)
+        with open(env_path, encoding="utf-8") as f:
+            persisted = json.load(f)
+        assert persisted["HARNESS_CODEX_REASONING_EFFORT"] == "xhigh"
+
+        config = json.loads(_get(port, "/api/config").read().decode())
+        assert config["reasoning_effort"] == "xhigh"
+
+        restore_resp = _post(
+            port,
+            "/api/settings",
+            {"reasoning_effort": "low"},
             {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
         )
         assert restore_resp.status == 200

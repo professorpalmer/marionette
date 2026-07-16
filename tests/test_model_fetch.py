@@ -56,6 +56,35 @@ def test_provider_models_merges_live_with_curated(monkeypatch):
     assert merged.count("claude-opus-4-8") == 1
 
 
+def test_cursor_cli_provider_models_prefers_live_order(monkeypatch):
+    p = prov.get_provider("cursor-cli")
+    monkeypatch.setattr(p.__class__, "key", lambda self: "1")
+    monkeypatch.setattr(
+        mf, "fetch_models",
+        lambda provider, key, **kw: ["composer-2.5", "cursor-grok-4.5-high", "gpt-5.5-high"],
+    )
+    merged = mv.provider_models(p)
+    assert merged[:3] == ["composer-2.5", "cursor-grok-4.5-high", "gpt-5.5-high"]
+
+
+def test_codex_oauth_models_parse(monkeypatch):
+    monkeypatch.setattr(
+        mf, "_get",
+        lambda url, headers: {
+            "models": [
+                {"slug": "gpt-5.5", "priority": 1},
+                {"slug": "gpt-5.3-codex", "priority": 2},
+                {"slug": "hidden-x", "visibility": "hidden", "priority": 0},
+            ]
+        },
+    )
+    out = mf._fetch_codex_oauth_models("tok")
+    assert out[0] == "gpt-5.5"
+    assert "gpt-5.3-codex" in out
+    assert "hidden-x" not in out
+    assert "gpt-5.6-sol" in out  # forward-compat
+
+
 def test_provider_models_falls_back_to_curated_on_fetch_failure(monkeypatch):
     p = prov.get_provider("openai")
     monkeypatch.setattr(p.__class__, "key", lambda self: "fake-key")

@@ -70,6 +70,48 @@ def _get(url: str, headers: dict) -> dict:
     return json.loads(raw)
 
 
+def _fetch_codex_oauth_models(access_token: str) -> list[str]:
+    """List ChatGPT Codex OAuth models (chatgpt.com backend), Hermes-aligned."""
+    token = (access_token or "").strip()
+    if not token:
+        return []
+    data = _get(
+        "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+        {"Authorization": f"Bearer {token}", "User-Agent": "pm-harness"},
+    )
+    entries = data.get("models", []) if isinstance(data, dict) else []
+    sortable = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        slug = item.get("slug")
+        if not isinstance(slug, str) or not slug.strip():
+            continue
+        visibility = item.get("visibility", "")
+        if isinstance(visibility, str) and visibility.strip().lower() in ("hide", "hidden"):
+            continue
+        priority = item.get("priority")
+        rank = int(priority) if isinstance(priority, (int, float)) else 10_000
+        sortable.append((rank, slug.strip()))
+    sortable.sort(key=lambda x: (x[0], x[1]))
+    # Forward-compat: surface GPT-5.6 family when older templates are present.
+    ids = [slug for _, slug in sortable]
+    present = set(ids)
+    forward = (
+        ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4", "gpt-5.3-codex")),
+        ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4", "gpt-5.3-codex")),
+        ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4", "gpt-5.3-codex")),
+        ("gpt-5.3-codex-spark", ("gpt-5.3-codex",)),
+    )
+    for newer, templates in forward:
+        if newer in present:
+            continue
+        if any(t in present for t in templates):
+            ids.append(newer)
+            present.add(newer)
+    return ids
+
+
 def _fetch_provider_models(provider, key: str) -> list[str]:
     """Hit the provider's native model-listing endpoint. Returns bare model ids
     (no provider prefix). Empty list on any failure, with the failure REASON
@@ -112,6 +154,14 @@ def _fetch_provider_models(provider, key: str) -> list[str]:
             from puppetmaster.bedrock import list_chat_model_ids
 
             return list(list_chat_model_ids(timeout=_FETCH_TIMEOUT))
+        if name == "cursor-cli" or getattr(provider, "api_mode", "") == "cursor_cli":
+            # Live plan catalog via `agent models` (Composer 2.5, Grok 4.5, …).
+            # Results are memoized by fetch_models(); curated is the offline fallback.
+            from .cursor_cli_auth import list_models
+            return list(list_models(live=True))
+        if name == "openai-codex" or getattr(provider, "api_mode", "") == "codex_responses":
+            # ChatGPT Codex OAuth model list (Hermes-compatible endpoint).
+            return _fetch_codex_oauth_models(key)
     except Exception as e:
         # Preserve the cause: bad key, network down, and a changed provider
         # schema are very different problems and must not collapse to a silent

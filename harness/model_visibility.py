@@ -90,7 +90,7 @@ def toggle(spec: str, on: bool) -> list:
     return enabled
 
 
-def provider_models(p) -> list:
+def provider_models(p, *, force: bool = False) -> list:
     """All selectable model ids for a provider: its LIVE catalog (fetched from
     the provider's own listing endpoint when a key is present) merged with the
     curated pilot_models fallback. Curated entries come first (they are the
@@ -102,19 +102,25 @@ def provider_models(p) -> list:
         key = p.key()
         if key:
             from .model_fetch import fetch_models
-            live = fetch_models(p, key)
+            live = fetch_models(p, key, force=force)
     except Exception:
         live = []
     seen = set()
     merged = []
-    for m in curated + live:
+    # For plan providers with a large live catalog (Cursor CLI), prefer live
+    # order so Composer/Grok/etc. aren't buried under stale curated aliases.
+    if getattr(p, "api_mode", "") == "cursor_cli" and live:
+        ordered = list(live) + [m for m in curated if m not in set(live)]
+    else:
+        ordered = list(curated) + list(live)
+    for m in ordered:
         if m and m not in seen:
             seen.add(m)
             merged.append(m)
     return merged
 
 
-def catalog(available_only: bool = True) -> list:
+def catalog(available_only: bool = True, *, force: bool = False) -> list:
     """The selectable model catalog as a list of dicts:
         {provider, provider_display, model, spec, available, enabled}
 
@@ -132,7 +138,7 @@ def catalog(available_only: bool = True) -> list:
             continue
         # Live-merged list for keyed providers; curated-only for unkeyed ones
         # (so a not-yet-keyed provider still shows its vetted picks).
-        models = provider_models(p) if is_avail else list(p.pilot_models)
+        models = provider_models(p, force=force) if is_avail else list(p.pilot_models)
         for m in models:
             spec = f"{p.name}:{m}"
             out.append({
