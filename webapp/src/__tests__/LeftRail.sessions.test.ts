@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, projectSessionsEmptyState, purgeSessionFromRootCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, projectSessionsEmptyState, purgeSessionFromRootCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -320,6 +320,23 @@ describe("LeftRail session list contracts", () => {
     expect(shouldOfferBackgroundStop("idle", false)).toBe(false);
     expect(shouldOfferBackgroundStop("attaching", false)).toBe(false);
     expect(shouldOfferBackgroundStop(undefined, false)).toBe(false);
+  });
+
+  it("collectUnreadFinishedSessionIds marks background running→idle", () => {
+    expect(
+      collectUnreadFinishedSessionIds(
+        { a: "running", b: "running", c: "idle" },
+        { a: "idle", b: "idle", c: "idle" },
+        "a",
+      ),
+    ).toEqual(["b"]);
+    expect(
+      collectUnreadFinishedSessionIds(
+        { a: "attaching" },
+        { a: "idle" },
+        undefined,
+      ),
+    ).toEqual([]);
   });
 
   it("browse-select does not rail-wide switch when only jobs are transitioning", () => {

@@ -122,6 +122,22 @@ export function shouldOfferBackgroundStop(
   return status === "running" && !isActive;
 }
 
+type RunnerStatus = "running" | "idle" | "attaching" | "missing";
+
+/** Sessions that finished a background turn while the user looked elsewhere. */
+export function collectUnreadFinishedSessionIds(
+  prev: Record<string, RunnerStatus>,
+  next: Record<string, RunnerStatus>,
+  activeSessionId: string | undefined,
+): string[] {
+  const out: string[] = [];
+  for (const [id, status] of Object.entries(next)) {
+    if (id === activeSessionId) continue;
+    if (status === "idle" && prev[id] === "running") out.push(id);
+  }
+  return out;
+}
+
 /**
  * Rail-wide dim / project-switching signal. Browse-selecting an already-listed
  * project must not trip this — jobs SWR key changes on select and used to flash
@@ -303,7 +319,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
   // Per-session runner liveness from /api/session/state (multi-session Phase D).
-  const [runners, setRunners] = useState<Record<string, "running" | "idle" | "attaching" | "missing">>({});
+  const [runners, setRunners] = useState<Record<string, RunnerStatus>>({});
+  // Hermes-style: green unread cue when a non-active session finishes a turn.
+  const [unreadFinishedIds, setUnreadFinishedIds] = useState<Record<string, true>>({});
+  const runnersPrevRef = useRef<Record<string, RunnerStatus>>({});
 
   const getWorkspaceBasename = (repoPath: string) => {
     if (!repoPath) return "";
@@ -715,6 +734,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const switchSession = async (id: string) => {
     if (switchingSessionId || opening) return;
     setSwitchingSessionId(id);
+    setUnreadFinishedIds((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     try {
       const res: any = await api.switchSession(id);
       await refreshSessionsRef.current();
@@ -1025,7 +1050,22 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   // Poll runner statuses so session rows can show running/idle without opening
   // a conversation. Same endpoint Conversation already uses for resume/swarm.
   usePolling(() => api.getSessionState().then((res) => {
-    if (res?.runners) setRunners(res.runners);
+    if (!res?.runners) return;
+    const next = res.runners as Record<string, RunnerStatus>;
+    const finished = collectUnreadFinishedSessionIds(
+      runnersPrevRef.current,
+      next,
+      sessions.find((s) => s.active)?.id,
+    );
+    runnersPrevRef.current = next;
+    setRunners(next);
+    if (finished.length) {
+      setUnreadFinishedIds((prev) => {
+        const merged = { ...prev };
+        for (const id of finished) merged[id] = true;
+        return merged;
+      });
+    }
   }), 4000);
 
   useEffect(() => { saveHiddenSessionJobs(hiddenJobIds); }, [hiddenJobIds]);
@@ -1420,11 +1460,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                     <span className="block truncate text-[10px] font-normal text-faint">{s.preview}</span>
                                   ) : null}
                                 </span>
-                                <RunnerStatusDot
-                                  status={runners[s.id]}
-                                  stoppable={shouldOfferBackgroundStop(runners[s.id], !!s.active)}
-                                  onStop={() => { void stopBackgroundSession(s.id); }}
-                                />
+                                {unreadFinishedIds[s.id] && !s.active && runners[s.id] !== "running" ? (
+                                  <span
+                                    className="w-1.5 h-1.5 rounded-full shrink-0 bg-good"
+                                    title="Finished while you were away"
+                                    aria-label="Unread finished session"
+                                  />
+                                ) : (
+                                  <RunnerStatusDot
+                                    status={runners[s.id]}
+                                    stoppable={shouldOfferBackgroundStop(runners[s.id], !!s.active)}
+                                    onStop={() => { void stopBackgroundSession(s.id); }}
+                                  />
+                                )}
                               </button>
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
