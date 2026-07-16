@@ -118,17 +118,24 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          mapfile -t ASSETS < <(find dist -type f \( \
-            -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o \
-            -name '*.AppImage' -o -name '*.blockmap' -o -name 'latest*.yml' \
-          ) | sort)
-          if [ "${#ASSETS[@]}" -eq 0 ]; then
+          # Keep the finder free of escaped parens — Actions wraps this into a
+          # temp .sh and `find \( ... \)` has failed with syntax errors.
+          mapfile -t ALL < <(find dist -type f | sort)
+          FILTERED=()
+          for f in "${ALL[@]}"; do
+            case "$f" in
+              *.dmg|*.zip|*.exe|*.AppImage|*.blockmap|*latest*.yml)
+                FILTERED+=("$f")
+                ;;
+            esac
+          done
+          if [ "${#FILTERED[@]}" -eq 0 ]; then
             echo "No installer assets found under dist/" >&2
-            find dist -type f | head -n 50 || true
+            find dist -type f | head -n 80 || true
             exit 1
           fi
-          echo "Uploading ${#ASSETS[@]} asset(s) to $TAG:"
-          printf '  %s\n' "${ASSETS[@]}"
+          echo "Uploading ${#FILTERED[@]} asset(s) to $TAG:"
+          printf '  %s\n' "${FILTERED[@]}"
 
           # Ensure the release row exists (notes may already be present).
           if ! gh release view "$TAG" >/dev/null 2>&1; then
@@ -137,7 +144,7 @@ jobs:
 
           for attempt in 1 2 3 4 5 6 7 8; do
             echo "release upload attempt ${attempt}/8"
-            if gh release upload "$TAG" "${ASSETS[@]}" --clobber; then
+            if gh release upload "$TAG" "${FILTERED[@]}" --clobber; then
               echo "Upload succeeded"
               exit 0
             fi
