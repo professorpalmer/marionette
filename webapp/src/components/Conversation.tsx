@@ -657,7 +657,12 @@ function formatMentionListingCapMessage(meta: MentionListingCap): string {
   return "File listing is capped for large workspaces";
 }
 
-export default function Conversation({ config, activeSessionId, onArtifacts, onJobChange }: {
+export default function Conversation({
+  config,
+  activeSessionId,
+  onArtifacts,
+  onJobChange,
+}: {
   config: Config | null;
   activeSessionId: string | null;
   onArtifacts: (a: { type: string; headline: string }[]) => void;
@@ -3276,24 +3281,20 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
   }, []);
 
   return (
-    <main
-      className="flex flex-col h-full min-w-0 bg-bg"
-      style={{
-        // Subtle depth: a faint cool highlight pooled near the top that fades
-        // into the base, so the canvas reads as a lit surface rather than a flat
-        // greyscale slab. Very low contrast on purpose.
-        backgroundImage:
-          "radial-gradient(120% 80% at 50% -10%, rgba(139,150,196,0.06), rgba(139,150,196,0) 60%)",
-      }}
-    >
-      <header className="flex items-center justify-between px-6 border-b border-edge"
-         style={{ paddingTop: 12, paddingBottom: 10, WebkitAppRegion: "drag" } as React.CSSProperties}>
-        <span className="flex items-baseline gap-1.5 select-none" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
-          <span className="font-semibold text-[13px] text-txt/90 tracking-tight">Marionette</span>
-          <span className="text-faint/70 text-[10px] font-normal">|</span>
-          <span className="text-muted/80 text-[10px] font-medium tracking-wide uppercase">The Puppetmaster Harness</span>
+    <main className="flex flex-col h-full min-w-0 bg-transparent">
+      {/* Brand + idle share equal inset so they line up with the floating dock. */}
+      <header
+        className="flex items-center justify-between border-b border-edge/60 shrink-0 px-6"
+        style={{ paddingTop: 8, paddingBottom: 7, WebkitAppRegion: "drag" } as React.CSSProperties}
+      >
+        <span className="flex items-baseline gap-1.5 select-none min-w-0" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+          <span className="font-semibold text-[12px] text-txt/90 tracking-tight">Marionette</span>
+          <span className="text-faint/70 text-[9px] font-normal">|</span>
+          <span className="text-muted/80 text-[9px] font-medium tracking-wide uppercase truncate">
+            The Puppetmaster Harness
+          </span>
         </span>
-        <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+        <div className="shrink-0" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
           <StatusPill
             status={pillStatus}
             detail={
@@ -3447,7 +3448,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       )}
 
       {activeTab === "chat" ? (
-        <>
+        <div className="flex flex-col flex-1 min-h-0">
           <div ref={feedRef} className={`flex-1 overflow-y-auto ${panelOpacityClass(transcriptStale)}`}>
         <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1">
           {items.length === 0 && !transcriptStale && (
@@ -4135,7 +4136,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
 
         </div>
       </div>
-    </>
+    </div>
   ) : (
     <FileEditorPane
       path={activeTab}

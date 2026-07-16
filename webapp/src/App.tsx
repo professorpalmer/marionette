@@ -41,7 +41,8 @@ export default function App() {
   }, [activeSessionId]);
 
   const [leftW, setLeftW] = useState(() => num(LS.left, 248));
-  const [rightW, setRightW] = useState(() => Math.max(340, num(LS.right, 340)));
+  // Default / floor narrower than the old 340 so small windows keep chat usable.
+  const [rightW, setRightW] = useState(() => Math.max(280, num(LS.right, 300)));
   const [leftOpen, setLeftOpen] = useState(() => bool(LS.leftOpen, true));
   // Default closed: chat-first layout; RightDock surfaces Swarm/Changes/Browser/…
   const [rightOpen, setRightOpen] = useState(() => bool(LS.rightOpen, false));
@@ -149,7 +150,7 @@ export default function App() {
     const reclampRails = () => {
       const avail = window.innerWidth - MIN_CENTER;
       setLeftW((w) => clamp(Math.min(w, Math.max(180, avail - rightW)), 180, 420));
-      setRightW((w) => clamp(Math.min(w, Math.max(340, avail - leftW)), 340, 640));
+      setRightW((w) => clamp(Math.min(w, Math.max(280, avail - leftW)), 280, 640));
     };
     reclampRails();
     window.addEventListener("resize", reclampRails);
@@ -228,7 +229,16 @@ export default function App() {
             <Resizer side="left" onResize={(dx) => setLeftW((w) => clamp(w + dx, 180, 420))} />
           </>
         )}
-        <div className="flex-1 min-w-0 h-full flex flex-col">
+        {/* Chat column owns the radial wash so it continues under the floating
+            right dock (Cursor-style transparent toolbar) instead of cutting off. */}
+        <div
+          className="relative flex-1 min-w-0 h-full flex flex-col"
+          style={{
+            backgroundColor: "#0f1113",
+            backgroundImage:
+              "radial-gradient(120% 80% at 50% -10%, rgba(139,150,196,0.06), rgba(139,150,196,0) 60%)",
+          }}
+        >
           <div className="flex-1 min-h-0">
             <ErrorBoundary label="Chat">
               <Conversation
@@ -239,22 +249,23 @@ export default function App() {
               />
             </ErrorBoundary>
           </div>
+          {!rightOpen && (
+            <RightDock
+              onOpenTab={openRightTo}
+              onExpand={() => openRightTo(lastRightTab())}
+            />
+          )}
         </div>
         {rightOpen ? (
           <>
-            <Resizer side="right" onResize={(dx) => setRightW((w) => clamp(w + dx, 340, 640))} />
+            <Resizer side="right" onResize={(dx) => setRightW((w) => clamp(w + dx, 280, 640))} />
             <div style={{ width: rightW }} className="shrink-0 h-full overflow-hidden">
               <ErrorBoundary label="Side panel">
                 <RightPane artifacts={artifacts} onOpenWizard={() => setShowWizard(true)} />
               </ErrorBoundary>
             </div>
           </>
-        ) : (
-          <RightDock
-            onOpenTab={openRightTo}
-            onExpand={() => openRightTo(lastRightTab())}
-          />
-        )}
+        ) : null}
       </div>
       <StatusBar config={config}
         leftOpen={leftOpen} rightOpen={rightOpen}

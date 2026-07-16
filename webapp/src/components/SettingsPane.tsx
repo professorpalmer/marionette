@@ -151,6 +151,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   // Per-provider key management states
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [providersLoaded, setProvidersLoaded] = useState(false);
   const [provKeyInput, setProvKeyInput] = useState<Record<string, string>>({});
   const [provBusy, setProvBusy] = useState<string>("");
 
@@ -291,12 +292,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       });
   }, []);
 
-  // Section-scoped loads: notifications/advanced only on demand (providers
-  // section uses per-collapse onFirstOpen lazy loads).
+  // Section-scoped loads. API keys summary ("N/M connected") is visible while
+  // the accordion is collapsed, so providers must load on section entry — not
+  // only onFirstOpen of the collapse (that left a misleading 0/0).
   const searchActive = filter.trim().length > 0;
   useEffect(() => {
     const wantNotify = section === "notifications" || searchActive;
     const wantAdvanced = section === "advanced" || searchActive;
+    const wantProviders = section === "providers" || searchActive;
 
     if (wantNotify) {
       api.getUsage()
@@ -309,6 +312,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         .then((w) => { setWikiCfg(w); setWikiBase(w.api_base || ""); })
         .catch(() => {});
       loadHooks();
+    }
+
+    if (wantProviders) {
+      loadProvidersList();
     }
   }, [section, searchActive]);
 
@@ -382,7 +389,12 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   };
 
   const refreshProviders = async () => {
-    try { setProviders(await api.providers()); } catch (e) { console.error(e); }
+    try {
+      setProviders(await api.providers());
+      setProvidersLoaded(true);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const refreshAuthPools = async () => {
@@ -400,7 +412,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   const loadProvidersList = () => {
     api.providers()
-      .then(setProviders)
+      .then((list) => {
+        setProviders(list);
+        setProvidersLoaded(true);
+      })
       .catch((err) => console.error("Failed to load providers", err));
   };
 
@@ -1504,6 +1519,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           onFirstOpen={loadProvidersList}
           className="space-y-2"
           summary={(() => {
+            if (!providersLoaded) return "…";
             const list = providers.filter((p) => p.name !== "bedrock");
             const n = list.filter((p) => p.has_key && !p.disconnected).length;
             return `${n}/${list.length} connected`;
