@@ -22,6 +22,7 @@ from .prompt_cache import (
 )
 from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
+from pmharness.think_scrubber import StreamingThinkScrubber
 
 
 class OpenAICompatDriver:
@@ -500,6 +501,9 @@ class OpenAICompatDriver:
             cache_write_tokens = 0
             provider_cost_usd = None
             stream_started = False
+            # Hermes-style: suppress <think>/<reasoning> tags that split across
+            # SSE deltas so visible on_delta never leaks mid-stream reasoning.
+            think_scrubber = StreamingThinkScrubber()
 
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:
@@ -538,8 +542,10 @@ class OpenAICompatDriver:
                                 content_delta = delta.get("content") or ""
                                 if content_delta:
                                     stream_started = True
-                                    on_delta(content_delta)
                                     full_text += content_delta
+                                    visible = think_scrubber.feed(content_delta)
+                                    if visible:
+                                        on_delta(visible)
 
                                 # Reasoning delta -- forward live so the UI can
                                 # paint Thought while tokens climb (GLM/OR
@@ -631,6 +637,14 @@ class OpenAICompatDriver:
                 )
 
             latency = (time.time() - t0) * 1000.0
+
+            # Emit any held-back partial-tag tail that was not a real tag.
+            try:
+                scrub_tail = think_scrubber.flush()
+            except Exception:
+                scrub_tail = ""
+            if scrub_tail:
+                on_delta(scrub_tail)
 
             # Build message_obj to pass to extract_reasoning
             message_obj = {"content": full_text}
