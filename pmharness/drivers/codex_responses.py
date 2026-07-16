@@ -32,6 +32,25 @@ _TERMINAL_EVENT_TYPES = frozenset({
     "response.failed",
 })
 
+# Hermes-aligned: reasoning-only incomplete turns need a distinct user nudge
+# or the retry is byte-identical and fails forever.
+_CODEX_INCOMPLETE_NUDGE = (
+    "[System: Your previous response contained only internal reasoning and "
+    "never produced a visible answer or tool call. Do not keep thinking. "
+    "Produce your final answer as plain text now (or make the tool call "
+    "you were planning).]"
+)
+_CODEX_LENGTH_CONTINUE = (
+    "[System: Your previous response was truncated by the output length "
+    "limit. Continue exactly where you left off. Do not restart or repeat "
+    "prior text. Finish the answer directly.]"
+)
+_CODEX_MAX_INCOMPLETE_RETRIES = 3
+_CONTENT_FILTER_MSG = (
+    "Model declined to respond (content filter). Try rephrasing the request "
+    "or narrowing the context."
+)
+
 
 def _codex_cloudflare_headers(access_token: str, *, streaming: bool = True) -> Dict[str, str]:
     headers = {
@@ -124,11 +143,30 @@ def _tools_to_responses(tools: Optional[list]) -> Optional[List[dict]]:
     return out or None
 
 
+def _incomplete_reason(raw: dict) -> str:
+    details = raw.get("incomplete_details")
+    if isinstance(details, dict):
+        return str(details.get("reason") or "").strip().lower()
+    return ""
+
+
 def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
-    """Parse a Responses API JSON body into text, openai-shaped tool_calls, finish."""
+    """Parse a Responses API JSON body into text, openai-shaped tool_calls, finish.
+
+    Maps ``status=incomplete`` + ``incomplete_details.reason=content_filter`` to
+    finish_reason ``content_filter`` (Hermes) so callers refuse instead of
+    burning continuation retries.
+    """
     text_parts: List[str] = []
     tool_calls: List[dict] = []
-    finish = str(raw.get("status") or "")
+    status = str(raw.get("status") or "")
+    reason = _incomplete_reason(raw)
+    if status == "incomplete" and reason == "content_filter":
+        finish = "content_filter"
+    elif status == "incomplete" and reason in ("max_output_tokens", "length"):
+        finish = "incomplete"
+    else:
+        finish = status
     for item in raw.get("output") or []:
         if not isinstance(item, dict):
             continue
@@ -153,6 +191,27 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
     if not text_parts and isinstance(raw.get("output_text"), str):
         text_parts.append(raw["output_text"])
     return "".join(text_parts), tool_calls, finish
+
+
+def _codex_continuation_kind(finish: str, text: str, tool_calls: list) -> Optional[str]:
+    """Return ``nudge`` / ``length`` when the turn should continue, else None."""
+    if finish == "content_filter":
+        return None
+    if finish != "incomplete":
+        return None
+    if tool_calls:
+        return None
+    if (text or "").strip():
+        return "length"
+    return "nudge"
+
+
+def _user_input_item(text: str) -> dict:
+    return {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": text}],
+    }
 
 
 def _usage_ints(usage: Any) -> Tuple[int, int]:
@@ -186,6 +245,7 @@ def _consume_codex_sse(
     terminal_usage: Any = None
     terminal_error: Any = None
     terminal_model: Optional[str] = None
+    terminal_incomplete_details: Any = None
     saw_terminal = False
     stream_error: Optional[str] = None
 
@@ -276,6 +336,9 @@ def _consume_codex_sse(
                 mid = resp_obj.get("model")
                 if isinstance(mid, str) and mid.strip():
                     terminal_model = mid.strip()
+                details = resp_obj.get("incomplete_details")
+                if details is not None:
+                    terminal_incomplete_details = details
                 if event_type == "response.failed":
                     terminal_error = resp_obj.get("error") or resp_obj
             if event_type == "response.completed":
@@ -330,7 +393,7 @@ def _consume_codex_sse(
         else:
             err_msg = "Codex response failed"
 
-    return {
+    out = {
         "status": terminal_status,
         "output": output,
         "output_text": assembled_text,
@@ -338,6 +401,9 @@ def _consume_codex_sse(
         "error": err_msg,
         "model": terminal_model,
     }
+    if terminal_incomplete_details is not None:
+        out["incomplete_details"] = terminal_incomplete_details
+    return out
 
 
 class CodexResponsesDriver:
@@ -446,14 +512,133 @@ class CodexResponsesDriver:
             body["prompt_cache_key"] = session_id
         return body
 
+    def _one_stream_attempt(
+        self,
+        body: dict,
+        data: bytes,
+        *,
+        on_delta: Optional[Callable[[str], None]],
+        on_reasoning_delta: Optional[Callable[[str], None]],
+        t0: float,
+    ) -> Tuple[Optional[dict], Optional[DriverResponse], bytes]:
+        """POST once (with reasoning-strip / pool rotate). Returns (raw, err_resp, data)."""
+        for attempt in range(3):
+            token = self._key()
+            headers = _codex_cloudflare_headers(token, streaming=True)
+            try:
+                req = urllib.request.Request(
+                    f"{self.base_url}/responses",
+                    data=data,
+                    headers=headers,
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    raw = _consume_codex_sse(
+                        resp,
+                        on_delta=on_delta,
+                        on_reasoning_delta=on_reasoning_delta,
+                    )
+                return raw, None, data
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode("utf-8", "replace")[:800]
+                low = detail.lower()
+                if (
+                    attempt < 2
+                    and e.code == 400
+                    and "reasoning" in low
+                    and body.get("reasoning") is not None
+                ):
+                    body.pop("reasoning", None)
+                    data = json.dumps(body).encode("utf-8")
+                    continue
+                if attempt == 0:
+                    nxt = self._pool_rotate_on_http_error(e.code, detail)
+                    if nxt:
+                        continue
+                return None, DriverResponse(
+                    text="", model=self.name,
+                    error=f"HTTP {e.code}: {detail}",
+                    latency_ms=(time.time() - t0) * 1000.0,
+                ), data
+            except Exception as e:
+                return None, DriverResponse(
+                    text="", model=self.name, error=repr(e),
+                    latency_ms=(time.time() - t0) * 1000.0,
+                ), data
+        return None, DriverResponse(
+            text="", model=self.name, error="empty response",
+            latency_ms=(time.time() - t0) * 1000.0,
+        ), data
+
+    def _response_from_raw(
+        self,
+        raw: dict,
+        *,
+        t0: float,
+        incomplete_retries: int = 0,
+    ) -> DriverResponse:
+        if raw.get("error"):
+            return DriverResponse(
+                text="", model=self.name, error=str(raw["error"]),
+                latency_ms=(time.time() - t0) * 1000.0,
+                meta={
+                    "api_mode": "codex_responses",
+                    "finish_reason": raw.get("status"),
+                },
+            )
+        text, tool_calls, finish = _extract_text_and_tools(raw)
+        if not text and isinstance(raw.get("output_text"), str):
+            text = raw["output_text"]
+        if finish == "content_filter":
+            return DriverResponse(
+                text="",
+                model=self.name,
+                error=_CONTENT_FILTER_MSG,
+                latency_ms=(time.time() - t0) * 1000.0,
+                meta={
+                    "api_mode": "codex_responses",
+                    "finish_reason": "content_filter",
+                    "billing": "plan",
+                    "requested_model": self.model,
+                },
+            )
+        usage = raw.get("usage") or {}
+        tin, tout = _usage_ints(usage)
+        meta = {
+            "tool_calls": tool_calls,
+            "finish_reason": finish,
+            "raw_usage": usage,
+            "api_mode": "codex_responses",
+            "billing": "plan",
+            "requested_model": self.model,
+            "incomplete_retries": incomplete_retries,
+        }
+        reason = _incomplete_reason(raw)
+        if reason:
+            meta["incomplete_reason"] = reason
+        cost = _usage_cost(usage)
+        if cost is not None:
+            meta["provider_cost_usd"] = cost
+        served = raw.get("model")
+        if isinstance(served, str) and served.strip():
+            meta["served_model"] = served.strip()
+        return DriverResponse(
+            text=text,
+            tokens_in=tin,
+            tokens_out=tout,
+            latency_ms=(time.time() - t0) * 1000.0,
+            model=self.name,
+            meta=meta,
+        )
+
     def _post_stream(
         self,
         body: dict,
         *,
         on_delta: Optional[Callable[[str], None]] = None,
         on_reasoning_delta: Optional[Callable[[str], None]] = None,
+        on_wait_notice: Optional[Callable[[str], None]] = None,
     ) -> DriverResponse:
-        url = f"{self.base_url}/responses"
         # Enforce stream even if a caller mutated the body.
         body = dict(body)
         body["stream"] = True
@@ -461,89 +646,102 @@ class CodexResponsesDriver:
 
         def _call() -> DriverResponse:
             t0 = time.time()
-            raw: Optional[dict] = None
-            nonlocal data
-            for attempt in range(3):
-                token = self._key()
-                headers = _codex_cloudflare_headers(token, streaming=True)
-                try:
-                    req = urllib.request.Request(
-                        url, data=data, headers=headers, method="POST",
+            nonlocal data, body
+            length_parts: List[str] = []
+            incomplete_retries = 0
+
+            while True:
+                raw, err_resp, data = self._one_stream_attempt(
+                    body,
+                    data,
+                    on_delta=on_delta,
+                    on_reasoning_delta=on_reasoning_delta,
+                    t0=t0,
+                )
+                if err_resp is not None:
+                    return err_resp
+                if raw is None:
+                    return DriverResponse(
+                        text="", model=self.name, error="empty response",
+                        latency_ms=(time.time() - t0) * 1000.0,
                     )
-                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                        raw = _consume_codex_sse(
-                            resp,
-                            on_delta=on_delta,
-                            on_reasoning_delta=on_reasoning_delta,
+                resp = self._response_from_raw(
+                    raw, t0=t0, incomplete_retries=incomplete_retries,
+                )
+                if resp.error:
+                    return resp
+                text = resp.text or ""
+                tool_calls = (resp.meta or {}).get("tool_calls") or []
+                finish = str((resp.meta or {}).get("finish_reason") or "")
+                kind = _codex_continuation_kind(finish, text, tool_calls)
+                if kind is None:
+                    final_text = "".join(length_parts) + text if length_parts else text
+                    if final_text == text:
+                        return resp
+                    meta = dict(resp.meta or {})
+                    return DriverResponse(
+                        text=final_text,
+                        tokens_in=resp.tokens_in,
+                        tokens_out=resp.tokens_out,
+                        latency_ms=resp.latency_ms,
+                        model=self.name,
+                        meta=meta,
+                    )
+
+                incomplete_retries += 1
+                if kind == "length" and text.strip():
+                    length_parts.append(text)
+                if incomplete_retries > _CODEX_MAX_INCOMPLETE_RETRIES:
+                    return DriverResponse(
+                        text="".join(length_parts),
+                        model=self.name,
+                        error=(
+                            "Codex response remained incomplete after "
+                            f"{_CODEX_MAX_INCOMPLETE_RETRIES} continuation attempts"
+                        ),
+                        latency_ms=(time.time() - t0) * 1000.0,
+                        meta={
+                            "api_mode": "codex_responses",
+                            "finish_reason": "incomplete",
+                            "billing": "plan",
+                            "incomplete_retries": incomplete_retries - 1,
+                            "requested_model": self.model,
+                        },
+                    )
+
+                nudge = (
+                    _CODEX_INCOMPLETE_NUDGE if kind == "nudge" else _CODEX_LENGTH_CONTINUE
+                )
+                if on_wait_notice is not None:
+                    try:
+                        why = (
+                            "reasoning with no final answer"
+                            if kind == "nudge"
+                            else "a truncated answer"
                         )
-                    break
-                except urllib.error.HTTPError as e:
-                    detail = e.read().decode("utf-8", "replace")[:800]
-                    low = detail.lower()
-                    # Strip reasoning if this Codex build rejects it, then retry.
-                    if (
-                        attempt < 2
-                        and e.code == 400
-                        and "reasoning" in low
-                        and body.get("reasoning") is not None
-                    ):
-                        body.pop("reasoning", None)
-                        data = json.dumps(body).encode("utf-8")
-                        continue
-                    if attempt == 0:
-                        nxt = self._pool_rotate_on_http_error(e.code, detail)
-                        if nxt:
-                            continue
-                    return DriverResponse(
-                        text="", model=self.name,
-                        error=f"HTTP {e.code}: {detail}",
-                        latency_ms=(time.time() - t0) * 1000.0,
-                    )
-                except Exception as e:
-                    return DriverResponse(
-                        text="", model=self.name, error=repr(e),
-                        latency_ms=(time.time() - t0) * 1000.0,
-                    )
-            if raw is None:
-                return DriverResponse(
-                    text="", model=self.name, error="empty response",
-                    latency_ms=(time.time() - t0) * 1000.0,
-                )
-            if raw.get("error"):
-                return DriverResponse(
-                    text="", model=self.name, error=str(raw["error"]),
-                    latency_ms=(time.time() - t0) * 1000.0,
-                    meta={"api_mode": "codex_responses", "finish_reason": raw.get("status")},
-                )
-            text, tool_calls, finish = _extract_text_and_tools(raw)
-            if not text and isinstance(raw.get("output_text"), str):
-                text = raw["output_text"]
-            usage = raw.get("usage") or {}
-            tin, tout = _usage_ints(usage)
-            meta = {
-                "tool_calls": tool_calls,
-                "finish_reason": finish,
-                "raw_usage": usage,
-                "api_mode": "codex_responses",
-                # ChatGPT subscription burn — $ is estimate unless usage carries cost.
-                "billing": "plan",
-                "requested_model": self.model,
-            }
-            cost = _usage_cost(usage)
-            if cost is not None:
-                meta["provider_cost_usd"] = cost
-            # Echo the model the backend actually served when present.
-            served = raw.get("model")
-            if isinstance(served, str) and served.strip():
-                meta["served_model"] = served.strip()
-            return DriverResponse(
-                text=text,
-                tokens_in=tin,
-                tokens_out=tout,
-                latency_ms=(time.time() - t0) * 1000.0,
-                model=self.name,
-                meta=meta,
-            )
+                        on_wait_notice(
+                            f"model returned {why} — asking it to continue "
+                            f"({incomplete_retries}/{_CODEX_MAX_INCOMPLETE_RETRIES})"
+                        )
+                    except Exception:
+                        pass
+                inp = list(body.get("input") or [])
+                last_text = ""
+                last = inp[-1] if inp else None
+                if isinstance(last, dict):
+                    for part in last.get("content") or []:
+                        if isinstance(part, dict):
+                            last_text += str(part.get("text") or "")
+                if last_text.strip() != nudge:
+                    if kind == "length" and text.strip():
+                        inp.append({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": text}],
+                        })
+                    inp.append(_user_input_item(nudge))
+                    body["input"] = inp
+                    data = json.dumps(body).encode("utf-8")
 
         return with_retry(_call)
 
@@ -577,6 +775,7 @@ class CodexResponsesDriver:
         session_id: str | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
         on_tool_hint: Callable[[str], None] | None = None,
+        on_wait_notice: Callable[[str], None] | None = None,
     ) -> DriverResponse:
         body = self._build_body(
             messages, tools=tools, system=system, session_id=session_id,
@@ -590,6 +789,7 @@ class CodexResponsesDriver:
             body,
             on_delta=_delta_and_hint,
             on_reasoning_delta=on_reasoning_delta,
+            on_wait_notice=on_wait_notice,
         )
         if on_tool_hint is not None:
             for tc in (resp.meta or {}).get("tool_calls") or []:

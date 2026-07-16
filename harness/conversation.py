@@ -670,6 +670,9 @@ class ConversationalSession(ToolDispatchMixin):
         self._frozen_system_prompt: Optional[str] = None
         self._last_rendered_prompt: str = ""
         self._prefix_stable_turns: int = 0
+        # Compaction summarizer: after timeout/fail, skip LLM and use extractive
+        # fallback until this monotonic deadline (Hermes-style cooldown).
+        self._compaction_fail_until: float = 0.0
         # Reload any persisted provider-worker history from a prior process so the
         # swarm panel keeps its history across a backend restart. Stale 'running'
         # jobs (whose thread died with the old process) are marked interrupted.
@@ -1833,22 +1836,64 @@ class ConversationalSession(ToolDispatchMixin):
         summary_ratio = 0.20
         summary_token_budget = max(500, int(middle_tokens * summary_ratio))
         summary_char_budget = summary_token_budget * 4
+
+        # Hermes-style: bound the summarizer call and cool down after hangs so a
+        # stuck pilot cannot stall the turn forever on every compaction.
+        try:
+            _compact_timeout = float(os.environ.get("HARNESS_COMPACTION_TIMEOUT_S", "45") or "45")
+        except ValueError:
+            _compact_timeout = 45.0
+        try:
+            _compact_cooldown = float(os.environ.get("HARNESS_COMPACTION_COOLDOWN_S", "120") or "120")
+        except ValueError:
+            _compact_cooldown = 120.0
         
         summary = ""
-        try:
-            if hasattr(self.pilot, "chat"):
-                resp = self.pilot.chat([{"role": "user", "content": content_to_summarize}], system=sys_msg)
-            else:
-                resp = self.pilot.complete(content_to_summarize, system=sys_msg)
-                
-            if resp and not getattr(resp, "error", None) and getattr(resp, "text", None):
-                summary = resp.text.strip()
-                if len(summary) > summary_char_budget:
-                    summary = summary[:summary_char_budget] + "\n... [summary truncated to fit budget]"
-            else:
-                summary = self._make_fallback_summary(middle_block)
-        except Exception:
+        now = time.time()
+        if now < float(getattr(self, "_compaction_fail_until", 0.0) or 0.0):
             summary = self._make_fallback_summary(middle_block)
+        else:
+            try:
+                box: dict = {}
+
+                def _run_summarizer():
+                    try:
+                        if hasattr(self.pilot, "chat"):
+                            box["resp"] = self.pilot.chat(
+                                [{"role": "user", "content": content_to_summarize}],
+                                system=sys_msg,
+                            )
+                        else:
+                            box["resp"] = self.pilot.complete(
+                                content_to_summarize, system=sys_msg,
+                            )
+                    except Exception as ex:
+                        box["err"] = ex
+
+                # Daemon thread + join timeout: never block shutdown on a hung
+                # summarizer (ThreadPoolExecutor.__exit__ would wait forever).
+                t = threading.Thread(target=_run_summarizer, daemon=True)
+                t.start()
+                t.join(timeout=max(5.0, _compact_timeout))
+                if t.is_alive():
+                    raise TimeoutError("compaction summarizer timed out")
+                if box.get("err") is not None:
+                    raise box["err"]
+                resp = box.get("resp")
+
+                if resp and not getattr(resp, "error", None) and getattr(resp, "text", None):
+                    summary = resp.text.strip()
+                    if len(summary) > summary_char_budget:
+                        summary = summary[:summary_char_budget] + "\n... [summary truncated to fit budget]"
+                else:
+                    summary = self._make_fallback_summary(middle_block)
+                    self._compaction_fail_until = time.time() + _compact_cooldown
+            except TimeoutError:
+                summary = self._make_fallback_summary(middle_block)
+                self._compaction_fail_until = time.time() + _compact_cooldown
+            except Exception:
+                summary = self._make_fallback_summary(middle_block)
+                self._compaction_fail_until = time.time() + _compact_cooldown
             
         summary_msg = {
             "role": "user",
@@ -3226,13 +3271,26 @@ class ConversationalSession(ToolDispatchMixin):
                             
                             def run_stream():
                                 try:
+                                    import inspect
+                                    kwargs = {
+                                        "tools": tools_schema,
+                                        "system": sys_prompt,
+                                        "on_delta": lambda delta: q.put(("delta", delta)),
+                                        "on_reasoning_delta": lambda delta: q.put(("reasoning", delta)),
+                                        "on_tool_hint": lambda name: q.put(("tool_hint", name)),
+                                    }
+                                    try:
+                                        if "on_wait_notice" in inspect.signature(
+                                            self.pilot.chat_stream
+                                        ).parameters:
+                                            kwargs["on_wait_notice"] = (
+                                                lambda msg: q.put(("wait", msg))
+                                            )
+                                    except Exception:
+                                        pass
                                     r = self.pilot.chat_stream(
                                         self._elide_stale_reads(self._history[1:]),
-                                        tools=tools_schema,
-                                        system=sys_prompt,
-                                        on_delta=lambda delta: q.put(("delta", delta)),
-                                        on_reasoning_delta=lambda delta: q.put(("reasoning", delta)),
-                                        on_tool_hint=lambda name: q.put(("tool_hint", name)),
+                                        **kwargs,
                                     )
                                     q.put(("done", r))
                                 except Exception as ex:
@@ -3264,6 +3322,14 @@ class ConversationalSession(ToolDispatchMixin):
                                 elif kind == "tool_hint":
                                     if val:
                                         yield ConvEvent("tool_prep", {"name": str(val)})
+                                elif kind == "wait":
+                                    if val:
+                                        # Hermes-style live status for long Codex
+                                        # incomplete continuations / reconnects.
+                                        yield ConvEvent("notice", {
+                                            "message": str(val),
+                                            "kind": "wait",
+                                        })
                                 elif kind == "done":
                                     resp = val
                                     break
