@@ -71,15 +71,15 @@ def test_build_pilot_selects_cursor_cli_driver(monkeypatch):
         "harness.cursor_cli_auth.is_authenticated",
         lambda: True,
     )
-    # Default: per-turn --print. Warm ACP only when explicitly enabled.
+    # Default: warm ACP. Opt out with HARNESS_CURSOR_ACP=0 for --print.
     monkeypatch.delenv("HARNESS_CURSOR_ACP", raising=False)
     d = prov.build_pilot("cursor-cli:auto")
-    assert isinstance(d, CursorCliDriver)
+    assert isinstance(d, CursorAcpDriver)
     assert d.model == "auto"
     assert d.supports_streaming is True
-    monkeypatch.setenv("HARNESS_CURSOR_ACP", "1")
+    monkeypatch.setenv("HARNESS_CURSOR_ACP", "0")
     d2 = prov.build_pilot("cursor-cli:auto")
-    assert isinstance(d2, CursorAcpDriver)
+    assert isinstance(d2, CursorCliDriver)
 
 
 def test_available_pilots_include_cursor_cli_when_authed(monkeypatch):

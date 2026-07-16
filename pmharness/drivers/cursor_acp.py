@@ -30,15 +30,15 @@ from .cursor_cli import (
 
 
 def cursor_acp_enabled() -> bool:
-    """Opt-in warm ACP path (``HARNESS_CURSOR_ACP=1``).
+    """Warm ACP path (default ON). Set ``HARNESS_CURSOR_ACP=0`` to force --print.
 
-    Default OFF: until we prove ``agent acp`` stays alive across turns on
-    Windows, the experimental warm path can be *slower* than per-turn
-    ``--print`` (handshake + respawn every prompt). Keep the driver code;
-    enable explicitly when validating.
+    Live probe on Windows: turn-1 ``session/prompt`` ~11s, turn-2 on the same
+    process ~2s. Per-turn ``--print`` stays ~10–12s forever — so warm ACP is
+    the daily-driver default. Auth is best-effort (short timeout); a hung
+    authenticate must not block the session.
     """
-    raw = (os.environ.get("HARNESS_CURSOR_ACP") or "0").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+    raw = (os.environ.get("HARNESS_CURSOR_ACP") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 def _extract_update_text(update: Any) -> str:
@@ -360,19 +360,27 @@ class WarmAcpSession:
         with self._lock:
             if self.transport is not None and self.transport.alive() and self.session_id:
                 return self.transport
-            if self.transport is not None:
+            old = self.transport
+            self.transport = None
+            self.session_id = None
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+        transport = (
+            self._transport_factory()
+            if self._transport_factory is not None
+            else self._spawn_transport()
+        )
+        self._handshake(transport)
+        with self._lock:
+            if self.transport is not None and self.transport.alive() and self.session_id:
                 try:
-                    self.transport.close()
+                    transport.close()
                 except Exception:
                     pass
-                self.transport = None
-                self.session_id = None
-            transport = (
-                self._transport_factory()
-                if self._transport_factory is not None
-                else self._spawn_transport()
-            )
-            self._handshake(transport)
+                return self.transport
             self.transport = transport
             return transport
 
@@ -413,17 +421,13 @@ class WarmAcpSession:
         if init.get("error"):
             raise RuntimeError(f"acp initialize failed: {init.get('error')}")
         transport.notify("initialized", {})
-        auth = transport.request(
+        # CLI login is often already on disk; authenticate can hang with no
+        # response. Cap wait tightly and proceed — session/new is the real gate.
+        transport.request(
             "authenticate",
             {"methodId": "cursor_login"},
-            timeout=30.0,
+            timeout=5.0,
         )
-        # Some builds skip auth when already logged in — tolerate soft errors.
-        if auth.get("error"):
-            err = auth.get("error") or {}
-            msg = str(err.get("message") or err)
-            if "auth" in msg.lower() and "not" in msg.lower():
-                raise RuntimeError(f"acp authenticate failed: {err}")
         params: dict = {
             "cwd": self.cwd or os.getcwd(),
             "mcpServers": [],
@@ -438,6 +442,14 @@ class WarmAcpSession:
         if not sid:
             raise RuntimeError("acp session/new returned no sessionId")
         self.session_id = str(sid)
+        # Prefer ask/plan when Marionette asked for a read-only CLI mode.
+        mode = (os.environ.get("HARNESS_CURSOR_CLI_MODE") or "").strip() or "ask"
+        if mode in ("ask", "plan"):
+            transport.request(
+                "session/set_mode",
+                {"sessionId": self.session_id, "modeId": mode},
+                timeout=5.0,
+            )
 
     def prompt(
         self,
@@ -557,6 +569,18 @@ class CursorAcpDriver:
         )
         self._acp_disabled = False
         self._acp_fail_reason = ""
+        # Hide first-turn handshake behind session open when possible.
+        if session is None:
+            threading.Thread(
+                target=self.prewarm, name="cursor-acp-prewarm", daemon=True
+            ).start()
+
+    def prewarm(self) -> None:
+        """Background handshake so the first user prompt can hit a live session."""
+        try:
+            self._session.ensure()
+        except Exception as exc:
+            self._acp_fail_reason = str(exc)
 
     def close(self) -> None:
         self._session.close()
@@ -581,13 +605,18 @@ class CursorAcpDriver:
                 timeout=float(self.timeout),
             )
         except Exception as exc:
-            self._acp_disabled = True
             self._acp_fail_reason = str(exc)
-            self._session.close()
+            # Drop a dead transport so the next turn can respawn; do NOT
+            # permanently disable ACP (that forced ~12s --print forever).
+            tr = self._session.transport
+            if tr is None or not tr.alive():
+                self._session.close()
             raise
         if out.get("error") and not (out.get("text") or "").strip():
-            self._acp_disabled = True
             self._acp_fail_reason = str(out.get("error"))
+            tr = self._session.transport
+            if tr is None or not tr.alive():
+                self._session.close()
             raise RuntimeError(self._acp_fail_reason)
         return DriverResponse(
             text=str(out.get("text") or ""),
