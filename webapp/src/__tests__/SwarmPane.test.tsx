@@ -464,7 +464,7 @@ describe("SwarmPane worker progress", () => {
   });
 });
 
-describe("SwarmPane session spend", () => {
+describe("SwarmPane tracker header", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -473,30 +473,16 @@ describe("SwarmPane session spend", () => {
     mockArtifacts.mockResolvedValue([]);
   });
 
-  it("shows session tokens and cost in the tracker header when present", async () => {
-    mockSwarmLive.mockResolvedValue(
-      liveJob({}, { tokens_used: 42_500, est_cost_usd: 0.1234 }),
-    );
-
-    render(<SwarmPane />);
-
-    await waitFor(() => {
-      expect(screen.getByTitle(/Estimated token usage, cost, and savings for this project/)).toHaveTextContent("42,500t");
-      expect(screen.getByTitle(/Estimated token usage, cost, and savings for this project/)).toHaveTextContent("$0.1234");
-      expect(screen.getByTitle(/Estimated token usage, cost, and savings for this project/)).toHaveTextContent("session");
-    });
-  });
-
-  it("shows session savings chip in the tracker header when savings are positive", async () => {
+  it("keeps the header free of session token/cost rollups", async () => {
+    // Process-lifetime / boot-carry session totals used to crowd the header
+    // with opaque megatokens ($26 / 28Mt). Per-job spend stays on each row.
     mockSwarmLive.mockResolvedValue(
       liveJob(
         {},
         {
-          tokens_used: 10_000,
-          est_cost_usd: 0.05,
+          tokens_used: 28_510_956,
+          est_cost_usd: 26.9602,
           routing_saved_usd: 0.12,
-          cache_saved_usd_swarm: 0.03,
-          tool_output_savings_usd: 0.01,
         },
       ),
     );
@@ -504,76 +490,14 @@ describe("SwarmPane session spend", () => {
     render(<SwarmPane />);
 
     await waitFor(() => {
-      expect(screen.getByTitle(/Estimated token usage, cost, and savings for this project/)).toHaveTextContent("$0.1600 saved");
-    });
-  });
-
-  it("omits the session spend line when totals are zero", async () => {
-    mockSwarmLive.mockResolvedValue(liveJob());
-
-    render(<SwarmPane />);
-
-    await waitFor(() => {
       expect(screen.getByText("Swarm Tracker")).toBeInTheDocument();
     });
-    expect(screen.queryByTitle(/Estimated token usage, cost, and savings for this project/)).not.toBeInTheDocument();
-  });
-
-  it("updates session spend when a poll returns new session totals", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      let pollCount = 0;
-      mockSwarmLive.mockImplementation(async () => {
-        pollCount += 1;
-        if (pollCount <= 2) {
-          return liveJob({}, { tokens_used: 1_000, est_cost_usd: 0.01 });
-        }
-        return liveJob({}, { tokens_used: 9_000, est_cost_usd: 0.09 });
-      });
-
-      render(<SwarmPane />);
-
-      await waitFor(() => {
-        expect(screen.getByTitle(/Estimated token usage, cost, and savings for this project/)).toHaveTextContent("1,000t");
-      });
-
-      await vi.advanceTimersByTimeAsync(6000);
-
-      await waitFor(() => {
-        expect(screen.getByTitle(/Estimated token usage, cost, and savings for this project/)).toHaveTextContent("9,000t");
-        expect(screen.getByTitle(/Estimated token usage, cost, and savings for this project/)).toHaveTextContent("$0.0900");
-      });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("updates session savings when a poll returns new savings totals", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      let pollCount = 0;
-      mockSwarmLive.mockImplementation(async () => {
-        pollCount += 1;
-        if (pollCount <= 2) {
-          return liveJob({}, { tokens_used: 1_000, est_cost_usd: 0.01, routing_saved_usd: 0.02 });
-        }
-        return liveJob({}, { tokens_used: 1_000, est_cost_usd: 0.01, routing_saved_usd: 0.05, cache_saved_usd_swarm: 0.04 });
-      });
-
-      render(<SwarmPane />);
-
-      await waitFor(() => {
-        expect(screen.getByTitle(/Estimated token usage, cost, and savings for this project/)).toHaveTextContent("$0.0200 saved");
-      });
-
-      await vi.advanceTimersByTimeAsync(6000);
-
-      await waitFor(() => {
-        expect(screen.getByTitle(/Estimated token usage, cost, and savings for this project/)).toHaveTextContent("$0.0900 saved");
-      });
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(screen.queryByText(/28,510,956t/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$26\.9602/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^session$/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByTitle(/Estimated token usage, cost, and savings for this project/),
+    ).not.toBeInTheDocument();
   });
 });
 

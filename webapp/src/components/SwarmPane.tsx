@@ -349,13 +349,6 @@ function jobSavings(j: Job): SavingsParts {
   return { routing, cache, compact, total: routing + cache + compact };
 }
 
-function sessionSavings(s: SwarmLive["session"]): SavingsParts {
-  const routing = positiveUsd(s.routing_saved_usd);
-  const cache = positiveUsd(s.cache_saved_usd_swarm) + positiveUsd(s.cache_savings_usd);
-  const compact = positiveUsd(s.tool_output_savings_usd);
-  return { routing, cache, compact, total: routing + cache + compact };
-}
-
 function savingsDetail(parts: SavingsParts): string {
   return [
     parts.routing > 0 ? `routing vs frontier baseline (~${formatCost(parts.routing)})` : "",
@@ -687,11 +680,6 @@ export default function SwarmPane() {
   const restoreDismissed = () => setDismissed(new Set());
   const hiddenCount = allJobs.length - visibleJobs.length;
 
-  const sessionSpend = data?.session;
-  const sessionTokens = Number(sessionSpend?.tokens_used ?? 0);
-  const sessionCost = Number(sessionSpend?.est_cost_usd ?? 0);
-  const sessionSavingsParts = sessionSpend ? sessionSavings(sessionSpend) : { routing: 0, cache: 0, compact: 0, total: 0 };
-  const showSessionSpend = sessionSpend && (sessionTokens > 0 || sessionCost > 0 || sessionSavingsParts.total > 0);
 
   // One card renderer, reused by both the running list and the Finished
   // accordion. Defined in-scope so it closes over the expand/dismiss state
@@ -1144,17 +1132,6 @@ export default function SwarmPane() {
           {visibleJobs.length > 0 && <span className="text-faint/60 normal-case tracking-normal">({visibleJobs.length})</span>}
         </div>
         <div className="flex items-center gap-2.5 text-[10px]">
-          {showSessionSpend && (
-            <span
-              className="text-muted font-mono flex items-center gap-1.5 tabular-nums"
-              title="Estimated token usage, cost, and savings for this project in the current session"
-            >
-              {sessionTokens > 0 && <span>{sessionTokens.toLocaleString()}t</span>}
-              {sessionCost > 0 && <span className="text-good/90">{formatCost(sessionCost)}</span>}
-              <SavingsChip parts={sessionSavingsParts} className="text-[9px] font-sans" />
-              <span className="text-faint/70 normal-case font-sans tracking-normal">session</span>
-            </span>
-          )}
           {anyRunning && (
             <span className="flex items-center gap-1 text-accent">
               <Loader2 size={10} className="animate-spin" /> {runningCount} running
