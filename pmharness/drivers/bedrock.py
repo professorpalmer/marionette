@@ -226,7 +226,55 @@ class BedrockDriver:
         extra: dict[str, Any] = {"max_tokens": self.max_tokens}
         if self.send_temperature and self.temperature is not None:
             extra["temperature"] = self.temperature
+        # Claude-on-Bedrock extended thinking (same effort knob as Codex/Anthropic).
+        # Forwarded via Puppetmaster build_converse_body when present; also
+        # stamped post-build in _chat_stream_converse for older PM installs.
+        try:
+            from harness.reasoning_effort import (
+                anthropic_thinking_budget,
+                model_supports_anthropic_thinking,
+            )
+            if model_supports_anthropic_thinking(self.model):
+                budget = anthropic_thinking_budget()
+                if budget is not None and budget > 0:
+                    if int(extra.get("max_tokens") or 0) <= budget:
+                        extra["max_tokens"] = budget + 1024
+                    extra["additionalModelRequestFields"] = {
+                        "thinking": {"type": "enabled", "budget_tokens": int(budget)},
+                    }
+                    extra.pop("temperature", None)
+        except Exception:
+            pass
         return extra
+
+    def _stamp_thinking_fields(self, body: dict) -> dict:
+        """Attach Claude extended thinking onto a Converse body (PM passthrough gap).
+
+        ``puppetmaster.bedrock.build_converse_body`` does not yet forward
+        ``additionalModelRequestFields`` from ``extra``, so we stamp after build.
+        """
+        if not isinstance(body, dict):
+            return body
+        try:
+            from harness.reasoning_effort import (
+                anthropic_thinking_budget,
+                model_supports_anthropic_thinking,
+            )
+            if not model_supports_anthropic_thinking(self.model):
+                return body
+            budget = anthropic_thinking_budget()
+            if budget is None or budget <= 0:
+                return body
+            fields = dict(body.get("additionalModelRequestFields") or {})
+            fields["thinking"] = {"type": "enabled", "budget_tokens": int(budget)}
+            body["additionalModelRequestFields"] = fields
+            # Thinking rejects custom temperature.
+            cfg = body.get("inferenceConfig")
+            if isinstance(cfg, dict):
+                cfg.pop("temperature", None)
+        except Exception:
+            pass
+        return body
 
     def _wire_messages(
         self, messages: list, system: Optional[str]
@@ -516,7 +564,9 @@ class BedrockDriver:
         region = resolve_bedrock_region(os.environ)
         url_base = bedrock_runtime_base_url(region).rstrip("/")
         model_id = require_bedrock_model_id(self.model)
-        body = build_converse_body(messages=wire, tools=tools, extra=self._extra())
+        body = self._stamp_thinking_fields(
+            build_converse_body(messages=wire, tools=tools, extra=self._extra())
+        )
         url = _converse_stream_url(url_base, model_id)
         payload = json.dumps(body).encode("utf-8")
         creds = _resolve_call_credentials(api_key=None, env=os.environ)

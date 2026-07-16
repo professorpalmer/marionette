@@ -72,3 +72,58 @@ def reasoning_effort_label(level: str) -> str:
         normalize_reasoning_effort(level),
         REASONING_EFFORT_LABELS[DEFAULT_CODEX_REASONING_EFFORT],
     )
+
+
+# Anthropic / Bedrock Claude extended-thinking budgets (tokens). ``none`` omits
+# the thinking block entirely. Tuned for interactive pilots, not max-out research.
+_ANTHROPIC_THINKING_BUDGETS = {
+    "none": None,
+    "low": 4_096,
+    "medium": 10_000,
+    "high": 16_000,
+    "xhigh": 24_000,
+    "max": 32_000,
+}
+
+
+def model_supports_anthropic_thinking(model_id: str) -> bool:
+    """True for Claude opus/sonnet families that accept Messages ``thinking``."""
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return False
+    if "haiku" in mid:
+        return False
+    # Bare ids and Bedrock profiles (e.g. us.anthropic.claude-sonnet-4-…).
+    return ("opus" in mid) or ("sonnet" in mid)
+
+
+def anthropic_thinking_budget(ui_effort: object = None) -> Optional[int]:
+    """Map effort → Anthropic ``budget_tokens``, or None to omit thinking."""
+    level = normalize_reasoning_effort(
+        ui_effort if ui_effort is not None else current_reasoning_effort()
+    )
+    return _ANTHROPIC_THINKING_BUDGETS.get(level)
+
+
+def apply_anthropic_thinking(body: dict, model_id: str, *, max_tokens: int) -> dict:
+    """Mutate a Messages-style body to enable extended thinking when appropriate.
+
+    Ensures ``max_tokens`` is strictly greater than ``budget_tokens`` (Anthropic
+    requirement). Returns the same dict for chaining.
+    """
+    if not isinstance(body, dict):
+        return body
+    if not model_supports_anthropic_thinking(model_id):
+        return body
+    budget = anthropic_thinking_budget()
+    if budget is None or budget <= 0:
+        return body
+    # Thinking budget must be below output ceiling.
+    ceiling = int(max_tokens or body.get("max_tokens") or 0)
+    if ceiling <= budget:
+        ceiling = budget + 1024
+        body["max_tokens"] = ceiling
+    body["thinking"] = {"type": "enabled", "budget_tokens": int(budget)}
+    # Extended thinking rejects non-default temperature.
+    body.pop("temperature", None)
+    return body

@@ -349,6 +349,14 @@ class AnthropicDriver:
             # the newest turn so NEXT turn's stable marker can reuse it.
             _mark(anthropic_msgs[-1])
 
+        # Extended thinking: request when effort != none and model supports it.
+        # Streams already emit thinking_delta → on_reasoning_delta.
+        try:
+            from harness.reasoning_effort import apply_anthropic_thinking
+            apply_anthropic_thinking(body, self.model, max_tokens=self.max_tokens)
+        except Exception:
+            pass
+
         return body
 
     def _headers(self) -> dict:
@@ -363,6 +371,18 @@ class AnthropicDriver:
             oauth = is_anthropic_oauth_token(key)
         except Exception:
             oauth = key.startswith("sk-ant-oat") or key.startswith("eyJ") or key.startswith("cc-")
+        thinking_on = False
+        try:
+            from harness.reasoning_effort import (
+                anthropic_thinking_budget,
+                model_supports_anthropic_thinking,
+            )
+            thinking_on = (
+                model_supports_anthropic_thinking(self.model)
+                and anthropic_thinking_budget() is not None
+            )
+        except Exception:
+            thinking_on = False
         if oauth:
             headers["Authorization"] = f"Bearer {key}"
             headers["x-app"] = "cli"
@@ -370,11 +390,19 @@ class AnthropicDriver:
             betas = ["claude-code-20250219", "oauth-2025-04-20"]
             if self._prompt_cache_on():
                 betas.append("prompt-caching-2024-07-31")
+            if thinking_on:
+                # Tools + thinking need interleaved thinking on current Claude.
+                betas.append("interleaved-thinking-2025-05-14")
             headers["anthropic-beta"] = ",".join(betas)
         else:
             headers["x-api-key"] = key
+            betas = []
             if self._prompt_cache_on():
-                headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+                betas.append("prompt-caching-2024-07-31")
+            if thinking_on:
+                betas.append("interleaved-thinking-2025-05-14")
+            if betas:
+                headers["anthropic-beta"] = ",".join(betas)
         return headers
 
     def chat(self, messages: list, *, tools: list | None = None, system: str | None = None) -> DriverResponse:

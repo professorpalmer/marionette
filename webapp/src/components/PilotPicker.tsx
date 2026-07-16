@@ -18,6 +18,18 @@ function isCodexPilot(driver: string): boolean {
   return CODEX_REACHES.has(reach);
 }
 
+/** Effort picker: Codex always; Anthropic/Bedrock Claude opus|sonnet only. */
+function supportsReasoningEffort(driver: string): boolean {
+  const reach = (driver.split(":")[0] || "").toLowerCase();
+  const model = (driver.split(":")[1] || "").toLowerCase();
+  if (CODEX_REACHES.has(reach)) return true;
+  if (reach === "anthropic" || reach === "bedrock") {
+    if (model.includes("haiku")) return false;
+    return model.includes("opus") || model.includes("sonnet");
+  }
+  return false;
+}
+
 function labelForEffort(value: ReasoningEffort): string {
   return REASONING_LEVELS.find((l) => l.value === value)?.label || "Low";
 }
@@ -115,7 +127,7 @@ export default function PilotPicker({ config }: {
     return short;
   };
   const currentLabel = labelOf(current);
-  const showReasoning = isCodexPilot(current);
+  const showReasoning = supportsReasoningEffort(current);
 
   return (
     <div className="relative inline-flex items-center gap-1" ref={containerRef}>
