@@ -104,16 +104,37 @@ class Session:
         env = getattr(d, "api_key_env", None)
         if not env:
             return None
+        try:
+            from .credential_pool import (
+                credential_satisfied,
+                peek_token_for_env,
+                providers_for_env_var,
+                _mirror_pool_token_to_env,
+            )
+            # Refresh all mirrored aliases from the pool first (set-only).
+            # Anthropic OAuth may leave ANTHROPIC_TOKEN set while
+            # ANTHROPIC_API_KEY was cleared — remirror restores both.
+            for prov in providers_for_env_var(env):
+                _mirror_pool_token_to_env(prov)
+        except Exception:
+            pass
         if os.environ.get(env, "").strip():
             return None
         try:
-            from .credential_pool import credential_satisfied, peek_token_for_env
+            from .credential_pool import (
+                credential_satisfied,
+                peek_token_for_env,
+                providers_for_env_var,
+                _mirror_pool_token_to_env,
+            )
             if credential_satisfied(env):
                 # Mirror so subsequent env-only checks / child tools see it
                 # (includes OAuth sibling pools, e.g. xai-oauth → XAI_API_KEY).
                 tok = peek_token_for_env(env)
                 if tok:
                     os.environ[env] = tok
+                    for prov in providers_for_env_var(env):
+                        _mirror_pool_token_to_env(prov)
                 return None
         except Exception:
             pass

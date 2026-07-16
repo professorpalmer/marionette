@@ -1593,9 +1593,8 @@ class ConversationalSession(ToolDispatchMixin):
             turn_note = self._turn_budget_system_note()
             if turn_note:
                 parts.append(turn_note)
-            identity_note = self._pilot_identity_system_note()
-            if identity_note:
-                parts.append(identity_note)
+            # Pilot identity stays in the frozen system prompt for append-only
+            # (not the per-turn trailer) so the rendered prefix stays stable.
             if not parts:
                 return message
             return message + self._TURN_CONTEXT_TRAILER + "\n\n".join(parts)
@@ -1604,6 +1603,10 @@ class ConversationalSession(ToolDispatchMixin):
 
     def _ensure_frozen_system_prompt(self, base_sys: str) -> str:
         if self._frozen_system_prompt is not None:
+            # Re-sync history after send()'s finally may have briefly restored
+            # the pre-freeze base between turns.
+            if self._history and self._history[0].get("role") == "system":
+                self._history[0]["content"] = self._frozen_system_prompt
             return self._frozen_system_prompt
         try:
             sys_prompt = base_sys
@@ -2883,7 +2886,13 @@ class ConversationalSession(ToolDispatchMixin):
                 else:
                     yield ev
         finally:
-            self._history[0]["content"] = original_sys
+            # Append-only freezes an enriched system prompt (MCP catalog, pilot
+            # identity, …). Restoring the pre-turn base would desync history
+            # from the frozen prefix and break prompt.startswith stability.
+            if self._resolve_append_only() and self._frozen_system_prompt is not None:
+                self._history[0]["content"] = self._frozen_system_prompt
+            else:
+                self._history[0]["content"] = original_sys
             self._release_busy(busy_gen)
 
     def _send_locked(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:

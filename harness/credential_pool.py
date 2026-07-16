@@ -374,7 +374,10 @@ def remove_entry(provider: str, entry_id: str) -> bool:
         pool = load_pool(provider)
         ok = pool.remove_entry(entry_id)
         if ok:
-            _mirror_pool_token_to_env(provider, pool)
+            if pool.entries():
+                _mirror_pool_token_to_env(provider, pool)
+            else:
+                _clear_mirrored_env_for_provider(provider)
         return ok
 
 
@@ -644,8 +647,11 @@ def resolve_entry_for_env(env_name: str) -> Optional[PooledCredential]:
 def _mirror_pool_token_to_env(provider: str, pool: Optional[CredentialPool] = None) -> None:
     """Best-effort: put a healthy pool token into process env for preflight/UI.
 
-    When the pool has no healthy token (e.g. after Sign out), clear the mirrored
-    env vars so status / preflight stop reporting the account as signed in.
+    Set-only. Never clear env here — ``load_pool`` remirrors empty pools during
+    ``add_api_key`` / oauth sibling flows, and wiping would race
+    ``set_api_key`` / shared extras (xai-oauth → XAI_API_KEY). Sign-out clearing
+    goes through ``remove_entry`` → ``_clear_mirrored_env_for_provider`` and
+    Settings ``clearProviderKey``.
     """
     env_names = []
     primary = env_var_for_provider(provider)
@@ -665,10 +671,44 @@ def _mirror_pool_token_to_env(provider: str, pool: Optional[CredentialPool] = No
                 for env_name in env_names:
                     os.environ[env_name] = tok
                 return
-        for env_name in env_names:
-            os.environ.pop(env_name, None)
     except Exception as e:
         _diag("credential_pool.mirror_env", e)
+
+
+def _clear_mirrored_env_for_provider(provider: str) -> None:
+    """Clear env vars owned by ``provider`` after its pool becomes empty.
+
+    Only clears an env var when no other known pool still has a healthy token
+    that mirrors into the same name (avoids wiping XAI_API_KEY when removing
+    an empty ``xai`` remirror while ``xai-oauth`` is still signed in).
+    """
+    owned: List[str] = []
+    primary = env_var_for_provider(provider)
+    if primary:
+        owned.append(primary)
+    for extra in _PROVIDER_TO_ENV_EXTRAS.get(provider, ()):
+        if extra not in owned:
+            owned.append(extra)
+    for env_name in owned:
+        still_needed = False
+        for other in known_pool_providers():
+            if other == provider:
+                continue
+            other_envs = []
+            op = env_var_for_provider(other)
+            if op:
+                other_envs.append(op)
+            other_envs.extend(_PROVIDER_TO_ENV_EXTRAS.get(other, ()))
+            if env_name not in other_envs:
+                continue
+            try:
+                if has_healthy_credential(other):
+                    still_needed = True
+                    break
+            except Exception:
+                continue
+        if not still_needed:
+            os.environ.pop(env_name, None)
 
 
 def known_pool_providers() -> List[str]:

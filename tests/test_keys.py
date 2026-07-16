@@ -38,10 +38,20 @@ def setup_env(monkeypatch):
     # Create a temporary directory for tests
     tmp_dir = tempfile.mkdtemp()
     monkeypatch.setenv("HARNESS_STATE_DIR", tmp_dir)
+    try:
+        from harness.credential_pool import clear_pools_for_tests
+        clear_pools_for_tests()
+    except Exception:
+        pass
     yield tmp_dir
     # Cleanup env
     if "OPENROUTER_API_KEY" in os.environ:
         del os.environ["OPENROUTER_API_KEY"]
+    try:
+        from harness.credential_pool import clear_pools_for_tests
+        clear_pools_for_tests()
+    except Exception:
+        pass
 
 
 def test_set_and_get_api_key_status():
