@@ -27,6 +27,7 @@ Start here, then follow the map:
 | [DEMO.md](DEMO.md) | A guided walkthrough of the harness in action. |
 | [FINDINGS.md](FINDINGS.md) | Research-rig findings: which models can drive the harness. |
 | [NOTICE.md](NOTICE.md) | Third-party attributions. |
+| [docs/discord-mcp.md](docs/discord-mcp.md) | Optional recipe: wire a MIT Discord MCP (Docker + `manage_mcp`), not a first-party Discord product. |
 
 ## What it is
 

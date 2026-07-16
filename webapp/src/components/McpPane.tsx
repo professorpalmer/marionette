@@ -172,7 +172,8 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
         {servers.length === 0 && !adding && (
           <div className={`text-faint text-[11px] text-center px-3 leading-relaxed ${embedded ? "mt-2" : "mt-6"}`}>
             No MCP servers yet. Add github, aws, vercel, a browser controller, or a Docker HTTP URL
-            (e.g. http://localhost:8085/mcp).
+            (e.g. http://localhost:8085/mcp). Discord bot recipe (optional, not built-in):
+            docs/discord-mcp.md in the Marionette repo.
           </div>
         )}
 
