@@ -480,6 +480,56 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     }
   };
 
+  /** Sign out every pool credential for a plan OAuth provider (Codex / Claude / xAI / Nous). */
+  const handlePlanPoolSignOut = async (provider: string) => {
+    const entries = poolEntriesFor(provider);
+    if (!entries.length) return;
+    setPoolBusy(provider);
+    setOauthHint("");
+    setError("");
+    try {
+      for (const e of entries) {
+        await api.removeAuthPoolEntry(provider, e.id);
+      }
+      // OAuth login also mirrors into keys.json / process env — clear that too
+      // so Sign out matches Cursor CLI (status flips to Not signed in).
+      try {
+        await api.clearProviderKey(provider);
+      } catch {
+        /* pool-only providers may not have a keys.json row */
+      }
+      if (provider === "xai-oauth") {
+        try {
+          await api.clearProviderKey("xai");
+        } catch {
+          /* ignore */
+        }
+      }
+      if (provider === "anthropic") {
+        setOauthSessionId("");
+        setOauthPasteCode("");
+      }
+      await refreshAuthPools();
+      await refreshProviders();
+      window.dispatchEvent(new Event("harness-config-changed"));
+      setOauthHint("Signed out");
+    } catch (e) {
+      console.error("Failed to sign out plan account", e);
+      setError("Failed to sign out");
+    } finally {
+      setPoolBusy("");
+    }
+  };
+
+  const refreshPlanPoolStatus = async () => {
+    try {
+      await refreshAuthPools();
+      await refreshProviders();
+    } catch (e) {
+      console.error("Failed to refresh plan account status", e);
+    }
+  };
+
   const handlePoolStrategy = async (provider: string, strategy: string) => {
     setPoolBusy(provider);
     try {
@@ -1196,11 +1246,21 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   type="button"
                   onClick={handleCodexSignIn}
-                  disabled={oauthBusy}
+                  disabled={oauthBusy || poolBusy === "openai-codex"}
                   className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
                 >
                   {oauthBusy ? "Waiting for browser..." : "Sign in"}
                 </button>
+                {poolEntriesFor("openai-codex").length ? (
+                  <button
+                    type="button"
+                    onClick={() => handlePlanPoolSignOut("openai-codex")}
+                    disabled={oauthBusy || poolBusy === "openai-codex"}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                  >
+                    Sign out
+                  </button>
+                ) : null}
                 {oauthBusy ? (
                   <button
                     type="button"
@@ -1210,6 +1270,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     Cancel
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  onClick={() => { refreshPlanPoolStatus(); }}
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                >
+                  Refresh status
+                </button>
               </div>
             </div>
 
@@ -1220,15 +1287,28 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   {planAccountStatusLine("anthropic")}
                 </span>
               </div>
+              <p className="text-[10px] text-muted mt-1 leading-normal">
+                Claude Pro/Max subscription via claude.ai. Enterprise org keys use API Keys below (or Bedrock) — not this Sign in.
+              </p>
               <div className="flex items-center gap-2 flex-wrap mt-1.5">
                 <button
                   type="button"
                   onClick={handleAnthropicSignIn}
-                  disabled={oauthBusy}
+                  disabled={oauthBusy || poolBusy === "anthropic"}
                   className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
                 >
                   {oauthBusy ? "Waiting for code..." : "Sign in"}
                 </button>
+                {poolEntriesFor("anthropic").length ? (
+                  <button
+                    type="button"
+                    onClick={() => handlePlanPoolSignOut("anthropic")}
+                    disabled={oauthBusy || poolBusy === "anthropic"}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                  >
+                    Sign out
+                  </button>
+                ) : null}
                 {oauthBusy || oauthSessionId ? (
                   <button
                     type="button"
@@ -1238,6 +1318,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     Cancel
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  onClick={() => { refreshPlanPoolStatus(); }}
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                >
+                  Refresh status
+                </button>
               </div>
               {oauthSessionId ? (
                 <div className="flex items-center gap-2 mt-1.5">
@@ -1323,11 +1410,21 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   type="button"
                   onClick={handleXaiSignIn}
-                  disabled={oauthBusy}
+                  disabled={oauthBusy || poolBusy === "xai-oauth"}
                   className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
                 >
                   {oauthBusy ? "Waiting for browser..." : "Sign in"}
                 </button>
+                {poolEntriesFor("xai-oauth").length ? (
+                  <button
+                    type="button"
+                    onClick={() => handlePlanPoolSignOut("xai-oauth")}
+                    disabled={oauthBusy || poolBusy === "xai-oauth"}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                  >
+                    Sign out
+                  </button>
+                ) : null}
                 {oauthBusy ? (
                   <button
                     type="button"
@@ -1337,6 +1434,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     Cancel
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  onClick={() => { refreshPlanPoolStatus(); }}
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                >
+                  Refresh status
+                </button>
               </div>
             </div>
 
@@ -1351,11 +1455,21 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   type="button"
                   onClick={handleNousSignIn}
-                  disabled={oauthBusy}
+                  disabled={oauthBusy || poolBusy === "nous"}
                   className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
                 >
                   {oauthBusy ? "Waiting for browser..." : "Sign in"}
                 </button>
+                {poolEntriesFor("nous").length ? (
+                  <button
+                    type="button"
+                    onClick={() => handlePlanPoolSignOut("nous")}
+                    disabled={oauthBusy || poolBusy === "nous"}
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                  >
+                    Sign out
+                  </button>
+                ) : null}
                 {oauthBusy ? (
                   <button
                     type="button"
@@ -1365,6 +1479,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     Cancel
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  onClick={() => { refreshPlanPoolStatus(); }}
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                >
+                  Refresh status
+                </button>
               </div>
             </div>
           </div>
