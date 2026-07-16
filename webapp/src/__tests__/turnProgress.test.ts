@@ -74,6 +74,22 @@ describe("deriveBusyProgress", () => {
     expect(p.label.toLowerCase()).not.toContain("thinking");
   });
 
+  it("names the pilot model while waiting on provider", () => {
+    const p = deriveBusyProgress([msg("user", "hi")], "thinking", 5_000, {
+      modelLabel: "openai-codex:gpt-5.6-luna",
+    });
+    expect(p.label).toBe("Waiting on gpt-5.6-luna… · 5s");
+  });
+
+  it("appends a wait hint for Codex continuation", () => {
+    const p = deriveBusyProgress([msg("user", "hi")], "thinking", 2_000, {
+      modelLabel: "openai-codex:gpt-5.6-luna",
+      waitHint: "asking it to continue (1/3)",
+    });
+    expect(p.label).toContain("gpt-5.6-luna");
+    expect(p.label).toContain("asking it to continue (1/3)");
+  });
+
   it("omits elapsed under 1s while waiting on provider", () => {
     const p = deriveBusyProgress([msg("user", "hi")], "thinking", 400);
     expect(p.label).toBe("Waiting on provider…");

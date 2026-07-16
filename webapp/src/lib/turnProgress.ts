@@ -293,10 +293,21 @@ export function shouldShowBusyFooter(items: TurnItem[], status: BusyStatus): boo
  * Pre-token TTFT: "Waiting on provider…" until reasoning or tools start.
  * Post-answer SSE lag: empty labels once the assistant bubble looks complete.
  */
+/** Short model label for wait chrome (drop provider prefix when present). */
+export function shortPilotModelLabel(driver: string | null | undefined): string {
+  const raw = (driver || "").trim();
+  if (!raw) return "";
+  const model = raw.includes(":") ? raw.split(":").slice(1).join(":") : raw;
+  // Prefer the leaf id for long OpenRouter-style paths.
+  const leaf = model.includes("/") ? model.split("/").pop() || model : model;
+  return leaf.length > 28 ? `${leaf.slice(0, 26)}…` : leaf;
+}
+
 export function deriveBusyProgress(
   items: TurnItem[],
   status: BusyStatus,
   elapsedMs?: number | null,
+  opts?: { modelLabel?: string | null; waitHint?: string | null },
 ): BusyProgress {
   const busy =
     status === "thinking" || status === "executing" || status === "streaming";
@@ -356,9 +367,13 @@ export function deriveBusyProgress(
 
   // T3: honesty before first token / tool — do not pretend we are "thinking".
   if (!hasSignal) {
-    const waiting = elapsed
-      ? `Waiting on provider… · ${elapsed}`
-      : "Waiting on provider…";
+    const model = shortPilotModelLabel(opts?.modelLabel || "");
+    const hint = (opts?.waitHint || "").trim();
+    const who = model ? `Waiting on ${model}` : "Waiting on provider";
+    let waiting = elapsed ? `${who}… · ${elapsed}` : `${who}…`;
+    if (hint) {
+      waiting = `${waiting} · ${hint}`;
+    }
     return {
       phase: "waiting",
       label: waiting,

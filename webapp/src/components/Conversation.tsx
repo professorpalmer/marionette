@@ -878,7 +878,11 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     || status === "executing"
     || status === "streaming";
   const liveInvestigation = turnHasLiveInvestigation(items, agentLoopOpen);
-  const busyProgress = deriveBusyProgress(items, status, busyElapsedMs);
+  const [waitHint, setWaitHint] = useState<string | null>(null);
+  const busyProgress = deriveBusyProgress(items, status, busyElapsedMs, {
+    modelLabel: config?.driver || "",
+    waitHint,
+  });
   // True while visible items belong to a prior session (or are awaiting hydrate).
   // Dims the feed and blocks send so stale A is never treated as B.
   const [transcriptStale, setTranscriptStale] = useState(false);
@@ -2581,6 +2585,9 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         setCompactingStatus(null);
         setItems((p) => [...p, { kind: "compaction" as const, before_tokens: d.before_tokens, after_tokens: d.after_tokens }]);
         window.dispatchEvent(new Event("harness-context-changed"));
+      } else if (ev.kind === "notice" && (d.kind === "wait" || !d.kind)) {
+        const msg = String(d.message || "").trim();
+        if (msg) setWaitHint(msg.length > 72 ? `${msg.slice(0, 70)}…` : msg);
       } else if (ev.kind === "thinking") {
         // Live reasoning deltas (delta:true) paint mid-turn so GLM/OR token
         // climbs are visible. Full post-answer reasoning dumps (no delta) stay
@@ -2849,6 +2856,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
       } else if (ev.kind === "assistant_done") {
         turnSettledRef.current = true;
         setTurnOpen(false);
+        setWaitHint(null);
         setStatus("done");
         setItems((p) => finalizeStreamingThinking(p));
         fetchContextUsage();
@@ -2859,6 +2867,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
         turnSettledRef.current = true;
         setTurnOpen(false);
         setCompactingStatus(null);
+        setWaitHint(null);
         setStatus("error");
         setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
       }
