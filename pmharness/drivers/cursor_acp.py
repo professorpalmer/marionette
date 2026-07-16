@@ -30,9 +30,15 @@ from .cursor_cli import (
 
 
 def cursor_acp_enabled() -> bool:
-    """True unless ``HARNESS_CURSOR_ACP`` is an explicit off value."""
-    raw = (os.environ.get("HARNESS_CURSOR_ACP") or "1").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+    """Opt-in warm ACP path (``HARNESS_CURSOR_ACP=1``).
+
+    Default OFF: until we prove ``agent acp`` stays alive across turns on
+    Windows, the experimental warm path can be *slower* than per-turn
+    ``--print`` (handshake + respawn every prompt). Keep the driver code;
+    enable explicitly when validating.
+    """
+    raw = (os.environ.get("HARNESS_CURSOR_ACP") or "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def _extract_update_text(update: Any) -> str:
@@ -565,13 +571,6 @@ class CursorAcpDriver:
         on_tool_hint: Optional[Callable[[str], None]],
     ) -> DriverResponse:
         t0 = time.time()
-        if on_reasoning_delta is not None:
-            try:
-                on_reasoning_delta(
-                    "Warm Cursor Agent (ACP) — reusing persistent session…"
-                )
-            except Exception:
-                pass
         prompt = _messages_to_prompt(messages, system, lean=True)
         try:
             out = self._session.prompt(
@@ -626,13 +625,7 @@ class CursorAcpDriver:
                     on_tool_hint=on_tool_hint,
                 )
             except Exception:
-                if on_reasoning_delta is not None:
-                    try:
-                        on_reasoning_delta(
-                            "ACP warm path failed; falling back to Cursor Agent --print…"
-                        )
-                    except Exception:
-                        pass
+                pass
         return self._fallback._run_stream(
             messages,
             tools=None,

@@ -140,9 +140,9 @@ class _FakeProc:
 
 def test_cursor_acp_enabled_default(monkeypatch):
     monkeypatch.delenv("HARNESS_CURSOR_ACP", raising=False)
-    assert cursor_acp_enabled() is True
-    monkeypatch.setenv("HARNESS_CURSOR_ACP", "0")
     assert cursor_acp_enabled() is False
+    monkeypatch.setenv("HARNESS_CURSOR_ACP", "1")
+    assert cursor_acp_enabled() is True
 
 
 def test_extract_update_text_chunk():

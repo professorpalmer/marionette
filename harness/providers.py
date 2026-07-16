@@ -482,8 +482,8 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
     if provider.api_mode == "cursor_cli":
         # Workspace trust / --workspace follow the open project (HARNESS_REPO).
         cwd = (os.environ.get("HARNESS_REPO") or "").strip() or None
-        # Default ON: warm ACP session (Hermes/Grok-style). Set
-        # HARNESS_CURSOR_ACP=0 to force per-turn `agent --print`.
+        # Warm ACP is opt-in (HARNESS_CURSOR_ACP=1). Default stays per-turn
+        # `agent --print` until the persistent process is proven across turns.
         from pmharness.drivers.cursor_acp import CursorAcpDriver, cursor_acp_enabled
         if cursor_acp_enabled():
             return _finalize_driver(

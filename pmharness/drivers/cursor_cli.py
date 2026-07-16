@@ -580,16 +580,8 @@ class CursorCliDriver:
             # Hide console flash; CREATE_NO_WINDOW=0x08000000
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-        # Surface wait immediately — Cursor Agent cold print is ~10s on Windows
-        # even for "pong"; silence feels broken. Hermes-style: paint a phase
-        # before the first model token.
-        if on_reasoning_delta is not None:
-            try:
-                on_reasoning_delta(
-                    "Starting Cursor Agent CLI (plan path; cold start often ~8–12s)…"
-                )
-            except Exception:
-                pass
+        # Leave the composer on the thinking spinner until real model/tool
+        # events arrive — no synthetic "cold start" status chrome.
 
         try:
             proc = subprocess.Popen(cmd, **popen_kwargs)
