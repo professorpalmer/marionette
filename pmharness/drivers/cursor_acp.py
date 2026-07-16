@@ -421,13 +421,19 @@ class WarmAcpSession:
         if init.get("error"):
             raise RuntimeError(f"acp initialize failed: {init.get('error')}")
         transport.notify("initialized", {})
-        # CLI login is often already on disk; authenticate can hang with no
-        # response. Cap wait tightly and proceed — session/new is the real gate.
-        transport.request(
-            "authenticate",
-            {"methodId": "cursor_login"},
-            timeout=5.0,
-        )
+        # Never call authenticate(cursor_login) here. That RPC opens the browser
+        # "Log in to Cursor CLI?" modal on every new ACP process — including New
+        # Session / prewarm — even when the CLI session store is already valid.
+        # Agent picks up the existing login; session/new is the real gate.
+        # Opt-in only: HARNESS_CURSOR_ACP_AUTH=1
+        if (os.environ.get("HARNESS_CURSOR_ACP_AUTH") or "").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            transport.request(
+                "authenticate",
+                {"methodId": "cursor_login"},
+                timeout=5.0,
+            )
         params: dict = {
             "cwd": self.cwd or os.getcwd(),
             "mcpServers": [],
