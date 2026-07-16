@@ -24,7 +24,10 @@ from .base import SYSTEM_PROMPT, DriverResponse
 from .cursor_cli import (
     INSTALL_HINT,
     CursorCliDriver,
+    _canonicalize_tool_kind,
     _messages_to_prompt,
+    goal_from_tool_args,
+    humanize_cursor_tool_name,
     resolve_agent_exec,
 )
 from .token_usage import coerce_token_usage
@@ -114,30 +117,136 @@ def _extract_thought_text(update: Any) -> str:
     return str(inner.get("text") or "")
 
 
-def _extract_tool_hint(update: Any) -> str:
-    if not isinstance(update, dict):
+def _goal_from_acp_locations(inner: dict) -> str:
+    locs = inner.get("locations")
+    if not isinstance(locs, list):
         return ""
+    for loc in locs:
+        if not isinstance(loc, dict):
+            continue
+        path = loc.get("path") or loc.get("uri") or loc.get("file")
+        if isinstance(path, str) and path.strip():
+            return path.strip()
+    return ""
+
+
+def _extract_tool_event(update: Any) -> Optional[dict]:
+    """Structured ACP tool_call / tool_call_update → tool_prep payload.
+
+    Cursor often sends ``kind: \"read\"`` + ``toolCallId`` with no ``toolName``.
+    The old path fell through to the literal ``\"tool\"``, which the UI then
+    painted as ``Investigating · tool tool``. Prefer ACP ``kind``, then
+    ``*ToolCall`` keys / titles, and surface path/command as ``goal``.
+    """
+    if not isinstance(update, dict):
+        return None
     inner = update.get("update") if isinstance(update.get("update"), dict) else update
     if not isinstance(inner, dict):
-        return ""
-    kind = str(
+        return None
+    session_kind = str(
         inner.get("sessionUpdate")
         or inner.get("session_update")
         or inner.get("type")
         or ""
     ).lower()
-    if "tool" not in kind:
-        return ""
-    for key in ("toolName", "tool_name", "title", "name"):
-        val = inner.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
+    if "tool" not in session_kind:
+        return None
+
+    call_id = str(
+        inner.get("toolCallId")
+        or inner.get("tool_call_id")
+        or inner.get("call_id")
+        or ""
+    ).strip()
+    status = str(inner.get("status") or "").strip().lower()
+    # Internal "think" tool rows duplicate the reasoning stream — skip.
+    acp_kind = str(inner.get("kind") or "").strip()
+    if acp_kind.lower() == "think":
+        return None
+
+    name = humanize_cursor_tool_name(acp_kind)
+    if not name:
+        for key in ("toolName", "tool_name", "name"):
+            name = humanize_cursor_tool_name(str(inner.get(key) or ""))
+            if name:
+                break
+    title = str(inner.get("title") or "").strip()
+
     tool_call = inner.get("toolCall") or inner.get("tool_call")
+    args: dict = {}
     if isinstance(tool_call, dict):
-        for k in tool_call:
-            if k and isinstance(k, str):
-                return k
-    return "tool"
+        for k, payload in tool_call.items():
+            if not isinstance(k, str) or not k:
+                continue
+            candidate = humanize_cursor_tool_name(k)
+            if candidate and not name:
+                name = candidate
+            if isinstance(payload, dict):
+                nested_args = payload.get("args")
+                if isinstance(nested_args, dict):
+                    args = nested_args
+                elif "result" not in payload:
+                    args = {
+                        pk: pv for pk, pv in payload.items() if pk != "result"
+                    }
+                nested_name = humanize_cursor_tool_name(
+                    str(
+                        payload.get("name")
+                        or payload.get("toolName")
+                        or payload.get("tool_name")
+                        or ""
+                    )
+                )
+                if nested_name and not name:
+                    name = nested_name
+            break
+
+    raw_in = inner.get("rawInput") or inner.get("raw_input")
+    if isinstance(raw_in, dict) and not args:
+        args = raw_in
+
+    goal = (
+        _goal_from_acp_locations(inner)
+        or goal_from_tool_args(args)
+        or ""
+    )
+    # Title is a last-resort goal when it isn't just a restatement of kind.
+    if not goal and title:
+        title_as_kind = humanize_cursor_tool_name(title)
+        if title_as_kind and name and title_as_kind == name:
+            pass
+        elif title.lower() != (name or "").lower():
+            goal = title
+
+    if not name and not call_id:
+        return None
+    if not name:
+        # Status-only update for a known call — let the UI patch by id.
+        name = ""
+
+    if name:
+        name = _canonicalize_tool_kind(name)
+
+    out: dict = {"name": name or "tool_call"}
+    if goal:
+        out["goal"] = goal
+    if call_id:
+        out["id"] = call_id
+    if status:
+        out["status"] = status
+    elif "update" in session_kind:
+        out["status"] = "in_progress"
+    else:
+        out["status"] = "in_progress"
+    return out
+
+
+def _extract_tool_hint(update: Any) -> str:
+    """Back-compat string form (kind / humanized name) for tests and logs."""
+    ev = _extract_tool_event(update)
+    if not ev:
+        return ""
+    return str(ev.get("name") or "")
 
 
 class AcpTransport:
@@ -479,11 +588,13 @@ class WarmAcpSession:
                     on_reasoning_delta(thought)
                 except Exception:
                     pass
-            hint = _extract_tool_hint(params)
-            if hint and on_tool_hint is not None:
+            tool_ev = _extract_tool_event(params)
+            if tool_ev and on_tool_hint is not None:
                 # Surface Cursor-native tools as hints only (never host tool_calls).
+                # Pass a dict so the UI can show kind + path and keep one row
+                # per toolCallId (string-only fell back to bare "tool").
                 try:
-                    on_tool_hint(hint)
+                    on_tool_hint(tool_ev)
                 except Exception:
                     pass
             piece = _extract_update_text(params)

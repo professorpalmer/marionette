@@ -3320,7 +3320,27 @@ class ConversationalSession(ToolDispatchMixin):
                                     if val:
                                         yield ConvEvent("thinking", {"text": val, "delta": True})
                                 elif kind == "tool_hint":
-                                    if val:
+                                    # Drivers may pass a plain name or a structured
+                                    # {name, goal, id, status} payload (Cursor ACP /
+                                    # stream-json). Bare "tool" used to paint
+                                    # "Investigating · tool tool" in the fold.
+                                    if isinstance(val, dict):
+                                        name = str(val.get("name") or "").strip()
+                                        if name or val.get("id"):
+                                            data = {
+                                                "name": name or "tool_call",
+                                            }
+                                            goal = val.get("goal")
+                                            if goal:
+                                                data["goal"] = str(goal)
+                                            call_id = val.get("id")
+                                            if call_id:
+                                                data["id"] = str(call_id)
+                                            status = val.get("status")
+                                            if status:
+                                                data["status"] = str(status)
+                                            yield ConvEvent("tool_prep", data)
+                                    elif val:
                                         yield ConvEvent("tool_prep", {"name": str(val)})
                                 elif kind == "wait":
                                     if val:

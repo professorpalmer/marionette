@@ -227,6 +227,60 @@ def _is_partial_assistant_delta(event: dict) -> bool:
     return True
 
 
+# Wrapper keys that are not the real tool name (nested name lives in payload).
+_GENERIC_TOOL_KEYS = frozenset({"tool", "function", "toolcall", "tool_call", "call"})
+
+
+def humanize_cursor_tool_name(raw: str) -> str:
+    """Turn Cursor stream/ACP names into UI-friendly kinds.
+
+    ``readToolCall`` / ``ShellToolCall`` → ``read`` / ``shell``;
+    bare ``tool`` / empty → ``\"\"`` so callers can fall back.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    low = s.lower().replace("-", "_")
+    if low in ("tool", "function", "unknown", "other", "tool_call", "toolcall"):
+        return ""
+    if s.endswith("ToolCall"):
+        s = s[: -len("ToolCall")]
+    elif s.endswith("_tool_call"):
+        s = s[: -len("_tool_call")]
+    # camelCase → snake_case for row-label maps (readFile → read_file).
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)
+    out = spaced.replace("-", "_").replace(" ", "_").strip("_").lower()
+    return out
+
+
+def goal_from_tool_args(args: dict) -> str:
+    """Pick a scannable path/command/query from Cursor tool args."""
+    if not isinstance(args, dict):
+        return ""
+    for key in (
+        "path",
+        "targetDirectory",
+        "target_directory",
+        "command",
+        "pattern",
+        "query",
+        "url",
+        "glob",
+        "globPattern",
+        "glob_pattern",
+        "file_path",
+        "filePath",
+    ):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, list) and val:
+            first = val[0]
+            if isinstance(first, str) and first.strip():
+                return first.strip()
+    return ""
+
+
 def _tool_call_name_and_args(tool_call: dict) -> tuple[str, dict]:
     if not isinstance(tool_call, dict):
         return ("unknown", {})
@@ -235,8 +289,59 @@ def _tool_call_name_and_args(tool_call: dict) -> tuple[str, dict]:
             args = payload.get("args")
             if not isinstance(args, dict):
                 args = {k: v for k, v in payload.items() if k != "result"}
-            return (str(key), args)
+            name = str(key)
+            if name.lower().replace("-", "_") in _GENERIC_TOOL_KEYS:
+                nested = (
+                    payload.get("name")
+                    or payload.get("toolName")
+                    or payload.get("tool_name")
+                    or (args.get("name") if isinstance(args, dict) else None)
+                )
+                if nested:
+                    name = str(nested)
+            return (name, args if isinstance(args, dict) else {})
     return ("unknown", {})
+
+
+def _canonicalize_tool_kind(kind: str) -> str:
+    """Map Cursor ACP/stream kinds onto Marionette row families."""
+    k = (kind or "").strip().lower()
+    if k in ("execute", "shell", "bash"):
+        return "run_command"
+    if k == "read":
+        return "read_file"
+    if k == "write":
+        return "write_file"
+    if k == "edit":
+        return "edit_file"
+    if k == "fetch":
+        return "web_fetch"
+    return kind
+
+
+def _tool_hint_payload(
+    name: str,
+    args: dict,
+    *,
+    call_id: str = "",
+    status: str = "",
+) -> dict:
+    """Structured tool_prep payload for conversation / UI."""
+    kind = humanize_cursor_tool_name(name) or humanize_cursor_tool_name(
+        str((args or {}).get("name") or "")
+    )
+    if not kind:
+        kind = (name or "tool_call").strip() or "tool_call"
+    kind = _canonicalize_tool_kind(kind)
+    goal = goal_from_tool_args(args or {})
+    out: dict = {"name": kind}
+    if goal:
+        out["goal"] = goal
+    if call_id:
+        out["id"] = call_id
+    if status:
+        out["status"] = status
+    return out
 
 
 def _openai_tool_call(call_id: str, name: str, args: dict) -> dict:
@@ -325,12 +430,30 @@ def consume_stream_json(
             name, args = _tool_call_name_and_args(event.get("tool_call") or {})
             if subtype == "started":
                 if on_tool_hint is not None and name:
-                    on_tool_hint(name)
+                    on_tool_hint(
+                        _tool_hint_payload(
+                            name, args, call_id=call_id, status="in_progress",
+                        )
+                    )
                 if call_id and call_id not in seen_call_ids:
                     seen_call_ids.add(call_id)
                     tool_calls.append(_openai_tool_call(call_id, name, args))
                 elif not call_id:
                     tool_calls.append(_openai_tool_call("", name, args))
+            elif subtype == "completed" and on_tool_hint is not None and (
+                name or call_id
+            ):
+                # Mark the provisional card done so the investigation fold
+                # keeps each Cursor-native tool row instead of one sticky
+                # "tool tool" placeholder.
+                on_tool_hint(
+                    _tool_hint_payload(
+                        name or "tool_call",
+                        args,
+                        call_id=call_id,
+                        status="completed",
+                    )
+                )
             continue
 
         if etype == "result":

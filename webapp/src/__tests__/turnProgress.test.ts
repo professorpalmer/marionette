@@ -151,6 +151,12 @@ describe("investigatingHeadline / exploration summary", () => {
     ).toBe("Investigating · read config.txt");
   });
 
+  it("does not paint tool tool when kind and goal are the same", () => {
+    expect(
+      investigatingHeadline(1, true, "tool", "tool", "1 step"),
+    ).toBe("Investigating · tool");
+  });
+
   it("falls back to kind counts while live without a focus tool", () => {
     expect(
       investigatingHeadline(3, true, "", "", "2 files, 1 search"),
@@ -181,6 +187,9 @@ describe("investigatingHeadline / exploration summary", () => {
     expect(toolRowLabel("run_command")).toBe("Run");
     expect(toolRowLabel("query_wiki")).toBe("Query wiki");
     expect(toolFocusPhrase("run_command")).toBe("run");
+    expect(toolRowLabel("readToolCall")).toBe("Read");
+    expect(toolRowLabel("ShellToolCall")).toBe("Run");
+    expect(toolRowLabel("execute")).toBe("Run");
   });
 
   it("shortens path tails", () => {
@@ -346,6 +355,31 @@ describe("upsertToolPrep promotes into ActivityGroup cards", () => {
     const cards = twice.filter((i) => i.kind === "card") as Extract<Item, { kind: "card" }>[];
     expect(cards).toHaveLength(1);
     expect(cards[0].card.id).toBe("tool-prep:grep");
+  });
+
+  it("accumulates Cursor tools by call id instead of wiping the fold", () => {
+    const once = upsertToolPrep([msg("user", "go")], "read_file", {
+      id: "c1",
+      goal: "a.py",
+      status: "in_progress",
+    });
+    const twice = upsertToolPrep(once, "run_command", {
+      id: "c2",
+      goal: "pytest",
+      status: "in_progress",
+    });
+    const done = upsertToolPrep(twice, "read_file", {
+      id: "c1",
+      status: "completed",
+    });
+    const cards = done.filter((i) => i.kind === "card") as Extract<Item, { kind: "card" }>[];
+    expect(cards).toHaveLength(2);
+    expect(cards[0].card.id).toBe("tool-prep:c1");
+    expect(cards[0].card.running).toBe(false);
+    expect(cards[0].card.goal).toBe("a.py");
+    expect(cards[1].card.id).toBe("tool-prep:c2");
+    expect(cards[1].card.running).toBe(true);
+    expect(cards[1].card.goal).toBe("pytest");
   });
 
   it("clears prep placeholders before a real action_start card", () => {

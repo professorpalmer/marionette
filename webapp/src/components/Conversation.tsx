@@ -9,6 +9,7 @@ import FileEditorPane from "./FileEditorPane";
 import { TranscriptList, type Item, type Msg, type Card } from "./TranscriptList";
 import {
   deriveBusyProgress,
+  normalizeToolKind,
   turnHasInvestigationActivity,
   turnHasLiveInvestigation,
   turnLooksAnswerComplete,
@@ -399,18 +400,34 @@ export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
   return [...items, { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() }];
 }
 
-/** Replace or append a provisional running card for tool_prep so ActivityGroup
- * appears as soon as tools start assembling -- not only after action_start. */
-export function upsertToolPrep(items: Item[], name: string): Item[] {
-  const prepId = `tool-prep:${name}`;
-  const card = {
-    id: prepId,
-    goal: name.replace(/_/g, " "),
-    cwd: null as string | null,
-    kind: name,
-    running: true,
-    open: false,
-  };
+export type ToolPrepOpts = {
+  /** Path / command / query for the row (Cursor ACP locations / args). */
+  goal?: string;
+  /** Stable Cursor toolCallId / stream call_id — accumulate one row per id. */
+  id?: string;
+  /** pending | in_progress | completed | failed | cancelled */
+  status?: string;
+};
+
+/** Upsert a provisional running card for tool_prep so ActivityGroup appears
+ * as soon as tools start. Cursor ACP/CLI pass call ids so each native tool
+ * keeps its own row; legacy string-only hints still replace the anonymous
+ * placeholder (pre-action_start). */
+export function upsertToolPrep(
+  items: Item[],
+  name: string,
+  opts?: ToolPrepOpts,
+): Item[] {
+  const callId = (opts?.id || "").trim();
+  const status = (opts?.status || "").toLowerCase().trim();
+  const done =
+    status === "completed" || status === "failed" || status === "cancelled";
+  const kind = normalizeToolKind(name) || (name || "").trim() || "tool_call";
+  const goalRaw = (opts?.goal || "").trim();
+  const kindAsGoal =
+    kind === "tool_call" || kind === "tool" ? "" : kind.replace(/_/g, " ");
+  const prepId = callId ? `tool-prep:${callId}` : `tool-prep:${kind}`;
+
   let lastUser = -1;
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
@@ -420,8 +437,75 @@ export function upsertToolPrep(items: Item[], name: string): Item[] {
     }
   }
   const turnStart = lastUser + 1;
-  // Drop prior tool_prep footer hints and stale prep cards in this turn, then
-  // append one provisional card (keeps ActivityGroup + busy helpers in sync).
+
+  // Status-only / completed patch for a known call — never clobber a path
+  // goal with the bare kind label ("read file").
+  if (callId && done) {
+    let hit = false;
+    const patched = items.map((it, i) => {
+      if (i < turnStart || it.kind !== "card") return it;
+      if (it.card.id !== prepId) return it;
+      hit = true;
+      return {
+        ...it,
+        card: {
+          ...it.card,
+          running: false,
+          kind: (kind !== "tool_call" ? kind : it.card.kind) || kind,
+          goal: goalRaw || it.card.goal || kindAsGoal,
+          ...(status === "failed"
+            ? { result: { ...(it.card.result || {}), error: "failed" } }
+            : {}),
+        },
+      };
+    });
+    if (hit) {
+      return patched.filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
+    }
+  }
+
+  const card = {
+    id: prepId,
+    goal: goalRaw || kindAsGoal || kind.replace(/_/g, " "),
+    cwd: null as string | null,
+    kind,
+    running: !done,
+    open: false,
+    ...(status === "failed" ? { result: { error: "failed" } } : {}),
+  };
+
+  // With a stable call id: keep prior Cursor tool rows; update matching id.
+  if (callId) {
+    let replaced = false;
+    const next = items.map((it, i) => {
+      if (i < turnStart) return it;
+      if (it.kind === "tool_prep") return it; // drop below
+      if (it.kind === "card" && it.card.id === prepId) {
+        replaced = true;
+        return {
+          kind: "card" as const,
+          card: {
+            ...it.card,
+            ...card,
+            goal: goalRaw || it.card.goal || card.goal,
+            kind: kind !== "tool_call" ? kind : (it.card.kind || kind),
+            running: card.running,
+          },
+        };
+      }
+      return it;
+    }).filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
+    if (replaced) {
+      return [...next, { kind: "tool_prep" as const, name: kind }];
+    }
+    return [
+      ...next,
+      { kind: "card" as const, card },
+      { kind: "tool_prep" as const, name: kind },
+    ];
+  }
+
+  // Legacy string-only hint: replace anonymous prep cards in this turn.
   const next = items.filter((it, i) => {
     if (i < turnStart) return true;
     if (it.kind === "tool_prep") return false;
@@ -434,7 +518,7 @@ export function upsertToolPrep(items: Item[], name: string): Item[] {
     }
     return true;
   });
-  return [...next, { kind: "card" as const, card }, { kind: "tool_prep" as const, name }];
+  return [...next, { kind: "card" as const, card }, { kind: "tool_prep" as const, name: kind }];
 }
 
 /** Strip provisional tool-prep cards (and footer hints) before a real action_start. */
@@ -505,6 +589,23 @@ export function shouldPollChatEvents(opts: {
 }): boolean {
   if (opts.sawTerminal || opts.userStopped || opts.localStreamActive) return false;
   return opts.detachedBusy;
+}
+
+/**
+ * When a turn starts outside this tab's EventSource (Discord bridge queue,
+ * another client, session already open when the runner flips to running),
+ * runners-poll must arm chatEvents reattach — transcript disk polls alone
+ * stay empty until the turn finishes, which looks like a stuck
+ * "Waiting on provider…" until restart hydrates the final message.
+ */
+export function shouldArmChatEventsFromRunners(opts: {
+  runnerBusy: boolean;
+  localStreamActive: boolean;
+  userStopped: boolean;
+  chatEventsPollArmed: boolean;
+}): boolean {
+  if (!opts.runnerBusy || opts.localStreamActive || opts.userStopped) return false;
+  return !opts.chatEventsPollArmed;
 }
 
 /** Fields checked when classifying a chatEvents miss vs empty catch-up. */
@@ -693,6 +794,9 @@ export default function Conversation({
   const flushTypewriterRef = useRef<() => void>(() => {});
   const maybeRunQueuedResumeRef = useRef<() => void>(() => {});
   const maybeDrainQueueRef = useRef<() => void>(() => {});
+  // Session-load effect installs the reattach starter; runners-poll calls it when
+  // a turn begins without a local EventSource (e.g. Discord Bridge queue drain).
+  const ensureChatEventsReattachRef = useRef<() => void>(() => {});
 
   const clearChatEventsPoll = () => {
     if (chatEventsPollTimerRef.current != null) {
@@ -1739,6 +1843,7 @@ export default function Conversation({
               running = st?.runners?.[reattachSid] === "running";
               if (running) {
                 detachedBusyRef.current = true;
+                setTurnOpen(true);
                 setStatus((prev) =>
                   prev === "thinking" || prev === "executing" || prev === "streaming"
                     ? prev
@@ -1761,6 +1866,9 @@ export default function Conversation({
             });
           }, CHAT_EVENTS_POLL_MS);
         };
+        ensureChatEventsReattachRef.current = () => {
+          void startChatEventsReattach();
+        };
         void startChatEventsReattach();
       })
       .catch(() => {
@@ -1778,6 +1886,7 @@ export default function Conversation({
     return () => {
       cancelled = true;
       clearChatEventsPoll();
+      ensureChatEventsReattachRef.current = () => {};
     };
   }, [activeSessionId]);
 
@@ -1812,6 +1921,19 @@ export default function Conversation({
             ? prev
             : "thinking"
         );
+        // Queue/bridge turns start without this tab's EventSource. Arm the
+        // chatEvents ring poll so tokens paint live (not only after restart).
+        if (
+          shouldArmChatEventsFromRunners({
+            runnerBusy: true,
+            localStreamActive: localStreamActiveRef.current,
+            userStopped: userStoppedRef.current,
+            chatEventsPollArmed: chatEventsPollTimerRef.current != null,
+          })
+        ) {
+          ensureChatEventsReattachRef.current();
+          return;
+        }
         // While chatEvents reattach poll owns mid-turn UI, skip disk replace
         // that would wipe in-flight deltas not yet persisted.
         if (chatEventsPollTimerRef.current != null) return;
@@ -2611,12 +2733,19 @@ export default function Conversation({
         }
       } else if (ev.kind === "tool_prep") {
         const name = String(d.name || "").trim();
-        if (!name) return;
+        const callId = String(d.id || "").trim();
+        if (!name && !callId) return;
         setCompactingStatus(null);
         setStatus((prev) =>
           prev === "streaming" || prev === "executing" ? prev : "thinking"
         );
-        setItems((p) => upsertToolPrep(p, name));
+        setItems((p) =>
+          upsertToolPrep(p, name || "tool_call", {
+            goal: d.goal != null ? String(d.goal) : undefined,
+            id: callId || undefined,
+            status: d.status != null ? String(d.status) : undefined,
+          })
+        );
       } else if (ev.kind === "message_delta") {
         setCompactingStatus(null);
         setStatus("streaming");

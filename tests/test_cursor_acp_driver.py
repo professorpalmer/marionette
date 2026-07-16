@@ -13,6 +13,7 @@ from pmharness.drivers.cursor_acp import (
     AcpTransport,
     CursorAcpDriver,
     WarmAcpSession,
+    _extract_tool_event,
     _extract_tool_hint,
     _extract_update_text,
     cursor_acp_enabled,
@@ -168,7 +169,50 @@ def test_extract_tool_hint():
             "toolName": "ShellToolCall",
         }
     }
-    assert _extract_tool_hint(params) == "ShellToolCall"
+    assert _extract_tool_hint(params) == "run_command"
+
+
+def test_extract_tool_event_prefers_acp_kind_and_path():
+    """Cursor ACP often sends kind+locations with no toolName — never bare 'tool'."""
+    params = {
+        "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call_001",
+            "kind": "read",
+            "status": "in_progress",
+            "locations": [{"path": "C:/proj/harness/server.py"}],
+        }
+    }
+    ev = _extract_tool_event(params)
+    assert ev is not None
+    assert ev["name"] == "read_file"
+    assert ev["goal"].endswith("server.py")
+    assert ev["id"] == "call_001"
+    assert _extract_tool_hint(params) == "read_file"
+
+
+def test_extract_tool_event_skips_think_and_bare_tool_fallback():
+    think = {
+        "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "t1",
+            "kind": "think",
+        }
+    }
+    assert _extract_tool_event(think) is None
+    # No kind/name/title — still emit via call id, never the literal "tool"
+    bare = {
+        "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call_x",
+            "status": "completed",
+        }
+    }
+    ev = _extract_tool_event(bare)
+    assert ev is not None
+    assert ev["name"] != "tool"
+    assert ev["id"] == "call_x"
+    assert ev["status"] == "completed"
 
 
 def test_warm_session_reuses_process_across_prompts():

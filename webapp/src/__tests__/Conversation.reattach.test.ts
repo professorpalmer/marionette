@@ -8,6 +8,7 @@ import {
   ringGenerationAfterReplayMiss,
   shouldAdvanceReplayCursor,
   shouldHydrateTranscriptOnReplayMiss,
+  shouldArmChatEventsFromRunners,
   shouldPollChatEvents,
 } from "../components/Conversation";
 
@@ -162,6 +163,36 @@ describe("chatEvents reattach poll gate", () => {
       localStreamActive: false,
       userStopped: false,
       sawTerminal: false,
+    })).toBe(false);
+  });
+
+  it("arms chatEvents from runners when a bridge/queue turn starts on an open session", () => {
+    expect(shouldArmChatEventsFromRunners({
+      runnerBusy: true,
+      localStreamActive: false,
+      userStopped: false,
+      chatEventsPollArmed: false,
+    })).toBe(true);
+
+    expect(shouldArmChatEventsFromRunners({
+      runnerBusy: true,
+      localStreamActive: false,
+      userStopped: false,
+      chatEventsPollArmed: true,
+    })).toBe(false);
+
+    expect(shouldArmChatEventsFromRunners({
+      runnerBusy: true,
+      localStreamActive: true,
+      userStopped: false,
+      chatEventsPollArmed: false,
+    })).toBe(false);
+
+    expect(shouldArmChatEventsFromRunners({
+      runnerBusy: false,
+      localStreamActive: false,
+      userStopped: false,
+      chatEventsPollArmed: false,
     })).toBe(false);
   });
 });

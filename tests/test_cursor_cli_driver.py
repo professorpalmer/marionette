@@ -67,11 +67,43 @@ def test_consume_partial_deltas_and_skip_flushes():
     )
     assert deltas == ["Hel", "lo"]
     assert parsed["text"] == "Hello"
-    assert hints == ["readToolCall"]
+    assert len(hints) == 1
+    assert hints[0]["name"] == "read_file"
+    assert hints[0]["goal"] == "a.py"
+    assert hints[0]["id"] == "c1"
+    assert hints[0]["status"] == "in_progress"
     assert parsed["tool_calls"][0]["function"]["name"] == "readToolCall"
     assert json.loads(parsed["tool_calls"][0]["function"]["arguments"])["path"] == "a.py"
     assert parsed["session_id"] == "s1"
     assert parsed["error"] is None
+
+
+def test_consume_tool_hint_unwraps_generic_tool_key():
+    lines = [
+        json.dumps({
+            "type": "tool_call",
+            "subtype": "started",
+            "call_id": "c9",
+            "tool_call": {
+                "tool": {"name": "Shell", "args": {"command": "ls"}},
+            },
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "c9",
+            "tool_call": {
+                "tool": {"name": "Shell", "args": {"command": "ls"}},
+            },
+        }),
+    ]
+    hints = []
+    consume_stream_json(lines, on_tool_hint=hints.append)
+    assert hints[0]["name"] == "run_command"
+    assert hints[0]["goal"] == "ls"
+    assert hints[0]["status"] == "in_progress"
+    assert hints[1]["status"] == "completed"
+    assert hints[1]["id"] == "c9"
 
 
 def test_consume_result_error():

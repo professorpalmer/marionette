@@ -34,11 +34,36 @@ export type BusyProgress = {
   runningKind: string;
 };
 
+/** Normalize Cursor ACP / stream-json kinds (readToolCall → read_file family). */
+export function normalizeToolKind(kind: string): string {
+  let k = (kind || "").trim();
+  if (!k) return "";
+  if (k.endsWith("ToolCall")) k = k.slice(0, -"ToolCall".length);
+  k = k
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/-/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (k === "tool" || k === "function" || k === "unknown" || k === "other" || k === "tool_call") {
+    return "";
+  }
+  // ACP ToolKind → Marionette row families.
+  if (k === "execute" || k === "shell" || k === "bash") return "run_command";
+  if (k === "read") return "read_file";
+  if (k === "edit" || k === "write" || k === "delete" || k === "move") {
+    return k === "write" ? "write_file" : k === "edit" ? "edit_file" : k;
+  }
+  if (k === "fetch") return "web_fetch";
+  return k;
+}
+
 /** Cursor-style row label for a tool card (Read / Grep / Run / Query wiki). */
 export function toolRowLabel(kind: string): string {
-  const k = (kind || "").toLowerCase().replace(/-/g, "_").trim();
+  const k = normalizeToolKind(kind) || (kind || "").toLowerCase().replace(/-/g, "_").trim();
   const known: Record<string, string> = {
     read_file: "Read",
+    read: "Read",
     write_file: "Write",
     edit_file: "Edit",
     apply_hashline: "Edit",
@@ -48,15 +73,20 @@ export function toolRowLabel(kind: string): string {
     glob: "Glob",
     run_command: "Run",
     run_terminal: "Run",
+    execute: "Run",
+    shell: "Run",
     query_wiki: "Query wiki",
     wiki: "Query wiki",
     web_fetch: "Fetch",
+    fetch: "Fetch",
     codegraph_search: "Query",
     codegraph_context: "Query",
     codegraph: "Query",
     view_image: "View",
     open_project: "Open",
     relocate_session: "Relocate",
+    delete: "Delete",
+    move: "Move",
   };
   if (known[k]) return known[k];
   if (!k) return "Tool";
@@ -68,7 +98,10 @@ export function toolRowLabel(kind: string): string {
 /** Soft focus phrase for live headlines ("run command", "read file"). */
 export function toolFocusPhrase(kind: string): string {
   const label = toolRowLabel(kind);
-  if (!label || label === "Tool") return (kind || "").replace(/_/g, " ").trim();
+  if (!label || label === "Tool") {
+    const fallback = normalizeToolKind(kind) || (kind || "").replace(/_/g, " ").trim();
+    return fallback.replace(/_/g, " ");
+  }
   return label.toLowerCase();
 }
 
@@ -83,9 +116,10 @@ type ExplorationBucket =
 
 /** Bucket a tool kind into Cursor-style exploration categories. */
 export function explorationBucket(kind: string): ExplorationBucket {
-  const k = (kind || "").toLowerCase().replace(/-/g, "_").trim();
+  const k = normalizeToolKind(kind) || (kind || "").toLowerCase().replace(/-/g, "_").trim();
   if (
     k === "read_file"
+    || k === "read"
     || k === "view_image"
     || k === "open_project"
     || k.startsWith("read_")
@@ -97,6 +131,8 @@ export function explorationBucket(kind: string): ExplorationBucket {
     || k === "edit_file"
     || k === "hash_edit"
     || k === "apply_hashline"
+    || k === "delete"
+    || k === "move"
     || k.startsWith("write_")
     || k.startsWith("edit_")
   ) {
@@ -115,6 +151,8 @@ export function explorationBucket(kind: string): ExplorationBucket {
   if (
     k === "run_command"
     || k === "run_terminal"
+    || k === "execute"
+    || k === "shell"
     || k.includes("command")
     || k.includes("terminal")
     || k.startsWith("run_")
@@ -427,11 +465,20 @@ export function investigatingHeadline(
 ): string {
   if (actionCount <= 0) return "";
   if (anyRunning) {
-    const focus = runningKind
-      ? runningGoal
-        ? `${runningKind} ${runningGoal}`
-        : runningKind
-      : runningGoal || "";
+    // Avoid "tool tool" / "read read" when kind and goal are the same string
+    // (Cursor CLI tool_prep used to set both from the hint name).
+    const kind = (runningKind || "").trim();
+    const goal = (runningGoal || "").trim();
+    const k = kind.toLowerCase().replace(/_/g, " ");
+    const g = goal.toLowerCase().replace(/_/g, " ");
+    let focus = "";
+    if (kind && goal) {
+      if (!g || g === k || g === "tool") focus = kind;
+      else if (!k || k === "tool") focus = goal;
+      else focus = `${kind} ${goal}`;
+    } else {
+      focus = kind || goal;
+    }
     if (focus) return `Investigating · ${focus}`;
     if (kindSummary) return `Investigating · ${kindSummary}`;
     return "Investigating…";
