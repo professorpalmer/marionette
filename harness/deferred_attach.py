@@ -76,6 +76,9 @@ class DeferredPilotPlaceholder:
         self._worker_cost_usd = 0.0
         self._worker_tokens_in = 0
         self._worker_tokens_out = 0
+        # Duck-type ConversationalSession review queue for /api/reviews polls.
+        self._pending_reviews_lock = threading.Lock()
+        self._pending_reviews: dict = {}
 
     @property
     def defer_building(self) -> bool:

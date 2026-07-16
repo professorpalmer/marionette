@@ -459,10 +459,11 @@ export function clearToolPrepPlaceholders(items: Item[]): Item[] {
  */
 export function composerStatusFromRunner(
   activeSessionId: string | null,
-  runners: Record<string, "running" | "idle"> | undefined,
+  runners: Record<string, "running" | "idle" | "attaching" | "missing"> | undefined,
   localStreamActive: boolean,
 ): "thinking" | "idle" | null {
   if (localStreamActive || !activeSessionId) return null;
+  // "attaching" = deferred cold pilot build — not a user turn (no thinking chrome).
   if (runners?.[activeSessionId] === "running") return "thinking";
   return "idle";
 }
@@ -1512,10 +1513,13 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
     // Immediately reflect runner busy state for the session we switched TO
     // (warm cache + Stop chrome) before the background transcript refresh.
     let cancelled = false;
-    const applyRunnerBusy = (runners: Record<string, "running" | "idle"> | undefined) => {
+    const applyRunnerBusy = (
+      runners: Record<string, "running" | "idle" | "attaching" | "missing"> | undefined,
+    ) => {
       if (cancelled || localStreamActiveRef.current) return;
       if (!activeSessionId) return;
-      if (runners?.[activeSessionId] === "running") {
+      const st = runners?.[activeSessionId];
+      if (st === "running") {
         detachedBusyRef.current = true;
         setTurnOpen(true);
         setStatus((prev) =>
@@ -1524,7 +1528,7 @@ export default function Conversation({ config, activeSessionId, onArtifacts, onJ
             : "thinking"
         );
       } else if (prevId !== activeSessionId) {
-        // Switching to an idle session: clear busy chrome from the prior view.
+        // Idle or cold-attaching: never flash turn-thinking on New Session.
         detachedBusyRef.current = false;
         setTurnOpen(false);
         setStatus("idle");

@@ -30,7 +30,10 @@ def build_lease_exhausted_payload(
     sessions/create, and relocate stay in sync.
     """
     statuses = registry.statuses()
-    busy_session_ids = [sid for sid, status in statuses.items() if status == "running"]
+    # Cold-attach ("attaching") still holds a lease slot.
+    busy_session_ids = [
+        sid for sid, status in statuses.items() if status in ("running", "attaching")
+    ]
     payload: dict[str, Any] = {
         "ok": False,
         "error": (error or "").strip()
@@ -248,8 +251,10 @@ class SessionRunnerRegistry:
         runner = self._runners.get(session_id)
         if runner is None:
             return "missing"
-        # defer_building shells count as busy via _is_busy so lease_exhausted
-        # busy lists and StatusBar dots are not idle-looking mid cold-attach.
+        # Cold-attach placeholders are busy for leases, but must not paint the
+        # composer as mid-turn "thinking" (New Session spinner flash).
+        if getattr(runner, "defer_building", False):
+            return "attaching"
         return "running" if _is_busy(runner) else "idle"
 
     def statuses(self) -> dict[str, str]:

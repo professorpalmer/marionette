@@ -318,6 +318,7 @@ describe("LeftRail session list contracts", () => {
     expect(shouldOfferBackgroundStop("running", false)).toBe(true);
     expect(shouldOfferBackgroundStop("running", true)).toBe(false);
     expect(shouldOfferBackgroundStop("idle", false)).toBe(false);
+    expect(shouldOfferBackgroundStop("attaching", false)).toBe(false);
     expect(shouldOfferBackgroundStop(undefined, false)).toBe(false);
   });
 

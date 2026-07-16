@@ -116,7 +116,7 @@ export function workspacesCacheKey(repo: string): string {
 
 /** True when LeftRail should offer Stop without forcing a view attach. */
 export function shouldOfferBackgroundStop(
-  status: "running" | "idle" | undefined,
+  status: "running" | "idle" | "attaching" | "missing" | undefined,
   isActive: boolean,
 ): boolean {
   return status === "running" && !isActive;
@@ -303,7 +303,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
   // Per-session runner liveness from /api/session/state (multi-session Phase D).
-  const [runners, setRunners] = useState<Record<string, "running" | "idle">>({});
+  const [runners, setRunners] = useState<Record<string, "running" | "idle" | "attaching" | "missing">>({});
 
   const getWorkspaceBasename = (repoPath: string) => {
     if (!repoPath) return "";

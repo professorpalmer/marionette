@@ -337,7 +337,7 @@ def test_switch_response_includes_idle_transcript(tmp_path, monkeypatch):
             payload = json.loads(resp.read().decode())
             assert payload.get("ok") is True
             assert payload.get("active") == sid_b
-            assert payload.get("state") == "running"
+            assert payload.get("state") == "attaching"
             assert payload.get("transcript", {}).get("history", [])[0]["content"] == "from-disk"
             assert is_deferred_placeholder(srv._pilot)
             # Build still blocked — proves switch did not wait on ConversationalSession.
@@ -526,7 +526,7 @@ def test_failed_deferred_attach_rebuilds_on_reattach(tmp_path, monkeypatch):
 
 
 def test_building_placeholder_reports_busy_for_lease(tmp_path, monkeypatch):
-    """Building shells must show running in statuses / lease_exhausted (T3)."""
+    """Building shells report attaching (not running) but still hold a lease (T3)."""
     from harness.session_runners import _is_busy, build_lease_exhausted_payload
 
     ph = DeferredPilotPlaceholder(session_id="s1", state_dir="/tmp", transcript=[])
@@ -534,10 +534,15 @@ def test_building_placeholder_reports_busy_for_lease(tmp_path, monkeypatch):
     assert ph.state() == "building"
     assert ph.is_turn_busy() is True
     assert _is_busy(ph) is True
+    # /api/reviews must not AttributeError while the shell is still building.
+    with ph._pending_reviews_lock:
+        assert list(ph._pending_reviews.values()) == []
 
     reg = SessionRunnerRegistry(max_concurrent_sessions=1)
     reg.get_or_create("s1", lambda: ph)
-    assert reg.status("s1") == "running"
+    # Composer must see "attaching" (not "running") so New Session does not
+    # flash turn-thinking chrome; lease still treats the shell as busy.
+    assert reg.status("s1") == "attaching"
     payload = build_lease_exhausted_payload(reg)
     assert payload["busy_session_ids"] == ["s1"]
 

@@ -183,6 +183,11 @@ describe("busy runners keep Stop not Send", () => {
     expect(composerStatusFromRunner("sess-b", runners, false)).toBe("idle");
   });
 
+  it("treats attaching (cold pilot build) as idle, not thinking", () => {
+    const runners = { "sess-new": "attaching" as const };
+    expect(composerStatusFromRunner("sess-new", runners, false)).toBe("idle");
+  });
+
   it("on switch to running session: hydrate warm cache and keep busy chrome", () => {
     writeTranscriptCache("sess-busy", [makeMsg("user", "in flight")]);
     const runners = { "sess-busy": "running" as const };
