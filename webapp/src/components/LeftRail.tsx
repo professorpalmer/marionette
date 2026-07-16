@@ -2026,11 +2026,11 @@ function RunnerStatusDot({
   stoppable,
   onStop,
 }: {
-  status?: "running" | "idle";
+  status?: "running" | "idle" | "attaching" | "missing";
   stoppable?: boolean;
   onStop?: () => void;
 }) {
-  if (!status) return null;
+  if (!status || status === "missing") return null;
   const running = status === "running";
   if (stoppable && running && onStop) {
     return (
@@ -2047,10 +2047,12 @@ function RunnerStatusDot({
       />
     );
   }
+  const title =
+    status === "attaching" ? "Attaching" : running ? "Running" : "Idle";
   return (
     <span
       className={`w-1.5 h-1.5 rounded-full shrink-0 ${running ? "bg-accent" : "bg-muted/50"}`}
-      title={running ? "Running" : "Idle"}
+      title={title}
     />
   );
 }

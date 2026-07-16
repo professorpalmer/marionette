@@ -13,11 +13,6 @@ const REASONING_LEVELS: { value: ReasoningEffort; label: string }[] = [
 
 const CODEX_REACHES = new Set(["openai-codex", "codex-plan", "chatgpt-codex"]);
 
-function isCodexPilot(driver: string): boolean {
-  const reach = (driver.split(":")[0] || "").toLowerCase();
-  return CODEX_REACHES.has(reach);
-}
-
 /** Effort picker: Codex always; Anthropic/Bedrock Claude opus|sonnet only. */
 function supportsReasoningEffort(driver: string): boolean {
   const reach = (driver.split(":")[0] || "").toLowerCase();
