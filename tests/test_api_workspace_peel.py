@@ -10,6 +10,7 @@ from harness.api.workspace import (
     get_workspace_symbols,
     get_workspaces,
     post_workspace_forget,
+    post_workspace_open,
     post_workspaces_create,
     post_workspaces_switch,
 )
@@ -146,3 +147,115 @@ def test_workspace_symbols_query(monkeypatch, tmp_path):
     assert code == 200 and empty["status"] == "ready" and empty["symbols"] == []
     code2, hit = get_workspace_symbols("Foo", svc)
     assert code2 == 200 and hit["symbols"][0]["name"] == "Foo"
+
+
+def test_workspace_open_requires_dir(tmp_path):
+    cfg = SimpleNamespace(repo="", driver="m1")
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    assert post_workspace_open({}, svc)[0] == 400
+    assert post_workspace_open({"path": str(tmp_path / "missing")}, svc)[0] == 400
+
+
+def test_workspace_open_switches(tmp_path):
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    cfg = SimpleNamespace(repo="", driver="m1")
+
+    class _Sessions:
+        active = None
+
+        def list(self):
+            return []
+
+        def create(self, title="", repo="", branch=""):
+            self.active = "s1"
+            return {"id": "s1", "title": title}
+
+        def switch(self, sid):
+            self.active = sid
+
+    sessions = _Sessions()
+    attached = {"n": 0}
+    cg_status = {"v": "none"}
+
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    svc.sessions = sessions
+    svc.save_active_transcript = lambda: None
+    svc.note_boot_repo = lambda r: None
+    svc.get_workspace_driver = lambda r: None
+    svc.apply_model_context_window = lambda: None
+    svc.record_recent_workspace = lambda r, as_active=True: []
+    svc.sessions_state_dir = lambda: str(tmp_path)
+    svc.session_visible_for_workspace = lambda s, r, d: True
+    svc.attach_view = lambda sid, defer_cold_build=False: attached.__setitem__(
+        "n", attached["n"] + 1
+    )
+    svc.puppetmaster_available = lambda: False
+    svc.set_codegraph_status = lambda status, reason=None: cg_status.__setitem__(
+        "v", status
+    )
+    svc.index_codegraph_bg = lambda r: None
+    svc.maybe_refresh_codegraph = lambda r: None
+    svc.get_codegraph_status = lambda r: cg_status["v"]
+
+    code, payload = post_workspace_open({"path": str(repo)}, svc)
+    assert code == 200 and payload["ok"] is True
+    assert payload["repo"] == str(repo)
+    assert cfg.repo == str(repo)
+    assert sessions.active == "s1"
+    assert attached["n"] == 1
+
+
+def test_workspace_open_lease_exhausted_rolls_back(tmp_path):
+    """Lease exhaustion must restore repo/driver/session and return 409."""
+    import os
+
+    prev = tmp_path / "prev"
+    target = tmp_path / "target"
+    prev.mkdir()
+    target.mkdir()
+    cfg = SimpleNamespace(repo=str(prev), driver="old-model")
+    os.environ["HARNESS_REPO"] = str(prev)
+
+    class _LeaseErr(Exception):
+        pass
+
+    class _Sessions:
+        active = "prev-sid"
+
+        def list(self):
+            return [{"id": "new-sid", "created": 1, "repo": str(target)}]
+
+        def create(self, title="", repo="", branch=""):
+            self.active = "new-sid"
+            return {"id": "new-sid"}
+
+        def switch(self, sid):
+            self.active = sid
+
+    sessions = _Sessions()
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    svc.sessions = sessions
+    svc.save_active_transcript = lambda: None
+    svc.note_boot_repo = lambda r: None
+    svc.get_workspace_driver = lambda r: None
+    svc.apply_model_context_window = lambda: None
+    svc.record_recent_workspace = lambda r, as_active=True: []
+    svc.sessions_state_dir = lambda: str(tmp_path)
+    svc.session_visible_for_workspace = lambda s, r, d: True
+    svc.attach_view = lambda sid, defer_cold_build=False: (_ for _ in ()).throw(
+        _LeaseErr("full")
+    )
+    svc.lease_exhausted_error = _LeaseErr
+    svc.lease_exhausted_body = lambda e: {
+        "error": "lease exhausted",
+        "code": "lease_exhausted",
+    }
+
+    code, payload = post_workspace_open({"path": str(target)}, svc)
+    assert code == 409
+    assert payload["code"] == "lease_exhausted"
+    assert cfg.repo == str(prev)
+    assert cfg.driver == "old-model"
+    assert sessions.active == "prev-sid"
+    assert os.environ.get("HARNESS_REPO") == str(prev)

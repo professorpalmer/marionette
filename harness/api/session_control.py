@@ -1,14 +1,17 @@
 """Live-session control HTTP bodies (peeled from ``harness.server``).
 
-Covers stash / interrupt / rewind / steer / prompt-queue. Persist / restart /
-compact stay on Handler (resume latch + process lifecycle).
+Covers stash / interrupt / rewind / steer / prompt-queue, plus persist /
+compact / state / context_at / swarm-results and restart-prepare (transcript
+flush + resume latch). Process self-terminate for ``POST /api/restart``
+stays on Handler.
 """
 
 from __future__ import annotations
 
 import os
+import tempfile as _tf
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 
 @dataclass
@@ -23,6 +26,14 @@ class SessionControlServices:
     save_active_transcript: Callable[[], None]
     upload_dir: str
     diag: Callable[..., Any]
+    # persist / compact / state / context_at / swarm-results / restart-prepare
+    get_sessions: Optional[Callable[[], Any]] = None
+    save_transcript: Optional[Callable[..., None]] = None
+    set_resume_latch: Optional[Callable[[], None]] = None
+    persist_boot_usage: Optional[Callable[..., None]] = None
+    consume_resume_pending: Optional[Callable[[bool], bool]] = None
+    checkpoint_transcript: Optional[Callable[[], None]] = None
+    context_at: Optional[Callable[..., Any]] = None
 
 
 JsonPayload = Union[dict, list]
@@ -45,6 +56,123 @@ def _validate_upload_images(
         except ValueError:
             return None, (400, {"error": f"Invalid image path: {p}"})
     return valid_imgs, None
+
+
+def prepare_session_restart(svc: SessionControlServices) -> tuple[bool, Optional[str]]:
+    """Flush transcript + arm resume latch + persist boot usage.
+
+    Shared by ``POST /api/session/persist`` and the prepare half of
+    ``POST /api/restart``. Returns ``(ok, error_message)``.
+    """
+    try:
+        sessions = svc.get_sessions() if svc.get_sessions is not None else None
+        pilot = svc.get_pilot()
+        if sessions is not None and sessions.active and svc.save_transcript is not None:
+            svc.save_transcript(
+                svc.cfg.state_dir or _tf.gettempdir(),
+                sessions.active,
+                pilot.export_transcript_data(),
+            )
+        if svc.set_resume_latch is not None:
+            svc.set_resume_latch()
+        if svc.persist_boot_usage is not None:
+            svc.persist_boot_usage(fold_live=True, force=True)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def post_session_persist(svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """POST /api/session/persist."""
+    ok, err = prepare_session_restart(svc)
+    if ok:
+        return 200, {"ok": True}
+    return 500, {"ok": False, "error": err}
+
+
+def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """POST /api/session/compact."""
+    not_ready = svc.gate_active_pilot_ready()
+    if not_ready is not None:
+        return 409, not_ready
+    pilot = svc.get_pilot()
+    before = pilot._estimate_context_tokens()
+    orig_tokens = getattr(svc.cfg, "max_context_tokens", 96000)
+    svc.cfg.max_context_tokens = 1
+    try:
+        list(pilot._maybe_compact_history())
+    finally:
+        svc.cfg.max_context_tokens = orig_tokens
+    after = pilot._estimate_context_tokens()
+    sessions = svc.get_sessions() if svc.get_sessions is not None else None
+    if sessions is not None and sessions.active and svc.save_transcript is not None:
+        svc.save_transcript(
+            svc.cfg.state_dir or _tf.gettempdir(),
+            sessions.active,
+            pilot.export_transcript_data(),
+        )
+    return 200, {
+        "ok": True,
+        "before_tokens": before,
+        "after_tokens": after,
+    }
+
+
+def get_session_state(svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """GET /api/session/state."""
+    pilot = svc.get_pilot()
+    runners = svc.get_runners()
+    state = pilot.state()
+    resume_pending = False
+    if svc.consume_resume_pending is not None:
+        resume_pending = svc.consume_resume_pending(state == "idle")
+    return 200, {
+        "state": state,
+        "pending_swarms": pilot.has_pending_swarms(),
+        "resume_pending": resume_pending,
+        "runners": runners.statuses(),
+        # Active VIEW id so StatusBar can distinguish this session's
+        # runner from background sessions still executing under the lease.
+        "active_view_id": runners.active_view_id,
+    }
+
+
+def get_session_context_at(
+    turn: int, svc: SessionControlServices
+) -> tuple[int, JsonPayload]:
+    """GET /api/session/context_at?turn=N."""
+    pilot = svc.get_pilot()
+    if svc.context_at is None:
+        from ..turn_context import context_at as _context_at
+        record = _context_at(
+            pilot.state_dir,
+            getattr(pilot, "harness_session_id", "") or "default",
+            turn,
+        )
+    else:
+        record = svc.context_at(
+            pilot.state_dir,
+            getattr(pilot, "harness_session_id", "") or "default",
+            turn,
+        )
+    if record is None:
+        return 404, {"error": f"no context recorded for turn {turn}"}
+    return 200, record
+
+
+def get_session_swarm_results(svc: SessionControlServices) -> tuple[int, JsonPayload]:
+    """GET /api/session/swarm-results."""
+    pilot = svc.get_pilot()
+    results = []
+    for ev in pilot.drain_swarm_results():
+        results.append({"kind": ev.kind, "data": ev.data})
+    if results and svc.checkpoint_transcript is not None:
+        # The drain just appended history + display entries (incl. the
+        # swarm outcome badge). This poll path runs while the session is
+        # idle, so persist now -- otherwise closing the app before the
+        # next turn would drop them.
+        svc.checkpoint_transcript()
+    return 200, {"results": results}
 
 
 def post_chat_stash(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:

@@ -2733,10 +2733,19 @@ def _platform_services():
 def _codegraph_services():
     """Build CodegraphServices from live server module globals (call-time lookup)."""
     from .api.codegraph import CodegraphServices
+    import time as _time
 
     def _set_reason(reason: str) -> None:
         global _codegraph_status_reason
         _codegraph_status_reason = reason
+
+    def _set_live_status(status: str) -> None:
+        global _codegraph_status
+        _codegraph_status = status
+
+    def _status_cache_put(repo: str, payload) -> None:
+        _codegraph_status_cache[repo] = (
+            _time.monotonic() + _CODEGRAPH_STATUS_TTL, payload)
 
     return CodegraphServices(
         cfg=_cfg,
@@ -2746,6 +2755,18 @@ def _codegraph_services():
         get_status=_get_codegraph_status,
         get_reason=lambda: _codegraph_status_reason,
         set_reason=_set_reason,
+        get_live_status=lambda: _codegraph_status,
+        set_live_status=_set_live_status,
+        get_preflight=lambda: _codegraph_preflight,
+        get_suggested_action=lambda: _codegraph_suggested_action,
+        puppetmaster_available=_puppetmaster_available,
+        codegraph_indexed=_codegraph_indexed,
+        status_cache_get=lambda repo: _codegraph_status_cache.get(repo),
+        status_cache_put=_status_cache_put,
+        status_cache_pop=lambda repo: _codegraph_status_cache.pop(repo, None),
+        fail_until_for=lambda repo: float(_codegraph_fail_until.get(repo) or 0),
+        puppetmaster_cmd=_puppetmaster_cmd,
+        status_ttl=_CODEGRAPH_STATUS_TTL,
     )
 
 
@@ -2753,10 +2774,18 @@ def _workspace_services():
     """Build WorkspaceServices from live server module globals (call-time lookup)."""
     from .api.workspace import WorkspaceServices
 
+    _UNSET = object()
+
     def _clear_active_codegraph() -> None:
         global _codegraph_status, _codegraph_status_reason
         _codegraph_status = "none"
         _codegraph_status_reason = None
+
+    def _set_codegraph_status(status: str, reason=_UNSET) -> None:
+        global _codegraph_status, _codegraph_status_reason
+        _codegraph_status = status
+        if reason is not _UNSET:
+            _codegraph_status_reason = reason
 
     return WorkspaceServices(
         cfg=_cfg,
@@ -2771,6 +2800,21 @@ def _workspace_services():
         home_workspace_path=_home_workspace_path,
         is_app_install_root=_is_app_install_root,
         diag=_diag,
+        sessions=_sessions,
+        save_active_transcript=_save_active_transcript,
+        note_boot_repo=_note_boot_repo,
+        get_workspace_driver=_get_workspace_driver,
+        apply_model_context_window=_apply_model_context_window,
+        record_recent_workspace=_record_recent_workspace,
+        sessions_state_dir=_sessions_state_dir,
+        session_visible_for_workspace=session_visible_for_workspace,
+        attach_view=_attach_view,
+        lease_exhausted_body=_lease_exhausted_body,
+        lease_exhausted_error=LeaseExhaustedError,
+        puppetmaster_available=_puppetmaster_available,
+        set_codegraph_status=_set_codegraph_status,
+        index_codegraph_bg=_index_codegraph_bg,
+        maybe_refresh_codegraph=_maybe_refresh_codegraph,
     )
 
 
@@ -2795,6 +2839,7 @@ def _settings_services():
 def _session_control_services():
     """Build SessionControlServices from live server module globals."""
     from .api.session_control import SessionControlServices
+    from .turn_context import context_at as _context_at
     return SessionControlServices(
         cfg=_cfg,
         get_pilot=lambda: _pilot,
@@ -2804,6 +2849,41 @@ def _session_control_services():
         save_active_transcript=_save_active_transcript,
         upload_dir=_UPLOAD_DIR,
         diag=_diag,
+        get_sessions=lambda: _sessions,
+        save_transcript=save_transcript,
+        set_resume_latch=_set_resume_latch,
+        persist_boot_usage=_persist_boot_usage,
+        consume_resume_pending=_consume_resume_pending,
+        checkpoint_transcript=_checkpoint_transcript,
+        context_at=_context_at,
+    )
+
+
+def _usage_services():
+    """Build UsageServices from live server module globals (call-time lookup)."""
+    from .api.usage import UsageServices
+    return UsageServices(
+        cfg=_cfg,
+        boot_repos=lambda: set(_BOOT_REPOS),
+        boot_usage_meters=_boot_usage_meters,
+        usage_cache_get=_usage_cache_get,
+        usage_cache_put=_usage_cache_put,
+        boot_session_cost=_boot_session_cost,
+        scoped_jobs_with_stores=_scoped_jobs_with_stores,
+        job_in_cost_window=_job_in_cost_window,
+        swarm_registry=_swarm_registry,
+        job_swarm_accounting=_job_swarm_accounting,
+        tokens_cached_swarm=_tokens_cached_swarm,
+        job_savings_fields=_job_savings_fields,
+        active_session_total=_active_session_total,
+        sum_job_set_savings=_sum_job_set_savings,
+        cache_savings=_cache_savings,
+        boot_cost_source=_boot_cost_source,
+        tool_output_savings_fields=_tool_output_savings_fields,
+        persist_boot_usage=_persist_boot_usage,
+        retry_on_locked=_retry_on_locked,
+        diag=_diag,
+        get_pilot=lambda: _pilot,
     )
 
 
@@ -3878,14 +3958,9 @@ class Handler(BaseHTTPRequestHandler):
             # Also arms the one-shot resume latch so the post-restart UI can
             # auto-continue -- without treating every trailing user turn as a
             # resume signal on mere session view.
-            try:
-                if _sessions.active:
-                    save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
-                _set_resume_latch()
-                _persist_boot_usage(fold_live=True, force=True)
-                return self._send(200, json.dumps({"ok": True}))
-            except Exception as e:
-                return self._send(500, json.dumps({"ok": False, "error": str(e)}))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.post_session_persist(_session_control_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/restart":
             # Graceful self-restart for non-Electron callers (served browser) and
             # as a fallback path. Persist, ACK, then SIGTERM self so a supervisor
@@ -3893,13 +3968,10 @@ class Handler(BaseHTTPRequestHandler):
             # the Electron IPC path (harness:restart) is preferred -- it also
             # reloads the renderer -- but this keeps the capability reachable over
             # HTTP for the pilot or a browser session.
-            try:
-                if _sessions.active:
-                    save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
-                _set_resume_latch()
-                _persist_boot_usage(fold_live=True, force=True)
-            except Exception as e:
-                _diag("server.self_edit_restart_persist", e)
+            from .api import session_control as _sc_api
+            ok, err = _sc_api.prepare_session_restart(_session_control_services())
+            if not ok:
+                _diag("server.self_edit_restart_persist", Exception(err or "persist failed"))
             self._send(200, json.dumps({"ok": True, "restarting": True}))
 
             def _delayed_self_terminate():
@@ -3916,24 +3988,9 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=_delayed_self_terminate, daemon=True).start()
             return
         if path == "/api/session/compact":
-            not_ready = _gate_active_pilot_ready()
-            if not_ready is not None:
-                return self._send(409, json.dumps(not_ready))
-            before = _pilot._estimate_context_tokens()
-            orig_tokens = getattr(_cfg, "max_context_tokens", 96000)
-            _cfg.max_context_tokens = 1
-            try:
-                events = list(_pilot._maybe_compact_history())
-            finally:
-                _cfg.max_context_tokens = orig_tokens
-            after = _pilot._estimate_context_tokens()
-            if _sessions.active:
-                save_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active, _pilot.export_transcript_data())
-            return self._send(200, json.dumps({
-                "ok": True,
-                "before_tokens": before,
-                "after_tokens": after
-            }))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.post_session_compact(_session_control_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/checkpoints/restore":
             from .api import checkpoints as _ckpt_api
             status, payload = _ckpt_api.post_checkpoints_restore(
@@ -3992,115 +4049,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(status, json.dumps(payload))
 
         if path == "/api/workspace/open":
-            import subprocess
-            target_repo = body.get("path", "").strip()
-            if not target_repo or not os.path.isdir(target_repo):
-                return self._send(400, json.dumps({"error": "Path is not an existing directory"}))
-
-            # Save outgoing conversation transcript for the current active runner
-            _save_active_transcript()
-
-            # Snapshot so a lease-exhausted attach can roll back without leaving
-            # the process pointed at the target repo / session.
-            prev_repo = _cfg.repo
-            prev_driver = _cfg.driver
-            prev_active = _sessions.active
-            prev_env_repo = os.environ.get("HARNESS_REPO")
-
-            _cfg.repo = target_repo
-            os.environ["HARNESS_REPO"] = target_repo
-            _note_boot_repo(target_repo)
-
-            # Restore the model last used in this workspace (if any + still
-            # available), so each dir remembers its model across switches.
-            try:
-                saved_driver = _get_workspace_driver(target_repo)
-                if saved_driver and saved_driver != _cfg.driver:
-                    from . import model_visibility as _mv
-                    avail = {row["spec"] for row in _mv.catalog(available_only=True)}
-                    if saved_driver in avail or not avail:
-                        _cfg.driver = saved_driver
-                        _apply_model_context_window()
-            except Exception as e:
-                _diag("server.restore_workspace_driver", e)
-
-            try:
-                recents = _record_recent_workspace(target_repo)
-            except Exception as e:
-                _diag("server.record_recent_workspace", e)
-
-            is_git = False
-            branch = ""
-            try:
-                proc = subprocess.run(
-                    ["git", "-C", target_repo, "rev-parse", "--is-inside-work-tree"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if proc.returncode == 0:
-                    is_git = True
-                    proc_branch = subprocess.run(
-                        ["git", "-C", target_repo, "rev-parse", "--abbrev-ref", "HEAD"],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if proc_branch.returncode == 0:
-                        branch = proc_branch.stdout.strip()
-            except Exception:
-                pass
-
-            # Select/create the target project's session, then attach via registry
-            # (do not rebuild in a way that orphans busy runners).
-            target_sessions = [
-                s for s in _sessions.list()
-                if session_visible_for_workspace(s, target_repo, _sessions_state_dir())
-            ]
-            if target_sessions:
-                newest_session = max(target_sessions, key=lambda s: s.get("created", 0))
-                _sessions.switch(newest_session["id"])
-            else:
-                basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
-                _sessions.create(title=basename, repo=target_repo, branch=branch)
-
-            if _sessions.active:
-                try:
-                    _attach_view(_sessions.active, defer_cold_build=True)
-                except LeaseExhaustedError as e:
-                    _cfg.repo = prev_repo
-                    _cfg.driver = prev_driver
-                    _apply_model_context_window()
-                    if prev_env_repo is None:
-                        os.environ.pop("HARNESS_REPO", None)
-                    else:
-                        os.environ["HARNESS_REPO"] = prev_env_repo
-                    if prev_active:
-                        try:
-                            _sessions.switch(prev_active)
-                        except Exception as roll_e:
-                            _diag("server.workspace_open_lease_rollback", roll_e)
-                    return self._send(409, json.dumps(_lease_exhausted_body(e)))
-
-            has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
-            if not has_codegraph:
-                # Set indexing before spawn/preflight so the open response and
-                # immediate polls never flash unsupported.
-                if _puppetmaster_available():
-                    _codegraph_status = "indexing"
-                    _codegraph_status_reason = None
-                _index_codegraph_bg(target_repo)
-            else:
-                if _puppetmaster_available():
-                    _codegraph_status = "ready"
-                    _maybe_refresh_codegraph(target_repo)
-                else:
-                    _codegraph_status = "unsupported"
-
-            return self._send(200, json.dumps({
-                "ok": True,
-                "repo": target_repo,
-                "branch": branch,
-                "is_git": is_git,
-                "codegraph": _get_codegraph_status(target_repo),
-                "active_session": _sessions.active
-            }))
+            from .api import workspace as _ws_api
+            status, payload = _ws_api.post_workspace_open(body, _workspace_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/workspace/forget":
             from .api import workspace as _ws_api
@@ -4572,20 +4523,9 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            # resume_pending: explicit one-shot latch armed by the self-edit
-            # restart path (/api/session/persist or /api/restart), AND idle.
-            # NOT merely "transcript ends on a user turn" -- that heuristic
-            # ghost-resumed past sessions on mere open/switch.
-            _state = _pilot.state()
-            return self._send(200, json.dumps({
-                "state": _state,
-                "pending_swarms": _pilot.has_pending_swarms(),
-                "resume_pending": _consume_resume_pending(_state == "idle"),
-                "runners": _runners.statuses(),
-                # Active VIEW id so StatusBar can distinguish this session's
-                # runner from background sessions still executing under the lease.
-                "active_view_id": _runners.active_view_id,
-            }))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.get_session_state(_session_control_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/session/context_at":
             if self._guard():
                 return
@@ -4596,31 +4536,20 @@ class Handler(BaseHTTPRequestHandler):
                 turn = int(parse_qs(u.query).get("turn", ["0"])[0])
             except (TypeError, ValueError):
                 return self._send(400, json.dumps({"error": "turn must be an integer"}))
-            from .turn_context import context_at
-            record = context_at(
-                _pilot.state_dir,
-                getattr(_pilot, "harness_session_id", "") or "default",
-                turn,
-            )
-            if record is None:
-                return self._send(404, json.dumps({"error": f"no context recorded for turn {turn}"}))
-            return self._send(200, json.dumps(record))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.get_session_context_at(
+                turn, _session_control_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/session/swarm-results":
             if self._guard():
                 return
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            results = []
-            for ev in _pilot.drain_swarm_results():
-                results.append({"kind": ev.kind, "data": ev.data})
-            if results:
-                # The drain just appended history + display entries (incl. the
-                # swarm outcome badge). This poll path runs while the session is
-                # idle, so persist now -- otherwise closing the app before the
-                # next turn would drop them.
-                _checkpoint_transcript()
-            return self._send(200, json.dumps({"results": results}))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.get_session_swarm_results(
+                _session_control_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/session/queue":
             if self._guard():
                 return
@@ -4755,236 +4684,9 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-
-            repo = _cfg.repo
-            if not repo or not os.path.isdir(repo):
-                return self._send(200, json.dumps({
-                    "indexed": False,
-                    "status": "none",
-                    "nodes": None,
-                    "edges": None,
-                    "files": None,
-                    "languages": None,
-                    "last_indexed": None,
-                    "repo": ""
-                }))
-
-            if not _puppetmaster_available():
-                return self._send(200, json.dumps({
-                    "indexed": False,
-                    "status": "unsupported",
-                    "reason": _codegraph_status_reason or "puppetmaster not found -- codegraph/swarm unavailable",
-                    "nodes": None,
-                    "edges": None,
-                    "files": None,
-                    "languages": None,
-                    "last_indexed": None,
-                    "repo": repo
-                }))
-
-            # Only report "indexing" while the indexer subprocess is actually
-            # alive. If the flag is stale (job finished), fall through to the real
-            # status query so the panel shows live metrics instead of nulls --
-            # this is what previously stuck the panel on INDEXING until a restart.
-            # Preserve needs_scope: do not collapse it to unsupported.
-            if _codegraph_status == "indexing" and not _codegraph_index_alive():
-                if _codegraph_indexed(repo):
-                    _codegraph_status = "ready"
-                elif _codegraph_status != "needs_scope":
-                    _codegraph_status = "unsupported"
-                _codegraph_status_cache.pop(repo, None)
-
-            if _codegraph_status == "needs_scope":
-                return self._send(200, json.dumps({
-                    "indexed": False,
-                    "status": "needs_scope",
-                    "reason": _codegraph_status_reason,
-                    "preflight": _codegraph_preflight,
-                    "suggested_action": _codegraph_suggested_action,
-                    "nodes": None,
-                    "edges": None,
-                    "files": None,
-                    "languages": None,
-                    "last_indexed": None,
-                    "repo": repo,
-                }))
-
-            if _codegraph_status == "indexing" and _codegraph_index_alive():
-                last_indexed = None
-                try:
-                    import puppetmaster.codegraph as cg
-                    mtime = cg.codegraph_index_mtime(repo)
-                    if mtime:
-                        import datetime
-                        last_indexed = datetime.datetime.fromtimestamp(mtime).isoformat()
-                except Exception:
-                    try:
-                        db_path = os.path.join(repo, ".codegraph", "db")
-                        if not os.path.exists(db_path):
-                            db_path = os.path.join(repo, ".codegraph")
-                        if os.path.exists(db_path):
-                            mtime = os.path.getmtime(db_path)
-                            import datetime
-                            last_indexed = datetime.datetime.fromtimestamp(mtime).isoformat()
-                    except Exception:
-                        pass
-
-                return self._send(200, json.dumps({
-                    "indexed": False,
-                    "status": "indexing",
-                    "reason": _codegraph_status_reason or None,
-                    "preflight": _codegraph_preflight,
-                    "suggested_action": _codegraph_suggested_action,
-                    "nodes": None,
-                    "edges": None,
-                    "files": None,
-                    "languages": None,
-                    "last_indexed": last_indexed,
-                    "repo": repo
-                }))
-
-            # No built DB yet and no indexer running: start one and report
-            # "indexing" rather than shelling out to `codegraph status --json`,
-            # which hangs on a config-only checkout until the 20s timeout and then
-            # mis-reports "unsupported". This makes a fresh install self-heal.
-            # Skip the kick when preflight already said the tree is unindexable,
-            # the path is gone, or we recently failed for this repo.
-            if not _codegraph_indexed(repo) and not _codegraph_index_alive():
-                import time as _time
-                if not os.path.isdir(repo):
-                    return self._send(200, json.dumps({
-                        "indexed": False,
-                        "status": "unsupported",
-                        "reason": (
-                            _codegraph_status_reason
-                            or f"Workspace path is missing: {repo}"
-                        ),
-                        "preflight": _codegraph_preflight,
-                        "suggested_action": _codegraph_suggested_action,
-                        "nodes": None,
-                        "edges": None,
-                        "files": None,
-                        "languages": None,
-                        "last_indexed": None,
-                        "repo": repo,
-                    }))
-                fail_until = float(_codegraph_fail_until.get(repo) or 0)
-                if fail_until > _time.monotonic():
-                    return self._send(200, json.dumps({
-                        "indexed": False,
-                        "status": _codegraph_status if _codegraph_status in (
-                            "unsupported", "needs_scope"
-                        ) else "unsupported",
-                        "reason": _codegraph_status_reason,
-                        "preflight": _codegraph_preflight,
-                        "suggested_action": _codegraph_suggested_action,
-                        "nodes": None,
-                        "edges": None,
-                        "files": None,
-                        "languages": None,
-                        "last_indexed": None,
-                        "repo": repo,
-                    }))
-                def _kick_index():
-                    _index_codegraph_bg(repo)
-                threading.Thread(target=_kick_index, daemon=True).start()
-                # Preflight inside _index_codegraph_bg may flip to needs_scope;
-                # report indexing briefly, next poll picks up the real status.
-                return self._send(200, json.dumps({
-                    "indexed": False,
-                    "status": "indexing",
-                    "reason": _codegraph_status_reason,
-                    "preflight": _codegraph_preflight,
-                    "suggested_action": _codegraph_suggested_action,
-                    "nodes": None,
-                    "edges": None,
-                    "files": None,
-                    "languages": None,
-                    "last_indexed": None,
-                    "repo": repo,
-                }))
-
-            # Serve a recent cached payload instead of re-spawning the status
-            # subprocess on every poll (the main source of panel load lag).
-            import time as _time
-            cached = _codegraph_status_cache.get(repo)
-            if cached and cached[0] > _time.monotonic():
-                return self._send(200, json.dumps(cached[1]))
-
-            try:
-                import subprocess
-                # 20s (not 5s): codegraph status on a large indexed repo
-                # (e.g. 60k+ nodes) takes ~5s in the packaged/frozen binary --
-                # right at a 5s limit, which intermittently tripped a timeout
-                # and showed "UNSUPPORTED" in the panel even though the repo is
-                # fully indexed. The 30s status cache means this slower call is
-                # only paid on a cache miss, so the panel stays responsive.
-                proc = subprocess.run(
-                    _puppetmaster_cmd("codegraph", "status", "--json"),
-                    cwd=repo,
-                    capture_output=True,
-                    text=True,
-                    timeout=20
-                )
-                if proc.returncode == 0:
-                    data = json.loads(proc.stdout)
-                    initialized = data.get("initialized", False)
-                    status_val = "ready" if initialized else "unsupported"
-                    
-                    last_indexed = None
-                    try:
-                        import puppetmaster.codegraph as cg
-                        mtime = cg.codegraph_index_mtime(repo)
-                        if mtime:
-                            import datetime
-                            last_indexed = datetime.datetime.fromtimestamp(mtime).isoformat()
-                    except Exception:
-                        try:
-                            db_path = os.path.join(repo, ".codegraph", "db")
-                            if not os.path.exists(db_path):
-                                db_path = os.path.join(repo, ".codegraph")
-                            if os.path.exists(db_path):
-                                mtime = os.path.getmtime(db_path)
-                                import datetime
-                                last_indexed = datetime.datetime.fromtimestamp(mtime).isoformat()
-                        except Exception:
-                            pass
-
-                    _cg_payload = {
-                        "indexed": initialized,
-                        "status": status_val,
-                        "nodes": data.get("nodeCount"),
-                        "edges": data.get("edgeCount"),
-                        "files": data.get("fileCount"),
-                        "languages": data.get("languages"),
-                        "last_indexed": last_indexed,
-                        "repo": repo
-                    }
-                    _codegraph_status_cache[repo] = (
-                        _time.monotonic() + _CODEGRAPH_STATUS_TTL, _cg_payload)
-                    return self._send(200, json.dumps(_cg_payload))
-                else:
-                    return self._send(200, json.dumps({
-                        "indexed": False,
-                        "status": "unsupported",
-                        "nodes": None,
-                        "edges": None,
-                        "files": None,
-                        "languages": None,
-                        "last_indexed": None,
-                        "repo": repo
-                    }))
-            except Exception:
-                return self._send(200, json.dumps({
-                    "indexed": False,
-                    "status": "unsupported",
-                    "nodes": None,
-                    "edges": None,
-                    "files": None,
-                    "languages": None,
-                    "last_indexed": None,
-                    "repo": repo
-                }))
+            from .api import codegraph as _cg_api
+            status, payload = _cg_api.get_codegraph(_codegraph_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/config":
             from .api import settings as _settings_api
             status, payload = _settings_api.get_config(_settings_services())
@@ -5069,232 +4771,9 @@ class Handler(BaseHTTPRequestHandler):
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
             repo_override = parse_qs(u.query).get("repo", [""])[0]
-            # Resolve real per-Mtok pricing for the active driver: eval-catalog
-            # native rates first, then the live OpenRouter price map (so picker
-            # specs like 'anthropic:claude-opus-4-8' show the true $5/$25 instead
-            # of a 0.5/2.0 placeholder).
-            try:
-                from pmharness.registry import resolve_price
-                price_in, price_out = resolve_price(_cfg.driver)
-            except Exception:
-                price_in, price_out = 0.5, 2.0
-            # Boot pill: process-lifetime meters (carry + ALL live runners), not
-            # just the active view -- so attaching another session never drops
-            # spend that already happened on a background runner.
-            _boot_meters = _boot_usage_meters()
-            # Cache key includes cheap meter fingerprints so a turn that burns
-            # tokens invalidates the burst cache without waiting for TTL.
-            _usage_cache_key = "%s|%s|%s|%s|%s|%s" % (
-                (repo_override or "").strip() or (_cfg.repo or ""),
-                ",".join(sorted(_BOOT_REPOS)) if _BOOT_REPOS else "",
-                int(_boot_meters.get("_tokens_used", 0) or 0),
-                int(_boot_meters.get("_tokens_cached", 0) or 0),
-                round(float(_boot_meters.get("_worker_cost_usd", 0) or 0.0), 6),
-                round(float(_boot_meters.get("_provider_cost_usd", 0) or 0.0), 6),
-            )
-            _cached_usage = _usage_cache_get(_usage_cache_key)
-            if _cached_usage is not None:
-                return self._send(200, json.dumps(_cached_usage))
-            tokens_used = int(_boot_meters.get("_tokens_used", 0) or 0)
-            _t_in = int(_boot_meters.get("_tokens_in", 0) or 0)
-            _t_out = int(_boot_meters.get("_tokens_out", 0) or 0)
-            _t_cached = int(_boot_meters.get("_tokens_cached", 0) or 0)
-            _w_in = int(_boot_meters.get("_worker_tokens_in", 0) or 0)
-            _w_out = int(_boot_meters.get("_worker_tokens_out", 0) or 0)
-            # Price each live runner (and carry) via _session_cost_split so
-            # worker dollars stay at each worker's own model rate.
-            est_session_cost = _boot_session_cost(price_in, price_out)
-            jobs_list = []
-            session_total = None
-            routing_saved_usd = 0.0
-            cache_saved_usd_swarm = 0.0
-            swarm_cached = 0
-            try:
-                # Same merged, workspace-scoped job set the tracker uses
-                # (/api/swarm/live): harness store + per-project CLI store, so
-                # MCP/CLI-dispatched swarm spend reaches the status bar.
-                from .cli_job_merge import (
-                    bulk_load_store_artifacts,
-                    partition_jobs_by_store,
-                )
-
-                # repo_override already parsed above for the usage cache key.
-                # Boot-pill swarm dollars: merge epoch-windowed jobs across every
-                # workspace opened this process (not only active _cfg.repo).
-                # session_total below still uses the active-workspace set.
-                boot_repos = set(_BOOT_REPOS)
-                active_repo = (repo_override or "").strip() or (_cfg.repo or "")
-                if active_repo:
-                    boot_repos.add(os.path.abspath(active_repo) if os.path.isdir(active_repo) else active_repo)
-                if not boot_repos and active_repo:
-                    boot_repos.add(active_repo)
-
-                all_jobs_by_id: dict = {}
-                store = None
-                cli_store = None
-                for repo_path in sorted(boot_repos) or [active_repo or None]:
-                    scoped, st, cli_st = _scoped_jobs_with_stores(
-                        repo_root=repo_path or None
-                    )
-                    if store is None:
-                        store = st
-                    if cli_store is None and cli_st is not None:
-                        cli_store = cli_st
-                    for j in scoped:
-                        jid = j.get("id")
-                        if jid and jid not in all_jobs_by_id:
-                            all_jobs_by_id[jid] = j
-                all_jobs = list(all_jobs_by_id.values())
-
-                # Active-workspace set for session_total (unchanged semantics).
-                active_jobs, active_store, active_cli = _scoped_jobs_with_stores(
-                    repo_root=repo_override or None
-                )
-                if store is None:
-                    store = active_store
-                if cli_store is None:
-                    cli_store = active_cli
-
-                # Boot pill: only jobs created during THIS app run (epoch window).
-                jobs = [j for j in all_jobs
-                        if _job_in_cost_window(j.get("created_at"))]
-                registry = _swarm_registry()
-                jids = [j.get("id") for j in jobs if j.get("id")]
-                # Artifacts may live in harness or CLI stores; load from the
-                # union of boot-scoped + active-scoped job ids.
-                arts_source_jobs = list(all_jobs_by_id.values())
-                for j in active_jobs:
-                    jid = j.get("id")
-                    if jid and jid not in all_jobs_by_id:
-                        arts_source_jobs.append(j)
-                harness_jids, cli_jids = partition_jobs_by_store(arts_source_jobs)
-
-                arts_by_job: dict = {}
-                try:
-                    harness_arts = bulk_load_store_artifacts(store, harness_jids)
-                    cli_arts = bulk_load_store_artifacts(cli_store, cli_jids)
-                    arts_by_job = {**harness_arts, **cli_arts}
-                except Exception:
-                    arts_by_job = None  # fall back to per-job reads
-
-                # Owning-store lookup: each job is priced from its own store.
-                job_by_id = {j.get("id"): j for j in arts_source_jobs if j.get("id")}
-
-                def _owning_store(jid):
-                    job = job_by_id.get(jid) or {}
-                    if job.get("source") == "cli" and cli_store is not None:
-                        return cli_store
-                    return store
-
-                def _job_arts(jid):
-                    if arts_by_job is not None:
-                        return arts_by_job.get(jid, [])
-                    owning = _owning_store(jid)
-                    if owning is None:
-                        return []
-                    try:
-                        return _retry_on_locked(lambda: owning.list_artifacts(jid))
-                    except Exception:
-                        return []
-
-                # Lifetime session_total: active-workspace visible set only
-                # (filter_store_jobs + CLI merge). Dedupe by job id; harness
-                # wins via merge_scoped_cli_jobs order.
-                session_jids: list = []
-                seen_session: set = set()
-                for j in active_jobs:
-                    jid = j.get("id")
-                    if not jid or jid in seen_session:
-                        continue
-                    seen_session.add(jid)
-                    session_jids.append(jid)
-
-                for jid in jids:
-                    try:
-                        raw_arts = _job_arts(jid)
-                        tokens, est_cost_usd = _job_swarm_accounting(
-                            raw_arts, registry
-                        )
-                        try:
-                            swarm_cached += int(_tokens_cached_swarm(raw_arts) or 0)
-                        except Exception:
-                            pass
-                        jobs_list.append({
-                            "job_id": jid,
-                            "tokens": tokens,
-                            "est_cost_usd": est_cost_usd,
-                            **_job_savings_fields(jid),
-                        })
-                    except Exception as e:
-                        _diag("server.usage_job_cost", e, msg=f"job={jid}")
-                session_total = _active_session_total(
-                    session_jids, _job_arts, registry
-                )
-                # Boot-pill savings: epoch job set across boot repos (jids), not
-                # active-workspace-only session_jids -- so dir/session swaps keep
-                # routing/cache saved meters process-lifetime.
-                routing_saved_usd, cache_saved_usd_swarm = _sum_job_set_savings(
-                    jids, _job_arts, registry
-                )
-            except Exception as e:
-                _diag("server.usage_jobs_aggregate", e)
-            # Swarm store jobs: dollars come ONLY from here (usage artifacts x
-            # registry). Token display = pilot-only meters (boot total minus
-            # worker in/out already folded into pilot) + authoritative store
-            # job token sums -- mirrors SwarmPane job.tokens without undercount.
-            swarm_cost = sum(float(j.get("est_cost_usd") or 0.0) for j in jobs_list)
-            est_session_cost += swarm_cost
-            pilot_only_tokens = max(0, tokens_used - _w_in - _w_out)
-            job_tokens_sum = sum(int(j.get("tokens") or 0) for j in jobs_list)
-            tokens_used = pilot_only_tokens + job_tokens_sum
-            # Cache tokens: subtract overlapping swarm attribution from pilot
-            # meters, then add authoritative store-job cache (avoids double
-            # count when harness workers were folded into _tokens_cached).
-            pilot_only_cached = max(0, _t_cached - min(_t_cached, swarm_cached))
-            tokens_cached = pilot_only_cached + swarm_cached
-            _cache_savings_usd = _cache_savings(pilot_only_cached, price_in)
-            _usage_cost_source = _boot_cost_source()
-            # Swarm store dollars are still catalog/usage-priced; do not claim
-            # the whole pill is provider-billed when those are folded in.
-            if swarm_cost > 0 and _usage_cost_source == "provider":
-                _usage_cost_source = "mixed"
-            response_data = {
-                "session": {
-                    "tokens_used": tokens_used,
-                    "est_cost_usd": round(est_session_cost, 6),
-                    # provider = OpenRouter usage.cost (etc.); estimated =
-                    # token*catalog fallback; mixed = both slices present.
-                    "cost_source": _usage_cost_source,
-                    "driver": _cfg.driver,
-                    "price_in": price_in,
-                    "price_out": price_out,
-                    # Prompt-cache hits (billed at the cache-read discount) and
-                    # the USD that discount saved vs full input price (pilot-
-                    # only; store-job cache USD is cache_saved_usd_swarm).
-                    "tokens_cached": tokens_cached,
-                    "cache_savings_usd": round(_cache_savings_usd, 6),
-                    # Routing + swarm-cache savings over the boot-repo epoch job
-                    # set (additive to the pilot cache/compaction figures).
-                    "routing_saved_usd": round(routing_saved_usd, 6),
-                    "cache_saved_usd_swarm": round(cache_saved_usd_swarm, 6),
-                    **_tool_output_savings_fields(price_in, process_wide=True),
-                },
-                # Lifetime running total for the active chat session
-                # (persisted meters + all-time session-stamped / workspace-
-                # visible swarm jobs); unlike "session" above, it survives
-                # restarts and updates.
-                "session_total": session_total,
-                "jobs": jobs_list
-            }
-            try:
-                _persist_boot_usage(fold_live=False)
-            except Exception:
-                pass
-            try:
-                _usage_cache_put(_usage_cache_key, response_data)
-            except Exception:
-                pass
-            return self._send(200, json.dumps(response_data))
+            from .api import usage as _usage_api
+            status, payload = _usage_api.get_usage(repo_override, _usage_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/artifacts":
             from .api import jobs as _jobs_api
             q = parse_qs(u.query)
@@ -5468,11 +4947,9 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(u.query)
             return self._swap_pilot(q.get("model", [""])[0])
         if u.path == "/api/context/usage":
-            try:
-                usage = _pilot.get_context_usage()
-                return self._send(200, json.dumps(usage))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": str(e)}))
+            from .api import usage as _usage_api
+            status, payload = _usage_api.get_context_usage(_usage_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/workspaces":
             from .api import workspace as _ws_api
             status, payload = _ws_api.get_workspaces(_workspace_services())
