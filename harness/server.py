@@ -2774,6 +2774,24 @@ def _workspace_services():
     )
 
 
+def _settings_services():
+    """Build SettingsServices from live server module globals (call-time lookup)."""
+    from .api.settings import SettingsServices
+    return SettingsServices(
+        cfg=_cfg,
+        get_pilot=lambda: _pilot,
+        get_session=lambda: _session,
+        parse_bool=_parse_bool,
+        set_api_key=set_api_key,
+        clear_api_key=clear_api_key,
+        rebuild_pilot_and_session=_rebuild_pilot_and_session,
+        available_pilots=_available_pilots,
+        save_workspace_driver=_save_workspace_driver,
+        persist_env_setting=_persist_env_setting,
+        get_settings_dict=_get_settings_dict,
+    )
+
+
 def _provider_services():
     """Build ProviderServices from live server module globals (call-time lookup)."""
     from .api.providers import ProviderServices
@@ -4524,117 +4542,10 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _plat_api.post_platform(body, _platform_services())
             return self._send(status, json.dumps(payload))
         if path == "/api/settings":
-            requires_rebuild = False
-            if "api_key" in body or body.get("clear_api_key") is True:
-                requires_rebuild = True
-            driver = body.get("driver")
-            if driver is not None and driver != _cfg.driver:
-                requires_rebuild = True
-            if requires_rebuild:
-                if not _pilot._busy.acquire(blocking=False):
-                    return self._send(409, json.dumps({"error": "pilot busy, try again"}))
-                _pilot._busy.release()
-
-            reach_to_use = body.get("reach", _cfg.reach)
-            if "api_key" in body:
-                val = str(body["api_key"]).strip()
-                if val:
-                    set_api_key(reach_to_use, val)
-                    _rebuild_pilot_and_session()
-                    # Resync agentic registry when a key is added
-                    from .auto_registry import sync_agentic_registry_safe
-                    sync_agentic_registry_safe()
-            elif body.get("clear_api_key") is True:
-                clear_api_key(reach_to_use)
-                _rebuild_pilot_and_session()
-                # Resync agentic registry when a key is cleared
-                from .auto_registry import sync_agentic_registry_safe
-                sync_agentic_registry_safe()
-
-            driver = body.get("driver")
-            if driver is not None:
-                # Validate against the FULL available catalog (every model from a
-                # keyed provider), not just the enabled picker subset -- a user may
-                # set a driver that is valid but not currently toggled into the
-                # dropdown. _available_pilots() is the curated picker list; the
-                # catalog is the superset of what can actually be built.
-                from . import model_visibility as _mv
-                catalog_specs = {c["spec"] for c in _mv.catalog(available_only=True)}
-                av = set(_available_pilots()) | catalog_specs
-                if driver not in av:
-                    return self._send(400, json.dumps({"error": f"Unknown or unavailable driver: {driver}"}))
-                if driver != _cfg.driver:
-                    try:
-                        _cfg.driver = driver
-                        _rebuild_pilot_and_session()
-                        # Persist like /api/pilot/swap does -- a settings-page
-                        # change that only lived in _cfg silently reverted to
-                        # the compiled-in default on the next backend start.
-                        _save_workspace_driver(_cfg.repo, driver)
-                    except Exception as e:
-                        return self._send(500, json.dumps({"error": f"Failed to swap driver: {str(e)}"}))
-            budget = body.get("budget")
-            if budget is not None:
-                try:
-                    b_val = int(budget)
-                    _cfg.budget = max(1, min(50, b_val))
-                except (ValueError, TypeError):
-                    return self._send(400, json.dumps({"error": "Invalid budget value"}))
-            def _set_env_setting(env_var: str, value: str) -> None:
-                os.environ[env_var] = value
-                _persist_env_setting(env_var, value)
-
-            if "auto_distill" in body:
-                ad_val = _parse_bool(body["auto_distill"])
-                _pilot._auto_distill = ad_val
-                _set_env_setting("HARNESS_AUTO_DISTILL", "true" if ad_val else "false")
-            if "reviewEditsBeforeApply" in body:
-                rev_val = _parse_bool(body["reviewEditsBeforeApply"])
-                _pilot._review_edits_before_apply = rev_val
-                _set_env_setting("HARNESS_REVIEW_EDITS_BEFORE_APPLY", "true" if rev_val else "false")
-            if "autoCommandGuard" in body:
-                g_val = _parse_bool(body["autoCommandGuard"])
-                _pilot._auto_command_guard = g_val
-                _set_env_setting("HARNESS_AUTO_COMMAND_GUARD", "true" if g_val else "off")
-            if "autoVerify" in body:
-                av_val = _parse_bool(body["autoVerify"])
-                _cfg.auto_verify = av_val
-                _set_env_setting("HARNESS_AUTO_VERIFY", "true" if av_val else "false")
-            if "hash_edit_enabled" in body:
-                he_val = _parse_bool(body["hash_edit_enabled"])
-                _set_env_setting("HARNESS_HASH_EDIT", "1" if he_val else "0")
-            if "verifyCommand" in body:
-                vc_val = str(body["verifyCommand"]).strip()
-                _cfg.verify_command = vc_val
-                _set_env_setting("HARNESS_VERIFY_COMMAND", vc_val)
-            if "commandTimeout" in body:
-                # seconds; "0"/"off"/"none" = unbounded. Validate before storing.
-                raw = str(body["commandTimeout"]).strip().lower()
-                if raw in ("0", "off", "none", "unbounded"):
-                    _set_env_setting("HARNESS_COMMAND_TIMEOUT", "0")
-                else:
-                    try:
-                        _set_env_setting("HARNESS_COMMAND_TIMEOUT", str(max(1, int(raw))))
-                    except (ValueError, TypeError):
-                        return self._send(400, json.dumps({"error": "Invalid commandTimeout"}))
-            if "maxPilotSteps" in body:
-                # Per-message pilot step ceiling; "0"/"unlimited" = no cap. The
-                # Settings page always sent this, but the server silently
-                # ignored it -- the field looked saved and never took effect.
-                raw = str(body["maxPilotSteps"]).strip().lower()
-                if raw in ("0", "off", "none", "unlimited"):
-                    _set_env_setting("HARNESS_MAX_PILOT_STEPS", "0")
-                else:
-                    try:
-                        _set_env_setting("HARNESS_MAX_PILOT_STEPS", str(max(1, int(raw))))
-                    except (ValueError, TypeError):
-                        return self._send(400, json.dumps({"error": "Invalid maxPilotSteps"}))
-            if "reasoning_effort" in body:
-                from harness.reasoning_effort import normalize_reasoning_effort
-                normalized = normalize_reasoning_effort(body["reasoning_effort"])
-                _set_env_setting("HARNESS_CODEX_REASONING_EFFORT", normalized)
-
-            return self._send(200, json.dumps(_get_settings_dict()))
+            from .api import settings as _settings_api
+            status, payload = _settings_api.post_settings(
+                body, _settings_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/providers/probe":
             from .api import providers as _prov_api
@@ -5222,26 +5133,9 @@ class Handler(BaseHTTPRequestHandler):
                     "repo": repo
                 }))
         if u.path == "/api/config":
-            try:
-                from .edit_engines import agentic_available, select_edit_engine
-                _edit_engine = select_edit_engine(_cfg)
-                _agentic_ready = agentic_available()
-            except Exception:
-                _edit_engine, _agentic_ready = "native", False
-            try:
-                from .reasoning_effort import current_reasoning_effort
-                _reasoning_effort = current_reasoning_effort()
-            except Exception:
-                _reasoning_effort = "low"
-            return self._send(200, json.dumps({
-                "driver": _cfg.driver, "reach": _cfg.reach,
-                "budget": _cfg.budget, "state_dir": _session.state_dir,
-                "models": _available_pilots(), "repo": _cfg.repo,
-                "swarm_adapter": _cfg.swarm_adapter,
-                "edit_engine": _edit_engine, "agentic_ready": _agentic_ready,
-                "preflight": _session.preflight(),
-                "reasoning_effort": _reasoning_effort,
-            }))
+            from .api import settings as _settings_api
+            status, payload = _settings_api.get_config(_settings_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/wiki/config":
             if self._guard():
                 return
@@ -5293,7 +5187,9 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _wiki_api.get_wiki_status(_wiki_services())
             return self._send(status, json.dumps(payload))
         if u.path == "/api/settings":
-            return self._send(200, json.dumps(_get_settings_dict()))
+            from .api import settings as _settings_api
+            status, payload = _settings_api.get_settings(_settings_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/reviews":
             if self._guard():
                 return
