@@ -1,10 +1,10 @@
-"""SSE event-ring primitives (peeled from ``harness.server``).
+"""SSE ring buffer + pump/write helpers (peeled from ``harness.server``).
 
-Bounded per-session/per-generation frame buffer for mid-turn reattach.
-Handler stream methods (``_sse_pump`` / ``_sse_write`` / ``_stream_*``) stay in
-``server.py``; this module owns only the ring buffer and registry helpers.
-``server.py`` re-exports the historical names so tests and callers keep
-importing ``harness.server``.
+Bounded per-session/per-generation frame buffer for mid-turn reattach, plus
+Hermes-style ``sse_write`` / ``sse_pump`` that take a handler-like ``wfile``.
+Stream route bodies live in ``harness.api.streams``. ``server.py`` re-exports
+historical names and keeps thin ``Handler`` wrappers so tests keep binding
+``Handler._sse_write`` / ``Handler._sse_pump``.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from typing import Any, Deque, Dict, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, Optional, Tuple
 
 # Mid-turn SSE reattach: bounded per-session/per-generation event ring. When the
 # UI detaches, _sse_pump keeps draining the turn and RETAINS recent frames here
@@ -153,3 +153,78 @@ def _sse_ring_clear_for_tests() -> None:
     with _sse_rings_lock:
         _sse_rings.clear()
         _sse_ring_generation.clear()
+
+
+def sse_write(wfile: Any, payload: bytes) -> bool:
+    """Write one SSE frame. Returns False if the client has detached.
+
+    View detach (EventSource close / navigate away) must NOT cancel the
+    in-flight turn -- only /api/session/interrupt does. Callers drain the
+    generator after a False return so _busy still releases via the
+    generator's own finally.
+    """
+    try:
+        wfile.write(payload)
+        wfile.flush()
+        return True
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        # ConnectionAbortedError is the common Windows EventSource/nav-close
+        # path; it is not a subclass of BrokenPipe/Reset. Treat it as detach
+        # so the pump can keep draining instead of gen.close()-aborting mid-yield.
+        return False
+
+
+def sse_pump(
+    wfile: Any,
+    gen: Any,
+    frame_for_event: Callable[[Any], bytes],
+    *,
+    on_event: Optional[Callable[[Any], None]] = None,
+    write_done: bool = True,
+    ring: Optional[SseEventRing] = None,
+) -> bool:
+    """Pump a turn generator over SSE with Hermes-style detach semantics.
+
+    While the UI is attached, each event is written. On client disconnect we
+    keep consuming the generator so the pilot turn finishes and releases
+    _busy -- we never call _pilot.cancel() here. Explicit Stop still goes
+    through /api/session/interrupt.
+
+    When ``ring`` is provided, every event (including those after detach) is
+    retained in the bounded per-generation buffer for /api/chat/events replay.
+
+    Returns True if the client detached mid-stream.
+    """
+    detached = False
+    try:
+        for ev in gen:
+            if on_event is not None:
+                on_event(ev)
+            if ring is not None:
+                try:
+                    ring.append(
+                        getattr(ev, "kind", "event"),
+                        getattr(ev, "data", None) or {},
+                        getattr(ev, "turn", None),
+                    )
+                except Exception:
+                    pass
+            if detached:
+                continue
+            if not sse_write(wfile, frame_for_event(ev)):
+                detached = True
+        if write_done and not detached:
+            sse_write(wfile, b"data: {\"kind\": \"done\"}\n\n")
+        if write_done and ring is not None:
+            try:
+                ring.append("done", {})
+            except Exception:
+                pass
+    finally:
+        # Exhausted generators are a no-op; if the turn raised, close still
+        # runs the generator finally so the session lock cannot leak.
+        try:
+            gen.close()
+        except Exception:
+            pass
+    return detached

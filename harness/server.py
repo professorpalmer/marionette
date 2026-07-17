@@ -52,12 +52,15 @@ from .deferred_attach import (
     normalize_transcript_payload,
     schedule_deferred_build,
 )
-from .autobudget import AutoBudget
+# Re-export for tests that patch harness.server.AutoBudget (stream_auto uses
+# AutoBudget.from_env via harness.api.streams).
+from .autobudget import AutoBudget  # noqa: F401
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd, _ensure_node_on_path
 from .diag import note as _diag
 from .secure_files import restrict_dir_to_owner, restrict_to_owner
-# SSE event-ring primitives live in harness.api.sse; re-export historical
-# names so Handler methods and tests keep importing harness.server.
+# SSE ring + pump/write live in harness.api.sse; stream bodies in
+# harness.api.streams. Re-export historical names so Handler methods and
+# tests keep importing harness.server.
 from .api.sse import (
     _SSE_RING_CAP,
     _SSE_RING_TTL,
@@ -69,7 +72,10 @@ from .api.sse import (
     _sse_ring_begin,
     _sse_ring_lookup,
     _sse_ring_clear_for_tests,
+    sse_pump,
+    sse_write,
 )
+from .api.streams import CHECKPOINT_KINDS as _CHECKPOINT_KINDS
 
 
 # Prompt-cache FALLBACK multipliers (used only when the provider did not return
@@ -2829,6 +2835,24 @@ def _session_services():
         attach_view_transcript_payload=_attach_view_transcript_payload,
         parse_bool=_parse_bool,
         set_codegraph_status=_set_codegraph_status,
+    )
+
+
+def _stream_services():
+    """Build StreamServices from live server module globals (call-time lookup)."""
+    from .api.streams import StreamServices
+    return StreamServices(
+        cfg=_cfg,
+        sessions=_sessions,
+        get_pilot=lambda: _pilot,
+        get_session=lambda: _session,
+        ensure_pilot_matches_driver=_ensure_pilot_matches_driver,
+        maybe_refresh_codegraph=_maybe_refresh_codegraph,
+        pilot_preflight=_pilot_preflight,
+        checkpoint_transcript=_checkpoint_transcript,
+        finalize_turn=_finalize_turn,
+        upload_dir=_UPLOAD_DIR,
+        auto_budget_from_env=lambda: AutoBudget.from_env(),
     )
 
 
@@ -7705,168 +7729,29 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _sse_write(self, payload: bytes) -> bool:
-        """Write one SSE frame. Returns False if the client has detached.
-
-        View detach (EventSource close / navigate away) must NOT cancel the
-        in-flight turn -- only /api/session/interrupt does. Callers drain the
-        generator after a False return so _busy still releases via the
-        generator's own finally.
-        """
-        try:
-            self.wfile.write(payload)
-            self.wfile.flush()
-            return True
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            # ConnectionAbortedError is the common Windows EventSource/nav-close
-            # path; it is not a subclass of BrokenPipe/Reset. Treat it as detach
-            # so the pump can keep draining instead of gen.close()-aborting mid-yield.
-            return False
+        """Write one SSE frame. Returns False if the client has detached."""
+        return sse_write(self.wfile, payload)
 
     def _sse_pump(self, gen, frame_for_event, *, on_event=None, write_done: bool = True,
                   ring: Optional[SseEventRing] = None) -> bool:
-        """Pump a turn generator over SSE with Hermes-style detach semantics.
-
-        While the UI is attached, each event is written. On client disconnect we
-        keep consuming the generator so the pilot turn finishes and releases
-        _busy -- we never call _pilot.cancel() here. Explicit Stop still goes
-        through /api/session/interrupt.
-
-        When ``ring`` is provided, every event (including those after detach) is
-        retained in the bounded per-generation buffer for /api/chat/events replay.
-
-        Returns True if the client detached mid-stream.
-        """
-        detached = False
-        try:
-            for ev in gen:
-                if on_event is not None:
-                    on_event(ev)
-                if ring is not None:
-                    try:
-                        ring.append(
-                            getattr(ev, "kind", "event"),
-                            getattr(ev, "data", None) or {},
-                            getattr(ev, "turn", None),
-                        )
-                    except Exception:
-                        pass
-                if detached:
-                    continue
-                if not self._sse_write(frame_for_event(ev)):
-                    detached = True
-            if write_done and not detached:
-                self._sse_write(b"data: {\"kind\": \"done\"}\n\n")
-            if write_done and ring is not None:
-                try:
-                    ring.append("done", {})
-                except Exception:
-                    pass
-        finally:
-            # Exhausted generators are a no-op; if the turn raised, close still
-            # runs the generator finally so the session lock cannot leak.
-            try:
-                gen.close()
-            except Exception:
-                pass
-        return detached
+        """Pump a turn generator over SSE with Hermes-style detach semantics."""
+        return sse_pump(
+            self.wfile,
+            gen,
+            frame_for_event,
+            on_event=on_event,
+            write_done=write_done,
+            ring=ring,
+        )
 
     def _stream_run(self, prompt: str, images=None):
-        try:
-            _ensure_pilot_matches_driver()
-        except Exception as e:
-            return self._send(500, json.dumps({"error": str(e)}))
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-        
-        if _sessions.active and prompt:
-            from .sessions import derive_title
-            _sessions.set_title_if_default(_sessions.active, derive_title(prompt))
-
-        if _cfg.repo and os.path.isdir(_cfg.repo):
-            _maybe_refresh_codegraph(_cfg.repo)
-
-        pre = _session.preflight()
-        if pre:
-            self.wfile.write(f"data: {json.dumps({'kind':'error','turn':0,'data':{'error':pre}})}\n\n".encode())
-            self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
-            self.wfile.flush()
-            return
-
-        from .hooks import run_hooks
-        # Bind turn identity before any view switch can reassign globals.
-        turn_pilot = _pilot
-        turn_sid = _sessions.active or getattr(turn_pilot, "harness_session_id", "") or ""
-        ctx = {"session_id": turn_sid, "prompt": prompt, "pilot": turn_pilot}
-        run_hooks("preRun", ctx)
-        gen = _session.run(prompt, images=images or None)
-        ring = _sse_ring_begin(turn_sid)
-        try:
-            self._sse_pump(
-                gen,
-                lambda ev: (
-                    f"data: {json.dumps({'kind': ev.kind, 'turn': ev.turn, 'data': ev.data})}\n\n"
-                ).encode(),
-                ring=ring,
-            )
-        finally:
-            run_hooks("postRun", ctx)
+        from .api.streams import stream_run
+        return stream_run(self, prompt, images, _stream_services())
 
     def _stream_auto(self, objective: str):
         """Stream the fully-auto loop (governor-bounded) over SSE."""
-        try:
-            _ensure_pilot_matches_driver()
-        except Exception as e:
-            return self._send(500, json.dumps({"error": str(e)}))
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self._cors()
-        self.end_headers()
-        
-        if _sessions.active and objective:
-            from .sessions import derive_title
-            _sessions.set_title_if_default(_sessions.active, derive_title(objective))
-
-        if _cfg.repo and os.path.isdir(_cfg.repo):
-            _maybe_refresh_codegraph(_cfg.repo)
-
-        from .hooks import run_hooks
-        # Bind turn identity before any view switch can reassign globals.
-        turn_pilot = _pilot
-        turn_sid = _sessions.active or getattr(turn_pilot, "harness_session_id", "") or ""
-        ctx = {"session_id": turn_sid, "objective": objective, "pilot": turn_pilot}
-        run_hooks("preRun", ctx)
-        budget = AutoBudget.from_env()
-        gen = turn_pilot.run_auto(objective, budget)
-        last_ckpt = time.monotonic()
-
-        def _maybe_checkpoint(ev):
-            nonlocal last_ckpt
-            # Incremental checkpoint: flush immediately after an appended action
-            # result, else on a 2s throttle, so a crash mid governor-loop can't
-            # lose the last chunk of transcript before _finalize_turn runs.
-            if ev.kind in _CHECKPOINT_KINDS:
-                _checkpoint_transcript(ctx)
-                last_ckpt = time.monotonic()
-            elif time.monotonic() - last_ckpt >= 2.0:
-                _checkpoint_transcript(ctx)
-                last_ckpt = time.monotonic()
-
-        try:
-            # Detach != cancel: closing the EventSource must not stop the
-            # governor. Explicit Stop uses /api/session/interrupt -> cancel().
-            ring = _sse_ring_begin(turn_sid)
-            self._sse_pump(
-                gen,
-                lambda ev: f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode(),
-                on_event=_maybe_checkpoint,
-                ring=ring,
-            )
-        finally:
-            _finalize_turn(ctx)
+        from .api.streams import stream_auto
+        return stream_auto(self, objective, _stream_services())
 
     def _swap_pilot(self, model: str):
         """Hot-swap the pilot model (the whole point: your key -> your pilot).
@@ -7943,210 +7828,11 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _stream_chat(self, message: str, images=None, plan: bool = False, resume: bool = False):
-        """Stream the conversational PILOT loop: prose messages + collapsible
-        action cards (run_swarm) + assistant_done.
-
-        ``resume=True`` runs a keep-alive continuation turn: no new user message
-        is appended -- the pilot generates off the history that drain_swarm_results
-        already extended with the finished job's result + continuation."""
-        try:
-            _ensure_pilot_matches_driver()
-        except Exception as e:
-            return self._send(500, json.dumps({"error": str(e)}))
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-        
-        if _sessions.active and message:
-            from .sessions import derive_title
-            _sessions.set_title_if_default(_sessions.active, derive_title(message))
-
-        # Self-healing CodeGraph: debounced staleness check at the start of every
-        # turn, so an index that drifted (files edited/added/DELETED since the last
-        # build) reindexes in the background before it misleads the pilot. The
-        # debounce in _maybe_refresh_codegraph prevents thrash during rapid turns.
-        if _cfg.repo and os.path.isdir(_cfg.repo):
-            _maybe_refresh_codegraph(_cfg.repo)
-
-        # Resolve @-file and @symbol mentions in message
-        resolved_files = []
-        resolved_symbols = []
-        total_size = 0
-        repo = _cfg.repo
-        if repo and os.path.isdir(repo) and message:
-            import re
-            tokens = re.findall(r'@([a-zA-Z0-9_\-\.\/:]+)', message)
-            seen_tokens = set()
-            for token in tokens:
-                if token in seen_tokens:
-                    continue
-                seen_tokens.add(token)
-                
-                is_symbol_prefix = token.startswith("symbol:")
-                symbol_name = token[7:] if is_symbol_prefix else token
-                
-                is_file = False
-                file_to_read = None
-                if not is_symbol_prefix:
-                    full_path = os.path.abspath(os.path.join(repo, token))
-                    repo_real = os.path.realpath(repo)
-                    full_real = os.path.realpath(full_path)
-                    try:
-                        common = os.path.commonpath([repo_real, full_real])
-                        if common == repo_real and os.path.isfile(full_real):
-                            is_file = True
-                            file_to_read = full_real
-                    except Exception:
-                        pass
-                    # Also accept files dropped from OUTSIDE the workspace: the
-                    # composer uploads those into the trusted upload dir and
-                    # references them by absolute path. Allow reading that path
-                    # too (drag-and-drop of external files).
-                    if not is_file:
-                        try:
-                            upload_real = os.path.realpath(_UPLOAD_DIR)
-                            abs_token = os.path.realpath(os.path.abspath(token))
-                            if (os.path.commonpath([upload_real, abs_token]) == upload_real
-                                    and os.path.isfile(abs_token)):
-                                is_file = True
-                                file_to_read = abs_token
-                        except Exception:
-                            pass
-                
-                if is_file and file_to_read:
-                    try:
-                        size = os.path.getsize(file_to_read)
-                        read_size = min(size, 50 * 1024)
-                        if total_size + read_size <= 150 * 1024:
-                            with open(file_to_read, 'r', encoding='utf-8', errors='replace') as f:
-                                content = f.read(read_size)
-                            resolved_files.append(f"--- File: {token} ---\n{content}\n")
-                            total_size += len(content.encode('utf-8'))
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        import puppetmaster.codegraph as cg
-                        if cg.codegraph_available() and cg.codegraph_ready(repo):
-                            res = cg.codegraph_query(search=symbol_name, cwd=repo, limit=1)
-                            if res.get("ok") and res.get("stdout"):
-                                data = json.loads(res["stdout"])
-                                if isinstance(data, list) and len(data) > 0:
-                                    node = data[0].get("node")
-                                    if node:
-                                        file_path = node.get("filePath")
-                                        start_line = node.get("startLine")
-                                        end_line = node.get("endLine")
-                                        name = node.get("name")
-                                        
-                                        if file_path and start_line is not None:
-                                            sym_full_path = os.path.abspath(os.path.join(repo, file_path))
-                                            repo_real = os.path.realpath(repo)
-                                            sym_full_real = os.path.realpath(sym_full_path)
-                                            common = os.path.commonpath([repo_real, sym_full_real])
-                                            if common == repo_real and os.path.isfile(sym_full_real):
-                                                with open(sym_full_real, 'r', encoding='utf-8', errors='replace') as f:
-                                                    lines = f.readlines()
-                                                
-                                                start_idx = max(0, int(start_line) - 1)
-                                                if end_line is not None:
-                                                    end_idx = min(len(lines), int(end_line))
-                                                else:
-                                                    end_idx = min(len(lines), start_idx + 60)
-                                                
-                                                snippet_lines = lines[start_idx:end_idx]
-                                                snippet = "".join(snippet_lines)
-                                                if len(snippet.encode('utf-8')) > 8 * 1024:
-                                                    snippet = snippet.encode('utf-8')[:8 * 1024].decode('utf-8', errors='ignore')
-                                                
-                                                read_size = len(snippet.encode('utf-8'))
-                                                if total_size + read_size <= 150 * 1024:
-                                                    resolved_symbols.append(f"--- Symbol: {name} ({file_path}:{start_line}) ---\n{snippet}\n")
-                                                    total_size += read_size
-                    except Exception:
-                        pass
-            
-            context_blocks = []
-            if resolved_files:
-                context_blocks.append("Referenced files:\n" + "\n".join(resolved_files))
-            if resolved_symbols:
-                context_blocks.append("Referenced symbols:\n" + "\n".join(resolved_symbols))
-            
-            if context_blocks:
-                message = "\n\n".join(context_blocks) + "\n\n" + message
- 
-        pre = _pilot_preflight()
-        if pre:
-            self.wfile.write(f"data: {json.dumps({'kind':'error','data':{'error':pre}})}\n\n".encode())
-            self.wfile.write(b"data: {\"kind\": \"done\"}\n\n")
-            self.wfile.flush()
-            return
- 
-        from .hooks import run_hooks
-        # Bind turn identity before any view switch can reassign globals.
-        turn_pilot = _pilot
-        turn_sid = _sessions.active or getattr(turn_pilot, "harness_session_id", "") or ""
-        ctx = {"session_id": turn_sid, "message": message, "pilot": turn_pilot}
-        run_hooks("preRun", ctx)
-        # Detach != cancel: if the client closes the EventSource mid-turn we keep
-        # draining send() so its finally releases _busy. Closing the generator
-        # early (old behavior) aborted the turn via GeneratorExit; cancel() on
-        # BrokenPipe (auto path) stopped the governor for a mere view switch.
-        # Explicit Stop still uses /api/session/interrupt.
-        gen = turn_pilot.send(message, images=images or None, plan=plan, resume=resume)
-        last_ckpt = time.monotonic()
-
-        def _maybe_checkpoint(ev):
-            nonlocal last_ckpt
-            # Incremental checkpoint: flush the transcript immediately when an
-            # action result was just appended to history, else on a 2s throttle
-            # so a mid-turn crash can't lose the last chunk of transcript.
-            if ev.kind in _CHECKPOINT_KINDS:
-                _checkpoint_transcript(ctx)
-                last_ckpt = time.monotonic()
-            elif time.monotonic() - last_ckpt >= 2.0:
-                _checkpoint_transcript(ctx)
-                last_ckpt = time.monotonic()
-
-        try:
-            ring = _sse_ring_begin(turn_sid)
-            detached = self._sse_pump(
-                gen,
-                lambda ev: f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode(),
-                on_event=_maybe_checkpoint,
-                write_done=False,
-                ring=ring,
-            )
-            # After a chat turn streams its events, also drain ready swarm results
-            # (retain + drop-write if the UI already detached).
-            for ev in turn_pilot.drain_swarm_results():
-                _maybe_checkpoint(ev)
-                try:
-                    ring.append(ev.kind, ev.data or {}, getattr(ev, "turn", None))
-                except Exception:
-                    pass
-                if detached:
-                    continue
-                if not self._sse_write(
-                    f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode()
-                ):
-                    detached = True
-            if not detached:
-                self._sse_write(b"data: {\"kind\": \"done\"}\n\n")
-            try:
-                ring.append("done", {})
-            except Exception:
-                pass
-        finally:
-            _finalize_turn(ctx)
-
-
-# Event kinds that mean a tool result / action completion has just been appended
-# to _history -- checkpoint immediately (ignoring throttle) when we see one so a
-# crash right after an action never loses that appended chunk of the transcript.
-_CHECKPOINT_KINDS = frozenset({"action_result", "swarm_result"})
+        """Stream the conversational PILOT loop over SSE."""
+        from .api.streams import stream_chat
+        return stream_chat(
+            self, message, images, _stream_services(), plan=plan, resume=resume,
+        )
 
 
 def _checkpoint_transcript(ctx=None) -> None:
