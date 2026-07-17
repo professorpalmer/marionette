@@ -24,6 +24,30 @@ DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
     "run_swarm", "run_implement", "run_parallel", "route_task", "memory",
 })
 
+_PATH_REF_RE = re.compile(
+    r"[\w./\\-]+\.(py|ts|tsx|js|jsx|cjs|mjs|json|md|toml|yml|yaml|css|html|rs|go|java|c|h|cpp|sh|ps1|bat)\b"
+    r"|line\s+\d+|:\d+\b",
+    re.IGNORECASE,
+)
+
+
+def _is_substantive_artifact(a: dict) -> bool:
+    """True when a FINDING/RISK/DECISION carries real analysis, not a stub.
+
+    Workers that choke on a goal still emit one-line generic findings ("audit
+    complete", "no issues found") with no evidence. Substance = enough prose to
+    be an actual finding, or a shorter claim that at least cites a concrete
+    file/line. Keeps the badge honest without judging content quality by LLM.
+    """
+    try:
+        text = str(a.get('body') or a.get('headline') or '').strip()
+        if len(text) >= 200:
+            return True
+        return len(text) >= 40 and bool(_PATH_REF_RE.search(text))
+    except Exception:
+        return True
+
+
 def dispatch_swarm_action(session, act, aid, is_native, *, counters, turn_findings) -> Iterator[Any]:
     """Assemble tool-results for ``run_swarm`` (peeled from ``_send_locked_inner``).
 
@@ -87,16 +111,26 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     digest_arts = _signal[:20] + _plumbing[:3] if _signal else _plumbing[:8]
     yield ConvEvent('action_result', {'id': aid, 'job_id': result.job_id, 'num': result.num_artifacts, 'types': result.artifact_types, 'artifacts': ordered[:12], 'adapter': result.adapter, 'mode': result.mode, 'auth_failure': auth_failure})
     _has_signal = bool(_signal)
-    _swarm_ok = _has_signal and (not auth_failure)
+    # Quality gate: a "finding" with no substance (a one-liner with no file
+    # reference) must not turn the badge green -- a swarm whose workers choked
+    # on the goal used to read as a clean "N findings" success.
+    _substantive = [a for a in _signal if _is_substantive_artifact(a)]
+    _swarm_ok = bool(_substantive) and (not auth_failure)
     if auth_failure:
         _badge_summary = 'auth failure'
-    elif _has_signal:
+    elif _substantive:
         _badge_summary = f'{len(_signal)} findings via {result.adapter} ({result.num_artifacts} artifacts)'
+    elif _has_signal:
+        _badge_summary = f'degraded: {len(_signal)} thin findings via {result.adapter} (no file-backed substance)'
     elif result.num_artifacts:
         _badge_summary = f'degraded: {result.num_artifacts} plumbing artifacts via {result.adapter}, no findings'
     else:
         _badge_summary = 'no artifacts produced'
-    _badge_error = auth_failure or (None if _swarm_ok else 'swarm produced no FINDING/RISK/DECISION artifacts' if result.num_artifacts else 'swarm produced no artifacts')
+    _badge_error = auth_failure or (
+        None if _swarm_ok
+        else 'swarm findings are thin/generic (no file-backed substance)' if _has_signal
+        else 'swarm produced no FINDING/RISK/DECISION artifacts' if result.num_artifacts
+        else 'swarm produced no artifacts')
     _store_jid = (result.job_id or '').strip() or _sync_local_id
     _badge = {'job_id': _store_jid, 'applied': _swarm_ok, 'files': [], 'summary': _badge_summary, 'error': _badge_error, 'objective': act.goal}
     try:
@@ -120,6 +154,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         stall = f'\n(PROVIDER AUTH FAILURE -- {auth_failure} This is a dead/revoked/wrong API key, NOT a weak model or bad prompt. Do NOT re-run the swarm; tell the user to fix the named key, then stop.)' + stall
     elif not _has_signal:
         stall = '\n(DEGRADED SWARM — only routing/verification plumbing, no FINDING/RISK/DECISION. Tell the user the audit did not produce real findings. Re-dispatch with fewer roles or a sharper goal; do NOT claim the repo was reviewed.)' + stall
+    elif not _substantive:
+        stall = '\n(THIN SWARM FINDINGS — the findings above are generic one-liners with no file-backed evidence, a known failure mode when the goal is too long/multi-part for the workers. Do NOT present these as a completed audit. Re-dispatch narrowed workers with tight single-domain objectives.)' + stall
     session._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {result.num_artifacts} artifacts via {result.adapter}:\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
     return None
     return None

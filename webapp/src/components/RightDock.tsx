@@ -9,6 +9,7 @@ import {
   SquareTerminal,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { lastSelectedProjectRoot } from "../lib/panelTransition";
 
 /** Curated destinations when the right pane is collapsed — Cursor-style icon strip.
  *  Settings is pinned to the foot of the floating pill. */
@@ -53,17 +54,44 @@ export default function RightDock({
   onExpand: () => void;
 }) {
   const [reviewCount, setReviewCount] = useState(0);
+  // Live swarm activity dot: the collapsed pill must show running jobs just
+  // like the expanded tracker tab does, or background swarms go invisible.
+  const [swarmRunning, setSwarmRunning] = useState(0);
+  const [swarmRepo, setSwarmRepo] = useState<string | undefined>(
+    () => lastSelectedProjectRoot() || undefined,
+  );
+
+  useEffect(() => {
+    const onProject = (e: Event) => {
+      const path = (e as CustomEvent<string>).detail;
+      if (typeof path === "string") setSwarmRepo(path || undefined);
+    };
+    window.addEventListener("harness-project-selected", onProject);
+    return () => window.removeEventListener("harness-project-selected", onProject);
+  }, []);
 
   useEffect(() => {
     const load = () => {
       api.getReviews()
         .then((rows) => setReviewCount(Array.isArray(rows) ? rows.length : 0))
         .catch(() => {});
+      api.swarmLive(swarmRepo)
+        .then((data) => {
+          const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
+          const n = jobs.filter((j) => {
+            const s = (j.status || "").toLowerCase();
+            return s.includes("run") || s.includes("progress") || s.includes("active");
+          }).length;
+          setSwarmRunning(n);
+        })
+        .catch(() => {
+          /* keep last known; dot is best-effort */
+        });
     };
     load();
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
-  }, []);
+  }, [swarmRepo]);
 
   return (
     <aside
@@ -95,6 +123,12 @@ export default function RightDock({
             className="relative flex h-7 w-7 items-center justify-center rounded-xl text-muted hover:text-txt hover:bg-panel2/50 transition-colors"
           >
             {link.icon}
+            {link.id === "swarm" && swarmRunning > 0 && (
+              <span
+                title={`${swarmRunning} swarm job${swarmRunning === 1 ? "" : "s"} running`}
+                className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
+              />
+            )}
             {link.id === "review" && reviewCount > 0 && (
               <span className="absolute -top-0.5 -right-0.5 min-w-[0.875rem] h-3.5 px-0.5 rounded-full bg-accent text-panel text-[8px] font-bold flex items-center justify-center border border-panel">
                 {reviewCount > 9 ? "9+" : reviewCount}

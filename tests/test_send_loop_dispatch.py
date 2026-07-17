@@ -261,3 +261,30 @@ def test_dispatch_swarm_registers_and_surfaces_error():
     assert counters["swarms"] == 0
     session._finish_local_job.assert_called()
     session._append_action_result.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Swarm quality gate: thin/generic findings must not read as a green success.
+
+def test_substantive_artifact_gate():
+    from harness.send_loop_dispatch import _is_substantive_artifact
+
+    # Generic one-liner stubs: not substantive.
+    assert not _is_substantive_artifact({"type": "finding", "headline": "Audit complete."})
+    assert not _is_substantive_artifact({"type": "finding", "headline": "No issues found in the repository."})
+
+    # Short but file-backed: substantive.
+    assert _is_substantive_artifact(
+        {"type": "finding", "headline": "Unbounded cache growth in harness/server.py line 210"})
+    assert _is_substantive_artifact(
+        {"type": "risk", "headline": "webapp/src/lib/api.ts:88 swallows fetch errors silently"})
+
+    # Long prose without a path: substantive (real analysis parked in body).
+    assert _is_substantive_artifact({
+        "type": "finding",
+        "headline": "clip",
+        "body": "x" * 250,
+    })
+
+    # Malformed payloads never crash the gate closed.
+    assert _is_substantive_artifact({"type": "finding", "body": None, "headline": None}) in (True, False)
