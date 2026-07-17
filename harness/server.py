@@ -73,7 +73,8 @@ from .api.sse import (
 from .api.streams import CHECKPOINT_KINDS as _CHECKPOINT_KINDS
 
 
-# Cost / usage / swarm-accounting helpers live in harness.api.cost; re-export
+# Cost / usage / swarm-accounting helpers live under harness.api.cost*
+# (cost facade + cost_accounting / usage_meters / swarm_cost). Re-export
 # historical names so tests and send_loop keep importing harness.server.
 from .api.cost import (  # noqa: E402
     CACHE_READ_MULTIPLIER,
