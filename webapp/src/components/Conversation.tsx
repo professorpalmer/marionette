@@ -6,7 +6,7 @@ import { usePolling } from "../lib/usePolling";
 import PilotPicker from "./PilotPicker";
 import { revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../lib/transport";
 import FileEditorPane from "./FileEditorPane";
-import { TranscriptList, type Item, type Card, type Msg } from "./TranscriptList";
+import { TranscriptList, type Item, type Card } from "./TranscriptList";
 import {
   deriveBusyProgress,
   turnHasInvestigationActivity,
@@ -21,7 +21,6 @@ import {
   writeTranscriptCache,
 } from "./conversation/transcriptCache";
 import {
-  deduplicateConsecutiveAssistantMessages,
   transcriptResponseToItems,
   mergeTranscriptItems,
   transcriptFingerprint,
@@ -30,7 +29,6 @@ import {
   finalizeStreamingThinking,
   upsertStreamingThinking,
   upsertToolPrep,
-  clearToolPrepPlaceholders,
   newThinkingId,
 } from "./conversation/thinkingToolPrep";
 import {
@@ -59,13 +57,54 @@ import {
   remapActiveTabAfterRename,
 } from "./conversation/tabPaths";
 import {
-  findStreamingBubbleIdx,
   appendStreamingTextToItems,
   typewriterCharsPerFrame,
 } from "./conversation/streamBubbles";
 import { derivePillStatus } from "./conversation/pillStatus";
 import StatusPill from "./conversation/StatusPill";
 import WorkspaceChip from "./conversation/WorkspaceChip";
+import {
+  appendActionStartCard,
+  appendAuthFailure,
+  appendAutoHalt,
+  appendCheckpoint,
+  appendCodegraphContext,
+  appendCommandBlocked,
+  appendCompaction,
+  appendNonStreamingThinking,
+  appendQueuedPromptUserBubble,
+  appendStreamError,
+  appendSwarmPending,
+  applySwarmResultToItems,
+  ensureAssistantStreamingBubble,
+  ensureWorkerStreamingBubble,
+  finalizePilotMessage,
+  finalizeStreamingBubbleOnActionResult,
+  formatDistilledNotice,
+  formatWikiAutoIngestNotice,
+  patchCardInItems,
+  shouldPaintThinking,
+  truncateWaitHint,
+  workspaceRootFromActionResult,
+} from "./conversation/streamApply";
+import {
+  collectDisplayArtifacts,
+  emptySessionSwitchState,
+  mergeUniqueArtifacts,
+  runnerBusySwitchDecision,
+  shouldPreserveBusyStatus,
+} from "./conversation/sessionHydrate";
+import {
+  composerEnterAction,
+  editNoticeAfterSend,
+  executeSendGate,
+  formatCompactCompleteMessage,
+  formatCompactErrorMessage,
+  formatHelpSlashReply,
+  formatRenderCommandErrorMessage,
+  formatSteerErrorMessage,
+  shouldBlockEmptySend,
+} from "./conversation/composerSend";
 
 // Re-export pure helpers so existing test / LeftRail import paths keep working.
 export {
@@ -136,6 +175,48 @@ export {
 } from "./conversation/StatusPill";
 export { default as StatusPill } from "./conversation/StatusPill";
 export { default as WorkspaceChip } from "./conversation/WorkspaceChip";
+export {
+  patchCardInItems,
+  appendAuthFailure,
+  appendCommandBlocked,
+  appendCodegraphContext,
+  appendCompaction,
+  truncateWaitHint,
+  shouldPaintThinking,
+  ensureAssistantStreamingBubble,
+  ensureWorkerStreamingBubble,
+  finalizePilotMessage,
+  appendActionStartCard,
+  finalizeStreamingBubbleOnActionResult,
+  workspaceRootFromActionResult,
+  appendSwarmPending,
+  appendCheckpoint,
+  appendQueuedPromptUserBubble,
+  appendAutoHalt,
+  appendStreamError,
+  appendNonStreamingThinking,
+  applySwarmResultToItems,
+  formatDistilledNotice,
+  formatWikiAutoIngestNotice,
+} from "./conversation/streamApply";
+export {
+  collectDisplayArtifacts,
+  mergeUniqueArtifacts,
+  emptySessionSwitchState,
+  shouldPreserveBusyStatus,
+  runnerBusySwitchDecision,
+} from "./conversation/sessionHydrate";
+export {
+  composerEnterAction,
+  executeSendGate,
+  shouldBlockEmptySend,
+  formatHelpSlashReply,
+  formatCompactCompleteMessage,
+  formatCompactErrorMessage,
+  formatSteerErrorMessage,
+  formatRenderCommandErrorMessage,
+  editNoticeAfterSend,
+} from "./conversation/composerSend";
 
 export default function Conversation({
   config,
@@ -942,12 +1023,11 @@ export default function Conversation({
       // Project/session list may briefly report no active id while the next
       // root's sessions load. Keep prior transcript dimmed instead of flashing
       // the first-run empty placeholder; clear only when there was nothing.
-      if (itemsRef.current.length === 0) {
+      const emptySwitch = emptySessionSwitchState(itemsRef.current.length);
+      if (emptySwitch.clearItems) {
         setItems([]);
-        setTranscriptStale(false);
-      } else {
-        setTranscriptStale(true);
       }
+      setTranscriptStale(emptySwitch.stale);
       setTurnOpen(false);
       setStatus("idle");
       setCompactingStatus(null);
@@ -976,16 +1056,16 @@ export default function Conversation({
     ) => {
       if (cancelled || localStreamActiveRef.current) return;
       if (!activeSessionId) return;
-      const st = runners?.[activeSessionId];
-      if (st === "running") {
+      const decision = runnerBusySwitchDecision({
+        runnerState: runners?.[activeSessionId],
+        localStreamActive: false,
+        switchedSession: prevId !== activeSessionId,
+      });
+      if (decision.kind === "busy") {
         detachedBusyRef.current = true;
         setTurnOpen(true);
-        setStatus((prev) =>
-          prev === "thinking" || prev === "executing" || prev === "streaming"
-            ? prev
-            : "thinking"
-        );
-      } else if (prevId !== activeSessionId) {
+        setStatus((prev) => (shouldPreserveBusyStatus(prev) ? prev : "thinking"));
+      } else if (decision.kind === "idle") {
         // Idle or cold-attaching: never flash turn-thinking on New Session.
         detachedBusyRef.current = false;
         setTurnOpen(false);
@@ -1014,29 +1094,10 @@ export default function Conversation({
         setTranscriptStale(false);
 
         // Gather all artifacts from (a) card entries in res.display
-        const displayArtifacts: { type: string; headline: string }[] = [];
-        if (res.display && res.display.length > 0) {
-          res.display.forEach((m: any) => {
-            if (m.type === "card" && m.result && Array.isArray(m.result.artifacts)) {
-              m.result.artifacts.forEach((art: any) => {
-                if (art && art.type && art.headline) {
-                  displayArtifacts.push({ type: art.type, headline: art.headline });
-                }
-              });
-            }
-          });
-        }
+        const displayArtifacts = collectDisplayArtifacts(res.display);
 
         const mergeAndEmit = (fetchedArts: { type: string; headline: string }[]) => {
-          const seen = new Set<string>();
-          const unique: { type: string; headline: string }[] = [];
-          displayArtifacts.concat(fetchedArts).forEach((art) => {
-            const key = `${art.type}::${art.headline}`;
-            if (!seen.has(key)) {
-              seen.add(key);
-              unique.push(art);
-            }
-          });
+          const unique = mergeUniqueArtifacts(displayArtifacts, fetchedArts);
           if (unique.length > 0) {
             onArtifacts(unique);
           }
@@ -1357,12 +1418,7 @@ export default function Conversation({
   }, [activeSessionId]);
 
   const setCard = (id: string, patch: Partial<Card>) =>
-    setItems((prev) => prev.map((it) => {
-      if (it.kind === "card" && it.card.id === id) {
-        return { kind: "card", card: { ...it.card, ...patch } };
-      }
-      return it;
-    }));
+    setItems((prev) => patchCardInItems(prev, id, patch));
 
   useEffect(() => {
     const onFocus = () => { taRef.current?.focus(); };
@@ -1790,7 +1846,7 @@ export default function Conversation({
       // While a turn is running, plain Enter STEERS (redirects the current turn);
       // Cmd/Ctrl+Enter QUEUES (runs after the current turn finishes). When idle,
       // Enter always sends a normal turn.
-      if (busy && (e.metaKey || e.ctrlKey)) {
+      if (composerEnterAction({ busy, metaOrCtrl: e.metaKey || e.ctrlKey }) === "queue") {
         handleQueueAdd();
         return;
       }
@@ -1807,38 +1863,7 @@ export default function Conversation({
 
     setPendingJobIds((p) => p.filter(id => id !== job_id));
 
-    setItems((prevItems) => {
-      const pendingItem = prevItems.find(it => it.kind === "swarm_pending" && it.job_ids.includes(job_id));
-      const pendingObj = pendingItem && pendingItem.kind === "swarm_pending" ? pendingItem.objective : "";
-      const finalObjective = d.objective || pendingObj || "";
-
-      // Resolve matching swarm_pending chip
-      const updated = prevItems.map((item) => {
-        if (item.kind === "swarm_pending" && item.job_ids.includes(job_id)) {
-          return { ...item, resolved: true };
-        }
-        return item;
-      });
-
-      // Check if we already have this swarm_result in updated (double check)
-      const alreadyHasResult = updated.some(it => it.kind === "swarm_result" && it.job_id === job_id);
-      if (alreadyHasResult) return updated;
-
-      const res_obj = d.result || d;
-
-      return [
-        ...updated,
-        {
-          kind: "swarm_result" as const,
-          job_id: job_id,
-          applied: res_obj.applied,
-          files: res_obj.files || [],
-          summary: res_obj.summary || "",
-          error: res_obj.error || null,
-          objective: finalObjective
-        }
-      ];
-    });
+    setItems((prevItems) => applySwarmResultToItems(prevItems, d));
   };
 
   const swarmResultsPending = pendingJobIds.length > 0 || backendPendingSwarms;
@@ -1869,20 +1894,8 @@ export default function Conversation({
                   resumeQueuedRef.current = true;
                 }
               } else if (anyEvt.kind === "distilled" && anyEvt.data) {
-                const d = anyEvt.data;
-                const parts: string[] = [];
-                if (d.skill && d.skill.status === "proposed") {
-                  const { name } = d.skill;
-                  parts.push(`proposed 1 skill${name ? ` ("${name}")` : ""}`);
-                }
-                if (d.rules) {
-                  const pCount = d.rules.proposed?.length || 0;
-                  if (pCount > 0) {
-                    parts.push(`proposed ${pCount} rule${pCount === 1 ? "" : "s"}`);
-                  }
-                }
-                if (parts.length > 0) {
-                  const notice = `Self-learning: ${parts.join(", ")} - review in Skills tab`;
+                const notice = formatDistilledNotice(anyEvt.data);
+                if (notice) {
                   setDistillNotice(notice);
                   setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
                 }
@@ -1891,7 +1904,7 @@ export default function Conversation({
                 const pages = d.pages || [];
                 if (pages.length > 0) {
                   if (d.auto_ingested) {
-                    const notice = `Wiki: ${pages.length} page${pages.length === 1 ? "" : "s"} auto-ingested (local orchestration)`;
+                    const notice = formatWikiAutoIngestNotice(pages.length);
                     setDistillNotice(notice);
                     setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
                   } else {
@@ -1977,27 +1990,25 @@ export default function Conversation({
 
   // Shared path for live SSE and mid-turn chatEvents reattach. Callers must
   // enforce session/generation guards before invoking.
+  // Item transforms live in conversation/streamApply.ts (pure); chrome/side
+  // effects stay here.
   const applyStreamEvent = (ev: { kind: string; data?: any }) => {
       const d = ev.data || {};
       if (ev.kind === "compacting") {
         setCompactingStatus(d.message || "Summarizing chat context");
       } else if (ev.kind === "command_blocked") {
-        setItems((p) => [...p, { kind: "command_blocked" as const, command: d.command || "", category: d.category || "", reason: d.reason || "", matched: d.matched || "" }]);
+        setItems((p) => appendCommandBlocked(p, d));
       } else if (ev.kind === "swarm_auth_failure") {
         // A provider rejected the API key. Surface it as a loud, persistent
         // banner so a dead/revoked key is never silently read as a generic
         // "completed without findings" degrade. Deduped by action id.
-        setItems((p) => (
-          p.some((it) => it.kind === "auth_failure" && it.id === d.id)
-            ? p
-            : [...p, { kind: "auth_failure" as const, message: d.message || "", id: d.id }]
-        ));
+        setItems((p) => appendAuthFailure(p, d.message || "", d.id));
       } else if (ev.kind === "wiki_prepared") {
         const pages = d.pages || [];
         if (pages.length > 0) {
           if (d.auto_ingested) {
             // Silent-auto mode already ingested -- just a quiet confirmation footnote.
-            const notice = `Wiki: ${pages.length} page${pages.length === 1 ? "" : "s"} auto-ingested (local orchestration)`;
+            const notice = formatWikiAutoIngestNotice(pages.length);
             setDistillNotice(notice);
             setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
           } else {
@@ -2018,21 +2029,20 @@ export default function Conversation({
           ));
         }
       } else if (ev.kind === "codegraph_context") {
-        setItems((p) => [...p, { kind: "codegraph_context" as const, symbols: d.symbols || 0, query: d.query || "" }]);
+        setItems((p) => appendCodegraphContext(p, d.symbols || 0, d.query || ""));
       } else if (ev.kind === "compaction") {
         setCompactingStatus(null);
-        setItems((p) => [...p, { kind: "compaction" as const, before_tokens: d.before_tokens, after_tokens: d.after_tokens }]);
+        setItems((p) => appendCompaction(p, d.before_tokens, d.after_tokens));
         window.dispatchEvent(new Event("harness-context-changed"));
       } else if (ev.kind === "notice" && (d.kind === "wait" || !d.kind)) {
-        const msg = String(d.message || "").trim();
-        if (msg) setWaitHint(msg.length > 72 ? `${msg.slice(0, 70)}…` : msg);
+        const hint = truncateWaitHint(d.message || "");
+        if (hint) setWaitHint(hint);
       } else if (ev.kind === "thinking") {
         // Live reasoning deltas (delta:true) paint mid-turn so GLM/OR token
         // climbs are visible. Full post-answer reasoning dumps (no delta) stay
         // suppressed -- the answer is already on screen.
         setCompactingStatus(null);
-        const chunk = String(d.text || "");
-        const painting = Boolean(d.delta) ? Boolean(chunk) : Boolean(chunk.trim());
+        const { painting, chunk } = shouldPaintThinking(d);
         if (!painting) return;
         setStatus((prev) =>
           prev === "streaming" || prev === "executing" ? prev : "thinking"
@@ -2040,7 +2050,7 @@ export default function Conversation({
         if (d.delta && chunk) {
           setItems((p) => upsertStreamingThinking(p, chunk));
         } else if (chunk.trim()) {
-          setItems((p) => [...p, { kind: "thinking", text: chunk, id: newThinkingId() }]);
+          setItems((p) => appendNonStreamingThinking(p, chunk));
         }
       } else if (ev.kind === "tool_prep") {
         const name = String(d.name || "").trim();
@@ -2066,13 +2076,7 @@ export default function Conversation({
         // from top to bottom" after hard commands. Bare prose turns still
         // use the cadence typewriter.
         const investigating = turnHasLiveInvestigation(itemsRef.current, true);
-        setItems((p) => {
-          const base = finalizeStreamingThinking(p);
-          if (findStreamingBubbleIdx(base) >= 0) {
-            return base;
-          }
-          return [...base, { kind: "msg", msg: { role: "assistant", text: "", streaming: true, isPlan: planTurnRef.current } }];
-        });
+        setItems((p) => ensureAssistantStreamingBubble(p, { isPlan: planTurnRef.current }));
         const chunk = d.text || "";
         if (!chunk) return;
         if (investigating) {
@@ -2093,16 +2097,7 @@ export default function Conversation({
         if (d.kind === "text" && d.text) {
           setCompactingStatus(null);
           setStatus("streaming");
-          setItems((p) => {
-            const lastIdx = p.length - 1;
-            if (lastIdx >= 0 && p[lastIdx].kind === "msg") {
-              const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
-              if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming && lastMsg.msg.workerStream) {
-                return p;
-              }
-            }
-            return [...p, { kind: "msg", msg: { role: "assistant", text: "", streaming: true, workerStream: true, isPlan: planTurnRef.current } }];
-          });
+          setItems((p) => ensureWorkerStreamingBubble(p, { isPlan: planTurnRef.current }));
           typeBufRef.current += (d.text || "");
           startTypewriter();
         }
@@ -2111,53 +2106,15 @@ export default function Conversation({
         setStatus("thinking");
         // Drain any queued typed text before finalizing, so the bubble is whole.
         flushTypewriter();
-        setItems((p0) => {
-          // A pilot message must never adopt a worker's ephemeral stream: drop a
-          // trailing worker-stream preview before finalizing the pilot's own text.
-          const p = finalizeStreamingThinking(
-            (p0.length > 0 && p0[p0.length - 1].kind === "msg" && (p0[p0.length - 1] as { kind: "msg"; msg: Msg }).msg.workerStream)
-              ? p0.slice(0, -1) : p0
-          );
-          // Finalize the pilot's open streaming bubble (skip worker previews).
-          const streamIdx = findStreamingBubbleIdx(p, { excludeWorkerStream: true });
-          if (streamIdx >= 0) {
-            const lastMsg = p[streamIdx] as Extract<Item, { kind: "msg" }>;
-            // Finalize the streaming bubble in place. If the final text is
-            // empty, KEEP whatever already streamed into the bubble (don't wipe
-            // visible narration) -- only drop the bubble when it never had any
-            // text at all. This preserves the text -> tool -> text -> tool
-            // thought chain instead of making intermediate prose vanish when a
-            // step finalizes with an empty cleaned-say.
-            const finalText = d.text || lastMsg.msg.text || "";
-            if (!finalText.trim()) {
-              return [...p.slice(0, streamIdx), ...p.slice(streamIdx + 1)];
-            }
-            const updatedItems = [...p];
-            updatedItems[streamIdx] = {
-              kind: "msg",
-              msg: { ...lastMsg.msg, text: finalText, streaming: false },
-            };
-            return deduplicateConsecutiveAssistantMessages(updatedItems);
-          }
-          if (!d.text) {
-            return p;
-          }
-          return deduplicateConsecutiveAssistantMessages([...p, { kind: "msg", msg: { role: "assistant", text: d.text || "", isPlan: planTurnRef.current } }]);
-        });
+        setItems((p0) => finalizePilotMessage(p0, d.text, { isPlan: planTurnRef.current }));
       } else if (ev.kind === "action_start") {
         setCompactingStatus(null);
         setStatus("executing");
-        setItems((p) => {
-          const base = clearToolPrepPlaceholders(finalizeStreamingThinking(p));
-          // Idempotent: a late/replayed action_start with the same id must not
-          // stack another card (session-switch SSE race → infinite Investigated).
-          if (base.some((it) => it.kind === "card" && it.card.id === d.id)) return base;
-          return [...base, { kind: "card", card: {
-          // Default tool cards to collapsed always: they used to mount open while
-          // running and snap shut on action_result, which read as a flicker.
-          // Start collapsed; the user can click to expand (onToggleCard).
-          id: d.id, goal: d.goal, cwd: d.cwd, running: true, open: false, kind: d.kind } }];
-        });
+        // Idempotent: a late/replayed action_start with the same id must not
+        // stack another card (session-switch SSE race → infinite Investigated).
+        // Default tool cards to collapsed always: they used to mount open while
+        // running and snap shut on action_result, which read as a flicker.
+        setItems((p) => appendActionStartCard(p, d));
       } else if (ev.kind === "action_result") {
         setCompactingStatus(null);
         setStatus("thinking");
@@ -2167,34 +2124,12 @@ export default function Conversation({
         // scroll/attention). A non-worker streaming bubble (the pilot's own
         // narration) is still finalized in place.
         flushTypewriter();
-        setItems((p) => {
-          const lastIdx = p.length - 1;
-          if (lastIdx >= 0 && p[lastIdx].kind === "msg") {
-            const lastMsg = p[lastIdx] as { kind: "msg"; msg: Msg };
-            if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
-              const finalText = (lastMsg.msg.text || "").trim();
-              if (lastMsg.msg.workerStream) {
-                return p.slice(0, lastIdx);
-              }
-              if (!finalText) {
-                return p.slice(0, lastIdx);
-              }
-              const updated = [...p];
-              updated[lastIdx] = { kind: "msg", msg: { ...lastMsg.msg, streaming: false } };
-              return updated;
-            }
-          }
-          return p;
-        });
+        setItems((p) => finalizeStreamingBubbleOnActionResult(p));
         // Fallback: if the card carries an auth_failure but the dedicated
         // swarm_auth_failure event was missed, still raise the loud banner so a
         // dead key is never buried in a quiet "completed" card. Deduped by id.
         if (d.auth_failure) {
-          setItems((p) => (
-            p.some((it) => it.kind === "auth_failure" && it.id === d.id)
-              ? p
-              : [...p, { kind: "auth_failure" as const, message: d.auth_failure, id: d.id }]
-          ));
+          setItems((p) => appendAuthFailure(p, d.auth_failure, d.id));
         }
         setCard(d.id, { running: false, open: false, result: d });
         if (d.artifacts && !d.error) onArtifacts(d.artifacts);
@@ -2212,9 +2147,7 @@ export default function Conversation({
             // Card.goal can be "(workspace root)" when relocate used
             // workspace_root without path — that used to skip the left-rail
             // expand/refresh and leave the project invisible until a tab flip.
-            const root = String(
-              d.workspace_root || d.path || d.repo || cardItem.card.goal || "",
-            ).trim();
+            const root = workspaceRootFromActionResult(d, cardItem.card.goal);
             if (root && root !== "(workspace root)") {
               window.dispatchEvent(new CustomEvent("harness-session-relocated", {
                 detail: { workspace_root: root },
@@ -2230,19 +2163,8 @@ export default function Conversation({
         // attention -- a newly PROPOSED skill or rule(s). Skips, duplicates, and
         // "insufficient findings" are the 99% case and stay silent (they are not
         // actionable; announcing them is pure noise).
-        const parts: string[] = [];
-        if (d.skill && d.skill.status === "proposed") {
-          const { name } = d.skill;
-          parts.push(`proposed 1 skill${name ? ` ("${name}")` : ""}`);
-        }
-        if (d.rules) {
-          const pCount = d.rules.proposed?.length || 0;
-          if (pCount > 0) {
-            parts.push(`proposed ${pCount} rule${pCount === 1 ? "" : "s"}`);
-          }
-        }
-        if (parts.length > 0) {
-          const notice = `Self-learning: ${parts.join(", ")} - review in Skills tab`;
+        const notice = formatDistilledNotice(d);
+        if (notice) {
           setDistillNotice(notice);
           // Quiet footnote: auto-fade after 8s so it never lingers like a push notif.
           setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
@@ -2251,21 +2173,13 @@ export default function Conversation({
         turnSettledRef.current = true;
         setTurnOpen(false);
         setStatus("done");
-        setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "HALT: " + (d.reason || "") } }]);
+        setItems((p) => appendAutoHalt(p, d.reason || ""));
       } else if (ev.kind === "swarm_pending") {
         const job_ids = d.job_ids || [];
         setPendingJobIds((p) => [...p, ...job_ids]);
-        setItems((p) => [
-          ...p,
-          {
-            kind: "swarm_pending" as const,
-            job_ids,
-            objective: d.objective || "",
-            resolved: false,
-          },
-        ]);
+        setItems((p) => appendSwarmPending(p, job_ids, d.objective || ""));
       } else if (ev.kind === "checkpoint") {
-        setItems((p) => [...p, { kind: "checkpoint" as const, id: d.id, label: d.label, trigger: d.trigger }]);
+        setItems((p) => appendCheckpoint(p, d));
         window.dispatchEvent(new Event("harness-repo-mutated"));
       } else if (ev.kind === "swarm_result") {
         handleSwarmResult(d);
@@ -2283,12 +2197,7 @@ export default function Conversation({
         // refetch so the chip list drops it and promotes the next item.
         if (d.text) {
           const qImgs: string[] = Array.isArray(d.images) ? d.images : [];
-          const bubbleImgs = qImgs.map((p: string) => ({
-            path: p,
-            name: (p.split(/[\\/]/).pop() || p),
-            previewUrl: p,
-          }));
-          setItems((p) => [...p, { kind: "msg", msg: { role: "user", text: d.text, images: bubbleImgs } }]);
+          setItems((p) => appendQueuedPromptUserBubble(p, d.text, qImgs));
         }
         refreshQueue();
       } else if (ev.kind === "assistant_done") {
@@ -2307,7 +2216,7 @@ export default function Conversation({
         setCompactingStatus(null);
         setWaitHint(null);
         setStatus("error");
-        setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "[error] " + (d.error || "") } }]);
+        setItems((p) => appendStreamError(p, d.error || ""));
       }
   };
   applyStreamEventRef.current = applyStreamEvent;
@@ -2315,14 +2224,20 @@ export default function Conversation({
   const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false, resume: boolean = false, imagesOverride?: { path: string; name: string; previewUrl: string }[]) => {
     // Stale transcript = prior session still on screen while B hydrates.
     // Never send into the wrong session.
-    if (transcriptStale && !resume) return;
-    if (!resume) {
-      // Real user/autopilot send clears the Stop hold so thinking can run again.
-      userStoppedRef.current = false;
-    } else if (userStoppedRef.current) {
+    const gate = executeSendGate({
+      transcriptStale,
+      resume,
+      userStopped: userStoppedRef.current,
+    });
+    if (gate === "stale") return;
+    if (gate === "stopped_resume") {
       // Keep-alive after Stop must not re-arm the turn.
       resumeQueuedRef.current = false;
       return;
+    }
+    if (!resume) {
+      // Real user/autopilot send clears the Stop hold so thinking can run again.
+      userStoppedRef.current = false;
     }
     planTurnRef.current = usePlan;
     turnSettledRef.current = false;
@@ -2507,11 +2422,14 @@ export default function Conversation({
   resumeTriggerRef.current = triggerResume;
 
   const send = () => {
-    if (transcriptStale) return;
     const msg = input.trim();
     // Allow a send/steer that is only attached image(s) with no text -- the
     // backend accepts text OR images.
-    if (!msg && attachedImages.length === 0) return;
+    if (shouldBlockEmptySend({
+      transcriptStale,
+      text: msg,
+      imageCount: attachedImages.length,
+    })) return;
 
     // Intercept slash commands locally
     if (msg.startsWith("/")) {
@@ -2539,7 +2457,7 @@ export default function Conversation({
                 kind: "msg",
                 msg: {
                   role: "assistant",
-                  text: "System Note: Manual context compaction complete (" + res.before_tokens + " -> " + res.after_tokens + " tokens)."
+                  text: formatCompactCompleteMessage(res.before_tokens, res.after_tokens),
                 }
               }
             ]);
@@ -2552,7 +2470,7 @@ export default function Conversation({
                 kind: "msg",
                 msg: {
                   role: "assistant",
-                  text: "[error] Compaction failed: " + (err.message || err)
+                  text: formatCompactErrorMessage(err),
                 }
               }
             ]);
@@ -2570,9 +2488,7 @@ export default function Conversation({
       if (cmd === "/help") {
         setInput("");
         setEditingIndex(null);
-        const helpText = "Available Slash Commands:\n\n" +
-          allSlashCommands.map(s => `* \`${s.cmd}\` - ${s.desc}`).join("\n") +
-          "\n\nType @ to list and mention files in your message context.";
+        const helpText = formatHelpSlashReply(allSlashCommands);
         setItems((p) => [
           ...p,
           {
@@ -2612,7 +2528,7 @@ export default function Conversation({
                   kind: "msg",
                   msg: {
                     role: "assistant",
-                    text: "[error] Render failed: " + (err.message || err)
+                    text: formatRenderCommandErrorMessage(err),
                   }
                 }
               ]);
@@ -2625,7 +2541,7 @@ export default function Conversation({
     // After a rewind-edit, clear the editing chrome but keep Revert available
     // so the user can restore the prior branch (Hermes/Cursor pattern).
     setEditingIndex(null);
-    setEditNotice(canRevertEdit ? "Edited — Revert restores the previous turns." : null);
+    setEditNotice(editNoticeAfterSend(canRevertEdit));
 
     if (composerBusy) {
       // Snapshot the attached image paths BEFORE clearing input/attachments or
@@ -2647,7 +2563,7 @@ export default function Conversation({
               kind: "msg",
               msg: {
                 role: "assistant",
-                text: "[error] Steer failed: " + (err.message || err)
+                text: formatSteerErrorMessage(err),
               }
             }
           ]);

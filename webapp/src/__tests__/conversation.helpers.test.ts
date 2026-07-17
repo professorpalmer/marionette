@@ -61,6 +61,36 @@ import {
   statusPillLabel,
   statusPillTextClass,
 } from "../components/conversation/StatusPill";
+import {
+  appendActionStartCard,
+  appendAuthFailure,
+  appendCommandBlocked,
+  applySwarmResultToItems,
+  ensureAssistantStreamingBubble,
+  finalizePilotMessage,
+  finalizeStreamingBubbleOnActionResult,
+  formatDistilledNotice,
+  formatWikiAutoIngestNotice,
+  patchCardInItems,
+  shouldPaintThinking,
+  truncateWaitHint,
+  workspaceRootFromActionResult,
+} from "../components/conversation/streamApply";
+import {
+  collectDisplayArtifacts,
+  emptySessionSwitchState,
+  mergeUniqueArtifacts,
+  runnerBusySwitchDecision,
+  shouldPreserveBusyStatus,
+} from "../components/conversation/sessionHydrate";
+import {
+  composerEnterAction,
+  editNoticeAfterSend,
+  executeSendGate,
+  formatCompactCompleteMessage,
+  formatHelpSlashReply,
+  shouldBlockEmptySend,
+} from "../components/conversation/composerSend";
 import type { Item } from "../components/TranscriptList";
 
 function msg(role: "user" | "assistant", text: string, streaming = false): Item {
@@ -423,5 +453,160 @@ describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
     expect(statusPillLabel("idle", "x")).toBe("idle");
     expect(statusPillTextClass("error")).toContain("risk");
     expect(statusPillDotClass("streaming")).toContain("animate-pulse");
+  });
+});
+
+describe("streamApply module", () => {
+  it("patches cards and dedupes auth_failure banners", () => {
+    const items: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "c1",
+          goal: "read",
+          cwd: null,
+          kind: "read_file",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+    const patched = patchCardInItems(items, "c1", { running: false, open: false });
+    expect((patched[0] as Extract<Item, { kind: "card" }>).card.running).toBe(false);
+    const once = appendAuthFailure(items, "bad key", "c1");
+    const twice = appendAuthFailure(once, "bad key", "c1");
+    expect(twice.filter((i) => i.kind === "auth_failure")).toHaveLength(1);
+  });
+
+  it("ensures bubbles, finalizes pilot message, and drops worker preview", () => {
+    const withBubble = ensureAssistantStreamingBubble([], { isPlan: true });
+    expect(withBubble).toHaveLength(1);
+    expect((withBubble[0] as Extract<Item, { kind: "msg" }>).msg.streaming).toBe(true);
+
+    const workerThenPilot: Item[] = [
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "w", streaming: true, workerStream: true },
+      },
+    ];
+    const finalized = finalizePilotMessage(workerThenPilot, "answer");
+    expect(finalized).toHaveLength(1);
+    expect((finalized[0] as Extract<Item, { kind: "msg" }>).msg.text).toBe("answer");
+    expect((finalized[0] as Extract<Item, { kind: "msg" }>).msg.streaming).toBeFalsy();
+
+    const dropped = finalizeStreamingBubbleOnActionResult([
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "tmp", streaming: true, workerStream: true },
+      },
+    ]);
+    expect(dropped).toHaveLength(0);
+  });
+
+  it("action_start is idempotent and swarm_result resolves pending chips", () => {
+    let items = appendActionStartCard([], { id: "a1", goal: "g", kind: "read_file" });
+    items = appendActionStartCard(items, { id: "a1", goal: "g", kind: "read_file" });
+    expect(items.filter((i) => i.kind === "card")).toHaveLength(1);
+
+    items = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["j1"],
+        objective: "ship",
+        resolved: false,
+      },
+    ];
+    const next = applySwarmResultToItems(items, {
+      job_id: "j1",
+      applied: true,
+      files: ["a.ts"],
+      summary: "done",
+      error: null,
+    });
+    expect(next[0]).toMatchObject({ kind: "swarm_pending", resolved: true });
+    expect(next[1]).toMatchObject({ kind: "swarm_result", job_id: "j1", objective: "ship" });
+  });
+
+  it("formats notices and wait hints", () => {
+    expect(formatDistilledNotice({ skill: { status: "skipped" } })).toBeNull();
+    expect(
+      formatDistilledNotice({ skill: { status: "proposed", name: "foo" } }),
+    ).toMatch(/proposed 1 skill/);
+    expect(formatWikiAutoIngestNotice(1)).toMatch(/1 page/);
+    expect(formatWikiAutoIngestNotice(2)).toMatch(/2 pages/);
+    expect(truncateWaitHint("")).toBeNull();
+    expect(truncateWaitHint("x".repeat(80))?.endsWith("…")).toBe(true);
+    expect(shouldPaintThinking({ text: "  ", delta: false }).painting).toBe(false);
+    expect(shouldPaintThinking({ text: "a", delta: true }).painting).toBe(true);
+    expect(workspaceRootFromActionResult({ path: "/repo" }, "(workspace root)")).toBe("/repo");
+    expect(appendCommandBlocked([], { command: "rm" })[0].kind).toBe("command_blocked");
+  });
+});
+
+describe("sessionHydrate module", () => {
+  it("collects and merges artifacts; empty-session switch keeps prior rows", () => {
+    const display = [
+      {
+        type: "card",
+        result: {
+          artifacts: [
+            { type: "diff", headline: "a" },
+            { type: "diff", headline: "a" },
+            { type: "note", headline: "b" },
+          ],
+        },
+      },
+    ];
+    const collected = collectDisplayArtifacts(display);
+    // collect mirrors display walk (no dedupe); mergeUniqueArtifacts dedupes.
+    expect(collected).toHaveLength(3);
+    expect(mergeUniqueArtifacts(collected, [{ type: "note", headline: "b" }])).toHaveLength(2);
+    expect(emptySessionSwitchState(0)).toEqual({ clearItems: true, stale: false });
+    expect(emptySessionSwitchState(3)).toEqual({ clearItems: false, stale: true });
+  });
+
+  it("runner busy switch decisions preserve chrome rules", () => {
+    expect(shouldPreserveBusyStatus("executing")).toBe(true);
+    expect(shouldPreserveBusyStatus("idle")).toBe(false);
+    expect(
+      runnerBusySwitchDecision({
+        runnerState: "running",
+        localStreamActive: false,
+        switchedSession: true,
+      }).kind,
+    ).toBe("busy");
+    expect(
+      runnerBusySwitchDecision({
+        runnerState: "idle",
+        localStreamActive: false,
+        switchedSession: true,
+      }).kind,
+    ).toBe("idle");
+    expect(
+      runnerBusySwitchDecision({
+        runnerState: "running",
+        localStreamActive: true,
+        switchedSession: true,
+      }).kind,
+    ).toBe("noop");
+  });
+});
+
+describe("composerSend module", () => {
+  it("gates enter/send and formats slash replies", () => {
+    expect(composerEnterAction({ busy: true, metaOrCtrl: true })).toBe("queue");
+    expect(composerEnterAction({ busy: true, metaOrCtrl: false })).toBe("send");
+    expect(
+      executeSendGate({ transcriptStale: true, resume: false, userStopped: false }),
+    ).toBe("stale");
+    expect(
+      executeSendGate({ transcriptStale: false, resume: true, userStopped: true }),
+    ).toBe("stopped_resume");
+    expect(shouldBlockEmptySend({ transcriptStale: false, text: "  ", imageCount: 0 })).toBe(true);
+    expect(shouldBlockEmptySend({ transcriptStale: false, text: "", imageCount: 1 })).toBe(false);
+    expect(formatHelpSlashReply([{ cmd: "/help", desc: "Help" }])).toMatch(/\/help/);
+    expect(formatCompactCompleteMessage(10, 4)).toMatch(/10 -> 4/);
+    expect(editNoticeAfterSend(true)).toMatch(/Revert/);
+    expect(editNoticeAfterSend(false)).toBeNull();
   });
 });

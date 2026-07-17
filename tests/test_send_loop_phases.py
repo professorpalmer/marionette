@@ -152,7 +152,6 @@ def test_send_locked_inner_no_longer_inlines_local_branches():
     assert "LOCAL_ACTION_KINDS" in segment
 
 
-
 def test_run_stream_puts_done_on_success():
     q: queue.Queue = queue.Queue()
     resp = SimpleNamespace(text="ok")
@@ -652,7 +651,7 @@ def test_local_action_kinds_covers_workspace_mutate_browse_mcp():
     assert "call_mcp" in LOCAL_ACTION_KINDS
     assert "manage_mcp" in LOCAL_ACTION_KINDS
     assert "browser_navigate" in LOCAL_ACTION_KINDS
-    # Delegation / swarm stay in the kernel.
+    # Delegation / swarm live in send_loop_dispatch, not local kinds.
     assert "run_swarm" not in LOCAL_ACTION_KINDS
     assert "run_implement" not in LOCAL_ACTION_KINDS
     assert "read_file" not in LOCAL_ACTION_KINDS

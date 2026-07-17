@@ -11,7 +11,8 @@ Public orchestration stays on SendLoopMixin.send / _send_locked /
 _send_locked_inner; this module owns background-thread targets, prefetch
 workers, stream-queue drain, per-step usage metering, idle steer/queue
 finalization, read-only tool-result assembly, local tool-result assembly,
-auto-verify, and small pure helpers the kernel calls.
+auto-verify, and small pure helpers the kernel calls. Swarm / implement /
+parallel / route_task / memory dispatch lives in ``send_loop_dispatch``.
 """
 
 import inspect
@@ -773,10 +774,10 @@ def dispatch_local_action(
     """Assemble tool-results for LOCAL_ACTION_KINDS (workspace / mutate / browse / mcp).
 
     Mechanical lift of the per-kind local branches from ``_send_locked_inner``
-    (everything after read-only dispatch and before run_swarm / run_implement /
-    run_parallel / route_task / memory). Caller must gate on
-    ``act.kind in LOCAL_ACTION_KINDS``. Yields the same ConvEvent shapes and
-    history appends; mutates ``turn_changed_files`` on successful writes/edits.
+    (everything after read-only dispatch and before ``send_loop_dispatch``).
+    Caller must gate on ``act.kind in LOCAL_ACTION_KINDS``. Yields the same
+    ConvEvent shapes and history appends; mutates ``turn_changed_files`` on
+    successful writes/edits.
     """
     import os
 
