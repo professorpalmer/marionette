@@ -10,8 +10,8 @@ Explicit ``session`` / queue / schema args replace closure capture.
 Public orchestration stays on SendLoopMixin.send / _send_locked /
 _send_locked_inner; this module owns background-thread targets, prefetch
 workers, stream-queue drain, per-step usage metering, idle steer/queue
-finalization, read-only tool-result assembly, auto-verify, and small pure
-helpers the kernel calls.
+finalization, read-only tool-result assembly, local tool-result assembly,
+auto-verify, and small pure helpers the kernel calls.
 """
 
 import inspect
@@ -33,6 +33,16 @@ _JOB_ID_RE = re.compile(r"\b(job_[a-fA-F0-9]{12})\b")
 READ_ONLY_KINDS: frozenset[str] = frozenset({
     "read_file", "list_dir", "search_codegraph", "search_files",
     "web_search", "web_fetch", "read_pdf", "view_image", "lsp",
+})
+
+LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
+    "open_project", "relocate_session", "session_bank",
+    "write_file", "edit_file", "hash_edit", "run_command",
+    "search_tools", "search_state",
+    "browser_navigate", "browser_snapshot", "browser_click",
+    "browser_type", "browser_scroll", "browser_back",
+    "browser_get_text", "browser_screenshot",
+    "query_wiki", "call_mcp", "manage_mcp",
 })
 
 
@@ -750,3 +760,577 @@ def run_auto_verify(
             session._history.append({"role": "user", "content": feedback})
             return (auto_verify_iters, True)
     return (auto_verify_iters, False)
+
+
+def dispatch_local_action(
+    session: Any,
+    act: PilotAction,
+    aid: str,
+    is_native: bool,
+    turn_changed_files: list,
+    act_goal: Any = None,
+) -> Iterator[Any]:
+    """Assemble tool-results for LOCAL_ACTION_KINDS (workspace / mutate / browse / mcp).
+
+    Mechanical lift of the per-kind local branches from ``_send_locked_inner``
+    (everything after read-only dispatch and before run_swarm / run_implement /
+    run_parallel / route_task / memory). Caller must gate on
+    ``act.kind in LOCAL_ACTION_KINDS``. Yields the same ConvEvent shapes and
+    history appends; mutates ``turn_changed_files`` on successful writes/edits.
+    """
+    import os
+
+    from .conversation import ConvEvent, _mcp_result_text
+    from .tool_dispatch import is_safe_path
+
+    if act_goal is None:
+        act_goal = action_display_goal(act)
+
+    # ---- open_project branch --------------------------------------
+    if act.kind == "open_project":
+        target_repo = (act.path or "").strip()
+        if not target_repo:
+            err_msg = "Error: path is required for open_project action"
+            yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+            session._append_action_result(act, aid, err_msg, is_native)
+            return
+        if not os.path.isdir(target_repo):
+            err_msg = f"Error: path '{target_repo}' is not an existing directory"
+            yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+            session._append_action_result(act, aid, err_msg, is_native)
+            return
+
+        # Update active configuration and environment -- but never
+        # let an agent open_project yank the workspace onto the
+        # Marionette app checkout itself.
+        try:
+            from harness.server import _cfg, _record_recent_workspace, _is_app_install_root
+            if _is_app_install_root(target_repo):
+                err_msg = (
+                    "Refusing to open the Marionette app checkout as a "
+                    "project; pick a user repository instead."
+                )
+                yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+                session._append_action_result(act, aid, err_msg, is_native, ok=False)
+                return
+            session.config.repo = target_repo
+            os.environ["HARNESS_REPO"] = target_repo
+            _cfg.repo = target_repo
+            _record_recent_workspace(target_repo)
+        except Exception:
+            session.config.repo = target_repo
+            os.environ["HARNESS_REPO"] = target_repo
+
+        basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
+        yield ConvEvent("action_result", {
+            "id": aid,
+            "num": 1,
+            "types": ["workspace"],
+            "adapter": "local",
+            "mode": "tool",
+            "path": os.path.abspath(target_repo),
+            "workspace_root": os.path.abspath(target_repo),
+            "artifacts": [{"type": "workspace", "headline": f"Opened project: {basename}"}]
+        })
+        session._append_action_result(act, aid, f"Opened project: {basename}", is_native)
+        return
+
+    # ---- relocate_session branch ----------------------------------
+    if act.kind == "relocate_session":
+        args = act.arguments or {}
+        target_repo = (
+            (act.path or "").strip()
+            or (act.repo or "").strip()
+            or (args.get("workspace_root") or args.get("path") or args.get("repo") or "")
+        ).strip()
+        sid = (args.get("session_id") or args.get("id") or "").strip()
+        title = args.get("title")
+        if not target_repo:
+            err_msg = "Error: workspace_root is required for relocate_session"
+            yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+            session._append_action_result(act, aid, err_msg, is_native, ok=False)
+            return
+        try:
+            from harness.server import _handle_session_relocate
+            status, payload = _handle_session_relocate({
+                "workspace_root": target_repo,
+                "session_id": sid,
+                "title": title if isinstance(title, str) else None,
+            })
+        except Exception as e:
+            err_msg = f"Error relocating session: {e}"
+            yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+            session._append_action_result(act, aid, err_msg, is_native, ok=False)
+            return
+        if status != 200 or not payload.get("ok"):
+            err_msg = payload.get("error") or f"relocate failed ({status})"
+            yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+            session._append_action_result(act, aid, err_msg, is_native, ok=False)
+            return
+        # Keep this runner's config.repo aligned with the server.
+        try:
+            session.config.repo = target_repo
+            os.environ["HARNESS_REPO"] = target_repo
+        except Exception:
+            pass
+        abs_target = os.path.abspath(target_repo)
+        basename = os.path.basename(abs_target) or "Workspace"
+        headline = f"Moved conversation into {basename}"
+        yield ConvEvent("action_result", {
+            "id": aid,
+            "num": 1,
+            "types": ["workspace"],
+            "adapter": "local",
+            "mode": "tool",
+            "path": abs_target,
+            "workspace_root": abs_target,
+            "session_id": payload.get("active") or sid,
+            "artifacts": [{"type": "workspace", "headline": headline}],
+        })
+        session._append_action_result(
+            act, aid,
+            f"{headline}\nsession={payload.get('active')} workspace_root={target_repo}",
+            is_native,
+        )
+        return
+
+    # ---- session_bank branch --------------------------------------
+    if act.kind == "session_bank":
+        args = act.arguments or {}
+        query = (act.query or args.get("query") or "").strip()
+        sid = (args.get("session_id") or args.get("id") or "").strip()
+        try:
+            limit = int(args.get("limit") if args.get("limit") is not None else (act.limit or 20))
+        except (TypeError, ValueError):
+            limit = 20
+        try:
+            from harness.server import _sessions, _sessions_state_dir
+            from harness.sessions import load_transcript
+            if sid:
+                rows = [r for r in _sessions.list() if r.get("id") == sid]
+                meta = rows[0] if rows else {"id": sid, "title": "(unknown)"}
+                data = load_transcript(_sessions_state_dir(), sid)
+                history = []
+                if isinstance(data, dict):
+                    history = data.get("history") or data.get("display") or []
+                elif isinstance(data, list):
+                    history = data
+                lines = [
+                    f"Session {sid}: {meta.get('title') or '(untitled)'}",
+                    f"workspace_root: {meta.get('workspace_root') or meta.get('repo') or ''}",
+                    f"created: {meta.get('created')}",
+                    f"messages: {len(history)}",
+                    "",
+                ]
+                for msg in history[:40]:
+                    if not isinstance(msg, dict):
+                        continue
+                    role = msg.get("role") or msg.get("type") or "?"
+                    content = msg.get("content") or msg.get("text") or ""
+                    if isinstance(content, list):
+                        parts = []
+                        for p in content:
+                            if isinstance(p, dict) and p.get("type") == "text":
+                                parts.append(str(p.get("text") or ""))
+                            elif isinstance(p, str):
+                                parts.append(p)
+                        content = "\n".join(parts)
+                    text = str(content).strip().replace("\n", " ")
+                    if len(text) > 240:
+                        text = text[:237] + "..."
+                    if text:
+                        lines.append(f"[{role}] {text}")
+                val = "\n".join(lines)
+            else:
+                bank = _sessions.list_bank(
+                    query=query,
+                    limit=limit,
+                    state_dir=_sessions_state_dir(),
+                )
+                lines = [f"Session bank ({len(bank)}):"]
+                for row in bank:
+                    lines.append(
+                        f"- {row.get('id')} | {row.get('title') or '(untitled)'} | "
+                        f"{row.get('workspace_root') or row.get('repo') or '(no root)'} | "
+                        f"in={row.get('input_tokens', 0)} out={row.get('output_tokens', 0)}"
+                    )
+                val = "\n".join(lines) if bank else "No sessions found."
+        except Exception as e:
+            err_msg = f"session_bank failed: {e}"
+            yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+            session._append_action_result(act, aid, err_msg, is_native, ok=False)
+            return
+        yield ConvEvent("action_result", {
+            "id": aid, "num": 1, "types": ["session_bank"], "adapter": "local", "mode": "tool",
+            "artifacts": [{"type": "session_bank", "headline": f"session_bank: {sid or query or 'list'}"}],
+        })
+        session._append_action_result(act, aid, f"(session_bank returned)\n{val}", is_native)
+        return
+
+    # ---- write_file branch ----------------------------------------
+    if act.kind == "write_file":
+        if not session.config.repo:
+            error_msg = "No workspace directory (config.repo) is open."
+            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+            session._append_action_result(act, aid, f"(write_file {aid} failed: {error_msg})", is_native)
+            return
+        target_path = act.path
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(session.config.repo, target_path)
+        if not is_safe_path(target_path, session.config.repo):
+            error_msg = f"Path traversal attempt rejected: {act.path}"
+            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+            session._append_action_result(act, aid, f"(write_file {aid} failed: {error_msg})", is_native)
+            return
+        try:
+            ok, status, msg = session._do_write_file(act, write=False)
+            if not ok:
+                yield ConvEvent("action_result", {"id": aid, "error": msg})
+                session._append_action_result(act, aid, f"(write_file {act.path} failed: {msg})", is_native)
+                return
+
+            try:
+                cp_id = session._checkpoints.snapshot(
+                    label=f"Before writing {act.path}",
+                    trigger="write_file",
+                    session_id=session.harness_session_id or None,
+                )
+                if cp_id:
+                    yield ConvEvent("checkpoint", {
+                        "id": cp_id,
+                        "trigger": "write_file",
+                        "label": f"Before writing {act.path}"
+                    })
+            except Exception as cp_err:
+                import sys
+                print(f"Checkpoint error before write_file: {cp_err}", file=sys.stderr)
+
+            ok, status, msg = session._do_write_file(act, write=True)
+            if not ok:
+                yield ConvEvent("action_result", {"id": aid, "error": msg})
+                session._append_action_result(act, aid, f"(write_file {act.path} failed: {msg})", is_native)
+                return
+
+            bytes_written = msg
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "file", "headline": f"Wrote {bytes_written} bytes to {act.path}"}],
+            })
+            session._append_action_result(act, aid, f"(write_file {act.path} successfully wrote {bytes_written} bytes)", is_native)
+            turn_changed_files.append(target_path)
+        except Exception as e:
+            yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+            session._append_action_result(act, aid, f"(write_file {act.path} failed: {e})", is_native)
+        return
+    # ---- edit_file branch -----------------------------------------
+    if act.kind == "edit_file":
+        if not session.config.repo:
+            error_msg = "No workspace directory (config.repo) is open."
+            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+            session._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native)
+            return
+        target_path = act.path
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(session.config.repo, target_path)
+        if not is_safe_path(target_path, session.config.repo):
+            error_msg = f"Path traversal attempt rejected: {act.path}"
+            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+            session._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native)
+            return
+        try:
+            ok, status, msg = session._do_edit_file(act, write=False)
+            if not ok:
+                yield ConvEvent("action_result", {"id": aid, "error": msg})
+                session._append_action_result(act, aid, f"(edit_file {act.path} failed: {msg})", is_native)
+                return
+
+            try:
+                cp_id = session._checkpoints.snapshot(
+                    label=f"Before editing {act.path}",
+                    trigger="edit_file",
+                    session_id=session.harness_session_id or None,
+                )
+                if cp_id:
+                    yield ConvEvent("checkpoint", {
+                        "id": cp_id,
+                        "trigger": "edit_file",
+                        "label": f"Before editing {act.path}"
+                    })
+            except Exception as cp_err:
+                import sys
+                print(f"Checkpoint error before edit_file: {cp_err}", file=sys.stderr)
+
+            ok, status, msg = session._do_edit_file(act, write=True)
+            if not ok:
+                yield ConvEvent("action_result", {"id": aid, "error": msg})
+                session._append_action_result(act, aid, f"(edit_file {act.path} failed: {msg})", is_native)
+                return
+
+            headline = msg
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "file", "headline": headline}],
+            })
+            session._append_action_result(act, aid, f"(edit_file {act.path} successfully edited: {headline})", is_native)
+            turn_changed_files.append(target_path)
+        except Exception as e:
+            yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+            session._append_action_result(act, aid, f"(edit_file {act.path} failed: {e})", is_native)
+        return
+    # ---- hash_edit branch -----------------------------------------
+    if act.kind == "hash_edit":
+        if not session.config.repo:
+            error_msg = "No workspace directory (config.repo) is open."
+            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+            session._append_action_result(act, aid, f"(hash_edit {aid} failed: {error_msg})", is_native)
+            return
+        target_path = act.path
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(session.config.repo, target_path)
+        if not is_safe_path(target_path, session.config.repo):
+            error_msg = f"Path traversal attempt rejected: {act.path}"
+            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+            session._append_action_result(act, aid, f"(hash_edit {aid} failed: {error_msg})", is_native)
+            return
+        try:
+            ok, status, msg = session._do_hash_edit(act, write=False)
+            if not ok:
+                yield ConvEvent("action_result", {"id": aid, "error": msg})
+                session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {msg})", is_native)
+                return
+
+            try:
+                cp_id = session._checkpoints.snapshot(
+                    label=f"Before hash_edit {act.path}",
+                    trigger="hash_edit",
+                    session_id=session.harness_session_id or None,
+                )
+                if cp_id:
+                    yield ConvEvent("checkpoint", {
+                        "id": cp_id,
+                        "trigger": "hash_edit",
+                        "label": f"Before hash_edit {act.path}"
+                    })
+            except Exception as cp_err:
+                import sys
+                print(f"Checkpoint error before hash_edit: {cp_err}", file=sys.stderr)
+
+            ok, status, msg = session._do_hash_edit(act, write=True)
+            if not ok:
+                yield ConvEvent("action_result", {"id": aid, "error": msg})
+                session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {msg})", is_native)
+                return
+
+            headline = f"hash_edit {act.path}: {msg}"
+            hash_edit_result = {
+                "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "file", "headline": headline}],
+            }
+            # AST preview (round 6, opt-in): structural diff
+            # computed by _do_hash_edit on the write pass.
+            ast_preview = getattr(self, "_last_ast_preview", None)
+            if ast_preview and ast_preview.get("available"):
+                hash_edit_result["ast_preview"] = ast_preview
+            session._last_ast_preview = None
+            yield ConvEvent("action_result", hash_edit_result)
+            session._append_action_result(act, aid, f"(hash_edit {act.path} successfully applied: {headline})", is_native)
+            turn_changed_files.append(target_path)
+        except Exception as e:
+            yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+            session._append_action_result(act, aid, f"(hash_edit {act.path} failed: {e})", is_native)
+        return
+    # ---- run_command branch ---------------------------------------
+    if act.kind == "run_command":
+        if not session.config.repo:
+            error_msg = "No workspace directory (config.repo) is open."
+            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+            session._append_action_result(act, aid, f"(run_command {aid} failed: {error_msg})", is_native)
+            return
+        # FULL-AUTO safety + cancellable execution live in
+        # ToolDispatchMixin._do_run_command; yield/append stay here.
+        ok, status, val = session._do_run_command(act)
+        if not ok:
+            if status == "blocked":
+                block = val if isinstance(val, dict) else {"message": str(val)}
+                block_msg = block.get("message") or str(val)
+                yield ConvEvent("command_blocked", {
+                    "id": aid, "command": act.command,
+                    "category": block.get("category"),
+                    "reason": block.get("reason"),
+                    "matched": block.get("matched"),
+                })
+                session._append_action_result(act, aid, f"(run_command {aid} {block_msg})", is_native)
+            else:
+                yield ConvEvent("action_result", {"id": aid, "error": val})
+                session._append_action_result(act, aid, f"(run_command {aid} failed: {val})", is_native)
+            return
+        output = val["output"]
+        exit_code = val["exit_code"]
+        yield ConvEvent("action_result", {
+            "id": aid, "num": 1, "types": ["command"], "adapter": "local", "mode": "tool",
+            "artifacts": [{"type": "command", "headline": f"Command exited with {exit_code}"}],
+        })
+        session._append_action_result(act, aid, f"(run_command '{act.command}' completed with exit code {exit_code})\n{output}", is_native)
+        return
+    # ---- search_tools branch ---------------------------------------
+    if act.kind == "search_tools":
+        try:
+            ok, status, val = session._do_search_tools(act)
+        except Exception as exc:
+            ok, status, val = False, "exception", str(exc)
+
+        if ok:
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["search_tools"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "search_tools", "headline": f"Tool search: {act.query or 'activate'}"}],
+            })
+            session._append_action_result(act, aid, f"(search_tools returned)\n{val}", is_native)
+        else:
+            yield ConvEvent("action_result", {"id": aid, "error": val})
+            session._append_action_result(act, aid, f"(search_tools failed: {val})", is_native)
+        return
+    # ---- search_state branch ---------------------------------------
+    if act.kind == "search_state":
+        try:
+            ok, status, val = session._do_search_state(act)
+        except Exception as exc:
+            ok, status, val = False, "exception", str(exc)
+
+        if ok:
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["search_state"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "search_state", "headline": f"State search: {act.query}"}],
+            })
+            session._append_action_result(act, aid, f"(search_state returned)\n{val}", is_native)
+        else:
+            yield ConvEvent("action_result", {"id": aid, "error": val})
+            session._append_action_result(act, aid, f"(search_state failed: {val})", is_native)
+        return
+    # ---- native browser / computer-use tools ----------------------
+    if act.kind in ("browser_navigate", "browser_snapshot", "browser_click",
+                    "browser_type", "browser_scroll", "browser_back",
+                    "browser_get_text", "browser_screenshot"):
+        try:
+            from . import browser as _browser
+            bargs = act.arguments or {}
+            if act.kind == "browser_navigate":
+                res = _browser.browser_navigate(bargs.get("url") or act.url or "")
+            elif act.kind == "browser_snapshot":
+                res = _browser.browser_snapshot()
+            elif act.kind == "browser_click":
+                res = _browser.browser_click(bargs.get("ref") or "")
+            elif act.kind == "browser_type":
+                res = _browser.browser_type(bargs.get("ref") or "", bargs.get("text") or "")
+            elif act.kind == "browser_scroll":
+                res = _browser.browser_scroll(bargs.get("direction") or "down")
+            elif act.kind == "browser_back":
+                res = _browser.browser_back()
+            elif act.kind == "browser_get_text":
+                res = _browser.browser_get_text()
+            else:  # browser_screenshot
+                res = _browser.browser_screenshot()
+        except Exception as e:
+            res = f"Error: {e}"
+        yield ConvEvent("action_result", {
+            "id": aid, "num": 1, "types": [act.kind], "adapter": "local", "mode": "tool",
+            "artifacts": [{"type": act.kind, "headline": act.kind}],
+        })
+        session._append_action_result(act, aid, f"({act.kind} returned)\n{res}", is_native)
+        return
+    # ---- query_wiki branch ----------------------------------------
+    if act.kind == "query_wiki":
+        question = act.arguments.get("question") or ""
+        if not session._wiki.configured:
+            res = "wiki not configured"
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["query_wiki"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "query_wiki", "headline": f"Wiki: {question}"}],
+            })
+            session._append_action_result(act, aid, f"(query_wiki '{question}' returned)\n{res}", is_native)
+            return
+
+        try:
+            res = session._wiki.query(question)
+            # Grounded synthesis: fold the raw wiki result through
+            # harness.nl_memory.answer_from_memory so the surfaced
+            # text is a concise, cited answer instead of a raw dump.
+            # Everything here is best-effort: on ANY failure we fall
+            # straight back to the exact prior behavior (raw res).
+            surfaced = f"(query_wiki '{question}' returned)\n{res}"
+            try:
+                grounded = session._grounded_wiki_answer(question, res)
+                if grounded:
+                    surfaced = (
+                        f"(query_wiki '{question}' returned)\n"
+                        f"{grounded}\n\n"
+                        f"--- raw wiki result ---\n{res}"
+                    )
+            except Exception:
+                # Never regress the raw-dump path.
+                surfaced = f"(query_wiki '{question}' returned)\n{res}"
+            yield ConvEvent("action_result", {
+                "id": aid, "num": 1, "types": ["query_wiki"], "adapter": "local", "mode": "tool",
+                "artifacts": [{"type": "query_wiki", "headline": f"Wiki: {question}"}],
+            })
+            session._append_action_result(act, aid, surfaced, is_native)
+        except Exception as e:
+            yield ConvEvent("action_result", {"id": aid, "error": str(e)})
+            session._append_action_result(act, aid, f"(query_wiki '{question}' failed: {e})", is_native)
+        return
+    # ---- MCP tool call branch -------------------------------------
+    if act.kind == "call_mcp":
+        if session._mcp is None:
+            yield ConvEvent("action_result", {"id": aid, "error": "MCP not available"})
+            session._append_action_result(act, aid, f"(mcp {aid} unavailable)", is_native)
+            return
+        try:
+            if act.tool:
+                session._tool_catalog.activate([act.tool])
+            out = session._mcp.call(act.tool, act.arguments)
+            text = _mcp_result_text(out)
+        except Exception as e:
+            yield ConvEvent("action_result", {"id": aid, "error": f"mcp: {e}"})
+            session._append_action_result(act, aid, f"(mcp {act.tool} failed: {e})", is_native)
+            return
+        yield ConvEvent("action_result", {
+            "id": aid, "tool": act.tool, "num": 1,
+            "types": ["mcp"], "adapter": "mcp", "mode": "tool",
+            "artifacts": [{"type": "mcp", "headline": f"{act.tool}: {text[:120]}"}],
+        })
+        session._append_action_result(act, aid, f"(mcp {act.tool} returned)\n{text[:2000]}", is_native)
+        return
+    if act.kind == "manage_mcp":
+        if session._mcp is None:
+            yield ConvEvent("action_result", {"id": aid, "error": "MCP not available"})
+            session._append_action_result(act, aid, "(manage_mcp unavailable)", is_native)
+            return
+        import json as _json_mcp
+        args = act.arguments if isinstance(act.arguments, dict) else {}
+        try:
+            out = session._mcp.manage(
+                str(args.get("action") or ""),
+                name=str(args.get("name") or act.path or ""),
+                url=str(args.get("url") or act.url or ""),
+                command=str(args.get("command") or act.command or ""),
+                args=args.get("args") if isinstance(args.get("args"), list) else None,
+                env=args.get("env") if isinstance(args.get("env"), dict) else None,
+            )
+            text = _json_mcp.dumps(out, indent=2)[:4000]
+        except Exception as e:
+            yield ConvEvent("action_result", {"id": aid, "error": f"manage_mcp: {e}"})
+            session._append_action_result(act, aid, f"(manage_mcp failed: {e})", is_native)
+            return
+        headline = act_goal or "manage_mcp"
+        yield ConvEvent("action_result", {
+            "id": aid, "num": 1,
+            "types": ["manage_mcp"], "adapter": "mcp", "mode": "tool",
+            "artifacts": [{"type": "manage_mcp", "headline": headline}],
+        })
+        session._append_action_result(
+            act, aid, f"(manage_mcp {headline} returned)\n{text}", is_native,
+        )
+        return
+
+    err = f"Unhandled local action kind: {act.kind}"
+    yield ConvEvent("action_result", {"id": aid, "error": err})
+    session._append_action_result(act, aid, err, is_native)

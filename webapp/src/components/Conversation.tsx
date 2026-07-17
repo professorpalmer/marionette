@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
-import { Loader2, Send, Zap, Square, Folder, ChevronDown, ChevronUp, GripVertical, Trash2, GitBranch, ListChecks, Pencil, FileText, X, Code, Share2, Image as ImageIcon, Brain } from "lucide-react";
+import { Loader2, Send, Zap, Square, ChevronDown, ChevronUp, GripVertical, Trash2, ListChecks, Pencil, FileText, X, Code, Share2, Image as ImageIcon, Brain } from "lucide-react";
 import { api, type Config } from "../lib/api";
 import { panelOpacityClass } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
 import PilotPicker from "./PilotPicker";
-import { pickFolder, revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../lib/transport";
+import { revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../lib/transport";
 import FileEditorPane from "./FileEditorPane";
-import { TranscriptList, type Item, type Card } from "./TranscriptList";
+import { TranscriptList, type Item, type Card, type Msg } from "./TranscriptList";
 import {
   deriveBusyProgress,
   turnHasInvestigationActivity,
@@ -31,6 +31,7 @@ import {
   upsertStreamingThinking,
   upsertToolPrep,
   clearToolPrepPlaceholders,
+  newThinkingId,
 } from "./conversation/thinkingToolPrep";
 import {
   nextAppliedCursor,
@@ -46,9 +47,25 @@ import {
   CHAT_EVENTS_POLL_MS,
 } from "./conversation/chatEvents";
 import {
-  isWorkspaceOpenLeaseExhausted,
-  formatWorkspaceOpenLeaseExhaustedMessage,
-} from "./conversation/leaseExhausted";
+  type MentionListingCap,
+  formatMentionListingCapMessage,
+  mergeSlashCommands,
+  isBuiltInSlashCommand,
+} from "./conversation/slashCommands";
+import {
+  pathIsUnder,
+  filterTabsAfterDelete,
+  remapTabsAfterRename,
+  remapActiveTabAfterRename,
+} from "./conversation/tabPaths";
+import {
+  findStreamingBubbleIdx,
+  appendStreamingTextToItems,
+  typewriterCharsPerFrame,
+} from "./conversation/streamBubbles";
+import { derivePillStatus } from "./conversation/pillStatus";
+import StatusPill from "./conversation/StatusPill";
+import WorkspaceChip from "./conversation/WorkspaceChip";
 
 // Re-export pure helpers so existing test / LeftRail import paths keep working.
 export {
@@ -72,6 +89,7 @@ export {
   type ToolPrepOpts,
   upsertToolPrep,
   clearToolPrepPlaceholders,
+  newThinkingId,
 } from "./conversation/thinkingToolPrep";
 export {
   nextAppliedCursor,
@@ -91,30 +109,33 @@ export {
   formatWorkspaceOpenLeaseExhaustedMessage,
 } from "./conversation/leaseExhausted";
 export { composerStatusFromRunner } from "./conversation/composerStatus";
-
-const SLASH_COMMANDS = [
-  { cmd: "/clear", desc: "Clear visible transcript" },
-  { cmd: "/new", desc: "Clear visible transcript (new session)" },
-  { cmd: "/compact", desc: "Trigger manual context compaction" },
-  { cmd: "/model", desc: "Focus model picker to switch models" },
-  { cmd: "/help", desc: "Render a small help note" }
-];
-
-type MentionListingCap = {
-  total?: number;
-  capped?: number;
-};
-
-function formatMentionListingCapMessage(meta: MentionListingCap): string {
-  const { total, capped } = meta;
-  if (typeof total === "number" && typeof capped === "number" && total > capped) {
-    return `Showing ${capped.toLocaleString()} of ${total.toLocaleString()} files`;
-  }
-  if (typeof capped === "number") {
-    return `File listing capped at ${capped.toLocaleString()} files`;
-  }
-  return "File listing is capped for large workspaces";
-}
+export {
+  SLASH_COMMANDS,
+  formatMentionListingCapMessage,
+  mergeSlashCommands,
+  isBuiltInSlashCommand,
+} from "./conversation/slashCommands";
+export {
+  normalizeTabPath,
+  pathIsUnder,
+  filterTabsAfterDelete,
+  remapTabsAfterRename,
+  remapActiveTabAfterRename,
+} from "./conversation/tabPaths";
+export {
+  findStreamingBubbleIdx,
+  appendStreamingTextToItems,
+  typewriterCharsPerFrame,
+} from "./conversation/streamBubbles";
+export { derivePillStatus } from "./conversation/pillStatus";
+export { workspaceLeafName } from "./conversation/workspaceDisplay";
+export {
+  statusPillLabel,
+  statusPillTextClass,
+  statusPillDotClass,
+} from "./conversation/StatusPill";
+export { default as StatusPill } from "./conversation/StatusPill";
+export { default as WorkspaceChip } from "./conversation/WorkspaceChip";
 
 export default function Conversation({
   config,
@@ -203,14 +224,6 @@ export default function Conversation({
     setActiveTab("chat");
   };
 
-  const normalizeTabPath = (p: string) => p.replace(/\\/g, "/");
-
-  const pathIsUnder = (candidate: string, root: string) => {
-    const c = normalizeTabPath(candidate);
-    const r = normalizeTabPath(root);
-    return c === r || c.startsWith(r + "/");
-  };
-
   const handleTabDirtyChange = (path: string, isDirty: boolean) => {
     setOpenTabs((prev) =>
       prev.map((t) => (t.path === path ? { ...t, isDirty } : t))
@@ -244,33 +257,15 @@ export default function Conversation({
     const handleDeleted = (e: CustomEvent<{ path: string }>) => {
       const deleted = e.detail?.path;
       if (!deleted) return;
-      setOpenTabs((prev) => prev.filter((t) => !pathIsUnder(t.path, deleted)));
+      setOpenTabs((prev) => filterTabsAfterDelete(prev, deleted));
       setActiveTab((cur) => (pathIsUnder(cur, deleted) ? "chat" : cur));
     };
     const handleRenamed = (e: CustomEvent<{ from: string; to: string }>) => {
       const from = e.detail?.from;
       const to = e.detail?.to;
       if (!from || !to) return;
-      setOpenTabs((prev) =>
-        prev.map((t) => {
-          if (normalizeTabPath(t.path) === normalizeTabPath(from)) {
-            return { ...t, path: to };
-          }
-          const norm = normalizeTabPath(t.path);
-          const fromNorm = normalizeTabPath(from);
-          if (norm.startsWith(fromNorm + "/")) {
-            return { ...t, path: to + t.path.slice(from.length) };
-          }
-          return t;
-        }),
-      );
-      setActiveTab((cur) => {
-        if (normalizeTabPath(cur) === normalizeTabPath(from)) return to;
-        const norm = normalizeTabPath(cur);
-        const fromNorm = normalizeTabPath(from);
-        if (norm.startsWith(fromNorm + "/")) return to + cur.slice(from.length);
-        return cur;
-      });
+      setOpenTabs((prev) => remapTabsAfterRename(prev, from, to));
+      setActiveTab((cur) => remapActiveTabAfterRename(cur, from, to));
     };
     window.addEventListener("harness-file-deleted", handleDeleted as EventListener);
     window.addEventListener("harness-file-renamed", handleRenamed as EventListener);
@@ -364,15 +359,13 @@ export default function Conversation({
     && (status === "thinking" || status === "streaming");
   // Runner/SSE can briefly report idle while a card is still running (or the
   // reverse). Prefer the investigation / open-turn truth for the header pill.
-  const pillStatus: string = transcriptStale
-    ? "switching…"
-    : answerChromeIdle
-      ? "idle"
-      : liveInvestigation && (status === "idle" || status === "done")
-        ? "executing"
-        : turnOpen && (status === "idle" || status === "done")
-          ? "thinking"
-          : status;
+  const pillStatus: string = derivePillStatus({
+    transcriptStale,
+    answerChromeIdle,
+    liveInvestigation,
+    turnOpen,
+    status,
+  });
   // Same latch as agentLoopOpen — Steer/Stop stay up for the whole turn.
   const composerBusy = agentLoopOpen;
   // True while this Conversation owns a live SSE stream for the active session.
@@ -504,13 +497,7 @@ export default function Conversation({
 
   const [customCommands, setCustomCommands] = useState<{ name: string; description: string; scope: string }[]>([]);
 
-  const allSlashCommands = [
-    ...SLASH_COMMANDS,
-    ...customCommands.map(c => ({
-      cmd: "/" + c.name,
-      desc: c.description + " (custom)"
-    }))
-  ];
+  const allSlashCommands = mergeSlashCommands(customCommands);
 
   const fetchCustomCommands = () => {
     api.listCommands()
@@ -1940,37 +1927,11 @@ export default function Conversation({
   );
 
   // Append decoded text to the streaming assistant bubble (one state update).
-  // Find the open streaming bubble scanning back PAST decoration items
-  // (reasoning rows, tool cards, codegraph chips) that may land after it while
-  // the typewriter is still draining. Only checking the very last item split
-  // the stream into a second bubble whenever a `thinking` event arrived
-  // mid-drain -- the classic "same message posted twice around a reasoning
-  // row" bug on models that emit reasoning (deepseek et al).
-  const findStreamingBubbleIdx = (p: Item[]): number => {
-    for (let i = p.length - 1; i >= 0; i--) {
-      const it = p[i];
-      if (it.kind === "card" || it.kind === "thinking" || it.kind === "tool_prep" || it.kind === "codegraph_context") continue;
-      if (it.kind === "msg") {
-        const m = (it as { kind: "msg"; msg: Msg }).msg;
-        if (m.role === "assistant" && m.streaming) return i;
-      }
-      break;
-    }
-    return -1;
-  };
-
+  // findStreamingBubbleIdx scans back past decoration items so mid-drain
+  // thinking/tool events do not split the stream into a second bubble.
   const appendStreamingText = (chunk: string) => {
     if (!chunk) return;
-    setItems((p) => {
-      const idx = findStreamingBubbleIdx(p);
-      if (idx >= 0) {
-        const bubble = p[idx] as { kind: "msg"; msg: Msg };
-        const updated = [...p];
-        updated[idx] = { kind: "msg", msg: { ...bubble.msg, text: bubble.msg.text + chunk } };
-        return updated;
-      }
-      return [...p, { kind: "msg", msg: { role: "assistant", text: chunk, streaming: true, isPlan: planTurnRef.current } }];
-    });
+    setItems((p) => appendStreamingTextToItems(p, chunk, { isPlan: planTurnRef.current }));
   };
 
   // Drain the typewriter buffer at a steady cadence. While the stream is live we
@@ -1983,16 +1944,8 @@ export default function Conversation({
       if (!typeDoneRef.current) typeRafRef.current = requestAnimationFrame(pumpTypewriter);
       return;
     }
-    // Reveal speed. A fixed live cadence (3 chars/frame ~= 180 cps) falls
-    // arbitrarily far behind a fast agentic worker, so the visible text lags
-    // seconds-to-minutes behind reality until the final flush -- defeating the
-    // "live" stream. Make the live slice scale with the pending backlog: 3
-    // chars/frame keeps a smooth, readable floor when the buffer is small, but
-    // as it grows we drain proportionally faster so cadence stays smooth and
-    // never lags arbitrarily. On done, drain a larger slice to finish promptly.
-    const perFrame = typeDoneRef.current
-      ? Math.max(12, Math.ceil(buf.length / 4))
-      : Math.max(3, Math.ceil(buf.length / 8));
+    // Reveal speed scales with backlog (see typewriterCharsPerFrame).
+    const perFrame = typewriterCharsPerFrame(buf.length, typeDoneRef.current);
     const take = buf.slice(0, perFrame);
     typeBufRef.current = buf.slice(perFrame);
     appendStreamingText(take);
@@ -2165,25 +2118,10 @@ export default function Conversation({
             (p0.length > 0 && p0[p0.length - 1].kind === "msg" && (p0[p0.length - 1] as { kind: "msg"; msg: Msg }).msg.workerStream)
               ? p0.slice(0, -1) : p0
           );
-          // Find the pilot's open streaming bubble, scanning back PAST any tool
-          // cards / reasoning / codegraph chips that landed after it. Only
-          // checking the very last item lost the race when action_start events
-          // arrived before this finalizer: the bubble stayed streaming:true
-          // forever (so it rendered standalone, excluded from the activity fold)
-          // AND a duplicate finalized copy was appended into the fold -- the
-          // narration showed up both outside and inside the collapse.
-          let streamIdx = -1;
-          for (let i = p.length - 1; i >= 0; i--) {
-            const it = p[i];
-            if (it.kind === "card" || it.kind === "thinking" || it.kind === "tool_prep" || it.kind === "codegraph_context") continue;
-            if (it.kind === "msg") {
-              const m = (it as { kind: "msg"; msg: Msg }).msg;
-              if (m.role === "assistant" && m.streaming && !m.workerStream) streamIdx = i;
-            }
-            break;
-          }
+          // Finalize the pilot's open streaming bubble (skip worker previews).
+          const streamIdx = findStreamingBubbleIdx(p, { excludeWorkerStream: true });
           if (streamIdx >= 0) {
-            const lastMsg = p[streamIdx] as { kind: "msg"; msg: Msg };
+            const lastMsg = p[streamIdx] as Extract<Item, { kind: "msg" }>;
             // Finalize the streaming bubble in place. If the final text is
             // empty, KEEP whatever already streamed into the bubble (don't wipe
             // visible narration) -- only drop the bubble when it never had any
@@ -2648,7 +2586,7 @@ export default function Conversation({
         return;
       }
 
-      const isBuiltIn = SLASH_COMMANDS.some(s => s.cmd === cmd);
+      const isBuiltIn = isBuiltInSlashCommand(cmd);
       if (!isBuiltIn) {
         const customCmdName = cmd.startsWith("/") ? cmd.slice(1) : cmd;
         const isCustom = customCommands.some(c => c.name === customCmdName);
@@ -3666,131 +3604,5 @@ export default function Conversation({
 
     </main>
   );
-}
-
-
-function WorkspaceChip() {
-  const [ws, setWs] = useState<{ repo: string; branch: string; recents?: string[]; home?: string } | null>(null);
-  const [open, setOpen] = useState(false);
-  const [openError, setOpenError] = useState<string | null>(null);
-  const refresh = () => api.getWorkspace().then((w) => setWs(w as any)).catch(() => {});
-  useEffect(() => {
-    refresh();
-    const h = () => refresh();
-    window.addEventListener("harness-config-changed", h);
-    return () => window.removeEventListener("harness-config-changed", h);
-  }, []);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    const onClick = () => setOpen(false);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("click", onClick);
-    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("click", onClick); };
-  }, [open]);
-
-  // Auto-fade so a failed open doesn't leave a permanent error chip.
-  useEffect(() => {
-    if (!openError) return;
-    const id = setTimeout(() => setOpenError(null), 6000);
-    return () => clearTimeout(id);
-  }, [openError]);
-
-  const openPath = async (p: string) => {
-    setOpen(false);
-    setOpenError(null);
-    try {
-      const res = await api.openWorkspace(p);
-      if ((res as any).ok) {
-        refresh();
-        window.dispatchEvent(new Event("harness-config-changed"));
-      } else if ((res as { code?: string }).code === "lease_exhausted") {
-        setOpenError(formatWorkspaceOpenLeaseExhaustedMessage(res));
-      } else {
-        // A stale recent (deleted/moved folder) used to no-op silently here.
-        setOpenError((res as any).error || `Could not open ${base(p)}`);
-      }
-    } catch (err) {
-      if (isWorkspaceOpenLeaseExhausted(err)) {
-        setOpenError(formatWorkspaceOpenLeaseExhaustedMessage(err));
-      } else {
-        setOpenError((err as Error)?.message || `Could not open ${base(p)}`);
-      }
-    }
-  };
-  const browse = async () => {
-    const picked = await pickFolder();
-    if (picked) await openPath(picked);
-  };
-  // Split on both separators so Windows paths show the leaf dir, not C:\...\repo.
-  const base = (p: string) => {
-    if (!p) return "";
-    const home = ws?.home || "";
-    if (home && p.replace(/\\/g, "/").toLowerCase() === home.replace(/\\/g, "/").toLowerCase()) {
-      return "Home";
-    }
-    if (/[/\\]\.pmharness[/\\]home$/i.test(p.replace(/\\/g, "/"))) return "Home";
-    return p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
-  };
-  const name = ws?.repo ? base(ws.repo) : (ws?.home ? "Home" : "No folder");
-  const recents = (ws?.recents || []).filter((r) => r !== ws?.repo);
-
-  return (
-    <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] relative">
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
-        className="flex items-center gap-1 text-muted hover:text-txt transition rounded px-1 py-0.5 hover:bg-panel2/60">
-        <Folder size={11} className="text-faint" />
-        <span className="font-medium">{name}</span>
-        <ChevronDown size={11} className="text-faint" />
-      </button>
-      {ws?.branch ? <span className="text-faint flex items-center gap-0.5"><GitBranch size={10} />{ws.branch}</span> : null}
-      <span className="text-faint/70">Local</span>
-      {openError && <span className="text-risk/90 truncate max-w-[240px]" title={openError}>{openError}</span>}
-      {open && (
-        <div onClick={(e) => e.stopPropagation()}
-          className="absolute bottom-full left-0 mb-1 w-64 bg-panel border border-edge rounded-lg shadow-xl shadow-black/40 py-1 z-50">
-          {recents.length > 0 && (
-            <>
-              <div className="text-[9px] uppercase tracking-wider text-faint px-3 py-1">Recents</div>
-              {recents.map((r) => (
-                <button key={r} onClick={() => openPath(r)}
-                  className="w-full text-left px-3 py-1.5 hover:bg-panel2 transition flex flex-col">
-                  <span className="text-txt font-medium text-[11px]">{base(r)}</span>
-                  <span className="text-faint text-[9px] font-mono truncate">{r}</span>
-                </button>
-              ))}
-              <div className="border-t border-edge/50 my-1" />
-            </>
-          )}
-          <button onClick={browse}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 transition flex items-center gap-2 text-txt text-[11px]">
-            <Folder size={12} className="text-accent" /> Open Folder...
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-function StatusPill({ status, detail }: { status: string; detail?: string }) {
-  const m: Record<string, string> = {
-    idle: "text-faint", thinking: "text-accent", executing: "text-warn",
-    streaming: "text-accent",
-    done: "text-good", error: "text-risk", "switching…": "text-accent",
-  };
-  const dot: Record<string, string> = {
-    idle: "bg-faint", thinking: "bg-accent animate-pulse", executing: "bg-warn animate-pulse",
-    streaming: "bg-accent animate-pulse",
-    done: "bg-good", error: "bg-risk", "switching…": "bg-accent animate-pulse",
-  };
-  const label = detail && (status === "thinking" || status === "executing" || status === "streaming")
-    ? detail
-    : status;
-  return <span className={`text-[10.5px] flex items-center gap-1.5 min-w-0 max-w-[42ch] ${m[status] || m.idle}`} title={detail || status}>
-    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot[status] || dot.idle}`} />
-    <span className="truncate">{label}</span>
-  </span>;
 }
 

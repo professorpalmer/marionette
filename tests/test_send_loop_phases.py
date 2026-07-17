@@ -2,7 +2,7 @@
 
 Locks the extracted helper contracts (queue kinds, stream drain, metering,
 action-goal labels, prefetch pool, stdout job_id scrape, idle steer/queue
-drain, read-only tool-result assembly, auto-verify) and asserts those
+drain, read-only/local tool-result assembly, auto-verify) and asserts those
 helpers are module-level callables invoked from the mixin turn kernel — so
 unit tests can target them directly without nested closures.
 """
@@ -20,8 +20,10 @@ from unittest.mock import MagicMock
 from harness.pilot import PilotAction
 from harness.send_loop import SendLoopMixin
 from harness.send_loop_phases import (
+    LOCAL_ACTION_KINDS,
     READ_ONLY_KINDS,
     action_display_goal,
+    dispatch_local_action,
     dispatch_readonly_action,
     drain_idle_turn,
     drain_stream_queue,
@@ -45,6 +47,7 @@ PHASE_HELPERS = (
     "meter_pilot_step",
     "drain_idle_turn",
     "dispatch_readonly_action",
+    "dispatch_local_action",
     "run_auto_verify",
 )
 
@@ -98,6 +101,7 @@ def test_mixin_calls_new_phase_helpers():
     assert "run_parallel_prefetch(" in src
     assert "drain_idle_turn(" in src
     assert "dispatch_readonly_action(" in src
+    assert "dispatch_local_action(" in src
     assert "run_auto_verify(" in src
 
 
@@ -122,6 +126,30 @@ def test_send_locked_inner_no_longer_inlines_readonly_branches():
     assert "dispatch_readonly_action(" in segment
     assert "drain_idle_turn(" in segment
     assert "run_auto_verify(" in segment
+
+
+def test_send_locked_inner_no_longer_inlines_local_branches():
+    """Local tool-result assembly must live in dispatch_local_action."""
+    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    inner = None
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "SendLoopMixin":
+            for item in node.body:
+                if (
+                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and item.name == "_send_locked_inner"
+                ):
+                    inner = item
+                    break
+    assert inner is not None
+    segment = ast.get_source_segment(src, inner) or ""
+    assert "---- open_project branch" not in segment
+    assert "---- write_file branch" not in segment
+    assert "---- hash_edit branch" not in segment
+    assert "---- MCP tool call branch" not in segment
+    assert "dispatch_local_action(" in segment
+    assert "LOCAL_ACTION_KINDS" in segment
 
 
 
@@ -614,6 +642,105 @@ def test_dispatch_readonly_action_read_file_error():
     )
     events = list(dispatch_readonly_action(session, act, 0, "a1", {}, True))
     assert events[0].data.get("error") == "no repo"
+    session._append_action_result.assert_called_once()
+
+
+def test_local_action_kinds_covers_workspace_mutate_browse_mcp():
+    assert "open_project" in LOCAL_ACTION_KINDS
+    assert "write_file" in LOCAL_ACTION_KINDS
+    assert "run_command" in LOCAL_ACTION_KINDS
+    assert "call_mcp" in LOCAL_ACTION_KINDS
+    assert "manage_mcp" in LOCAL_ACTION_KINDS
+    assert "browser_navigate" in LOCAL_ACTION_KINDS
+    # Delegation / swarm stay in the kernel.
+    assert "run_swarm" not in LOCAL_ACTION_KINDS
+    assert "run_implement" not in LOCAL_ACTION_KINDS
+    assert "read_file" not in LOCAL_ACTION_KINDS
+
+
+def test_dispatch_local_action_open_project_requires_path():
+    act = PilotAction(kind="open_project", path="")
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=None),
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "a1", True, []))
+    assert events[0].data.get("error")
+    assert "path is required" in events[0].data["error"]
+    session._append_action_result.assert_called_once()
+
+
+def test_dispatch_local_action_write_file_requires_repo():
+    act = PilotAction(kind="write_file", path="a.py", content="x")
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=""),
+        _append_action_result=MagicMock(),
+        _do_write_file=MagicMock(),
+    )
+    changed: list = []
+    events = list(dispatch_local_action(session, act, "a1", False, changed))
+    assert "No workspace directory" in events[0].data.get("error", "")
+    session._do_write_file.assert_not_called()
+    assert changed == []
+
+
+def test_dispatch_local_action_write_file_success_tracks_changed(tmp_path):
+    target = tmp_path / "a.py"
+    act = PilotAction(kind="write_file", path="a.py", content="hello")
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=str(tmp_path)),
+        harness_session_id="sess",
+        _checkpoints=SimpleNamespace(snapshot=MagicMock(return_value=None)),
+        _do_write_file=MagicMock(
+            side_effect=[(True, "ok", None), (True, "ok", 5)]
+        ),
+        _append_action_result=MagicMock(),
+    )
+    changed: list = []
+    events = list(dispatch_local_action(session, act, "a9", True, changed))
+    assert events[0].kind == "action_result"
+    assert events[0].data["types"] == ["file"]
+    assert changed == [str(target)]
+    assert session._do_write_file.call_count == 2
+
+
+def test_dispatch_local_action_run_command_blocked():
+    act = PilotAction(kind="run_command", command="rm -rf /")
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        _do_run_command=MagicMock(
+            return_value=(
+                False,
+                "blocked",
+                {"message": "blocked destructive", "category": "destructive"},
+            )
+        ),
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "a3", True, []))
+    assert events[0].kind == "command_blocked"
+    assert events[0].data["command"] == "rm -rf /"
+    session._append_action_result.assert_called_once()
+
+
+def test_dispatch_local_action_call_mcp_unavailable():
+    act = PilotAction(kind="call_mcp", tool="x.y", arguments={})
+    session = SimpleNamespace(
+        _mcp=None,
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "a4", False, []))
+    assert events[0].data.get("error") == "MCP not available"
+
+
+def test_dispatch_local_action_search_tools_success():
+    act = PilotAction(kind="search_tools", query="browser")
+    session = SimpleNamespace(
+        _do_search_tools=MagicMock(return_value=(True, "ok", "found browser_*")),
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "a5", True, []))
+    assert events[0].data["types"] == ["search_tools"]
     session._append_action_result.assert_called_once()
 
 

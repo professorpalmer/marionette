@@ -2,7 +2,8 @@ import { normalizeToolKind } from "../../lib/turnProgress";
 import type { Item } from "../TranscriptList";
 
 let thinkingIdSeq = 0;
-function newThinkingId(): string {
+/** Durable id for a thinking row (exported for non-streaming inserts in Conversation). */
+export function newThinkingId(): string {
   thinkingIdSeq += 1;
   return `th-${Date.now().toString(36)}-${thinkingIdSeq}`;
 }

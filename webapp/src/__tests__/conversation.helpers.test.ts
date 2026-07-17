@@ -36,6 +36,31 @@ import {
   isWorkspaceOpenLeaseExhausted,
 } from "../components/conversation/leaseExhausted";
 import { composerStatusFromRunner } from "../components/conversation/composerStatus";
+import {
+  SLASH_COMMANDS,
+  formatMentionListingCapMessage,
+  isBuiltInSlashCommand,
+  mergeSlashCommands,
+} from "../components/conversation/slashCommands";
+import {
+  filterTabsAfterDelete,
+  normalizeTabPath,
+  pathIsUnder,
+  remapActiveTabAfterRename,
+  remapTabsAfterRename,
+} from "../components/conversation/tabPaths";
+import {
+  appendStreamingTextToItems,
+  findStreamingBubbleIdx,
+  typewriterCharsPerFrame,
+} from "../components/conversation/streamBubbles";
+import { derivePillStatus } from "../components/conversation/pillStatus";
+import { workspaceLeafName } from "../components/conversation/workspaceDisplay";
+import {
+  statusPillDotClass,
+  statusPillLabel,
+  statusPillTextClass,
+} from "../components/conversation/StatusPill";
 import type { Item } from "../components/TranscriptList";
 
 function msg(role: "user" | "assistant", text: string, streaming = false): Item {
@@ -283,5 +308,120 @@ describe("leaseExhausted + composerStatus modules", () => {
   it("composerStatusFromRunner ignores attaching cold builds", () => {
     expect(composerStatusFromRunner("s", { s: "attaching" }, false)).toBe("idle");
     expect(composerStatusFromRunner(null, { s: "running" }, false)).toBeNull();
+  });
+});
+
+describe("slashCommands + mention listing", () => {
+  it("merges custom commands and recognizes built-ins", () => {
+    expect(SLASH_COMMANDS.some((s) => s.cmd === "/clear")).toBe(true);
+    expect(isBuiltInSlashCommand("/clear")).toBe(true);
+    expect(isBuiltInSlashCommand("/custom")).toBe(false);
+    const merged = mergeSlashCommands([{ name: "ship", description: "Ship it", scope: "user" }]);
+    expect(merged).toContainEqual({ cmd: "/ship", desc: "Ship it (custom)" });
+  });
+
+  it("formats mention listing caps", () => {
+    expect(formatMentionListingCapMessage({ total: 5000, capped: 1000 })).toMatch(/Showing .+ of .+/);
+    expect(formatMentionListingCapMessage({ capped: 2000 })).toMatch(/capped at/i);
+    expect(formatMentionListingCapMessage({})).toMatch(/capped/i);
+  });
+});
+
+describe("tabPaths module", () => {
+  it("normalizes separators and nest checks", () => {
+    expect(normalizeTabPath("a\\b\\c")).toBe("a/b/c");
+    expect(pathIsUnder("repo/src/a.ts", "repo/src")).toBe(true);
+    expect(pathIsUnder("repo/other", "repo/src")).toBe(false);
+  });
+
+  it("filters deletes and remaps renames including nested paths", () => {
+    const tabs = [
+      { path: "src/a.ts", isDirty: false },
+      { path: "src/nested/b.ts", isDirty: true },
+      { path: "keep.ts", isDirty: false },
+    ];
+    expect(filterTabsAfterDelete(tabs, "src").map((t) => t.path)).toEqual(["keep.ts"]);
+    const renamed = remapTabsAfterRename(tabs, "src", "lib");
+    expect(renamed.map((t) => t.path)).toEqual(["lib/a.ts", "lib/nested/b.ts", "keep.ts"]);
+    expect(remapActiveTabAfterRename("src/nested/b.ts", "src", "lib")).toBe("lib/nested/b.ts");
+    expect(remapActiveTabAfterRename("src", "src", "lib")).toBe("lib");
+    expect(remapActiveTabAfterRename("chat", "src", "lib")).toBe("chat");
+  });
+});
+
+describe("streamBubbles module", () => {
+  it("finds streaming bubble past decoration and appends text", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      { kind: "msg", msg: { role: "assistant", text: "hi", streaming: true } },
+      { kind: "thinking", text: "reason", streaming: true, id: "t1" },
+      {
+        kind: "card",
+        card: { id: "c1", goal: "read", cwd: null, kind: "read_file", running: true, open: false },
+      },
+    ];
+    expect(findStreamingBubbleIdx(items)).toBe(1);
+    const next = appendStreamingTextToItems(items, " there");
+    expect((next[1] as Extract<Item, { kind: "msg" }>).msg.text).toBe("hi there");
+  });
+
+  it("skips workerStream bubbles when asked and scales typewriter drain", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "assistant", text: "w", streaming: true, workerStream: true } },
+    ];
+    expect(findStreamingBubbleIdx(items, { excludeWorkerStream: true })).toBe(-1);
+    expect(typewriterCharsPerFrame(0, false)).toBe(0);
+    expect(typewriterCharsPerFrame(3, false)).toBe(3);
+    expect(typewriterCharsPerFrame(40, true)).toBeGreaterThanOrEqual(12);
+  });
+});
+
+describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {
+  it("derivePillStatus prefers investigation and open-turn over idle flaps", () => {
+    expect(
+      derivePillStatus({
+        transcriptStale: true,
+        answerChromeIdle: false,
+        liveInvestigation: false,
+        turnOpen: false,
+        status: "idle",
+      }),
+    ).toBe("switching…");
+    expect(
+      derivePillStatus({
+        transcriptStale: false,
+        answerChromeIdle: true,
+        liveInvestigation: false,
+        turnOpen: false,
+        status: "thinking",
+      }),
+    ).toBe("idle");
+    expect(
+      derivePillStatus({
+        transcriptStale: false,
+        answerChromeIdle: false,
+        liveInvestigation: true,
+        turnOpen: true,
+        status: "idle",
+      }),
+    ).toBe("executing");
+    expect(
+      derivePillStatus({
+        transcriptStale: false,
+        answerChromeIdle: false,
+        liveInvestigation: false,
+        turnOpen: true,
+        status: "done",
+      }),
+    ).toBe("thinking");
+  });
+
+  it("workspaceLeafName and StatusPill helpers stay stable", () => {
+    expect(workspaceLeafName("C:\\Users\\me\\proj", undefined)).toBe("proj");
+    expect(workspaceLeafName("C:\\Users\\me\\.pmharness\\home", "C:\\Users\\me\\.pmharness\\home")).toBe("Home");
+    expect(statusPillLabel("thinking", "read_file")).toBe("read_file");
+    expect(statusPillLabel("idle", "x")).toBe("idle");
+    expect(statusPillTextClass("error")).toContain("risk");
+    expect(statusPillDotClass("streaming")).toContain("animate-pulse");
   });
 });
