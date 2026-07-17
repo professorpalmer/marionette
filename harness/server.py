@@ -2675,6 +2675,33 @@ def _terminal_services():
     return TerminalServices(cfg=_cfg, pty=_pty)
 
 
+def _commands_services():
+    """Build CommandsServices from live server module globals (call-time lookup)."""
+    from .api.commands import CommandsServices
+    return CommandsServices(commands=_commands, cfg=_cfg)
+
+
+def _hooks_services():
+    """Build HooksServices from live server module globals (call-time lookup)."""
+    from .api.hooks import HooksServices
+    return HooksServices(parse_bool=_parse_bool)
+
+
+def _checkpoint_services():
+    """Build CheckpointServices from live server module globals (call-time lookup)."""
+    from .api.checkpoints import CheckpointServices
+    return CheckpointServices(
+        cfg=_cfg,
+        get_active_session_id=lambda: _sessions.active or "",
+    )
+
+
+def _git_services():
+    """Build GitServices from live server module globals (call-time lookup)."""
+    from .api.git import GitServices
+    return GitServices(cfg=_cfg)
+
+
 def _provider_services():
     """Build ProviderServices from live server module globals (call-time lookup)."""
     from .api.providers import ProviderServices
@@ -3808,38 +3835,16 @@ class Handler(BaseHTTPRequestHandler):
                 "after_tokens": after
             }))
         if path == "/api/checkpoints/restore":
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            checkpoint_id = body.get("id", "").strip()
-            if not checkpoint_id:
-                return self._send(400, json.dumps({"error": "Missing checkpoint id"}))
-            from .checkpoints import CheckpointStore
-            active_sid = _sessions.active or ""
-            store = CheckpointStore(repo, session_id=active_sid or None)
-            result = store.restore(
-                checkpoint_id,
-                session_id=active_sid or None,
-                expected_repo=repo,
-            )
-            if result.get("ok"):
-                return self._send(200, json.dumps(result))
-            else:
-                return self._send(400, json.dumps({"error": result.get("error", "Restore failed")}))
+            from .api import checkpoints as _ckpt_api
+            status, payload = _ckpt_api.post_checkpoints_restore(
+                body, _checkpoint_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/checkpoints/snapshot":
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            label = body.get("label", "").strip() or "Manual checkpoint"
-            from .checkpoints import CheckpointStore
-            active_sid = _sessions.active or ""
-            store = CheckpointStore(repo, session_id=active_sid or None)
-            checkpoint_id = store.snapshot(
-                label=label, trigger="manual", session_id=active_sid or None
-            )
-            if checkpoint_id:
-                return self._send(200, json.dumps({"ok": True, "id": checkpoint_id}))
-            else:
-                return self._send(400, json.dumps({"error": "Failed to create checkpoint snapshot"}))
+            from .api import checkpoints as _ckpt_api
+            status, payload = _ckpt_api.post_checkpoints_snapshot(
+                body, _checkpoint_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/codegraph/reindex":
             if not repo or not os.path.isdir(repo):
@@ -3893,14 +3898,10 @@ class Handler(BaseHTTPRequestHandler):
                 "defaults": DEFAULT_ASSET_EXCLUDES[:8],
             }))
         if path == "/api/commands/render":
-            name = body.get("name", "").strip()
-            args = body.get("args", "")
-            if not name:
-                return self._send(400, json.dumps({"error": "Missing name parameter"}))
-            rendered = _commands.render(name, args, repo=repo)
-            if rendered is None:
-                return self._send(404, json.dumps({"error": "unknown command"}))
-            return self._send(200, json.dumps({"name": name, "prompt": rendered}))
+            from .api import commands as _cmd_api
+            status, payload = _cmd_api.post_commands_render(
+                body, _commands_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/inline-edit":
             if not repo or not os.path.exists(repo):
@@ -4567,53 +4568,17 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _wiki_api.post_wiki_handoff(host)
             return self._send(status, json.dumps(payload))
         if path == "/api/git/connect":
-            method = body.get("method")
-            if method not in ("gh", "device"):
-                return self._send(400, json.dumps({"error": f"Invalid method: {method}"}))
-            from .git_provision import GitProvisioner, save_connection, get_status
-            prov = GitProvisioner()
-            if method == "gh":
-                info = prov.detect_gh()
-                if not info["available"]:
-                    return self._send(400, json.dumps({"error": "GitHub CLI not authenticated or not installed"}))
-                token = prov.github_token()
-                if not token:
-                    return self._send(400, json.dumps({"error": "Could not retrieve GitHub CLI token"}))
-                res = prov.provision_wiki_repo(token)
-                if not res.get("ok"):
-                    return self._send(500, json.dumps({"error": res.get("error", "Failed to provision repository")}))
-                save_connection("gh", res["repo_full_name"], res["html_url"])
-                return self._send(200, json.dumps(get_status()))
-            elif method == "device":
-                res = prov.device_flow_start()
-                if "error" in res:
-                    return self._send(500, json.dumps({"error": res["error"]}))
-                return self._send(200, json.dumps(res))
+            from .api import git as _git_api
+            status, payload = _git_api.post_git_connect(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/git/device/poll":
-            device_code = body.get("device_code")
-            if not device_code:
-                return self._send(400, json.dumps({"error": "Missing device_code"}))
-            from .git_provision import GitProvisioner, save_connection, save_device_token, get_status
-            prov = GitProvisioner()
-            res = prov.device_flow_poll(None, device_code)
-            if res.get("status") == "authorized":
-                token = res.get("token")
-                if not token:
-                    return self._send(500, json.dumps({"error": "No token in authorized response"}))
-                repo_res = prov.provision_wiki_repo(token)
-                if not repo_res.get("ok"):
-                    return self._send(500, json.dumps({"error": repo_res.get("error", "Failed to provision repository")}))
-                save_device_token(token)
-                save_connection("device", repo_res["repo_full_name"], repo_res["html_url"])
-                return self._send(200, json.dumps(get_status()))
-            elif res.get("status") == "pending":
-                return self._send(200, json.dumps({"status": "pending"}))
-            else:
-                return self._send(400, json.dumps({"error": res.get("error", "Verification failed")}))
+            from .api import git as _git_api
+            status, payload = _git_api.post_git_device_poll(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/git/disconnect":
-            from .git_provision import delete_connection, get_status
-            delete_connection()
-            return self._send(200, json.dumps(get_status()))
+            from .api import git as _git_api
+            status, payload = _git_api.post_git_disconnect()
+            return self._send(status, json.dumps(payload))
         if path == "/api/platform":
             name = body.get("name")
             enabled = body.get("enabled")
@@ -4895,57 +4860,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(status, json.dumps(payload))
 
         if path == "/api/hooks/add":
-            from . import hooks as _hk
-            event = body.get("event", "").strip()
-            command = body.get("command", "").strip()
-            if event not in _hk.ALLOWED_EVENTS:
-                return self._send(400, json.dumps({"error": f"Invalid event. Allowed: {_hk.ALLOWED_EVENTS}"}))
-            if not command:
-                return self._send(400, json.dumps({"error": "Command cannot be empty"}))
-            
-            hooks = _hk.get_hooks()
-            new_hook = {
-                "id": uuid.uuid4().hex[:12],
-                "event": event,
-                "command": command,
-                "enabled": True
-            }
-            hooks.append(new_hook)
-            _hk.save_hooks(hooks)
-            return self._send(200, json.dumps(new_hook))
+            from .api import hooks as _hooks_api
+            status, payload = _hooks_api.post_hooks_add(body)
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/hooks/update":
-            from . import hooks as _hk
-            hid = body.get("id", "").strip()
-            if not hid:
-                return self._send(400, json.dumps({"error": "missing hook id"}))
-            
-            hooks = _hk.get_hooks()
-            hook = next((h for h in hooks if h["id"] == hid), None)
-            if not hook:
-                return self._send(404, json.dumps({"error": "hook not found"}))
-            
-            if "enabled" in body:
-                hook["enabled"] = _parse_bool(body["enabled"])
-            if "command" in body:
-                cmd = body["command"].strip()
-                if not cmd:
-                    return self._send(400, json.dumps({"error": "Command cannot be empty"}))
-                hook["command"] = cmd
-            
-            _hk.save_hooks(hooks)
-            return self._send(200, json.dumps(hook))
+            from .api import hooks as _hooks_api
+            status, payload = _hooks_api.post_hooks_update(
+                body, _hooks_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/hooks/remove":
-            from . import hooks as _hk
-            hid = body.get("id", "").strip()
-            if not hid:
-                return self._send(400, json.dumps({"error": "missing hook id"}))
-            
-            hooks = _hk.get_hooks()
-            hooks = [h for h in hooks if h["id"] != hid]
-            _hk.save_hooks(hooks)
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import hooks as _hooks_api
+            status, payload = _hooks_api.post_hooks_remove(body)
+            return self._send(status, json.dumps(payload))
 
         return self._send(404, json.dumps({"error": "not found"}))
 
@@ -5009,11 +4937,10 @@ class Handler(BaseHTTPRequestHandler):
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
             qargs = parse_qs(u.query)
-            if qargs.get("repo", [""])[0].strip():
-                from .git_workspace import workspace_status
-                return self._send(200, json.dumps(workspace_status(_cfg.repo, qargs.get("repo", [""])[0])))
-            from .git_provision import get_status
-            return self._send(200, json.dumps(get_status()))
+            from .api import git as _git_api
+            status, payload = _git_api.get_git_status(
+                qargs.get("repo", [""])[0], _git_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/git/branches":
             if self._guard():
                 return
@@ -5021,8 +4948,10 @@ class Handler(BaseHTTPRequestHandler):
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
             qargs = parse_qs(u.query)
-            from .git_workspace import workspace_branches
-            return self._send(200, json.dumps(workspace_branches(_cfg.repo, qargs.get("repo", [""])[0])))
+            from .api import git as _git_api
+            status, payload = _git_api.get_git_branches(
+                qargs.get("repo", [""])[0], _git_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/git/diff":
             if self._guard():
                 return
@@ -5030,14 +4959,15 @@ class Handler(BaseHTTPRequestHandler):
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
             qargs = parse_qs(u.query)
-            from .git_workspace import workspace_diff
             staged = qargs.get("staged", ["0"])[0].strip().lower() in ("1", "true", "yes")
-            return self._send(200, json.dumps(workspace_diff(
-                _cfg.repo,
+            from .api import git as _git_api
+            status, payload = _git_api.get_git_diff(
                 qargs.get("repo", [""])[0],
-                qargs.get("file", [""])[0].strip() or None,
-                staged=staged,
-            )))
+                qargs.get("file", [""])[0],
+                staged,
+                _git_services(),
+            )
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/session/state":
             if self._guard():
                 return
@@ -5114,37 +5044,21 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            repo = _cfg.repo
-            if not repo or not os.path.exists(repo):
-                return self._send(200, json.dumps([]))
-            from .checkpoints import CheckpointStore
-            active_sid = _sessions.active or ""
-            store = CheckpointStore(repo, session_id=active_sid or None)
-            return self._send(200, json.dumps(store.list(session_id=active_sid or None)))
+            from .api import checkpoints as _ckpt_api
+            status, payload = _ckpt_api.get_checkpoints(_checkpoint_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/checkpoints/diff":
             if self._guard():
                 return
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            repo = _cfg.repo
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            checkpoint_id = parse_qs(u.query).get("id", [""])[0].strip()
-            if not checkpoint_id:
-                return self._send(400, json.dumps({"error": "Missing checkpoint id"}))
-            from .checkpoints import CheckpointStore
-            active_sid = _sessions.active or ""
-            store = CheckpointStore(repo, session_id=active_sid or None)
-            result = store.diff(
-                checkpoint_id,
-                session_id=active_sid or None,
-                expected_repo=repo,
+            from .api import checkpoints as _ckpt_api
+            status, payload = _ckpt_api.get_checkpoints_diff(
+                parse_qs(u.query).get("id", [""])[0],
+                _checkpoint_services(),
             )
-            if result.get("ok"):
-                return self._send(200, json.dumps(result))
-            else:
-                return self._send(400, json.dumps({"error": result.get("error", "Diff generation failed")}))
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/mcp":
             from .api import mcp as _mcp_api
             status, payload = _mcp_api.get_mcp(_mcp_services())
@@ -5154,15 +5068,12 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _mcp_api.get_mcp_catalog()
             return self._send(status, json.dumps(payload))
         if u.path == "/api/commands":
-            qargs = parse_qs(u.query)
-            repo = qargs.get("repo", [""])[0].strip() or _cfg.repo
-            cmds = _commands.list(repo=repo)
-            return self._send(200, json.dumps({
-                "commands": [
-                    {"name": c.name, "description": c.description, "scope": c.scope}
-                    for c in cmds
-                ]
-            }))
+            from .api import commands as _cmd_api
+            status, payload = _cmd_api.get_commands(
+                parse_qs(u.query).get("repo", [""])[0],
+                _commands_services(),
+            )
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/skills":
             from .api import skills as _skills_api
             status, payload = _skills_api.get_skills(_skills_services())
@@ -6114,11 +6025,9 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _wt_api.get_worktrees(_worktree_services())
             return self._send(status, json.dumps(payload))
         if u.path == "/api/hooks":
-            from . import hooks as _hk
-            return self._send(200, json.dumps({
-                "hooks": _hk.get_hooks(),
-                "events": _hk.ALLOWED_EVENTS
-            }))
+            from .api import hooks as _hooks_api
+            status, payload = _hooks_api.get_hooks()
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/sessions/transcript":
             from .api import sessions as _sessions_api
             status, payload = _sessions_api.get_sessions_transcript(
