@@ -66,10 +66,20 @@ _CURSOR_CLI_KERNEL_SYSTEM = """You are Marionette's pilot via the Cursor Agent C
 
 Identity / small talk: answer in one or two sentences. Do not open tools.
 
-Code exploration: Puppetmaster CodeGraph is the search path — not Grep/Glob crawls.
-  python -m puppetmaster codegraph search '<query>'
-  python -m puppetmaster codegraph context '<task>' --max-nodes 15 --format markdown
+Code / context (in this order — do not Grep/Glob-crawl the tree first):
+1. If this system prompt already contains "CODEGRAPH HAS ALREADY BEEN QUERIED"
+   or "WIKI HAS ALREADY BEEN QUERIED", USE those blocks as primary evidence.
+2. Prefer MCP tools when available (auto-approved in this session):
+   - puppetmaster_codegraph_search / puppetmaster_codegraph_context
+   - wiki: query_wiki / search_wiki (portable-llm-wiki MCP)
+   - puppetmaster_start_cursor_swarm for broad multi-role audits
+3. Shell fallback only if MCP is missing:
+   python -m puppetmaster codegraph search '<query>'
+   python -m puppetmaster codegraph context '<task>' --max-nodes 15 --format markdown
 Use Grep only for plain-text/config/log strings CodeGraph cannot see.
+
+Do not claim a swarm/audit succeeded when you only have routing/verification
+plumbing and no FINDING/RISK/DECISION content.
 
 Your user message is already in this prompt. Never treat OS temp files
 (pmh-cursor-cli-*.txt or similar) as codebase tasks — do not read/grep them.
@@ -680,6 +690,9 @@ class CursorCliDriver:
             *exec_prefix,
             "--print",
             "--trust",
+            # Headless --print otherwise prompts per MCP server; without this,
+            # CodeGraph/wiki/Puppetmaster MCP tools never run for auth pilots.
+            "--approve-mcps",
             "--output-format", "stream-json",
             "--stream-partial-output",
             "--model", self.model,

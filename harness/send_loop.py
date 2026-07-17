@@ -2060,6 +2060,23 @@ class SendLoopMixin:
                 if act.kind == "run_swarm":
                     intent = DriverIntent(action="run_swarm", goal=act.goal,
                                           roles=act.roles or None, rationale="pilot")
+                    # Sync analysis used to skip tracker registration — chat showed
+                    # "N artifacts via agentic" while Swarm Tracker stayed empty.
+                    # Pin a local row for the run, then re-key to the store job id.
+                    _sync_local_id = f"local-swarm-{aid}"
+                    try:
+                        self._register_local_job(
+                            _sync_local_id, act.goal, role="explore",
+                            cwd=self.config.repo or "",
+                            engine="agentic",
+                        )
+                        self._session_job_ids.append(_sync_local_id)
+                    except Exception:
+                        pass
+                    yield ConvEvent("swarm_pending", {
+                        "job_ids": [_sync_local_id],
+                        "objective": act.goal,
+                    })
                     # Run the (blocking, in-process) swarm on a background thread so
                     # the generator can drain live token deltas from the agentic
                     # worker and forward them to the UI, mirroring the pilot's own
@@ -2100,10 +2117,25 @@ class SendLoopMixin:
                             swarm_error = msg_val
                             break
                     if swarm_error is not None:
+                        try:
+                            self._finish_local_job(
+                                _sync_local_id, ok=False,
+                                summary=str(swarm_error)[:200],
+                                status="failed", engine="agentic",
+                            )
+                        except Exception:
+                            pass
                         yield ConvEvent("action_result", {"id": aid, "error": f"execute: {swarm_error}"})
                         self._append_action_result(act, aid, f"(swarm {aid} failed: {swarm_error})", is_native)
                         continue
                     if result is None:
+                        try:
+                            self._finish_local_job(
+                                _sync_local_id, ok=False,
+                                summary="no result", status="failed", engine="agentic",
+                            )
+                        except Exception:
+                            pass
                         yield ConvEvent("action_result", {"id": aid, "error": "execute: no result"})
                         self._append_action_result(act, aid, f"(swarm {aid} failed: no result)", is_native)
                         continue
@@ -2140,28 +2172,65 @@ class SendLoopMixin:
                         "adapter": result.adapter, "mode": result.mode,
                         "auth_failure": auth_failure,
                     })
-                    # Give the synchronous analysis swarm the same green/red
-                    # outcome badge that background implement swarms get. Before
-                    # this, only run_implement/run_parallel emitted swarm_result,
-                    # so audits finished with no visible "swarm done/failed"
-                    # confirmation. Persist to the display transcript too so the
-                    # badge survives reloads.
-                    _swarm_ok = bool(result.num_artifacts) and not auth_failure
-                    _badge_summary = (
-                        f"{result.num_artifacts} artifacts via {result.adapter}"
-                        if result.num_artifacts else "no artifacts produced"
-                    )
+                    # Green badge requires real signal — routing/verification-only
+                    # "5 artifacts via agentic" in ~3s was lying about success.
+                    _has_signal = bool(_signal)
+                    _swarm_ok = _has_signal and not auth_failure
+                    if auth_failure:
+                        _badge_summary = "auth failure"
+                    elif _has_signal:
+                        _badge_summary = (
+                            f"{len(_signal)} findings via {result.adapter}"
+                            f" ({result.num_artifacts} artifacts)"
+                        )
+                    elif result.num_artifacts:
+                        _badge_summary = (
+                            f"degraded: {result.num_artifacts} plumbing artifacts "
+                            f"via {result.adapter}, no findings"
+                        )
+                    else:
+                        _badge_summary = "no artifacts produced"
                     _badge_error = auth_failure or (
-                        None if _swarm_ok else "swarm produced no artifacts"
+                        None if _swarm_ok else (
+                            "swarm produced no FINDING/RISK/DECISION artifacts"
+                            if result.num_artifacts else "swarm produced no artifacts"
+                        )
                     )
+                    _store_jid = (result.job_id or "").strip() or _sync_local_id
                     _badge = {
-                        "job_id": result.job_id or aid,
+                        "job_id": _store_jid,
                         "applied": _swarm_ok,
                         "files": [],
                         "summary": _badge_summary,
                         "error": _badge_error,
                         "objective": act.goal,
                     }
+                    try:
+                        self._finish_local_job(
+                            _sync_local_id,
+                            ok=_swarm_ok,
+                            summary=_badge_summary,
+                            status="done" if _swarm_ok else "failed",
+                            engine=(result.adapter or "agentic"),
+                        )
+                        if _store_jid != _sync_local_id:
+                            if _store_jid not in self._session_job_ids:
+                                self._session_job_ids.append(_store_jid)
+                            # Terminal store-keyed row so expand/artifacts resolve.
+                            self._register_local_job(
+                                _store_jid, act.goal, role="explore",
+                                cwd=self.config.repo or "",
+                                engine=(result.adapter or "agentic"),
+                            )
+                            self._finish_local_job(
+                                _store_jid,
+                                ok=_swarm_ok,
+                                summary=_badge_summary,
+                                status="done" if _swarm_ok else "failed",
+                                engine=(result.adapter or "agentic"),
+                            )
+                    except Exception:
+                        pass
                     self._display_transcript.append({"type": "swarm_result", **_badge})
                     yield ConvEvent("swarm_result", {
                         "job_id": _badge["job_id"],
@@ -2190,6 +2259,13 @@ class SendLoopMixin:
                                  "dead/revoked/wrong API key, NOT a weak model or bad "
                                  "prompt. Do NOT re-run the swarm; tell the user to fix "
                                  "the named key, then stop.)") + stall
+                    elif not _has_signal:
+                        stall = (
+                            "\n(DEGRADED SWARM — only routing/verification plumbing, "
+                            "no FINDING/RISK/DECISION. Tell the user the audit did not "
+                            "produce real findings. Re-dispatch with fewer roles or a "
+                            "sharper goal; do NOT claim the repo was reviewed.)"
+                        ) + stall
                     self._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {result.num_artifacts} artifacts via {result.adapter}:\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
                     continue
 

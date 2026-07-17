@@ -374,8 +374,21 @@ def test_build_cmd_passes_trust_and_workspace(tmp_path):
     )
     cmd = d._build_cmd("hi")
     assert "--trust" in cmd
+    assert "--approve-mcps" in cmd
     assert "--workspace" in cmd
     assert str(ws.resolve()) in cmd
+
+
+def test_kernel_steers_mcp_before_shell_codegraph():
+    from pmharness.drivers.cursor_cli import _CURSOR_CLI_KERNEL_SYSTEM
+
+    k = _CURSOR_CLI_KERNEL_SYSTEM.lower()
+    assert "puppetmaster_codegraph" in k
+    assert "mcp" in k
+    assert "query_wiki" in k or "search_wiki" in k
+    assert "finding" in k or "plumbing" in k
+    # Shell remains a fallback, not the only path.
+    assert "python -m puppetmaster codegraph" in k
 
 
 def test_driver_missing_binary_errors(monkeypatch):

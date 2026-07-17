@@ -25,8 +25,11 @@ def _fake_result(n=1):
 @pytest.fixture(autouse=True)
 def _fast_swarm(monkeypatch):
     """Replace real Puppetmaster execution with an instant deterministic result."""
-    monkeypatch.setattr("harness.conversation.execute_intent",
-                        lambda intent, **kw: _fake_result(1))
+    fake = lambda intent, **kw: _fake_result(1)
+    # send_loop owns the run_swarm call site after the mixin peel; patch both
+    # bindings so either import path stays hermetic.
+    monkeypatch.setattr("harness.send_loop.execute_intent", fake)
+    monkeypatch.setattr("harness.conversation.execute_intent", fake)
 
 
 class _NeverDonePilot:
@@ -78,7 +81,12 @@ def test_auto_stops_when_pilot_done():
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     s = ConversationalSession(cfg)
     s.pilot = _DonePilot()
-    events = list(s.run_auto("quick check", AutoBudget(max_swarms=20)))
+    # Prompt-size tokens_in estimates (~chars//4) dominate with a full PILOT_SYSTEM;
+    # give headroom so the idle "objective met" halt wins over the token ceiling.
+    events = list(s.run_auto(
+        "quick check",
+        AutoBudget(max_swarms=20, max_tokens=500_000),
+    ))
     halts = [e for e in events if e.kind == "auto_halt"]
     assert halts and "objective met" in halts[-1].data["reason"]
 
