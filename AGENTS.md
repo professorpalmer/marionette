@@ -8,7 +8,7 @@ driver seam; it is not the shipping GUI contract.
 
 | Surface | Own it when… | Key modules |
 |---|---|---|
-| Product (lane B) | GUI/CLI pilot loop, tools, SSE, delegation | `harness/conversation.py` (turn loop only), `harness/pilot.py` (`PilotTurn` / schema), `harness/tool_dispatch.py`, `harness/tool_discovery.py`, `harness/pilot_guards.py`, `harness/hash_edit.py` |
+| Product (lane B) | GUI/CLI pilot loop, tools, SSE, delegation | `harness/conversation.py` (facade) + mixins (`send_loop`, `busy_control`, …), `harness/api/*` HTTP peels, `harness/pilot.py` (`PilotTurn` / schema), `harness/tool_dispatch.py`, `harness/tool_discovery.py`, `harness/pilot_guards.py`, `harness/hash_edit.py` |
 | Research rig | DriverIntent eval, scoring, Stage batteries | `pmharness/intent.py`, `pmharness/bridge.py`, `pmharness/drivers/`, `harness/session.py` (single-shot) |
 
 Ownership rule: new pilot tools -> `pilot.py` schema + `tool_dispatch` /

@@ -38,7 +38,9 @@ Two consequences of that lane-B framing:
 
 Ownership rule for contributors: new pilot tools land in `pilot.py` schema plus
 `tool_dispatch` / `tool_discovery`; new orchestration lands in Puppetmaster;
-`conversation.py` owns only the turn loop (history, SSE events, swarm bridging).
+`conversation.py` composes the turn loop (history, SSE, swarm bridge) from
+mixins — prefer peeling helpers into a focused mixin/`harness/api/*` module over
+growing the facade.
 
 ## 2. The seam (Stage 1, proven live)
 
@@ -252,16 +254,25 @@ pmharness/        research rig (validates the driver layer; not the GUI contract
   registry.py       data-driven catalog.json (license, price, vision, tier)
   battery* / scoring* / runner* / episode*   the Stage 1-4 evals
   ledger.py         append-only SQLite results
-harness/          the product (~43 modules; principal ones below)
-  conversation.py   turn loop (ConversationalSession: history, SSE, swarm bridge)
+harness/          the product (principal modules below; mixins compose the session)
+  conversation.py   ConversationalSession facade (composes mixins; thin turn owner)
+  send_loop.py      SendLoopMixin — send / _send_locked_inner turn kernel
+  busy_control.py   BusyControlMixin — busy / interrupt / reap
+  prompt_queue.py   PromptQueueMixin
+  adapter_resolve.py AdapterResolveMixin (implement adapter pick)
+  steer_mixin.py / compaction_mixin.py / local_jobs.py
+  wiki_distill.py / review_memory.py
+  turn_economy.py   TurnEconomy facade over budget/savings helpers
   pilot.py          PilotTurn / PilotAction contract + tool schema + PILOT_SYSTEM
   tool_discovery.py ToolCatalog (core-visible vs search_tools activation)
   tool_dispatch.py  ToolDispatchMixin (per-tool `_do_*` handlers)
   pilot_guards.py   pilot-loop safety / policy guards
   hash_edit.py      hashline surgical edit ops (optional via HARNESS_HASH_EDIT)
+  api/              HTTP route peels (sessions, jobs, sse, streams, wiki, mcp,
+                    providers, files, attach) wired from server.Handler
   session.py        single-shot Session core (DriverIntent path for the research rig)
   repair.py         intent-repair retry (research / bare-intent path)
-  server.py         stdlib HTTP + SSE server (three-pane GUI backend)
+  server.py         stdlib HTTP + SSE server shell (routes live in api/)
   worker.py         edit-capable worktree worker (applies real file edits)
   worktrees.py      git worktree confinement (isolated work trees)
   workspaces.py     workspace bookkeeping over the confined worktrees

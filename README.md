@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.80, deliberately pre-1.0. Vetted privately before any wider release.
+> Status: v0.9.81, deliberately pre-1.0. Vetted privately before any wider release.
 
 ## Documentation
 
@@ -244,7 +244,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_AUTO_MAX_SWARMS` / `_TOKENS` / `_SECONDS` / `_MAX_IDLE` | Full-auto budget governor ceilings. |
 | `HARNESS_APPEND_ONLY_CONTEXT` | Force append-only KV-cache context mode (auto-detected for local/cache-discounting endpoints when unset). |
 
-Swarm job costs in the UI come from measured usage priced against `~/.puppetmaster/models.json`, then the live OpenRouter `/models` map (cached under `~/.pmharness/or_models_cache.json`), then the router pre-flight estimate. Bedrock agentic workers use the same usage Ã¢â€ â€™ `price_job` / tracker path (including cache-read discount). No manual registry entry is required for OpenRouter-hosted models like `z-ai/glm-5.2`.
+Swarm job costs in the UI come from measured usage priced against `~/.puppetmaster/models.json`, then the live OpenRouter `/models` map (cached under `~/.pmharness/or_models_cache.json`), then the router pre-flight estimate. Bedrock agentic workers use the same usage ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ `price_job` / tracker path (including cache-read discount). No manual registry entry is required for OpenRouter-hosted models like `z-ai/glm-5.2`.
 
 ## Conventions
 
