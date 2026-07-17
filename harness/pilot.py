@@ -34,7 +34,7 @@ conversation from the token-heavy investigation.
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, TypeGuard, get_args
+from typing import Any, Literal, Optional, get_args
 
 
 # Canonical set of dispatchable action kinds. `__invalid__` is modeled
@@ -249,11 +249,14 @@ class InvalidAction(PilotAction):
         return self
 
 
-def is_invalid_action(act: object) -> TypeGuard[InvalidAction]:
+def is_invalid_action(act: object) -> bool:
     """True for InvalidAction carriers (isinstance or kind == __invalid__).
 
     Attribute-compatible duck types with kind=__invalid__ also match so
     gradual migration does not require every path to construct InvalidAction.
+
+    Returns bool (not typing.TypeGuard) so the 3.9 floor stays importable —
+    TypeGuard landed in typing only in 3.10.
     """
     if isinstance(act, InvalidAction):
         return True
