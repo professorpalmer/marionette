@@ -65,6 +65,7 @@ from .api.sse import (
     _sse_rings_lock,
     _sse_ring_begin,
     _sse_ring_lookup,
+    _sse_ring_current_generation,
     _sse_ring_clear_for_tests,
     sse_pump,
     sse_write,
@@ -2675,6 +2676,30 @@ def _terminal_services():
     return TerminalServices(cfg=_cfg, pty=_pty)
 
 
+def _sse_services():
+    """Build SseServices from live server module globals (call-time lookup)."""
+    from .api.sse import SseServices
+    return SseServices(
+        ring_lookup=_sse_ring_lookup,
+        current_generation=_sse_ring_current_generation,
+        default_session_id=lambda: (
+            _sessions.active or getattr(_pilot, "harness_session_id", "") or ""
+        ),
+    )
+
+
+def _pilot_services():
+    """Build PilotServices from live server module globals (call-time lookup)."""
+    from .api.pilot import PilotServices
+    return PilotServices(
+        cfg=_cfg,
+        get_pilot=lambda: _pilot,
+        apply_model_context_window=_apply_model_context_window,
+        save_workspace_driver=_save_workspace_driver,
+        perform_pilot_swap=_perform_pilot_swap,
+    )
+
+
 def _commands_services():
     """Build CommandsServices from live server module globals (call-time lookup)."""
     from .api.commands import CommandsServices
@@ -4826,19 +4851,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(status, json.dumps(payload))
         if u.path == "/api/run":
             q = parse_qs(u.query)
-            imgs = []
-            upload_dir_real = os.path.realpath(_UPLOAD_DIR)
-            for p in q.get("images", [""])[0].split("|"):
-                if not p:
-                    continue
-                real_p = os.path.realpath(p)
-                try:
-                    if os.path.commonpath([upload_dir_real, real_p]) == upload_dir_real:
-                        imgs.append(p)
-                    else:
-                        return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
-                except ValueError:
-                    return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
+            from .api.streams import validate_upload_image_paths
+            imgs, err = validate_upload_image_paths(
+                q.get("images", [""])[0], _UPLOAD_DIR
+            )
+            if err is not None:
+                return self._send(err[0], json.dumps(err[1]))
             return self._stream_run(q.get("prompt", [""])[0], imgs)
         if u.path == "/api/chat":
             q = parse_qs(u.query)
@@ -4846,31 +4864,19 @@ class Handler(BaseHTTPRequestHandler):
             # exists precisely because the real message/images were too big for
             # this URL. Falls back to the query-param message for small chats,
             # keeping today's behavior unchanged when no ?mid= is present.
-            mid = q.get("mid", [""])[0]
-            raw_images = q.get("images", [""])[0]
-            message = q.get("message", [""])[0]
-            if mid:
-                stashed = _stash_pop(mid)
-                if stashed is not None:
-                    message = stashed.get("message", "")
-                    stashed_images = stashed.get("images") or []
-                    if stashed_images and not raw_images:
-                        raw_images = "|".join(stashed_images)
-                # unknown/expired mid: fall through gracefully with whatever
-                # message/images (if any) were also on the query string.
-            imgs = []
-            upload_dir_real = os.path.realpath(_UPLOAD_DIR)
-            for p in raw_images.split("|"):
-                if not p:
-                    continue
-                real_p = os.path.realpath(p)
-                try:
-                    if os.path.commonpath([upload_dir_real, real_p]) == upload_dir_real:
-                        imgs.append(p)
-                    else:
-                        return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
-                except ValueError:
-                    return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
+            from .api.streams import (
+                resolve_stashed_chat_message,
+                validate_upload_image_paths,
+            )
+            message, raw_images = resolve_stashed_chat_message(
+                q.get("mid", [""])[0],
+                q.get("message", [""])[0],
+                q.get("images", [""])[0],
+                _stash_pop,
+            )
+            imgs, err = validate_upload_image_paths(raw_images, _UPLOAD_DIR)
+            if err is not None:
+                return self._send(err[0], json.dumps(err[1]))
             plan_val = q.get("plan", ["false"])[0].lower() in ("true", "1", "yes")
             resume_val = q.get("resume", ["false"])[0].lower() in ("true", "1", "yes")
             return self._stream_chat(message, imgs, plan=plan_val, resume=resume_val)
@@ -4882,9 +4888,7 @@ class Handler(BaseHTTPRequestHandler):
             qtok = q.get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            sid = (q.get("session", [""])[0] or "").strip() or (
-                _sessions.active or getattr(_pilot, "harness_session_id", "") or ""
-            )
+            from .api import sse as _sse_api
             since_raw = q.get("since", ["0"])[0]
             try:
                 since_c = int(since_raw or 0)
@@ -4897,49 +4901,13 @@ class Handler(BaseHTTPRequestHandler):
                     generation = int(gen_raw)
                 except (TypeError, ValueError):
                     return self._send(400, json.dumps({"error": "generation must be an integer"}))
-            ring = _sse_ring_lookup(sid, generation)
-            if ring is None:
-                # Distinguish a missing ring from a stale generation so clients
-                # do not treat an empty ok:true replay as a successful catch-up.
-                miss_code = "ring_miss"
-                current_gen = 0
-                with _sse_rings_lock:
-                    live_gen = _sse_ring_generation.get(sid)
-                    if live_gen is not None:
-                        current_gen = int(live_gen)
-                        if generation is not None and int(generation) != current_gen:
-                            miss_code = "generation_mismatch"
-                return self._send(200, json.dumps({
-                    "ok": False,
-                    "code": miss_code,
-                    "missed": True,
-                    "available": False,
-                    "session_id": sid,
-                    "generation": current_gen if miss_code == "generation_mismatch"
-                    else (generation if generation is not None else 0),
-                    "cursor": 0,
-                    "events": [],
-                    "retained": 0,
-                }))
-            payload = ring.since(since_c)
-            if payload.pop("gap", False):
-                # Cap/TTL prune punched a hole after ``since`` — refuse so the
-                # client hydrates instead of advancing past dropped frames.
-                return self._send(200, json.dumps({
-                    "ok": False,
-                    "code": "cursor_gap",
-                    "missed": True,
-                    "available": False,
-                    "session_id": sid,
-                    "generation": ring.generation,
-                    "cursor": int(payload.get("cursor") or 0),
-                    "events": [],
-                    "retained": int(payload.get("retained") or 0),
-                }))
-            payload["ok"] = True
-            payload["missed"] = False
-            payload["available"] = True
-            return self._send(200, json.dumps(payload))
+            status, payload = _sse_api.get_chat_events(
+                _sse_services(),
+                (q.get("session", [""])[0] or "").strip(),
+                since_c,
+                generation,
+            )
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/terminal/stream":
             q = parse_qs(u.query)
             return self._stream_terminal(q.get("id", [""])[0])
@@ -5030,76 +4998,17 @@ class Handler(BaseHTTPRequestHandler):
     def _swap_pilot(self, model: str):
         """Hot-swap the pilot model (the whole point: your key -> your pilot).
 
-        Preserves the in-flight conversation: history, auto-distill, and MCP are
-        carried onto the rebuilt pilot (mirrors _rebuild_pilot_and_session).
-        Cost meters freeze into boot carry at the old rates (not copied / not
-        repriced). A bare rebuild dropped history, so swapping mid-conversation
-        silently reset the context to empty.
-
-        Hermes-style mid-turn: while a turn is streaming we do NOT rebuild (that
-        would orphan the live stream). Instead we stage the choice on ``_cfg`` +
-        workspace drivers and return ``deferred: true``. The live turn keeps its
-        bound pilot; ``_ensure_pilot_matches_driver`` applies the rebuild at the
-        start of the next idle turn (Send / Queue drain / Autopilot).
+        Body lives in ``harness.api.pilot``; this wrapper injects live globals.
+        Hermes-style mid-turn deferral and idle rebuild semantics are unchanged.
         """
-        if not model:
-            return self._send(400, json.dumps({"error": "model required"}))
-        busy = (
-            getattr(_pilot, "_busy", None) is not None
-            and _pilot._busy.locked()
-        )
-        if busy:
-            # Stage preference only -- do not touch the live pilot object.
-            _cfg.driver = model
-            _apply_model_context_window()
-            _save_workspace_driver(_cfg.repo, model)
-            return self._send(200, json.dumps({
-                "ok": True, "driver": model, "deferred": True,
-            }))
-        try:
-            _perform_pilot_swap(model)
-            return self._send(200, json.dumps({
-                "ok": True, "driver": model, "deferred": False,
-            }))
-        except Exception as e:
-            return self._send(500, json.dumps({"error": str(e)}))
+        from .api.pilot import get_pilot_swap
+        status, payload = get_pilot_swap(model, _pilot_services())
+        return self._send(status, json.dumps(payload))
 
     def _stream_terminal(self, sid: str):
         """Stream PTY output over SSE. Client sends keystrokes via POST /api/terminal/write."""
-        sess = _pty.get(sid)
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self._cors()
-        self.end_headers()
-        if not sess:
-            try:
-                self.wfile.write(b"data: {\"kind\": \"exit\"}\n\n")
-                self.wfile.flush()
-            except Exception:
-                pass
-            return
-        offset = 0
-        try:
-            while sess.alive():
-                data, offset = sess.read_since(offset)
-                if data:
-                    import base64 as _b64
-                    payload = json.dumps({"kind": "data", "b64": _b64.b64encode(data).decode("ascii")})
-                    self.wfile.write(f"data: {payload}\n\n".encode())
-                    self.wfile.flush()
-                else:
-                    time.sleep(0.05)
-            # flush any final bytes after exit
-            data, offset = sess.read_since(offset)
-            if data:
-                import base64 as _b64
-                payload = json.dumps({"kind": "data", "b64": _b64.b64encode(data).decode("ascii")})
-                self.wfile.write(f"data: {payload}\n\n".encode())
-            self.wfile.write(b"data: {\"kind\": \"exit\"}\n\n")
-            self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        from .api.terminals import stream_terminal
+        return stream_terminal(self, sid, _terminal_services())
 
     def _stream_chat(self, message: str, images=None, plan: bool = False, resume: bool = False):
         """Stream the conversational PILOT loop over SSE."""

@@ -1,11 +1,14 @@
 """Terminal control HTTP route bodies (peeled from ``harness.server``).
 
-SSE ``/api/terminal/stream`` stays on Handler (needs streaming I/O helpers).
+Includes SSE ``GET /api/terminal/stream`` via ``stream_terminal`` (writes on
+the handler ``wfile``, same pattern as ``harness.api.streams``).
 """
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -56,3 +59,51 @@ def post_terminal_kill(body: dict, svc: TerminalServices) -> tuple[int, dict]:
     """POST /api/terminal/kill."""
     svc.pty.kill(body.get("id", ""))
     return 200, {"ok": True}
+
+
+def stream_terminal(handler: Any, sid: str, svc: TerminalServices) -> None:
+    """Stream PTY output over SSE (GET /api/terminal/stream).
+
+    Client sends keystrokes via POST /api/terminal/write. Preserves data/exit
+    frames and BrokenPipe/ConnectionReset detach handling.
+    """
+    sess = svc.pty.get(sid)
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.send_header("Cache-Control", "no-cache")
+    handler._cors()
+    handler.end_headers()
+    if not sess:
+        try:
+            handler.wfile.write(b"data: {\"kind\": \"exit\"}\n\n")
+            handler.wfile.flush()
+        except Exception:
+            pass
+        return
+    offset = 0
+    try:
+        while sess.alive():
+            data, offset = sess.read_since(offset)
+            if data:
+                import base64 as _b64
+                payload = json.dumps({
+                    "kind": "data",
+                    "b64": _b64.b64encode(data).decode("ascii"),
+                })
+                handler.wfile.write(f"data: {payload}\n\n".encode())
+                handler.wfile.flush()
+            else:
+                time.sleep(0.05)
+        # flush any final bytes after exit
+        data, offset = sess.read_since(offset)
+        if data:
+            import base64 as _b64
+            payload = json.dumps({
+                "kind": "data",
+                "b64": _b64.b64encode(data).decode("ascii"),
+            })
+            handler.wfile.write(f"data: {payload}\n\n".encode())
+        handler.wfile.write(b"data: {\"kind\": \"exit\"}\n\n")
+        handler.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError):
+        pass

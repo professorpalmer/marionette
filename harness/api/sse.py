@@ -2,7 +2,8 @@
 
 Bounded per-session/per-generation frame buffer for mid-turn reattach, plus
 Hermes-style ``sse_write`` / ``sse_pump`` that take a handler-like ``wfile``.
-Stream route bodies live in ``harness.api.streams``. ``server.py`` re-exports
+``GET /api/chat/events`` replay lives here as ``get_chat_events``. Stream
+route bodies live in ``harness.api.streams``. ``server.py`` re-exports
 historical names and keeps thin ``Handler`` wrappers so tests keep binding
 ``Handler._sse_write`` / ``Handler._sse_pump``.
 """
@@ -12,7 +13,8 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from typing import Any, Callable, Deque, Dict, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Deque, Dict, Optional, Tuple, Union
 
 # Mid-turn SSE reattach: bounded per-session/per-generation event ring. When the
 # UI detaches, _sse_pump keeps draining the turn and RETAINS recent frames here
@@ -153,6 +155,88 @@ def _sse_ring_clear_for_tests() -> None:
     with _sse_rings_lock:
         _sse_rings.clear()
         _sse_ring_generation.clear()
+
+
+def _sse_ring_current_generation(session_id: str) -> Optional[int]:
+    """Latest generation counter for ``session_id``, or None if never begun."""
+    sid = session_id or ""
+    with _sse_rings_lock:
+        gen = _sse_ring_generation.get(sid)
+        return int(gen) if gen is not None else None
+
+
+@dataclass
+class SseServices:
+    """Explicit deps for SSE HTTP handlers (injected by ``server.py``)."""
+
+    ring_lookup: Callable[[str, Optional[int]], Optional[SseEventRing]]
+    current_generation: Callable[[str], Optional[int]]
+    default_session_id: Callable[[], str]
+
+
+JsonPayload = Union[dict, list]
+
+
+def get_chat_events(
+    svc: SseServices,
+    session_id: str,
+    since: int,
+    generation: Optional[int],
+) -> tuple[int, JsonPayload]:
+    """GET /api/chat/events — mid-turn reattach replay from the SSE ring.
+
+    Preserves miss codes ``ring_miss`` / ``generation_mismatch`` / ``cursor_gap``
+    and the ok/missed/available fields clients rely on.
+    """
+    sid = (session_id or "").strip() or svc.default_session_id()
+    try:
+        since_c = int(since or 0)
+    except (TypeError, ValueError):
+        since_c = 0
+    ring = svc.ring_lookup(sid, generation)
+    if ring is None:
+        # Distinguish a missing ring from a stale generation so clients
+        # do not treat an empty ok:true replay as a successful catch-up.
+        miss_code = "ring_miss"
+        current_gen = 0
+        live_gen = svc.current_generation(sid)
+        if live_gen is not None:
+            current_gen = int(live_gen)
+            if generation is not None and int(generation) != current_gen:
+                miss_code = "generation_mismatch"
+        return 200, {
+            "ok": False,
+            "code": miss_code,
+            "missed": True,
+            "available": False,
+            "session_id": sid,
+            "generation": (
+                current_gen if miss_code == "generation_mismatch"
+                else (generation if generation is not None else 0)
+            ),
+            "cursor": 0,
+            "events": [],
+            "retained": 0,
+        }
+    payload = ring.since(since_c)
+    if payload.pop("gap", False):
+        # Cap/TTL prune punched a hole after ``since`` — refuse so the
+        # client hydrates instead of advancing past dropped frames.
+        return 200, {
+            "ok": False,
+            "code": "cursor_gap",
+            "missed": True,
+            "available": False,
+            "session_id": sid,
+            "generation": ring.generation,
+            "cursor": int(payload.get("cursor") or 0),
+            "events": [],
+            "retained": int(payload.get("retained") or 0),
+        }
+    payload["ok"] = True
+    payload["missed"] = False
+    payload["available"] = True
+    return 200, payload
 
 
 def sse_write(wfile: Any, payload: bytes) -> bool:

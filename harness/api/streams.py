@@ -12,7 +12,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from .sse import _sse_ring_begin, sse_pump, sse_write
 
@@ -38,6 +38,51 @@ class StreamServices:
     upload_dir: str
     # Call-time lookup so tests can patch harness.server.AutoBudget.
     auto_budget_from_env: Callable[[], Any]
+
+
+def validate_upload_image_paths(
+    raw_images: str, upload_dir: str
+) -> tuple[Optional[list], Optional[tuple[int, dict]]]:
+    """Validate pipe-separated image paths are under ``upload_dir``.
+
+    Used by ``GET /api/run`` and ``GET /api/chat`` query parsing. Returns
+    ``(paths, None)`` on success or ``(None, (status, payload))`` on error.
+    """
+    imgs: list = []
+    upload_dir_real = os.path.realpath(upload_dir)
+    for p in (raw_images or "").split("|"):
+        if not p:
+            continue
+        real_p = os.path.realpath(p)
+        try:
+            if os.path.commonpath([upload_dir_real, real_p]) == upload_dir_real:
+                imgs.append(p)
+            else:
+                return None, (400, {"error": f"Invalid image path: {p}"})
+        except ValueError:
+            return None, (400, {"error": f"Invalid image path: {p}"})
+    return imgs, None
+
+
+def resolve_stashed_chat_message(
+    mid: str,
+    message: str,
+    raw_images: str,
+    stash_pop: Callable[[str], Optional[dict]],
+) -> tuple[str, str]:
+    """Apply a stashed ``mid`` onto message/images for ``GET /api/chat``.
+
+    Unknown/expired mid falls through with whatever query-string values remain.
+    """
+    if not mid:
+        return message, raw_images
+    stashed = stash_pop(mid)
+    if stashed is not None:
+        message = stashed.get("message", "")
+        stashed_images = stashed.get("images") or []
+        if stashed_images and not raw_images:
+            raw_images = "|".join(stashed_images)
+    return message, raw_images
 
 
 def stream_run(handler: Any, prompt: str, images, svc: StreamServices) -> Any:

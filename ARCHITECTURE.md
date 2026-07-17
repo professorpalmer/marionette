@@ -272,8 +272,8 @@ harness/          the product (principal modules below; mixins compose the sessi
                     providers, files, attach, skills, auth, worktrees,
                     terminals, commands, hooks, checkpoints, git, reviews,
                     registry, platform, codegraph, workspace, settings,
-                    session_control, usage) wired from server.Handler. Handler
-                    keeps auth/token gates; route bodies live in api/*
+                    session_control, usage, pilot) wired from server.Handler.
+                    Handler keeps auth/token gates; route bodies live in api/*
                     with *Services dataclasses. auth re-exports
                     providers' pool/OAuth/Cursor-CLI handlers under an
                     ownership name. platform also owns Bedrock BYOK;
@@ -284,7 +284,9 @@ harness/          the product (principal modules below; mixins compose the sessi
                     rewind/steer/queue plus persist/compact/state/
                     context_at/swarm-results and restart-prepare (process
                     self-terminate stays on Handler); usage owns
-                    /api/usage and /api/context/usage.
+                    /api/usage and /api/context/usage; sse owns
+                    /api/chat/events replay; pilot owns /api/pilot hot-swap;
+                    terminals also owns /api/terminal/stream SSE.
   session.py        single-shot Session core (DriverIntent path for the research rig)
   repair.py         intent-repair retry (research / bare-intent path)
   server.py         stdlib HTTP + SSE server shell (routes live in api/)
