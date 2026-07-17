@@ -305,7 +305,7 @@ def _tool_call_name_and_args(tool_call: dict) -> tuple[str, dict]:
 
 def _canonicalize_tool_kind(kind: str) -> str:
     """Map Cursor ACP/stream kinds onto Marionette row families."""
-    k = (kind or "").strip().lower()
+    k = (kind or "").strip().lower().replace("-", "_")
     if k in ("execute", "shell", "bash"):
         return "run_command"
     if k == "read":
@@ -316,7 +316,42 @@ def _canonicalize_tool_kind(kind: str) -> str:
         return "edit_file"
     if k == "fetch":
         return "web_fetch"
+    if k in ("mcp", "mcp_tool", "call_mcp"):
+        return "call_mcp"
+    if k in ("get_mcp_tools", "list_mcp_resources", "read_mcp_resource", "mcp_auth"):
+        return k
     return kind
+
+
+def _mcp_goal_from_args(args: dict) -> str:
+    """Build ``server/tool`` (or just tool) for Cursor ``mcpToolCall`` args."""
+    if not isinstance(args, dict):
+        return ""
+    tool = (
+        args.get("toolName")
+        or args.get("tool_name")
+        or args.get("name")
+        or args.get("tool")
+    )
+    server = (
+        args.get("serverIdentifier")
+        or args.get("providerIdentifier")
+        or args.get("serverName")
+        or args.get("server_name")
+        or args.get("server")
+        or args.get("provider")
+    )
+    tool_s = str(tool).strip() if tool is not None else ""
+    server_s = str(server).strip() if server is not None else ""
+    # Cursor sometimes leaves a placeholder tool name of literally "tool".
+    if tool_s.lower() in ("", "tool", "function", "unknown"):
+        tool_s = ""
+    # Drop bare "MCP"/"tool" server labels — they paint as "Tool Call MCP: tool".
+    if server_s.lower() in ("mcp", "tool"):
+        server_s = ""
+    if tool_s and server_s:
+        return f"{server_s}/{tool_s}"
+    return tool_s or server_s
 
 
 def _tool_hint_payload(
@@ -333,7 +368,11 @@ def _tool_hint_payload(
     if not kind:
         kind = (name or "tool_call").strip() or "tool_call"
     kind = _canonicalize_tool_kind(kind)
-    goal = goal_from_tool_args(args or {})
+    args = args if isinstance(args, dict) else {}
+    if kind == "call_mcp" or "mcp" in humanize_cursor_tool_name(name):
+        goal = _mcp_goal_from_args(args) or goal_from_tool_args(args)
+    else:
+        goal = goal_from_tool_args(args)
     out: dict = {"name": kind}
     if goal:
         out["goal"] = goal

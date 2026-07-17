@@ -106,6 +106,45 @@ def test_consume_tool_hint_unwraps_generic_tool_key():
     assert hints[1]["id"] == "c9"
 
 
+def test_consume_mcp_tool_hint_uses_server_and_tool_name():
+    """mcpToolCall must not paint as 'Tool Call MCP: tool'."""
+    lines = [
+        json.dumps({
+            "type": "tool_call",
+            "subtype": "started",
+            "call_id": "m1",
+            "tool_call": {
+                "mcpToolCall": {
+                    "args": {
+                        "serverIdentifier": "user-puppetmaster",
+                        "toolName": "puppetmaster_status",
+                    },
+                },
+            },
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "subtype": "started",
+            "call_id": "m2",
+            "tool_call": {
+                "mcpToolCall": {
+                    "args": {
+                        "providerIdentifier": "MCP",
+                        "toolName": "tool",
+                    },
+                },
+            },
+        }),
+    ]
+    hints = []
+    consume_stream_json(lines, on_tool_hint=hints.append)
+    assert hints[0]["name"] == "call_mcp"
+    assert hints[0]["goal"] == "user-puppetmaster/puppetmaster_status"
+    assert hints[1]["name"] == "call_mcp"
+    # Placeholder server/tool names are dropped — empty goal, not "MCP: tool".
+    assert "goal" not in hints[1] or not hints[1].get("goal")
+
+
 def test_consume_result_error():
     lines = [
         json.dumps({
