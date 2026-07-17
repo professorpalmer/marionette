@@ -2730,6 +2730,25 @@ def _platform_services():
     )
 
 
+def _codegraph_services():
+    """Build CodegraphServices from live server module globals (call-time lookup)."""
+    from .api.codegraph import CodegraphServices
+
+    def _set_reason(reason: str) -> None:
+        global _codegraph_status_reason
+        _codegraph_status_reason = reason
+
+    return CodegraphServices(
+        cfg=_cfg,
+        index_alive=_codegraph_index_alive,
+        reindex_bg=_reindex_codegraph_bg,
+        index_bg=_index_codegraph_bg,
+        get_status=_get_codegraph_status,
+        get_reason=lambda: _codegraph_status_reason,
+        set_reason=_set_reason,
+    )
+
+
 def _provider_services():
     """Build ProviderServices from live server module globals (call-time lookup)."""
     from .api.providers import ProviderServices
@@ -3870,56 +3889,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(status, json.dumps(payload))
 
         if path == "/api/codegraph/reindex":
-            if not repo or not os.path.isdir(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            # Don't stack a second indexer on top of a running one -- concurrent
-            # codegraph indexers collide on the same SQLite and wedge the panel.
-            if _codegraph_index_alive():
-                return self._send(200, json.dumps({"ok": True, "status": "indexing", "note": "already indexing"}))
-            _reindex_codegraph_bg(repo)
-            return self._send(200, json.dumps({
-                "ok": True,
-                "status": _get_codegraph_status(repo),
-                "reason": _codegraph_status_reason,
-            }))
+            from .api import codegraph as _cg_api
+            status, payload = _cg_api.post_codegraph_reindex(_codegraph_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/codegraph/apply-excludes":
-            if not repo or not os.path.isdir(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            from .codegraph_preflight import (
-                DEFAULT_ASSET_EXCLUDES,
-                child_exclude_globs,
-                merge_codegraph_excludes,
-            )
-            names = body.get("excludes") if isinstance(body, dict) else None
-            if isinstance(names, list) and names:
-                # Accept bare dir names or full globs.
-                globs = []
-                for n in names:
-                    s = str(n or "").strip()
-                    if not s:
-                        continue
-                    if "*" in s or "/" in s or "\\" in s:
-                        globs.append(s.replace("\\", "/"))
-                    else:
-                        globs.extend(child_exclude_globs([s]))
-                extra = globs or None
-            else:
-                extra = None
-            try:
-                cfg = merge_codegraph_excludes(repo, extra_excludes=extra)
-            except Exception as e:
-                return self._send(500, json.dumps({"error": str(e)}))
-            # Clear needs_scope and kick index.
-            _codegraph_status_reason = "Asset excludes applied; indexing source only."
-            if not _codegraph_index_alive():
-                _index_codegraph_bg(repo)
-            return self._send(200, json.dumps({
-                "ok": True,
-                "status": _get_codegraph_status(repo),
-                "reason": _codegraph_status_reason,
-                "exclude_count": len(cfg.get("exclude") or []),
-                "defaults": DEFAULT_ASSET_EXCLUDES[:8],
-            }))
+            from .api import codegraph as _cg_api
+            status, payload = _cg_api.post_codegraph_apply_excludes(
+                body, _codegraph_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/commands/render":
             from .api import commands as _cmd_api
             status, payload = _cmd_api.post_commands_render(
