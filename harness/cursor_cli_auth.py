@@ -257,6 +257,8 @@ def ensure_workspace_trusted(workspace: Optional[str] = None) -> Dict[str, Any]:
         }
     # Tiny no-op print: records trust for this workspace when the CLI persists it.
     # Driver also passes --trust on every turn so chat works even if this fails.
+    # Keep the timeout short — a cold model turn must not look like Sign-in hang
+    # (Settings fires this in the background after login succeeds).
     args = [
         "--print",
         "--trust",
@@ -265,7 +267,17 @@ def ensure_workspace_trusted(workspace: Optional[str] = None) -> Dict[str, Any]:
         "ok",
     ]
     try:
-        proc = _run_agent(args, timeout=45)
+        proc = _run_agent(args, timeout=20)
+    except subprocess.TimeoutExpired:
+        # Pilot still passes --trust per turn; prewarm anyway so the next chat
+        # is less cold. Treat timeout as soft-pending, not hard failure.
+        prewarm_agent()
+        return {
+            "ok": False,
+            "trusted": False,
+            "workspace": path,
+            "error": "trust probe timed out (pilot still passes --trust)",
+        }
     except Exception as e:
         return {
             "ok": False,

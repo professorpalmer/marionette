@@ -146,6 +146,24 @@ def test_ensure_workspace_trusted_missing_dir(monkeypatch):
     assert res["ok"] is False
 
 
+def test_ensure_workspace_trusted_timeout_is_soft(monkeypatch, tmp_path):
+    """Cold-start trust must not raise — Sign in already succeeded in the UI."""
+    import subprocess
+
+    monkeypatch.setattr(auth, "resolve_agent_binary", lambda: "/fake/agent")
+    warmed = []
+
+    def boom(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="agent", timeout=20)
+
+    monkeypatch.setattr(auth, "_run_agent", boom)
+    monkeypatch.setattr(auth, "prewarm_agent", lambda: warmed.append(1))
+    res = auth.ensure_workspace_trusted(str(tmp_path))
+    assert res["trusted"] is False
+    assert "timed out" in (res.get("error") or "").lower()
+    assert warmed == [1]
+
+
 def test_login_token_sentinel(monkeypatch):
     monkeypatch.delenv("CURSOR_CLI_LOGIN", raising=False)
     monkeypatch.setattr(auth, "is_authenticated", lambda: False)
