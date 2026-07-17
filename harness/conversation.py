@@ -44,7 +44,15 @@ from pmharness import registry as reg
 from . import providers as prov
 from pmharness.intent import DriverIntent
 from pmharness.bridge import execute_intent, BridgeResult
-from .pilot import (parse_pilot_turn, PilotTurn, PilotError, PILOT_SYSTEM, WORKER_SYSTEM)
+from .pilot import (
+    PilotAction,
+    PilotError,
+    PilotTurn,
+    PILOT_SYSTEM,
+    WORKER_SYSTEM,
+    is_invalid_action,
+    parse_pilot_turn,
+)
 from .wiki import WikiClient, session_digest
 from .text_clean import clean_say
 from .checkpoints import CheckpointStore
@@ -55,6 +63,7 @@ from .tool_dispatch import (
     is_safe_path,
 )
 from .prompt_queue import PromptQueueMixin
+from .adapter_resolve import AdapterResolveMixin
 from .pilot_guards import (
     guards_active,
     check_pilot_guards,
@@ -382,7 +391,7 @@ class ConvEvent:
     data: dict = field(default_factory=dict)
 
 
-class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
+class ConversationalSession(PromptQueueMixin, AdapterResolveMixin, ToolDispatchMixin):
     def __init__(self, config: HarnessConfig) -> None:
         self.config = config
         import tempfile
@@ -1415,12 +1424,10 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
         if self._append_only is not None:
             return self._append_only
         try:
-            from .append_only_context import append_only_setting, should_enable_append_only
-
             driver_name = str(getattr(self.config, "driver", "") or "")
             base_url = str(getattr(self.pilot, "base_url", "") or "")
-            self._append_only = should_enable_append_only(
-                append_only_setting(), base_url, driver_name
+            self._append_only = self._turn_economy.resolve_append_only(
+                base_url, driver_name
             )
         except Exception:
             self._append_only = False
@@ -1514,15 +1521,12 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
                 wiki_section = wiki_section[: self._WIKI_GROUNDING_MAX_CHARS].rstrip() + "…"
 
             try:
-                from harness.wiki_grounding_savings import try_record_grounding
                 from pmharness.registry import resolve_price
 
                 price_in, _ = resolve_price(self.config.driver)
-                try_record_grounding(
-                    state_dir=self.state_dir,
-                    session_id=self.harness_session_id or "default",
-                    chars=len(wiki_section),
-                    pages=len(hits),
+                self._turn_economy.record_wiki_grounding(
+                    len(wiki_section),
+                    len(hits),
                     price_in=price_in,
                 )
             except Exception:
@@ -1592,12 +1596,7 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
 
     def _spill_usage_fields(self) -> dict:
         try:
-            from harness.spill_registry import spill_usage_payload
-
-            return spill_usage_payload(
-                self.state_dir,
-                self.harness_session_id or "default",
-            )
+            return self._turn_economy.spill_usage_fields()
         except Exception:
             return {"spill_count": 0, "spill_chars": 0}
 
@@ -1618,37 +1617,28 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
     def _tool_output_savings_fields(self) -> dict:
         """Compact tool-output savings for context/usage APIs."""
         try:
-            from harness.tool_output_savings import get_ledger, savings_usd
             from pmharness.registry import resolve_price
 
-            summary = get_ledger(self.state_dir).summarize(
-                session_id=self.harness_session_id or None
-            )
             price_in, _ = resolve_price(self.config.driver)
+            # Empty harness session id => unscoped summarize (prior behavior).
+            return self._turn_economy.tool_output_savings_fields(
+                price_in,
+                session_id=self.harness_session_id or "",
+            )
         except Exception:
             return {
                 "tool_output_tokens_saved": 0,
                 "tool_output_savings_usd": 0.0,
                 "tool_output_compactions": 0,
             }
-        return {
-            "tool_output_tokens_saved": summary.tokens_saved,
-            "tool_output_savings_usd": round(savings_usd(summary.tokens_saved, price_in), 6),
-            "tool_output_compactions": summary.record_count,
-        }
 
     def _wiki_grounding_fields(self) -> dict:
         """Compact wiki grounding stats for context/usage APIs."""
         try:
-            from harness.wiki_grounding_savings import session_grounding_payload
             from pmharness.registry import resolve_price
 
             price_in, _ = resolve_price(self.config.driver)
-            return session_grounding_payload(
-                self.state_dir,
-                self.harness_session_id or "default",
-                price_in,
-            )
+            return self._turn_economy.wiki_grounding_fields(price_in)
         except Exception:
             return {
                 "wiki_groundings": 0,
@@ -1657,16 +1647,6 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
                 "wiki_estimated_reinference_tokens": 0,
                 "wiki_estimated_savings_usd": 0.0,
             }
-
-    def _tool_output_compaction_callback(self, tool_call_id: str):
-        from harness.tool_output_savings import make_compaction_callback
-
-        return make_compaction_callback(
-            state_dir=self._state_dir_or_tempdir,
-            session_id=self.harness_session_id or "default",
-            tool_call_id=tool_call_id,
-            job_id=self.savings_job_id or None,
-        )
 
     def _format_block_for_summary(self, messages: list[dict]) -> str:
         lines = []
@@ -1706,7 +1686,7 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
 
         if not force:
             try:
-                from .compaction_advisor import advisor_compaction_enabled, assess_layer_pressure
+                from .compaction_advisor import advisor_compaction_enabled
                 from .memory_layers import latest_layer_snapshot
 
                 if advisor_compaction_enabled():
@@ -1715,7 +1695,9 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
                         self.harness_session_id or "default",
                     )
                     if snapshot:
-                        advice = assess_layer_pressure(snapshot, budget)
+                        advice = self._turn_economy.advise_compaction(
+                            budget, snapshot=snapshot
+                        )
                         if advice.get("level") == "now":
                             trigger = int(budget * _ADVISED_TRIGGER_RATIO)
             except Exception:
@@ -1887,6 +1869,18 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
     def _state_dir_or_tempdir(self) -> str:
         import tempfile
         return getattr(self, "state_dir", None) or tempfile.gettempdir()
+
+    @property
+    def _turn_economy(self):
+        """Session-scoped TurnEconomy bound to current state/session/job ids."""
+        from harness.turn_economy import TurnEconomy
+
+        return TurnEconomy(
+            state_dir=self._state_dir_or_tempdir,
+            session_id=self.harness_session_id or "default",
+            job_id=self.savings_job_id or None,
+            config=self.context_budget_config,
+        )
 
     @staticmethod
     def _interruption_stub(tool_call_id: str) -> dict:
@@ -2090,15 +2084,7 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
         self, act: Any, aid: str, content: str, is_native: bool, *, ok: bool = True,
     ) -> None:
         tc_id = getattr(act, "tool_call_id", None) or aid
-        from harness.context_budget import maybe_persist_result
-        clamped_content = maybe_persist_result(
-            content=content,
-            result_id=tc_id,
-            state_dir=self._state_dir_or_tempdir,
-            config=self.context_budget_config,
-            on_compaction=self._tool_output_compaction_callback(tc_id),
-            spill_session_id=self.harness_session_id or "default",
-        )
+        clamped_content = self._turn_economy.persist_tool_result(content, tc_id)
         # Tag full-file reads with their path so the pre-send pass can elide an
         # EARLIER read of the same file once a newer read supersedes it (the
         # stale copy still costs tokens every turn otherwise). Only whole-file
@@ -2134,7 +2120,7 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
                 if (
                     gs is not None
                     and kind
-                    and kind != "__invalid__"
+                    and not is_invalid_action(act)
                     and not head.startswith("(SUPPRESSED")
                     and not head.startswith("(REDIRECT")
                     and " failed:" not in (clamped_content or "")[:120]
@@ -2869,10 +2855,12 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
             # redirect caps do not leak across unrelated turns.
             self._turn_guard_state = None
             try:
-                from .turn_budget import parse_turn_budget, turn_budget_enabled
+                from .turn_budget import turn_budget_enabled
 
                 if turn_budget_enabled():
-                    self._turn_budget = parse_turn_budget(user_message)
+                    self._turn_budget = self._turn_economy.parse_output_directive(
+                        user_message
+                    )
             except Exception:
                 pass
 
@@ -3476,7 +3464,12 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
                 return
 
             # 4. Execute each action as a collapsible tool-call.
-            READ_ONLY_KINDS = {"read_file", "list_dir", "search_codegraph", "search_files", "web_search", "web_fetch", "read_pdf", "view_image", "lsp"}
+            # ActionKind string set — membership stays typed against the pilot
+            # contract without rewriting the execute-loop control flow below.
+            READ_ONLY_KINDS: frozenset[str] = frozenset({
+                "read_file", "list_dir", "search_codegraph", "search_files",
+                "web_search", "web_fetch", "read_pdf", "view_image", "lsp",
+            })
             prior_guard = getattr(self, "_turn_guard_state", None)
             guard_state = new_turn_guard_state(user_message)
             # Carry swarm-gate redirect progress across model steps in this send()
@@ -3522,28 +3515,29 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
             if len(prefetch_targets) >= 2 and not self._cancel.is_set():
                 from concurrent.futures import ThreadPoolExecutor
                 
-                def run_prefetch(idx_and_act):
+                def run_prefetch(idx_and_act: tuple[int, PilotAction]):
                     idx, act = idx_and_act
+                    kind = act.kind
                     try:
-                        if act.kind == "read_file":
+                        if kind == "read_file":
                             return idx, self._do_read_file(act)
-                        elif act.kind == "list_dir":
+                        elif kind == "list_dir":
                             return idx, self._do_list_dir(act)
-                        elif act.kind == "search_codegraph":
+                        elif kind == "search_codegraph":
                             return idx, self._do_search_codegraph(act)
-                        elif act.kind == "search_files":
+                        elif kind == "search_files":
                             return idx, self._do_search_files(act)
-                        elif act.kind == "web_search":
+                        elif kind == "web_search":
                             return idx, self._do_web_search(act)
-                        elif act.kind == "web_fetch":
+                        elif kind == "web_fetch":
                             return idx, self._do_web_fetch(act)
-                        elif act.kind == "read_pdf":
+                        elif kind == "read_pdf":
                             return idx, self._do_read_pdf(act)
-                        elif act.kind == "view_image":
+                        elif kind == "view_image":
                             return idx, self._do_view_image(act)
                     except Exception as exc:
                         return idx, (False, "exception", str(exc))
-                    return idx, (False, "exception", f"Unknown prefetch kind {act.kind}")
+                    return idx, (False, "exception", f"Unknown prefetch kind {kind}")
 
                 max_workers = min(8, len(prefetch_targets))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -3587,7 +3581,7 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
                 # Malformed/truncated tool call: do NOT silently drop it. Surface the error
                 # back to the model so it re-issues the call with all required arguments, and
                 # count it as activity so the autonomous loop does not mistake it for "done".
-                if act.kind == "__invalid__":
+                if is_invalid_action(act):
                     err = act.content or f"invalid tool call '{act.tool}'"
                     yield ConvEvent("action_result", {"id": aid, "error": err})
                     self._append_action_result(act, aid, err, is_native)
@@ -5529,15 +5523,8 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
                     continue
 
             # Enforce turn budget on the newly appended actions
-            from harness.context_budget import enforce_turn_budget
             new_messages = self._history[history_len_before_actions:]
-            enforce_turn_budget(
-                tool_messages=new_messages,
-                state_dir=self._state_dir_or_tempdir,
-                config=self.context_budget_config,
-                savings_session_id=self.harness_session_id or "default",
-                savings_job_id=self.savings_job_id or None,
-            )
+            self._turn_economy.enforce_tool_batch(new_messages)
             self._history[history_len_before_actions:] = new_messages
 
             # ---- AUTO-VERIFY LOOP ----------------------------------------
@@ -5966,156 +5953,6 @@ class ConversationalSession(PromptQueueMixin, ToolDispatchMixin):
                 os.remove(temp_path)
             except Exception:
                 pass
-
-    def _external_adapter_available(self, adapter: str) -> bool:
-        """True when the requested external CLI adapter can actually run.
-
-        Honors the live platform lock first: a disabled adapter is never
-        "available" even if its CLI is on PATH (fixes cursor stickiness when
-        the operator disables cursor and enables agentic). The provider-native
-        / agentic in-process path is always the fallback when this returns False.
-        """
-        import shutil
-        a = (adapter or "").lower().strip()
-        try:
-            from puppetmaster.platform_lock import KNOWN_ADAPTERS, is_adapter_enabled
-            if a in KNOWN_ADAPTERS and not is_adapter_enabled(a):
-                return False
-        except Exception:
-            pass
-        if a == "cursor":
-            return shutil.which("cursor") is not None
-        if a == "claude-code":
-            return shutil.which("claude") is not None
-        if a == "codex":
-            return shutil.which("codex") is not None
-        if a == "openai":
-            return bool(os.environ.get("OPENAI_API_KEY"))
-        if a == "hermes":
-            return shutil.which("hermes") is not None
-        # Unknown adapter name: let the external path try (it will report its own error).
-        return True
-
-    def _validate_target_repo(self, repo: str):
-        """Validate an optional per-dispatch target repo for run_implement /
-        run_parallel. Returns (abs_path, err) where err is a human string on
-        failure. The path must be an existing directory that is a git repo
-        (either a .git directory, a gitfile, or `git rev-parse` succeeds -- the
-        last check accepts secondary worktrees). No fallback: an invalid path
-        surfaces as an error so the caller never silently runs against the
-        wrong repo.
-        """
-        raw = (repo or "").strip()
-        if not raw:
-            return "", ""
-        try:
-            abs_path = os.path.abspath(raw)
-        except Exception as e:
-            return "", f"could not resolve target repo path {raw!r}: {e}"
-        if not os.path.isdir(abs_path):
-            return "", f"target repo {abs_path} is not an existing directory"
-        # Fast local check: a .git directory OR a .git file (worktree pointer).
-        git_marker = os.path.join(abs_path, ".git")
-        if os.path.isdir(git_marker) or os.path.isfile(git_marker):
-            return abs_path, ""
-        # Fall back to `git -C <repo> rev-parse` so we also accept unusual
-        # layouts (e.g. GIT_DIR override). Bounded and quiet.
-        try:
-            r = subprocess.run(
-                ["git", "-C", abs_path, "rev-parse", "--is-inside-work-tree"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", timeout=5,
-            )
-            if r.returncode == 0 and (r.stdout or "").strip() == "true":
-                return abs_path, ""
-        except Exception:
-            pass
-        return "", f"target repo {abs_path} is not a valid git repository"
-
-    def _resolve_requested_implement_adapter(self, requested: str) -> tuple:
-        """Map a pilot-requested adapter to what may actually run right now.
-
-        Returns ``(effective, note)``. Empty ``effective`` means use the
-        in-process agentic/native path. Disabled or missing external adapters
-        are remapped rather than hard-failing.
-        """
-        requested = (requested or "").strip().lower()
-        if not requested or requested in ("agentic", "native", "provider"):
-            return requested, ""
-        external = {"cursor", "claude-code", "codex", "openai", "hermes"}
-        if requested not in external:
-            return requested, ""
-        if self._external_adapter_available(requested):
-            return requested, ""
-        note = (
-            f"adapter '{requested}' is disabled by platform lock or its CLI is "
-            "unavailable; using standalone agentic/native instead"
-        )
-        return "", note
-
-    def _active_adapters_system_note(self) -> str:
-        """Live platform-lock snapshot injected each turn so the pilot cannot
-        keep requesting a previously-enabled adapter after the operator flips
-        Settings > Platform."""
-        try:
-            from puppetmaster.platform_lock import enabled_adapters
-            enabled = sorted(enabled_adapters())
-        except Exception:
-            return ""
-        if not enabled:
-            return (
-                "ACTIVE IMPLEMENT PLATFORMS (live): none enabled. "
-                "Omit adapter on run_implement (standalone agentic/native only)."
-            )
-        preferred = "agentic" if "agentic" in enabled else enabled[0]
-        disabled_hint = ""
-        try:
-            from puppetmaster.platform_lock import KNOWN_ADAPTERS
-            disabled = sorted(set(KNOWN_ADAPTERS) - set(enabled))
-            if disabled:
-                disabled_hint = f" Do NOT pass adapter={{{', '.join(disabled)}}} — those are disabled."
-        except Exception:
-            pass
-        return (
-            f"ACTIVE IMPLEMENT PLATFORMS (live, re-read every turn): {', '.join(enabled)}. "
-            f"Default run_implement MUST omit adapter or use '{preferred}'.{disabled_hint}"
-        )
-
-    def _detect_default_implement_adapter(self) -> str:
-        """Prefer agentic when enabled; never return a platform-locked adapter."""
-        try:
-            from puppetmaster.platform_lock import enabled_adapters, is_adapter_enabled
-            enabled = enabled_adapters()
-            if "agentic" in enabled:
-                return "agentic"
-        except Exception:
-            enabled = None
-            is_adapter_enabled = None  # type: ignore
-
-        if not _puppetmaster_available():
-            return "agentic"
-        try:
-            p = subprocess.run(
-                _puppetmaster_cmd("platform", "status"),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
-                timeout=10
-            )
-            output = p.stdout or ""
-            import re
-            matches = re.findall(r"\[on\s*\]\s*([a-zA-Z0-9_-]+)", output)
-            on = {m.lower().strip() for m in matches}
-            pref = ["agentic", "hermes", "codex", "cursor", "claude-code"]
-            for adapter in pref:
-                if adapter not in on:
-                    continue
-                if is_adapter_enabled is not None and not is_adapter_enabled(adapter):
-                    continue
-                if adapter == "agentic" or self._external_adapter_available(adapter):
-                    return adapter
-        except Exception:
-            pass
-        return "agentic"
 
     def _await_and_apply_job(self, job_id: str, state_dir: Optional[str] = None, objective: str = "") -> dict:
         import json
