@@ -11,9 +11,10 @@ defines no state and no __init__.
 Owns the turn orchestration entrypoints ``send`` / ``_send_locked`` /
 ``_send_locked_inner`` plus the small private helpers that exist only to
 support that loop (``_is_correction``, ``_get_codegraph_context``). Background
-thread targets and prefetch map workers live in ``send_loop_phases`` so the
-kernel stays the public orchestration surface. Busy lock lifecycle stays on
-BusyControlMixin; per-tool ``_do_*`` handlers stay on ToolDispatchMixin.
+thread targets, stream-queue drain, per-step metering, prefetch pool, and
+action-goal labeling live in ``send_loop_phases`` so the kernel stays the
+public orchestration surface. Busy lock lifecycle stays on BusyControlMixin;
+per-tool ``_do_*`` handlers stay on ToolDispatchMixin.
 
 CRITICAL invariants — zero behavior change:
 - ConvEvent kinds/shapes unchanged
@@ -56,8 +57,12 @@ from .pilot_guards import (
     record_action_execution,
 )
 from .send_loop_phases import (
+    READ_ONLY_KINDS,
+    action_display_goal,
+    drain_stream_queue,
+    meter_pilot_step,
     read_stdout_thread,
-    run_prefetch,
+    run_parallel_prefetch,
     run_stream,
     stream_swarm,
 )
@@ -631,7 +636,6 @@ class SendLoopMixin:
                         if is_interactive and _can_stream:
                             import queue
                             import threading
-                            from .pilot import StreamingSayExtractor
                             q = queue.Queue()
 
                             t = threading.Thread(
@@ -641,63 +645,8 @@ class SendLoopMixin:
                             )
                             t.start()
 
-                            # The model streams a raw JSON envelope ({"say": "...",
-                            # "actions": [...]}). Extract just the human-facing `say`
-                            # prose incrementally so it renders token-by-token --
-                            # instead of streaming ugly JSON then dumping the parsed
-                            # prose all at once. streamed_prose tracks what we showed
-                            # so the final `message` can skip re-emitting it.
-                            # Reasoning + tool-name hints paint live so a long
-                            # GLM/OR "thinking" wait is not a blank spinner.
-                            say_extractor = StreamingSayExtractor()
-                            streamed_prose = []
-                            while True:
-                                kind, val = q.get()
-                                if kind == "delta":
-                                    clean = say_extractor.feed(val)
-                                    if clean:
-                                        streamed_prose.append(clean)
-                                        yield ConvEvent("message_delta", {"text": clean})
-                                elif kind == "reasoning":
-                                    if val:
-                                        yield ConvEvent("thinking", {"text": val, "delta": True})
-                                elif kind == "tool_hint":
-                                    # Drivers may pass a plain name or a structured
-                                    # {name, goal, id, status} payload (Cursor ACP /
-                                    # stream-json). Bare "tool" used to paint
-                                    # "Investigating · tool tool" in the fold.
-                                    if isinstance(val, dict):
-                                        name = str(val.get("name") or "").strip()
-                                        if name or val.get("id"):
-                                            data = {
-                                                "name": name or "tool_call",
-                                            }
-                                            goal = val.get("goal")
-                                            if goal:
-                                                data["goal"] = str(goal)
-                                            call_id = val.get("id")
-                                            if call_id:
-                                                data["id"] = str(call_id)
-                                            status = val.get("status")
-                                            if status:
-                                                data["status"] = str(status)
-                                            yield ConvEvent("tool_prep", data)
-                                    elif val:
-                                        yield ConvEvent("tool_prep", {"name": str(val)})
-                                elif kind == "wait":
-                                    if val:
-                                        # Hermes-style live status for long Codex
-                                        # incomplete continuations / reconnects.
-                                        yield ConvEvent("notice", {
-                                            "message": str(val),
-                                            "kind": "wait",
-                                        })
-                                elif kind == "done":
-                                    resp = val
-                                    break
-                                elif kind == "error":
-                                    raise val
-                            self._streamed_prose = "".join(streamed_prose)
+                            streamed_prose, resp = yield from drain_stream_queue(q)
+                            self._streamed_prose = streamed_prose
                         else:
                             resp = self.pilot.chat(self._elide_stale_reads(self._history[1:]), tools=tools_schema, system=sys_prompt)
                     else:
@@ -709,96 +658,7 @@ class SendLoopMixin:
                     if not append_only:
                         self._history[0]["content"] = base_sys
 
-                # real token metering: prompt + completion (drivers report tokens_out;
-                # estimate tokens_in from prompt length when not provided).
-                _t_out = int(getattr(resp, "tokens_out", 0) or 0)
-                _t_in = int(getattr(resp, "tokens_in", 0) or len(prompt) // 4)
-                self._tokens_used += _t_out + _t_in
-                self._tokens_out += _t_out
-                self._turn_output_tokens += _t_out
-                self._tokens_in += _t_in
-                # Remember this turn's REAL prompt size so the live context
-                # estimate (compaction trigger + composer % meter) can prefer
-                # the driver's actual number over the chars//4 heuristic.
-                if _t_in > 0:
-                    self._last_prompt_tokens = _t_in
-                # Cache read/write credit: drivers report prompt-prefix cache
-                # hits (and Anthropic/Bedrock writes) in meta. Reads save; writes
-                # cost a premium -- both feed the same _session_cost formula.
-                try:
-                    _meta = getattr(resp, "meta", None) or {}
-                    _cache_delta = int(_meta.get("cache_read_tokens", 0) or 0)
-                    _write_delta = int(_meta.get("cache_write_tokens", 0) or 0)
-                    _write_5m = int(_meta.get("cache_write_5m_tokens", 0) or 0)
-                    _write_1h = int(_meta.get("cache_write_1h_tokens", 0) or 0)
-                    self._tokens_cached += _cache_delta
-                    self._tokens_cache_write += _write_delta
-                    self._tokens_cache_write_5m += _write_5m
-                    self._tokens_cache_write_1h += _write_1h
-                except Exception:
-                    _meta = {}
-                    _cache_delta = 0
-                    _write_delta = 0
-                    _write_5m = 0
-                    _write_1h = 0
-                if str(_meta.get("billing") or "").lower() == "plan":
-                    self._plan_billing = True
-                try:
-                    from pmharness.registry import resolve_price_with_source
-                    _price_in, _price_out, _price_src = resolve_price_with_source(
-                        self.config.driver
-                    )
-                    self._price_source = str(_price_src or "")
-                except Exception:
-                    try:
-                        from pmharness.registry import resolve_price
-                        _price_in, _price_out = resolve_price(self.config.driver)
-                    except Exception:
-                        _price_in, _price_out = 0.0, 0.0
-                    _price_src = "default"
-                    self._price_source = _price_src
-                # Prefer provider-billed USD (OpenRouter usage.cost) when the
-                # driver surfaced it. Otherwise price this step with the same
-                # cache-aware formula /api/usage uses -- never full-price the
-                # cached slice, and bill writes at the published premium.
-                _provider_step = _meta.get("provider_cost_usd")
-                _pilot_cost = None
-                if _provider_step is not None:
-                    try:
-                        _cand = float(_provider_step)
-                        if _cand == _cand and _cand >= 0.0:
-                            _pilot_cost = _cand
-                            self._provider_cost_usd += _cand
-                            self._provider_billed_tokens_in += _t_in
-                            self._provider_billed_tokens_out += _t_out
-                            self._provider_billed_tokens_cached += _cache_delta
-                            self._provider_billed_tokens_cache_write += _write_delta
-                            self._provider_billed_tokens_cache_write_5m += _write_5m
-                            self._provider_billed_tokens_cache_write_1h += _write_1h
-                    except (TypeError, ValueError):
-                        _pilot_cost = None
-                if _pilot_cost is None:
-                    try:
-                        from harness.server import _session_cost
-                        _pilot_cost = float(
-                            _session_cost(
-                                _t_in, _t_out, _cache_delta, _price_in, _price_out,
-                                cache_write=_write_delta,
-                                cache_write_5m=_write_5m,
-                                cache_write_1h=_write_1h,
-                            )
-                        )
-                    except Exception:
-                        _pilot_cost = (
-                            (_t_in * float(_price_in) + _t_out * float(_price_out))
-                            / 1_000_000.0
-                        )
-                self._accumulate_session_meters(
-                    input_tokens=_t_in,
-                    output_tokens=_t_out,
-                    cache_read_tokens=_cache_delta,
-                    estimated_cost_usd=_pilot_cost,
-                )
+                meter_pilot_step(self, resp, prompt)
 
                 if resp and resp.error:
                     from pmharness.drivers import error_classifier
@@ -1016,12 +876,6 @@ class SendLoopMixin:
                 return
 
             # 4. Execute each action as a collapsible tool-call.
-            # ActionKind string set — membership stays typed against the pilot
-            # contract without rewriting the execute-loop control flow below.
-            READ_ONLY_KINDS: frozenset[str] = frozenset({
-                "read_file", "list_dir", "search_codegraph", "search_files",
-                "web_search", "web_fetch", "read_pdf", "view_image", "lsp",
-            })
             prior_guard = getattr(self, "_turn_guard_state", None)
             guard_state = new_turn_guard_state(user_message)
             # Carry swarm-gate redirect progress across model steps in this send()
@@ -1065,16 +919,7 @@ class SendLoopMixin:
                     prefetch_targets.append((idx, act))
 
             if len(prefetch_targets) >= 2 and not self._cancel.is_set():
-                from concurrent.futures import ThreadPoolExecutor
-                from functools import partial
-
-                max_workers = min(8, len(prefetch_targets))
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    results = executor.map(
-                        partial(run_prefetch, self), prefetch_targets
-                    )
-                    for idx, res in results:
-                        prefetch[idx] = res
+                prefetch = run_parallel_prefetch(self, prefetch_targets)
 
             # Advisor pass (round 6, opt-in): one read-only review of this
             # turn's pending action list. Warnings are attached to the first
@@ -1118,48 +963,7 @@ class SendLoopMixin:
                     self._append_action_result(act, aid, err, is_native)
                     turn_had_invalid = True
                     continue
-                act_goal = act.goal
-                if act.kind == "relocate_session":
-                    _rs = act.arguments or {}
-                    act_goal = (
-                        (act.path or "").strip()
-                        or (act.repo or "").strip()
-                        or (_rs.get("workspace_root") or _rs.get("path") or _rs.get("repo") or "")
-                        or "(workspace root)"
-                    )
-                elif act.kind in ("read_file", "write_file", "edit_file", "hash_edit", "list_dir", "view_image", "open_project"):
-                    act_goal = act.path or "(workspace root)"
-                elif act.kind == "run_command":
-                    act_goal = act.command
-                elif act.kind == "lsp":
-                    _a = act.arguments or {}
-                    act_goal = _a.get("mode") or "lsp"
-                elif act.kind == "call_mcp":
-                    act_goal = act.tool
-                elif act.kind == "manage_mcp":
-                    _m = act.arguments or {}
-                    act_goal = f"{_m.get('action') or 'list'} {_m.get('name') or ''}".strip()
-                elif act.kind == "web_search":
-                    act_goal = act.query
-                elif act.kind == "web_fetch":
-                    act_goal = act.url
-                elif act.kind == "read_pdf":
-                    act_goal = act.path or act.url
-                elif act.kind == "search_codegraph":
-                    act_goal = act.query
-                elif act.kind == "search_files":
-                    act_goal = act.query
-                elif act.kind == "search_state":
-                    act_goal = act.query
-                elif act.kind == "session_bank":
-                    act_goal = (act.arguments or {}).get("session_id") or act.query or "list"
-                elif act.kind == "search_tools":
-                    act_goal = act.query or ",".join(act.arguments.get("activate") or [])
-                elif act.kind == "query_wiki":
-                    act_goal = act.arguments.get("question") or ""
-                elif act.kind.startswith("browser_"):
-                    _b = act.arguments or {}
-                    act_goal = _b.get("url") or _b.get("ref") or _b.get("direction") or act.kind
+                act_goal = action_display_goal(act)
 
                 # run_implement / run_parallel emit their own action_start after
                 # engine selection (includes mode=agentic|native). Emitting here
