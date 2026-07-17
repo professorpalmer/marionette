@@ -34,7 +34,7 @@ conversation from the token-heavy investigation.
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, get_args
+from typing import Any, Literal, Optional, TypeGuard, get_args
 
 
 # Canonical set of dispatchable action kinds. `__invalid__` is modeled
@@ -249,11 +249,22 @@ class InvalidAction(PilotAction):
         return self
 
 
+def is_invalid_action(act: object) -> TypeGuard[InvalidAction]:
+    """True for InvalidAction carriers (isinstance or kind == __invalid__).
+
+    Attribute-compatible duck types with kind=__invalid__ also match so
+    gradual migration does not require every path to construct InvalidAction.
+    """
+    if isinstance(act, InvalidAction):
+        return True
+    return getattr(act, "kind", None) == INVALID_ACTION_KIND
+
+
 @dataclass
 class PilotTurn:
     say: str = ""
     thinking: str = ""
-    actions: list = field(default_factory=list)  # list[PilotAction]
+    actions: list[PilotAction] = field(default_factory=list)
 
     @property
     def has_actions(self) -> bool:

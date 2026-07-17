@@ -1,5 +1,6 @@
-"""PR1: ActionKind + from_wire field parity (envelope vs native tool calls)."""
-from typing import get_args
+"""PR1/PR2: ActionKind + from_wire parity; dispatch narrowing helpers."""
+import inspect
+from typing import get_args, get_type_hints
 
 from harness.pilot import (
     ActionKind,
@@ -10,8 +11,10 @@ from harness.pilot import (
     _coerce_actions,
     _tool_name_to_action,
     from_wire,
+    is_invalid_action,
     parse_tool_calls,
 )
+from harness.tool_dispatch import ToolDispatchMixin
 
 
 def _assert_field_parity(envelope_act: PilotAction, native_act: PilotAction, fields):
@@ -136,3 +139,49 @@ def test_envelope_edit_file_no_longer_drops_old_str():
     }])
     assert acts[0].old_str == "before"
     assert acts[0].new_str == "after"
+
+
+# --- PR2: dispatch narrowing -------------------------------------------------
+
+def test_is_invalid_action_isinstance_and_kind():
+    bad = InvalidAction(kind=INVALID_ACTION_KIND, tool="write_file", content="TRUNCATED")
+    assert is_invalid_action(bad)
+    assert is_invalid_action(PilotAction(kind=INVALID_ACTION_KIND, content="x"))
+    assert not is_invalid_action(from_wire("read_file", {"path": "a.py"}))
+    assert not is_invalid_action(object())
+
+
+def test_do_handlers_annotate_pilot_action():
+    """ToolDispatchMixin._do_* take PilotAction (not Any) for gradual typing."""
+    for name, method in inspect.getmembers(ToolDispatchMixin, predicate=inspect.isfunction):
+        if not name.startswith("_do_"):
+            continue
+        hints = get_type_hints(method)
+        assert hints.get("act") is PilotAction, (name, hints.get("act"))
+
+
+def test_dispatch_accepts_attr_compatible_duck_type():
+    """Attribute access ABI: duck-typed carriers still call into _do_read_file."""
+    from dataclasses import dataclass
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+    import tempfile
+    import os
+
+    @dataclass
+    class _Duck:
+        path: str
+        kind: str = "read_file"
+        start_line: object = None
+        limit: object = None
+
+    with tempfile.TemporaryDirectory() as repo:
+        target = os.path.join(repo, "note.txt")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write("hello-duck\n")
+        session = ConversationalSession(
+            HarnessConfig(repo=os.path.realpath(repo), swarm_adapter="demo")
+        )
+        ok, status, val = session._do_read_file(_Duck(path="note.txt"))
+        assert ok and status == "success"
+        assert "hello-duck" in val

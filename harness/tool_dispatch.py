@@ -24,6 +24,7 @@ from typing import Any
 from ._exec import _puppetmaster_cmd
 from .internal_uri import InternalUriContext, InternalUriError, is_internal_uri, resolve_internal_uri
 from .paths import path_within
+from .pilot import PilotAction
 
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
@@ -47,6 +48,10 @@ class ToolDispatchMixin:
     The concrete class (ConversationalSession) supplies the state these
     methods read via `self` (self.config.repo, self._read_allowed_roots(),
     etc.). This mixin defines no __init__ and no instance state of its own.
+
+    Handlers take ``PilotAction`` (attribute access: act.path, act.query, …).
+    Duck-typed carriers with the same attributes remain runtime-compatible for
+    gradual migration; wire JSON / tool schemas are unchanged.
     """
 
     def _internal_uri_context(self) -> InternalUriContext:
@@ -55,7 +60,7 @@ class ToolDispatchMixin:
             repo=self.config.repo or None,
         )
 
-    def _do_read_file(self, act: Any) -> tuple[bool, str, str]:
+    def _do_read_file(self, act: PilotAction) -> tuple[bool, str, str]:
         if is_internal_uri(act.path):
             try:
                 resource = resolve_internal_uri(
@@ -166,7 +171,7 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
-    def _do_view_image(self, act: Any) -> tuple[bool, str, str]:
+    def _do_view_image(self, act: PilotAction) -> tuple[bool, str, str]:
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
         target_path = act.path
@@ -195,7 +200,7 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
-    def _do_list_dir(self, act: Any) -> tuple[bool, str, Any]:
+    def _do_list_dir(self, act: PilotAction) -> tuple[bool, str, Any]:
         uri_path = (act.path or "").strip()
         if is_internal_uri(uri_path):
             try:
@@ -245,7 +250,7 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
-    def _do_web_search(self, act: Any) -> tuple[bool, str, str]:
+    def _do_web_search(self, act: PilotAction) -> tuple[bool, str, str]:
         from .web_tools import web_search
         try:
             result_text = web_search(act.query)
@@ -253,7 +258,7 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
-    def _do_web_fetch(self, act: Any) -> tuple[bool, str, str]:
+    def _do_web_fetch(self, act: PilotAction) -> tuple[bool, str, str]:
         from .web_tools import web_fetch
         try:
             result_text = web_fetch(act.url)
@@ -261,7 +266,7 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
-    def _do_read_pdf(self, act: Any) -> tuple[bool, str, str]:
+    def _do_read_pdf(self, act: PilotAction) -> tuple[bool, str, str]:
         from .web_tools import read_pdf
         target = act.path or act.url
         is_remote = target.startswith(("http://", "https://"))
@@ -282,7 +287,7 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
-    def _do_search_codegraph(self, act: Any) -> tuple[bool, str, Any]:
+    def _do_search_codegraph(self, act: PilotAction) -> tuple[bool, str, Any]:
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
 
@@ -322,7 +327,7 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
-    def _do_search_files(self, act: Any) -> tuple[bool, str, Any]:
+    def _do_search_files(self, act: PilotAction) -> tuple[bool, str, Any]:
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
 
@@ -428,7 +433,7 @@ class ToolDispatchMixin:
             result_text += f"\n\n... (results truncated to {max_results} matches) ..."
         return True, "success", result_text
 
-    def _do_lsp(self, act: Any) -> tuple[bool, str, str]:
+    def _do_lsp(self, act: PilotAction) -> tuple[bool, str, str]:
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
         args = act.arguments or {}
@@ -464,7 +469,7 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
-    def _do_search_state(self, act: Any) -> tuple[bool, str, str]:
+    def _do_search_state(self, act: PilotAction) -> tuple[bool, str, str]:
         from .internal_uri import search_internal_uris
 
         args = act.arguments or {}
@@ -484,7 +489,7 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
-    def _do_search_tools(self, act: Any) -> tuple[bool, str, str]:
+    def _do_search_tools(self, act: PilotAction) -> tuple[bool, str, str]:
         from .tool_discovery import ToolCatalog
 
         catalog: ToolCatalog = getattr(self, "_tool_catalog", None) or ToolCatalog()
@@ -508,7 +513,7 @@ class ToolDispatchMixin:
         except Exception as e:
             return False, "exception", str(e)
 
-    def _do_hash_edit(self, act: Any, *, write: bool = True) -> tuple[bool, str, str]:
+    def _do_hash_edit(self, act: PilotAction, *, write: bool = True) -> tuple[bool, str, str]:
         """Validate (and optionally apply) hash-anchored edits from act.arguments['ops']."""
         from .hash_edit import HashEditOp, apply_hash_edits, atomic_write_text, hash_edit_enabled
 
