@@ -213,12 +213,23 @@ class BedrockDriver:
         self.send_temperature = send_temperature
 
     def _ensure_auth(self) -> None:
-        """Raise with an actionable message when AWS Bedrock creds are absent."""
+        """Raise with an actionable message when AWS Bedrock creds are absent.
+
+        Marionette's :func:`harness.keys.resolve_usable_bedrock_credentials` is
+        the authority for disconnect / placeholder rejection; Puppetmaster's
+        resolver still supplies the invoke-time handle when Marionette agrees.
+        """
         from puppetmaster.bedrock import (
             missing_bedrock_credentials_message,
             resolve_bedrock_credentials,
         )
 
+        try:
+            from harness.keys import resolve_usable_bedrock_credentials
+            if resolve_usable_bedrock_credentials() is None:
+                raise RuntimeError(missing_bedrock_credentials_message())
+        except ImportError:
+            pass
         if resolve_bedrock_credentials(os.environ) is None:
             raise RuntimeError(missing_bedrock_credentials_message())
 

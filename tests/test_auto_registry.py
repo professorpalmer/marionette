@@ -384,3 +384,98 @@ def test_build_agentic_spec_live_prices_kill_switch(monkeypatch):
     assert called == []
     assert spec["input_per_mtok_usd"] == template[1]
     assert spec["output_per_mtok_usd"] == template[2]
+
+
+def test_placeholder_bedrock_key_excluded_from_sync(monkeypatch, tmp_path):
+    """A doctor/placeholder bedrock token must not enter live_providers."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+    for ev in (
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    ):
+        monkeypatch.delenv(ev, raising=False)
+
+    from harness.keys import set_bedrock_credentials, set_api_key
+    from harness.auto_registry import sync_agentic_registry
+
+    set_api_key("anthropic", "sk-ant-live-fakekey1234")
+    set_bedrock_credentials({
+        "AWS_BEARER_TOKEN_BEDROCK": "doctor-bearer-token-1",
+    })
+
+    def mock_fetch_models(provider, key, force=False):
+        return []
+
+    with patch("harness.model_fetch.fetch_models", mock_fetch_models):
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    assert "bedrock" not in result["providers"]
+    assert "anthropic" in result["providers"]
+
+    with open(models_path, encoding="utf-8") as f:
+        data = json.load(f)
+    for model in data.get("models", []):
+        provider = model.get("payload_defaults", {}).get("provider")
+        assert provider != "bedrock"
+
+
+def test_disconnected_bedrock_excluded_from_sync(monkeypatch, tmp_path):
+    """Disconnected bedrock stays out of sync even with a live-looking keyfile."""
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+    for ev in (
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    ):
+        monkeypatch.delenv(ev, raising=False)
+
+    from harness.keys import set_bedrock_credentials, set_provider_enabled
+    from harness.auto_registry import sync_agentic_registry
+
+    set_bedrock_credentials({
+        "AWS_BEARER_TOKEN_BEDROCK": "live-bedrock-bearer-sync1",
+    })
+    set_provider_enabled("bedrock", False)
+
+    def mock_fetch_models(provider, key, force=False):
+        return []
+
+    with patch("harness.model_fetch.fetch_models", mock_fetch_models):
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    assert "bedrock" not in result["providers"]
+
+
+def test_seed_catalog_filters_marionette_unconfigured(monkeypatch, tmp_path):
+    """Seed path must not add bedrock when Marionette considers it unconfigured."""
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(tmp_path / "models.json"))
+    for ev in (
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    ):
+        monkeypatch.delenv(ev, raising=False)
+
+    from harness.keys import set_bedrock_credentials, mark_disconnected
+    from harness.server import _marionette_allowed_agentic_providers
+
+    # Puppetmaster sniffs bedrock (e.g. ~/.aws); Marionette has only a placeholder.
+    set_bedrock_credentials({
+        "AWS_BEARER_TOKEN_BEDROCK": "doctor-bearer-token-1",
+    })
+    allowed = _marionette_allowed_agentic_providers({"bedrock", "anthropic"})
+    assert "bedrock" not in allowed
+
+    # Real key but explicitly disconnected — still excluded.
+    set_bedrock_credentials({
+        "AWS_BEARER_TOKEN_BEDROCK": "live-bedrock-bearer-seed1",
+    })
+    mark_disconnected("bedrock")
+    from harness.keys import scrub_provider_env
+    scrub_provider_env("bedrock")
+    allowed2 = _marionette_allowed_agentic_providers({"bedrock", "anthropic"})
+    assert "bedrock" not in allowed2

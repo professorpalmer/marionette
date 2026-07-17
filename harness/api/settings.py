@@ -22,6 +22,8 @@ class SettingsServices:
     save_workspace_driver: Callable[[Any, str], None]
     persist_env_setting: Callable[[str, str], None]
     get_settings_dict: Callable[[], dict]
+    driver_provider_available: Callable[[str], bool] = lambda _spec: True
+    resolve_available_driver: Callable[[], None] = lambda: None
 
 
 JsonPayload = Union[dict, list]
@@ -88,6 +90,14 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
             sync_agentic_registry_safe()
     elif body.get("clear_api_key") is True:
         svc.clear_api_key(reach_to_use)
+        # Match /api/providers/key clear: scrub is inside clear_api_key; if the
+        # active driver just lost its provider, pick another before rebuild so
+        # Settings disconnect cannot 500 on a dead openrouter/bedrock pilot.
+        try:
+            if not svc.driver_provider_available(svc.cfg.driver):
+                svc.resolve_available_driver()
+        except Exception:
+            pass
         svc.rebuild_pilot_and_session()
         from ..auto_registry import sync_agentic_registry_safe
         sync_agentic_registry_safe()

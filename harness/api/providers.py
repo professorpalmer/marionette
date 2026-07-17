@@ -17,6 +17,7 @@ from ..keys import (
     get_api_key_status,
     get_disconnected,
     provider_has_env,
+    scrub_provider_env,
     set_api_key,
     set_bedrock_credentials,
     set_provider_enabled,
@@ -147,7 +148,14 @@ def post_providers_key(body: dict, svc: ProviderServices) -> tuple[int, dict]:
         else:
             enabled = action == "enable"
         set_provider_enabled(p.name, enabled)
-        # Resync agentic registry when a provider is enabled/disabled
+        if not enabled:
+            # Belt-and-suspenders: scrub in-process env immediately so
+            # workers/router/puppetmaster sniffers cannot see stale AWS_* keys
+            # before the next restart. set_provider_enabled already scrubs;
+            # repeat after mark so any race with env re-injection loses.
+            scrub_provider_env(p.name)
+        # Resync agentic registry when a provider is enabled/disabled so
+        # models.json is pruned without a backend restart.
         from ..auto_registry import sync_agentic_registry_safe
         sync_agentic_registry_safe()
         # Keep the active driver honest: enabling may make a better model
@@ -165,10 +173,14 @@ def post_providers_key(body: dict, svc: ProviderServices) -> tuple[int, dict]:
             "enabled": enabled,
             "has_key": status["has_key"],
             "masked": status["masked"],
+            "disconnected": p.name in get_disconnected(),
         }
     if action == "clear" or body.get("clear") is True:
         clear_api_key(p.name)
-        # Resync agentic registry when a provider key is cleared
+        # clear_api_key marks disconnected + scrubs; scrub again so any
+        # in-process AWS_* / provider env left by a concurrent path is gone
+        # before registry sync re-reads availability.
+        scrub_provider_env(p.name)
         from ..auto_registry import sync_agentic_registry_safe
         sync_agentic_registry_safe()
         # If the active driver's provider is no longer available (we just

@@ -4,8 +4,20 @@ import {
   finalizeStreamingThinking,
   newThinkingId,
 } from "./thinkingToolPrep";
-import { findStreamingBubbleIdx } from "./streamBubbles";
+import {
+  finalizeOpenPilotBubble,
+  findStreamingBubbleIdx,
+} from "./streamBubbles";
 import { deduplicateConsecutiveAssistantMessages } from "./transcriptItems";
+
+/**
+ * Seal every open stream surface (thinking row + pilot bubble) before a new
+ * phase starts. Later events may only APPEND; they must not reopen, merge, or
+ * re-parent content that already painted on a prior surface.
+ */
+export function sealOpenStreamSurfaces(items: Item[]): Item[] {
+  return finalizeOpenPilotBubble(finalizeStreamingThinking(items));
+}
 
 export function swarmPendingStatus(item: SwarmPendingItem): SwarmPendingStatus {
   if (item.status) return item.status;
@@ -218,7 +230,8 @@ export function appendActionStartCard(
   items: Item[],
   d: { id: string; goal?: string; cwd?: string | null; kind?: string },
 ): Item[] {
-  const base = clearToolPrepPlaceholders(finalizeStreamingThinking(items));
+  // Seal thinking + pilot bubbles first so tool cards never absorb prior text.
+  const base = clearToolPrepPlaceholders(sealOpenStreamSurfaces(items));
   if (base.some((it) => it.kind === "card" && it.card.id === d.id)) return base;
   return [
     ...base,

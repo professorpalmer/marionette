@@ -150,8 +150,38 @@ _STOP_CONDITIONS = (
 )
 
 
+def _analysis_submit_contract(*, via_tool: bool) -> str:
+    """Shared turn-budget / submit contract for analysis workers.
+
+    Agentic swarm workers call ``submit_findings`` on the tool channel. Native
+    ProviderWorker analysis mode has no that tool -- it must conclude with a
+    structured FINDING/RISK/DECISION summary in the final message instead.
+    Either way: never end on free-text planning/reasoning alone.
+    """
+    if via_tool:
+        return (
+            "IMPORTANT: You have a limited number of tool-call turns. Do a focused "
+            "investigation (a handful of reads/searches), then ALWAYS call "
+            "submit_findings with whatever concrete findings you have BEFORE you run "
+            "out of turns. A few well-evidenced findings submitted is far better than "
+            "a deep exploration that never submits. If unsure, submit early and stop. "
+            "Do not end on planning or mid-thought reasoning alone "
+            "(e.g. 'Now let me look at...')."
+        )
+    return (
+        "IMPORTANT: You have a limited number of turns. Do a focused "
+        "investigation (a handful of reads/searches), then ALWAYS end with a "
+        "structured findings summary in your final message -- label concrete "
+        "FINDING/RISK/DECISION lines with file:line evidence -- BEFORE you run "
+        "out of turns. A few well-evidenced findings concluded is far better than "
+        "a deep exploration that never concludes. Do not end on planning or "
+        "mid-thought reasoning alone (e.g. 'Now let me look at...')."
+    )
+
+
 def _analysis_instruction(goal: str, repo_cwd: str, role: str,
-                          *, browser: bool = False) -> str:
+                          *, browser: bool = False,
+                          via_tool: bool = True) -> str:
     """Build a read-only analysis worker's instruction from the shared goal plus
     the role's lens, so a multi-role swarm fans out into distinct investigations
     rather than N identical passes over the same goal.
@@ -159,10 +189,21 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
     When ``browser`` is set the worker is told it has the live browser toolset
     (browser_navigate/browser_snapshot/browser_get_text/...) so a live-site task
     drives a real page instead of only reading source. Browsing stays read-only:
-    it must not edit, create, or delete files."""
+    it must not edit, create, or delete files.
+
+    ``via_tool=False`` adapts the submit contract for native ProviderWorker
+    analysis (final-message findings summary instead of submit_findings).
+    """
     lens = ROLE_LENSES.get(role, "")
     lens_line = f"\n\n{lens}" if lens else ""
+    submit = _analysis_submit_contract(via_tool=via_tool)
     if browser:
+        submit_tail = (
+            "then ALWAYS call submit_findings before you run out of turns."
+            if via_tool else
+            "then ALWAYS end with a structured FINDING/RISK/DECISION summary "
+            "before you run out of turns."
+        )
         return (
             f"{goal}{lens_line}\n\nYou have a real headless browser. Use the "
             f"browser tools to complete this: browser_navigate(url) to open a "
@@ -172,8 +213,8 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
             f"This is READ-ONLY: do not edit, create, or delete any files, and "
             f"do not submit credentials or perform destructive actions on the "
             f"site. Emit what each browser tool returned as evidenced findings, "
-            f"then ALWAYS call submit_findings before you run out of turns.\n\n"
-            f"{_STOP_CONDITIONS}"
+            f"{submit_tail}\n\n"
+            f"{submit}\n\n{_STOP_CONDITIONS}"
         )
     return (
         f"{goal}{lens_line}\n\nAnalyze the REAL codebase at {repo_cwd}. "
@@ -184,12 +225,7 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
         # calling submit_findings -- surfacing as a "completed without
         # structured findings" degrade. Tell the worker to budget explicitly
         # and always submit what it has rather than exhausting its turns.
-        "IMPORTANT: You have a limited number of tool-call turns. Do a focused "
-        "investigation (a handful of reads/searches), then ALWAYS call "
-        "submit_findings with whatever concrete findings you have BEFORE you run "
-        "out of turns. A few well-evidenced findings submitted is far better than "
-        "a deep exploration that never submits. If unsure, submit early and stop."
-        "\n\n" + _STOP_CONDITIONS
+        f"{submit}\n\n{_STOP_CONDITIONS}"
     )
 
 
@@ -309,6 +345,32 @@ def _compact_artifact(a: Any) -> dict:
     if empty_headline and payload:
         headline = str(getattr(a, "type", "") or "artifact")
     failure = str(payload.get("failure") or "") or None
+    # Never let a truncated reasoning fragment become the digest/patch headline.
+    # Keep the full body for diagnosis, but label the headline honestly when the
+    # worker failed the submit contract (or only produced mid-thought prose).
+    # Leave genuinely empty headlines alone (empty_headline stays True).
+    fail_l = (failure or "").strip().lower()
+    headline_text = str(headline or "").strip()
+    if headline_text and str(getattr(a, "type", "") or "").lower() in (
+        "verification", "finding", "risk", "decision", "patch",
+    ):
+        is_no_structure = (
+            fail_l in _NO_STRUCTURE_FAILURES or fail_l.startswith("no_tool_calls")
+        )
+        if is_no_structure or _looks_like_reasoning_fragment(headline_text):
+            meta = _is_meta_degrade_artifact(
+                {"failure": failure, "headline": headline_text}
+            )
+            # Meta-risks that already name the degrade keep their diagnosis
+            # headline; only rewrite free-text reasoning masquerades.
+            if _looks_like_reasoning_fragment(headline_text) and (
+                is_no_structure or not meta
+            ):
+                headline = (
+                    f"no structured findings ({failure})"
+                    if failure else "no structured findings"
+                )
+                empty_headline = False
     # Auth rejections must surface as AUTH FAILURE with provider + key env, not
     # as the verification check text / empty degrade headline.
     if _is_auth_failure_tag(failure, headline):
@@ -343,6 +405,188 @@ def _compact_artifact(a: Any) -> dict:
 
 
 _SIGNAL_TYPES = frozenset({"finding", "risk", "decision"})
+
+# Failure tags that mean the worker never submitted structured findings (tool
+# channel unused, or free-text only). These are NOT real audit findings -- they
+# are degrade markers. Never promote their stdout into finding headlines.
+_NO_STRUCTURE_FAILURES = frozenset({
+    "no_tool_calls",
+    "empty_or_unstructured_agentic_result",
+})
+
+# Planning / mid-thought openers that must never masquerade as a finding headline.
+_REASONING_FRAGMENT_PREFIXES = (
+    "now let me",
+    "let me look",
+    "let me check",
+    "let me see",
+    "let me examine",
+    "let me read",
+    "let me start",
+    "i'll start",
+    "i will start",
+    "i'll look",
+    "i'll check",
+    "i'll read",
+    "i need to",
+    "i'm going to",
+    "i am going to",
+    "first, i",
+    "first i'll",
+    "first i will",
+    "okay, let me",
+    "ok, let me",
+    "ok let me",
+    "hmm,",
+    "wait,",
+    "looking at",
+    "next i",
+    "next, i",
+)
+
+
+def _looks_like_reasoning_fragment(text: object) -> bool:
+    """True when ``text`` is free-text planning / mid-thought, not a finding.
+
+    Analysis workers that stream chain-of-thought and never submit structure
+    used to surface truncated openers like 'Now let me look at...' as the
+    patch/finding headline. Treat those as non-findings so the job fails
+    degraded and the pilot can re-dispatch.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return True
+    low = raw.lower()
+    # Strip a common "Last assistant message:" wrapper from ProviderWorker.
+    for prefix in ("last assistant message:", "halt reason:"):
+        if low.startswith(prefix):
+            raw = raw[len(prefix):].strip()
+            low = raw.lower()
+            if not raw:
+                return True
+    # Structured labels only -- a bare path cite inside "Let me check foo.py"
+    # is still mid-thought planning, not a submitted finding.
+    finding_markers = (
+        "finding:", "findings:", "risk:", "decision:", "audit complete",
+        "issue:", "vulnerability:", "recommend:", "recommended:",
+    )
+    has_finding_shape = any(m in low for m in finding_markers)
+    if any(low.startswith(p) for p in _REASONING_FRAGMENT_PREFIXES):
+        return not has_finding_shape
+    # Truncated mid-thought ellipsis without finding shape.
+    if (raw.endswith("...") or raw.endswith("\u2026")) and not has_finding_shape:
+        if len(raw) < 160:
+            return True
+    return False
+
+
+def _is_meta_degrade_artifact(a: dict) -> bool:
+    """True for plumbing RISK/verification rows that only report 'no findings'."""
+    try:
+        fail = str(a.get("failure") or "").strip().lower()
+        if fail in _NO_STRUCTURE_FAILURES or fail.startswith("no_tool_calls"):
+            return True
+        head = str(a.get("headline") or a.get("body") or "").lower()
+        if "without structured findings" in head:
+            return True
+        if "never called any tool" in head:
+            return True
+        if "no structured findings" in head:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _has_real_structured_findings(compact: list) -> bool:
+    """True when compact artifacts include a real FINDING/RISK/DECISION signal.
+
+    Excludes meta degrade markers (no_tool_calls / without structured findings)
+    and free-text reasoning fragments so a swarm that only streamed thought
+    cannot report clean completion.
+    """
+    try:
+        for a in compact or []:
+            if str(a.get("type") or "") not in _SIGNAL_TYPES:
+                continue
+            if a.get("empty_headline"):
+                continue
+            if _is_meta_degrade_artifact(a):
+                continue
+            text = str(a.get("body") or a.get("headline") or "").strip()
+            if not text:
+                continue
+            if _looks_like_reasoning_fragment(text):
+                continue
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _worker_submitted_structure(compact: list) -> bool:
+    """True when a verification row shows the structured submit channel succeeded.
+
+    An honest ``submit_findings([])`` (found nothing) is a clean pass -- it must
+    not be rewritten as 'no structured findings'. Only missing/failed submits
+    (no_tool_calls / unstructured) should degrade.
+    """
+    try:
+        saw_clean = False
+        for a in compact or []:
+            if str(a.get("type") or "") != "verification":
+                continue
+            if _is_auth_failure_tag(a.get("failure"), a.get("headline")):
+                return False
+            fail = str(a.get("failure") or "").strip().lower()
+            if fail in _NO_STRUCTURE_FAILURES or fail.startswith("no_tool_calls"):
+                return False
+            if fail:
+                continue
+            saw_clean = True
+        return saw_clean
+    except Exception:
+        return False
+
+
+def _analysis_bridge_status(compact: list, *, job_status: str, summary: str,
+                            auth_note: str = "") -> tuple[str, str]:
+    """Normalize swarm BridgeResult status/summary for the submit contract.
+
+    A worker that produced no structured findings must never report as a clean
+    completed success with a reasoning fragment as the artifact headline.
+    """
+    if (auth_note or "").strip():
+        return str(job_status or ""), summary or ""
+    if _has_real_structured_findings(compact):
+        return str(job_status or ""), summary or ""
+    # Honest empty submit (structured channel used, zero findings) stays clean.
+    if _worker_submitted_structure(compact):
+        return str(job_status or ""), summary or ""
+    reason = "no structured findings"
+    for a in compact or []:
+        fail = str(a.get("failure") or "").strip()
+        if fail in _NO_STRUCTURE_FAILURES or fail.startswith("no_tool_calls"):
+            reason = f"no structured findings ({fail})"
+            break
+        if str(a.get("type") or "") == "verification" and _looks_like_reasoning_fragment(
+            a.get("body") or a.get("headline") or ""
+        ):
+            reason = "no structured findings (reasoning only)"
+    status = str(job_status or "").strip().lower()
+    if status in ("", "completed", "complete", "done", "success", "ok", "passed"):
+        status = "failed"
+    # Preserve an explicit degraded/failed from the orchestrator when present.
+    if status not in ("failed", "degraded", "error"):
+        status = "failed"
+    raw_summary = (summary or "").strip()
+    if not raw_summary or _looks_like_reasoning_fragment(raw_summary):
+        raw_summary = reason
+    elif "without structured findings" not in raw_summary.lower() and (
+            "no structured findings" not in raw_summary.lower()):
+        raw_summary = f"{reason}: {raw_summary}"
+    return status, raw_summary
+
 
 # Failure tags that mean provider credential rejection (401/403 / missing key),
 # including the verification artifact stamped by agentic ``_fail`` when the
@@ -415,13 +659,25 @@ def _promote_degraded_prose(compact: list) -> list:
                 continue
             if _is_auth_failure_tag(a.get("failure"), a.get("headline")):
                 continue
+            # Never launder a no_tool_calls / unstructured degrade into a
+            # synthetic finding -- Puppetmaster >= 1.19.14 already fails those
+            # runs; promoting their stdout would recreate the bug (reasoning
+            # fragment as headline, clean "completed" badge).
+            if _is_meta_degrade_artifact(a):
+                continue
+            fail = str(a.get("failure") or "").strip().lower()
+            if fail in _NO_STRUCTURE_FAILURES or fail.startswith("no_tool_calls"):
+                continue
             # Use the FULL body (untruncated stdout prose), falling back to the
             # display headline. Detection and the promoted finding both rely on
             # the full text so a broad audit's 3000-char analysis survives whole
             # instead of collapsing to the 240-char headline clip.
             body = str(a.get("body") or a.get("headline") or "").strip()
-            # Only promote genuine prose analysis, not a one-word "passed"/"blocked".
+            # Only promote genuine prose analysis, not a one-word "passed"/"blocked"
+            # and never a truncated reasoning fragment ("Now let me look at...").
             if len(body) < 40:
+                continue
+            if _looks_like_reasoning_fragment(body):
                 continue
             promoted.append({
                 "type": "finding",
@@ -827,13 +1083,30 @@ def execute_intent(
         compact = _hoist_auth_risks([_compact_artifact(a) for a in artifacts])
         compact = _promote_degraded_prose(compact)
         auth_note = _auth_failure_note(compact)
+        # Drop reasoning-fragment "findings" so they never become digest headlines.
+        compact = [
+            a for a in compact
+            if not (
+                str(a.get("type") or "") in _SIGNAL_TYPES
+                and _looks_like_reasoning_fragment(
+                    a.get("body") or a.get("headline") or ""
+                )
+                and not _is_meta_degrade_artifact(a)
+            )
+        ]
+        status, summary = _analysis_bridge_status(
+            compact,
+            job_status=str(result.job.status),
+            summary=result.summary or "",
+            auth_note=auth_note,
+        )
         return BridgeResult(
             job_id=result.job.id,
-            status=str(result.job.status),
+            status=status,
             mode=str(result.mode),
             num_artifacts=len(artifacts),
             artifact_types=sorted({str(a.type) for a in artifacts}),
-            summary=_summary_leading_with_auth(result.summary or "", auth_note),
+            summary=_summary_leading_with_auth(summary, auth_note),
             artifacts=compact,
             auth_failure=auth_note,
             adapter=adapter,

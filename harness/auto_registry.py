@@ -396,15 +396,17 @@ def sync_agentic_registry(force: bool = False) -> dict:
             "bedrock": "bedrock",
         }
         
-        # Detect live providers with keys
+        # Detect live providers with usable keys (get_provider_key rejects
+        # disconnects and doctor/test/placeholder tokens).
         live_providers = []
         for p in PROVIDERS:
             if p.name in disconnected:
                 continue
             key = get_provider_key(p)
-            if key:
-                agentic_name = provider_map.get(p.name, p.name)
-                live_providers.append((p.name, agentic_name, key))
+            if not key:
+                continue
+            agentic_name = provider_map.get(p.name, p.name)
+            live_providers.append((p.name, agentic_name, key))
         
         # Build agentic specs for each live provider
         new_agentic_specs = []

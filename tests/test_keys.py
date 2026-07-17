@@ -97,7 +97,10 @@ def test_clear_api_key():
     assert status["masked"] == ""
 
 
-def test_api_settings_endpoints_with_key():
+def test_api_settings_endpoints_with_key(monkeypatch):
+    # Keep rebuild on clear off a live openrouter pilot (ambient workspace
+    # driver) so clearing the key cannot 500 the settings handler.
+    monkeypatch.setenv("HARNESS_DRIVER", "stub-oracle-v2")
     httpd, port, srv = _server()
     try:
         # GET settings initial check
@@ -108,14 +111,14 @@ def test_api_settings_endpoints_with_key():
         
         # POST with no token (403)
         try:
-            _post(port, "/api/settings", {"api_key": "sk-or-test-fake1234"},
+            _post(port, "/api/settings", {"api_key": "sk-or-live-fake1234"},
                   {"Content-Type": "application/json"})
             assert False, "Should have returned 403"
         except urllib.error.HTTPError as e:
             assert e.code == 403
             
         # POST with valid token
-        post_resp = _post(port, "/api/settings", {"api_key": "sk-or-test-fake1234"},
+        post_resp = _post(port, "/api/settings", {"api_key": "sk-or-live-fake1234"},
                           {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN})
         assert post_resp.status == 200
         post_data = json.loads(post_resp.read().decode())
@@ -123,7 +126,7 @@ def test_api_settings_endpoints_with_key():
         assert post_data["has_api_key"] is True
         assert post_data["api_key_masked"] == "....1234"
         assert post_data["masked"] == "....1234"
-        assert "sk-or-test-fake1234" not in post_data["api_key_masked"]
+        assert "sk-or-live-fake1234" not in post_data["api_key_masked"]
         
         # Verify subsequent GET
         get_resp = _get(port, "/api/settings")
@@ -146,11 +149,17 @@ def test_api_settings_endpoints_with_key():
 
 def test_legacy_keys_fallback_when_state_dir_empty(monkeypatch, tmp_path):
     """Upgraded installs with keys only in ~/.pmharness/keys.json stay readable."""
-    state_dir = tmp_path / "state"
+    home = tmp_path / ".pmharness"
+    home.mkdir()
+    state_dir = home / "state"
     state_dir.mkdir()
-    legacy_file = tmp_path / "keys.json"
-    legacy_file.write_text(json.dumps({"openrouter": "sk-or-legacy-1234"}))
+    legacy_file = home / "keys.json"
+    legacy_file.write_text(
+        json.dumps({"openrouter": "sk-or-legacy-1234"}), encoding="utf-8"
+    )
     monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
     import importlib
     from harness import keys as K
@@ -161,6 +170,25 @@ def test_legacy_keys_fallback_when_state_dir_empty(monkeypatch, tmp_path):
     status = K.get_api_key_status("openrouter")
     assert status["has_key"] is True
     assert status["masked"] == "....1234"
+
+
+def test_ephemeral_state_dir_ignores_legacy_keys(monkeypatch, tmp_path):
+    """Temp / test HARNESS_STATE_DIR must not read or write ~/.pmharness/keys.json."""
+    state_dir = tmp_path / "ephemeral-state"
+    state_dir.mkdir()
+    legacy_file = tmp_path / "keys.json"
+    legacy_file.write_text(
+        json.dumps({"openrouter": "sk-or-legacy-leak"}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
+
+    import importlib
+    from harness import keys as K
+    importlib.reload(K)
+    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
+
+    assert K.get_keys_file_path() == str(state_dir / "keys.json")
+    assert K.get_api_key_status("openrouter")["has_key"] is False
 
 
 def test_state_dir_keys_preferred_over_legacy(monkeypatch, tmp_path):
@@ -378,7 +406,7 @@ def test_doctor_reports_bedrock(monkeypatch, capsys, tmp_path):
     assert "not configured" in out
 
     set_bedrock_credentials({
-        "AWS_BEARER_TOKEN_BEDROCK": "doctor-bearer-token-1",
+        "AWS_BEARER_TOKEN_BEDROCK": "live-bearer-token-for-doctor-1",
         "AWS_REGION": "us-east-1",
     })
     code = cli.main(["doctor"])
@@ -386,3 +414,93 @@ def test_doctor_reports_bedrock(monkeypatch, capsys, tmp_path):
     assert code == 0
     assert "bearer auth" in out
     assert "us-east-1" in out
+
+
+def test_placeholder_bedrock_credential_rejected(monkeypatch, tmp_path):
+    """doctor-/test-/placeholder tokens must not count as configured Bedrock auth."""
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    for ev in (
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    ):
+        monkeypatch.delenv(ev, raising=False)
+
+    from harness.keys import (
+        is_placeholder_credential,
+        set_bedrock_credentials,
+        bedrock_credential_token,
+        resolve_usable_bedrock_credentials,
+        get_bedrock_status,
+    )
+    from harness.providers import get_provider
+    from harness.registry_wizard import get_provider_key as wizard_key
+
+    assert is_placeholder_credential("doctor-bearer-token-1") is True
+    assert is_placeholder_credential("test-fake-key") is True
+    assert is_placeholder_credential("dummy_secret") is True
+    assert is_placeholder_credential("placeholder-key") is True
+    assert is_placeholder_credential("EXAMPLE-token") is True
+    # Mid-string "placeholder" / unrelated live tokens are not rejected.
+    assert is_placeholder_credential("my-placeholder-key") is False
+    assert is_placeholder_credential("live-bearer-token-xyz9") is False
+
+    set_bedrock_credentials({
+        "AWS_BEARER_TOKEN_BEDROCK": "doctor-bearer-token-1",
+        "AWS_REGION": "us-east-1",
+    })
+    assert bedrock_credential_token() is None
+    assert resolve_usable_bedrock_credentials() is None
+    assert get_bedrock_status()["configured"] is False
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") is None
+
+    p = get_provider("bedrock")
+    assert p is not None
+    assert p.key() is None
+    assert wizard_key(p) is None
+
+
+def test_disconnect_bedrock_scrubs_env_in_process(monkeypatch, tmp_path):
+    """Disabling bedrock must scrub AWS_* from os.environ without a restart."""
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    for ev in (
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    ):
+        monkeypatch.delenv(ev, raising=False)
+
+    from harness.keys import (
+        set_bedrock_credentials,
+        set_provider_enabled,
+        get_disconnected,
+        bedrock_credential_token,
+    )
+    from harness.api.providers import post_providers_key
+    from unittest.mock import MagicMock
+
+    set_bedrock_credentials({
+        "AWS_BEARER_TOKEN_BEDROCK": "live-bedrock-bearer-abc1",
+    })
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") == "live-bedrock-bearer-abc1"
+
+    set_provider_enabled("bedrock", False)
+    assert "bedrock" in get_disconnected()
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") is None
+    assert bedrock_credential_token() is None
+
+    # Re-enable and clear via the HTTP handler path (also scrubs + resyncs).
+    set_provider_enabled("bedrock", True)
+    set_bedrock_credentials({
+        "AWS_BEARER_TOKEN_BEDROCK": "live-bedrock-bearer-abc1",
+    })
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") == "live-bedrock-bearer-abc1"
+
+    svc = MagicMock()
+    svc.cfg.driver = "stub"
+    svc.driver_provider_available.return_value = True
+    code, body = post_providers_key(
+        {"provider": "bedrock", "action": "disable"}, svc
+    )
+    assert code == 200
+    assert body.get("disconnected") is True
+    assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") is None
+    assert "bedrock" in get_disconnected()

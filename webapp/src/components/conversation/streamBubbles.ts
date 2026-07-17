@@ -69,6 +69,27 @@ export function appendStreamingTextToItems(
 }
 
 /**
+ * Seal the open pilot streaming bubble in place so a later phase (thinking /
+ * tool card) cannot re-parent or reopen it. Empty bubbles are dropped.
+ * Worker-stream previews are left alone (ephemeral; action_result drops them).
+ */
+export function finalizeOpenPilotBubble(items: Item[]): Item[] {
+  const idx = findStreamingBubbleIdx(items, { excludeWorkerStream: true });
+  if (idx < 0) return items;
+  const bubble = items[idx] as { kind: "msg"; msg: Msg };
+  const finalText = (bubble.msg.text || "").trim();
+  if (!finalText) {
+    return [...items.slice(0, idx), ...items.slice(idx + 1)];
+  }
+  const updated = [...items];
+  updated[idx] = {
+    kind: "msg",
+    msg: { ...bubble.msg, streaming: false },
+  };
+  return updated;
+}
+
+/**
  * Typewriter drain rate: scale with backlog so live streams never lag
  * arbitrarily far behind; accelerate when the stream has ended.
  */

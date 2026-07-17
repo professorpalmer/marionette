@@ -55,6 +55,7 @@ export {
 export {
   findStreamingBubbleIdx,
   appendStreamingTextToItems,
+  finalizeOpenPilotBubble,
   typewriterCharsPerFrame,
 } from "./streamBubbles";
 export { derivePillStatus } from "./pillStatus";
@@ -74,6 +75,7 @@ export {
   appendCompaction,
   truncateWaitHint,
   shouldPaintThinking,
+  sealOpenStreamSurfaces,
   ensureAssistantStreamingBubble,
   ensureWorkerStreamingBubble,
   finalizePilotMessage,

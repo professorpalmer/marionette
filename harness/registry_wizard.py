@@ -27,28 +27,27 @@ def get_models_file_path() -> str:
 
 # Helpers for provider keys
 def get_provider_key(p: Provider) -> Optional[str]:
-    # p.key() already returns None for an explicitly-disconnected provider; mirror
-    # that for the stored-keys fallback so a disconnect is honored everywhere.
-    try:
-        from .keys import get_disconnected
-        if p.name in get_disconnected():
-            return None
-    except Exception:
-        pass
+    """Return a usable provider key, or None.
+
+    Honors explicit disconnects, rejects doctor/test/placeholder tokens, and
+    for Bedrock routes through :func:`harness.keys.bedrock_credential_token`
+    (the single source of truth for Bedrock usability).
+    """
+    from .keys import (
+        bedrock_credential_token,
+        get_disconnected,
+        is_placeholder_credential,
+    )
+    if p.name in get_disconnected():
+        return None
+    if p.name == "bedrock":
+        return bedrock_credential_token()
     k = p.key()
-    if k:
+    if k and not is_placeholder_credential(k):
         return k
     stored = _read_keys()
     raw = stored.get(p.name, "")
-    if p.name == "bedrock":
-        from .keys import _normalize_bedrock_creds, bedrock_auth_present
-        creds = _normalize_bedrock_creds(raw)
-        if bedrock_auth_present(creds):
-            return (creds.get("AWS_BEARER_TOKEN_BEDROCK")
-                    or creds.get("AWS_ACCESS_KEY_ID")
-                    or None)
-        return None
-    if isinstance(raw, str) and raw:
+    if isinstance(raw, str) and raw and not is_placeholder_credential(raw):
         return raw
     return None
 

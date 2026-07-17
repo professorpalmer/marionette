@@ -19,6 +19,12 @@ def _isolate(monkeypatch):
     """Snapshot + restore harness.server's module-level _cfg around each test so
     driver mutations never leak into other tests."""
     monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
+    # Ambient Cursor CLI login on a developer machine must not steal fallback.
+    monkeypatch.delenv("CURSOR_CLI_LOGIN", raising=False)
+    monkeypatch.setattr(
+        "harness.cursor_cli_auth.is_authenticated",
+        lambda: False,
+    )
     saved = srv._cfg
     yield
     srv._cfg = saved
@@ -29,6 +35,16 @@ def _install_cfg(monkeypatch, enabled, driver, disconnect=None):
     json.dump({"enabled": enabled}, open(os.path.join(state, "models.json"), "w"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-real")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-...rted")
+    # Pin the curated set so ambient ~/.pmharness model visibility cannot
+    # insert cursor-cli (or other) specs ahead of the fixtures under test.
+    monkeypatch.setattr(
+        "harness.model_visibility.get_enabled",
+        lambda: list(enabled),
+    )
+    monkeypatch.setattr(
+        "harness.model_visibility.enabled_pilots",
+        lambda: list(enabled),
+    )
     import importlib
     from harness import keys as K
     importlib.reload(K)

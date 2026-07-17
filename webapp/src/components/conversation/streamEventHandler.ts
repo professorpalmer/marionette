@@ -30,10 +30,12 @@ import {
   finalizeStreamingBubbleOnActionResult,
   formatDistilledNotice,
   formatWikiAutoIngestNotice,
+  sealOpenStreamSurfaces,
   shouldPaintThinking,
   truncateWaitHint,
   workspaceRootFromActionResult,
 } from "./streamApply";
+import { finalizeOpenPilotBubble } from "./streamBubbles";
 import { turnHasLiveInvestigation } from "../../lib/turnProgress";
 
 export type StreamEvent = { kind: string; data?: any };
@@ -158,9 +160,11 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         prev === "streaming" || prev === "executing" ? prev : "thinking"
       );
       if (d.delta && chunk) {
-        setItems((p) => upsertStreamingThinking(p, chunk));
+        // Seal any open pilot bubble first so thinking cannot reopen or
+        // re-parent streamed assistant text into a reasoning row.
+        setItems((p) => upsertStreamingThinking(finalizeOpenPilotBubble(p), chunk));
       } else if (chunk.trim()) {
-        setItems((p) => appendNonStreamingThinking(p, chunk));
+        setItems((p) => appendNonStreamingThinking(finalizeOpenPilotBubble(p), chunk));
       }
     } else if (ev.kind === "tool_prep") {
       const name = String(d.name || "").trim();
@@ -170,8 +174,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setStatus((prev) =>
         prev === "streaming" || prev === "executing" ? prev : "thinking"
       );
+      // Seal thinking + assistant surfaces; tool cards only ever hold tool data.
       setItems((p) =>
-        upsertToolPrep(p, name || "tool_call", {
+        upsertToolPrep(sealOpenStreamSurfaces(p), name || "tool_call", {
           goal: d.goal != null ? String(d.goal) : undefined,
           id: callId || undefined,
           status: d.status != null ? String(d.status) : undefined,
@@ -184,7 +189,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // cards (Cursor CLI / investigation), paint deltas instantly — the
       // typewriter over an open Investigating fold reads as chat "loading
       // from top to bottom" after hard commands. Bare prose turns still
-      // use the cadence typewriter.
+      // use the cadence typewriter. ensureAssistantStreamingBubble seals
+      // open thinking so reasoning stays on its own finalized row.
       const investigating = turnHasLiveInvestigation(itemsRef.current, true);
       setItems((p) => ensureAssistantStreamingBubble(p, { isPlan: planTurnRef.current }));
       const chunk = d.text || "";

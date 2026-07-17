@@ -1,11 +1,30 @@
 from __future__ import annotations
 import os
+import re
 import json
 import tempfile
 from typing import Optional
 
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
+
+# Doctor / hermetic fixtures sometimes write obvious fake tokens into keys.json.
+# Those must never mark a provider "configured" for registry seeding or routing.
+_PLACEHOLDER_CREDENTIAL_RE = re.compile(
+    r"(?i)^(doctor|test|dummy|placeholder|example)[-_]"
+)
+
+
+def is_placeholder_credential(value: Optional[str]) -> bool:
+    """True for obvious test/doctor/dummy/placeholder/example credential strings.
+
+    Matches values whose first segment is a known fake prefix followed by
+    ``-`` or ``_`` (case-insensitive), e.g. ``doctor-bearer-token-1``.
+    """
+    text = (value or "").strip()
+    if not text:
+        return False
+    return _PLACEHOLDER_CREDENTIAL_RE.match(text) is not None
 
 _KEYS_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "keys.json")
 
@@ -16,8 +35,18 @@ def get_keys_file_path() -> str:
         # MIGRATION: earlier builds wrote keys.json to ~/.pmharness/keys.json.
         # Once HARNESS_STATE_DIR anchored to ~/.pmharness/state, upgraded installs
         # with keys only in the parent directory appeared keyless until re-entered.
+        # Only fall back for real harness homes — never for ephemeral test /
+        # temp state dirs (same rule as disconnected.json).
         if not os.path.exists(p) and os.path.exists(_KEYS_FILE):
-            return _KEYS_FILE
+            try:
+                home_root = os.path.normcase(
+                    os.path.abspath(os.path.expanduser("~/.pmharness"))
+                )
+                abs_state = os.path.normcase(os.path.abspath(state_dir))
+                if abs_state.startswith(home_root):
+                    return _KEYS_FILE
+            except Exception:
+                pass
         return p
     return _KEYS_FILE
 
@@ -66,45 +95,76 @@ def _normalize_bedrock_creds(raw) -> dict:
     return out
 
 
+def _bedrock_secret_fields_usable(creds: dict) -> bool:
+    """True when ``creds`` has a non-placeholder bearer or access-key pair."""
+    bearer = (creds.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip()
+    if bearer:
+        return not is_placeholder_credential(bearer)
+    access = (creds.get("AWS_ACCESS_KEY_ID") or "").strip()
+    secret = (creds.get("AWS_SECRET_ACCESS_KEY") or "").strip()
+    if access and secret:
+        return not (
+            is_placeholder_credential(access)
+            or is_placeholder_credential(secret)
+        )
+    return False
+
+
 def bedrock_auth_present(creds: Optional[dict] = None) -> bool:
     """True when bearer token OR (access key + secret) is available.
 
-    When ``creds`` is None, reads the live process environment (and does not
-    fall back to the keyfile — callers that need stored+env should merge first).
+    Placeholder / doctor / test tokens do not count. When ``creds`` is None,
+    reads the live process environment (and does not fall back to the keyfile
+    — callers that need stored+env should merge first via
+    :func:`resolve_usable_bedrock_credentials`).
     """
     if creds is None:
-        bearer = (os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip()
-        if bearer:
-            return True
-        access = (os.environ.get("AWS_ACCESS_KEY_ID") or "").strip()
-        secret = (os.environ.get("AWS_SECRET_ACCESS_KEY") or "").strip()
-        return bool(access and secret)
-    bearer = (creds.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip()
-    if bearer:
-        return True
-    access = (creds.get("AWS_ACCESS_KEY_ID") or "").strip()
-    secret = (creds.get("AWS_SECRET_ACCESS_KEY") or "").strip()
-    return bool(access and secret)
+        return _bedrock_secret_fields_usable({
+            "AWS_BEARER_TOKEN_BEDROCK": os.environ.get("AWS_BEARER_TOKEN_BEDROCK", ""),
+            "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", ""),
+            "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
+        })
+    return _bedrock_secret_fields_usable(creds)
+
+
+def resolve_usable_bedrock_credentials() -> Optional[dict]:
+    """Single source of truth: usable Bedrock auth material, or None.
+
+    Returns None when:
+    - ``bedrock`` is in :func:`get_disconnected`
+    - credentials are obvious test/doctor placeholders
+    - neither a bearer token nor (access key + secret) is present
+
+    Merges process env over the stored keyfile so startup-before-inject and
+    live Settings updates both resolve consistently.
+    """
+    if "bedrock" in get_disconnected():
+        return None
+    effective = _normalize_bedrock_creds(_read_keys().get("bedrock"))
+    for field in BEDROCK_ENV_FIELDS:
+        env_val = (os.environ.get(field) or "").strip()
+        if env_val:
+            effective[field] = env_val
+    if not _bedrock_secret_fields_usable(effective):
+        return None
+    return effective
 
 
 def bedrock_credential_token() -> Optional[str]:
-    """Opaque credential string for Provider.key() / masking, or None."""
-    if "bedrock" in get_disconnected():
+    """Opaque credential string for Provider.key() / masking, or None.
+
+    Honors disconnect, rejects placeholders, and requires real auth material
+    (bearer, or access key + secret). All Bedrock "is configured?" checks
+    should go through this or :func:`resolve_usable_bedrock_credentials`.
+    """
+    creds = resolve_usable_bedrock_credentials()
+    if not creds:
         return None
-    bearer = (os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip()
-    if bearer:
-        return bearer
-    access = (os.environ.get("AWS_ACCESS_KEY_ID") or "").strip()
-    secret = (os.environ.get("AWS_SECRET_ACCESS_KEY") or "").strip()
-    if access and secret:
-        return access
-    # Fall back to stored keyfile (startup may not have injected yet).
-    stored = _normalize_bedrock_creds(_read_keys().get("bedrock"))
-    if bedrock_auth_present(stored):
-        return (stored.get("AWS_BEARER_TOKEN_BEDROCK")
-                or stored.get("AWS_ACCESS_KEY_ID")
-                or None)
-    return None
+    return (
+        (creds.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip()
+        or (creds.get("AWS_ACCESS_KEY_ID") or "").strip()
+        or None
+    )
 
 
 def _mask_secret(value: str) -> str:
@@ -160,15 +220,17 @@ def _apply_bedrock_to_env(creds: dict, *, clear_absent_secrets: bool = True) -> 
     """Inject Bedrock fields into os.environ.
 
     Secret fields absent from ``creds`` are scrubbed (so a saved bearer-only
-    snapshot does not leave a stale access key in the process). Region/model
-    config is set when present; absent config fields are left alone so a
-    shell-exported ``AWS_REGION`` survives a bearer-only save.
+    snapshot does not leave a stale access key in the process). Obvious
+    doctor/test/placeholder secrets are never injected (and clear any stale
+    value) so Puppetmaster env sniffers cannot treat them as live auth.
+    Region/model config is set when present; absent config fields are left
+    alone so a shell-exported ``AWS_REGION`` survives a bearer-only save.
     """
     if not isinstance(creds, dict):
         creds = {}
     for field in BEDROCK_SECRET_FIELDS:
         val = (creds.get(field) or "").strip()
-        if val:
+        if val and not is_placeholder_credential(val):
             os.environ[field] = val
         elif clear_absent_secrets and field in os.environ:
             del os.environ[field]
@@ -414,9 +476,13 @@ def unmark_disconnected(reach: str) -> None:
         _write_disconnected(names)
 
 
-def _scrub_provider_env(reach: str) -> None:
+def scrub_provider_env(reach: str) -> None:
     """Remove a provider's env vars from os.environ (so a shell-exported key
-    cannot make a deliberately-disconnected provider appear available)."""
+    cannot make a deliberately-disconnected provider appear available).
+
+    For bedrock this clears AWS_BEARER_TOKEN_BEDROCK, AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, and region/model config fields.
+    """
     from .providers import get_provider
     p = get_provider(reach)
     if reach == "bedrock" or (p and getattr(p, "api_mode", "") == "bedrock"):
@@ -429,6 +495,10 @@ def _scrub_provider_env(reach: str) -> None:
     for ev in vars_to_clear:
         if ev in os.environ:
             del os.environ[ev]
+
+
+# Back-compat alias (internal callers / older tests).
+_scrub_provider_env = scrub_provider_env
 
 
 def scrub_disconnected_env() -> None:
@@ -451,6 +521,8 @@ def get_api_key_status(reach: str) -> dict:
     key = keys.get(reach, "")
     if isinstance(key, dict):
         # Non-bedrock structured entries are not single-string API keys.
+        return {"has_key": False, "masked": ""}
+    if key and is_placeholder_credential(key):
         return {"has_key": False, "masked": ""}
     if not key:
         # Credential-pool OAuth / multi-key entries count as configured.
@@ -496,16 +568,21 @@ def set_api_key(reach: str, value: str):
         keys[reach] = value
         _write_keys(keys)
         env_var = get_env_var_for_reach(reach)
-        os.environ[env_var] = value
-        # Reconnecting clears the explicit-disconnect flag.
-        unmark_disconnected(reach)
-        # Keep the credential pool in sync so multi-key rotation can include
-        # keys pasted via the classic Settings form.
-        try:
-            from .credential_pool import add_api_key
-            add_api_key(reach, value, label=f"{reach}-settings")
-        except Exception:
-            pass
+        if is_placeholder_credential(value):
+            # Persist for inspection but do not inject into the live process.
+            if env_var in os.environ:
+                del os.environ[env_var]
+        else:
+            os.environ[env_var] = value
+            # Reconnecting clears the explicit-disconnect flag.
+            unmark_disconnected(reach)
+            # Keep the credential pool in sync so multi-key rotation can include
+            # keys pasted via the classic Settings form.
+            try:
+                from .credential_pool import add_api_key
+                add_api_key(reach, value, label=f"{reach}-settings")
+            except Exception:
+                pass
     else:
         clear_api_key(reach)
 
@@ -534,14 +611,17 @@ def load_api_keys_on_startup(reach: str):
                 pass
     keys = _read_keys()
     # Inject every stored provider credential so pilots/workers see them after
-    # restart — not only the active reach.
+    # restart — not only the active reach. Skip obvious placeholders so a stale
+    # doctor/test token in keys.json cannot seed the agentic catalog.
     for name, value in keys.items():
         if name == "bedrock":
             creds = _normalize_bedrock_creds(value)
-            if creds:
+            if creds and _bedrock_secret_fields_usable(creds):
                 _apply_bedrock_to_env(creds)
             continue
         if isinstance(value, str) and value.strip():
+            if is_placeholder_credential(value):
+                continue
             env_var = get_env_var_for_reach(name)
             if env_var:
                 os.environ[env_var] = value

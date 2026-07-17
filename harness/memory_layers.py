@@ -210,12 +210,15 @@ def measure_l2_workspace(state_dir: str, repo: str = "") -> dict[str, Any]:
         memory_paths = []
         if state_dir:
             memory_paths.append(os.path.join(os.path.abspath(state_dir), "memory.json"))
-        try:
-            from .memory_store import MEMORY_PATH
+        # The user-global memory store leaks real ~/.pmharness state into
+        # hermetic tmp_path tests; same convention as the ephemeral-root guards.
+        if "PYTEST_CURRENT_TEST" not in os.environ:
+            try:
+                from .memory_store import MEMORY_PATH
 
-            memory_paths.append(str(MEMORY_PATH))
-        except Exception:
-            pass
+                memory_paths.append(str(MEMORY_PATH))
+            except Exception:
+                pass
         seen = set()
         for path in memory_paths:
             if path in seen:

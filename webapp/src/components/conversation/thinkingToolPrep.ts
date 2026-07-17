@@ -19,11 +19,27 @@ export function finalizeStreamingThinking(items: Item[]): Item[] {
 
 /** Append/update the open streaming reasoning row for the current turn.
  * Preserves a durable `id` across token upserts so the ActivityGroup React key
- * (and expand/scroll state) does not remount on every thinking delta. */
+ * (and expand/scroll state) does not remount on every thinking delta.
+ *
+ * Phase barrier: never reopen or append into a thinking row that already has a
+ * later assistant bubble or tool card after it — those surfaces are committed.
+ * A new thinking_delta after a message/tool always APPENDs a fresh thinking row. */
 export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     if (it.kind === "msg" && it.msg.role === "user") break;
+    // Committed surfaces after an earlier thinking row: seal any still-open
+    // reasoning and start a new row so content cannot jump back into thinking.
+    if (
+      it.kind === "card"
+      || (it.kind === "msg" && it.msg.role === "assistant")
+    ) {
+      const sealed = finalizeStreamingThinking(items);
+      return [
+        ...sealed,
+        { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() },
+      ];
+    }
     if (it.kind === "thinking" && it.streaming) {
       const copy = items.slice();
       copy[i] = {

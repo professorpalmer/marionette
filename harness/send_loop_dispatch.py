@@ -39,9 +39,24 @@ def _is_substantive_artifact(a: dict) -> bool:
     complete", "no issues found") with no evidence. Substance = enough prose to
     be an actual finding, or a shorter claim that at least cites a concrete
     file/line. Keeps the badge honest without judging content quality by LLM.
+
+    Reasoning fragments ("Now let me look at...") and meta degrade markers
+    (no_tool_calls / without structured findings) are never substantive --
+    they must not turn the swarm badge green or masquerade as findings.
     """
     try:
-        text = str(a.get('body') or a.get('headline') or '').strip()
+        try:
+            from pmharness.bridge import (
+                _is_meta_degrade_artifact,
+                _looks_like_reasoning_fragment,
+            )
+            if _is_meta_degrade_artifact(a):
+                return False
+            text = str(a.get('body') or a.get('headline') or '').strip()
+            if _looks_like_reasoning_fragment(text):
+                return False
+        except Exception:
+            text = str(a.get('body') or a.get('headline') or '').strip()
         if len(text) >= 200:
             return True
         return len(text) >= 40 and bool(_PATH_REF_RE.search(text))
@@ -115,7 +130,18 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         yield ConvEvent('swarm_auth_failure', {'id': aid, 'job_id': result.job_id, 'message': auth_failure})
     _SIGNAL = {'finding', 'risk', 'decision'}
     _all_arts = list(result.artifacts)
-    _signal = [a for a in _all_arts if str(a.get('type')) in _SIGNAL]
+    # Reasoning-only fragments must never appear as finding/risk/decision
+    # headlines in the digest (same submit contract as swarm workers).
+    try:
+        from pmharness.bridge import _looks_like_reasoning_fragment as _reasoning_frag
+    except Exception:
+        def _reasoning_frag(_t):  # type: ignore[misc]
+            return False
+    _signal = [
+        a for a in _all_arts
+        if str(a.get('type')) in _SIGNAL
+        and not _reasoning_frag(a.get('body') or a.get('headline') or '')
+    ]
     _plumbing = [a for a in _all_arts if str(a.get('type')) not in _SIGNAL]
     # Keep auth-tagged plumbing (verification) ahead of other plumbing so a
     # zero-signal digest slice cannot drop the credential failure.

@@ -102,17 +102,58 @@ type ActivityItem =
   | { kind: "msg"; msg: Msg };
 
 
+/**
+ * Assistants that painted AFTER a tool card in the same turn may fold into the
+ * investigation box. Pre-tool assistant bubbles are sticky: once they rendered
+ * as standalone chat, later cards must not re-parent them into the fold
+ * (that was the mid-turn surface flicker).
+ *
+ * While the agent loop is open, every post-tool assistant stays folded (still
+ * mid-turn). When the loop closes, only assistants that still have a later card
+ * remain intermediate — the trailing final answer stands alone.
+ */
+export function collectIntermediateAssistantItems(
+  items: Item[],
+  agentLoopOpen: boolean,
+): Set<Item> {
+  const intermediateItems = new Set<Item>();
+  let seenCardInTurn = false;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind === "msg" && item.msg.role === "user") {
+      seenCardInTurn = false;
+      continue;
+    }
+    if (item.kind === "card") {
+      seenCardInTurn = true;
+      continue;
+    }
+    if (item.kind !== "msg" || item.msg.role !== "assistant") continue;
+    if (!seenCardInTurn) continue; // pre-tool bubble — never reclassify
+
+    if (agentLoopOpen) {
+      intermediateItems.add(item);
+      continue;
+    }
+    // Loop closed: fold only if another tool card still follows this bubble.
+    let cardAfter = false;
+    for (let j = i + 1; j < items.length; j++) {
+      const later = items[j];
+      if (later.kind === "msg" && later.msg.role === "user") break;
+      if (later.kind === "card") {
+        cardAfter = true;
+        break;
+      }
+    }
+    if (cardAfter) intermediateItems.add(item);
+  }
+  return intermediateItems;
+}
+
 function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
-  // Mental model (Cursor/Hermes): a turn is [user msg] + [investigation] +
-  // [final answer]. The investigation -- every tool card, reasoning block,
-  // codegraph chip, AND per-step micro-narration -- folds into ONE collapsible
-  // box. Only the user message and the FINAL assistant answer render standalone.
-  //
-  // To classify an assistant message as "mid-investigation" (fold) vs "final
-  // answer" (standalone), we look ahead: if a tool card appears later in this
-  // turn (before the next user message), this assistant msg is just per-step
-  // chatter and belongs in the box. The last assistant msg with no card after it
-  // is the real answer.
+  // Mental model: a turn is [user msg] + sticky pre-tool bubbles +
+  // [investigation fold: thinking / tools / post-tool micro-narration] +
+  // [final answer]. Surfaces do not reclassify after first paint.
   const grouped: GroupedItem[] = [];
   let currentGroup: ActivityItem[] = [];
 
@@ -130,13 +171,8 @@ function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): Groupe
     if (item.kind === "tool_prep") continue;
 
     if (item.kind === "msg") {
-      // Cursor-tight model: intermediate per-step narration -- an assistant
-      // message with MORE tool activity still to come this turn -- folds INTO the
-      // collapsed activity box as a tight muted line, instead of a full standalone
-      // bubble that spams the transcript and scrolls the view. Only user messages
-      // and the FINAL assistant answer break out standalone at full size.
-      // Fold mid-investigation assistants (including live streaming narration)
-      // into the activity box so the bubble does not jump in/out between tools.
+      // Post-tool micro-narration folds into the investigation box. Pre-tool
+      // assistant bubbles stay standalone permanently (no look-ahead reparent).
       if (item.msg.role === "assistant" && intermediateItems.has(item)) {
         currentGroup.push(item);
       } else {
@@ -323,53 +359,7 @@ export const TranscriptList = memo(function TranscriptList({
     || status === "executing"
     || status === "streaming";
 
-  const intermediateItems = new Set<Item>();
-  let hasSeenCardOrAssistantMsgInTurn = false;
-  for (let j = items.length - 1; j >= 0; j--) {
-    const item = items[j];
-    if (item.kind === "msg" && item.msg.role === "user") {
-      hasSeenCardOrAssistantMsgInTurn = false;
-    } else if (item.kind === "msg" && item.msg.role === "assistant") {
-      if (hasSeenCardOrAssistantMsgInTurn) {
-        intermediateItems.add(item);
-      }
-      hasSeenCardOrAssistantMsgInTurn = true;
-    } else if (item.kind === "card") {
-      hasSeenCardOrAssistantMsgInTurn = true;
-    }
-  }
-
-  // While the agent loop is open, the trailing assistant after tools is still
-  // mid-turn narration — not the final answer. The backward pass above only
-  // marks assistants that already have a card AFTER them; between tool batches
-  // there is no card yet, so those bubbles used to stand alone and lurch the
-  // fold (and cut off Steer). Fold every current-turn assistant when tools ran.
-  if (agentLoopOpen) {
-    let turnStart = 0;
-    for (let i = items.length - 1; i >= 0; i--) {
-      const it = items[i];
-      if (it.kind === "msg" && it.msg.role === "user") {
-        turnStart = i + 1;
-        break;
-      }
-    }
-    let turnHasCards = false;
-    for (let i = turnStart; i < items.length; i++) {
-      if (items[i].kind === "card") {
-        turnHasCards = true;
-        break;
-      }
-    }
-    if (turnHasCards) {
-      for (let i = turnStart; i < items.length; i++) {
-        const it = items[i];
-        if (it.kind === "msg" && it.msg.role === "assistant") {
-          intermediateItems.add(it);
-        }
-      }
-    }
-  }
-
+  const intermediateItems = collectIntermediateAssistantItems(items, agentLoopOpen);
   const grouped = groupAgentActivity(items, intermediateItems);
 
   // PERF: window to the newest RENDER_WINDOW display groups. Walk newest-first,

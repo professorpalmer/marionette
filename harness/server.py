@@ -295,6 +295,48 @@ def _init_platform_lock() -> None:
             _diag("server.platform_lock_write", e)
 
 
+def _marionette_allowed_agentic_providers(pm_providers) -> set:
+    """Intersect Puppetmaster's sniff with Marionette's own key/disconnect state.
+
+    ``puppetmaster.providers.available_providers`` can report bedrock from
+    ``~/.aws/credentials`` or shell env even when Marionette has bedrock
+    disconnected or only a doctor/placeholder token in keys.json. Seeding must
+    never re-introduce those providers into models.json.
+    """
+    from .providers import PROVIDERS
+    from .registry_wizard import get_provider_key
+    from .keys import get_disconnected
+
+    disconnected = get_disconnected()
+    # harness name -> agentic/puppetmaster slug
+    harness_to_pm = {
+        "anthropic": "anthropic",
+        "openai": "openai-api",
+        "gemini": "gemini",
+        "openrouter": "openrouter",
+        "deepseek": "deepseek",
+        "zai": "zai",
+        "xai": "xai",
+        "bedrock": "bedrock",
+    }
+    live_pm = set()
+    for p in PROVIDERS:
+        if p.name in disconnected:
+            continue
+        if get_provider_key(p) is None:
+            continue
+        live_pm.add(harness_to_pm.get(p.name, p.name))
+    try:
+        candidates = set(pm_providers or ())
+    except TypeError:
+        candidates = set()
+    if not candidates:
+        # Puppetmaster reported nothing; still allow Marionette-live providers
+        # so a key pasted only into Settings seeds the catalog.
+        return live_pm
+    return candidates & live_pm
+
+
 def _seed_agentic_catalog() -> None:
     """Seed the standalone 'agentic' models into the Puppetmaster registry.
 
@@ -314,8 +356,9 @@ def _seed_agentic_catalog() -> None:
         env_path = os.environ.get("PUPPETMASTER_MODELS_PATH")
         registry_path = _Path(env_path) if env_path else default_registry_path()
         existing = load_registry(registry_path)
+        allowed = _marionette_allowed_agentic_providers(available_providers())
         merged, _report = merge_curated_into_registry(
-            "agentic", "api", existing, allowed_providers=available_providers()
+            "agentic", "api", existing, allowed_providers=allowed
         )
         save_registry(merged, registry_path)
     except Exception as e:
@@ -1608,6 +1651,8 @@ def _settings_services():
         save_workspace_driver=_save_workspace_driver,
         persist_env_setting=_persist_env_setting,
         get_settings_dict=_get_settings_dict,
+        driver_provider_available=_driver_provider_available,
+        resolve_available_driver=_resolve_available_driver,
     )
 
 

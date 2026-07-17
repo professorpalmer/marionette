@@ -387,6 +387,31 @@ def patch_subprocess_run(repo_path: str):
                 _original_run = None
 
 
+def _analysis_output_is_structured(
+    last_message: str, *, halt_reason: str = "",
+) -> tuple[bool, str]:
+    """Whether an analysis-mode worker's free-text output counts as findings.
+
+    Returns ``(ok, degrade_reason)``. Reasoning-only / empty / no_tool_calls
+    outputs must fail so they never surface as a clean completed artifact.
+    """
+    halt = (halt_reason or "").strip().lower()
+    if "no_tool_calls" in halt:
+        return False, "no structured findings (no_tool_calls)"
+    text = (last_message or "").strip()
+    if not text:
+        return False, "no structured findings"
+    try:
+        from pmharness.bridge import _looks_like_reasoning_fragment
+        if _looks_like_reasoning_fragment(text):
+            return False, "no structured findings (reasoning only)"
+    except Exception:
+        low = text.lower()
+        if low.startswith("now let me") or low.startswith("let me look"):
+            return False, "no structured findings (reasoning only)"
+    return True, ""
+
+
 class ProviderWorker:
     def __init__(
         self,
@@ -555,12 +580,31 @@ class ProviderWorker:
                 no_delegation=True,
             )
             
-            # Set the objective framing
-            worker_objective = (
-                f"IMPLEMENT TASK: {self.goal}\n\n"
-                "Edit the file(s) directly to complete this task. Read each target file at most once, then write the change. "
-                "Do not investigate beyond the files you must edit. Finish as soon as the change is complete."
-            )
+            # Set the objective framing. Analysis/review workers must follow the
+            # same submit contract as swarm briefs (structured findings before
+            # the turn budget ends) -- not the implement "edit then stop" brief.
+            if self.expects_diff:
+                worker_objective = (
+                    f"IMPLEMENT TASK: {self.goal}\n\n"
+                    "Edit the file(s) directly to complete this task. Read each target file at most once, then write the change. "
+                    "Do not investigate beyond the files you must edit. Finish as soon as the change is complete."
+                )
+            else:
+                try:
+                    from pmharness.bridge import _analysis_instruction
+                    worker_objective = _analysis_instruction(
+                        self.goal, wt_path, "explore", via_tool=False,
+                    )
+                except Exception:
+                    worker_objective = (
+                        f"ANALYSIS TASK: {self.goal}\n\n"
+                        f"Analyze the REAL codebase at {wt_path}. This is "
+                        "READ-ONLY: do not edit, create, or delete any files. "
+                        "ALWAYS end with a structured FINDING/RISK/DECISION "
+                        "summary (cite file:line evidence) BEFORE you run out "
+                        "of turns. Do not end on planning or mid-thought "
+                        "reasoning alone."
+                    )
             
             # Start the budget
             self.budget.start()
@@ -684,8 +728,10 @@ class ProviderWorker:
                         worktree=wt_path,
                         declarative_checks=check_payload,
                     )
-                # Analysis/review: empty diff is success; summarize from the
-                # same last-message / halt-reason builder as the patch path.
+                # Analysis/review: empty diff is only success when the worker
+                # produced structured findings. Free-text reasoning alone
+                # (e.g. "Now let me look at...") must fail degraded so the
+                # pilot re-dispatches -- same submit contract as swarm workers.
                 last_message = ""
                 halt_reason = ""
                 for ev in events:
@@ -693,6 +739,20 @@ class ProviderWorker:
                         last_message = ev.data.get("text") or ""
                     elif ev.kind == "auto_halt":
                         halt_reason = ev.data.get("reason") or ""
+                structured_ok, degrade_reason = _analysis_output_is_structured(
+                    last_message, halt_reason=halt_reason,
+                )
+                if not structured_ok:
+                    success = True  # clean worktree; the failure is contractual
+                    label = degrade_reason or "no structured findings"
+                    return WorkerResult(
+                        ok=False,
+                        error=label,
+                        summary=label,
+                        events=events,
+                        worktree=wt_path,
+                        declarative_checks=check_payload,
+                    )
                 summary_parts = []
                 if halt_reason:
                     summary_parts.append(f"Halt reason: {halt_reason}")
