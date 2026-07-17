@@ -34,14 +34,69 @@ conversation from the token-heavy investigation.
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Literal, Optional, get_args
 
 
-VALID_ACTION_KINDS = {"run_swarm", "call_mcp", "manage_mcp", "read_file", "write_file", "edit_file", "hash_edit", "run_command", "list_dir", "web_search", "web_fetch", "read_pdf", "search_codegraph", "search_files", "search_state", "search_tools", "query_wiki", "run_implement", "run_parallel", "route_task", "view_image", "memory", "open_project",
-                      "relocate_session", "session_bank",
-                      "lsp",
-                      "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
-                      "browser_scroll", "browser_back", "browser_get_text", "browser_screenshot"}
+# Canonical set of dispatchable action kinds. `__invalid__` is modeled
+# separately (InvalidAction) and is intentionally NOT part of ActionKind.
+ActionKind = Literal[
+    "run_swarm",
+    "call_mcp",
+    "manage_mcp",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "hash_edit",
+    "run_command",
+    "list_dir",
+    "web_search",
+    "web_fetch",
+    "read_pdf",
+    "search_codegraph",
+    "search_files",
+    "search_state",
+    "search_tools",
+    "query_wiki",
+    "run_implement",
+    "run_parallel",
+    "route_task",
+    "view_image",
+    "memory",
+    "open_project",
+    "relocate_session",
+    "session_bank",
+    "lsp",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_scroll",
+    "browser_back",
+    "browser_get_text",
+    "browser_screenshot",
+]
+
+VALID_ACTION_KINDS: frozenset[str] = frozenset(get_args(ActionKind))
+INVALID_ACTION_KIND = "__invalid__"
+
+
+def _optional_int(value: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _as_str_list(value: Any) -> list:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return value
+    return []
 
 
 @dataclass
@@ -180,6 +235,21 @@ class PilotAction:
 
 
 @dataclass
+class InvalidAction(PilotAction):
+    """Malformed/truncated tool-call carrier.
+
+    Not an ActionKind — validate() is a no-op so parse_tool_calls can surface
+    the error to the model without failing membership checks. Attribute-
+    compatible with PilotAction so dispatch can treat actions uniformly.
+    """
+
+    def validate(self) -> "InvalidAction":
+        if self.kind != INVALID_ACTION_KIND:
+            self.kind = INVALID_ACTION_KIND
+        return self
+
+
+@dataclass
 class PilotTurn:
     say: str = ""
     thinking: str = ""
@@ -194,6 +264,142 @@ class PilotError(ValueError):
     """Raised when a pilot envelope cannot be parsed/validated."""
 
 
+def from_wire(
+    kind: str,
+    raw: Optional[dict] = None,
+    *,
+    tool_call_id: str = "",
+    tool: str = "",
+) -> PilotAction:
+    """Build a validated PilotAction from a wire dict.
+
+    Shared by envelope coerce (`_coerce_actions`) and native/MCP tool mapping
+    (`_tool_name_to_action`) so both paths preserve the same fields: old_str/
+    new_str, memory_*, repo, start_line/limit, browser refs, tool_call_id, etc.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    arguments = raw.get("arguments") if "arguments" in raw else raw.get("args")
+    if arguments is None:
+        # Native tool args ARE the argument object; keep a copy for lsp/hash_edit/etc.
+        arguments = dict(raw) if raw else {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+    else:
+        arguments = dict(arguments)
+
+    path = (
+        raw.get("path")
+        or raw.get("file_path")
+        or raw.get("filename")
+        or raw.get("file")
+        or raw.get("filepath")
+        or ""
+    )
+    if kind == "relocate_session" and not str(path).strip():
+        path = (
+            raw.get("workspace_root")
+            or raw.get("repo")
+            or arguments.get("workspace_root")
+            or arguments.get("repo")
+            or ""
+        )
+    if kind == "relocate_session":
+        if path and not (arguments.get("workspace_root") or "").strip():
+            arguments["workspace_root"] = str(path)
+
+    content = (
+        raw.get("content")
+        or raw.get("text")
+        or raw.get("code")
+        or raw.get("file_contents")
+        or raw.get("contents")
+        or ""
+    )
+    old_str = (
+        raw.get("old_str")
+        or raw.get("old_string")
+        or raw.get("old")
+        or raw.get("search")
+        or ""
+    )
+    new_str = (
+        raw.get("new_str")
+        or raw.get("new_string")
+        or raw.get("new")
+        or raw.get("replace")
+        or ""
+    )
+    # Native edit_file historically fell back to content/text for new_str when
+    # the model used those aliases; keep that tolerance only when new_str is empty.
+    if not new_str and kind == "edit_file":
+        new_str = raw.get("content") or raw.get("text") or ""
+
+    command = raw.get("command") or raw.get("cmd") or raw.get("shell") or ""
+    query = raw.get("query") or ""
+    url = raw.get("url") or ""
+    instruction = raw.get("instruction") or ""
+    # Envelope often puts the brief on instruction/task; keep instruction
+    # distinct but fill goal when empty (matches prior coerce behavior).
+    goal = raw.get("goal") or raw.get("task") or instruction or ""
+    roles = _as_str_list(raw.get("roles"))
+    goals = _as_str_list(raw.get("goals"))
+    adapter = raw.get("adapter") or ""
+    mode = raw.get("mode") or ""
+
+    memory_action = ""
+    memory_content = ""
+    memory_id = ""
+    memory_category = "general"
+    if kind == "memory":
+        memory_action = raw.get("action") or raw.get("memory_action") or ""
+        memory_content = raw.get("content") or raw.get("text") or raw.get("memory_content") or ""
+        memory_id = raw.get("entry_id") or raw.get("id") or raw.get("memory_id") or ""
+        memory_category = raw.get("category") or raw.get("memory_category") or "general"
+
+    repo_arg = ""
+    if kind in ("run_implement", "run_parallel"):
+        repo_arg = (raw.get("repo") or raw.get("target_dir") or "").strip()
+    elif kind == "relocate_session":
+        repo_arg = (raw.get("repo") or "").strip()
+
+    resolved_tool = tool or raw.get("tool") or ""
+    resolved_tc_id = tool_call_id or raw.get("tool_call_id") or ""
+
+    browser_text = ""
+    if kind == "browser_type":
+        browser_text = (raw.get("text") or raw.get("value") or "").strip()
+
+    return PilotAction(
+        kind=str(kind),
+        goal=str(goal),
+        roles=roles,
+        tool=str(resolved_tool),
+        arguments=arguments,
+        path=str(path),
+        content=str(content),
+        command=str(command),
+        query=str(query),
+        url=str(url),
+        tool_call_id=str(resolved_tc_id),
+        goals=goals,
+        adapter=str(adapter),
+        mode=str(mode),
+        instruction=str(instruction),
+        old_str=str(old_str),
+        new_str=str(new_str),
+        memory_action=str(memory_action),
+        memory_content=str(memory_content),
+        memory_id=str(memory_id),
+        memory_category=str(memory_category),
+        ref=(raw.get("ref") or "").strip(),
+        text=browser_text,
+        direction=(raw.get("direction") or "").strip(),
+        repo=str(repo_arg),
+        start_line=_optional_int(raw.get("start_line")),
+        limit=_optional_int(raw.get("limit")),
+    ).validate()
+
+
 def _coerce_actions(raw_actions) -> list:
     actions = []
     if not raw_actions:
@@ -205,53 +411,16 @@ def _coerce_actions(raw_actions) -> list:
     for a in raw_actions:
         if not isinstance(a, dict):
             raise PilotError("each action must be an object")
-        kind = a.get("kind") or a.get("action") or "run_swarm"
-        # if a bare "tool" + "arguments" shape is given, treat as call_mcp
+        # When kind is present, "action" is a per-kind field (memory/manage_mcp op).
+        # Without kind, fall back to action as the kind name (legacy envelope shape).
+        if a.get("kind"):
+            kind = a.get("kind")
+        else:
+            kind = a.get("action") or "run_swarm"
         tool = a.get("tool") or ""
-        arguments = a.get("arguments") or a.get("args") or {}
         if tool and kind in ("run_swarm",) and ("goal" not in a and "instruction" not in a):
             kind = "call_mcp"
-        goal = a.get("goal") or a.get("instruction") or a.get("task") or ""
-        roles = a.get("roles") or []
-        if isinstance(roles, str):
-            roles = [roles]
-        if not isinstance(arguments, dict):
-            arguments = {}
-        path = a.get("path") or ""
-        content = a.get("content") or ""
-        command = a.get("command") or ""
-        query = a.get("query") or ""
-        url = a.get("url") or ""
-        goals = a.get("goals") or []
-        if isinstance(goals, str):
-            goals = [goals]
-        adapter = a.get("adapter") or ""
-        mode = a.get("mode") or ""
-        instruction = a.get("instruction") or ""
-        # Envelope actions often put relocate's target on workspace_root /
-        # repo rather than path; keep those aliases in arguments and promote
-        # to path so action_start goal + dispatch share one resolved root.
-        if kind == "relocate_session" and not str(path).strip():
-            path = (
-                a.get("workspace_root")
-                or a.get("repo")
-                or (arguments.get("workspace_root") if isinstance(arguments, dict) else None)
-                or (arguments.get("repo") if isinstance(arguments, dict) else None)
-                or ""
-            )
-        if kind == "relocate_session":
-            if not isinstance(arguments, dict):
-                arguments = {}
-            else:
-                arguments = dict(arguments)
-            if path and not (arguments.get("workspace_root") or "").strip():
-                arguments["workspace_root"] = str(path)
-        actions.append(PilotAction(kind=str(kind), goal=str(goal), roles=roles,
-                                   tool=str(tool), arguments=arguments,
-                                   path=str(path), content=str(content), command=str(command),
-                                   query=str(query), url=str(url),
-                                   goals=goals, adapter=str(adapter), mode=str(mode),
-                                   instruction=str(instruction)).validate())
+        actions.append(from_wire(str(kind), a, tool_call_id=str(a.get("tool_call_id") or "")))
     return actions
 
 
@@ -1011,105 +1180,18 @@ def build_tools_schema(
 
 
 def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> PilotAction:
+    if not isinstance(args, dict):
+        args = {}
     if name.startswith("mcp_"):
         parts = name.split("_", 2)
         if len(parts) >= 3:
-            server = parts[1]
-            tool_name = parts[2]
-            kind = "call_mcp"
-            tool = f"{server}.{tool_name}"
+            tool = f"{parts[1]}.{parts[2]}"
         else:
-            kind = "call_mcp"
             tool = name[4:]
-
-        return PilotAction(
-            kind=kind,
-            tool=tool,
-            arguments=args,
-            tool_call_id=tool_call_id
-        ).validate()
-    elif name in VALID_ACTION_KINDS:
-        kind = name
-        # Tolerant arg extraction: some models emit aliases (file_path/filename/file,
-        # text/code/file_contents) instead of the schema names. Accept the common ones
-        # so a slightly-off tool call still does the right thing instead of erroring.
-        path = (args.get("path") or args.get("file_path") or args.get("filename")
-                or args.get("file") or args.get("filepath") or "")
-        if kind == "relocate_session" and not path:
-            path = (args.get("workspace_root") or args.get("repo") or "")
-        content = (args.get("content") or args.get("text") or args.get("code")
-                   or args.get("file_contents") or args.get("contents") or "")
-        old_str = (args.get("old_str") or args.get("old_string") or args.get("old")
-                   or args.get("search") or "")
-        new_str = (args.get("new_str") or args.get("new_string") or args.get("new")
-                   or args.get("replace") or args.get("content") or args.get("text") or "")
-        command = (args.get("command") or args.get("cmd") or args.get("shell") or "")
-        query = args.get("query") or ""
-        url = args.get("url") or ""
-        goal = args.get("goal") or ""
-        roles = args.get("roles") or []
-        if isinstance(roles, str):
-            roles = [roles]
-        goals = args.get("goals") or []
-        if isinstance(goals, str):
-            goals = [goals]
-        adapter = args.get("adapter") or ""
-        mode = args.get("mode") or ""
-        instruction = args.get("instruction") or ""
-        memory_action = args.get("action") or ""
-        memory_content = args.get("content") or args.get("text") or ""
-        memory_id = args.get("entry_id") or args.get("id") or ""
-        memory_category = args.get("category") or "general"
-        start_line = args.get("start_line")
-        if start_line is not None:
-            try:
-                start_line = int(start_line)
-            except ValueError:
-                pass
-        limit = args.get("limit")
-        if limit is not None:
-            try:
-                limit = int(limit)
-            except ValueError:
-                pass
-
-        # Optional target-repo for run_implement / run_parallel dispatches --
-        # points the worker at a DIFFERENT git repo than the open workspace.
-        repo_arg = ""
-        if kind in ("run_implement", "run_parallel"):
-            repo_arg = (args.get("repo") or args.get("target_dir") or "").strip()
-
-        return PilotAction(
-            kind=kind,
-            path=path,
-            content=content,
-            command=command,
-            query=query,
-            url=url,
-            goal=goal,
-            roles=roles,
-            goals=goals,
-            adapter=adapter,
-            mode=mode,
-            instruction=instruction,
-            old_str=old_str,
-            new_str=new_str,
-            memory_action=memory_action,
-            memory_content=memory_content,
-            memory_id=memory_id,
-            memory_category=memory_category,
-            start_line=start_line,
-            limit=limit,
-            # Browser tool args (url reused from above).
-            ref=(args.get("ref") or "").strip(),
-            text=(args.get("text") or args.get("value") or "").strip() if kind == "browser_type" else "",
-            direction=(args.get("direction") or "").strip(),
-            repo=repo_arg,
-            arguments=args,
-            tool_call_id=tool_call_id
-        ).validate()
-    else:
-        raise PilotError(f"unknown native tool name: {name}")
+        return from_wire("call_mcp", args, tool_call_id=tool_call_id, tool=tool)
+    if name in VALID_ACTION_KINDS:
+        return from_wire(name, args, tool_call_id=tool_call_id)
+    raise PilotError(f"unknown native tool name: {name}")
 
 
 def _parse_lenient_json(s: str) -> dict:
@@ -1232,14 +1314,14 @@ def parse_tool_calls(tool_calls: list) -> list[PilotAction]:
             args_failed = True
 
         if args_failed:
-            actions.append(PilotAction(
-                kind="__invalid__",
+            actions.append(InvalidAction(
+                kind=INVALID_ACTION_KIND,
                 tool=name,
                 arguments={},
                 tool_call_id=tc_id,
                 content=(f"INVALID TOOL CALL '{name}': your previous tool call was TRUNCATED (arguments cut off). "
                          f"Use edit_file with a SMALL old_str/new_str snippet instead of writing the whole file."),
-            ))
+            ).validate())
             continue
 
         try:
@@ -1250,14 +1332,14 @@ def parse_tool_calls(tool_calls: list) -> list[PilotAction]:
             # its path) must NOT abort the whole turn and discard the other valid actions.
             # Record it as a failed action carrying the error so the loop can feed the
             # message back to the model and let it retry, instead of silently halting.
-            actions.append(PilotAction(
-                kind="__invalid__",
+            actions.append(InvalidAction(
+                kind=INVALID_ACTION_KIND,
                 tool=name,
                 arguments=args,
                 tool_call_id=tc_id,
                 content=(f"INVALID TOOL CALL '{name}': {e}. Re-issue the tool call with ALL required "
                          f"arguments (write_file needs both 'path' and 'content'; edit_file needs 'path', 'old_str', and 'new_str')."),
-            ))
+            ).validate())
 
     return actions
 
