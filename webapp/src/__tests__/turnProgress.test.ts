@@ -9,6 +9,7 @@ import {
   shouldShowBusyFooter,
   toolFocusPhrase,
   toolRowLabel,
+  isRedundantToolGoal,
   streamActivityKey,
   streamStallVisible,
   turnHasLiveInvestigation,
@@ -186,10 +187,18 @@ describe("investigatingHeadline / exploration summary", () => {
     expect(toolRowLabel("grep")).toBe("Grep");
     expect(toolRowLabel("run_command")).toBe("Run");
     expect(toolRowLabel("query_wiki")).toBe("Query wiki");
+    expect(toolRowLabel("call_mcp")).toBe("MCP");
     expect(toolFocusPhrase("run_command")).toBe("run");
     expect(toolRowLabel("readToolCall")).toBe("Read");
     expect(toolRowLabel("ShellToolCall")).toBe("Run");
     expect(toolRowLabel("execute")).toBe("Run");
+  });
+
+  it("treats kind-echo goals as redundant", () => {
+    expect(isRedundantToolGoal("read_file", "read file")).toBe(true);
+    expect(isRedundantToolGoal("read_file", "tool")).toBe(true);
+    expect(isRedundantToolGoal("call_mcp", "MCP")).toBe(true);
+    expect(isRedundantToolGoal("read_file", "harness/server.py")).toBe(false);
   });
 
   it("shortens path tails", () => {

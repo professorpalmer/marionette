@@ -423,9 +423,9 @@ export function upsertToolPrep(
   const done =
     status === "completed" || status === "failed" || status === "cancelled";
   const kind = normalizeToolKind(name) || (name || "").trim() || "tool_call";
+  // Real path/command/query only — never echo the kind as the goal
+  // ("Read" + "read file" / "Tool" + "tool" painted as doubled chrome).
   const goalRaw = (opts?.goal || "").trim();
-  const kindAsGoal =
-    kind === "tool_call" || kind === "tool" ? "" : kind.replace(/_/g, " ");
   const prepId = callId ? `tool-prep:${callId}` : `tool-prep:${kind}`;
 
   let lastUser = -1;
@@ -452,7 +452,7 @@ export function upsertToolPrep(
           ...it.card,
           running: false,
           kind: (kind !== "tool_call" ? kind : it.card.kind) || kind,
-          goal: goalRaw || it.card.goal || kindAsGoal,
+          goal: goalRaw || it.card.goal || "",
           ...(status === "failed"
             ? { result: { ...(it.card.result || {}), error: "failed" } }
             : {}),
@@ -466,7 +466,7 @@ export function upsertToolPrep(
 
   const card = {
     id: prepId,
-    goal: goalRaw || kindAsGoal || kind.replace(/_/g, " "),
+    goal: goalRaw,
     cwd: null as string | null,
     kind,
     running: !done,
@@ -487,7 +487,7 @@ export function upsertToolPrep(
           card: {
             ...it.card,
             ...card,
-            goal: goalRaw || it.card.goal || card.goal,
+            goal: goalRaw || it.card.goal || "",
             kind: kind !== "tool_call" ? kind : (it.card.kind || kind),
             running: card.running,
           },
@@ -2749,11 +2749,12 @@ export default function Conversation({
       } else if (ev.kind === "message_delta") {
         setCompactingStatus(null);
         setStatus("streaming");
-        // Ensure a streaming bubble exists, then queue the text for the
-        // typewriter loop (smooth cadence) instead of painting on arrival.
-        // Reuse an open bubble even when decoration items (reasoning/cards)
-        // landed after it -- same scan as appendStreamingText, so deltas never
-        // fork a duplicate bubble mid-turn.
+        // Ensure a streaming bubble exists. When the turn already has tool
+        // cards (Cursor CLI / investigation), paint deltas instantly — the
+        // typewriter over an open Investigating fold reads as chat "loading
+        // from top to bottom" after hard commands. Bare prose turns still
+        // use the cadence typewriter.
+        const investigating = turnHasLiveInvestigation(itemsRef.current, true);
         setItems((p) => {
           const base = finalizeStreamingThinking(p);
           if (findStreamingBubbleIdx(base) >= 0) {
@@ -2761,8 +2762,15 @@ export default function Conversation({
           }
           return [...base, { kind: "msg", msg: { role: "assistant", text: "", streaming: true, isPlan: planTurnRef.current } }];
         });
-        typeBufRef.current += (d.text || "");
-        startTypewriter();
+        const chunk = d.text || "";
+        if (!chunk) return;
+        if (investigating) {
+          flushTypewriter();
+          appendStreamingText(chunk);
+        } else {
+          typeBufRef.current += chunk;
+          startTypewriter();
+        }
       } else if (ev.kind === "worker_delta") {
         // Live token stream from an inline swarm worker (the agentic adapter).
         // This is an EPHEMERAL preview: it renders in a height-capped, auto-

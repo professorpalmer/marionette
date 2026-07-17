@@ -82,6 +82,12 @@ export function toolRowLabel(kind: string): string {
     codegraph_search: "Query",
     codegraph_context: "Query",
     codegraph: "Query",
+    call_mcp: "MCP",
+    mcp: "MCP",
+    get_mcp_tools: "MCP",
+    list_mcp_resources: "MCP",
+    read_mcp_resource: "MCP",
+    mcp_auth: "MCP",
     view_image: "View",
     open_project: "Open",
     relocate_session: "Relocate",
@@ -93,6 +99,22 @@ export function toolRowLabel(kind: string): string {
   return k
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** True when goal is just a restatement of the kind label ("read file", "tool"). */
+export function isRedundantToolGoal(kind: string, goal: string): boolean {
+  const g = (goal || "").trim().toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ");
+  if (!g || g === "tool" || g === "function" || g === "unknown") return true;
+  const focus = toolFocusPhrase(kind).toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ");
+  const label = toolRowLabel(kind).toLowerCase();
+  if (g === focus || g === label) return true;
+  // "read file" vs kind read_file / label Read
+  const kindPhrase = (normalizeToolKind(kind) || kind || "")
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return !!kindPhrase && g === kindPhrase;
 }
 
 /** Soft focus phrase for live headlines ("run command", "read file"). */

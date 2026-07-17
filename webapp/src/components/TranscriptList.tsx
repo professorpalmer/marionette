@@ -26,6 +26,7 @@ import {
   streamStallVisible,
   toolFocusPhrase,
   toolRowLabel,
+  isRedundantToolGoal,
   turnHasLiveInvestigation,
 } from "../lib/turnProgress";
 
@@ -1421,7 +1422,10 @@ function Bubble({
 
 function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   const toolName = toolRowLabel(card.kind || "");
-  const goalPreview = shortenGoal(card.goal || "", 56);
+  const rawGoal = isRedundantToolGoal(card.kind || "", card.goal || "")
+    ? ""
+    : (card.goal || "");
+  const goalPreview = shortenGoal(rawGoal, 56);
   const meta = getCardMeta(card);
 
   // Hermes tool-row spec: monochrome. Success is SILENT (no glyph -- the row
@@ -1430,7 +1434,7 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   // not red -- they are intentional harness redirects, not tool failures.
   const suppressed = isGateSuppressed(card);
   const isErr = !!card.result?.error && !suppressed;
-  const { linkKind, value: goalValue } = classifyActionGoal(card.kind || "", card.goal || "");
+  const { linkKind, value: goalValue } = classifyActionGoal(card.kind || "", rawGoal);
 
   const onGoalClick = (e: React.MouseEvent) => {
     e.preventDefault();
