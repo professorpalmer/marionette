@@ -628,7 +628,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     setOauthSessionId("");
     setOauthPasteCode("");
     setOauthBusy(false);
-    setOauthHint("Sign-in cancelled — click Sign in to try again.");
+    // Cursor CLI often finishes browser login before the poll/trust step;
+    // Cancel must not overwrite an already-good account with "cancelled".
+    if (cursorCliStatus?.authenticated) {
+      setOauthHint(`Signed in as ${cursorCliStatus.label || "Cursor account"}`);
+    } else {
+      setOauthHint("Sign-in cancelled — click Sign in to try again.");
+    }
   };
 
   const handleCodexSignIn = async () => handleDeviceOAuthSignIn("openai-codex", "chatgpt-codex");
@@ -683,26 +689,39 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         }
         const st = await refreshCursorCliStatus();
         if (st?.authenticated) {
-          // Headless Agent CLI requires workspace trust; bundle it into Sign in.
-          let trustNote = "";
-          try {
-            const trust = await api.trustCursorCliWorkspace(
-              workspace ? { workspace } : undefined,
-            );
-            if (trust.trusted) {
-              trustNote = trust.workspace
-                ? ` · workspace trusted (${trust.workspace})`
-                : " · workspace trusted";
-            } else if (trust.error) {
-              trustNote = " · workspace trust pending (pilot still passes --trust)";
-            }
-          } catch {
-            trustNote = " · workspace trust pending (pilot still passes --trust)";
-          }
-          setOauthHint(`Signed in as ${st.label || "Cursor account"}${trustNote}`);
-          await refreshProviders();
+          // Browser login is done — clear the spinner immediately. Workspace
+          // trust used to `await` a full `agent --print` cold start here, so
+          // Sign in hung until Cancel even though status was already good.
+          const label = st.label || "Cursor account";
+          setOauthHint(`Signed in as ${label}`);
           setPoolProvider("cursor-cli");
+          await refreshProviders();
           window.dispatchEvent(new Event("harness-config-changed"));
+          void (async () => {
+            try {
+              const trust = await api.trustCursorCliWorkspace(
+                workspace ? { workspace } : undefined,
+              );
+              if (oauthAbortRef.current) return;
+              if (trust.trusted) {
+                setOauthHint(
+                  trust.workspace
+                    ? `Signed in as ${label} · workspace trusted (${trust.workspace})`
+                    : `Signed in as ${label} · workspace trusted`,
+                );
+              } else if (trust.error) {
+                setOauthHint(
+                  `Signed in as ${label} · workspace trust pending (pilot still passes --trust)`,
+                );
+              }
+            } catch {
+              if (!oauthAbortRef.current) {
+                setOauthHint(
+                  `Signed in as ${label} · workspace trust pending (pilot still passes --trust)`,
+                );
+              }
+            }
+          })();
           return;
         }
         if (st && st.installed === false) {
