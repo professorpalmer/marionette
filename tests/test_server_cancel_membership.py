@@ -1,51 +1,203 @@
-"""Focused tests for the /api/swarm/cancel job-membership check.
+"""Dual-store cancel membership for /api/swarm/cancel.
 
-The cancel handler in harness/server.py decides whether a job_id is "known"
-by scanning the durable store's job list. The scan was changed from a
-re-scanning ``any(j.get("id") == job_id for j in jobs)`` to a set built once:
-
-    job_ids = {j.get("id") for j in state_obj.list_jobs()}
-    known = job_id in job_ids
-
-These tests pin the semantics of that membership check: a job present in the
-list resolves as known, an absent one as unknown, and malformed rows (missing
-"id") never raise and never spuriously match. The handler itself is embedded in
-a large do_POST and needs a full session/store to exercise end-to-end, so we
-assert the pure set-membership logic that the handler relies on.
+Production cancel (``harness.api.jobs.post_swarm_cancel``) resolves jobs from
+BOTH the harness session store and the per-project CLI durable store. A
+single-store membership check used to 404 CLI-only jobs as "unkillable".
+These tests call the production path with fakes — not a resurrected helper.
 """
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from harness.api.jobs import JobServices, post_swarm_cancel
 
 
-def _known(job_id, jobs):
-    """Mirror of the handler's membership check (build a set once, then test)."""
-    job_ids = {j.get("id") for j in jobs}
-    return job_id in job_ids
+def _noop(*_a, **_k):
+    return None
 
 
-def test_known_job_id_is_identified():
-    jobs = [{"id": "job-a"}, {"id": "job-b"}, {"id": "job-c"}]
-    assert _known("job-b", jobs) is True
+def _job_services(*, get_pilot, get_session, cfg_repo: str = "/repo") -> JobServices:
+    return JobServices(
+        cfg=SimpleNamespace(repo=cfg_repo),
+        sessions=SimpleNamespace(),
+        get_pilot=get_pilot,
+        get_session=get_session,
+        diag=_noop,
+        scoped_jobs_snapshot=lambda **_k: [],
+        scoped_jobs_with_stores=lambda **_k: ([], None, None),
+        retry_on_locked=lambda fn: fn(),
+        swarm_registry=lambda: [],
+        job_status_is_terminal=lambda _s: False,
+        slim_swarm_list_artifacts=lambda *_a, **_k: [],
+        job_swarm_accounting=lambda *_a, **_k: (0, 0, 0),
+        task_swarm_accounting=lambda *_a, **_k: {},
+        routing_saved_usd=lambda *_a, **_k: 0.0,
+        cache_saved_usd_swarm=lambda *_a, **_k: 0.0,
+        tokens_cached_swarm=lambda *_a, **_k: 0,
+        job_dead_run_failure=lambda *_a, **_k: None,
+        job_savings_fields=lambda *_a, **_k: {},
+        repo_session_stamped_meters=lambda *_a, **_k: {},
+        session_cost_split=lambda *_a, **_k: 0.0,
+        cache_savings=lambda *_a, **_k: 0.0,
+        tool_output_savings_fields=lambda *_a, **_k: {},
+        cost_source_label=lambda *_a, **_k: "",
+    )
 
 
-def test_unknown_job_id_is_rejected():
-    jobs = [{"id": "job-a"}, {"id": "job-b"}]
-    assert _known("job-zzz", jobs) is False
+class _FakeStore:
+    def __init__(self, jobs, *, cancelable: bool = True):
+        self._jobs = list(jobs)
+        self.cancelled: list[str] = []
+        self._cancelable = cancelable
+
+    def list_jobs(self):
+        return list(self._jobs)
+
+    def cancel_job(self, job_id: str):
+        if not self._cancelable:
+            raise RuntimeError("cancel_job unavailable")
+        self.cancelled.append(job_id)
 
 
-def test_empty_job_list_means_unknown():
-    assert _known("anything", []) is False
+class _FakeState:
+    def __init__(self, store: _FakeStore):
+        self.store = store
+
+    def list_jobs(self):
+        return self.store.list_jobs()
 
 
-def test_rows_without_id_do_not_match_and_do_not_raise():
-    # Malformed rows (no "id" key) map to None in the set; a real job_id must
-    # not accidentally match, and building the set must not raise.
-    jobs = [{}, {"goal": "x"}, {"id": "real-job"}]
-    assert _known("real-job", jobs) is True
-    assert _known("", jobs) is False
+class _FakeSession:
+    def __init__(self, state: _FakeState):
+        self._state = state
+
+    def state(self):
+        return self._state
 
 
-def test_matches_original_any_semantics():
-    # The set-membership optimization must be equivalent to the prior any(...).
-    jobs = [{"id": "a"}, {"id": "b"}, {}, {"id": "c"}]
-    for candidate in ("a", "b", "c", "d", "", None):
-        original = any(j.get("id") == candidate for j in jobs)
-        assert _known(candidate, jobs) == original
+class _FakePilot:
+    def __init__(self, local_ids=None):
+        self._local_ids = set(local_ids or [])
+        self.cancelled_local: list[str] = []
+
+    def cancel_local_job(self, job_id: str) -> bool:
+        if job_id in self._local_ids:
+            self.cancelled_local.append(job_id)
+            return True
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _silence_request_cancel(monkeypatch):
+    monkeypatch.setattr(
+        "puppetmaster.cancellation.request_cancel",
+        lambda _job_id: None,
+    )
+
+
+def test_missing_job_id_is_bad_request():
+    svc = _job_services(
+        get_pilot=lambda: _FakePilot(),
+        get_session=lambda: _FakeSession(_FakeState(_FakeStore([]))),
+    )
+    code, body = post_swarm_cancel({}, svc)
+    assert code == 400
+    assert body["ok"] is False
+
+
+def test_harness_store_job_cancels_via_production_path(monkeypatch):
+    harness = _FakeStore([{"id": "job-a"}, {"id": "job-b"}])
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": None,
+    )
+    svc = _job_services(
+        get_pilot=lambda: _FakePilot(),
+        get_session=lambda: _FakeSession(_FakeState(harness)),
+    )
+    code, body = post_swarm_cancel({"job_id": "job-b"}, svc)
+    assert code == 200
+    assert body == {"ok": True, "job_id": "job-b", "durable": True, "marked": True}
+    assert harness.cancelled == ["job-b"]
+
+
+def test_cli_store_only_job_cancels_not_404(monkeypatch):
+    """CLI durable jobs must resolve through the same dual-store set as reads."""
+    harness = _FakeStore([{"id": "harness-only"}])
+    cli_store = _FakeStore([{"id": "cli-only"}, {}, {"goal": "x"}])
+    cli_state = SimpleNamespace(store=cli_store)
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": cli_state,
+    )
+    svc = _job_services(
+        get_pilot=lambda: _FakePilot(),
+        get_session=lambda: _FakeSession(_FakeState(harness)),
+    )
+    code, body = post_swarm_cancel({"job_id": "cli-only"}, svc)
+    assert code == 200
+    assert body["ok"] is True
+    assert body["job_id"] == "cli-only"
+    assert body["durable"] is True
+    assert body["marked"] is True
+    assert cli_store.cancelled == ["cli-only"]
+    assert harness.cancelled == []
+
+
+def test_unknown_job_id_returns_404(monkeypatch):
+    harness = _FakeStore([{"id": "job-a"}])
+    cli_store = _FakeStore([{"id": "cli-a"}])
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": SimpleNamespace(store=cli_store),
+    )
+    svc = _job_services(
+        get_pilot=lambda: _FakePilot(),
+        get_session=lambda: _FakeSession(_FakeState(harness)),
+    )
+    code, body = post_swarm_cancel({"job_id": "job-zzz"}, svc)
+    assert code == 404
+    assert body == {"ok": False, "error": "unknown job_id", "job_id": "job-zzz"}
+
+
+def test_malformed_rows_do_not_match_or_raise(monkeypatch):
+    harness = _FakeStore([{}, {"goal": "x"}, {"id": "real-job"}])
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda _repo="": None,
+    )
+    svc = _job_services(
+        get_pilot=lambda: _FakePilot(),
+        get_session=lambda: _FakeSession(_FakeState(harness)),
+    )
+    code_ok, body_ok = post_swarm_cancel({"job_id": "real-job"}, svc)
+    assert code_ok == 200
+    assert body_ok["ok"] is True
+
+    code_bad, body_bad = post_swarm_cancel({"job_id": ""}, svc)
+    assert code_bad == 400
+    assert body_bad["ok"] is False
+
+
+def test_local_pilot_cancel_short_circuits_before_stores(monkeypatch):
+    harness = _FakeStore([{"id": "local-1"}])
+    calls = {"cli": 0}
+
+    def _open_cli(_repo=""):
+        calls["cli"] += 1
+        return None
+
+    monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", _open_cli)
+    pilot = _FakePilot(local_ids={"local-1"})
+    svc = _job_services(
+        get_pilot=lambda: pilot,
+        get_session=lambda: _FakeSession(_FakeState(harness)),
+    )
+    code, body = post_swarm_cancel({"job_id": "local-1"}, svc)
+    assert code == 200
+    assert body == {"ok": True, "job_id": "local-1"}
+    assert pilot.cancelled_local == ["local-1"]
+    assert harness.cancelled == []
+    assert calls["cli"] == 0
