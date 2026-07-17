@@ -105,6 +105,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # Checkout so `gh release create --generate-notes` can read git history.
+      # Without this, publish only has downloaded artifacts and gh fails with
+      # "fatal: not a git repository".
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
       - name: Download staged installers
         uses: actions/download-artifact@v4
         with:
