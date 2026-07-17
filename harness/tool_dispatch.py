@@ -16,9 +16,11 @@ handlers); harness.conversation re-imports them so external callers keep
 working.
 """
 
+import hashlib
 import os
 import re
 import subprocess
+import tempfile
 from typing import Any
 
 from ._exec import _puppetmaster_cmd
@@ -563,3 +565,134 @@ class ToolDispatchMixin:
             return True, "success", result.message
         except Exception as e:
             return False, "exception", str(e)
+
+    def _do_write_file(self, act: PilotAction, *, write: bool = True) -> tuple[bool, str, Any]:
+        """Validate (and optionally apply) a write_file action.
+
+        Returns ``(ok, status, val)`` where ``val`` is an error string on
+        failure, or ``bytes_written`` (int) on a successful write. Dry-run
+        (``write=False``) returns ``0`` on success after path checks.
+        """
+        if not self.config.repo:
+            return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        target_path = act.path
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(self.config.repo, target_path)
+        if not is_safe_path(target_path, self.config.repo):
+            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+        if not write:
+            return True, "success", 0
+        try:
+            target_dir = os.path.dirname(target_path)
+            os.makedirs(target_dir, exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                    f.write(act.content)
+                os.replace(temp_path, target_path)
+            except Exception:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise
+            bytes_written = len(act.content.encode("utf-8"))
+            return True, "success", bytes_written
+        except Exception as e:
+            return False, "exception", str(e)
+
+    def _do_edit_file(self, act: PilotAction, *, write: bool = True) -> tuple[bool, str, str]:
+        """Validate (and optionally apply) a unique-substring edit_file action."""
+        if not self.config.repo:
+            return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        target_path = act.path
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(self.config.repo, target_path)
+        if not is_safe_path(target_path, self.config.repo):
+            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+
+        try:
+            if not os.path.exists(target_path):
+                return False, "not_found", (
+                    f"edit_file: file not found: {act.path} (use write_file to create new files)"
+                )
+            if os.path.isdir(target_path):
+                return False, "is_directory", f"edit_file: path is a directory: {act.path}"
+
+            with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                original_content = f.read()
+
+            old_str = act.old_str
+            new_str = act.new_str
+            occurrences = original_content.count(old_str)
+            if occurrences == 0:
+                return False, "not_found", (
+                    f"edit_file: old_str not found in {act.path} "
+                    f"(it must match the existing text EXACTLY, including whitespace/indentation)"
+                )
+            if occurrences > 1:
+                return False, "ambiguous", (
+                    f"edit_file: old_str matched {occurrences} times in {act.path}; "
+                    f"add more surrounding context to make it unique"
+                )
+
+            new_content = original_content.replace(old_str, new_str, 1)
+            headline = (
+                f"edited {act.path}: replaced {len(old_str)} chars -> {len(new_str)} chars"
+            )
+            if not write:
+                return True, "success", headline
+
+            target_dir = os.path.dirname(target_path)
+            os.makedirs(target_dir, exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                    f.write(new_content)
+                os.replace(temp_path, target_path)
+            except Exception:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise
+            return True, "success", headline
+        except Exception as e:
+            return False, "exception", str(e)
+
+    def _do_run_command(self, act: PilotAction) -> tuple[bool, str, Any]:
+        """Screen (full-auto) and execute a run_command action.
+
+        On success returns ``(True, "success", {"output", "exit_code"})``.
+        On full-auto danger block returns
+        ``(False, "blocked", {"message", "category", "reason", "matched"})``.
+        """
+        if not self.config.repo:
+            return False, "repo_not_open", "No workspace directory (config.repo) is open."
+        from .command_policy import classify_command, resolve_timeout, run_cancellable
+
+        if getattr(self, "_auto_mode", False) and getattr(self, "_auto_command_guard", None):
+            verdict = classify_command(act.command or "")
+            cmd_hash = hashlib.sha256((act.command or "").encode()).hexdigest()
+            approved = getattr(self, "_approved_commands", set())
+            if verdict.danger and cmd_hash not in approved:
+                block_msg = (
+                    f"BLOCKED in full-auto: command matches '{verdict.category}' "
+                    f"({verdict.reason}; matched: {verdict.matched}). Autonomous "
+                    f"execution of irreversible/remote/escalating commands is gated. "
+                    f"Choose a safer approach, or the operator can run this manually."
+                )
+                return False, "blocked", {
+                    "message": block_msg,
+                    "category": verdict.category,
+                    "reason": verdict.reason,
+                    "matched": verdict.matched,
+                }
+
+        cmd_timeout = resolve_timeout()
+        output, exit_code, _run_status = run_cancellable(
+            act.command,
+            cwd=self.config.repo,
+            timeout=cmd_timeout,
+            cancel_event=getattr(self, "_cancel", None),
+        )
+        max_cap = 50 * 1024
+        if len(output) > max_cap:
+            output = output[:max_cap] + "\n\n... (output truncated to 50KB) ..."
+        return True, "success", {"output": output, "exit_code": exit_code}

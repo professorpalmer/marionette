@@ -22,6 +22,9 @@ MOVED_METHODS = (
     "_do_search_state",
     "_do_search_tools",
     "_do_hash_edit",
+    "_do_write_file",
+    "_do_edit_file",
+    "_do_run_command",
 )
 
 
