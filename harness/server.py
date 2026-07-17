@@ -130,6 +130,7 @@ from .api.cost import (  # noqa: E402
     _task_swarm_accounting,
     _tokens_cached_swarm,
     _tool_output_savings_fields,
+    _boot_usage_reset_for_tests,
     _usage_cache_clear_for_tests,
     _usage_cache_get,
     _usage_cache_put,

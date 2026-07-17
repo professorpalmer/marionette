@@ -12,9 +12,11 @@ import pytest
 
 def _server(tmp_state_dir):
     import harness.server as srv
-    # Set a temp state dir
+    # Hermetic: prior suite cases can leave boot carry that /api/usage
+    # prices but /api/swarm/live's pilot split ignores.
+    srv._boot_usage_reset_for_tests()
     srv._session.state_dir = tmp_state_dir
-    
+
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
     port = httpd.server_address[1]
     t = threading.Thread(target=httpd.serve_forever, daemon=True)

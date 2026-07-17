@@ -60,6 +60,21 @@ def _usage_cache_clear_for_tests() -> None:
     with _usage_response_lock:
         _usage_response_cache.clear()
 
+
+def _boot_usage_reset_for_tests() -> None:
+    """Zero process-global boot carry so hermetic API tests do not inherit
+    spend left by an earlier case (carry is priced into /api/usage but not
+    into /api/swarm/live's pilot split -- suite order then flakes)."""
+    global _BOOT_CARRY_COST_USD, _BOOT_PLAN_BILLING, _BOOT_USAGE_RESTORED
+    _usage_cache_clear_for_tests()
+    _BOOT_CARRY_COST_USD = 0.0
+    _BOOT_PLAN_BILLING = False
+    _BOOT_USAGE_RESTORED = False
+    for attr in _BOOT_METER_ATTRS:
+        _BOOT_METER_CARRY[attr] = 0.0
+    _BOOT_REPOS.clear()
+
+
 _BOOT_PLAN_BILLING: bool = False
 
 

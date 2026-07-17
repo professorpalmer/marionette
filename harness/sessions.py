@@ -435,13 +435,16 @@ def _is_ephemeral_root(root: str) -> bool:
     """True for roots under the OS temp dir (worker worktrees, test repos).
 
     Skipped under pytest so the suite's own tmp_path fixtures keep working.
+    Compare against ``gettempdir()`` only (both sides realpath'd) -- a bare
+    ``/var/folders/`` substring falsely flags every macOS pytest path when
+    tests clear ``PYTEST_CURRENT_TEST`` to exercise this guard.
     """
     if not root or "PYTEST_CURRENT_TEST" in os.environ:
         return False
     try:
-        real = os.path.realpath(root)
-        tmp = os.path.realpath(tempfile.gettempdir())
-        return real.startswith(tmp) or "/var/folders/" in real
+        from .paths import path_within
+
+        return path_within(root, tempfile.gettempdir(), allow_equal=True)
     except Exception:
         return False
 

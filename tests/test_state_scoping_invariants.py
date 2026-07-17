@@ -185,6 +185,14 @@ def test_pick_next_active_stays_same_workspace(tmp_path):
     older_a = store.create("A-old", repo=str(repo_a), workspace_root=str(repo_a))
     store.create("B", repo=str(repo_b), workspace_root=str(repo_b))
     newer_a = store.create("A-new", repo=str(repo_a), workspace_root=str(repo_a))
+    # time.time() can collide within one second; pin order for max(created).
+    for row in store._sessions:
+        if row["id"] == older_a["id"]:
+            row["created"] = 1.0
+        elif row["id"] == newer_a["id"]:
+            row["created"] = 3.0
+        else:
+            row["created"] = 2.0
 
     picked = store._pick_next_active(str(repo_a))
     assert picked == newer_a["id"]

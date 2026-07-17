@@ -146,6 +146,7 @@ from .usage_meters import (  # noqa: E402
     _repo_session_stamped_meters,
     _restore_boot_usage,
     _tool_output_savings_fields,
+    _boot_usage_reset_for_tests,
     _usage_cache_clear_for_tests,
     _usage_cache_get,
     _usage_cache_put,

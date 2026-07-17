@@ -137,6 +137,7 @@ def _seed_cli_store(tmp_path, repo_root: str, *, session_id: str = ""):
 
 
 def _api_server(tmp_state_dir):
+    server._boot_usage_reset_for_tests()
     server._session.state_dir = tmp_state_dir
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     port = httpd.server_address[1]

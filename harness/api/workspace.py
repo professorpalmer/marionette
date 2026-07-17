@@ -46,15 +46,15 @@ def _persistable_recent_path(path: str, is_app_install_root: Callable[[str], boo
     """True when ``path`` may be written into workspace.json recents/repo."""
     if not path:
         return False
-    from ..paths import _resolve
-    try:
-        resolved = os.path.normcase(_resolve(path))
-    except Exception:
-        return False
-    tmproot = os.path.normcase(_resolve(_tf.gettempdir()))
+    from ..paths import path_within
     if "PYTEST_CURRENT_TEST" not in os.environ:
-        if resolved.startswith(tmproot) or "/var/folders/" in resolved or "/T/tmp" in path:
-            return False
+        # Temp-dir only (realpath both sides). Do not use a bare
+        # ``/var/folders/`` match -- macOS pytest tmp_path lives there too.
+        try:
+            if path_within(path, _tf.gettempdir(), allow_equal=True):
+                return False
+        except Exception:
+            pass
     if is_app_install_root(path):
         return False
     return os.path.isdir(path)
@@ -446,12 +446,13 @@ def get_workspace(svc: WorkspaceServices) -> tuple[int, JsonPayload]:
                 recents = json.load(f).get("recents", []) or []
     except Exception:
         recents = []
-    tmproot = os.path.realpath(_tf.gettempdir())
+    from ..paths import path_within
+
+    tmproot = _tf.gettempdir()
     recents = [
         r for r in recents
         if r and os.path.isdir(r)
-        and not os.path.realpath(r).startswith(tmproot)
-        and "/var/folders/" not in os.path.realpath(r)
+        and not path_within(r, tmproot, allow_equal=True)
         and not svc.is_app_install_root(r)
     ]
     try:
