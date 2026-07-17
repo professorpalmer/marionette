@@ -51,11 +51,3 @@ def test_mixin_defines_no_init():
     # The mixin must not carry state or an __init__ of its own -- otherwise
     # it would interfere with ConversationalSession.__init__ via MRO.
     assert "__init__" not in PromptQueueMixin.__dict__
-
-
-def test_steer_helpers_remain_on_session():
-    # _check_and_inject_steer (and its marker helper) stay on ConversationalSession
-    # — they are the next peel (SteerMixin), not part of this extraction.
-    assert hasattr(ConversationalSession, "_check_and_inject_steer")
-    attr = ConversationalSession._check_and_inject_steer
-    assert attr.__qualname__ == "ConversationalSession._check_and_inject_steer"
