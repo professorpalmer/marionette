@@ -54,11 +54,13 @@ def test_mixin_defines_no_init():
     assert "__init__" not in CompactionContextMixin.__dict__
 
 
-def test_send_loop_stays_on_session():
-    # Busy lifecycle and the send loop must not have been swept into the mixin.
-    for name in ("send", "_send_locked_inner", "is_turn_busy"):
+def test_send_loop_not_folded_into_compaction():
+    # The send loop lives on SendLoopMixin (separate peel).
+    from harness.send_loop import SendLoopMixin
+
+    for name in ("send", "_send_locked_inner"):
         attr = getattr(ConversationalSession, name)
-        assert attr.__qualname__.startswith("ConversationalSession."), (
+        assert attr.__qualname__ == f"SendLoopMixin.{name}", (
             name,
             attr.__qualname__,
         )

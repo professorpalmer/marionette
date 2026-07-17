@@ -51,11 +51,15 @@ def test_apply_worker_patch_stays_on_session():
     )
 
 
-def test_busy_send_swarm_remain_on_session():
-    for name in ("_send_locked", "_send_locked_inner", "_await_and_apply_job"):
-        assert hasattr(ConversationalSession, name), name
-        attr = getattr(ConversationalSession, name)
-        assert attr.__qualname__ == f"ConversationalSession.{name}", (
-            name,
-            attr.__qualname__,
-        )
+def test_busy_send_swarm_not_folded_into_review_memory():
+    from harness.send_loop import SendLoopMixin
+
+    assert ConversationalSession._send_locked.__qualname__ == "SendLoopMixin._send_locked"
+    assert (
+        ConversationalSession._send_locked_inner.__qualname__
+        == "SendLoopMixin._send_locked_inner"
+    )
+    attr = getattr(ConversationalSession, "_await_and_apply_job")
+    assert attr.__qualname__ == "ConversationalSession._await_and_apply_job", (
+        attr.__qualname__,
+    )

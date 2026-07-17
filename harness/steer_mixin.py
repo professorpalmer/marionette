@@ -8,8 +8,9 @@ contract: these methods operate through `self` (``_steer_queue``, ``_steer_lock`
 ``_steer_pending``, ``_history``) provided by the concrete class -- the mixin
 defines no state and no __init__.
 
-Prompt-queue playlist CRUD stays on PromptQueueMixin. Busy lifecycle and
-``_send_locked_inner`` control flow stay on ConversationalSession.
+Prompt-queue playlist CRUD stays on PromptQueueMixin. Busy lifecycle lives
+on BusyControlMixin; ``_send_locked_inner`` control flow lives on
+SendLoopMixin.
 
 Method Resolution Order keeps behavior identical: steer_with_images /
 enqueue_steer / drain_steer / _check_and_inject_steer still resolve via

@@ -53,11 +53,14 @@ def test_wiki_grounding_max_chars_on_mixin():
     assert ConversationalSession._WIKI_GROUNDING_MAX_CHARS == 8000
 
 
-def test_send_and_busy_stay_on_session():
-    # Busy / send / _send_locked_inner must not have been swept into the mixin.
-    for name in ("send", "_send_locked_inner"):
-        attr = getattr(ConversationalSession, name)
-        assert attr.__qualname__ == f"ConversationalSession.{name}", (
-            name,
-            attr.__qualname__,
-        )
+def test_send_and_busy_not_folded_into_wiki_distill():
+    # Busy / send live on their own mixins — not WikiDistillMixin.
+    from harness.busy_control import BusyControlMixin
+    from harness.send_loop import SendLoopMixin
+
+    assert ConversationalSession.send.__qualname__ == "SendLoopMixin.send"
+    assert (
+        ConversationalSession._send_locked_inner.__qualname__
+        == "SendLoopMixin._send_locked_inner"
+    )
+    assert ConversationalSession.interrupt.__qualname__ == "BusyControlMixin.interrupt"

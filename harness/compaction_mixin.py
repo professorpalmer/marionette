@@ -9,8 +9,9 @@ SteerMixin contract: these methods operate through `self` (``_history``,
 ``_turn_economy``, …) provided by the concrete class -- the mixin defines no
 state and no __init__.
 
-Busy lifecycle, ``send`` / ``_send_locked_inner``, and AutoBudget stay on
-ConversationalSession. Method Resolution Order keeps behavior identical:
+Busy lifecycle lives on BusyControlMixin; ``send`` / ``_send_locked_inner``
+live on SendLoopMixin; AutoBudget stays on ConversationalSession. Method
+Resolution Order keeps behavior identical:
 ``_maybe_compact_history`` still yields the same ``compacting`` / ``compaction``
 ConvEvent kinds via inheritance.
 """

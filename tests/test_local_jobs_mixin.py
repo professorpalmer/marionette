@@ -60,11 +60,9 @@ def test_drain_swarm_results_stays_on_session():
 
 
 def test_session_cancel_stays_on_session():
-    # Session-level cancel/interrupt stay on ConversationalSession; only
-    # cancel_local_job moved with the mixin.
-    for name in ("cancel", "interrupt"):
-        attr = getattr(ConversationalSession, name)
-        assert attr.__qualname__ == f"ConversationalSession.{name}", (
-            name,
-            attr.__qualname__,
-        )
+    # Session-level cancel stays on ConversationalSession; interrupt lives on
+    # BusyControlMixin. Only cancel_local_job moved with LocalJobsMixin.
+    cancel = getattr(ConversationalSession, "cancel")
+    assert cancel.__qualname__ == "ConversationalSession.cancel", cancel.__qualname__
+    interrupt = getattr(ConversationalSession, "interrupt")
+    assert interrupt.__qualname__ == "BusyControlMixin.interrupt", interrupt.__qualname__

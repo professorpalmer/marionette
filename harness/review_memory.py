@@ -10,8 +10,8 @@ contract: these methods operate through `self` (``_pending_reviews``,
 the mixin defines no state and no __init__.
 
 ``_apply_worker_patch`` stays on ConversationalSession (checkpoint / git-apply
-path tightly coupled to host state). Busy lifecycle, ``send``, and swarm drain
-also stay on the host.
+path tightly coupled to host state). Swarm drain stays on the host; ``send``
+lives on SendLoopMixin; busy lifecycle lives on BusyControlMixin.
 
 Method Resolution Order keeps behavior identical: ``apply_review``,
 ``dismiss_review``, ``accept_memory_proposal``, etc. still resolve via

@@ -8,9 +8,10 @@ contract: these methods operate through `self` (``_wiki``, ``_turn_economy``,
 ``_session_findings``, ``pilot``, ``config``, …) provided by the concrete
 class -- the mixin defines no state and no __init__.
 
-Busy lifecycle, ``send`` / ``_send_locked_inner``, and turn-trailer assembly
-stay on ConversationalSession. ``TurnEconomy.record_wiki_grounding`` wiring
-inside ``_build_turn_wiki_section`` is preserved verbatim.
+Busy lifecycle lives on BusyControlMixin; ``send`` / ``_send_locked_inner``
+live on SendLoopMixin; turn-trailer assembly stays on ConversationalSession.
+``TurnEconomy.record_wiki_grounding`` wiring inside ``_build_turn_wiki_section``
+is preserved verbatim.
 
 Method Resolution Order keeps behavior identical: ``_build_turn_wiki_section``,
 ``distill``, ``prepare_wiki_pages``, etc. still resolve via inheritance.
