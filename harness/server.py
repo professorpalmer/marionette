@@ -27,7 +27,7 @@ from dataclasses import replace as _dc_replace
 from .config import HarnessConfig
 from .session import Session
 from .conversation import ConversationalSession
-from .mcp_manager import McpManager, CATALOG
+from .mcp_manager import McpManager
 from .skill_store import SkillStore
 from .rule_store import RuleStore
 from .command_store import CommandStore
@@ -1999,12 +1999,7 @@ from .keys import (
     set_bedrock_credentials,
     clear_bedrock_credentials,
 )
-from .wiki_config import (
-    load_wiki_config_on_startup,
-    get_wiki_config,
-    set_wiki_config,
-    clear_wiki_config,
-)
+from .wiki_config import load_wiki_config_on_startup
 from .wiki_backend import ensure_wiki_backend_async
 load_api_keys_on_startup(_cfg.reach)
 # The Electron host spawns the backend with a stripped PATH; make Node visible so
@@ -2015,61 +2010,6 @@ load_wiki_config_on_startup()
 # Fresh installs stay unconfigured so the UI can guide users to portablellm.wiki.
 # Opt out: MARIONETTE_NO_WIKI=1.
 ensure_wiki_backend_async()
-
-_WIKI_NEEDS_AUTH_HINT = (
-    "Connected at public tier only. Paste your personal LLM URL or owner token "
-    "in Settings → Wiki Graph (portablellm.wiki Owner console)."
-)
-
-
-def _wiki_status_extras(client, graph_res=None) -> dict:
-    """Extra wiki status fields: needs_auth, viewer_tier, page_count, hint."""
-    from .wiki_config import is_hosted_portablellm_base
-
-    extras = {}
-    base = getattr(client, "base_url", "") or ""
-    has_token = bool(getattr(client, "token", "") or "")
-    if not has_token:
-        try:
-            has_token = bool(get_wiki_config().get("has_token"))
-        except Exception:
-            has_token = False
-    meta = {}
-    try:
-        meta = client.manifest_meta() or {}
-    except Exception:
-        meta = {}
-    page_count = meta.get("page_count")
-    if page_count is None and isinstance(graph_res, dict):
-        page_count = len(graph_res.get("nodes") or [])
-    if page_count is not None:
-        extras["page_count"] = page_count
-    viewer_tier = meta.get("viewer_tier")
-    viewer_is_owner = meta.get("viewer_is_owner")
-    if viewer_tier is not None:
-        extras["viewer_tier"] = viewer_tier
-    if viewer_is_owner is not None:
-        extras["viewer_is_owner"] = viewer_is_owner
-    needs_auth = False
-    # Personal LLM URLs mint private-tier *share* tokens — viewer_is_owner is
-    # False for those and must NOT force needs_auth. Only missing token or an
-    # actual public-tier response means the connection is incomplete.
-    if is_hosted_portablellm_base(base):
-        if not has_token:
-            needs_auth = True
-        elif (viewer_tier or "").lower() == "public":
-            needs_auth = True
-    if needs_auth:
-        extras["status"] = "needs_auth"
-        if has_token and (viewer_tier or "").lower() == "public":
-            extras["hint"] = (
-                "Token is saved but the wiki still returns public tier. "
-                "Disconnect, then Connect again (or paste a fresh personal LLM URL)."
-            )
-        else:
-            extras["hint"] = _WIKI_NEEDS_AUTH_HINT
-        extras["needs_owner_token"] = True
-    return extras
 
 
 def _driver_provider_available(spec: str) -> bool:
@@ -2886,6 +2826,45 @@ def _job_services():
     )
 
 
+def _wiki_services():
+    """Build WikiServices from live server module globals (call-time lookup)."""
+    from .api.wiki import WikiServices
+    return WikiServices(
+        cfg=_cfg,
+        get_pilot=lambda: _pilot,
+    )
+
+
+def _mcp_services():
+    """Build McpServices from live server module globals (call-time lookup)."""
+    from .api.mcp import McpServices
+    return McpServices(mcp=_mcp)
+
+
+def _provider_services():
+    """Build ProviderServices from live server module globals (call-time lookup)."""
+    from .api.providers import ProviderServices
+    return ProviderServices(
+        cfg=_cfg,
+        diag=_diag,
+        parse_bool=_parse_bool,
+        resync_driver_after_model_curation=_resync_driver_after_model_curation,
+        driver_provider_available=_driver_provider_available,
+        resolve_available_driver=_resolve_available_driver,
+        rebuild_pilot_and_session=_rebuild_pilot_and_session,
+    )
+
+
+def _file_services():
+    """Build FileServices from live server module globals (call-time lookup)."""
+    from .api.files import FileServices
+    return FileServices(
+        cfg=_cfg,
+        sessions=_sessions,
+        upload_dir=_UPLOAD_DIR,
+    )
+
+
 def _remove_session_transcript(sid: str) -> None:
     from .api.sessions import remove_session_transcript
     remove_session_transcript(sid, state_dir=_sessions_state_dir(), diag=_diag)
@@ -3220,6 +3199,21 @@ from .api.sessions import (  # noqa: E402
     stash_pop as _stash_pop,
 )
 
+# Wiki graph cache / handoff nonces / status helpers live in harness.api.wiki;
+# re-export historical names for tests and pilot._on_wiki_ingest.
+from .api.wiki import (  # noqa: E402
+    WIKI_NEEDS_AUTH_HINT as _WIKI_NEEDS_AUTH_HINT,
+    wiki_graph_cache as _wiki_graph_cache,
+    WIKI_GRAPH_TTL as _WIKI_GRAPH_TTL,
+    wiki_connect_nonces as _wiki_connect_nonces,
+    WIKI_CONNECT_NONCE_TTL as _WIKI_CONNECT_NONCE_TTL,
+    wiki_cache_key as _wiki_cache_key,
+    clear_wiki_graph_cache as _clear_wiki_graph_cache,
+    mint_wiki_connect_nonce as _mint_wiki_connect_nonce,
+    consume_wiki_connect_nonce as _consume_wiki_connect_nonce,
+    wiki_status_extras as _wiki_status_extras,
+)
+
 # Per-process auth token (defense-in-depth). Written owner-only (chmod 600 on
 # POSIX, NTFS ACL on Windows) so the local client (Electron main / served page)
 # can read it; required on mutating endpoints. Origin/Host validation below is
@@ -3293,54 +3287,7 @@ _CODEGRAPH_STATUS_TTL = 30.0  # seconds
 # a missing cwd / WinError 2 cannot spam the panel and log every poll.
 _codegraph_fail_until = {}  # repo -> monotonic timestamp
 
-# Short-TTL cache for the /api/wiki/graph payload. Each fetch is an HTTP round
-# trip to the wiki host (up to an 8s timeout when slow/unreachable), and the
-# wiki graph changes rarely, so a brief cache removes the repeated stall on the
-# panel without making the data meaningfully stale.
-# Key includes a token fingerprint so saving a token after a public-tier fetch
-# cannot keep serving the stale public payload for the TTL window.
-_wiki_graph_cache = {}  # cache_key -> (monotonic_expiry, payload_dict)
-_WIKI_GRAPH_TTL = 60.0  # seconds
-
-# One-shot nonces for loopback wiki handoff (avoids marionette:// on Windows,
-# which the OS routes to the Microsoft Store when the protocol is unregistered).
-_wiki_connect_nonces = {}  # nonce -> monotonic_expiry
-_WIKI_CONNECT_NONCE_TTL = 900.0  # 15 minutes
-
-
-def _wiki_cache_key(client) -> str:
-    import hashlib
-    base = getattr(client, "base_url", "") or ""
-    tok = getattr(client, "token", "") or ""
-    th = hashlib.sha256(tok.encode("utf-8")).hexdigest()[:16] if tok else "none"
-    return "%s|%s" % (base, th)
-
-
-def _clear_wiki_graph_cache() -> None:
-    _wiki_graph_cache.clear()
-
-
 _pilot._on_wiki_ingest = _clear_wiki_graph_cache
-
-
-def _mint_wiki_connect_nonce() -> str:
-    import time as _time
-    # Drop expired entries opportunistically.
-    now = _time.monotonic()
-    for k, exp in list(_wiki_connect_nonces.items()):
-        if exp <= now:
-            _wiki_connect_nonces.pop(k, None)
-    nonce = _secrets.token_urlsafe(24)
-    _wiki_connect_nonces[nonce] = now + _WIKI_CONNECT_NONCE_TTL
-    return nonce
-
-
-def _consume_wiki_connect_nonce(nonce: str) -> bool:
-    import time as _time
-    if not nonce:
-        return False
-    exp = _wiki_connect_nonces.pop(nonce, None)
-    return exp is not None and exp > _time.monotonic()
 
 
 # Handle to the in-flight CodeGraph indexer: (repo_path, Popen). Lets status
@@ -3777,94 +3724,15 @@ def _strip_markdown_fences(text: str) -> str:
     return text
 
 
-def _resolve_editor_path(repo: str, user_path: str) -> tuple[str, str]:
-    """Resolve an editor/API path under ``repo`` → ``(abs_path, rel_posix)``.
-
-    Raises ``ValueError`` with a user-facing message on missing/escaped/.git paths.
-    """
-    from .paths import is_git_restricted_path, resolve_workspace_path
-
-    abs_path, rel_posix = resolve_workspace_path(repo, user_path)
-    if is_git_restricted_path(rel_posix):
-        raise ValueError("Access denied: .git files are restricted")
-    return abs_path, rel_posix
-
-
-def _guess_file_mime(path: str) -> str:
-    import mimetypes
-
-    mime, _ = mimetypes.guess_type(path)
-    return mime or "application/octet-stream"
-
-
-def _sqlite_table_names(path: str) -> list[str] | None:
-    """Best-effort read-only table list for .db/.sqlite files; None if not sqlite."""
-    ext = os.path.splitext(path)[1].lower()
-    if ext not in {".db", ".sqlite", ".sqlite3"}:
-        return None
-    try:
-        import sqlite3
-
-        uri = Path(path).resolve().as_uri() + "?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=1.0)
-        try:
-            rows = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            ).fetchall()
-            return [str(r[0]) for r in rows if r and r[0]]
-        finally:
-            conn.close()
-    except Exception:
-        return []
-
-
-def _binary_file_payload(abs_path: str, rel_posix: str) -> dict[str, Any]:
-    """Metadata for binary workspace files (editor calm panel, not CodeMirror)."""
-    size = 0
-    try:
-        size = os.path.getsize(abs_path)
-    except OSError:
-        pass
-    name = os.path.basename(abs_path) or rel_posix
-    ext = os.path.splitext(name)[1].lower()
-    payload: dict[str, Any] = {
-        "ok": False,
-        "binary": True,
-        "error": "Cannot read binary files",
-        "path": rel_posix,
-        "name": name,
-        "size": size,
-        "mime": _guess_file_mime(abs_path),
-        "ext": ext,
-    }
-    tables = _sqlite_table_names(abs_path)
-    if tables is not None:
-        payload["sqlite_tables"] = tables
-    return payload
-
-
-def _parse_multipart_files(body: bytes, content_type: str) -> list:
-    """Extract uploaded files from a multipart/form-data body using the stdlib
-    email parser. Replaces cgi.FieldStorage, which was removed in Python 3.13.
-    Returns a list of (filename, data_bytes) for every part carrying a filename.
-    The body is already size-capped by the caller, so buffering it is bounded."""
-    from email.parser import BytesParser
-    # Synthesize the MIME header block the parser needs, then feed it the body.
-    header = (b"MIME-Version: 1.0\r\nContent-Type: "
-              + content_type.encode("latin-1", "replace") + b"\r\n\r\n")
-    message = BytesParser().parsebytes(header + body)
-    files = []
-    if not message.is_multipart():
-        return files
-    for part in message.get_payload():
-        filename = part.get_filename()
-        if not filename:
-            continue
-        data = part.get_payload(decode=True)
-        if data is None:
-            continue
-        files.append((filename, data))
-    return files
+# Editor path / mime / multipart helpers live in harness.api.files; re-export
+# historical names for inline-edit and any tests that patch harness.server.
+from .api.files import (  # noqa: E402
+    resolve_editor_path as _resolve_editor_path,
+    guess_file_mime as _guess_file_mime,
+    sqlite_table_names as _sqlite_table_names,
+    binary_file_payload as _binary_file_payload,
+    parse_multipart_files as _parse_multipart_files,
+)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3926,62 +3794,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_wiki_connect(self, u):
         """Apply wiki config from a loopback handoff (nonce + personal LLM URL)."""
+        # Host gate stays in the Handler; nonce/token/HTML live in api.wiki.
         if not _host_ok(self.headers.get("Host", "")):
             return self._send(403, json.dumps({"error": "host not allowed"}))
-        qs = parse_qs(u.query)
-        nonce = (qs.get("nonce") or [""])[0]
-        raw_url = (qs.get("url") or [""])[0]
-        api_base = (qs.get("api_base") or [""])[0]
-        token = (qs.get("token") or [""])[0]
-        if not _consume_wiki_connect_nonce(nonce):
-            html = (
-                "<!doctype html><html><head><meta charset=utf-8>"
-                "<title>Wiki connect failed</title></head><body style='"
-                "font-family:system-ui;background:#111;color:#eee;padding:2rem'>"
-                "<h1>Link expired</h1>"
-                "<p>Open Connect again from Marionette State → Wiki.</p>"
-                "</body></html>"
-            )
-            return self._send(403, html, "text/html")
-        try:
-            if raw_url:
-                res = set_wiki_config(api_base=raw_url, owner_token=None)
-            elif api_base or token:
-                res = set_wiki_config(
-                    api_base=api_base or None,
-                    owner_token=token or None,
-                )
-            else:
-                html = (
-                    "<!doctype html><html><head><meta charset=utf-8>"
-                    "<title>Wiki connect failed</title></head><body style='"
-                    "font-family:system-ui;background:#111;color:#eee;padding:2rem'>"
-                    "<h1>Missing wiki URL</h1>"
-                    "<p>No personal LLM URL was provided.</p>"
-                    "</body></html>"
-                )
-                return self._send(400, html, "text/html")
-        except Exception as e:
-            html = (
-                "<!doctype html><html><head><meta charset=utf-8>"
-                "<title>Wiki connect failed</title></head><body style='"
-                "font-family:system-ui;background:#111;color:#eee;padding:2rem'>"
-                "<h1>Could not save</h1><p>%s</p></body></html>"
-            ) % (str(e).replace("<", "&lt;")[:200],)
-            return self._send(500, html, "text/html")
-        _clear_wiki_graph_cache()
-        base = (res or {}).get("api_base") or ""
-        html = (
-            "<!doctype html><html><head><meta charset=utf-8>"
-            "<title>Wiki linked</title></head><body style='"
-            "font-family:system-ui;background:#111;color:#eee;padding:2rem'>"
-            "<h1>Wiki linked</h1>"
-            "<p>Marionette saved your portable LLM wiki connection.</p>"
-            "<p style='color:#888;font-size:12px;word-break:break-all'>%s</p>"
-            "<p>You can close this window.</p>"
-            "</body></html>"
-        ) % (base.replace("<", "&lt;"),)
-        return self._send(200, html, "text/html")
+        from .api import wiki as _wiki_api
+        status, body, ctype = _wiki_api.handle_wiki_connect(parse_qs(u.query))
+        return self._send(status, body, ctype)
 
     def do_OPTIONS(self):
         self.send_response(204); self._cors(); self.end_headers()
@@ -4332,177 +4150,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": False, "error": f"Failed during inline edit pilot execution: {str(e)}"}))
 
         if path == "/api/file/write":
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            rel_path = body.get("path", "").strip()
-            content = body.get("content", "")
-            if not rel_path:
-                return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            try:
-                target_path, rel_posix = _resolve_editor_path(repo, rel_path)
-            except ValueError as e:
-                msg = str(e)
-                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
-                return self._send(code, json.dumps({"error": msg}))
-            try:
-                try:
-                    from .checkpoints import CheckpointStore
-                    active_sid = _sessions.active or ""
-                    store = CheckpointStore(repo, session_id=active_sid or None)
-                    store.snapshot(
-                        label=f"before manual edit {rel_posix or rel_path}",
-                        trigger="manual_edit",
-                        session_id=active_sid or None,
-                    )
-                except Exception as cp_err:
-                    import sys
-                    print(f"Checkpoint error before write: {cp_err}", file=sys.stderr)
-                
-                target_dir = os.path.dirname(target_path)
-                os.makedirs(target_dir, exist_ok=True)
-                import tempfile
-                fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-")
-                try:
-                    with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as f:
-                        f.write(content)
-                    os.replace(temp_path, target_path)
-                except Exception as e:
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-                    raise e
-                bytes_written = len(content.encode('utf-8'))
-                return self._send(200, json.dumps({
-                    "ok": True,
-                    "bytes": bytes_written
-                }))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to write file: {e}"}))
+            from .api import files as _files_api
+            status, payload = _files_api.post_file_write(body, _file_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/file/delete":
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            rel_path = body.get("path", "").strip()
-            if not rel_path:
-                return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            try:
-                target_path, rel_posix = _resolve_editor_path(repo, rel_path)
-            except ValueError as e:
-                msg = str(e)
-                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
-                return self._send(code, json.dumps({"error": msg}))
-            # Never delete the workspace root itself.
-            repo_abs = os.path.realpath(repo)
-            if os.path.realpath(target_path) == repo_abs:
-                return self._send(400, json.dumps({"error": "Cannot delete workspace root"}))
-            if not os.path.exists(target_path):
-                return self._send(404, json.dumps({"error": "Path not found", "path": rel_posix}))
-            try:
-                import shutil as _shutil
-                if os.path.isdir(target_path) and not os.path.islink(target_path):
-                    _shutil.rmtree(target_path)
-                else:
-                    os.remove(target_path)
-                return self._send(200, json.dumps({"ok": True, "path": rel_posix}))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to delete: {e}"}))
+            from .api import files as _files_api
+            status, payload = _files_api.post_file_delete(body, _file_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/file/rename":
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            # Accept {path, new_name} (same-dir rename) or {from, to} (rel paths).
-            src_raw = (body.get("from") or body.get("path") or "").strip()
-            new_name = (body.get("new_name") or "").strip()
-            dst_raw = (body.get("to") or "").strip()
-            if not src_raw:
-                return self._send(400, json.dumps({"error": "Missing path/from parameter"}))
-            if new_name and dst_raw:
-                return self._send(400, json.dumps({"error": "Provide new_name or to, not both"}))
-            if not new_name and not dst_raw:
-                return self._send(400, json.dumps({"error": "Missing new_name or to parameter"}))
-            if new_name:
-                # Same-directory rename: refuse path separators in the new name.
-                if "/" in new_name or "\\" in new_name or new_name in (".", ".."):
-                    return self._send(400, json.dumps({"error": "Invalid new_name"}))
-            try:
-                src_path, src_rel = _resolve_editor_path(repo, src_raw)
-            except ValueError as e:
-                msg = str(e)
-                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
-                return self._send(code, json.dumps({"error": msg}))
-            if not os.path.exists(src_path):
-                return self._send(404, json.dumps({"error": "Path not found", "path": src_rel}))
-            if new_name:
-                dst_raw = "/".join(
-                    p for p in (*(src_rel.split("/")[:-1] if src_rel else ()), new_name) if p
-                )
-            try:
-                dst_path, dst_rel = _resolve_editor_path(repo, dst_raw)
-            except ValueError as e:
-                msg = str(e)
-                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
-                return self._send(code, json.dumps({"error": msg}))
-            if os.path.realpath(src_path) == os.path.realpath(repo):
-                return self._send(400, json.dumps({"error": "Cannot rename workspace root"}))
-            if os.path.exists(dst_path):
-                return self._send(409, json.dumps({"error": "Destination already exists", "path": dst_rel}))
-            try:
-                dst_parent = os.path.dirname(dst_path)
-                if dst_parent and not os.path.isdir(dst_parent):
-                    os.makedirs(dst_parent, exist_ok=True)
-                os.rename(src_path, dst_path)
-                return self._send(200, json.dumps({
-                    "ok": True,
-                    "from": src_rel,
-                    "to": dst_rel,
-                }))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to rename: {e}"}))
+            from .api import files as _files_api
+            status, payload = _files_api.post_file_rename(body, _file_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/file/mkdir":
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            rel_path = body.get("path", "").strip()
-            if not rel_path:
-                return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            try:
-                target_path, rel_posix = _resolve_editor_path(repo, rel_path)
-            except ValueError as e:
-                msg = str(e)
-                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
-                return self._send(code, json.dumps({"error": msg}))
-            if os.path.exists(target_path):
-                return self._send(409, json.dumps({"error": "Path already exists", "path": rel_posix}))
-            try:
-                os.makedirs(target_path, exist_ok=False)
-                return self._send(200, json.dumps({"ok": True, "path": rel_posix}))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to create directory: {e}"}))
+            from .api import files as _files_api
+            status, payload = _files_api.post_file_mkdir(body, _file_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/file/reveal":
-            # OS file-manager reveal. Prefer Electron shell.showItemInFolder when
-            # the preload bridge is present; this HTTP path covers stale shells
-            # and HTTP-only UIs so the FILES menu never toasts "web build".
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            rel_path = body.get("path", "").strip()
-            if not rel_path:
-                return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            try:
-                target_path, rel_posix = _resolve_editor_path(repo, rel_path)
-            except ValueError as e:
-                msg = str(e)
-                code = 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
-                return self._send(code, json.dumps({"error": msg}))
-            if not os.path.exists(target_path):
-                return self._send(404, json.dumps({"error": "Path not found", "path": rel_posix}))
-            try:
-                from .file_reveal import reveal_in_file_manager
-                err = reveal_in_file_manager(target_path)
-                if err:
-                    return self._send(500, json.dumps({"error": err, "path": rel_posix}))
-                return self._send(200, json.dumps({"ok": True, "path": rel_posix}))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to reveal: {e}"}))
+            from .api import files as _files_api
+            status, payload = _files_api.post_file_reveal(body, _file_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/workspace/open":
             import subprocess
@@ -4646,67 +4316,41 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(_ws.create_workspace(repo, body.get("name",""),
                               body.get("branch") or None)))
         if path == "/api/mcp/add":
-            name = body.get("name", "")
-            server = {k: body[k] for k in ("command", "args", "env", "cwd", "url", "headers") if k in body}
-            _mcp.save_server(name, server)
-            try:
-                tools = _mcp.start_server(name)
-                return self._send(200, json.dumps({"ok": True, "tools": len(tools)}))
-            except Exception as e:
-                return self._send(200, json.dumps({"ok": False, "error": str(e)}))
+            from .api import mcp as _mcp_api
+            status, payload = _mcp_api.post_mcp_add(body, _mcp_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/mcp/remove":
-            _mcp.remove_server(body.get("name", ""))
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import mcp as _mcp_api
+            status, payload = _mcp_api.post_mcp_remove(body, _mcp_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/mcp/start":
-            try:
-                tools = _mcp.start_server(body.get("name", ""))
-                return self._send(200, json.dumps({"ok": True, "tools": len(tools)}))
-            except Exception as e:
-                return self._send(200, json.dumps({"ok": False, "error": str(e)}))
+            from .api import mcp as _mcp_api
+            status, payload = _mcp_api.post_mcp_start(body, _mcp_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/mcp/stop":
-            _mcp.stop_server(body.get("name", ""))
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import mcp as _mcp_api
+            status, payload = _mcp_api.post_mcp_stop(body, _mcp_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/mcp/call":
-            args = body.get("arguments")
-            if args is not None and not isinstance(args, dict):
-                return self._send(400, json.dumps({"error": "arguments must be a dictionary"}))
-            try:
-                out = _mcp.call(body.get("tool", ""), args or {})
-                return self._send(200, json.dumps({"ok": True, "result": out}))
-            except Exception as e:
-                return self._send(200, json.dumps({"ok": False, "error": str(e)}))
+            from .api import mcp as _mcp_api
+            status, payload = _mcp_api.post_mcp_call(body, _mcp_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/skills/distill":
             return self._send(200, json.dumps(_pilot.distill()))
         if path == "/api/wiki/ingest-prepared":
             # One-click approve: file the locally-orchestrated pages into the wiki.
-            pages = body.get("pages") or []
-            count = _pilot.ingest_prepared_pages(pages)
-            # Same cache bust as connect/disconnect -- ingested pages change the
-            # tenant graph/status the UI polls.
-            _clear_wiki_graph_cache()
-            return self._send(200, json.dumps({"ok": count > 0, "ingested": count}))
+            from .api import wiki as _wiki_api
+            status, payload = _wiki_api.post_wiki_ingest_prepared(
+                body, _wiki_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/models/toggle":
-            from . import model_visibility as _mv
-            spec = body.get("spec", "")
-            on = _parse_bool(body.get("enabled", True))
-            enabled = _mv.toggle(spec, on)
-            sync = _resync_driver_after_model_curation()
-            return self._send(200, json.dumps({
-                "ok": True,
-                "enabled": enabled,
-                "driver": sync.get("driver") or _cfg.driver,
-                "driver_changed": bool(sync.get("changed")),
-            }))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_models_toggle(body, _provider_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/models/set":
-            from . import model_visibility as _mv
-            enabled = _mv.set_enabled(body.get("enabled") or [])
-            sync = _resync_driver_after_model_curation()
-            return self._send(200, json.dumps({
-                "ok": True,
-                "enabled": enabled,
-                "driver": sync.get("driver") or _cfg.driver,
-                "driver_changed": bool(sync.get("changed")),
-            }))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_models_set(body, _provider_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/skills/approve":
             sk = _skills.set_state(body.get("slug", ""), "active")
             return self._send(200, json.dumps({"ok": bool(sk)}))
@@ -5083,18 +4727,13 @@ class Handler(BaseHTTPRequestHandler):
             _pty.kill(body.get("id", ""))
             return self._send(200, json.dumps({"ok": True}))
         if path == "/api/wiki/config":
-            api_base = body.get("api_base")
-            owner_token = body.get("owner_token")
-            res = set_wiki_config(
-                api_base=api_base if api_base is not None else None,
-                owner_token=owner_token if owner_token is not None else None,
-            )
-            _clear_wiki_graph_cache()
-            return self._send(200, json.dumps(res))
+            from .api import wiki as _wiki_api
+            status, payload = _wiki_api.post_wiki_config(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/wiki/disconnect":
-            res = clear_wiki_config()
-            _clear_wiki_graph_cache()
-            return self._send(200, json.dumps(res))
+            from .api import wiki as _wiki_api
+            status, payload = _wiki_api.post_wiki_disconnect()
+            return self._send(status, json.dumps(payload))
         if path == "/api/bedrock":
             # AWS Bedrock BYOK: bearer token OR access-key pair + region/model.
             action = str(body.get("action", "")).strip().lower()
@@ -5119,249 +4758,74 @@ class Handler(BaseHTTPRequestHandler):
             sync_agentic_registry_safe()
             return self._send(200, json.dumps({"ok": True, **res}))
         if path == "/api/auth/pools":
-            from .credential_pool import list_all_pools_public, list_pool_public, known_pool_providers
-            pname = str(body.get("provider", "")).strip()
-            if pname:
-                return self._send(200, json.dumps(list_pool_public(pname)))
-            return self._send(200, json.dumps({
-                **list_all_pools_public(),
-                "providers": known_pool_providers(),
-            }))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_pools(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/pools/add":
-            from .credential_pool import add_api_key, list_pool_public
-            pname = str(body.get("provider", "")).strip()
-            auth_type = str(body.get("type", "api_key")).strip().lower()
-            if not pname:
-                return self._send(400, json.dumps({"error": "provider required"}))
-            if auth_type != "api_key":
-                return self._send(400, json.dumps({
-                    "error": "oauth add via /api/auth/oauth/start (not yet wired); "
-                             "use type=api_key for now",
-                }))
-            key = str(body.get("api_key", "")).strip()
-            label = str(body.get("label", "")).strip()
-            if not key:
-                return self._send(400, json.dumps({"error": "api_key required"}))
-            try:
-                entry = add_api_key(pname, key, label=label)
-            except ValueError as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            # Mirror into keys.json so classic has_key / env paths stay honest
-            # for the first (or latest) key of providers that use set_api_key.
-            try:
-                if pname in (
-                    "openrouter", "openai", "anthropic", "xai", "google",
-                    "groq", "deepseek", "mistral", "cursor",
-                ):
-                    set_api_key(pname, key)
-            except Exception as e:
-                _diag("server.auth_pool_mirror_key", e)
-            pub = list_pool_public(pname)
-            return self._send(200, json.dumps({"ok": True, "entry_id": entry.id, **pub}))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_pools_add(body, _provider_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/pools/remove":
-            from .credential_pool import remove_entry, list_pool_public
-            pname = str(body.get("provider", "")).strip()
-            eid = str(body.get("entry_id", "")).strip()
-            if not pname or not eid:
-                return self._send(400, json.dumps({"error": "provider and entry_id required"}))
-            ok = remove_entry(pname, eid)
-            return self._send(200, json.dumps({"ok": ok, **list_pool_public(pname)}))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_pools_remove(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/pools/strategy":
-            from .credential_pool import set_strategy, list_pool_public, SUPPORTED_STRATEGIES
-            pname = str(body.get("provider", "")).strip()
-            strategy = str(body.get("strategy", "")).strip()
-            if not pname or strategy not in SUPPORTED_STRATEGIES:
-                return self._send(400, json.dumps({
-                    "error": f"provider + strategy in {sorted(SUPPORTED_STRATEGIES)} required",
-                }))
-            set_strategy(pname, strategy)
-            return self._send(200, json.dumps({"ok": True, **list_pool_public(pname)}))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_pools_strategy(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/pools/reset":
-            from .credential_pool import load_pool, list_pool_public
-            pname = str(body.get("provider", "")).strip()
-            if not pname:
-                return self._send(400, json.dumps({"error": "provider required"}))
-            load_pool(pname).reset_cooldowns()
-            return self._send(200, json.dumps({"ok": True, **list_pool_public(pname)}))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_pools_reset(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/oauth/start":
-            pname = str(body.get("provider", "")).strip()
-            label = str(body.get("label", "")).strip()
-            try:
-                if pname == "openai-codex":
-                    from .oauth_codex import start_codex_device_login
-                    res = start_codex_device_login(label=label)
-                elif pname == "anthropic":
-                    from .oauth_anthropic import start_anthropic_pkce_login
-                    res = start_anthropic_pkce_login(label=label)
-                elif pname == "xai-oauth":
-                    from .oauth_xai import start_xai_device_login
-                    res = start_xai_device_login(label=label)
-                elif pname == "nous":
-                    from .oauth_nous import start_nous_device_login
-                    res = start_nous_device_login(label=label)
-                else:
-                    return self._send(400, json.dumps({
-                        "error": f"oauth start unsupported for {pname!r} "
-                                 "(openai-codex, anthropic, xai-oauth, nous)",
-                    }))
-            except Exception as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            return self._send(200, json.dumps({"ok": True, **res}))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_oauth_start(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/oauth/poll":
-            sid = str(body.get("session_id", "")).strip()
-            pname = str(body.get("provider", "")).strip()
-            if not sid:
-                return self._send(400, json.dumps({"error": "session_id required"}))
-            try:
-                if pname == "xai-oauth":
-                    from .oauth_xai import poll_xai_device_login
-                    res = poll_xai_device_login(sid)
-                    done_provider = "xai-oauth"
-                elif pname == "nous":
-                    from .oauth_nous import poll_nous_device_login
-                    res = poll_nous_device_login(sid)
-                    done_provider = "nous"
-                else:
-                    from .oauth_codex import poll_codex_device_login
-                    res = poll_codex_device_login(sid)
-                    done_provider = "openai-codex"
-            except Exception as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            if res.get("status") == "done":
-                from .credential_pool import list_pool_public
-                res = {**res, **list_pool_public(done_provider)}
-            return self._send(200, json.dumps(res))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_oauth_poll(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/oauth/complete":
-            # Anthropic PKCE paste-the-code completion (and future paste flows).
-            sid = str(body.get("session_id", "")).strip()
-            code = str(body.get("code") or body.get("auth_code") or "").strip()
-            pname = str(body.get("provider", "anthropic")).strip()
-            if not sid or not code:
-                return self._send(400, json.dumps({
-                    "error": "session_id and code required",
-                }))
-            if pname != "anthropic":
-                return self._send(400, json.dumps({
-                    "error": "oauth complete currently supports anthropic only",
-                }))
-            try:
-                from .oauth_anthropic import complete_anthropic_pkce_login
-                res = complete_anthropic_pkce_login(sid, code)
-            except Exception as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            if res.get("status") == "done":
-                from .credential_pool import list_pool_public
-                res = {**res, **list_pool_public("anthropic")}
-            return self._send(200, json.dumps(res))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_oauth_complete(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/oauth/cancel":
-            sid = str(body.get("session_id", "")).strip()
-            pname = str(body.get("provider", "")).strip()
-            if not sid:
-                return self._send(400, json.dumps({"error": "session_id required"}))
-            try:
-                if pname == "xai-oauth":
-                    from .oauth_xai import cancel_xai_device_login
-                    res = cancel_xai_device_login(sid)
-                elif pname == "nous":
-                    from .oauth_nous import cancel_nous_device_login
-                    res = cancel_nous_device_login(sid)
-                elif pname == "anthropic":
-                    from .oauth_anthropic import cancel_anthropic_pkce_login
-                    res = cancel_anthropic_pkce_login(sid)
-                else:
-                    from .oauth_codex import cancel_codex_device_login
-                    res = cancel_codex_device_login(sid)
-            except Exception as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            return self._send(200, json.dumps({"ok": True, **res}))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_oauth_cancel(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/cursor-cli/status":
-            from .cursor_cli_auth import get_status
-            try:
-                # Refresh after Sign-in / Refresh status button; otherwise
-                # Settings re-opens reuse the short TTL cache.
-                refresh = bool(body.get("refresh")) if isinstance(body, dict) else False
-                res = get_status(refresh=refresh)
-            except Exception as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            return self._send(200, json.dumps(res))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_cursor_cli_status(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/cursor-cli/login":
-            from .cursor_cli_auth import start_login
-            try:
-                ws = ""
-                if isinstance(body, dict):
-                    ws = (
-                        body.get("workspace")
-                        or body.get("workspace_root")
-                        or body.get("repo")
-                        or ""
-                    )
-                if not str(ws).strip():
-                    ws = getattr(_cfg, "repo", None) or os.environ.get("HARNESS_REPO") or ""
-                res = start_login(workspace=str(ws).strip() or None)
-            except Exception as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            status = 200 if res.get("ok") else 400
-            return self._send(status, json.dumps(res))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_cursor_cli_login(
+                body, _provider_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/cursor-cli/trust":
-            from .cursor_cli_auth import ensure_workspace_trusted
-            try:
-                ws = ""
-                if isinstance(body, dict):
-                    ws = (
-                        body.get("workspace")
-                        or body.get("workspace_root")
-                        or body.get("repo")
-                        or ""
-                    )
-                if not str(ws).strip():
-                    ws = getattr(_cfg, "repo", None) or os.environ.get("HARNESS_REPO") or ""
-                res = ensure_workspace_trusted(str(ws).strip() or None)
-            except Exception as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            status = 200 if res.get("ok") else 400
-            return self._send(status, json.dumps(res))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_cursor_cli_trust(
+                body, _provider_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/cursor-cli/logout":
-            from .cursor_cli_auth import logout
-            try:
-                res = logout()
-            except Exception as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            status = 200 if res.get("ok") else 400
-            return self._send(status, json.dumps(res))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_cursor_cli_logout()
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/cursor-cli/models":
-            from .cursor_cli_auth import list_models, get_status
-            try:
-                st = get_status()
-                models = list_models(live=True) if st.get("installed") else []
-            except Exception as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            return self._send(200, json.dumps({
-                "ok": True,
-                "models": [{"id": m} for m in models],
-                "auth_kind": "cursor_account",
-            }))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_auth_cursor_cli_models()
+            return self._send(status, json.dumps(payload))
         if path == "/api/wiki/handoff":
             # Mint a one-shot nonce and return a setup URL that carries a
             # loopback return target. Prefer this over marionette:// so Windows
             # never opens the Microsoft Store for an unregistered protocol.
-            nonce = _mint_wiki_connect_nonce()
+            # Host gate stays here; nonce + URL assembly live in api.wiki.
             host = self.headers.get("Host", "") or ""
             if not _host_ok(host):
                 return self._send(400, json.dumps({"error": "bad host"}))
-            return_url = "http://%s/api/wiki/connect" % host
-            from urllib.parse import quote as _quote
-            setup_url = (
-                "https://portablellm.wiki/connect/marionette"
-                "?client=marionette"
-                "&return=%s"
-                "&nonce=%s"
-            ) % (_quote(return_url, safe=""), _quote(nonce, safe=""))
-            return self._send(200, json.dumps({
-                "ok": True,
-                "nonce": nonce,
-                "return_url": return_url,
-                "setup_url": setup_url,
-            }))
+            from .api import wiki as _wiki_api
+            status, payload = _wiki_api.post_wiki_handoff(host)
+            return self._send(status, json.dumps(payload))
         if path == "/api/git/connect":
             method = body.get("method")
             if method not in ("gh", "device"):
@@ -5558,101 +5022,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(_get_settings_dict()))
 
         if path == "/api/providers/probe":
-            pname = body.get("provider", "")
-            from .providers import get_provider
-            p = get_provider(pname)
-            if not p:
-                return self._send(400, json.dumps({"error": f"Unknown provider: {pname}"}))
-            
-            from .registry_wizard import get_provider_key, probe_provider
-            key = get_provider_key(p)
-            try:
-                res = probe_provider(p, key)
-                return self._send(200, json.dumps(res))
-            except Exception as e:
-                return self._send(200, json.dumps({
-                    "provider": p.name,
-                    "models": [{"id": m} for m in p.pilot_models],
-                    "source": "static",
-                    "error": str(e)
-                }))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_providers_probe(body)
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/providers/key":
-            # Per-provider key management: set or disconnect a SPECIFIC provider's
-            # key independently (e.g. turn OpenRouter off while keeping Anthropic).
-            # Distinct from /api/settings, which only touches the active reach.
-            pname = str(body.get("provider", "")).strip()
-            from .providers import get_provider
-            p = get_provider(pname)
-            if not p:
-                return self._send(400, json.dumps({"error": f"Unknown provider: {pname}"}))
-            action = str(body.get("action", "")).strip().lower()
-            if action in ("enable", "disable", "toggle"):
-                # Non-destructive on/off for env-imported (or stored) keys. Unlike
-                # 'clear', this preserves the key so the user can flip a provider
-                # off and back on -- e.g. swapping a work key for a personal one.
-                from .keys import set_provider_enabled, get_disconnected
-                if action == "toggle":
-                    enabled = p.name in get_disconnected()
-                else:
-                    enabled = action == "enable"
-                set_provider_enabled(p.name, enabled)
-                # Resync agentic registry when a provider is enabled/disabled
-                from .auto_registry import sync_agentic_registry_safe
-                sync_agentic_registry_safe()
-                # Keep the active driver honest: enabling may make a better model
-                # reachable; disabling may kill the current one.
-                try:
-                    if not _driver_provider_available(_cfg.driver):
-                        _resolve_available_driver()
-                        _rebuild_pilot_and_session()
-                except Exception as e:
-                    _diag("server.provider_toggle_driver_rebuild", e)
-                status = get_api_key_status(p.name)
-                return self._send(200, json.dumps({
-                    "ok": True,
-                    "provider": p.name,
-                    "enabled": enabled,
-                    "has_key": status["has_key"],
-                    "masked": status["masked"],
-                }))
-            if action == "clear" or body.get("clear") is True:
-                clear_api_key(p.name)
-                # Resync agentic registry when a provider key is cleared
-                from .auto_registry import sync_agentic_registry_safe
-                sync_agentic_registry_safe()
-                # If the active driver's provider is no longer available (we just
-                # disconnected the provider backing it -- whether a 'provider:model'
-                # spec OR a bare name routed through the reach), re-resolve to the
-                # first available enabled model and rebuild, so the app never sits
-                # on a dead driver.
-                try:
-                    if not _driver_provider_available(_cfg.driver):
-                        _resolve_available_driver()
-                        _rebuild_pilot_and_session()
-                except Exception as e:
-                    _diag("server.provider_clear_driver_rebuild", e)
-            else:
-                # Bedrock accepts a multi-field credential blob; other providers
-                # take a single api_key string (bedrock also accepts api_key as
-                # the preferred bearer-token shortcut).
-                if p.name == "bedrock" and isinstance(body.get("bedrock"), dict):
-                    set_bedrock_credentials(body["bedrock"])
-                else:
-                    val = str(body.get("api_key", "")).strip()
-                    if not val:
-                        return self._send(400, json.dumps({"error": "api_key required to set"}))
-                    set_api_key(p.name, val)
-                # Resync agentic registry when a provider key is set
-                from .auto_registry import sync_agentic_registry_safe
-                sync_agentic_registry_safe()
-            status = get_api_key_status(p.name)
-            return self._send(200, json.dumps({
-                "ok": True,
-                "provider": p.name,
-                "has_key": status["has_key"],
-                "masked": status["masked"],
-            }))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.post_providers_key(body, _provider_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/registry":
             models = body.get("models")
@@ -5868,35 +5245,19 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _handle_upload(self):
+        from .api import files as _files_api
         ctype = self.headers.get("Content-Type", "")
-        if "multipart/form-data" not in ctype:
-            return self._send(400, json.dumps({"error": "expected multipart/form-data"}))
-        # Reject oversized bodies BEFORE parsing. Without a ceiling, a large
-        # multipart POST is read straight off the socket into memory on a
-        # thread-per-request server -- a cheap memory-exhaustion DoS. Cap by the
-        # declared Content-Length (default 10MB, env-tunable).
-        max_bytes = int(os.environ.get("HARNESS_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
         try:
             content_length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError:
             content_length = 0
-        if content_length <= 0:
-            return self._send(400, json.dumps({"error": "missing or empty body"}))
-        if content_length > max_bytes:
-            return self._send(413, json.dumps({
-                "error": f"upload too large: {content_length} bytes exceeds cap of {max_bytes}"
-            }))
+        # Size/ctype gate stays before rfile.read (DoS); parse+save in api.files.
+        early = _files_api.check_upload_request(ctype, content_length)
+        if early is not None:
+            return self._send(early[0], json.dumps(early[1]))
         body = self.rfile.read(content_length)
-        saved = []
-        for filename, data in _parse_multipart_files(body, ctype):
-            ext = os.path.splitext(filename)[1].lower() or ".png"
-            if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
-                continue
-            path = os.path.join(_UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
-            with open(path, "wb") as out:
-                out.write(data)
-            saved.append({"path": path, "name": filename})
-        return self._send(200, json.dumps({"saved": saved}))
+        status, payload = _files_api.save_upload(body, ctype, _UPLOAD_DIR)
+        return self._send(status, json.dumps(payload))
 
     # GET endpoints that are intentionally public (the same-origin renderer
     # bootstrap assets, which must load BEFORE the page has the token to make
@@ -6080,11 +5441,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 return self._send(400, json.dumps({"error": result.get("error", "Diff generation failed")}))
         if u.path == "/api/mcp":
-            return self._send(200, json.dumps({"servers": _mcp.status(),
-                "tools": [{"server": t.server, "name": t.name, "qualified": t.qualified,
-                           "description": t.description} for t in _mcp.tools()]}))
+            from .api import mcp as _mcp_api
+            status, payload = _mcp_api.get_mcp(_mcp_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/mcp/catalog":
-            return self._send(200, json.dumps({"catalog": CATALOG}))
+            from .api import mcp as _mcp_api
+            status, payload = _mcp_api.get_mcp_catalog()
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/commands":
             qargs = parse_qs(u.query)
             repo = qargs.get("repo", [""])[0].strip() or _cfg.repo
@@ -6123,129 +5486,33 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            repo = _cfg.repo
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            rel_path = parse_qs(u.query).get("path", [""])[0].strip()
-            if not rel_path:
-                return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            try:
-                full_path, rel_posix = _resolve_editor_path(repo, rel_path)
-            except ValueError as e:
-                msg = str(e)
-                code = 403 if "Access denied" in msg else 400
-                return self._send(code, json.dumps({"error": msg}))
-            if not os.path.isfile(full_path):
-                return self._send(404, json.dumps({"error": "File not found", "path": rel_posix}))
-            try:
-                with open(full_path, "rb") as f:
-                    chunk = f.read(1024)
-                    if b"\x00" in chunk:
-                        return self._send(200, json.dumps(_binary_file_payload(full_path, rel_posix)))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to check file type: {e}"}))
-            try:
-                file_size = os.path.getsize(full_path)
-                truncated = False
-                max_bytes = 1024 * 1024
-                # Read as bytes then decode: text-mode f.read(n) is characters,
-                # so a UTF-8 file over the byte gate could return more than
-                # max_bytes of encoded payload (or mis-label truncation).
-                with open(full_path, "rb") as f:
-                    if file_size > max_bytes:
-                        truncated = True
-                        raw = f.read(max_bytes)
-                    else:
-                        raw = f.read()
-                # errors="ignore" drops a trailing partial multibyte sequence
-                # when the byte cap splits a character; replace would inject U+FFFD.
-                content = raw.decode("utf-8", errors="ignore")
-                return self._send(200, json.dumps({
-                    "ok": True,
-                    "path": rel_posix or rel_path,
-                    "content": content,
-                    "truncated": truncated
-                }))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to read file: {e}"}))
+            from .api import files as _files_api
+            rel_path = parse_qs(u.query).get("path", [""])[0]
+            status, payload = _files_api.get_file_read(rel_path, _file_services())
+            return self._send(status, json.dumps(payload))
 
         if u.path == "/api/file/raw":
-            # Authenticated bytes for PDF/image/HTML preview. Same path gates as
-            # /api/file/read — never an arbitrary-file read outside the workspace.
+            # Authenticated bytes for PDF/image/HTML preview — body in api.files.
             if self._guard():
                 return
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            repo = _cfg.repo
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            rel_path = parse_qs(u.query).get("path", [""])[0].strip()
-            if not rel_path:
-                return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            try:
-                full_path, rel_posix = _resolve_editor_path(repo, rel_path)
-            except ValueError as e:
-                msg = str(e)
-                code = 403 if "Access denied" in msg else 400
-                return self._send(code, json.dumps({"error": msg}))
-            if not os.path.isfile(full_path):
-                return self._send(404, json.dumps({"error": "File not found", "path": rel_posix}))
-            try:
-                size = os.path.getsize(full_path)
-                max_bytes = int(os.environ.get("HARNESS_FILE_RAW_MAX_BYTES", str(50 * 1024 * 1024)))
-                if size > max_bytes:
-                    return self._send(413, json.dumps({"error": "File too large for raw preview"}))
-                with open(full_path, "rb") as f:
-                    data = f.read()
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to read file: {e}"}))
-            ctype = _guess_file_mime(full_path)
-            # Browsers sniff HTML; force text/html for .html/.htm so iframe preview works.
-            ext = os.path.splitext(full_path)[1].lower()
-            if ext in {".html", ".htm"}:
-                ctype = "text/html; charset=utf-8"
-            elif ext == ".pdf":
-                ctype = "application/pdf"
-            return self._send(200, data, ctype)
+            from .api import files as _files_api
+            rel_path = parse_qs(u.query).get("path", [""])[0]
+            status, body_or_err, ctype = _files_api.get_file_raw(
+                rel_path, _file_services())
+            if isinstance(body_or_err, dict):
+                return self._send(status, json.dumps(body_or_err))
+            return self._send(status, body_or_err, ctype)
 
         if u.path == "/api/image":
-            # Serve an uploaded image back to the browser so SENT message
-            # thumbnails have a durable src (the composer's blob: preview URL
-            # is revoked right after send and never survives a reload). Only
-            # ever serve files that live under _UPLOAD_DIR -- this must NOT
-            # become an arbitrary-file-read endpoint.
+            from .api import files as _files_api
             req_path = parse_qs(u.query).get("path", [""])[0]
-            if not req_path:
-                return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            upload_real = os.path.realpath(_UPLOAD_DIR)
-            file_real = os.path.realpath(req_path)
-            try:
-                is_under_upload_dir = os.path.commonpath([upload_real, file_real]) == upload_real
-            except ValueError:
-                # commonpath raises on e.g. mixed drives on Windows -- treat as unsafe.
-                is_under_upload_dir = False
-            if not is_under_upload_dir:
-                return self._send(403, json.dumps({"error": "Access denied: path outside upload directory"}))
-            ext = os.path.splitext(file_real)[1].lower()
-            _IMAGE_CTYPES = {
-                ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                ".webp": "image/webp", ".gif": "image/gif",
-            }
-            if ext not in _IMAGE_CTYPES:
-                return self._send(403, json.dumps({"error": "Access denied: not an image file"}))
-            if not os.path.isfile(file_real):
-                return self._send(404, json.dumps({"error": "File not found"}))
-            try:
-                size = os.path.getsize(file_real)
-                max_bytes = int(os.environ.get("HARNESS_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
-                if size > max_bytes:
-                    return self._send(413, json.dumps({"error": "Image too large"}))
-                with open(file_real, "rb") as f:
-                    data = f.read()
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to read image: {e}"}))
-            return self._send(200, data, _IMAGE_CTYPES[ext])
+            status, body_or_err, ctype = _files_api.get_image(req_path, _UPLOAD_DIR)
+            if isinstance(body_or_err, dict):
+                return self._send(status, json.dumps(body_or_err))
+            return self._send(status, body_or_err, ctype)
 
         if u.path == "/api/workspace/files":
             if self._guard():
@@ -6253,43 +5520,9 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            repo = _cfg.repo
-            if not repo or not os.path.isdir(repo):
-                return self._send(200, json.dumps({
-                    "files": [], "truncated": False, "total": 0, "capped": 0,
-                }))
-            files_list = []
-            try:
-                path_cap = int(os.environ.get("HARNESS_WORKSPACE_FILES_CAP", "2000") or "2000")
-            except ValueError:
-                path_cap = 2000
-            if path_cap < 1:
-                path_cap = 2000
-            skip_dirs = {".git", "node_modules", ".venv", ".codegraph", "dist", "build", ".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache", ".idea", ".vscode", "venv", ".next", "coverage", ".hermes", "release", "backend-dist"}
-            repo_abs = os.path.abspath(repo)
-            for root, dirs, files in os.walk(repo_abs):
-                dirs[:] = [d for d in dirs if d not in skip_dirs]
-                for f in files:
-                    full_path = os.path.join(root, f)
-                    rel_path = os.path.relpath(full_path, repo_abs)
-                    if rel_path == "." or rel_path.startswith(".."):
-                        continue
-                    # Forward slashes: the renderer's file tree and @-mention
-                    # matching expect one separator on every platform.
-                    files_list.append(rel_path.replace(os.sep, "/"))
-            # Collect fully, then sort, then cap — so the kept set is the
-            # alphabetical head, not an os.walk-order biased sample.
-            files_list.sort()
-            total = len(files_list)
-            truncated = total > path_cap
-            if truncated:
-                files_list = files_list[:path_cap]
-            return self._send(200, json.dumps({
-                "files": files_list,
-                "truncated": truncated,
-                "total": total,
-                "capped": path_cap if truncated else total,
-            }))
+            from .api import files as _files_api
+            status, payload = _files_api.get_workspace_files(_file_services())
+            return self._send(status, json.dumps(payload))
 
         if u.path == "/api/workspace/symbols":
             if self._guard():
@@ -6408,16 +5641,10 @@ class Handler(BaseHTTPRequestHandler):
             qtok = q.get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from . import model_visibility as _mv
+            from .api import providers as _prov_api
             force = (q.get("refresh", [""])[0] or "").strip().lower() in ("1", "true", "yes")
-            # One force pass (Cursor `agent models` is multi-second); derive the
-            # keyed-only catalog from the full list so we don't spawn twice.
-            all_cat = _mv.catalog(available_only=False, force=force)
-            return self._send(200, json.dumps({
-                "catalog": [c for c in all_cat if c.get("available")],
-                "all": all_cat,
-                "enabled": _mv.get_enabled(),
-            }))
+            status, payload = _prov_api.get_models_catalog(force=force)
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/codegraph":
             if self._guard():
                 return
@@ -6681,7 +5908,9 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            return self._send(200, json.dumps(get_wiki_config()))
+            from .api import wiki as _wiki_api
+            status, payload = _wiki_api.get_wiki_config_payload()
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/bedrock":
             if self._guard():
                 return
@@ -6695,98 +5924,21 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .credential_pool import (
-                list_all_pools_public, list_pool_public, known_pool_providers,
-            )
+            from .api import providers as _prov_api
             qs = parse_qs(u.query)
             pname = (qs.get("provider") or [""])[0].strip()
-            if pname:
-                return self._send(200, json.dumps(list_pool_public(pname)))
-            return self._send(200, json.dumps({
-                **list_all_pools_public(),
-                "providers": known_pool_providers(),
-            }))
+            status, payload = _prov_api.get_auth_pools(provider=pname)
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/wiki/graph":
             if self._guard():
                 return
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            
-            # WikiClient auto-detects the gated owner surface (WIKI_API_BASE +
-            # WIKI_OWNER_TOKEN, same as the portable-llm-wiki MCP) or the public
-            # HARNESS_WIKI_URL. config.wiki_url overrides base_url when set.
-            from .wiki import WikiClient
-            try:
-                client = WikiClient(base_url=_cfg.wiki_url or "", timeout=8)
-            except Exception as e:
-                client = None
-                _client_err = str(e)
-            if client is None or not client.base_url:
-                return self._send(200, json.dumps({
-                    "configured": False,
-                    "status": "not_configured",
-                    "nodes": [],
-                    "edges": [],
-                    "base_url": ""
-                }))
-            import time as _time
-            _ck = _wiki_cache_key(client)
-            _wiki_cached = _wiki_graph_cache.get(_ck)
-            if _wiki_cached and _wiki_cached[0] > _time.monotonic():
-                return self._send(200, json.dumps(_wiki_cached[1]))
-            try:
-                res = client.graph()
-            except Exception as e:
-                res = {"error": f"Unexpected error: {str(e)}", "nodes": [], "edges": []}
-            if res.get("error"):
-                # Distinguish "wiki host unreachable / not actually set up" from a real
-                # API error. An unreachable host (connection refused, DNS failure, timeout)
-                # should look like NOT CONNECTED -- neutral -- not a scary red ERROR, so a
-                # user who never set up a wiki is not confused by a broken-looking panel.
-                _err_l = str(res.get("error", "")).lower()
-                _unreachable = any(t in _err_l for t in (
-                    "connection refused", "refused", "timed out", "timeout",
-                    "name or service not known", "nodename nor servname",
-                    "failed to establish", "max retries", "cannot connect",
-                    "connection error", "urlopen error", "getaddrinfo",
-                    "no route to host", "network is unreachable", "[errno",
-                ))
-                # If the wiki was NEVER configured (no base_url/token), an
-                # unreachable result is just "not set up" -> neutral. But if a
-                # base_url IS configured, a transient failure must NOT wipe the
-                # connection -- keep configured + base_url and report a retryable
-                # error so Refresh recovers instead of showing "not connected".
-                _is_configured = bool(client.base_url)
-                if _unreachable and not _is_configured:
-                    return self._send(200, json.dumps({
-                        "configured": False,
-                        "status": "not_configured",
-                        "nodes": [],
-                        "edges": [],
-                        "base_url": ""
-                    }))
-                return self._send(200, json.dumps({
-                    "configured": True,
-                    "status": "error",
-                    "nodes": [],
-                    "edges": [],
-                    "error": ("Wiki temporarily unreachable -- click Refresh to retry."
-                              if _unreachable else res["error"]),
-                    "retryable": True,
-                    "base_url": client.base_url
-                }))
-            _wiki_payload = {
-                "configured": True,
-                "status": "ok",
-                "nodes": res.get("nodes") or [],
-                "edges": res.get("edges") or [],
-                "base_url": client.base_url
-            }
-            _wiki_payload.update(_wiki_status_extras(client, res))
-            _wiki_graph_cache[_wiki_cache_key(client)] = (
-                _time.monotonic() + _WIKI_GRAPH_TTL, _wiki_payload)
-            return self._send(200, json.dumps(_wiki_payload))
+            # WikiClient / cache / status extras live in harness.api.wiki.
+            from .api import wiki as _wiki_api
+            status, payload = _wiki_api.get_wiki_graph(_wiki_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/wiki/status":
             # Lightweight summary for the State pane strip -- counts only, no
             # full node/edge arrays. Reuses the same graph cache as /api/wiki/graph.
@@ -6795,99 +5947,9 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .wiki import WikiClient
-            try:
-                client = WikiClient(base_url=_cfg.wiki_url or "", timeout=8)
-            except Exception:
-                client = None
-            if client is None or not client.base_url:
-                return self._send(200, json.dumps({
-                    "configured": False,
-                    "status": "not_configured",
-                    "page_count": 0,
-                    "link_count": 0,
-                    "base_url": ""
-                }))
-            import time as _time
-            _ck = _wiki_cache_key(client)
-            _wiki_cached = _wiki_graph_cache.get(_ck)
-            if _wiki_cached and _wiki_cached[0] > _time.monotonic():
-                cached = _wiki_cached[1]
-                page_count = cached.get("page_count")
-                if page_count is None:
-                    page_count = len(cached.get("nodes") or [])
-                return self._send(200, json.dumps({
-                    "configured": cached.get("configured", True),
-                    "status": cached.get("status", "ok"),
-                    "page_count": page_count,
-                    "link_count": len(cached.get("edges") or []),
-                    "error": cached.get("error"),
-                    "retryable": cached.get("retryable"),
-                    "base_url": cached.get("base_url") or client.base_url,
-                    "hint": cached.get("hint"),
-                    "viewer_tier": cached.get("viewer_tier"),
-                    "viewer_is_owner": cached.get("viewer_is_owner"),
-                    "needs_owner_token": cached.get("needs_owner_token"),
-                }))
-            try:
-                res = client.graph()
-            except Exception as e:
-                res = {"error": f"Unexpected error: {str(e)}", "nodes": [], "edges": []}
-            if res.get("error"):
-                _err_l = str(res.get("error", "")).lower()
-                _unreachable = any(t in _err_l for t in (
-                    "connection refused", "refused", "timed out", "timeout",
-                    "name or service not known", "nodename nor servname",
-                    "failed to establish", "max retries", "cannot connect",
-                    "connection error", "urlopen error", "getaddrinfo",
-                    "no route to host", "network is unreachable", "[errno",
-                ))
-                _is_configured = bool(client.base_url)
-                if _unreachable and not _is_configured:
-                    return self._send(200, json.dumps({
-                        "configured": False,
-                        "status": "not_configured",
-                        "page_count": 0,
-                        "link_count": 0,
-                        "base_url": ""
-                    }))
-                return self._send(200, json.dumps({
-                    "configured": True,
-                    "status": "error",
-                    "page_count": 0,
-                    "link_count": 0,
-                    "error": ("Wiki temporarily unreachable -- click Refresh to retry."
-                              if _unreachable else res["error"]),
-                    "retryable": True,
-                    "base_url": client.base_url
-                }))
-            nodes = res.get("nodes") or []
-            edges = res.get("edges") or []
-            extras = _wiki_status_extras(client, res)
-            _wiki_payload = {
-                "configured": True,
-                "status": "ok",
-                "nodes": nodes,
-                "edges": edges,
-                "base_url": client.base_url
-            }
-            _wiki_payload.update(extras)
-            _wiki_graph_cache[_wiki_cache_key(client)] = (
-                _time.monotonic() + _WIKI_GRAPH_TTL, _wiki_payload)
-            page_count = extras.get("page_count")
-            if page_count is None:
-                page_count = len(nodes)
-            return self._send(200, json.dumps({
-                "configured": True,
-                "status": _wiki_payload.get("status", "ok"),
-                "page_count": page_count,
-                "link_count": len(edges),
-                "base_url": client.base_url,
-                "hint": extras.get("hint"),
-                "viewer_tier": extras.get("viewer_tier"),
-                "viewer_is_owner": extras.get("viewer_is_owner"),
-                "needs_owner_token": extras.get("needs_owner_token"),
-            }))
+            from .api import wiki as _wiki_api
+            status, payload = _wiki_api.get_wiki_status(_wiki_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/settings":
             return self._send(200, json.dumps(_get_settings_dict()))
         if u.path == "/api/reviews":
@@ -7175,24 +6237,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
 
         if u.path == "/api/providers":
-            from .registry_wizard import PROVIDERS, get_provider_key
-            from .keys import provider_has_env, get_disconnected
-            disconnected = get_disconnected()
-            res = []
-            for p in PROVIDERS:
-                status = get_api_key_status(p.name)
-                res.append({
-                    "name": p.name,
-                    "display_name": getattr(p, "display_name", "") or p.name,
-                    "env_var": p.env_vars[0] if p.env_vars else "",
-                    "base_url": p.base_url,
-                    "has_key": (get_provider_key(p) is not None) or status["has_key"],
-                    "masked": status["masked"],
-                    "api_mode": p.api_mode,
-                    "has_env": provider_has_env(p.name),
-                    "disconnected": p.name in disconnected,
-                })
-            return self._send(200, json.dumps(res))
+            from .api import providers as _prov_api
+            status, payload = _prov_api.get_providers()
+            return self._send(status, json.dumps(payload))
 
         if u.path == "/api/registry":
             from .registry_wizard import get_models_file_path
