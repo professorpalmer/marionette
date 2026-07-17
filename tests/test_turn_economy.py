@@ -1,4 +1,4 @@
-"""Identity tests for the TurnEconomy facade (PR1 — no conversation rewiring)."""
+"""Identity + wiring tests for the TurnEconomy facade (PR1 facade, PR2 session wire)."""
 from __future__ import annotations
 
 import ast
@@ -14,10 +14,16 @@ from harness.compaction_advisor import (
     assess_layer_pressure,
 )
 from harness.context_budget import BudgetConfig, PERSISTED_OUTPUT_TAG, enforce_turn_budget, maybe_persist_result
-from harness.tool_output_savings import make_compaction_callback
+from harness.spill_registry import spill_usage_payload
+from harness.tool_output_savings import make_compaction_callback, session_savings_payload
 from harness.turn_budget import parse_turn_budget
 from harness.turn_economy import TurnEconomy
-from harness.wiki_grounding_savings import JSONL_FILENAME, parse_jsonl_records, try_record_grounding
+from harness.wiki_grounding_savings import (
+    JSONL_FILENAME,
+    parse_jsonl_records,
+    session_grounding_payload,
+    try_record_grounding,
+)
 
 # Offload gate floor: 3000 tokens ~= 12000 chars (same as test_context_budget).
 _GATE_FLOOR_CHARS = 12_500
@@ -202,3 +208,73 @@ def test_default_config_when_omitted(tmp_path):
     assert isinstance(economy.config, BudgetConfig)
     assert economy.session_id == "s"
     assert economy.job_id is None
+
+
+def test_usage_fields_match_payload_helpers(tmp_path):
+    economy = _economy(str(tmp_path), session_id="usage-sess")
+    assert economy.spill_usage_fields() == spill_usage_payload(
+        str(tmp_path), "usage-sess"
+    )
+    assert economy.tool_output_savings_fields(1.5) == session_savings_payload(
+        str(tmp_path), "usage-sess", 1.5
+    )
+    assert economy.tool_output_savings_fields(1.5, session_id="") == session_savings_payload(
+        str(tmp_path), "", 1.5
+    )
+    assert economy.wiki_grounding_fields(2.0) == session_grounding_payload(
+        str(tmp_path), "usage-sess", 2.0
+    )
+
+
+def test_conversation_hot_path_routes_through_turn_economy():
+    """PR2: ConversationalSession must call TurnEconomy methods, not raw helpers."""
+    path = os.path.join(os.path.dirname(__file__), "..", "harness", "conversation.py")
+    source = open(path, encoding="utf-8").read()
+    tree = ast.parse(source)
+
+    forbidden_direct = {
+        "maybe_persist_result",
+        "enforce_turn_budget",
+        "parse_turn_budget",
+        "try_record_grounding",
+        "make_compaction_callback",
+        "assess_layer_pressure",
+        "spill_usage_payload",
+        "session_grounding_payload",
+        "session_savings_payload",
+        "should_enable_append_only",
+    }
+    imported_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imported_names.add(alias.name)
+
+    leaked = forbidden_direct & imported_names
+    assert not leaked, f"conversation.py still imports raw helpers: {sorted(leaked)}"
+
+    # Hot-path method names must appear as attribute calls on _turn_economy.
+    called_attrs: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "_turn_economy"
+        ):
+            called_attrs.add(node.attr)
+
+    for required in (
+        "persist_tool_result",
+        "enforce_tool_batch",
+        "parse_output_directive",
+        "record_wiki_grounding",
+        "resolve_append_only",
+        "spill_usage_fields",
+        "tool_output_savings_fields",
+        "wiki_grounding_fields",
+        "advise_compaction",
+    ):
+        assert required in called_attrs, f"missing _turn_economy.{required} call site"
+
+    # AutoBudget stays on ConversationalSession (run_auto) but must not be
+    # folded into TurnEconomy — covered by test_module_keeps_autobudget_out.

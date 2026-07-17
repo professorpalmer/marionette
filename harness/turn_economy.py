@@ -1,8 +1,8 @@
 """Session-scoped TurnEconomy facade over existing context-economy helpers.
 
 Thin delegation only — no behavior changes, no budget-governor merge, no
-pilot-loop control flow. Call sites in ConversationalSession stay on the
-underlying helpers until a later PR migrates them through this facade.
+pilot-loop control flow. ConversationalSession hot-path call sites go through
+this facade; AutoBudget stays outside.
 """
 from __future__ import annotations
 
@@ -11,9 +11,10 @@ from typing import Any, Dict, List, Optional
 from .append_only_context import append_only_setting, should_enable_append_only
 from .compaction_advisor import advice_payload, assess_layer_pressure
 from .context_budget import BudgetConfig, CompactionCallback, enforce_turn_budget, maybe_persist_result
-from .tool_output_savings import make_compaction_callback
+from .spill_registry import spill_usage_payload
+from .tool_output_savings import make_compaction_callback, session_savings_payload
 from .turn_budget import parse_turn_budget
-from .wiki_grounding_savings import try_record_grounding
+from .wiki_grounding_savings import session_grounding_payload, try_record_grounding
 
 
 class TurnEconomy:
@@ -124,3 +125,26 @@ class TurnEconomy:
         if snapshot is not None:
             return assess_layer_pressure(snapshot, max_context_tokens)
         return advice_payload(self.state_dir, self.session_id, max_context_tokens)
+
+    def spill_usage_fields(self) -> dict[str, Any]:
+        """Delegate to ``spill_usage_payload`` for this session."""
+        return spill_usage_payload(self.state_dir, self.session_id)
+
+    def tool_output_savings_fields(
+        self,
+        price_in: float,
+        *,
+        session_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Delegate to ``session_savings_payload``.
+
+        Pass ``session_id=""`` (or another explicit id) to control summarize
+        scoping; omit to use this economy's session_id. Empty string matches
+        ConversationalSession's prior unscoped summarize when no harness id.
+        """
+        sid = self.session_id if session_id is None else session_id
+        return session_savings_payload(self.state_dir, sid, price_in)
+
+    def wiki_grounding_fields(self, price_in: float) -> dict[str, Any]:
+        """Delegate to ``session_grounding_payload`` for this session."""
+        return session_grounding_payload(self.state_dir, self.session_id, price_in)
