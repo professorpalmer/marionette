@@ -392,6 +392,7 @@ def _get_platform_adapters() -> dict:
 
 _WEB = Path(__file__).resolve().parent / "web"
 from .api.static import PUBLIC_GET_PATHS as _STATIC_PUBLIC_GET_PATHS  # noqa: E402
+from . import http_routes as _http_routes  # noqa: E402
 # One shared session per server process (single-user local app).
 _state_dir = os.environ.get("HARNESS_STATE_DIR", "")
 _cfg = HarnessConfig.from_env()
@@ -2126,6 +2127,60 @@ from .api.files import (  # noqa: E402
 )
 
 
+
+# Lazy path → handler tables (built once; bodies live in harness.api.*).
+_POST_JSON_ROUTES = None
+_GET_ROUTES = None
+
+
+def _route_services():
+    """Service factories + helpers closed over by http_routes tables."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        review_services=_review_services,
+        job_services=_job_services,
+        session_control_services=_session_control_services,
+        checkpoint_services=_checkpoint_services,
+        codegraph_services=_codegraph_services,
+        commands_services=_commands_services,
+        file_services=_file_services,
+        workspace_services=_workspace_services,
+        mcp_services=_mcp_services,
+        skills_services=_skills_services,
+        wiki_services=_wiki_services,
+        provider_services=_provider_services,
+        session_services=_session_services,
+        terminal_services=_terminal_services,
+        platform_services=_platform_services,
+        settings_services=_settings_services,
+        registry_services=_registry_services,
+        worktree_services=_worktree_services,
+        hooks_services=_hooks_services,
+        git_services=_git_services,
+        usage_services=_usage_services,
+        sse_services=_sse_services,
+        handle_session_relocate=_handle_session_relocate,
+        host_ok=_host_ok,
+        diag=_diag,
+        get_upload_dir=lambda: _UPLOAD_DIR,
+        stash_pop=_stash_pop,
+    )
+
+
+def _post_json_routes():
+    global _POST_JSON_ROUTES
+    if _POST_JSON_ROUTES is None:
+        _POST_JSON_ROUTES = _http_routes.build_post_json_routes(_route_services())
+    return _POST_JSON_ROUTES
+
+
+def _get_routes():
+    global _GET_ROUTES
+    if _GET_ROUTES is None:
+        _GET_ROUTES = _http_routes.build_get_routes(_route_services())
+    return _GET_ROUTES
+
+
 class Handler(BaseHTTPRequestHandler):
     def handle_one_request(self):
         # A client (the Electron renderer) closing the socket mid-request --
@@ -2220,54 +2275,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/api/upload":
             return self._handle_upload()
-        if u.path in ("/api/workspaces/switch", "/api/workspaces/create",
-                      "/api/sessions/create", "/api/sessions/switch",
-                      "/api/sessions/delete", "/api/sessions/clear",
-                      "/api/sessions/archive", "/api/sessions/rename",
-                      "/api/sessions/relocate", "/api/sessions/move",
-                      "/api/session/interrupt", "/api/session/compact", "/api/session/steer",
-                      "/api/session/rewind", "/api/session/rewind/restore",
-                      "/api/session/queue", "/api/session/queue/reorder",
-                      "/api/session/persist", "/api/restart",
-                      "/api/chat/stash",
-                      "/api/swarm/cancel",
-                      "/api/mcp/add", "/api/mcp/remove", "/api/mcp/start",
-                      "/api/mcp/stop", "/api/mcp/call",
-                      "/api/skills/distill", "/api/skills/approve",
-                      "/api/wiki/ingest-prepared",
-                      "/api/models/toggle", "/api/models/set",
-                      "/api/skills/reject", "/api/skills/archive",
-                      "/api/skills/add", "/api/skills/update", "/api/skills/remove",
-                      "/api/rules/approve", "/api/rules/reject",
-                      "/api/rules/add", "/api/rules/update", "/api/rules/remove",
-                      "/api/memory/add", "/api/memory/remove",
-                      "/api/memory/propose/accept", "/api/memory/propose/dismiss",
-                      "/api/settings", "/api/providers/probe", "/api/providers/key", "/api/wiki/config",
-                      "/api/wiki/disconnect", "/api/wiki/handoff", "/api/bedrock",
-                      "/api/auth/pools", "/api/auth/pools/add", "/api/auth/pools/remove",
-                      "/api/auth/pools/strategy", "/api/auth/pools/reset",
-                      "/api/auth/oauth/start", "/api/auth/oauth/poll",
-                      "/api/auth/oauth/complete", "/api/auth/oauth/cancel",
-                      "/api/auth/cursor-cli/status", "/api/auth/cursor-cli/login",
-                      "/api/auth/cursor-cli/trust",
-                      "/api/auth/cursor-cli/logout", "/api/auth/cursor-cli/models",
-                      "/api/platform", "/api/reviews/apply", "/api/reviews/dismiss",
-                      "/api/registry", "/api/roles", "/api/pilot/validate",
-                      "/api/worktrees/add", "/api/worktrees/remove",
-                      "/api/worktrees/prune", "/api/worktrees/prune-edit-branches",
-                      "/api/worktrees/max",
-                      "/api/hooks/add", "/api/hooks/update", "/api/hooks/remove",
-                      "/api/workspace/open", "/api/workspace/forget", "/api/codegraph/reindex",
-                      "/api/codegraph/apply-excludes",
-                      "/api/file/write",
-                      "/api/file/delete", "/api/file/rename", "/api/file/mkdir",
-                      "/api/file/reveal",
-                      "/api/inline-edit",
-                      "/api/commands/render",
-                      "/api/git/connect", "/api/git/device/poll", "/api/git/disconnect",
-                      "/api/checkpoints/restore", "/api/checkpoints/snapshot",
-                      "/api/terminal/create", "/api/terminal/write",
-                      "/api/terminal/resize", "/api/terminal/kill"):
+        if u.path in _post_json_routes():
             # Wrap the dispatch so NO handler exception can escape to the
             # socketserver and crash the connection/process. A bad driver spec,
             # a failed rebuild, etc. now return a clean 500 the UI can show
@@ -2296,504 +2304,14 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(decoded or "{}")
 
     def _handle_post_json(self, path):
-        global _pilot
-        global _codegraph_status, _codegraph_status_reason
-        global _codegraph_preflight, _codegraph_suggested_action
         try:
             body = self._read_json()
         except json.JSONDecodeError:
             return self._send(400, json.dumps({"error": "invalid JSON"}))
-        repo = _cfg.repo
-
-        if path == "/api/reviews/apply":
-            from .api import reviews as _rev_api
-            status, payload = _rev_api.post_reviews_apply(body, _review_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/reviews/dismiss":
-            from .api import reviews as _rev_api
-            status, payload = _rev_api.post_reviews_dismiss(body, _review_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/swarm/cancel":
-            # Cooperative cancel for a swarm job. Auth/token already applied in
-            # do_POST; body + dual-store resolve live in harness.api.jobs.
-            from .api import jobs as _jobs_api
-            status, payload = _jobs_api.post_swarm_cancel(body, _job_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/session/persist":
-            # Flush the live transcript to disk on demand. Called right before a
-            # backend restart (self-edit apply) so the fresh process restores the
-            # exact conversation state, including any unanswered user turn.
-            # Also arms the one-shot resume latch so the post-restart UI can
-            # auto-continue -- without treating every trailing user turn as a
-            # resume signal on mere session view.
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.post_session_persist(_session_control_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/restart":
-            # Graceful self-restart for non-Electron callers (served browser) and
-            # as a fallback path. Persist, ACK, then SIGTERM self so a supervisor
-            # (Electron) respawns on the freshly-edited source. In the desktop app
-            # the Electron IPC path (harness:restart) is preferred -- it also
-            # reloads the renderer -- but this keeps the capability reachable over
-            # HTTP for the pilot or a browser session.
-            from .api import session_control as _sc_api
-            ok, err = _sc_api.prepare_session_restart(_session_control_services())
-            if not ok:
-                _diag("server.self_edit_restart_persist", Exception(err or "persist failed"))
-            self._send(200, json.dumps({"ok": True, "restarting": True}))
-
-            def _delayed_self_terminate():
-                import time as _t
-                import signal as _signal
-                _t.sleep(0.4)  # let the 200 flush before we exit
-                try:
-                    if os.name == "nt":
-                        os._exit(0)
-                    else:
-                        os.kill(os.getpid(), _signal.SIGTERM)
-                except Exception:
-                    os._exit(0)
-            threading.Thread(target=_delayed_self_terminate, daemon=True).start()
-            return
-        if path == "/api/session/compact":
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.post_session_compact(_session_control_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/checkpoints/restore":
-            from .api import checkpoints as _ckpt_api
-            status, payload = _ckpt_api.post_checkpoints_restore(
-                body, _checkpoint_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/checkpoints/snapshot":
-            from .api import checkpoints as _ckpt_api
-            status, payload = _ckpt_api.post_checkpoints_snapshot(
-                body, _checkpoint_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/codegraph/reindex":
-            from .api import codegraph as _cg_api
-            status, payload = _cg_api.post_codegraph_reindex(_codegraph_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/codegraph/apply-excludes":
-            from .api import codegraph as _cg_api
-            status, payload = _cg_api.post_codegraph_apply_excludes(
-                body, _codegraph_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/commands/render":
-            from .api import commands as _cmd_api
-            status, payload = _cmd_api.post_commands_render(
-                body, _commands_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/inline-edit":
-            from .api import reviews as _rev_api
-            status, payload = _rev_api.post_inline_edit(body, _review_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/file/write":
-            from .api import files as _files_api
-            status, payload = _files_api.post_file_write(body, _file_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/file/delete":
-            from .api import files as _files_api
-            status, payload = _files_api.post_file_delete(body, _file_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/file/rename":
-            from .api import files as _files_api
-            status, payload = _files_api.post_file_rename(body, _file_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/file/mkdir":
-            from .api import files as _files_api
-            status, payload = _files_api.post_file_mkdir(body, _file_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/file/reveal":
-            from .api import files as _files_api
-            status, payload = _files_api.post_file_reveal(body, _file_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/workspace/open":
-            from .api import workspace as _ws_api
-            status, payload = _ws_api.post_workspace_open(body, _workspace_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/workspace/forget":
-            from .api import workspace as _ws_api
-            status, payload = _ws_api.post_workspace_forget(
-                body, _workspace_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/workspaces/switch":
-            from .api import workspace as _ws_api
-            status, payload = _ws_api.post_workspaces_switch(
-                body, _workspace_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/workspaces/create":
-            from .api import workspace as _ws_api
-            status, payload = _ws_api.post_workspaces_create(
-                body, _workspace_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/mcp/add":
-            from .api import mcp as _mcp_api
-            status, payload = _mcp_api.post_mcp_add(body, _mcp_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/mcp/remove":
-            from .api import mcp as _mcp_api
-            status, payload = _mcp_api.post_mcp_remove(body, _mcp_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/mcp/start":
-            from .api import mcp as _mcp_api
-            status, payload = _mcp_api.post_mcp_start(body, _mcp_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/mcp/stop":
-            from .api import mcp as _mcp_api
-            status, payload = _mcp_api.post_mcp_stop(body, _mcp_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/mcp/call":
-            from .api import mcp as _mcp_api
-            status, payload = _mcp_api.post_mcp_call(body, _mcp_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/skills/distill":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_skills_distill(_skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/wiki/ingest-prepared":
-            # One-click approve: file the locally-orchestrated pages into the wiki.
-            from .api import wiki as _wiki_api
-            status, payload = _wiki_api.post_wiki_ingest_prepared(
-                body, _wiki_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/models/toggle":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_models_toggle(body, _provider_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/models/set":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_models_set(body, _provider_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/skills/approve":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_skills_approve(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/skills/add":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_skills_add(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/skills/update":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_skills_update(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/skills/remove":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_skills_remove(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/skills/reject":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_skills_reject(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/skills/archive":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_skills_archive(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/rules/approve":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_rules_approve(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/rules/add":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_rules_add(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/rules/update":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_rules_update(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/rules/remove":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_rules_remove(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/rules/reject":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_rules_reject(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/memory/add":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_memory_add(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/memory/remove":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_memory_remove(body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/memory/propose/accept":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_memory_propose_accept(
-                body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/memory/propose/dismiss":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.post_memory_propose_dismiss(
-                body, _skills_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/sessions/create":
-            from .api import sessions as _sessions_api
-            status, payload = _sessions_api.post_sessions_create(body, _session_services())
-            return self._send(status, json.dumps(payload))
-        if path in ("/api/sessions/relocate", "/api/sessions/move"):
-            status, payload = _handle_session_relocate(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/sessions/switch":
-            from .api import sessions as _sessions_api
-            status, payload = _sessions_api.post_sessions_switch(body, _session_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/sessions/delete":
-            from .api import sessions as _sessions_api
-            status, payload = _sessions_api.post_sessions_delete(body, _session_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/sessions/clear":
-            from .api import sessions as _sessions_api
-            status, payload = _sessions_api.post_sessions_clear(_session_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/sessions/archive":
-            from .api import sessions as _sessions_api
-            status, payload = _sessions_api.post_sessions_archive(body, _session_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/sessions/rename":
-            from .api import sessions as _sessions_api
-            status, payload = _sessions_api.post_sessions_rename(body, _session_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/chat/stash":
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.post_chat_stash(
-                body, _session_control_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/session/interrupt":
-            sid = (body.get("session_id") or "").strip()
-            if not sid:
-                try:
-                    qs = parse_qs(urlparse(self.path).query)
-                    sid = (qs.get("session_id") or [""])[0].strip()
-                except Exception:
-                    sid = ""
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.post_session_interrupt(
-                body, sid, _session_control_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/session/rewind":
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.post_session_rewind(
-                body, _session_control_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/session/rewind/restore":
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.post_session_rewind_restore(
-                _session_control_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/session/steer":
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.post_session_steer(
-                body, _session_control_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/session/queue":
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.post_session_queue(
-                body, _session_control_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/session/queue/reorder":
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.post_session_queue_reorder(
-                body, _session_control_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/terminal/create":
-            from .api import terminals as _term_api
-            status, payload = _term_api.post_terminal_create(body, _terminal_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/terminal/write":
-            from .api import terminals as _term_api
-            status, payload = _term_api.post_terminal_write(body, _terminal_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/terminal/resize":
-            from .api import terminals as _term_api
-            status, payload = _term_api.post_terminal_resize(body, _terminal_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/terminal/kill":
-            from .api import terminals as _term_api
-            status, payload = _term_api.post_terminal_kill(body, _terminal_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/wiki/config":
-            from .api import wiki as _wiki_api
-            status, payload = _wiki_api.post_wiki_config(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/wiki/disconnect":
-            from .api import wiki as _wiki_api
-            status, payload = _wiki_api.post_wiki_disconnect()
-            return self._send(status, json.dumps(payload))
-        if path == "/api/bedrock":
-            from .api import platform as _plat_api
-            status, payload = _plat_api.post_bedrock(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/pools":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_pools(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/pools/add":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_pools_add(body, _provider_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/pools/remove":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_pools_remove(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/pools/strategy":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_pools_strategy(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/pools/reset":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_pools_reset(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/oauth/start":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_oauth_start(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/oauth/poll":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_oauth_poll(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/oauth/complete":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_oauth_complete(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/oauth/cancel":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_oauth_cancel(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/cursor-cli/status":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_cursor_cli_status(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/cursor-cli/login":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_cursor_cli_login(
-                body, _provider_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/cursor-cli/trust":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_cursor_cli_trust(
-                body, _provider_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/cursor-cli/logout":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_cursor_cli_logout()
-            return self._send(status, json.dumps(payload))
-        if path == "/api/auth/cursor-cli/models":
-            from .api import auth as _auth_api
-            status, payload = _auth_api.post_auth_cursor_cli_models()
-            return self._send(status, json.dumps(payload))
-        if path == "/api/wiki/handoff":
-            # Mint a one-shot nonce and return a setup URL that carries a
-            # loopback return target. Prefer this over marionette:// so Windows
-            # never opens the Microsoft Store for an unregistered protocol.
-            # Host gate stays here; nonce + URL assembly live in api.wiki.
-            host = self.headers.get("Host", "") or ""
-            if not _host_ok(host):
-                return self._send(400, json.dumps({"error": "bad host"}))
-            from .api import wiki as _wiki_api
-            status, payload = _wiki_api.post_wiki_handoff(host)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/git/connect":
-            from .api import git as _git_api
-            status, payload = _git_api.post_git_connect(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/git/device/poll":
-            from .api import git as _git_api
-            status, payload = _git_api.post_git_device_poll(body)
-            return self._send(status, json.dumps(payload))
-        if path == "/api/git/disconnect":
-            from .api import git as _git_api
-            status, payload = _git_api.post_git_disconnect()
-            return self._send(status, json.dumps(payload))
-        if path == "/api/platform":
-            from .api import platform as _plat_api
-            status, payload = _plat_api.post_platform(body, _platform_services())
-            return self._send(status, json.dumps(payload))
-        if path == "/api/settings":
-            from .api import settings as _settings_api
-            status, payload = _settings_api.post_settings(
-                body, _settings_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/providers/probe":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_providers_probe(body)
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/providers/key":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_providers_key(body, _provider_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/registry":
-            from .api import registry as _reg_api
-            status, payload = _reg_api.post_registry(body)
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/roles":
-            from .api import registry as _reg_api
-            status, payload = _reg_api.post_roles(body, _registry_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/pilot/validate":
-            from .api import registry as _reg_api
-            status, payload = _reg_api.post_pilot_validate(body)
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/worktrees/add":
-            from .api import worktrees as _wt_api
-            status, payload = _wt_api.post_worktrees_add(body, _worktree_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/worktrees/remove":
-            from .api import worktrees as _wt_api
-            status, payload = _wt_api.post_worktrees_remove(body, _worktree_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/worktrees/prune":
-            from .api import worktrees as _wt_api
-            status, payload = _wt_api.post_worktrees_prune(_worktree_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/worktrees/prune-edit-branches":
-            from .api import worktrees as _wt_api
-            status, payload = _wt_api.post_worktrees_prune_edit_branches(
-                _worktree_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/worktrees/max":
-            from .api import worktrees as _wt_api
-            status, payload = _wt_api.post_worktrees_max(body, _worktree_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/hooks/add":
-            from .api import hooks as _hooks_api
-            status, payload = _hooks_api.post_hooks_add(body)
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/hooks/update":
-            from .api import hooks as _hooks_api
-            status, payload = _hooks_api.post_hooks_update(
-                body, _hooks_services())
-            return self._send(status, json.dumps(payload))
-
-        if path == "/api/hooks/remove":
-            from .api import hooks as _hooks_api
-            status, payload = _hooks_api.post_hooks_remove(body)
-            return self._send(status, json.dumps(payload))
-
-        return self._send(404, json.dumps({"error": "not found"}))
+        route = _post_json_routes().get(path)
+        if route is None:
+            return self._send(404, json.dumps({"error": "not found"}))
+        return route(self, body)
 
     def _handle_upload(self):
         from .api import files as _files_api
@@ -2824,15 +2342,8 @@ class Handler(BaseHTTPRequestHandler):
         # (no harness token). Must run before the centralized auth gate.
         if u.path == "/api/wiki/connect":
             return self._handle_wiki_connect(u)
-        # CENTRALIZED AUTH GATE (defense against per-handler drift): do_POST has
-        # a single token check at its top, but do_GET historically required each
-        # handler to re-add a copy-pasted token check -- and ~11 endpoints
-        # (/api/memory, /api/config, /api/skills, /api/rules, /api/commands,
-        # /api/settings, /api/platform, /api/jobs, /api/workspace, /api/mcp*)
-        # were left unauthenticated, leaking durable memory/config/skills to any
-        # local caller with no token. Gate every non-public path here so a newly
-        # added GET endpoint is authenticated by default; the redundant
-        # per-handler checks below are now harmless no-ops.
+        # CENTRALIZED AUTH GATE: every non-public path requires the token.
+        # Route bodies assume auth already happened (no per-GET token copies).
         if u.path not in self._PUBLIC_GET_PATHS:
             if self._guard():
                 return
@@ -2843,471 +2354,11 @@ class Handler(BaseHTTPRequestHandler):
         if shell is not None:
             status, body, ctype = shell
             return self._send(status, body, ctype)
-        if u.path == "/api/git/status":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            qargs = parse_qs(u.query)
-            from .api import git as _git_api
-            status, payload = _git_api.get_git_status(
-                qargs.get("repo", [""])[0], _git_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/git/branches":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            qargs = parse_qs(u.query)
-            from .api import git as _git_api
-            status, payload = _git_api.get_git_branches(
-                qargs.get("repo", [""])[0], _git_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/git/diff":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            qargs = parse_qs(u.query)
-            staged = qargs.get("staged", ["0"])[0].strip().lower() in ("1", "true", "yes")
-            from .api import git as _git_api
-            status, payload = _git_api.get_git_diff(
-                qargs.get("repo", [""])[0],
-                qargs.get("file", [""])[0],
-                staged,
-                _git_services(),
-            )
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/session/state":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.get_session_state(_session_control_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/session/context_at":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            try:
-                turn = int(parse_qs(u.query).get("turn", ["0"])[0])
-            except (TypeError, ValueError):
-                return self._send(400, json.dumps({"error": "turn must be an integer"}))
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.get_session_context_at(
-                turn, _session_control_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/session/swarm-results":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.get_session_swarm_results(
-                _session_control_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/session/queue":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import session_control as _sc_api
-            status, payload = _sc_api.get_session_queue(_session_control_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/checkpoints":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import checkpoints as _ckpt_api
-            status, payload = _ckpt_api.get_checkpoints(_checkpoint_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/checkpoints/diff":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import checkpoints as _ckpt_api
-            status, payload = _ckpt_api.get_checkpoints_diff(
-                parse_qs(u.query).get("id", [""])[0],
-                _checkpoint_services(),
-            )
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/mcp":
-            from .api import mcp as _mcp_api
-            status, payload = _mcp_api.get_mcp(_mcp_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/mcp/catalog":
-            from .api import mcp as _mcp_api
-            status, payload = _mcp_api.get_mcp_catalog()
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/commands":
-            from .api import commands as _cmd_api
-            status, payload = _cmd_api.get_commands(
-                parse_qs(u.query).get("repo", [""])[0],
-                _commands_services(),
-            )
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/skills":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.get_skills(_skills_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/rules":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.get_rules(_skills_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/memory":
-            from .api import skills as _skills_api
-            status, payload = _skills_api.get_memory(_skills_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/file/read":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import files as _files_api
-            rel_path = parse_qs(u.query).get("path", [""])[0]
-            status, payload = _files_api.get_file_read(rel_path, _file_services())
-            return self._send(status, json.dumps(payload))
-
-        if u.path == "/api/file/raw":
-            # Authenticated bytes for PDF/image/HTML preview — body in api.files.
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import files as _files_api
-            rel_path = parse_qs(u.query).get("path", [""])[0]
-            status, body_or_err, ctype = _files_api.get_file_raw(
-                rel_path, _file_services())
-            if isinstance(body_or_err, dict):
-                return self._send(status, json.dumps(body_or_err))
-            return self._send(status, body_or_err, ctype)
-
-        if u.path == "/api/image":
-            from .api import files as _files_api
-            req_path = parse_qs(u.query).get("path", [""])[0]
-            status, body_or_err, ctype = _files_api.get_image(req_path, _UPLOAD_DIR)
-            if isinstance(body_or_err, dict):
-                return self._send(status, json.dumps(body_or_err))
-            return self._send(status, body_or_err, ctype)
-
-        if u.path == "/api/workspace/files":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import files as _files_api
-            status, payload = _files_api.get_workspace_files(_file_services())
-            return self._send(status, json.dumps(payload))
-
-        if u.path == "/api/workspace/symbols":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import workspace as _ws_api
-            status, payload = _ws_api.get_workspace_symbols(
-                parse_qs(u.query).get("q", [""])[0],
-                _workspace_services(),
-            )
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/workspace":
-            from .api import workspace as _ws_api
-            status, payload = _ws_api.get_workspace(_workspace_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/models/catalog":
-            if self._guard():
-                return
-            q = parse_qs(u.query)
-            qtok = q.get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import providers as _prov_api
-            force = (q.get("refresh", [""])[0] or "").strip().lower() in ("1", "true", "yes")
-            status, payload = _prov_api.get_models_catalog(force=force)
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/codegraph":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import codegraph as _cg_api
-            status, payload = _cg_api.get_codegraph(_codegraph_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/config":
-            from .api import settings as _settings_api
-            status, payload = _settings_api.get_config(_settings_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/wiki/config":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import wiki as _wiki_api
-            status, payload = _wiki_api.get_wiki_config_payload()
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/bedrock":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import platform as _plat_api
-            status, payload = _plat_api.get_bedrock()
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/auth/pools":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import auth as _auth_api
-            qs = parse_qs(u.query)
-            pname = (qs.get("provider") or [""])[0].strip()
-            status, payload = _auth_api.get_auth_pools(provider=pname)
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/wiki/graph":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            # WikiClient / cache / status extras live in harness.api.wiki.
-            from .api import wiki as _wiki_api
-            status, payload = _wiki_api.get_wiki_graph(_wiki_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/wiki/status":
-            # Lightweight summary for the State pane strip -- counts only, no
-            # full node/edge arrays. Reuses the same graph cache as /api/wiki/graph.
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import wiki as _wiki_api
-            status, payload = _wiki_api.get_wiki_status(_wiki_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/settings":
-            from .api import settings as _settings_api
-            status, payload = _settings_api.get_settings(_settings_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/reviews":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import reviews as _rev_api
-            status, payload = _rev_api.get_reviews(_review_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/platform":
-            from .api import platform as _plat_api
-            status, payload = _plat_api.get_platform(_platform_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/jobs":
-            from .api import jobs as _jobs_api
-            q = parse_qs(u.query)
-            repo_override = q.get("repo", [""])[0]
-            status, payload = _jobs_api.get_jobs(repo_override or None, _job_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/usage":
-            if self._guard():
-                return
-            qtok = parse_qs(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            repo_override = parse_qs(u.query).get("repo", [""])[0]
-            from .api import usage as _usage_api
-            status, payload = _usage_api.get_usage(repo_override, _usage_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/artifacts":
-            from .api import jobs as _jobs_api
-            q = parse_qs(u.query)
-            jid = q.get("job_id", [""])[0]
-            # Dual-store resolve (harness then CLI) lives in harness.api.jobs.
-            status, payload = _jobs_api.get_artifacts(jid, _job_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/swarm/live":
-            if self._guard():
-                return
-            q = parse_qs(u.query)
-            qtok = q.get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import jobs as _jobs_api
-            repo_override = q.get("repo", [""])[0]
-            status, payload = _jobs_api.get_swarm_live(repo_override or None, _job_services())
-            return self._send(status, json.dumps(payload))
-        # action endpoints (SSE) mutate state / spend budget -> guard them.
-        if u.path in ("/api/run", "/api/chat", "/api/auto", "/api/pilot", "/api/sessions/transcript", "/api/sessions/export",
-                      "/api/providers", "/api/registry", "/api/roles", "/api/registry/recommend", "/api/context/usage"):
-            if self._guard():
-                return
-            from urllib.parse import parse_qs as _pq
-            qtok = _pq(u.query).get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-
-        if u.path == "/api/providers":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.get_providers()
-            return self._send(status, json.dumps(payload))
-
-        if u.path == "/api/registry":
-            from .api import registry as _reg_api
-            status, payload = _reg_api.get_registry()
-            # On-disk file content is already JSON text; empty default is a dict.
-            if isinstance(payload, str):
-                return self._send(status, payload)
-            return self._send(status, json.dumps(payload))
-
-        if u.path == "/api/roles":
-            from .api import registry as _reg_api
-            status, payload = _reg_api.get_roles(_registry_services())
-            return self._send(status, json.dumps(payload))
-
-        if u.path == "/api/registry/recommend":
-            from .api import registry as _reg_api
-            status, payload = _reg_api.get_registry_recommend()
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/run":
-            q = parse_qs(u.query)
-            from .api.streams import validate_upload_image_paths
-            imgs, err = validate_upload_image_paths(
-                q.get("images", [""])[0], _UPLOAD_DIR
-            )
-            if err is not None:
-                return self._send(err[0], json.dumps(err[1]))
-            return self._stream_run(q.get("prompt", [""])[0], imgs)
-        if u.path == "/api/chat":
-            q = parse_qs(u.query)
-            # A stashed message (see POST /api/chat/stash) takes precedence: it
-            # exists precisely because the real message/images were too big for
-            # this URL. Falls back to the query-param message for small chats,
-            # keeping today's behavior unchanged when no ?mid= is present.
-            from .api.streams import (
-                resolve_stashed_chat_message,
-                validate_upload_image_paths,
-            )
-            message, raw_images = resolve_stashed_chat_message(
-                q.get("mid", [""])[0],
-                q.get("message", [""])[0],
-                q.get("images", [""])[0],
-                _stash_pop,
-            )
-            imgs, err = validate_upload_image_paths(raw_images, _UPLOAD_DIR)
-            if err is not None:
-                return self._send(err[0], json.dumps(err[1]))
-            plan_val = q.get("plan", ["false"])[0].lower() in ("true", "1", "yes")
-            resume_val = q.get("resume", ["false"])[0].lower() in ("true", "1", "yes")
-            return self._stream_chat(message, imgs, plan=plan_val, resume=resume_val)
-        if u.path == "/api/chat/events":
-            # Mid-turn reattach replay: return retained SSE frames since ``since``.
-            if self._guard():
-                return
-            q = parse_qs(u.query)
-            qtok = q.get("token", [""])[0]
-            if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
-                return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import sse as _sse_api
-            since_raw = q.get("since", ["0"])[0]
-            try:
-                since_c = int(since_raw or 0)
-            except (TypeError, ValueError):
-                since_c = 0
-            gen_raw = q.get("generation", [""])[0]
-            generation = None
-            if gen_raw not in ("", None):
-                try:
-                    generation = int(gen_raw)
-                except (TypeError, ValueError):
-                    return self._send(400, json.dumps({"error": "generation must be an integer"}))
-            status, payload = _sse_api.get_chat_events(
-                _sse_services(),
-                (q.get("session", [""])[0] or "").strip(),
-                since_c,
-                generation,
-            )
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/terminal/stream":
-            q = parse_qs(u.query)
-            return self._stream_terminal(q.get("id", [""])[0])
-        if u.path == "/api/pilot":
-            q = parse_qs(u.query)
-            return self._swap_pilot(q.get("model", [""])[0])
-        if u.path == "/api/context/usage":
-            from .api import usage as _usage_api
-            status, payload = _usage_api.get_context_usage(_usage_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/workspaces":
-            from .api import workspace as _ws_api
-            status, payload = _ws_api.get_workspaces(_workspace_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/worktrees":
-            from .api import worktrees as _wt_api
-            status, payload = _wt_api.get_worktrees(_worktree_services())
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/hooks":
-            from .api import hooks as _hooks_api
-            status, payload = _hooks_api.get_hooks()
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/sessions/transcript":
-            from .api import sessions as _sessions_api
-            status, payload = _sessions_api.get_sessions_transcript(
-                parse_qs(u.query), _session_services()
-            )
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/sessions/export":
-            from .api import sessions as _sessions_api
-            return _sessions_api.write_sessions_export(
-                self, parse_qs(u.query), _session_services()
-            )
-        if u.path == "/api/sessions":
-            from .api import sessions as _sessions_api
-            status, payload = _sessions_api.get_sessions_list(
-                parse_qs(u.query), _session_services()
-            )
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/sessions/bank":
-            from .api import sessions as _sessions_api
-            status, payload = _sessions_api.get_sessions_bank(
-                parse_qs(u.query), _session_services()
-            )
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/sessions/search":
-            from .api import sessions as _sessions_api
-            status, payload = _sessions_api.get_sessions_search(
-                parse_qs(u.query), _session_services()
-            )
-            return self._send(status, json.dumps(payload))
-        if u.path == "/api/auto":
-            q = parse_qs(u.query)
-            objective = q.get("objective", [""])[0]
-            mid = q.get("mid", [""])[0]
-            if mid:
-                stashed = _stash_pop(mid)
-                if stashed is not None:
-                    objective = stashed.get("message", "")
-            return self._stream_auto(objective)
-        return self._send(404, json.dumps({"error": "not found"}))
+        q = parse_qs(u.query)
+        route = _get_routes().get(u.path)
+        if route is None:
+            return self._send(404, json.dumps({"error": "not found"}))
+        return route(self, u, q)
 
     def _sse_write(self, payload: bytes) -> bool:
         """Write one SSE frame. Returns False if the client has detached."""

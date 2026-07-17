@@ -184,7 +184,10 @@ and checked by a CENTRALIZED gate in `do_GET`: every path is rejected unless the
 request carries the token, with a single public allowlist -- `_PUBLIC_GET_PATHS =
 {"/", "/index.html", "/app.js", "/app.css"}` (the static shell that bootstraps
 the authenticated client). Host and Origin are also validated. The API is
-authenticated by default; there is no per-endpoint opt-in.
+authenticated by default; there is no per-endpoint opt-in. After the gate,
+`do_GET` and `_handle_post_json` dispatch via path→handler tables in
+`harness/http_routes.py` (route bodies remain under `harness/api/*`); `do_POST`
+derives its JSON allowlist from the same POST table.
 
 ### 7b. Token economics (prompt caching + real context meter)
 
