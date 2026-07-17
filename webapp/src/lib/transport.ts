@@ -5,13 +5,19 @@
 // ONLY this file changes: getJSON/postJSON/stream route through window.harnessIPC
 // (preload bridge) instead of HTTP. Components never know the difference.
 
-export type StreamEvent = { kind: string; data?: any };
+/**
+ * Live SSE payload from /api/chat, /api/auto, /api/run.
+ * Chat/auto omit `turn` (ConvEvent); classic /run includes it (SessionEvent).
+ * Keep both shapes — do not require `turn` for chat consumers.
+ */
+export type StreamEvent = { kind: string; data?: any; turn?: number };
 
 /** One retained SSE frame from GET /api/chat/events (mid-turn reattach). */
 export type ChatEventFrame = {
   cursor: number;
   kind: string;
   data?: any;
+  /** Present only when the source event carried a turn (SessionEvent /run). */
   turn?: number;
 };
 

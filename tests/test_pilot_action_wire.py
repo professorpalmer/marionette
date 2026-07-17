@@ -1,4 +1,4 @@
-"""PR1/PR2: ActionKind + from_wire parity; dispatch narrowing helpers."""
+"""PR1/PR2/PR3: ActionKind + from_wire parity; dispatch narrowing; kind typing."""
 import inspect
 from typing import get_args, get_type_hints
 
@@ -6,7 +6,9 @@ from harness.pilot import (
     ActionKind,
     INVALID_ACTION_KIND,
     InvalidAction,
+    InvalidActionKind,
     PilotAction,
+    PilotActionKind,
     VALID_ACTION_KINDS,
     _coerce_actions,
     _tool_name_to_action,
@@ -24,6 +26,24 @@ def _assert_field_parity(envelope_act: PilotAction, native_act: PilotAction, fie
 
 def test_action_kind_literal_matches_valid_set():
     assert frozenset(get_args(ActionKind)) == VALID_ACTION_KINDS
+    assert INVALID_ACTION_KIND not in VALID_ACTION_KINDS
+
+
+def test_pilot_action_kind_field_is_action_kind():
+    """PR3: PilotAction.kind is ActionKind; InvalidAction carries the sentinel."""
+    hints = get_type_hints(PilotAction)
+    assert hints["kind"] is ActionKind
+    act = from_wire("read_file", {"path": "a.py", "start_line": 2, "limit": 5})
+    assert act.kind in VALID_ACTION_KINDS
+    assert act.start_line == 2 and act.limit == 5
+    # Optional wire fields still accepted (no over-rejection).
+    browser = from_wire("browser_click", {"ref": "@e1"})
+    assert browser.kind == "browser_click" and browser.ref == "@e1"
+    repo_act = from_wire("run_implement", {"goal": "x", "repo": "/tmp/r"})
+    assert repo_act.repo == "/tmp/r"
+    assert get_args(InvalidActionKind) == (INVALID_ACTION_KIND,)
+    # Union[ActionKind, InvalidActionKind] — sentinel is the second arm.
+    assert get_args(PilotActionKind)[1] is InvalidActionKind
     assert INVALID_ACTION_KIND not in VALID_ACTION_KINDS
 
 

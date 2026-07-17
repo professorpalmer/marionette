@@ -35,7 +35,7 @@ import time
 import subprocess
 import re
 from dataclasses import dataclass, field, replace as _dc_replace
-from typing import Iterator, Optional, Any
+from typing import Iterator, Literal, Optional, Any, get_args
 
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd
 from .paths import git_toplevel, path_within
@@ -390,9 +390,51 @@ def append_failed_declarative_checks_summary(summary: str, declarative_checks) -
     return f"{summary}\n{check_line}" if summary else check_line
 
 
+# Emitted conversational SSE kinds (chat/auto paths). Intentionally excludes
+# SessionEvent kinds and the framing-only "done" sentinel written by sse_pump.
+# Keep in sync with yield sites in send_loop / conversation mixins — typing only;
+# unknown kinds are not rejected at runtime.
+ConvEventKind = Literal[
+    "action_result",
+    "action_start",
+    "assistant_done",
+    "auto_halt",
+    "auto_status",
+    "auto_verify",
+    "checkpoint",
+    "codegraph_context",
+    "command_blocked",
+    "compacting",
+    "compaction",
+    "distilled",
+    "error",
+    "interrupted",
+    "memory_propose",
+    "message",
+    "message_delta",
+    "notice",
+    "pending_review",
+    "pilot_resume",
+    "queued_prompt",
+    "steer",
+    "swarm_auth_failure",
+    "swarm_pending",
+    "swarm_result",
+    "thinking",
+    "tool_prep",
+    "verification",
+    "verifying",
+    "vision",
+    "wiki_prepared",
+    "worker_delta",
+]
+
+VALID_CONV_EVENT_KINDS: frozenset[str] = frozenset(get_args(ConvEventKind))
+
+
 @dataclass
 class ConvEvent:
-    kind: str
+    kind: ConvEventKind
     data: dict = field(default_factory=dict)
 
 

@@ -14,12 +14,24 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from .sse import _sse_ring_begin, sse_pump, sse_write
+from .sse import StreamEventDict, _sse_ring_begin, sse_pump, sse_write
 
 # Event kinds that mean a tool result / action completion has just been appended
 # to _history -- checkpoint immediately (ignoring throttle) when we see one so a
 # crash right after an action never loses that appended chunk of the transcript.
 CHECKPOINT_KINDS = frozenset({"action_result", "swarm_result"})
+
+
+def _encode_run_sse_frame(ev: Any) -> bytes:
+    """SessionEvent /run frame: includes ``turn`` (chat frames omit it)."""
+    frame: StreamEventDict = {"kind": ev.kind, "turn": ev.turn, "data": ev.data}
+    return f"data: {json.dumps(frame)}\n\n".encode()
+
+
+def _encode_chat_sse_frame(ev: Any) -> bytes:
+    """ConvEvent chat/auto frame: kind + data only (no ``turn``)."""
+    frame: StreamEventDict = {"kind": ev.kind, "data": ev.data}
+    return f"data: {json.dumps(frame)}\n\n".encode()
 
 
 @dataclass
@@ -126,9 +138,7 @@ def stream_run(handler: Any, prompt: str, images, svc: StreamServices) -> Any:
         sse_pump(
             handler.wfile,
             gen,
-            lambda ev: (
-                f"data: {json.dumps({'kind': ev.kind, 'turn': ev.turn, 'data': ev.data})}\n\n"
-            ).encode(),
+            _encode_run_sse_frame,
             ring=ring,
         )
     finally:
@@ -183,7 +193,7 @@ def stream_auto(handler: Any, objective: str, svc: StreamServices) -> Any:
         sse_pump(
             handler.wfile,
             gen,
-            lambda ev: f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode(),
+            _encode_chat_sse_frame,
             on_event=_maybe_checkpoint,
             ring=ring,
         )
@@ -374,7 +384,7 @@ def stream_chat(
         detached = sse_pump(
             handler.wfile,
             gen,
-            lambda ev: f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode(),
+            _encode_chat_sse_frame,
             on_event=_maybe_checkpoint,
             write_done=False,
             ring=ring,
@@ -389,10 +399,7 @@ def stream_chat(
                 pass
             if detached:
                 continue
-            if not sse_write(
-                handler.wfile,
-                f"data: {json.dumps({'kind': ev.kind, 'data': ev.data})}\n\n".encode(),
-            ):
+            if not sse_write(handler.wfile, _encode_chat_sse_frame(ev)):
                 detached = True
         if not detached:
             sse_write(handler.wfile, b"data: {\"kind\": \"done\"}\n\n")

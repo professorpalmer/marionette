@@ -15,7 +15,7 @@ registry) -- it is the productization of what Stage 1-3.5 proved, not a rewrite.
 import tempfile
 import time
 from dataclasses import dataclass, field
-from typing import Iterator, Optional
+from typing import Iterator, Literal, Optional, get_args
 
 from pmharness.intent import validate_intent, parse_intent_text, IntentError, DriverIntent
 from pmharness.bridge import execute_intent, BridgeResult
@@ -42,9 +42,23 @@ Answer trivia
 directly with zero swarms. Never loop the same swarm. Emit ONLY the JSON object."""
 
 
+# Classic /run stream kinds. Distinct from ConvEventKind — SessionEvent carries
+# ``turn``; chat ConvEvent framing omits it. Do not unify the wire shapes.
+SessionEventKind = Literal[
+    "intent",
+    "executing",
+    "artifacts",
+    "final",
+    "error",
+    "vision",
+]
+
+VALID_SESSION_EVENT_KINDS: frozenset[str] = frozenset(get_args(SessionEventKind))
+
+
 @dataclass
 class SessionEvent:
-    kind: str                  # "intent" | "executing" | "artifacts" | "final" | "error"
+    kind: SessionEventKind
     turn: int
     data: dict = field(default_factory=dict)
     ts: float = field(default_factory=time.time)

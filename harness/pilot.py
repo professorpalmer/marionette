@@ -34,7 +34,7 @@ conversation from the token-heavy investigation.
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, get_args
+from typing import Any, Literal, Optional, Union, cast, get_args
 
 
 # Canonical set of dispatchable action kinds. `__invalid__` is modeled
@@ -78,6 +78,9 @@ ActionKind = Literal[
 
 VALID_ACTION_KINDS: frozenset[str] = frozenset(get_args(ActionKind))
 INVALID_ACTION_KIND = "__invalid__"
+InvalidActionKind = Literal["__invalid__"]
+# Carrier union: dispatchable ActionKind plus the InvalidAction sentinel.
+PilotActionKind = Union[ActionKind, InvalidActionKind]
 
 
 def _optional_int(value: Any) -> Any:
@@ -101,7 +104,7 @@ def _as_str_list(value: Any) -> list:
 
 @dataclass
 class PilotAction:
-    kind: str
+    kind: ActionKind
     goal: str = ""
     roles: list = field(default_factory=list)
     tool: str = ""              # call_mcp: qualified MCP tool name (server.tool)
@@ -243,9 +246,12 @@ class InvalidAction(PilotAction):
     compatible with PilotAction so dispatch can treat actions uniformly.
     """
 
+    # Sentinel outside ActionKind; redefined so InvalidAction() defaults correctly.
+    kind: PilotActionKind = INVALID_ACTION_KIND  # type: ignore[assignment]
+
     def validate(self) -> "InvalidAction":
         if self.kind != INVALID_ACTION_KIND:
-            self.kind = INVALID_ACTION_KIND
+            self.kind = INVALID_ACTION_KIND  # type: ignore[assignment]
         return self
 
 
@@ -383,8 +389,9 @@ def from_wire(
     if kind == "browser_type":
         browser_text = (raw.get("text") or raw.get("value") or "").strip()
 
+    # Wire `kind` stays str (tolerant parse); validate() enforces ActionKind.
     return PilotAction(
-        kind=str(kind),
+        kind=cast(ActionKind, str(kind)),
         goal=str(goal),
         roles=roles,
         tool=str(resolved_tool),

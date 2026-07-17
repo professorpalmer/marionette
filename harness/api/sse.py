@@ -14,7 +14,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Callable, Deque, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Deque, Dict, Optional, Tuple, TypedDict, Union
 
 # Mid-turn SSE reattach: bounded per-session/per-generation event ring. When the
 # UI detaches, _sse_pump keeps draining the turn and RETAINS recent frames here
@@ -29,6 +29,40 @@ from typing import Any, Callable, Deque, Dict, Optional, Tuple, Union
 _SSE_RING_CAP = 512
 _SSE_RING_TTL = 300.0  # seconds
 _SSE_RING_MAX_SESSIONS = 32
+
+
+# 3.9-safe optional fields via TypedDict inheritance (NotRequired is 3.11+;
+# harness stays stdlib-only so no typing_extensions).
+class _StreamEventRequired(TypedDict):
+    kind: str
+
+
+class StreamEventDict(_StreamEventRequired, total=False):
+    """Wire SSE payload shared with webapp StreamEvent.
+
+    Chat/auto framers omit turn (ConvEvent); classic /run framers include turn
+    (SessionEvent). Do not unify the shapes.
+    """
+
+    data: Any
+    turn: Any
+
+
+class _SseRingEventRequired(TypedDict):
+    cursor: int
+    kind: str
+    data: Any
+
+
+class SseRingEvent(_SseRingEventRequired, total=False):
+    """One retained ring frame (GET /api/chat/events events[] item).
+
+    ``turn`` is only present when the source event carried one (SessionEvent
+    /run). Chat ConvEvent appends leave it absent — matching
+    ``getattr(ev, 'turn', None)`` in sse_pump.
+    """
+
+    turn: Any
 
 
 class SseEventRing:
@@ -49,14 +83,22 @@ class SseEventRing:
         self._lock = threading.Lock()
         self._cursor = 0
         # (cursor, monotonic_ts, event_dict)
-        self._entries: Deque[Tuple[int, float, dict]] = deque()
+        self._entries: Deque[Tuple[int, float, SseRingEvent]] = deque()
 
     def append(self, kind: str, data: Any = None, turn: Any = None) -> int:
-        """Append one logical SSE event; returns its cursor id."""
+        """Append one logical SSE event; returns its cursor id.
+
+        ``kind`` stays ``str`` so SessionEvent, ConvEvent, and framing-only
+        ``done`` can share the ring without unifying their Literal unions.
+        """
         with self._lock:
             self._cursor += 1
             now = time.monotonic()
-            ev: dict = {"cursor": self._cursor, "kind": kind, "data": data if data is not None else {}}
+            ev: SseRingEvent = {
+                "cursor": self._cursor,
+                "kind": kind,
+                "data": data if data is not None else {},
+            }
             if turn is not None:
                 ev["turn"] = turn
             self._entries.append((self._cursor, now, ev))
