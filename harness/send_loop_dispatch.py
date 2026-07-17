@@ -18,6 +18,7 @@ from typing import Any, Iterator
 from pmharness.intent import DriverIntent
 
 from ._exec import _puppetmaster_available, _puppetmaster_cmd
+from .repo_resolve import resolve_effective_repo
 from .send_loop_phases import read_stdout_thread, stream_swarm
 
 DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
@@ -57,8 +58,9 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     from .conversation import ConvEvent
     intent = DriverIntent(action='run_swarm', goal=act.goal, roles=act.roles or None, rationale='pilot')
     _sync_local_id = f'local-swarm-{aid}'
+    _swarm_repo = resolve_effective_repo(session.config.repo or '') if (session.config.repo or '').strip() else ''
     try:
-        session._register_local_job(_sync_local_id, act.goal, role='explore', cwd=session.config.repo or '', engine='agentic')
+        session._register_local_job(_sync_local_id, act.goal, role='explore', cwd=_swarm_repo, engine='agentic')
         session._session_job_ids.append(_sync_local_id)
     except Exception:
         pass
@@ -157,7 +159,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         if _store_jid != _sync_local_id:
             if _store_jid not in session._session_job_ids:
                 session._session_job_ids.append(_store_jid)
-            session._register_local_job(_store_jid, act.goal, role='explore', cwd=session.config.repo or '', engine=result.adapter or 'agentic')
+            session._register_local_job(_store_jid, act.goal, role='explore', cwd=_swarm_repo, engine=result.adapter or 'agentic')
             session._finish_local_job(_store_jid, ok=_swarm_ok, summary=_badge_summary, status='done' if _swarm_ok else 'failed', engine=result.adapter or 'agentic')
     except Exception:
         pass
@@ -200,6 +202,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             return None
         _target_repo_override = _abs
     effective_repo = _target_repo_override or session.config.repo
+    if effective_repo:
+        effective_repo = resolve_effective_repo(effective_repo)
     if not effective_repo:
         error_msg = 'No workspace directory (config.repo) is open.'
         yield ConvEvent('action_start', {'id': aid, 'kind': 'run_implement', 'goal': act.goal, 'cwd': None})
@@ -301,7 +305,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             session._session_job_ids.append(job_id)
             session._register_local_job(job_id, act.goal, role=_mode, cwd=effective_repo, engine=engine, model=session.config.driver or '' if engine == 'native' else '')
             _prewarm_worker_imports()
-            if not session._submit_swarm(session._run_provider_worker_background, job_id, act.goal, requested_adapter, _target_repo_override, expects_diff):
+            if not session._submit_swarm(session._run_provider_worker_background, job_id, act.goal, requested_adapter, effective_repo, expects_diff):
                 cap_msg = f'Swarm capacity reached ({session._swarm_inflight()} in flight); not dispatching more right now. Wait for an in-flight worker to finish.'
                 session._release_objective(act.goal)
                 yield ConvEvent('action_result', {'id': aid, 'status': 'deferred', 'message': cap_msg})
@@ -343,6 +347,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             return None
         _target_repo_override = _abs
     effective_repo = _target_repo_override or session.config.repo
+    if effective_repo:
+        effective_repo = resolve_effective_repo(effective_repo)
     if not effective_repo:
         error_msg = 'No workspace directory (config.repo) is open.'
         yield ConvEvent('action_result', {'id': aid, 'error': error_msg})
@@ -518,7 +524,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 job_id = f'local-{short}'
                 try:
                     session._register_local_job(job_id, sub_goal, role=_mode, cwd=effective_repo, engine=engine, model=session.config.driver or '' if engine == 'native' else '')
-                    submitted = session._submit_swarm(session._run_provider_worker_background, job_id, sub_goal, requested_adapter, _target_repo_override, expects_diff)
+                    submitted = session._submit_swarm(session._run_provider_worker_background, job_id, sub_goal, requested_adapter, effective_repo, expects_diff)
                 except Exception:
                     session._release_objective(sub_goal)
                     raise

@@ -139,11 +139,15 @@ def stream_swarm(
 ) -> None:
     """Background target: execute_intent with on_delta → delta_q (delta/done/error)."""
     try:
+        from .repo_resolve import resolve_effective_repo
+        _raw_repo = (session.config.repo or "").strip()
+        _cwd = resolve_effective_repo(_raw_repo) if _raw_repo else None
         r = execute_intent(
             intent,
             state_dir=session.state_dir,
             session_id=session.harness_session_id or "",
-            cwd=session.config.repo or None,
+            cwd=_cwd,
+            repo=_cwd,
             on_delta=lambda wid, kind, text: delta_q.put(
                 ("delta", (wid, kind, text))
             ),
