@@ -271,13 +271,14 @@ harness/          the product (principal modules below; mixins compose the sessi
   api/              HTTP route peels (sessions, jobs, sse, streams, wiki, mcp,
                     providers, files, attach, skills, auth, worktrees,
                     terminals, commands, hooks, checkpoints, git, reviews,
-                    registry, platform, codegraph) wired from server.Handler.
-                    Handler keeps auth/token gates; route bodies live in
-                    api/* with *Services dataclasses. auth re-exports
-                    providers' pool/OAuth/Cursor-CLI handlers under an
-                    ownership name. platform also owns Bedrock BYOK;
-                    codegraph currently owns POST reindex/apply-excludes
-                    (GET status panel still on Handler).
+                    registry, platform, codegraph, workspace) wired from
+                    server.Handler. Handler keeps auth/token gates; route
+                    bodies live in api/* with *Services dataclasses. auth
+                    re-exports providers' pool/OAuth/Cursor-CLI handlers
+                    under an ownership name. platform also owns Bedrock
+                    BYOK; codegraph owns POST reindex/apply-excludes (GET
+                    status panel still on Handler); workspace owns forget/
+                    get/symbols/workspaces CRUD (open stays on Handler).
   session.py        single-shot Session core (DriverIntent path for the research rig)
   repair.py         intent-repair retry (research / bare-intent path)
   server.py         stdlib HTTP + SSE server shell (routes live in api/)

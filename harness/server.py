@@ -2749,6 +2749,31 @@ def _codegraph_services():
     )
 
 
+def _workspace_services():
+    """Build WorkspaceServices from live server module globals (call-time lookup)."""
+    from .api.workspace import WorkspaceServices
+
+    def _clear_active_codegraph() -> None:
+        global _codegraph_status, _codegraph_status_reason
+        _codegraph_status = "none"
+        _codegraph_status_reason = None
+
+    return WorkspaceServices(
+        cfg=_cfg,
+        parse_bool=_parse_bool,
+        ws=_ws,
+        paths_same_workspace=_paths_same_workspace,
+        forget_recent_workspace=_forget_recent_workspace,
+        clear_active_codegraph=_clear_active_codegraph,
+        get_codegraph_status=_get_codegraph_status,
+        workspace_json_path=_workspace_json_path,
+        ensure_home_workspace=_ensure_home_workspace,
+        home_workspace_path=_home_workspace_path,
+        is_app_install_root=_is_app_install_root,
+        diag=_diag,
+    )
+
+
 def _provider_services():
     """Build ProviderServices from live server module globals (call-time lookup)."""
     from .api.providers import ProviderServices
@@ -4045,35 +4070,21 @@ class Handler(BaseHTTPRequestHandler):
             }))
 
         if path == "/api/workspace/forget":
-            target_repo = body.get("path", "").strip()
-            if not target_repo:
-                return self._send(400, json.dumps({"error": "Path is required"}))
-            cleared_active = False
-            try:
-                # Clear live process state when forgetting the open workspace so
-                # the rail does not keep re-appending currentRepo after forget.
-                if repo and _paths_same_workspace(repo, target_repo):
-                    _cfg.repo = ""
-                    os.environ.pop("HARNESS_REPO", None)
-                    cleared_active = True
-                    _codegraph_status = "none"
-                    _codegraph_status_reason = None
-                recents = _forget_recent_workspace(target_repo)
-            except Exception as e:
-                return self._send(500, json.dumps({"error": str(e)}))
-            return self._send(200, json.dumps({
-                "ok": True,
-                "recents": recents,
-                "cleared_active": cleared_active,
-                "repo": _cfg.repo or "",
-            }))
+            from .api import workspace as _ws_api
+            status, payload = _ws_api.post_workspace_forget(
+                body, _workspace_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/workspaces/switch":
-            return self._send(200, json.dumps(_ws.switch_workspace(repo, body.get("name",""),
-                              allow_dirty=_parse_bool(body.get("allow_dirty")))))
+            from .api import workspace as _ws_api
+            status, payload = _ws_api.post_workspaces_switch(
+                body, _workspace_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/workspaces/create":
-            return self._send(200, json.dumps(_ws.create_workspace(repo, body.get("name",""),
-                              body.get("branch") or None)))
+            from .api import workspace as _ws_api
+            status, payload = _ws_api.post_workspaces_create(
+                body, _workspace_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/mcp/add":
             from .api import mcp as _mcp_api
             status, payload = _mcp_api.post_mcp_add(body, _mcp_services())
@@ -4953,110 +4964,16 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            
-            repo = _cfg.repo
-            cg_status = _get_codegraph_status(repo) if repo else "unsupported"
-            
-            if not repo or not os.path.isdir(repo):
-                return self._send(200, json.dumps({"symbols": [], "status": cg_status}))
-            
-            try:
-                import puppetmaster.codegraph as cg
-                if not cg.codegraph_available() or not cg.codegraph_ready(repo):
-                    return self._send(200, json.dumps({"symbols": [], "status": cg_status}))
-            except Exception:
-                return self._send(200, json.dumps({"symbols": [], "status": "unsupported"}))
-            
-            q = parse_qs(u.query).get("q", [""])[0].strip()
-            if len(q) < 1:
-                return self._send(200, json.dumps({"symbols": [], "status": "ready"}))
-            
-            try:
-                import puppetmaster.codegraph as cg
-                res = cg.codegraph_query(search=q, cwd=repo, limit=20)
-                symbols_list = []
-                if res.get("ok") and res.get("stdout"):
-                    try:
-                        data = json.loads(res["stdout"])
-                        if isinstance(data, list):
-                            for item in data:
-                                node = item.get("node")
-                                if not node:
-                                    continue
-                                name = node.get("name")
-                                kind = node.get("kind")
-                                file_path = node.get("filePath")
-                                start_line = node.get("startLine")
-                                if name and file_path and start_line is not None:
-                                    symbols_list.append({
-                                        "name": str(name),
-                                        "kind": str(kind or "unknown"),
-                                        "path": str(file_path),
-                                        "line": int(start_line)
-                                    })
-                                if len(symbols_list) >= 20:
-                                    break
-                    except Exception:
-                        pass
-                return self._send(200, json.dumps({"symbols": symbols_list, "status": "ready"}))
-            except Exception as e:
-                return self._send(200, json.dumps({"symbols": [], "error": str(e), "status": cg_status}))
+            from .api import workspace as _ws_api
+            status, payload = _ws_api.get_workspace_symbols(
+                parse_qs(u.query).get("q", [""])[0],
+                _workspace_services(),
+            )
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/workspace":
-            repo = _cfg.repo
-            is_git = False
-            branch = ""
-            if repo and os.path.isdir(repo):
-                import subprocess
-                try:
-                    proc = subprocess.run(
-                        ["git", "-C", repo, "rev-parse", "--is-inside-work-tree"],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if proc.returncode == 0:
-                        is_git = True
-                        proc_branch = subprocess.run(
-                            ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
-                            capture_output=True, text=True, timeout=5
-                        )
-                        if proc_branch.returncode == 0:
-                            branch = proc_branch.stdout.strip()
-                except Exception:
-                    pass
-            cg_status = _get_codegraph_status(repo) if repo else "none"
-            recents = []
-            try:
-                _ws_path = _workspace_json_path()
-                if os.path.exists(_ws_path):
-                    with open(_ws_path, encoding="utf-8", errors="replace") as f:
-                        recents = json.load(f).get("recents", []) or []
-            except Exception:
-                recents = []
-            # filter temp/dead dirs so ephemeral test state_dirs never show as recents
-            _tmproot = os.path.realpath(_tf.gettempdir())
-            recents = [
-                r for r in recents
-                if r and os.path.isdir(r)
-                and not os.path.realpath(r).startswith(_tmproot)
-                and "/var/folders/" not in os.path.realpath(r)
-                and not _is_app_install_root(r)
-            ]
-            # Ensure Home is always visible in Projects (boot-restorable).
-            try:
-                home = _ensure_home_workspace()
-                if home and os.path.isdir(home) and not any(
-                    _paths_same_workspace(home, r) for r in recents
-                ):
-                    recents = list(recents) + [home]
-            except Exception as e:
-                _diag("server.workspace_home_recent", e)
-            return self._send(200, json.dumps({
-                "repo": repo,
-                "branch": branch,
-                "is_git": is_git,
-                "codegraph_status": cg_status,
-                "recents": recents,
-                "home": _home_workspace_path(),
-            }))
+            from .api import workspace as _ws_api
+            status, payload = _ws_api.get_workspace(_workspace_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/models/catalog":
             if self._guard():
                 return
@@ -5808,7 +5725,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)}))
         if u.path == "/api/workspaces":
-            return self._send(200, json.dumps(_ws.list_workspaces(_cfg.repo)))
+            from .api import workspace as _ws_api
+            status, payload = _ws_api.get_workspaces(_workspace_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/worktrees":
             from .api import worktrees as _wt_api
             status, payload = _wt_api.get_worktrees(_worktree_services())
