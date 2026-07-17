@@ -38,7 +38,7 @@ def _signal_result():
         artifact_types=["finding", "routing", "verification"],
         summary="has signal",
         artifacts=[
-            {"type": "finding", "headline": "auth gap in session store"},
+            {"type": "finding", "headline": "auth gap in session store: harness/sessions.py line 88 skips token check"},
             {"type": "routing", "headline": "routed explore"},
             {"type": "verification", "headline": "ok"},
         ],

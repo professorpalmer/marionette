@@ -1017,9 +1017,81 @@ async function ensurePackagedCheckout() {
   }
 }
 
+// --- window bounds persistence -------------------------------------------
+// Restore the main window's last size/position/maximized state across runs
+// (like every other desktop app). State lives beside other pmharness state.
+function windowStatePath() {
+  return path.join(os.homedir(), ".pmharness", "window-state.json");
+}
+
+function loadWindowState() {
+  try {
+    const j = JSON.parse(fs.readFileSync(windowStatePath(), "utf8"));
+    if (!j || typeof j !== "object") return null;
+    const { x, y, width, height, maximized } = j;
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+    const state = {
+      width: Math.max(640, Math.round(width)),
+      height: Math.max(480, Math.round(height)),
+      maximized: !!maximized,
+    };
+    // Only restore a position that is still (mostly) on a connected display —
+    // a saved spot on an unplugged monitor must not strand the window offscreen.
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      const { screen } = require("electron");
+      const visible = screen.getAllDisplays().some((d) => {
+        const a = d.workArea;
+        return (
+          x + state.width > a.x + 40 &&
+          x < a.x + a.width - 40 &&
+          y >= a.y - 8 &&
+          y < a.y + a.height - 40
+        );
+      });
+      if (visible) {
+        state.x = Math.round(x);
+        state.y = Math.round(y);
+      }
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+function saveWindowState(w) {
+  try {
+    if (!w || w.isDestroyed()) return;
+    const maximized = w.isMaximized();
+    // getNormalBounds keeps the restored (unmaximized) rect so unmaximizing
+    // after relaunch lands where the user expects.
+    const b = typeof w.getNormalBounds === "function" ? w.getNormalBounds() : w.getBounds();
+    const payload = { x: b.x, y: b.y, width: b.width, height: b.height, maximized };
+    fs.mkdirSync(path.dirname(windowStatePath()), { recursive: true });
+    fs.writeFileSync(windowStatePath(), JSON.stringify(payload));
+  } catch {}
+}
+
+function trackWindowState(w) {
+  let t = null;
+  const debounced = () => {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => saveWindowState(w), 400);
+  };
+  w.on("resize", debounced);
+  w.on("move", debounced);
+  w.on("maximize", debounced);
+  w.on("unmaximize", debounced);
+  w.on("close", () => saveWindowState(w));
+}
+
 function createWindow() {
+  const saved = loadWindowState();
   win = new BrowserWindow({
-    width: 1440, height: 900, backgroundColor: "#0f1113",
+    width: saved ? saved.width : 1440,
+    height: saved ? saved.height : 900,
+    ...(saved && Number.isFinite(saved.x) ? { x: saved.x, y: saved.y } : {}),
+    backgroundColor: "#0f1113",
     titleBarStyle: "hiddenInset",
     // Windows/Linux render an in-window "File Edit View..." menu bar that
     // stacks a second ugly strip under the title bar (macOS puts the menu in
@@ -1056,6 +1128,10 @@ function createWindow() {
       `window.__HARNESS_PORT__=${backendPort};window.__HARNESS_TOKEN__=${JSON.stringify(harnessToken)};`
     ).catch(() => {});
   });
+  if (saved && saved.maximized) {
+    try { win.maximize(); } catch {}
+  }
+  trackWindowState(win);
   loadRenderer();
 
   // Drop the reference when the window is closed so a reopen builds a clean one
