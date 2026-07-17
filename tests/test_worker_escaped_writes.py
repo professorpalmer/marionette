@@ -188,3 +188,37 @@ def test_detects_windows_various_write_forms():
             r"C:\temp\pm_esc_f",
         ):
             assert _norm(expected) in found, (expected, found)
+
+
+def test_null_device_redirect_is_not_escaped():
+    # POSIX `> /dev/null` must not false-positive on Windows where abspath
+    # resolves to C:\\dev\\null outside the worktree.
+    with tempfile.TemporaryDirectory() as wt:
+        events = [_run_cmd("echo hi > /dev/null 2>&1")]
+        assert _detect_escaped_writes(events, wt) == []
+
+
+def test_null_device_python_open_is_not_escaped():
+    with tempfile.TemporaryDirectory() as wt:
+        events = [_run_cmd("python -c \"open('/dev/null','w')\"")]
+        assert _detect_escaped_writes(events, wt) == []
+
+
+def test_real_escape_still_flagged_alongside_null_device():
+    with tempfile.TemporaryDirectory() as wt:
+        events = [
+            _run_cmd("echo hi > /dev/null 2>&1"),
+            _run_cmd("cp x /etc/passwd"),
+        ]
+        found = _detect_escaped_writes(events, wt)
+        assert _norm("/etc/passwd") in found, found
+        assert not any("dev" in p.lower() and p.lower().endswith("null") for p in found)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows absolute paths")
+def test_windows_outside_redirect_still_flagged():
+    with tempfile.TemporaryDirectory() as wt:
+        outside = r"C:\outside\f.txt"
+        events = [_run_cmd(f"> {outside}")]
+        found = _detect_escaped_writes(events, wt)
+        assert _norm(outside) in found, found

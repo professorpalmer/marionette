@@ -1,4 +1,4 @@
-import type { Card, Item, Msg } from "../TranscriptList";
+import type { Card, Item, Msg, SwarmPendingItem, SwarmPendingStatus } from "../TranscriptList";
 import {
   clearToolPrepPlaceholders,
   finalizeStreamingThinking,
@@ -6,6 +6,37 @@ import {
 } from "./thinkingToolPrep";
 import { findStreamingBubbleIdx } from "./streamBubbles";
 import { deduplicateConsecutiveAssistantMessages } from "./transcriptItems";
+
+export function swarmPendingStatus(item: SwarmPendingItem): SwarmPendingStatus {
+  if (item.status) return item.status;
+  if (item.resolved) return "done";
+  return "running";
+}
+
+function isSwarmPendingTerminal(item: SwarmPendingItem): boolean {
+  const status = swarmPendingStatus(item);
+  return status === "done" || status === "failed" || status === "ended";
+}
+
+function swarmResultLooksFailed(resObj: {
+  applied?: boolean;
+  error?: string | null;
+}): boolean {
+  return resObj.applied === false || Boolean(resObj.error);
+}
+
+function withPendingTerminal(
+  item: SwarmPendingItem,
+  status: "done" | "failed" | "ended",
+  terminalJobIds: string[],
+): SwarmPendingItem {
+  return {
+    ...item,
+    status,
+    resolved: true,
+    terminal_job_ids: terminalJobIds,
+  };
+}
 
 /** Patch a tool card by id (investigation / action_result path). */
 export function patchCardInItems(
@@ -253,6 +284,8 @@ export function appendSwarmPending(
       job_ids: jobIds,
       objective,
       resolved: false,
+      status: "running" as const,
+      terminal_job_ids: [],
     },
   ];
 }
@@ -310,8 +343,10 @@ export function appendNonStreamingThinking(items: Item[], text: string): Item[] 
 }
 
 /**
- * Resolve a swarm_result into transcript items: mark matching pending chips
- * resolved and append the result row (idempotent by job_id).
+ * Resolve a swarm_result into transcript items: advance matching pending chips
+ * toward a terminal state (done/failed) and append the result row (idempotent
+ * by job_id). For run_parallel pills that list several ids, the chip stays
+ * running until every constituent job has a terminal result.
  */
 export function applySwarmResultToItems(
   items: Item[],
@@ -328,27 +363,69 @@ export function applySwarmResultToItems(
   const jobId = d.job_id;
   if (!jobId) return items;
 
-  const pendingItem = items.find(
+  const resObj = d.result || d;
+  const resultFailed = swarmResultLooksFailed(resObj);
+
+  let pendingIdx = items.findIndex(
     (it) => it.kind === "swarm_pending" && it.job_ids.includes(jobId),
   );
-  const pendingObj =
-    pendingItem && pendingItem.kind === "swarm_pending"
-      ? pendingItem.objective
-      : "";
-  const finalObjective = d.objective || pendingObj || "";
+  // Sync run_swarm emits pending as local-swarm-{aid} but swarm_result may
+  // carry the substrate job id — fall back to objective match for a single
+  // still-running pill so the spinner does not stick next to a failed card.
+  if (pendingIdx < 0 && d.objective) {
+    pendingIdx = items.findIndex(
+      (it) =>
+        it.kind === "swarm_pending"
+        && !isSwarmPendingTerminal(it)
+        && it.objective === d.objective
+        && it.job_ids.length === 1,
+    );
+  }
 
-  const updated = items.map((item) => {
-    if (item.kind === "swarm_pending" && item.job_ids.includes(jobId)) {
-      return { ...item, resolved: true };
+  const pendingItem =
+    pendingIdx >= 0 && items[pendingIdx].kind === "swarm_pending"
+      ? (items[pendingIdx] as SwarmPendingItem)
+      : null;
+  const finalObjective = d.objective || pendingItem?.objective || "";
+
+  const updated = items.map((item, idx) => {
+    if (idx !== pendingIdx || item.kind !== "swarm_pending") return item;
+
+    const creditedIds = item.job_ids.includes(jobId)
+      ? [jobId]
+      : item.job_ids.length === 1
+        ? item.job_ids
+        : [jobId];
+    const terminalJobIds = [
+      ...new Set([...(item.terminal_job_ids || []), ...creditedIds]),
+    ];
+    const allTerminal = item.job_ids.every((id) => terminalJobIds.includes(id));
+    if (!allTerminal) {
+      return {
+        ...item,
+        terminal_job_ids: terminalJobIds,
+        status: "running" as const,
+        resolved: false,
+      };
     }
-    return item;
+
+    // Any prior credited failure on this pill, or this result, flips to failed.
+    const priorFailed = swarmPendingStatus(item) === "failed";
+    const siblingFailed = items.some(
+      (it) =>
+        it.kind === "swarm_result"
+        && item.job_ids.includes(it.job_id)
+        && swarmResultLooksFailed(it),
+    );
+    const status: "done" | "failed" =
+      priorFailed || siblingFailed || resultFailed ? "failed" : "done";
+    return withPendingTerminal(item, status, terminalJobIds);
   });
 
   if (updated.some((it) => it.kind === "swarm_result" && it.job_id === jobId)) {
     return updated;
   }
 
-  const resObj = d.result || d;
   return [
     ...updated,
     {
@@ -361,6 +438,84 @@ export function applySwarmResultToItems(
       objective: finalObjective,
     },
   ];
+}
+
+/**
+ * When a sync swarm dies with only action_result(error) (no swarm_result),
+ * flip the matching local-swarm-{actionId} pill to failed.
+ */
+export function failSwarmPendingForActionError(
+  items: Item[],
+  actionId: string | undefined,
+): Item[] {
+  if (!actionId) return items;
+  const localId = `local-swarm-${actionId}`;
+  return items.map((item) => {
+    if (item.kind !== "swarm_pending" || isSwarmPendingTerminal(item)) return item;
+    if (!item.job_ids.includes(localId)) return item;
+    return withPendingTerminal(item, "failed", [...item.job_ids]);
+  });
+}
+
+/**
+ * Turn-close safety net: still-spinning pills whose job ids are not live in
+ * the tracker flip to a neutral "ended" state (no spinner). Also reconciles
+ * pills that already have covering swarm_result rows but never flipped
+ * (e.g. job_id alias mismatch).
+ */
+export function finalizeOrphanSwarmPills(
+  items: Item[],
+  liveJobIds: ReadonlySet<string> | readonly string[],
+): Item[] {
+  const live = liveJobIds instanceof Set ? liveJobIds : new Set(liveJobIds);
+
+  const resultByJob = new Map<string, { failed: boolean; objective: string }>();
+  for (const it of items) {
+    if (it.kind !== "swarm_result") continue;
+    resultByJob.set(it.job_id, {
+      failed: swarmResultLooksFailed(it),
+      objective: it.objective || "",
+    });
+  }
+
+  return items.map((item) => {
+    if (item.kind !== "swarm_pending" || isSwarmPendingTerminal(item)) return item;
+
+    const terminalFromResults = new Set(item.terminal_job_ids || []);
+    for (const jid of item.job_ids) {
+      if (resultByJob.has(jid)) terminalFromResults.add(jid);
+    }
+
+    // Objective cover for single-id local-swarm ↔ substrate id mismatch.
+    let objectiveFailed = false;
+    let objectiveCovered = false;
+    if (item.job_ids.length === 1 && item.objective) {
+      for (const res of resultByJob.values()) {
+        if (res.objective !== item.objective) continue;
+        objectiveCovered = true;
+        if (res.failed) objectiveFailed = true;
+      }
+    }
+
+    const allTerminal =
+      item.job_ids.every((id) => terminalFromResults.has(id)) || objectiveCovered;
+    if (allTerminal) {
+      const anyFailed =
+        objectiveFailed
+        || [...terminalFromResults].some((id) => resultByJob.get(id)?.failed);
+      return withPendingTerminal(
+        item,
+        anyFailed ? "failed" : "done",
+        [...terminalFromResults],
+      );
+    }
+
+    const anyLive = item.job_ids.some((id) => live.has(id));
+    if (!anyLive) {
+      return withPendingTerminal(item, "ended", [...(item.terminal_job_ids || [])]);
+    }
+    return item;
+  });
 }
 
 /** Self-learning footnote copy; null when nothing actionable was proposed. */

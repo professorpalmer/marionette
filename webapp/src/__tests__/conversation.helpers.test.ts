@@ -67,6 +67,8 @@ import {
   appendCommandBlocked,
   applySwarmResultToItems,
   ensureAssistantStreamingBubble,
+  failSwarmPendingForActionError,
+  finalizeOrphanSwarmPills,
   finalizePilotMessage,
   finalizeStreamingBubbleOnActionResult,
   formatDistilledNotice,
@@ -569,6 +571,8 @@ describe("streamApply module", () => {
         job_ids: ["j1"],
         objective: "ship",
         resolved: false,
+        status: "running",
+        terminal_job_ids: [],
       },
     ];
     const next = applySwarmResultToItems(items, {
@@ -578,8 +582,112 @@ describe("streamApply module", () => {
       summary: "done",
       error: null,
     });
-    expect(next[0]).toMatchObject({ kind: "swarm_pending", resolved: true });
+    expect(next[0]).toMatchObject({ kind: "swarm_pending", resolved: true, status: "done" });
     expect(next[1]).toMatchObject({ kind: "swarm_result", job_id: "j1", objective: "ship" });
+  });
+
+  it("swarm_result failure flips the pending pill to failed (no spinner)", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-swarm-a1"],
+        objective: "audit auth",
+        status: "running",
+        terminal_job_ids: [],
+      },
+    ];
+    // Substrate job id differs from the local-swarm pending id — still match via objective.
+    const next = applySwarmResultToItems(items, {
+      job_id: "job_deadbeef1234",
+      objective: "audit auth",
+      applied: false,
+      files: [],
+      summary: "no artifacts",
+      error: "swarm produced no artifacts",
+    });
+    expect(next[0]).toMatchObject({
+      kind: "swarm_pending",
+      status: "failed",
+      resolved: true,
+    });
+    expect(next[1]).toMatchObject({
+      kind: "swarm_result",
+      applied: false,
+      job_id: "job_deadbeef1234",
+    });
+  });
+
+  it("run_parallel pill waits for all jobs and fails if any failed", () => {
+    let items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-a", "local-b"],
+        objective: "Parallel wave",
+        status: "running",
+        terminal_job_ids: [],
+      },
+    ];
+    items = applySwarmResultToItems(items, {
+      job_id: "local-a",
+      applied: true,
+      files: [],
+      summary: "ok",
+      error: null,
+    });
+    expect(items[0]).toMatchObject({
+      kind: "swarm_pending",
+      status: "running",
+      terminal_job_ids: ["local-a"],
+    });
+
+    items = applySwarmResultToItems(items, {
+      job_id: "local-b",
+      applied: false,
+      files: [],
+      summary: "boom",
+      error: "PATCH DID NOT APPLY",
+    });
+    expect(items[0]).toMatchObject({
+      kind: "swarm_pending",
+      status: "failed",
+      resolved: true,
+    });
+  });
+
+  it("finalizeOrphanSwarmPills ends spinning pills with no live tracker entry", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-swarm-a9"],
+        objective: "stuck",
+        status: "running",
+        terminal_job_ids: [],
+      },
+      {
+        kind: "swarm_pending",
+        job_ids: ["job_alive"],
+        objective: "background",
+        status: "running",
+        terminal_job_ids: [],
+      },
+    ];
+    const next = finalizeOrphanSwarmPills(items, ["job_alive"]);
+    expect(next[0]).toMatchObject({ status: "ended", resolved: true });
+    expect(next[1]).toMatchObject({ status: "running" });
+  });
+
+  it("failSwarmPendingForActionError marks local-swarm pill failed", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-swarm-a3"],
+        objective: "sync fail",
+        status: "running",
+        terminal_job_ids: [],
+      },
+    ];
+    const next = failSwarmPendingForActionError(items, "a3");
+    expect(next[0]).toMatchObject({ status: "failed", resolved: true });
   });
 
   it("formats notices and wait hints", () => {

@@ -308,6 +308,27 @@ def _compact_artifact(a: Any) -> dict:
     body = str(headline) if (isinstance(headline, str) and headline.strip()) else ""
     if empty_headline and payload:
         headline = str(getattr(a, "type", "") or "artifact")
+    failure = str(payload.get("failure") or "") or None
+    # Auth rejections must surface as AUTH FAILURE with provider + key env, not
+    # as the verification check text / empty degrade headline.
+    if _is_auth_failure_tag(failure, headline):
+        mitigation = str(payload.get("mitigation") or "").strip()
+        provider = str(payload.get("provider") or "").strip()
+        if "AUTH FAILURE" not in str(headline or "").upper():
+            status = payload.get("returncode")
+            status_bit = (
+                f"HTTP {status}" if status in (401, 403, "401", "403")
+                else (failure or "auth rejected")
+            )
+            who = f"provider '{provider}'" if provider else "provider"
+            headline = f"AUTH FAILURE: {who} rejected the API key ({status_bit})"
+            empty_headline = False
+            body = str(headline)
+        if mitigation and mitigation not in str(headline):
+            # mitigation names the env var to fix (e.g. OPENAI_API_KEY).
+            headline = f"{str(headline).rstrip('. ')}. {mitigation}"
+            body = str(headline) if not body else body
+            empty_headline = False
     return {
         "type": str(getattr(a, "type", "")),
         "headline": str(headline)[:240],
@@ -317,11 +338,38 @@ def _compact_artifact(a: Any) -> dict:
         # Carry the machine-readable failure tag so consumers can branch on a
         # provider auth rejection (auth_failed:401/403) instead of mistaking it
         # for a weak-model / bad-prompt degrade.
-        "failure": str(payload.get("failure") or "") or None,
+        "failure": failure,
     }
 
 
 _SIGNAL_TYPES = frozenset({"finding", "risk", "decision"})
+
+# Failure tags that mean provider credential rejection (401/403 / missing key),
+# including the verification artifact stamped by agentic ``_fail`` when the
+# dedicated auth RISK is absent (older Puppetmaster builds).
+_AUTH_FAILURE_EXACT = frozenset({
+    "not_authenticated",
+    "http_status:401",
+    "http_status:403",
+})
+
+
+def _is_auth_failure_tag(failure: object, headline: object = "") -> bool:
+    """True when a compact/raw failure tag (or headline) is a provider auth reject."""
+    fail = str(failure or "").strip()
+    if fail.startswith("auth_failed"):
+        return True
+    low = fail.lower()
+    if low in _AUTH_FAILURE_EXACT:
+        return True
+    if low.startswith("http_status:"):
+        code = low.rsplit(":", 1)[-1]
+        if code in ("401", "403"):
+            return True
+    head = str(headline or "")
+    if "AUTH FAILURE" in head.upper():
+        return True
+    return False
 
 
 def _promote_degraded_prose(compact: list) -> list:
@@ -349,6 +397,12 @@ def _promote_degraded_prose(compact: list) -> list:
     treats worker output as an untrusted boundary. Leave it here.
     """
     try:
+        # Never launder a provider auth rejection into a synthetic "finding" --
+        # that path is exactly how a dead key used to read as "completed without
+        # structured findings" / thin findings instead of AUTH FAILURE.
+        if any(_is_auth_failure_tag(a.get("failure"), a.get("headline"))
+               for a in compact):
+            return compact
         has_signal = any(str(a.get("type")) in _SIGNAL_TYPES
                          and not a.get("empty_headline")
                          and str(a.get("headline") or "").strip()
@@ -358,6 +412,8 @@ def _promote_degraded_prose(compact: list) -> list:
         promoted = list(compact)
         for a in compact:
             if str(a.get("type")) != "verification":
+                continue
+            if _is_auth_failure_tag(a.get("failure"), a.get("headline")):
                 continue
             # Use the FULL body (untruncated stdout prose), falling back to the
             # display headline. Detection and the promoted finding both rely on
@@ -389,17 +445,46 @@ def _auth_failure_note(compact: list) -> str:
     real cause rather than burying it as "no structured findings"."""
     for a in compact:
         fail = str(a.get("failure") or "")
-        if fail.startswith("auth_failed"):
-            return str(a.get("headline") or "Provider auth failure").strip()
+        headline = str(a.get("headline") or "").strip()
+        if not _is_auth_failure_tag(fail, headline):
+            continue
+        note = headline or "Provider auth failure"
+        # Prefer an explicit AUTH FAILURE lead-in so badge/digest never read as
+        # a generic degrade when we only have a verification failure tag.
+        if "AUTH FAILURE" not in note.upper():
+            note = f"AUTH FAILURE: {note}" if note else "AUTH FAILURE: provider auth rejected"
+            if fail and fail not in note:
+                note = f"{note} ({fail})"
+        return note.strip()
     return ""
+
+
+def _summary_leading_with_auth(summary: str, auth_note: str) -> str:
+    """Ensure BridgeResult.summary leads with the auth note when present.
+
+    Orchestrator stitcher text often still says "completed without structured
+    findings" even when an auth RISK exists; consumers that only read ``summary``
+    must not miss the credential failure.
+    """
+    note = (auth_note or "").strip()
+    if not note:
+        return summary or ""
+    raw = (summary or "").strip()
+    if not raw or "without structured findings" in raw.lower():
+        return note
+    if raw.startswith("AUTH FAILURE") or note in raw:
+        return raw if raw.startswith("AUTH FAILURE") else f"{note}\n{raw}"
+    return f"{note}\n{raw}"
 
 
 def _hoist_auth_risks(compact: list) -> list:
     """Sort provider auth-failure artifacts to the front so a fixed-size digest
     slice (e.g. artifacts[:8]) can never drop the one finding that explains the
     whole run."""
-    auth = [a for a in compact if str(a.get("failure") or "").startswith("auth_failed")]
-    rest = [a for a in compact if not str(a.get("failure") or "").startswith("auth_failed")]
+    auth = [a for a in compact
+            if _is_auth_failure_tag(a.get("failure"), a.get("headline"))]
+    rest = [a for a in compact
+            if not _is_auth_failure_tag(a.get("failure"), a.get("headline"))]
     return auth + rest if auth else compact
 
 
@@ -537,15 +622,16 @@ def _execute_prewalk(
     artifacts = list(result.artifacts)
     compact = _hoist_auth_risks([_compact_artifact(a) for a in artifacts])
     compact = _promote_degraded_prose(compact)
+    auth_note = _auth_failure_note(compact)
     return BridgeResult(
         job_id=result.job.id,
         status=str(result.job.status),
         mode=str(result.mode),
         num_artifacts=len(artifacts),
         artifact_types=sorted({str(a.type) for a in artifacts}),
-        summary=result.summary or "",
+        summary=_summary_leading_with_auth(result.summary or "", auth_note),
         artifacts=compact,
-        auth_failure=_auth_failure_note(compact),
+        auth_failure=auth_note,
         adapter=f"prewalk:{implement_adapter}",
     )
 
@@ -740,15 +826,16 @@ def execute_intent(
         artifacts = list(result.artifacts)
         compact = _hoist_auth_risks([_compact_artifact(a) for a in artifacts])
         compact = _promote_degraded_prose(compact)
+        auth_note = _auth_failure_note(compact)
         return BridgeResult(
             job_id=result.job.id,
             status=str(result.job.status),
             mode=str(result.mode),
             num_artifacts=len(artifacts),
             artifact_types=sorted({str(a.type) for a in artifacts}),
-            summary=result.summary or "",
+            summary=_summary_leading_with_auth(result.summary or "", auth_note),
             artifacts=compact,
-            auth_failure=_auth_failure_note(compact),
+            auth_failure=auth_note,
             adapter=adapter,
         )
     finally:

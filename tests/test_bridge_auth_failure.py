@@ -15,6 +15,9 @@ from pmharness.bridge import (
     _auth_failure_note,
     _compact_artifact,
     _hoist_auth_risks,
+    _is_auth_failure_tag,
+    _promote_degraded_prose,
+    _summary_leading_with_auth,
 )
 
 
@@ -44,6 +47,7 @@ def test_compact_carries_failure_tag():
     assert compact["failure"] == "auth_failed:401"
     assert compact["type"] == "risk"
     assert "AUTH FAILURE" in compact["headline"]
+    assert "OPENAI_API_KEY" in compact["headline"]
 
 
 def test_compact_failure_none_when_absent():
@@ -70,6 +74,54 @@ def test_auth_note_present_and_absent():
     with_auth = [_compact_artifact(_auth_risk_artifact())]
     note = _auth_failure_note(with_auth)
     assert "AUTH FAILURE" in note and "openai" in note
+    assert "OPENAI_API_KEY" in note
 
     without = [_compact_artifact(_Art("finding", {"claim": "clean"}))]
     assert _auth_failure_note(without) == ""
+
+
+def test_verification_http_401_is_auth_failure():
+    # Agentic ``_fail`` stamps failure=http_status:401 on a verification
+    # artifact when the dedicated auth RISK is missing. Must still surface.
+    compact = _compact_artifact(_Art(
+        "verification",
+        {
+            "check": "audit the repo",
+            "result": "failed",
+            "failure": "http_status:401",
+            "returncode": 401,
+            "stderr": "invalid_api_key",
+        },
+    ))
+    assert _is_auth_failure_tag(compact["failure"], compact["headline"])
+    note = _auth_failure_note([compact])
+    assert "AUTH FAILURE" in note
+    assert "without structured findings" not in note.lower()
+
+
+def test_promote_skips_when_auth_failure_present():
+    # Zero signal + auth verification must NOT become a synthetic finding that
+    # buries the credential failure as "structured findings".
+    auth_ver = _compact_artifact(_Art(
+        "verification",
+        {
+            "check": "x",
+            "result": "failed",
+            "failure": "http_status:401",
+            "returncode": 401,
+            "stderr": "x" * 80,
+            "stdout": "long stderr-looking prose that would otherwise promote " * 3,
+        },
+    ))
+    out = _promote_degraded_prose([auth_ver])
+    assert all(a.get("promoted_from") != "verification" for a in out)
+    assert _auth_failure_note(out)
+
+
+def test_summary_leads_with_auth_over_generic_degrade():
+    note = "AUTH FAILURE: provider 'openai' rejected the API key (HTTP 401). Fix OPENAI_API_KEY."
+    generic = "Agentic worker completed without structured findings."
+    led = _summary_leading_with_auth(generic, note)
+    assert led.startswith("AUTH FAILURE")
+    assert "without structured findings" not in led
+    assert "OPENAI_API_KEY" in led or "openai" in led

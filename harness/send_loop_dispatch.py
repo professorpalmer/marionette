@@ -101,12 +101,30 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     if result.adapter == 'demo':
         counters['demo_swarms'] += 1
     auth_failure = getattr(result, 'auth_failure', '') or ''
+    # Re-derive from artifacts when the bridge field is empty so a zero-signal
+    # auth death (verification-only http_status:401) still leads the badge.
+    if not auth_failure:
+        try:
+            from pmharness.bridge import _auth_failure_note
+            auth_failure = _auth_failure_note(list(result.artifacts) or []) or ''
+        except Exception:
+            auth_failure = ''
     if auth_failure:
         yield ConvEvent('swarm_auth_failure', {'id': aid, 'job_id': result.job_id, 'message': auth_failure})
     _SIGNAL = {'finding', 'risk', 'decision'}
     _all_arts = list(result.artifacts)
     _signal = [a for a in _all_arts if str(a.get('type')) in _SIGNAL]
     _plumbing = [a for a in _all_arts if str(a.get('type')) not in _SIGNAL]
+    # Keep auth-tagged plumbing (verification) ahead of other plumbing so a
+    # zero-signal digest slice cannot drop the credential failure.
+    if auth_failure and not _signal:
+        try:
+            from pmharness.bridge import _is_auth_failure_tag
+            _auth_plumb = [a for a in _plumbing if _is_auth_failure_tag(a.get('failure'), a.get('headline'))]
+            _other_plumb = [a for a in _plumbing if not _is_auth_failure_tag(a.get('failure'), a.get('headline'))]
+            _plumbing = _auth_plumb + _other_plumb
+        except Exception:
+            pass
     ordered = _signal + _plumbing
     digest_arts = _signal[:20] + _plumbing[:3] if _signal else _plumbing[:8]
     yield ConvEvent('action_result', {'id': aid, 'job_id': result.job_id, 'num': result.num_artifacts, 'types': result.artifact_types, 'artifacts': ordered[:12], 'adapter': result.adapter, 'mode': result.mode, 'auth_failure': auth_failure})
@@ -117,7 +135,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     _substantive = [a for a in _signal if _is_substantive_artifact(a)]
     _swarm_ok = bool(_substantive) and (not auth_failure)
     if auth_failure:
-        _badge_summary = 'auth failure'
+        # Lead with the provider/key note, never a generic "no findings" badge.
+        _badge_summary = auth_failure[:160] if len(auth_failure) > 20 else 'auth failure'
     elif _substantive:
         _badge_summary = f'{len(_signal)} findings via {result.adapter} ({result.num_artifacts} artifacts)'
     elif _has_signal:
@@ -147,6 +166,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     if result.adapter != 'demo':
         turn_findings.extend((a for a in result.artifacts if a.get('type') != 'verification'))
     digest = '\n'.join((f"  - [{a['type']}] {a['headline']}" for a in digest_arts)) or '  (no artifacts)'
+    if auth_failure and not _has_signal and auth_failure not in digest:
+        digest = f"  - [auth] {auth_failure}\n{digest}"
     stall = ''
     if counters['demo_swarms'] >= 2:
         stall = '\n(NOTE: swarms are running on the DEMO substrate, which returns generic artifacts -- not real codebase analysis. Do NOT keep retrying; explain this to the user and finish with no actions. Real analysis needs --repo + --swarm-adapter openai.)'

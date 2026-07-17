@@ -31,6 +31,7 @@ import {
 import { derivePillStatus } from "./conversation/pillStatus";
 import {
   applySwarmResultToItems,
+  finalizeOrphanSwarmPills,
   patchCardInItems,
 } from "./conversation/streamApply";
 import {
@@ -389,6 +390,8 @@ export default function Conversation({
   const [queueDragOverIndex, setQueueDragOverIndex] = useState<number | null>(null);
 
   const [pendingJobIds, setPendingJobIds] = useState<string[]>([]);
+  const pendingJobIdsRef = useRef<string[]>([]);
+  useEffect(() => { pendingJobIdsRef.current = pendingJobIds; }, [pendingJobIds]);
   const processedSwarmJobIdsRef = useRef<string[]>([]);
   const [backendPendingSwarms, setBackendPendingSwarms] = useState(false);
 
@@ -1445,6 +1448,7 @@ export default function Conversation({
     setStatus,
     setTurnOpen,
     setPendingJobIds,
+    pendingJobIdsRef,
     setSafeTimeout,
     itemsRef,
     planTurnRef,
@@ -1831,6 +1835,11 @@ export default function Conversation({
     setTurnOpen(false);
     setStatus("idle");
     setCompactingStatus(null);
+    const liveIds = pendingJobIdsRef.current.filter(
+      (id) => !id.startsWith("local-swarm-"),
+    );
+    setPendingJobIds(liveIds);
+    setItems((p) => finalizeOrphanSwarmPills(p, liveIds));
     api.interruptSession().catch((e) => console.error("Failed to interrupt session on backend:", e));
   };
 

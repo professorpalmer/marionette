@@ -87,6 +87,9 @@ export {
   appendStreamError,
   appendNonStreamingThinking,
   applySwarmResultToItems,
+  failSwarmPendingForActionError,
+  finalizeOrphanSwarmPills,
+  swarmPendingStatus,
   formatDistilledNotice,
   formatWikiAutoIngestNotice,
 } from "./streamApply";

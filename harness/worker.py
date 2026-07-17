@@ -144,6 +144,60 @@ _RE_PY_OPEN = re.compile(
 # absolute path token as the destination (POSIX convention for these tools).
 _RE_CP_MV = re.compile(r"\b(?:cp|mv|install|rsync)\b[^;|&`\n]*")
 
+# POSIX / Windows null and stdio sinks. On Windows, os.path.abspath("/dev/null")
+# becomes C:\dev\null and would otherwise false-positive as an escaped write.
+_NULL_DEVICE_LITERALS = frozenset({
+    "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty",
+    "nul", "NUL",
+})
+
+
+def _is_null_device_sink(path: str) -> bool:
+    """True for null/stdio pseudo-device sinks that are not real filesystem writes.
+
+    Never raises. Matches literal POSIX/Windows names, ``os.devnull``, and any
+    normalized absolute path whose tail is ``dev\\null`` or ``dev/null``.
+    """
+    try:
+        raw = (path or "").strip()
+        if not raw:
+            return False
+        if raw in _NULL_DEVICE_LITERALS:
+            return True
+        try:
+            if raw == os.devnull or os.path.normcase(raw) == os.path.normcase(os.devnull):
+                return True
+        except Exception:
+            pass
+        # Tail check on both the raw token and an abspath form so Windows
+        # C:\dev\null (from abspath('/dev/null')) is skipped too.
+        for candidate in (raw,):
+            try:
+                norm = os.path.normpath(candidate)
+            except Exception:
+                norm = candidate
+            tail = norm.replace("/", "\\").lower()
+            if tail.endswith("dev\\null") or tail.endswith("dev/null"):
+                return True
+            # Also accept forward-slash form after normpath on POSIX.
+            if norm.replace("\\", "/").lower().endswith("dev/null"):
+                return True
+        try:
+            abs_norm = os.path.abspath(raw.rstrip("/\\") or raw)
+        except Exception:
+            return False
+        abs_tail = abs_norm.replace("\\", "/").lower()
+        if abs_tail.endswith("dev/null"):
+            return True
+        try:
+            if os.path.normcase(abs_norm) == os.path.normcase(os.devnull):
+                return True
+        except Exception:
+            pass
+        return False
+    except Exception:
+        return False
+
 
 def _detect_escaped_writes(events, wt_path: str) -> list[str]:
     """Scan run_command events for shell writes to absolute paths that fall
@@ -208,13 +262,19 @@ def _detect_escaped_writes(events, wt_path: str) -> list[str]:
 
         for path in candidates:
             try:
+                if _is_null_device_sink(path):
+                    continue
                 stripped = path.rstrip("/\\")
                 if not stripped:
                     if len(path) >= 2 and path[1] == ":":
                         stripped = path[:2] + "\\"
                     else:
                         stripped = "/"
+                if _is_null_device_sink(stripped):
+                    continue
                 norm = os.path.abspath(stripped)
+                if _is_null_device_sink(norm):
+                    continue
             except Exception:
                 continue
             if norm == wt_norm or norm.startswith(wt_prefix):

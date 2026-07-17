@@ -54,12 +54,26 @@ export type Card = {
              artifacts?: { type: string; headline: string }[]; error?: string;
              status?: string; message?: string; duration_ms?: number };
 };
+/** Inline swarm status pill lifecycle (running spinner vs terminal chips). */
+export type SwarmPendingStatus = "running" | "done" | "failed" | "ended";
+
+export type SwarmPendingItem = {
+  kind: "swarm_pending";
+  job_ids: string[];
+  objective: string;
+  /** @deprecated prefer status; true means terminal "done". */
+  resolved?: boolean;
+  status?: SwarmPendingStatus;
+  /** Job ids that already received a swarm_result (for run_parallel). */
+  terminal_job_ids?: string[];
+};
+
 export type Item =
   | { kind: "msg"; msg: Msg }
   | { kind: "card"; card: Card }
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string }
   | { kind: "tool_prep"; name: string }
-  | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
+  | SwarmPendingItem
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
@@ -71,7 +85,7 @@ export type Item =
 export type GroupedItem =
   | { kind: "msg"; msg: Msg }
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string }
-  | { kind: "swarm_pending"; job_ids: string[]; objective: string; resolved?: boolean }
+  | SwarmPendingItem
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
@@ -468,11 +482,29 @@ export const TranscriptList = memo(function TranscriptList({
       const objText = it.objective || "";
       const truncatedObj = objText.length > 60 ? objText.slice(0, 60) + "..." : objText;
       const jobIdsStr = (it.job_ids || []).join(", ");
-      if (it.resolved) {
+      const pillStatus: SwarmPendingStatus =
+        it.status || (it.resolved ? "done" : "running");
+      if (pillStatus === "done") {
         return (
           <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/20 border border-edge/30 text-[11px] text-faint w-fit my-1 select-none">
             <span className="w-1.5 h-1.5 rounded-full bg-good/40" />
             <span>swarm done: {truncatedObj} ({jobIdsStr})</span>
+          </div>
+        );
+      }
+      if (pillStatus === "failed") {
+        return (
+          <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-risk/10 border border-risk/30 text-[11px] text-risk/80 w-fit my-1 select-none">
+            <span className="w-1.5 h-1.5 rounded-full bg-risk/50" />
+            <span>swarm failed: {truncatedObj} ({jobIdsStr})</span>
+          </div>
+        );
+      }
+      if (pillStatus === "ended") {
+        return (
+          <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[11px] text-faint w-fit my-1 select-none">
+            <span className="w-1.5 h-1.5 rounded-full bg-faint/40" />
+            <span>swarm ended: {truncatedObj} ({jobIdsStr})</span>
           </div>
         );
       }

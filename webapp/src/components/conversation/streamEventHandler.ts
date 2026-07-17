@@ -24,6 +24,8 @@ import {
   appendSwarmPending,
   ensureAssistantStreamingBubble,
   ensureWorkerStreamingBubble,
+  failSwarmPendingForActionError,
+  finalizeOrphanSwarmPills,
   finalizePilotMessage,
   finalizeStreamingBubbleOnActionResult,
   formatDistilledNotice,
@@ -52,6 +54,8 @@ export type ApplyStreamEventDeps = {
   >;
   setTurnOpen: Dispatch<SetStateAction<boolean>>;
   setPendingJobIds: Dispatch<SetStateAction<string[]>>;
+  /** Current pending swarm job ids (kept as a ref so turn-close can read live). */
+  pendingJobIdsRef: { current: string[] };
   setSafeTimeout: (fn: () => void, ms: number) => void;
   itemsRef: { current: Item[] };
   planTurnRef: { current: boolean };
@@ -80,6 +84,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     setStatus,
     setTurnOpen,
     setPendingJobIds,
+    pendingJobIdsRef,
     setSafeTimeout,
     itemsRef,
     planTurnRef,
@@ -229,7 +234,17 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // scroll/attention). A non-worker streaming bubble (the pilot's own
       // narration) is still finalized in place.
       flushTypewriter();
-      setItems((p) => finalizeStreamingBubbleOnActionResult(p));
+      setItems((p) => {
+        let next = finalizeStreamingBubbleOnActionResult(p);
+        // Sync run_swarm early failures emit action_result(error) without a
+        // swarm_result — flip the matching local-swarm pill off the spinner.
+        if (d.error) next = failSwarmPendingForActionError(next, d.id);
+        return next;
+      });
+      if (d.error && d.id) {
+        const localId = `local-swarm-${d.id}`;
+        setPendingJobIds((ids) => ids.filter((id) => id !== localId));
+      }
       // Fallback: if the card carries an auth_failure but the dedicated
       // swarm_auth_failure event was missed, still raise the loud banner so a
       // dead key is never buried in a quiet "completed" card. Deduped by id.
@@ -310,7 +325,16 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setTurnOpen(false);
       setWaitHint(null);
       setStatus("done");
-      setItems((p) => finalizeStreamingThinking(p));
+      // Sync local-swarm-* ids finish inside the turn; anything still spinning
+      // for those is an orphan. Background job_*/local-* stay live so their
+      // pills keep spinning until swarm_result arrives.
+      const liveIds = pendingJobIdsRef.current.filter(
+        (id) => !id.startsWith("local-swarm-"),
+      );
+      setPendingJobIds(liveIds);
+      setItems((p) =>
+        finalizeOrphanSwarmPills(finalizeStreamingThinking(p), liveIds),
+      );
       fetchContextUsage();
       // Backend may also set_title_if_default; refresh meters/title if the
       // optimistic first-send rename missed or the server derived a different slug.
@@ -321,7 +345,13 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setCompactingStatus(null);
       setWaitHint(null);
       setStatus("error");
-      setItems((p) => appendStreamError(p, d.error || ""));
+      const liveIds = pendingJobIdsRef.current.filter(
+        (id) => !id.startsWith("local-swarm-"),
+      );
+      setPendingJobIds(liveIds);
+      setItems((p) =>
+        finalizeOrphanSwarmPills(appendStreamError(p, d.error || ""), liveIds),
+      );
     }
   };
 }
