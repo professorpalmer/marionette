@@ -90,7 +90,7 @@ def test_queue_drains_while_swarm_pending(tmp_path):
     session = ConversationalSession(cfg)
     
     # Mock puppetmaster being available
-    with patch("harness.send_loop._puppetmaster_available", return_value=True), \
+    with patch("harness.send_loop_dispatch._puppetmaster_available", return_value=True), \
          patch.object(ConversationalSession, "_external_adapter_available", lambda self, adapter: True):
         # Mock pilot completing and returning run_implement action
         mock_pilot = MagicMock()

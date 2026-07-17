@@ -230,12 +230,15 @@ def test_conversation_hot_path_routes_through_turn_economy():
     """PR2: session hot path must call TurnEconomy methods, not raw helpers.
 
     After the audit peel, call sites live across conversation.py and the
-    mixins it composes (send_loop, wiki_distill, compaction_mixin).
+    mixins it composes (send_loop siblings, wiki_distill, compaction_mixin).
     """
     harness_dir = os.path.join(os.path.dirname(__file__), "..", "harness")
     scan_files = (
         "conversation.py",
         "send_loop.py",
+        "send_loop_actions.py",
+        "send_loop_dispatch.py",
+        "send_loop_phases.py",
         "wiki_distill.py",
         "compaction_mixin.py",
     )

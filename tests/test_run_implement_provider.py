@@ -126,7 +126,7 @@ def test_run_implement_external_fallback(monkeypatch):
         session = ConversationalSession(cfg)
 
         # Mock puppetmaster available (dispatch lives in send_loop after the peel)
-        monkeypatch.setattr("harness.send_loop._puppetmaster_available", lambda: True)
+        monkeypatch.setattr("harness.send_loop_dispatch._puppetmaster_available", lambda: True)
         # Mock the external adapter CLI as available so this test exercises the
         # external dispatch path (cursor is not installed in CI; without this it
         # would correctly fall back to the provider-native worker).
@@ -139,7 +139,7 @@ def test_run_implement_external_fallback(monkeypatch):
             # `echo` is a shell builtin, not an executable, so spawning it as
             # an argv list fails on Windows; a python -c print works everywhere.
             return [sys.executable, "-c", "print('job_123456789012')"]
-        monkeypatch.setattr("harness.send_loop._puppetmaster_cmd", mock_pm_cmd)
+        monkeypatch.setattr("harness.send_loop_dispatch._puppetmaster_cmd", mock_pm_cmd)
 
         # Mock pilot completing and returning run_implement action with an external adapter
         mock_pilot = MagicMock()
@@ -187,7 +187,7 @@ def test_run_implement_falls_back_to_provider_when_cli_absent(monkeypatch):
         cfg.repo = repo_dir
         session = ConversationalSession(cfg)
 
-        monkeypatch.setattr("harness.send_loop._puppetmaster_available", lambda: True)
+        monkeypatch.setattr("harness.send_loop_dispatch._puppetmaster_available", lambda: True)
         # The external adapter CLI is NOT available.
         monkeypatch.setattr(ConversationalSession, "_external_adapter_available", lambda self, adapter: False)
         # Pin the native engine so the in-process fallback is deterministic here.
@@ -198,7 +198,7 @@ def test_run_implement_falls_back_to_provider_when_cli_absent(monkeypatch):
         def mock_pm_cmd(*args, **kwargs):
             pm_cmd_called.append(args)
             return ["echo", "job_should_not_be_used"]
-        monkeypatch.setattr("harness.send_loop._puppetmaster_cmd", mock_pm_cmd)
+        monkeypatch.setattr("harness.send_loop_dispatch._puppetmaster_cmd", mock_pm_cmd)
 
         mock_pilot = MagicMock()
         first_resp = MagicMock()

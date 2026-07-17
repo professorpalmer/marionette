@@ -39,6 +39,7 @@ import threading
 import time
 from typing import Any, Iterator, Optional
 
+from ._exec import _puppetmaster_available, _puppetmaster_cmd  # noqa: F401 — test patch surface
 from .pilot import (
     PilotError,
     parse_pilot_turn,
