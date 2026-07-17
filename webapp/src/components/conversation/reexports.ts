@@ -1,0 +1,176 @@
+export {
+  resolveSwitchTranscript,
+  clearTranscriptCache,
+  peekTranscriptCache,
+  writeTranscriptCache,
+} from "./transcriptCache";
+export {
+  getSimilarity,
+  deduplicateAssistantNarration,
+  dedupeDisplayItems,
+  transcriptResponseToItems,
+  shouldPreferLocalTranscript,
+  mergeTranscriptItems,
+  transcriptFingerprint,
+} from "./transcriptItems";
+export {
+  finalizeStreamingThinking,
+  upsertStreamingThinking,
+  type ToolPrepOpts,
+  upsertToolPrep,
+  clearToolPrepPlaceholders,
+  newThinkingId,
+} from "./thinkingToolPrep";
+export {
+  nextAppliedCursor,
+  isTerminalStreamKind,
+  shouldPollChatEvents,
+  shouldArmChatEventsFromRunners,
+  type ChatEventReplayMissFields,
+  isChatEventReplayMiss,
+  shouldAdvanceReplayCursor,
+  ringGenerationAfterReplayMiss,
+  shouldHydrateTranscriptOnReplayMiss,
+  cursorAfterReplayMiss,
+  chatFrameToStreamEvent,
+} from "./chatEvents";
+export {
+  isWorkspaceOpenLeaseExhausted,
+  formatWorkspaceOpenLeaseExhaustedMessage,
+} from "./leaseExhausted";
+export { composerStatusFromRunner } from "./composerStatus";
+export {
+  SLASH_COMMANDS,
+  formatMentionListingCapMessage,
+  mergeSlashCommands,
+  isBuiltInSlashCommand,
+} from "./slashCommands";
+export {
+  normalizeTabPath,
+  pathIsUnder,
+  filterTabsAfterDelete,
+  remapTabsAfterRename,
+  remapActiveTabAfterRename,
+} from "./tabPaths";
+export {
+  findStreamingBubbleIdx,
+  appendStreamingTextToItems,
+  typewriterCharsPerFrame,
+} from "./streamBubbles";
+export { derivePillStatus } from "./pillStatus";
+export { workspaceLeafName } from "./workspaceDisplay";
+export {
+  statusPillLabel,
+  statusPillTextClass,
+  statusPillDotClass,
+} from "./StatusPill";
+export { default as StatusPill } from "./StatusPill";
+export { default as WorkspaceChip } from "./WorkspaceChip";
+export {
+  patchCardInItems,
+  appendAuthFailure,
+  appendCommandBlocked,
+  appendCodegraphContext,
+  appendCompaction,
+  truncateWaitHint,
+  shouldPaintThinking,
+  ensureAssistantStreamingBubble,
+  ensureWorkerStreamingBubble,
+  finalizePilotMessage,
+  appendActionStartCard,
+  finalizeStreamingBubbleOnActionResult,
+  workspaceRootFromActionResult,
+  appendSwarmPending,
+  appendCheckpoint,
+  appendQueuedPromptUserBubble,
+  appendAutoHalt,
+  appendStreamError,
+  appendNonStreamingThinking,
+  applySwarmResultToItems,
+  formatDistilledNotice,
+  formatWikiAutoIngestNotice,
+} from "./streamApply";
+export {
+  collectDisplayArtifacts,
+  mergeUniqueArtifacts,
+  emptySessionSwitchState,
+  shouldPreserveBusyStatus,
+  runnerBusySwitchDecision,
+} from "./sessionHydrate";
+export {
+  composerEnterAction,
+  executeSendGate,
+  shouldBlockEmptySend,
+  formatHelpSlashReply,
+  formatCompactCompleteMessage,
+  formatCompactErrorMessage,
+  formatSteerErrorMessage,
+  formatRenderCommandErrorMessage,
+  editNoticeAfterSend,
+  classifyLocalSlashCommand,
+} from "./composerSend";
+export {
+  detectComposerTrigger,
+  buildMentionInsert,
+  buildSymbolInsert,
+  filterSlashCommands,
+  cycleSelectIndex,
+  mentionTokenForDroppedPath,
+  appendMentionsToInput,
+  clampSelectIndex,
+} from "./composerInput";
+export { moveItem, reorderByDrag } from "./queueOps";
+export {
+  notifyPrefEnabled,
+  soundPrefEnabled,
+  queueMessagesPrefEnabled,
+  shouldShowCompletionNotification,
+} from "./completionNotify";
+export { createApplyStreamEvent } from "./streamEventHandler";
+export {
+  upsertOpenTab,
+  closeTabResult,
+  setTabDirty,
+  tabHasDirty,
+  otherTabsHaveDirty,
+} from "./openFileTabs";
+export {
+  userStoppedBusyChrome,
+  preserveOrThinking,
+  runnersBusyTickDecision,
+} from "./runnersBusy";
+export {
+  CONTEXT_USAGE_COLORS,
+  contextUsagePercent,
+  formatTokenK,
+} from "./contextUsageColors";
+export { default as EditorTabStrip } from "./EditorTabStrip";
+export { default as ComposerDock } from "./ComposerDock";
+export { default as ConversationHeader } from "./ConversationHeader";
+export { default as ImageLightbox } from "./ImageLightbox";
+export { classifySwarmPollEvent, appendMemoryProposal } from "./swarmPoll";
+export {
+  pumpTypewriterFrame,
+  startTypewriterLoop,
+  flushTypewriterBuffer,
+  cancelTypewriterWithoutFlush,
+} from "./streamTypewriter";
+
+export {
+  FEED_PIN_THRESHOLD_PX,
+  isPinnedToBottom,
+  shouldUnpinOnWheel,
+  shouldUnpinOnTouchMove,
+  settleFrameResult,
+} from "./feedScroll";
+export {
+  STREAM_ABORT_MESSAGE,
+  streamOnDoneDecision,
+  streamOnErrorDecision,
+} from "./streamTerminal";
+export { default as TranscriptEmptyState } from "./TranscriptEmptyState";
+export { createChatEventsReattach } from "./chatEventsReattach";
+export { gatherSessionArtifacts } from "./sessionArtifacts";
+export { useSessionSwitch } from "./useSessionSwitch";
+export { useRunnersBusyPoll } from "./useRunnersBusyPoll";
+export { default as ConversationChatColumn } from "./ConversationChatColumn";

@@ -84,6 +84,7 @@ import {
   shouldPreserveBusyStatus,
 } from "../components/conversation/sessionHydrate";
 import {
+  classifyLocalSlashCommand,
   composerEnterAction,
   editNoticeAfterSend,
   executeSendGate,
@@ -91,6 +92,60 @@ import {
   formatHelpSlashReply,
   shouldBlockEmptySend,
 } from "../components/conversation/composerSend";
+import {
+  appendMentionsToInput,
+  buildMentionInsert,
+  buildSymbolInsert,
+  clampSelectIndex,
+  cycleSelectIndex,
+  detectComposerTrigger,
+  filterSlashCommands,
+  mentionTokenForDroppedPath,
+} from "../components/conversation/composerInput";
+import { moveItem, reorderByDrag } from "../components/conversation/queueOps";
+import {
+  notifyPrefEnabled,
+  queueMessagesPrefEnabled,
+  shouldShowCompletionNotification,
+  soundPrefEnabled,
+} from "../components/conversation/completionNotify";
+import {
+  closeTabResult,
+  otherTabsHaveDirty,
+  setTabDirty,
+  tabHasDirty,
+  upsertOpenTab,
+} from "../components/conversation/openFileTabs";
+import {
+  preserveOrThinking,
+  runnersBusyTickDecision,
+  userStoppedBusyChrome,
+} from "../components/conversation/runnersBusy";
+import {
+  contextUsagePercent,
+  formatTokenK,
+} from "../components/conversation/contextUsageColors";
+import {
+  FEED_SETTLE_STABLE_FRAMES,
+  isPinnedToBottom,
+  settleFrameResult,
+  shouldUnpinOnTouchMove,
+  shouldUnpinOnWheel,
+} from "../components/conversation/feedScroll";
+import {
+  STREAM_ABORT_MESSAGE,
+  streamOnDoneDecision,
+  streamOnErrorDecision,
+} from "../components/conversation/streamTerminal";
+import {
+  appendMemoryProposal,
+  classifySwarmPollEvent,
+} from "../components/conversation/swarmPoll";
+import {
+  cancelTypewriterWithoutFlush,
+  flushTypewriterBuffer,
+  startTypewriterLoop,
+} from "../components/conversation/streamTypewriter";
 import type { Item } from "../components/TranscriptList";
 
 function msg(role: "user" | "assistant", text: string, streaming = false): Item {
@@ -608,5 +663,160 @@ describe("composerSend module", () => {
     expect(formatCompactCompleteMessage(10, 4)).toMatch(/10 -> 4/);
     expect(editNoticeAfterSend(true)).toMatch(/Revert/);
     expect(editNoticeAfterSend(false)).toBeNull();
+  });
+
+  it("classifies local slash commands", () => {
+    const builtIn = (cmd: string) => ["/clear", "/help", "/compact", "/model", "/new"].includes(cmd);
+    expect(
+      classifyLocalSlashCommand({ message: "/clear", isBuiltIn: builtIn, customNames: [] }).kind,
+    ).toBe("clear_or_new");
+    expect(
+      classifyLocalSlashCommand({ message: "/help", isBuiltIn: builtIn, customNames: [] }).kind,
+    ).toBe("help");
+    expect(
+      classifyLocalSlashCommand({
+        message: "/ship it",
+        isBuiltIn: builtIn,
+        customNames: ["ship"],
+      }),
+    ).toEqual({ kind: "custom", name: "ship", args: "it" });
+    expect(
+      classifyLocalSlashCommand({ message: "hello", isBuiltIn: builtIn, customNames: [] }).kind,
+    ).toBe("none");
+  });
+});
+
+describe("composerInput module", () => {
+  it("detects slash and mention triggers", () => {
+    expect(detectComposerTrigger("/he", 3)).toEqual({ kind: "slash", query: "he" });
+    expect(detectComposerTrigger("see @src/a", 10)).toEqual({
+      kind: "mention",
+      query: "src/a",
+      atIndex: 4,
+    });
+    expect(detectComposerTrigger("plain", 5).kind).toBe("none");
+  });
+
+  it("builds inserts, cycles selection, and resolves drop mentions", () => {
+    expect(buildMentionInsert("hi @", 3, 4, "a.ts")).toEqual({
+      next: "hi @a.ts ",
+      cursor: 9,
+    });
+    expect(buildSymbolInsert("@", 0, 1, "Foo").next).toContain("@symbol:Foo");
+    expect(filterSlashCommands([{ cmd: "/help" }, { cmd: "/clear" }], "he")).toEqual([
+      { cmd: "/help" },
+    ]);
+    expect(cycleSelectIndex(0, 1, 3)).toBe(1);
+    expect(cycleSelectIndex(0, -1, 3)).toBe(2);
+    expect(clampSelectIndex(9, 3)).toBe(2);
+    expect(
+      mentionTokenForDroppedPath({ osPath: "/repo/a.ts", repo: "/repo" }),
+    ).toBe("@a.ts");
+    expect(
+      mentionTokenForDroppedPath({ osPath: "/repo/a b.ts", repo: "/repo" }),
+    ).toBeNull();
+    expect(
+      mentionTokenForDroppedPath({
+        osPath: "",
+        repo: "/repo",
+        uploadedPath: "/repo/uploads/x.ts",
+      }),
+    ).toBe("@uploads/x.ts");
+    expect(appendMentionsToInput("hi", ["@a", "@b"])).toBe("hi @a @b ");
+  });
+});
+
+describe("queueOps / openFileTabs / runnersBusy", () => {
+  it("reorders queues and upserts editor tabs", () => {
+    expect(moveItem(["a", "b", "c"], 0, "down")).toEqual(["b", "a", "c"]);
+    expect(reorderByDrag(["a", "b", "c"], 2, 0)).toEqual(["c", "a", "b"]);
+    expect(upsertOpenTab([], "a.ts", 1, 2)).toEqual([
+      { path: "a.ts", isDirty: false, line: 1, col: 2 },
+    ]);
+    expect(closeTabResult([{ path: "a.ts", isDirty: false }], "a.ts", "a.ts")).toEqual({
+      tabs: [],
+      activeTab: "chat",
+    });
+    expect(tabHasDirty([{ path: "a.ts", isDirty: true }], "a.ts")).toBe(true);
+    expect(otherTabsHaveDirty([{ path: "a.ts", isDirty: true }, { path: "b.ts", isDirty: false }], "b.ts")).toBe(true);
+    expect(setTabDirty([{ path: "a.ts", isDirty: false }], "a.ts", true)[0].isDirty).toBe(true);
+    expect(userStoppedBusyChrome("thinking")).toBe("idle");
+    expect(preserveOrThinking("idle")).toBe("thinking");
+    expect(
+      runnersBusyTickDecision({
+        userStopped: false,
+        localStreamActive: false,
+        runnerBusy: true,
+        detachedBusy: true,
+        chatEventsPollArmed: false,
+        items: [],
+      }).kind,
+    ).toBe("arm_reattach");
+  });
+});
+
+describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
+  it("reads prefs and scroll/terminal decisions", () => {
+    const store: Record<string, string> = {};
+    const getItem = (k: string) => store[k] ?? null;
+    expect(notifyPrefEnabled(getItem)).toBe(true);
+    expect(soundPrefEnabled(getItem)).toBe(false);
+    expect(queueMessagesPrefEnabled(getItem)).toBe(true);
+    store["pmharness.notify"] = "false";
+    expect(notifyPrefEnabled(getItem)).toBe(false);
+    expect(
+      shouldShowCompletionNotification({ notifyEnabled: true, isHidden: true }),
+    ).toBe(true);
+    expect(isPinnedToBottom(1000, 900, 50)).toBe(true);
+    expect(shouldUnpinOnWheel(-1, false)).toBe(true);
+    expect(shouldUnpinOnTouchMove(10, 20, false)).toBe(true);
+    expect(
+      settleFrameResult({ height: 10, lastHeight: 10, stableFrames: FEED_SETTLE_STABLE_FRAMES - 1, frame: 1 }).done,
+    ).toBe(true);
+    expect(streamOnDoneDecision({ turnSettled: false, userStopped: false }).kind).toBe("abort_error");
+    expect(streamOnErrorDecision({ turnSettled: true, userStopped: false }).kind).toBe(
+      "preserve_error_or_done",
+    );
+    expect(STREAM_ABORT_MESSAGE).toMatch(/aborted/);
+    expect(contextUsagePercent(50, 100)).toBe(50);
+    expect(formatTokenK(1500)).toBe("1.5");
+    expect(classifySwarmPollEvent({ kind: "pilot_resume" }).kind).toBe("pilot_resume");
+    expect(appendMemoryProposal([], { id: "1", text: "t", category: "g" })).toHaveLength(1);
+    expect(appendMemoryProposal([{ id: "1", text: "t", category: "g" }], { id: "1", text: "t", category: "g" })).toHaveLength(1);
+  });
+
+  it("drives typewriter flush/cancel helpers", () => {
+    const refs = {
+      typeBufRef: { current: "hello" },
+      typeRafRef: { current: 7 as number | null },
+      typeDoneRef: { current: false },
+    };
+    const chunks: string[] = [];
+    flushTypewriterBuffer(refs, (c) => chunks.push(c), () => {});
+    expect(chunks).toEqual(["hello"]);
+    expect(refs.typeBufRef.current).toBe("");
+    expect(refs.typeDoneRef.current).toBe(true);
+
+    refs.typeBufRef.current = "x";
+    refs.typeRafRef.current = 1;
+    refs.typeDoneRef.current = true;
+    cancelTypewriterWithoutFlush(refs, () => {});
+    expect(refs.typeBufRef.current).toBe("");
+    expect(refs.typeDoneRef.current).toBe(false);
+
+    let scheduled = 0;
+    startTypewriterLoop(
+      {
+        typeBufRef: { current: "" },
+        typeRafRef: { current: null },
+        typeDoneRef: { current: false },
+      },
+      () => {},
+      () => {
+        scheduled += 1;
+        return 1;
+      },
+    );
+    expect(scheduled).toBe(1);
   });
 });

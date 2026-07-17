@@ -89,3 +89,41 @@ export function editNoticeAfterSend(canRevertEdit: boolean): string | null {
     ? "Edited — Revert restores the previous turns."
     : null;
 }
+
+export type LocalSlashAction =
+  | { kind: "none" }
+  | { kind: "clear_or_new" }
+  | { kind: "compact" }
+  | { kind: "model" }
+  | { kind: "help" }
+  | { kind: "custom"; name: string; args: string };
+
+/**
+ * Classify a composer message that starts with `/` into a local slash action.
+ * Built-in commands unknown here fall through as `none` (sent to the model).
+ */
+export function classifyLocalSlashCommand(opts: {
+  message: string;
+  isBuiltIn: (cmd: string) => boolean;
+  customNames: string[];
+}): LocalSlashAction {
+  const msg = opts.message;
+  if (!msg.startsWith("/")) return { kind: "none" };
+  const parts = msg.split(/\s+/);
+  const cmd = parts[0] || "";
+  if (cmd === "/clear" || cmd === "/new") return { kind: "clear_or_new" };
+  if (cmd === "/compact") return { kind: "compact" };
+  if (cmd === "/model") return { kind: "model" };
+  if (cmd === "/help") return { kind: "help" };
+  if (!opts.isBuiltIn(cmd)) {
+    const customCmdName = cmd.startsWith("/") ? cmd.slice(1) : cmd;
+    if (opts.customNames.includes(customCmdName)) {
+      return {
+        kind: "custom",
+        name: customCmdName,
+        args: msg.substring(cmd.length).trim(),
+      };
+    }
+  }
+  return { kind: "none" };
+}

@@ -1,12 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
-import { Loader2, Send, Zap, Square, ChevronDown, ChevronUp, GripVertical, Trash2, ListChecks, Pencil, FileText, X, Code, Share2, Image as ImageIcon, Brain } from "lucide-react";
 import { api, type Config } from "../lib/api";
-import { panelOpacityClass } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
-import PilotPicker from "./PilotPicker";
-import { revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../lib/transport";
 import FileEditorPane from "./FileEditorPane";
-import { TranscriptList, type Item, type Card } from "./TranscriptList";
+import { type Item, type Card } from "./TranscriptList";
 import {
   deriveBusyProgress,
   turnHasInvestigationActivity,
@@ -15,38 +11,11 @@ import {
 } from "../lib/turnProgress";
 import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
 
-import {
-  resolveSwitchTranscript,
-  peekTranscriptCache,
-  writeTranscriptCache,
-} from "./conversation/transcriptCache";
-import {
-  transcriptResponseToItems,
-  mergeTranscriptItems,
-  transcriptFingerprint,
-} from "./conversation/transcriptItems";
-import {
-  finalizeStreamingThinking,
-  upsertStreamingThinking,
-  upsertToolPrep,
-  newThinkingId,
-} from "./conversation/thinkingToolPrep";
-import {
-  nextAppliedCursor,
-  isTerminalStreamKind,
-  shouldPollChatEvents,
-  shouldArmChatEventsFromRunners,
-  isChatEventReplayMiss,
-  shouldAdvanceReplayCursor,
-  ringGenerationAfterReplayMiss,
-  shouldHydrateTranscriptOnReplayMiss,
-  cursorAfterReplayMiss,
-  chatFrameToStreamEvent,
-  CHAT_EVENTS_POLL_MS,
-} from "./conversation/chatEvents";
+import { writeTranscriptCache } from "./conversation/transcriptCache";
+import { transcriptResponseToItems } from "./conversation/transcriptItems";
+import { newThinkingId } from "./conversation/thinkingToolPrep";
 import {
   type MentionListingCap,
-  formatMentionListingCapMessage,
   mergeSlashCommands,
   isBuiltInSlashCommand,
 } from "./conversation/slashCommands";
@@ -58,43 +27,14 @@ import {
 } from "./conversation/tabPaths";
 import {
   appendStreamingTextToItems,
-  typewriterCharsPerFrame,
 } from "./conversation/streamBubbles";
 import { derivePillStatus } from "./conversation/pillStatus";
-import StatusPill from "./conversation/StatusPill";
-import WorkspaceChip from "./conversation/WorkspaceChip";
 import {
-  appendActionStartCard,
-  appendAuthFailure,
-  appendAutoHalt,
-  appendCheckpoint,
-  appendCodegraphContext,
-  appendCommandBlocked,
-  appendCompaction,
-  appendNonStreamingThinking,
-  appendQueuedPromptUserBubble,
-  appendStreamError,
-  appendSwarmPending,
   applySwarmResultToItems,
-  ensureAssistantStreamingBubble,
-  ensureWorkerStreamingBubble,
-  finalizePilotMessage,
-  finalizeStreamingBubbleOnActionResult,
-  formatDistilledNotice,
-  formatWikiAutoIngestNotice,
   patchCardInItems,
-  shouldPaintThinking,
-  truncateWaitHint,
-  workspaceRootFromActionResult,
 } from "./conversation/streamApply";
 import {
-  collectDisplayArtifacts,
-  emptySessionSwitchState,
-  mergeUniqueArtifacts,
-  runnerBusySwitchDecision,
-  shouldPreserveBusyStatus,
-} from "./conversation/sessionHydrate";
-import {
+  classifyLocalSlashCommand,
   composerEnterAction,
   editNoticeAfterSend,
   executeSendGate,
@@ -105,118 +45,61 @@ import {
   formatSteerErrorMessage,
   shouldBlockEmptySend,
 } from "./conversation/composerSend";
+import {
+  FEED_PIN_THRESHOLD_PX,
+  isPinnedToBottom,
+  settleFrameResult,
+  shouldUnpinOnTouchMove,
+  shouldUnpinOnWheel,
+} from "./conversation/feedScroll";
+import {
+  STREAM_ABORT_MESSAGE,
+  streamOnDoneDecision,
+  streamOnErrorDecision,
+} from "./conversation/streamTerminal";
+import ConversationChatColumn from "./conversation/ConversationChatColumn";
+import {
+  appendMentionsToInput,
+  buildMentionInsert,
+  buildSymbolInsert,
+  clampSelectIndex,
+  cycleSelectIndex,
+  detectComposerTrigger,
+  filterSlashCommands,
+  mentionTokenForDroppedPath,
+} from "./conversation/composerInput";
+import { moveItem, reorderByDrag } from "./conversation/queueOps";
+import {
+  notifyPrefEnabled,
+  queueMessagesPrefEnabled,
+  shouldShowCompletionNotification,
+  soundPrefEnabled,
+} from "./conversation/completionNotify";
+import { createApplyStreamEvent } from "./conversation/streamEventHandler";
+import EditorTabStrip from "./conversation/EditorTabStrip";
+import ComposerDock from "./conversation/ComposerDock";
+import ConversationHeader from "./conversation/ConversationHeader";
+import ImageLightbox from "./conversation/ImageLightbox";
+import { useSessionSwitch } from "./conversation/useSessionSwitch";
+import { useRunnersBusyPoll } from "./conversation/useRunnersBusyPoll";
+import {
+  appendMemoryProposal,
+  classifySwarmPollEvent,
+} from "./conversation/swarmPoll";
+import {
+  flushTypewriterBuffer,
+  startTypewriterLoop,
+} from "./conversation/streamTypewriter";
+import {
+  closeTabResult,
+  otherTabsHaveDirty,
+  setTabDirty,
+  tabHasDirty,
+  upsertOpenTab,
+} from "./conversation/openFileTabs";
 
 // Re-export pure helpers so existing test / LeftRail import paths keep working.
-export {
-  resolveSwitchTranscript,
-  clearTranscriptCache,
-  peekTranscriptCache,
-  writeTranscriptCache,
-} from "./conversation/transcriptCache";
-export {
-  getSimilarity,
-  deduplicateAssistantNarration,
-  dedupeDisplayItems,
-  transcriptResponseToItems,
-  shouldPreferLocalTranscript,
-  mergeTranscriptItems,
-  transcriptFingerprint,
-} from "./conversation/transcriptItems";
-export {
-  finalizeStreamingThinking,
-  upsertStreamingThinking,
-  type ToolPrepOpts,
-  upsertToolPrep,
-  clearToolPrepPlaceholders,
-  newThinkingId,
-} from "./conversation/thinkingToolPrep";
-export {
-  nextAppliedCursor,
-  isTerminalStreamKind,
-  shouldPollChatEvents,
-  shouldArmChatEventsFromRunners,
-  type ChatEventReplayMissFields,
-  isChatEventReplayMiss,
-  shouldAdvanceReplayCursor,
-  ringGenerationAfterReplayMiss,
-  shouldHydrateTranscriptOnReplayMiss,
-  cursorAfterReplayMiss,
-  chatFrameToStreamEvent,
-} from "./conversation/chatEvents";
-export {
-  isWorkspaceOpenLeaseExhausted,
-  formatWorkspaceOpenLeaseExhaustedMessage,
-} from "./conversation/leaseExhausted";
-export { composerStatusFromRunner } from "./conversation/composerStatus";
-export {
-  SLASH_COMMANDS,
-  formatMentionListingCapMessage,
-  mergeSlashCommands,
-  isBuiltInSlashCommand,
-} from "./conversation/slashCommands";
-export {
-  normalizeTabPath,
-  pathIsUnder,
-  filterTabsAfterDelete,
-  remapTabsAfterRename,
-  remapActiveTabAfterRename,
-} from "./conversation/tabPaths";
-export {
-  findStreamingBubbleIdx,
-  appendStreamingTextToItems,
-  typewriterCharsPerFrame,
-} from "./conversation/streamBubbles";
-export { derivePillStatus } from "./conversation/pillStatus";
-export { workspaceLeafName } from "./conversation/workspaceDisplay";
-export {
-  statusPillLabel,
-  statusPillTextClass,
-  statusPillDotClass,
-} from "./conversation/StatusPill";
-export { default as StatusPill } from "./conversation/StatusPill";
-export { default as WorkspaceChip } from "./conversation/WorkspaceChip";
-export {
-  patchCardInItems,
-  appendAuthFailure,
-  appendCommandBlocked,
-  appendCodegraphContext,
-  appendCompaction,
-  truncateWaitHint,
-  shouldPaintThinking,
-  ensureAssistantStreamingBubble,
-  ensureWorkerStreamingBubble,
-  finalizePilotMessage,
-  appendActionStartCard,
-  finalizeStreamingBubbleOnActionResult,
-  workspaceRootFromActionResult,
-  appendSwarmPending,
-  appendCheckpoint,
-  appendQueuedPromptUserBubble,
-  appendAutoHalt,
-  appendStreamError,
-  appendNonStreamingThinking,
-  applySwarmResultToItems,
-  formatDistilledNotice,
-  formatWikiAutoIngestNotice,
-} from "./conversation/streamApply";
-export {
-  collectDisplayArtifacts,
-  mergeUniqueArtifacts,
-  emptySessionSwitchState,
-  shouldPreserveBusyStatus,
-  runnerBusySwitchDecision,
-} from "./conversation/sessionHydrate";
-export {
-  composerEnterAction,
-  executeSendGate,
-  shouldBlockEmptySend,
-  formatHelpSlashReply,
-  formatCompactCompleteMessage,
-  formatCompactErrorMessage,
-  formatSteerErrorMessage,
-  formatRenderCommandErrorMessage,
-  editNoticeAfterSend,
-} from "./conversation/composerSend";
+export * from "./conversation/reexports";
 
 export default function Conversation({
   config,
@@ -275,22 +158,18 @@ export default function Conversation({
   const [repoRoot, setRepoRoot] = useState<string>("");
 
   const handleCloseTab = (path: string) => {
-    const tab = openTabs.find((t) => t.path === path);
-    if (tab?.isDirty) {
+    if (tabHasDirty(openTabs, path)) {
       if (!window.confirm(`Discard unsaved changes for ${path}?`)) {
         return;
       }
     }
-    const nextTabs = openTabs.filter((t) => t.path !== path);
-    setOpenTabs(nextTabs);
-    if (activeTab === path) {
-      setActiveTab("chat");
-    }
+    const next = closeTabResult(openTabs, path, activeTab);
+    setOpenTabs(next.tabs);
+    setActiveTab(next.activeTab);
   };
 
   const handleCloseOtherTabs = (keepPath: string) => {
-    const closing = openTabs.filter((t) => t.path !== keepPath);
-    if (closing.some((t) => t.isDirty)) {
+    if (otherTabsHaveDirty(openTabs, keepPath)) {
       if (!window.confirm("Discard unsaved changes in other tabs?")) return;
     }
     setOpenTabs((prev) => prev.filter((t) => t.path === keepPath));
@@ -298,7 +177,7 @@ export default function Conversation({
   };
 
   const handleCloseAllTabs = () => {
-    if (openTabs.some((t) => t.isDirty)) {
+    if (tabHasDirty(openTabs)) {
       if (!window.confirm("Discard unsaved changes in all tabs?")) return;
     }
     setOpenTabs([]);
@@ -306,9 +185,7 @@ export default function Conversation({
   };
 
   const handleTabDirtyChange = (path: string, isDirty: boolean) => {
-    setOpenTabs((prev) =>
-      prev.map((t) => (t.path === path ? { ...t, isDirty } : t))
-    );
+    setOpenTabs((prev) => setTabDirty(prev, path, isDirty));
   };
 
   useEffect(() => {
@@ -317,15 +194,7 @@ export default function Conversation({
       if (!filePath) return;
       const line = e.detail.line;
       const col = e.detail.col;
-      setOpenTabs((prev) => {
-        const exists = prev.some((t) => t.path === filePath);
-        if (exists) {
-          return prev.map((t) =>
-            t.path === filePath ? { ...t, line, col } : t
-          );
-        }
-        return [...prev, { path: filePath, isDirty: false, line, col }];
-      });
+      setOpenTabs((prev) => upsertOpenTab(prev, filePath, line, col));
       setActiveTab(filePath);
     };
     window.addEventListener("harness-open-file", handleOpenFile as EventListener);
@@ -624,16 +493,7 @@ export default function Conversation({
   }, []);
 
   const moveQueueItem = (index: number, direction: "up" | "down") => {
-    if (direction === "up" && index === 0) return;
-    if (direction === "down" && index === msgQueue.length - 1) return;
-    const targetIndex = direction === "up" ? index - 1 : index + 1;
-    setMsgQueue((prev) => {
-      const next = [...prev];
-      const temp = next[index];
-      next[index] = next[targetIndex];
-      next[targetIndex] = temp;
-      return next;
-    });
+    setMsgQueue((prev) => moveItem(prev, index, direction));
   };
 
   const handleDragStart = (idx: number) => {
@@ -658,12 +518,7 @@ export default function Conversation({
       setDragOverIndex(null);
       return;
     }
-    setMsgQueue((prev) => {
-      const next = [...prev];
-      const [draggedItem] = next.splice(dragIndex, 1);
-      next.splice(targetIdx, 0, draggedItem);
-      return next;
-    });
+    setMsgQueue((prev) => reorderByDrag(prev, dragIndex, targetIdx));
     setDragIndex(null);
     setDragOverIndex(null);
   };
@@ -699,9 +554,7 @@ export default function Conversation({
     setQueueDragOverIndex(null);
     if (fromIdx === null || fromIdx === targetIdx) return;
     setQueueItems((prev) => {
-      const next = [...prev];
-      const [dragged] = next.splice(fromIdx, 1);
-      next.splice(targetIdx, 0, dragged);
+      const next = reorderByDrag(prev, fromIdx, targetIdx);
       api.queueReorder(next.map((it) => it.id))
         .catch((err) => {
           console.error("Failed to reorder prompt queue:", err);
@@ -768,22 +621,18 @@ export default function Conversation({
 
   // Request notifications permission on mount
   useEffect(() => {
-    const notifyPref = localStorage.getItem("pmharness.notify");
-    const isNotifyEnabled = notifyPref !== null ? notifyPref === "true" : true;
+    const isNotifyEnabled = notifyPrefEnabled();
     if (isNotifyEnabled && typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission().catch(() => {});
     }
   }, []);
 
   const triggerCompletionEffects = () => {
-    const notifyPref = localStorage.getItem("pmharness.notify");
-    const isNotifyEnabled = notifyPref !== null ? notifyPref === "true" : true;
-
-    const soundPref = localStorage.getItem("pmharness.sound");
-    const isSoundEnabled = soundPref !== null ? soundPref === "true" : false;
+    const isNotifyEnabled = notifyPrefEnabled();
+    const isSoundEnabled = soundPrefEnabled();
 
     const isHidden = document.hidden || !document.hasFocus();
-    if (isNotifyEnabled && isHidden) {
+    if (shouldShowCompletionNotification({ notifyEnabled: isNotifyEnabled, isHidden })) {
       if (typeof Notification !== "undefined") {
         if (Notification.permission === "granted") {
           new Notification("Marionette", {
@@ -831,8 +680,7 @@ export default function Conversation({
       // or clicked. (The 5s poll only runs while the panel is visible.)
       fetchContextUsage();
 
-      const queuePrefVal = localStorage.getItem("pmharness.queueMessages");
-      const isQueueEnabled = queuePrefVal !== null ? queuePrefVal === "true" : true;
+      const isQueueEnabled = queueMessagesPrefEnabled();
 
       if (isQueueEnabled && msgQueue.length > 0) {
         const nextMsg = msgQueue[0];
@@ -872,15 +720,20 @@ export default function Conversation({
         pinnedToBottomRef.current = true;
         return;
       }
-      pinnedToBottomRef.current =
-        el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+      pinnedToBottomRef.current = isPinnedToBottom(
+        el.scrollHeight,
+        el.scrollTop,
+        el.clientHeight,
+        FEED_PIN_THRESHOLD_PX,
+      );
     };
     // Unpin on the first upward wheel/touch before the next thinking token
     // re-runs stick-to-bottom -- otherwise long reasoning streams keep yanking
     // the feed back to the end and the user cannot scroll the Thought block.
     const onWheel = (e: WheelEvent) => {
-      if (scrollSettlingRef.current) return;
-      if (e.deltaY < 0) pinnedToBottomRef.current = false;
+      if (shouldUnpinOnWheel(e.deltaY, scrollSettlingRef.current)) {
+        pinnedToBottomRef.current = false;
+      }
     };
     let touchY: number | null = null;
     const onTouchStart = (e: TouchEvent) => {
@@ -888,8 +741,8 @@ export default function Conversation({
     };
     const onTouchMove = (e: TouchEvent) => {
       const y = e.touches[0]?.clientY;
-      if (touchY != null && y != null && y > touchY + 2) {
-        if (!scrollSettlingRef.current) pinnedToBottomRef.current = false;
+      if (shouldUnpinOnTouchMove(touchY, y ?? null, scrollSettlingRef.current)) {
+        pinnedToBottomRef.current = false;
       }
       touchY = y ?? touchY;
     };
@@ -931,11 +784,18 @@ export default function Conversation({
         return;
       }
       const height = node.scrollHeight;
-      stableFrames = height === lastHeight ? stableFrames + 1 : 0;
+      const step = settleFrameResult({
+        height,
+        lastHeight,
+        stableFrames,
+        frame,
+      });
+      stableFrames = step.stableFrames;
+      frame = step.frame;
       lastHeight = height;
       node.scrollTop = height;
       pinnedToBottomRef.current = true;
-      if (stableFrames >= 5 || ++frame > 90) {
+      if (step.done) {
         scrollSettlingRef.current = false;
         return;
       }
@@ -967,432 +827,65 @@ export default function Conversation({
 
   usePolling(fetchContextUsage, 5000, { enabled: showContextPanel && !!activeSessionId });
 
-  // Warm-cache session switch: save outgoing transcript, hydrate incoming from
-  // cache immediately, detach any open EventSource (backend keeps the turn
-  // alive -- do NOT interrupt/stop), then refresh from sessionTranscript in the
-  // background without blanking a cache hit.
-  //
-  // Busy chrome: do NOT force idle on switch. If the target session's runner is
-  // still running, keep/show thinking so Stop/Steer stay available (slices B/C/D).
-  useEffect(() => {
-    const prevId = cachedSessionIdRef.current;
-    if (prevId && prevId !== activeSessionId && !transcriptStaleRef.current) {
-      // Only cache when the visible rows belong to prevId. Stale bleed (prior
-      // session still painted) must not poison the warm cache.
-      writeTranscriptCache(prevId, itemsRef.current);
-    }
+  useSessionSwitch({
+    activeSessionId,
+    onArtifacts,
+    clearChatEventsPoll,
+    itemsRef,
+    transcriptStaleRef,
+    cachedSessionIdRef,
+    transcriptLoadGenRef,
+    transcriptFpRef,
+    streamGenRef,
+    streamSessionIdRef,
+    lastAppliedCursorRef,
+    ringGenerationRef,
+    chatEventsPollTimerRef,
+    applyStreamEventRef,
+    flushTypewriterRef,
+    maybeRunQueuedResumeRef,
+    maybeDrainQueueRef,
+    ensureChatEventsReattachRef,
+    cancelRef,
+    localStreamActiveRef,
+    detachedBusyRef,
+    userStoppedRef,
+    runnerBusyPollGenRef,
+    typeRafRef,
+    typeBufRef,
+    typeDoneRef,
+    setItems,
+    setTranscriptStale,
+    setTurnOpen,
+    setStatus,
+    setCompactingStatus,
+    setEditingIndex,
+    setCanRevertEdit,
+    setEditNotice,
+    setEditBusy,
+    setInput,
+  });
 
-    // Rewind-edit chrome is session-local; never carry Revert/prefill across ids.
-    setEditingIndex(null);
-    setCanRevertEdit(false);
-    setEditNotice(null);
-    setEditBusy(false);
-    if (prevId && prevId !== activeSessionId) {
-      setInput("");
-    }
 
-    // Detach SSE only -- closing EventSource is OK; interrupt would kill the turn.
-    // Bump streamGen so any late onmessage from the closed stream is ignored.
-    streamGenRef.current += 1;
-    streamSessionIdRef.current = null;
-    if (cancelRef.current) {
-      cancelRef.current();
-      cancelRef.current = null;
-    }
-    localStreamActiveRef.current = false;
-    detachedBusyRef.current = false;
-    // Reset mid-turn reattach cursor/poll so the next session starts clean.
-    clearChatEventsPoll();
-    lastAppliedCursorRef.current = 0;
-    ringGenerationRef.current = undefined;
-    // Drop the typewriter loop without flushing into items (would race the
-    // cache hydrate below). Authoritative text comes back via sessionTranscript.
-    if (typeRafRef.current != null) {
-      cancelAnimationFrame(typeRafRef.current);
-      typeRafRef.current = null;
-    }
-    typeBufRef.current = "";
-    typeDoneRef.current = false;
-    // Intentionally do NOT setStatus("idle") here -- runner poll below decides
-    // busy vs idle so a mid-turn session switch keeps Stop/thinking chrome.
+  useRunnersBusyPoll({
+    activeSessionId,
+    clearChatEventsPoll,
+    itemsRef,
+    cachedSessionIdRef,
+    transcriptFpRef,
+    localStreamActiveRef,
+    detachedBusyRef,
+    userStoppedRef,
+    runnerBusyPollGenRef,
+    chatEventsPollTimerRef,
+    ensureChatEventsReattachRef,
+    setItems,
+    setTranscriptStale,
+    setTurnOpen,
+    setStatus,
+    setCompactingStatus,
+  });
 
-    const loadGen = ++transcriptLoadGenRef.current;
-    cachedSessionIdRef.current = activeSessionId;
-
-    if (!activeSessionId) {
-      // Project/session list may briefly report no active id while the next
-      // root's sessions load. Keep prior transcript dimmed instead of flashing
-      // the first-run empty placeholder; clear only when there was nothing.
-      const emptySwitch = emptySessionSwitchState(itemsRef.current.length);
-      if (emptySwitch.clearItems) {
-        setItems([]);
-      }
-      setTranscriptStale(emptySwitch.stale);
-      setTurnOpen(false);
-      setStatus("idle");
-      setCompactingStatus(null);
-      return;
-    }
-
-    const cachedItems = peekTranscriptCache(activeSessionId);
-    const hadCache = cachedItems !== undefined;
-    const resolved = resolveSwitchTranscript({
-      nextId: activeSessionId,
-      cached: cachedItems,
-      priorItems: itemsRef.current,
-    });
-    // Always apply resolved items so a cache miss blanks prior session rows
-    // instead of leaving A's transcript painted under B's id.
-    setItems(resolved.items);
-    itemsRef.current = resolved.items;
-    transcriptFpRef.current = transcriptFingerprint(resolved.items);
-    setTranscriptStale(resolved.stale);
-
-    // Immediately reflect runner busy state for the session we switched TO
-    // (warm cache + Stop chrome) before the background transcript refresh.
-    let cancelled = false;
-    const applyRunnerBusy = (
-      runners: Record<string, "running" | "idle" | "attaching" | "missing"> | undefined,
-    ) => {
-      if (cancelled || localStreamActiveRef.current) return;
-      if (!activeSessionId) return;
-      const decision = runnerBusySwitchDecision({
-        runnerState: runners?.[activeSessionId],
-        localStreamActive: false,
-        switchedSession: prevId !== activeSessionId,
-      });
-      if (decision.kind === "busy") {
-        detachedBusyRef.current = true;
-        setTurnOpen(true);
-        setStatus((prev) => (shouldPreserveBusyStatus(prev) ? prev : "thinking"));
-      } else if (decision.kind === "idle") {
-        // Idle or cold-attaching: never flash turn-thinking on New Session.
-        detachedBusyRef.current = false;
-        setTurnOpen(false);
-        setStatus("idle");
-        setCompactingStatus(null);
-      }
-    };
-
-    api.getSessionState()
-      .then((res) => {
-        if (cancelled) return;
-        applyRunnerBusy(res?.runners);
-      })
-      .catch(() => {});
-
-    api.sessionTranscript(activeSessionId)
-      .then((res) => {
-        if (loadGen !== transcriptLoadGenRef.current) return;
-        if (cachedSessionIdRef.current !== activeSessionId) return;
-
-        const loadedItems = transcriptResponseToItems(res);
-        setItems(loadedItems);
-        itemsRef.current = loadedItems;
-        transcriptFpRef.current = transcriptFingerprint(loadedItems);
-        writeTranscriptCache(activeSessionId, loadedItems);
-        setTranscriptStale(false);
-
-        // Gather all artifacts from (a) card entries in res.display
-        const displayArtifacts = collectDisplayArtifacts(res.display);
-
-        const mergeAndEmit = (fetchedArts: { type: string; headline: string }[]) => {
-          const unique = mergeUniqueArtifacts(displayArtifacts, fetchedArts);
-          if (unique.length > 0) {
-            onArtifacts(unique);
-          }
-        };
-
-        if (res.job_ids && res.job_ids.length > 0) {
-          Promise.all(
-            res.job_ids.map((jid: string) =>
-              api.artifacts(jid)
-                .then((arts) => (Array.isArray(arts) ? arts : []))
-                .catch((err) => {
-                  console.error("Failed to fetch artifacts for job", jid, err);
-                  return [];
-                })
-            )
-          ).then((allJobArts) => {
-            if (loadGen !== transcriptLoadGenRef.current) return;
-            mergeAndEmit(allJobArts.flat());
-          });
-        } else {
-          mergeAndEmit([]);
-        }
-
-        // Mid-turn reattach: if the runner is still busy and we have no local
-        // EventSource, replay retained SSE frames through the same handler path
-        // as live streaming, then lightly poll until the turn settles.
-        const reattachSid = activeSessionId;
-        const reattachGen = streamGenRef.current;
-        const pullChatEvents = async (generationMismatchRetried = false): Promise<boolean> => {
-          if (cancelled) return false;
-          if (loadGen !== transcriptLoadGenRef.current) return false;
-          if (streamGenRef.current !== reattachGen) return false;
-          if (cachedSessionIdRef.current !== reattachSid) return false;
-          if (localStreamActiveRef.current || userStoppedRef.current) return false;
-          try {
-            const replay = await api.chatEvents({
-              session: reattachSid,
-              since: lastAppliedCursorRef.current,
-              ...(ringGenerationRef.current != null
-                ? { generation: ringGenerationRef.current }
-                : {}),
-            });
-            if (cancelled) return false;
-            if (loadGen !== transcriptLoadGenRef.current) return false;
-            if (streamGenRef.current !== reattachGen) return false;
-            if (cachedSessionIdRef.current !== reattachSid) return false;
-            if (localStreamActiveRef.current || userStoppedRef.current) return false;
-
-            if (isChatEventReplayMiss(replay)) {
-              const prevGen = ringGenerationRef.current;
-              ringGenerationRef.current = ringGenerationAfterReplayMiss(replay, prevGen);
-              // Evicted / wrong-generation frames: do not treat as catch-up.
-              lastAppliedCursorRef.current = cursorAfterReplayMiss(
-                replay,
-                lastAppliedCursorRef.current,
-              );
-              // Busy-poll skips disk refresh while chatEvents poll is armed —
-              // hydrate once (per miss) so mid-turn UI does not freeze.
-              if (shouldHydrateTranscriptOnReplayMiss(replay)) {
-                const missHydrateGen = ++runnerBusyPollGenRef.current;
-                const missSid = reattachSid;
-                void api.sessionTranscript(missSid).then((tres) => {
-                  if (missHydrateGen !== runnerBusyPollGenRef.current) return;
-                  if (cancelled) return;
-                  if (loadGen !== transcriptLoadGenRef.current) return;
-                  if (streamGenRef.current !== reattachGen) return;
-                  if (cachedSessionIdRef.current !== missSid) return;
-                  if (localStreamActiveRef.current) return;
-                  const loadedItems = transcriptResponseToItems(tres);
-                  const next = mergeTranscriptItems(itemsRef.current, loadedItems);
-                  const fp = transcriptFingerprint(next);
-                  if (fp === transcriptFpRef.current) return;
-                  transcriptFpRef.current = fp;
-                  setItems(next);
-                  itemsRef.current = next;
-                  writeTranscriptCache(missSid, next);
-                  setTranscriptStale(false);
-                  // Keep detached-busy chrome; do not clear status / poll.
-                }).catch(() => {});
-              }
-              if (
-                replay.code === "generation_mismatch"
-                && !generationMismatchRetried
-                && ringGenerationRef.current != null
-                && ringGenerationRef.current !== prevGen
-              ) {
-                return pullChatEvents(true);
-              }
-              return shouldPollChatEvents({
-                detachedBusy: detachedBusyRef.current,
-                localStreamActive: localStreamActiveRef.current,
-                userStopped: userStoppedRef.current,
-                sawTerminal: false,
-              });
-            }
-
-            if (typeof replay.generation === "number" && replay.generation > 0) {
-              ringGenerationRef.current = replay.generation;
-            }
-
-            let sawTerminal = false;
-            const frames = Array.isArray(replay.events) ? replay.events : [];
-            for (const frame of frames) {
-              if (streamGenRef.current !== reattachGen) return false;
-              if (cachedSessionIdRef.current !== reattachSid) return false;
-              applyStreamEventRef.current(chatFrameToStreamEvent(frame));
-              if (isTerminalStreamKind(frame.kind)) sawTerminal = true;
-            }
-            if (shouldAdvanceReplayCursor(replay)) {
-              lastAppliedCursorRef.current = nextAppliedCursor(
-                lastAppliedCursorRef.current,
-                frames,
-                replay.cursor,
-              );
-            }
-
-            if (sawTerminal) {
-              flushTypewriterRef.current();
-              detachedBusyRef.current = false;
-              clearChatEventsPoll();
-              maybeRunQueuedResumeRef.current();
-              maybeDrainQueueRef.current();
-              return false;
-            }
-            return shouldPollChatEvents({
-              detachedBusy: detachedBusyRef.current,
-              localStreamActive: localStreamActiveRef.current,
-              userStopped: userStoppedRef.current,
-              sawTerminal: false,
-            });
-          } catch {
-            return shouldPollChatEvents({
-              detachedBusy: detachedBusyRef.current,
-              localStreamActive: localStreamActiveRef.current,
-              userStopped: userStoppedRef.current,
-              sawTerminal: false,
-            });
-          }
-        };
-
-        const startChatEventsReattach = async () => {
-          if (cancelled || localStreamActiveRef.current || userStoppedRef.current) return;
-          let running = detachedBusyRef.current;
-          if (!running) {
-            try {
-              const st = await api.getSessionState();
-              if (cancelled) return;
-              if (cachedSessionIdRef.current !== reattachSid) return;
-              running = st?.runners?.[reattachSid] === "running";
-              if (running) {
-                detachedBusyRef.current = true;
-                setTurnOpen(true);
-                setStatus((prev) =>
-                  prev === "thinking" || prev === "executing" || prev === "streaming"
-                    ? prev
-                    : "thinking"
-                );
-              }
-            } catch {
-              return;
-            }
-          }
-          if (!running) return;
-
-          const keepPolling = await pullChatEvents();
-          if (!keepPolling || cancelled) return;
-          if (streamGenRef.current !== reattachGen) return;
-          if (chatEventsPollTimerRef.current != null) return;
-          chatEventsPollTimerRef.current = window.setInterval(() => {
-            void pullChatEvents().then((cont) => {
-              if (!cont) clearChatEventsPoll();
-            });
-          }, CHAT_EVENTS_POLL_MS);
-        };
-        ensureChatEventsReattachRef.current = () => {
-          void startChatEventsReattach();
-        };
-        void startChatEventsReattach();
-      })
-      .catch(() => {
-        if (loadGen !== transcriptLoadGenRef.current) return;
-        if (cachedSessionIdRef.current !== activeSessionId) return;
-        // Cache hit: keep showing that session's cached rows on refresh failure.
-        // Cache miss: clear — never leave another session's relics on screen.
-        if (!hadCache) {
-          setItems([]);
-          itemsRef.current = [];
-          setTranscriptStale(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      clearChatEventsPoll();
-      ensureChatEventsReattachRef.current = () => {};
-    };
-  }, [activeSessionId]);
-
-  // Poll runners so composer shows Stop/Steer while the active session's
-  // backend runner is busy -- even after SSE detach on session switch.
-  usePolling(() => {
-    if (!activeSessionId) return;
-    if (localStreamActiveRef.current) return;
-    if (userStoppedRef.current) {
-      // Stop must stick: ignore runners=running while the abandoned generator
-      // unwinds; keep chrome idle until the user sends again.
-      detachedBusyRef.current = false;
-      clearChatEventsPoll();
-      setStatus((prev) =>
-        prev === "thinking" || prev === "executing" || prev === "streaming"
-          ? "idle"
-          : prev
-      );
-      return;
-    }
-    const sid = activeSessionId;
-    return api.getSessionState().then((res) => {
-      if (cachedSessionIdRef.current !== sid || localStreamActiveRef.current) return;
-      if (userStoppedRef.current) return;
-      const runners = res?.runners || {};
-      const running = runners[sid] === "running";
-      if (running) {
-        detachedBusyRef.current = true;
-        setTurnOpen(true);
-        setStatus((prev) =>
-          prev === "thinking" || prev === "executing" || prev === "streaming"
-            ? prev
-            : "thinking"
-        );
-        // Queue/bridge turns start without this tab's EventSource. Arm the
-        // chatEvents ring poll so tokens paint live (not only after restart).
-        if (
-          shouldArmChatEventsFromRunners({
-            runnerBusy: true,
-            localStreamActive: localStreamActiveRef.current,
-            userStopped: userStoppedRef.current,
-            chatEventsPollArmed: chatEventsPollTimerRef.current != null,
-          })
-        ) {
-          ensureChatEventsReattachRef.current();
-          return;
-        }
-        // While chatEvents reattach poll owns mid-turn UI, skip disk replace
-        // that would wipe in-flight deltas not yet persisted.
-        if (chatEventsPollTimerRef.current != null) return;
-        // Slice C: while detached-but-busy, refresh transcript so eventual
-        // dump lands without blanking thinking chrome.
-        const pollGen = ++runnerBusyPollGenRef.current;
-        return api.sessionTranscript(sid).then((tres) => {
-          if (pollGen !== runnerBusyPollGenRef.current) return;
-          if (cachedSessionIdRef.current !== sid) return;
-          if (localStreamActiveRef.current) return;
-          const loadedItems = transcriptResponseToItems(tres);
-          const local = itemsRef.current;
-          const next = mergeTranscriptItems(local, loadedItems);
-          const fp = transcriptFingerprint(next);
-          // Identical payload: keep existing object identities so React does not
-          // remount every Investigated/card row (the periodic blink).
-          if (fp === transcriptFpRef.current) return;
-          transcriptFpRef.current = fp;
-          setItems(next);
-          itemsRef.current = next;
-          writeTranscriptCache(sid, next);
-          setTranscriptStale(false);
-        }).catch(() => {});
-      } else if (detachedBusyRef.current) {
-        // Runner went idle after a detached busy view -- finalize + refresh.
-        // Do not clear busy chrome while live tool rows are still painted;
-        // a lagging runners map was wiping Investigating → idle mid-command.
-        if (turnHasLiveInvestigation(itemsRef.current, true)) {
-          return;
-        }
-        detachedBusyRef.current = false;
-        clearChatEventsPoll();
-        setTurnOpen(false);
-        setStatus("idle");
-        setCompactingStatus(null);
-        return api.sessionTranscript(sid)
-          .then((tres) => {
-            if (cachedSessionIdRef.current !== sid) return;
-            if (localStreamActiveRef.current) return;
-            const loadedItems = transcriptResponseToItems(tres);
-            const next = mergeTranscriptItems(itemsRef.current, loadedItems);
-            const fp = transcriptFingerprint(next);
-            if (fp === transcriptFpRef.current) return;
-            transcriptFpRef.current = fp;
-            setItems(next);
-            itemsRef.current = next;
-            writeTranscriptCache(sid, next);
-            setTranscriptStale(false);
-          })
-          .catch(() => {});
-      }
-    });
-  }, 1500, { enabled: !!activeSessionId });
 
   useEffect(() => {
     setPendingJobIds([]);
@@ -1498,42 +991,46 @@ export default function Conversation({
   useEffect(() => {
     const total = filteredFiles.length + symbolResults.length;
     if (selectedFileIndex >= total && total > 0) {
-      setSelectedFileIndex(total - 1);
+      setSelectedFileIndex(clampSelectIndex(selectedFileIndex, total));
     }
   }, [filteredFiles, symbolResults, selectedFileIndex]);
 
   const insertMention = (fileName: string) => {
     if (mentionIndex === -1) return;
-    const before = input.slice(0, mentionIndex);
-    const after = input.slice(taRef.current?.selectionStart || mentionIndex);
-    const completed = before + "@" + fileName + " " + after;
-    setInput(completed);
+    const { next, cursor } = buildMentionInsert(
+      input,
+      mentionIndex,
+      taRef.current?.selectionStart || mentionIndex,
+      fileName,
+    );
+    setInput(next);
     setMentionSearch(null);
     setMentionIndex(-1);
-    
+
     setTimeout(() => {
       if (taRef.current) {
         taRef.current.focus();
-        const cursorPosition = mentionIndex + fileName.length + 2; // +1 for @, +1 for space
-        taRef.current.setSelectionRange(cursorPosition, cursorPosition);
+        taRef.current.setSelectionRange(cursor, cursor);
       }
     }, 10);
   };
 
   const insertSymbol = (symbolName: string) => {
     if (mentionIndex === -1) return;
-    const before = input.slice(0, mentionIndex);
-    const after = input.slice(taRef.current?.selectionStart || mentionIndex);
-    const completed = before + "@symbol:" + symbolName + " " + after;
-    setInput(completed);
+    const { next, cursor } = buildSymbolInsert(
+      input,
+      mentionIndex,
+      taRef.current?.selectionStart || mentionIndex,
+      symbolName,
+    );
+    setInput(next);
     setMentionSearch(null);
     setMentionIndex(-1);
-    
+
     setTimeout(() => {
       if (taRef.current) {
         taRef.current.focus();
-        const cursorPosition = mentionIndex + symbolName.length + 9; // +1 for @, +7 for symbol:, +1 for space
-        taRef.current.setSelectionRange(cursorPosition, cursorPosition);
+        taRef.current.setSelectionRange(cursor, cursor);
       }
     }, 10);
   };
@@ -1552,31 +1049,18 @@ export default function Conversation({
 
   const handleInputChange = (val: string, cursorPosition: number) => {
     setInput(val);
-    
-    // Detect Slash Command trigger: input starts with '/' and cursor is within the command
-    if (val.startsWith("/") && !val.includes("\n") && cursorPosition <= val.length) {
-      const spaceIdx = val.indexOf(" ");
-      if (spaceIdx === -1 || cursorPosition <= spaceIdx) {
-        setSlashSearch(val.slice(1));
-        setMentionSearch(null);
-        setMentionIndex(-1);
-        return;
-      }
+    const trigger = detectComposerTrigger(val, cursorPosition);
+    if (trigger.kind === "slash") {
+      setSlashSearch(trigger.query);
+      setMentionSearch(null);
+      setMentionIndex(-1);
+      return;
     }
     setSlashSearch(null);
-
-    // Detect Mention trigger
-    const lastAt = val.lastIndexOf("@", cursorPosition - 1);
-    if (lastAt !== -1) {
-      const prefix = lastAt === 0 ? "" : val[lastAt - 1];
-      if (prefix === "" || /\s/.test(prefix)) {
-        const textAfterAt = val.slice(lastAt + 1, cursorPosition);
-        if (!/\s/.test(textAfterAt)) {
-          setMentionSearch(textAfterAt);
-          setMentionIndex(lastAt);
-          return;
-        }
-      }
+    if (trigger.kind === "mention") {
+      setMentionSearch(trigger.query);
+      setMentionIndex(trigger.atIndex);
+      return;
     }
     setMentionSearch(null);
     setMentionIndex(-1);
@@ -1675,23 +1159,20 @@ export default function Conversation({
       // INSIDE the open workspace, use a plain repo-relative @path (the backend
       // resolves it directly). Otherwise upload it into the workspace-readable
       // store and reference the uploaded path -- so external drops work too.
-      const insideRepo = osPath && repo && (osPath === repo || osPath.startsWith(repo + "/"));
-      if (insideRepo) {
-        const rel = osPath.slice(repo.length + 1);
-        // The backend mention regex matches @<path> tokens without spaces; a path
-        // with spaces is uploaded instead so it resolves reliably.
-        if (!/\s/.test(rel)) {
-          mentions.push(`@${rel}`);
-          continue;
-        }
+      const insideToken = mentionTokenForDroppedPath({ osPath, repo });
+      if (insideToken) {
+        mentions.push(insideToken);
+        continue;
       }
+      // Outside repo, or inside-repo path with spaces: upload then @-mention.
       try {
         const uploaded = await api.uploadImage(file); // generic file upload endpoint
-        // uploaded.path is absolute; the backend reads it back for the mention.
-        const rel = repo && uploaded.path.startsWith(repo + "/")
-          ? uploaded.path.slice(repo.length + 1)
-          : uploaded.path;
-        if (!/\s/.test(rel)) mentions.push(`@${rel}`);
+        const token = mentionTokenForDroppedPath({
+          osPath: "",
+          repo,
+          uploadedPath: uploaded.path,
+        });
+        if (token) mentions.push(token);
         else flashUploadError("Dropped file path has spaces -- rename and retry");
       } catch (err) {
         console.error("Failed to upload dropped file:", err);
@@ -1700,10 +1181,7 @@ export default function Conversation({
     }
 
     if (mentions.length > 0) {
-      setInput((prev) => {
-        const sep = prev && !prev.endsWith(" ") ? " " : "";
-        return prev + sep + mentions.join(" ") + " ";
-      });
+      setInput((prev) => appendMentionsToInput(prev, mentions));
       setTimeout(() => taRef.current?.focus(), 10);
     }
   };
@@ -1796,12 +1274,12 @@ export default function Conversation({
     const totalMentions = filteredFiles.length + symbolResults.length;
     if (mentionSearch !== null && totalMentions > 0) {
       if (e.key === "ArrowDown") {
-        setSelectedFileIndex((prev) => (prev + 1) % totalMentions);
+        setSelectedFileIndex((prev) => cycleSelectIndex(prev, 1, totalMentions));
         e.preventDefault();
         return;
       }
       if (e.key === "ArrowUp") {
-        setSelectedFileIndex((prev) => (prev - 1 + totalMentions) % totalMentions);
+        setSelectedFileIndex((prev) => cycleSelectIndex(prev, -1, totalMentions));
         e.preventDefault();
         return;
       }
@@ -1820,15 +1298,15 @@ export default function Conversation({
     }
 
     if (slashSearch !== null) {
-      const matchingSlash = allSlashCommands.filter(s => s.cmd.toLowerCase().startsWith("/" + slashSearch.toLowerCase()));
+      const matchingSlash = filterSlashCommands(allSlashCommands, slashSearch);
       if (matchingSlash.length > 0) {
         if (e.key === "ArrowDown") {
-          setSelectedSlashIndex((prev) => (prev + 1) % matchingSlash.length);
+          setSelectedSlashIndex((prev) => cycleSelectIndex(prev, 1, matchingSlash.length));
           e.preventDefault();
           return;
         }
         if (e.key === "ArrowUp") {
-          setSelectedSlashIndex((prev) => (prev - 1 + matchingSlash.length) % matchingSlash.length);
+          setSelectedSlashIndex((prev) => cycleSelectIndex(prev, -1, matchingSlash.length));
           e.preventDefault();
           return;
         }
@@ -1880,10 +1358,10 @@ export default function Conversation({
             // extras only set resumeQueuedRef). Mid-stream path already coalesces.
             let pollResumeFired = false;
             res.results.forEach((evt) => {
-              const anyEvt = evt as any;
-              if (anyEvt.kind === "swarm_result" && anyEvt.data) {
-                handleSwarmResult(anyEvt.data);
-              } else if (anyEvt.kind === "pilot_resume") {
+              const action = classifySwarmPollEvent(evt);
+              if (action.kind === "swarm_result") {
+                handleSwarmResult(action.data);
+              } else if (action.kind === "pilot_resume") {
                 // Background job finished while the session was idle. The backend
                 // already extended history with the result + continuation; kick
                 // off a keep-alive turn so the pilot continues without a prompt.
@@ -1893,35 +1371,20 @@ export default function Conversation({
                 } else {
                   resumeQueuedRef.current = true;
                 }
-              } else if (anyEvt.kind === "distilled" && anyEvt.data) {
-                const notice = formatDistilledNotice(anyEvt.data);
-                if (notice) {
-                  setDistillNotice(notice);
-                  setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
-                }
-              } else if (anyEvt.kind === "wiki_prepared" && anyEvt.data) {
-                const d = anyEvt.data;
-                const pages = d.pages || [];
-                if (pages.length > 0) {
-                  if (d.auto_ingested) {
-                    const notice = formatWikiAutoIngestNotice(pages.length);
-                    setDistillNotice(notice);
-                    setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
-                  } else {
-                    setWikiPrepared({ pages, autoIngested: false });
-                  }
-                }
-              } else if (anyEvt.kind === "memory_propose" && anyEvt.data) {
-                const d = anyEvt.data;
-                const id = d.id || "";
-                const text = (d.text || "").trim();
-                if (id && text) {
-                  setMemoryProposals((prev) => (
-                    prev.some((p) => p.id === id)
-                      ? prev
-                      : [...prev, { id, text, category: d.category || "general" }]
-                  ));
-                }
+              } else if (action.kind === "distilled" || action.kind === "wiki_auto") {
+                const notice = action.notice;
+                setDistillNotice(notice);
+                setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
+              } else if (action.kind === "wiki_prepare") {
+                setWikiPrepared({ pages: action.pages, autoIngested: false });
+              } else if (action.kind === "memory_propose") {
+                setMemoryProposals((prev) =>
+                  appendMemoryProposal(prev, {
+                    id: action.id,
+                    text: action.text,
+                    category: action.category,
+                  }),
+                );
               }
             });
           }
@@ -1950,276 +1413,56 @@ export default function Conversation({
   // Drain the typewriter buffer at a steady cadence. While the stream is live we
   // reveal a fixed number of chars per frame (smooths bursty network arrival);
   // once the stream has ended we accelerate so we never lag behind the model.
-  const pumpTypewriter = () => {
-    typeRafRef.current = null;
-    const buf = typeBufRef.current;
-    if (!buf) {
-      if (!typeDoneRef.current) typeRafRef.current = requestAnimationFrame(pumpTypewriter);
-      return;
-    }
-    // Reveal speed scales with backlog (see typewriterCharsPerFrame).
-    const perFrame = typewriterCharsPerFrame(buf.length, typeDoneRef.current);
-    const take = buf.slice(0, perFrame);
-    typeBufRef.current = buf.slice(perFrame);
-    appendStreamingText(take);
-    if (typeBufRef.current || !typeDoneRef.current) {
-      typeRafRef.current = requestAnimationFrame(pumpTypewriter);
-    }
-  };
-
   const startTypewriter = () => {
-    typeDoneRef.current = false;
-    if (typeRafRef.current == null) {
-      typeRafRef.current = requestAnimationFrame(pumpTypewriter);
-    }
+    startTypewriterLoop(
+      { typeBufRef, typeRafRef, typeDoneRef },
+      appendStreamingText,
+      requestAnimationFrame,
+    );
   };
 
-  // Flush any buffered text immediately + stop the loop (on done/error/finalize).
   const flushTypewriter = () => {
-    typeDoneRef.current = true;
-    if (typeBufRef.current) {
-      appendStreamingText(typeBufRef.current);
-      typeBufRef.current = "";
-    }
-    if (typeRafRef.current != null) {
-      cancelAnimationFrame(typeRafRef.current);
-      typeRafRef.current = null;
-    }
+    flushTypewriterBuffer(
+      { typeBufRef, typeRafRef, typeDoneRef },
+      appendStreamingText,
+      cancelAnimationFrame,
+    );
   };
   flushTypewriterRef.current = flushTypewriter;
+
 
   // Shared path for live SSE and mid-turn chatEvents reattach. Callers must
   // enforce session/generation guards before invoking.
   // Item transforms live in conversation/streamApply.ts (pure); chrome/side
-  // effects stay here.
-  const applyStreamEvent = (ev: { kind: string; data?: any }) => {
-      const d = ev.data || {};
-      if (ev.kind === "compacting") {
-        setCompactingStatus(d.message || "Summarizing chat context");
-      } else if (ev.kind === "command_blocked") {
-        setItems((p) => appendCommandBlocked(p, d));
-      } else if (ev.kind === "swarm_auth_failure") {
-        // A provider rejected the API key. Surface it as a loud, persistent
-        // banner so a dead/revoked key is never silently read as a generic
-        // "completed without findings" degrade. Deduped by action id.
-        setItems((p) => appendAuthFailure(p, d.message || "", d.id));
-      } else if (ev.kind === "wiki_prepared") {
-        const pages = d.pages || [];
-        if (pages.length > 0) {
-          if (d.auto_ingested) {
-            // Silent-auto mode already ingested -- just a quiet confirmation footnote.
-            const notice = formatWikiAutoIngestNotice(pages.length);
-            setDistillNotice(notice);
-            setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
-          } else {
-            // Prepare-and-approve: surface the pages for one-click ingest.
-            setWikiPrepared({ pages, autoIngested: false });
-          }
-        }
-      } else if (ev.kind === "memory_propose") {
-        // Non-blocking Save/Skip after the final answer. Does not affect
-        // composer busy state; ignore/dismiss is fine.
-        const id = d.id || "";
-        const text = (d.text || "").trim();
-        if (id && text) {
-          setMemoryProposals((prev) => (
-            prev.some((p) => p.id === id)
-              ? prev
-              : [...prev, { id, text, category: d.category || "general" }]
-          ));
-        }
-      } else if (ev.kind === "codegraph_context") {
-        setItems((p) => appendCodegraphContext(p, d.symbols || 0, d.query || ""));
-      } else if (ev.kind === "compaction") {
-        setCompactingStatus(null);
-        setItems((p) => appendCompaction(p, d.before_tokens, d.after_tokens));
-        window.dispatchEvent(new Event("harness-context-changed"));
-      } else if (ev.kind === "notice" && (d.kind === "wait" || !d.kind)) {
-        const hint = truncateWaitHint(d.message || "");
-        if (hint) setWaitHint(hint);
-      } else if (ev.kind === "thinking") {
-        // Live reasoning deltas (delta:true) paint mid-turn so GLM/OR token
-        // climbs are visible. Full post-answer reasoning dumps (no delta) stay
-        // suppressed -- the answer is already on screen.
-        setCompactingStatus(null);
-        const { painting, chunk } = shouldPaintThinking(d);
-        if (!painting) return;
-        setStatus((prev) =>
-          prev === "streaming" || prev === "executing" ? prev : "thinking"
-        );
-        if (d.delta && chunk) {
-          setItems((p) => upsertStreamingThinking(p, chunk));
-        } else if (chunk.trim()) {
-          setItems((p) => appendNonStreamingThinking(p, chunk));
-        }
-      } else if (ev.kind === "tool_prep") {
-        const name = String(d.name || "").trim();
-        const callId = String(d.id || "").trim();
-        if (!name && !callId) return;
-        setCompactingStatus(null);
-        setStatus((prev) =>
-          prev === "streaming" || prev === "executing" ? prev : "thinking"
-        );
-        setItems((p) =>
-          upsertToolPrep(p, name || "tool_call", {
-            goal: d.goal != null ? String(d.goal) : undefined,
-            id: callId || undefined,
-            status: d.status != null ? String(d.status) : undefined,
-          })
-        );
-      } else if (ev.kind === "message_delta") {
-        setCompactingStatus(null);
-        setStatus("streaming");
-        // Ensure a streaming bubble exists. When the turn already has tool
-        // cards (Cursor CLI / investigation), paint deltas instantly — the
-        // typewriter over an open Investigating fold reads as chat "loading
-        // from top to bottom" after hard commands. Bare prose turns still
-        // use the cadence typewriter.
-        const investigating = turnHasLiveInvestigation(itemsRef.current, true);
-        setItems((p) => ensureAssistantStreamingBubble(p, { isPlan: planTurnRef.current }));
-        const chunk = d.text || "";
-        if (!chunk) return;
-        if (investigating) {
-          flushTypewriter();
-          appendStreamingText(chunk);
-        } else {
-          typeBufRef.current += chunk;
-          startTypewriter();
-        }
-      } else if (ev.kind === "worker_delta") {
-        // Live token stream from an inline swarm worker (the agentic adapter).
-        // This is an EPHEMERAL preview: it renders in a height-capped, auto-
-        // scrolling window (see Bubble) and is dropped when the action finalizes,
-        // because the worker's real output arrives as swarm artifacts/summary.
-        // Reuse only a prior workerStream bubble -- never merge worker tokens into
-        // the pilot's own message bubble, and never let several workers pile into
-        // one unbounded permanent bubble.
-        if (d.kind === "text" && d.text) {
-          setCompactingStatus(null);
-          setStatus("streaming");
-          setItems((p) => ensureWorkerStreamingBubble(p, { isPlan: planTurnRef.current }));
-          typeBufRef.current += (d.text || "");
-          startTypewriter();
-        }
-      } else if (ev.kind === "message") {
-        setCompactingStatus(null);
-        setStatus("thinking");
-        // Drain any queued typed text before finalizing, so the bubble is whole.
-        flushTypewriter();
-        setItems((p0) => finalizePilotMessage(p0, d.text, { isPlan: planTurnRef.current }));
-      } else if (ev.kind === "action_start") {
-        setCompactingStatus(null);
-        setStatus("executing");
-        // Idempotent: a late/replayed action_start with the same id must not
-        // stack another card (session-switch SSE race → infinite Investigated).
-        // Default tool cards to collapsed always: they used to mount open while
-        // running and snap shut on action_result, which read as a flicker.
-        setItems((p) => appendActionStartCard(p, d));
-      } else if (ev.kind === "action_result") {
-        setCompactingStatus(null);
-        setStatus("thinking");
-        // The swarm is done: its structured artifacts/summary land below. Drop
-        // the ephemeral worker-stream PREVIEW entirely -- do not convert it into
-        // a trailing "reasoning" row (that duplicated the answer and burned
-        // scroll/attention). A non-worker streaming bubble (the pilot's own
-        // narration) is still finalized in place.
-        flushTypewriter();
-        setItems((p) => finalizeStreamingBubbleOnActionResult(p));
-        // Fallback: if the card carries an auth_failure but the dedicated
-        // swarm_auth_failure event was missed, still raise the loud banner so a
-        // dead key is never buried in a quiet "completed" card. Deduped by id.
-        if (d.auth_failure) {
-          setItems((p) => appendAuthFailure(p, d.auth_failure, d.id));
-        }
-        setCard(d.id, { running: false, open: false, result: d });
-        if (d.artifacts && !d.error) onArtifacts(d.artifacts);
-        onJobChange();
-        setItems((prev) => {
-          const cardItem = prev.find((it) => it.kind === "card" && it.card.id === d.id);
-          if (
-            cardItem
-            && cardItem.kind === "card"
-            && (cardItem.card.kind === "open_project" || cardItem.card.kind === "relocate_session")
-            && !d.error
-          ) {
-            window.dispatchEvent(new Event("harness-config-changed"));
-            // Prefer the resolved path from action_result (workspace_root/path).
-            // Card.goal can be "(workspace root)" when relocate used
-            // workspace_root without path — that used to skip the left-rail
-            // expand/refresh and leave the project invisible until a tab flip.
-            const root = workspaceRootFromActionResult(d, cardItem.card.goal);
-            if (root && root !== "(workspace root)") {
-              window.dispatchEvent(new CustomEvent("harness-session-relocated", {
-                detail: { workspace_root: root },
-              }));
-            }
-          }
-          return prev;
-        });
-      } else if (ev.kind === "auto_status") {
-        setStatus("executing");
-      } else if (ev.kind === "distilled") {
-        // Only surface self-learning when it produced something WORTH the user's
-        // attention -- a newly PROPOSED skill or rule(s). Skips, duplicates, and
-        // "insufficient findings" are the 99% case and stay silent (they are not
-        // actionable; announcing them is pure noise).
-        const notice = formatDistilledNotice(d);
-        if (notice) {
-          setDistillNotice(notice);
-          // Quiet footnote: auto-fade after 8s so it never lingers like a push notif.
-          setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 8000);
-        }
-      } else if (ev.kind === "auto_halt") {
-        turnSettledRef.current = true;
-        setTurnOpen(false);
-        setStatus("done");
-        setItems((p) => appendAutoHalt(p, d.reason || ""));
-      } else if (ev.kind === "swarm_pending") {
-        const job_ids = d.job_ids || [];
-        setPendingJobIds((p) => [...p, ...job_ids]);
-        setItems((p) => appendSwarmPending(p, job_ids, d.objective || ""));
-      } else if (ev.kind === "checkpoint") {
-        setItems((p) => appendCheckpoint(p, d));
-        window.dispatchEvent(new Event("harness-repo-mutated"));
-      } else if (ev.kind === "swarm_result") {
-        handleSwarmResult(d);
-      } else if (ev.kind === "pilot_resume") {
-        // A background job finished and the backend injected a continuation into
-        // history. Queue a keep-alive turn; it fires from this turn's onDone.
-        resumeQueuedRef.current = true;
-      } else if (ev.kind === "queued_prompt") {
-        // The backend drained one item off the server-side prompt queue and
-        // started running it as the next turn IN THE SAME STREAM. It already
-        // appended the prompt to history, but the transcript UI never saw a
-        // user message for it -- so the queued turn ran invisibly (no "you
-        // said X" bubble). Render the user bubble here so the auto-run queued
-        // prompt shows up in chat exactly like a normally-sent turn. Then
-        // refetch so the chip list drops it and promotes the next item.
-        if (d.text) {
-          const qImgs: string[] = Array.isArray(d.images) ? d.images : [];
-          setItems((p) => appendQueuedPromptUserBubble(p, d.text, qImgs));
-        }
-        refreshQueue();
-      } else if (ev.kind === "assistant_done") {
-        turnSettledRef.current = true;
-        setTurnOpen(false);
-        setWaitHint(null);
-        setStatus("done");
-        setItems((p) => finalizeStreamingThinking(p));
-        fetchContextUsage();
-        // Backend may also set_title_if_default; refresh meters/title if the
-        // optimistic first-send rename missed or the server derived a different slug.
-        window.dispatchEvent(new Event("harness-config-changed"));
-      } else if (ev.kind === "error") {
-        turnSettledRef.current = true;
-        setTurnOpen(false);
-        setCompactingStatus(null);
-        setWaitHint(null);
-        setStatus("error");
-        setItems((p) => appendStreamError(p, d.error || ""));
-      }
-  };
+  // effects are wired via createApplyStreamEvent.
+  const applyStreamEvent = createApplyStreamEvent({
+    setCompactingStatus,
+    setItems,
+    setDistillNotice,
+    setWikiPrepared,
+    setMemoryProposals,
+    setWaitHint,
+    setStatus,
+    setTurnOpen,
+    setPendingJobIds,
+    setSafeTimeout,
+    itemsRef,
+    planTurnRef,
+    turnSettledRef,
+    resumeQueuedRef,
+    typeBufRef,
+    flushTypewriter,
+    startTypewriter,
+    appendStreamingText,
+    setCard,
+    onArtifacts,
+    onJobChange,
+    handleSwarmResult,
+    refreshQueue,
+    fetchContextUsage,
+  });
   applyStreamEventRef.current = applyStreamEvent;
+
 
   const executeSend = (msg: string, useAuto: boolean, usePlan: boolean = false, resume: boolean = false, imagesOverride?: { path: string; name: string; previewUrl: string }[]) => {
     // Stale transcript = prior session still on screen while B hydrates.
@@ -2290,7 +1533,11 @@ export default function Conversation({
          flushTypewriter();
          // Stream closed without assistant_done / error / Stop -- explicit abort
          // so the UI never looks like a silent hang after "thinking".
-         if (!turnSettledRef.current && !userStoppedRef.current) {
+         const doneDec = streamOnDoneDecision({
+           turnSettled: turnSettledRef.current,
+           userStopped: userStoppedRef.current,
+         });
+         if (doneDec.kind === "abort_error") {
            turnSettledRef.current = true;
            setTurnOpen(false);
            setStatus("error");
@@ -2298,7 +1545,7 @@ export default function Conversation({
              kind: "msg",
              msg: {
                role: "assistant",
-               text: "[aborted] Connection closed before the turn finished. Send again to retry.",
+               text: STREAM_ABORT_MESSAGE,
              },
            }]);
          } else {
@@ -2314,18 +1561,22 @@ export default function Conversation({
        () => {
          if (!streamLive()) return;
          flushTypewriter();
-         if (!turnSettledRef.current && !userStoppedRef.current) {
+         const errDec = streamOnErrorDecision({
+           turnSettled: turnSettledRef.current,
+           userStopped: userStoppedRef.current,
+         });
+         if (errDec.kind === "abort_error") {
            turnSettledRef.current = true;
            setTurnOpen(false);
            setItems((p) => [...p, {
              kind: "msg",
              msg: {
                role: "assistant",
-               text: "[aborted] Connection closed before the turn finished. Send again to retry.",
+               text: STREAM_ABORT_MESSAGE,
              },
            }]);
            setStatus("error");
-         } else if (!userStoppedRef.current) {
+         } else if (errDec.kind === "preserve_error_or_done") {
            // EventSource often fires onerror when the stream closes after a
            // normal assistant_done -- do not paint a false error over success.
            setTurnOpen(false);
@@ -2432,110 +1683,100 @@ export default function Conversation({
     })) return;
 
     // Intercept slash commands locally
-    if (msg.startsWith("/")) {
-      const parts = msg.split(/\s+/);
-      const cmd = parts[0];
-      
-      if (cmd === "/clear" || cmd === "/new") {
-        setInput("");
-        setEditingIndex(null);
-        window.dispatchEvent(new Event("harness-new-session"));
-        return;
-      }
-      
-      if (cmd === "/compact") {
-        setInput("");
-        setEditingIndex(null);
-        setStatus("thinking");
-        setItems((p) => [...p, { kind: "thinking", text: "Compacting session context on backend...", id: newThinkingId() }]);
-        api.compactSession()
-          .then((res) => {
-            setStatus("done");
-            setItems((p) => [
-              ...p,
-              {
-                kind: "msg",
-                msg: {
-                  role: "assistant",
-                  text: formatCompactCompleteMessage(res.before_tokens, res.after_tokens),
-                }
+    const slash = classifyLocalSlashCommand({
+      message: msg,
+      isBuiltIn: isBuiltInSlashCommand,
+      customNames: customCommands.map((c) => c.name),
+    });
+    if (slash.kind === "clear_or_new") {
+      setInput("");
+      setEditingIndex(null);
+      window.dispatchEvent(new Event("harness-new-session"));
+      return;
+    }
+    if (slash.kind === "compact") {
+      setInput("");
+      setEditingIndex(null);
+      setStatus("thinking");
+      setItems((p) => [...p, { kind: "thinking", text: "Compacting session context on backend...", id: newThinkingId() }]);
+      api.compactSession()
+        .then((res) => {
+          setStatus("done");
+          setItems((p) => [
+            ...p,
+            {
+              kind: "msg",
+              msg: {
+                role: "assistant",
+                text: formatCompactCompleteMessage(res.before_tokens, res.after_tokens),
               }
-            ]);
-          })
-          .catch((err) => {
-            setStatus("error");
-            setItems((p) => [
-              ...p,
-              {
-                kind: "msg",
-                msg: {
-                  role: "assistant",
-                  text: formatCompactErrorMessage(err),
-                }
-              }
-            ]);
-          });
-        return;
-      }
-      
-      if (cmd === "/model") {
-        setInput("");
-        setEditingIndex(null);
-        window.dispatchEvent(new Event("harness-open-model-picker"));
-        return;
-      }
-      
-      if (cmd === "/help") {
-        setInput("");
-        setEditingIndex(null);
-        const helpText = formatHelpSlashReply(allSlashCommands);
-        setItems((p) => [
-          ...p,
-          {
-            kind: "msg",
-            msg: {
-              role: "assistant",
-              text: helpText
             }
+          ]);
+        })
+        .catch((err) => {
+          setStatus("error");
+          setItems((p) => [
+            ...p,
+            {
+              kind: "msg",
+              msg: {
+                role: "assistant",
+                text: formatCompactErrorMessage(err),
+              }
+            }
+          ]);
+        });
+      return;
+    }
+    if (slash.kind === "model") {
+      setInput("");
+      setEditingIndex(null);
+      window.dispatchEvent(new Event("harness-open-model-picker"));
+      return;
+    }
+    if (slash.kind === "help") {
+      setInput("");
+      setEditingIndex(null);
+      const helpText = formatHelpSlashReply(allSlashCommands);
+      setItems((p) => [
+        ...p,
+        {
+          kind: "msg",
+          msg: {
+            role: "assistant",
+            text: helpText
           }
-        ]);
-        return;
-      }
-
-      const isBuiltIn = isBuiltInSlashCommand(cmd);
-      if (!isBuiltIn) {
-        const customCmdName = cmd.startsWith("/") ? cmd.slice(1) : cmd;
-        const isCustom = customCommands.some(c => c.name === customCmdName);
-        if (isCustom) {
-          const restOfLine = msg.substring(cmd.length).trim();
-          setStatus("thinking");
-          api.renderCommand(customCmdName, restOfLine)
-            .then((res) => {
-              setStatus("done");
-              setInput(res.prompt);
-              setEditingIndex(null);
-              setTimeout(() => {
-                if (taRef.current) {
-                  taRef.current.focus();
-                }
-              }, 10);
-            })
-            .catch((err) => {
-              setStatus("error");
-              setItems((p) => [
-                ...p,
-                {
-                  kind: "msg",
-                  msg: {
-                    role: "assistant",
-                    text: formatRenderCommandErrorMessage(err),
-                  }
-                }
-              ]);
-            });
-          return;
         }
-      }
+      ]);
+      return;
+    }
+    if (slash.kind === "custom") {
+      setStatus("thinking");
+      api.renderCommand(slash.name, slash.args)
+        .then((res) => {
+          setStatus("done");
+          setInput(res.prompt);
+          setEditingIndex(null);
+          setTimeout(() => {
+            if (taRef.current) {
+              taRef.current.focus();
+            }
+          }, 10);
+        })
+        .catch((err) => {
+          setStatus("error");
+          setItems((p) => [
+            ...p,
+            {
+              kind: "msg",
+              msg: {
+                role: "assistant",
+                text: formatRenderCommandErrorMessage(err),
+              }
+            }
+          ]);
+        });
+      return;
     }
 
     // After a rewind-edit, clear the editing chrome but keep Revert available
@@ -2632,860 +1873,129 @@ export default function Conversation({
   return (
     <main className="flex flex-col h-full min-w-0 bg-transparent">
       {/* Brand + idle share equal inset so they line up with the floating dock. */}
-      <header
-        className="flex items-center justify-between border-b border-edge/60 shrink-0 px-6"
-        style={{ paddingTop: 8, paddingBottom: 7, WebkitAppRegion: "drag" } as React.CSSProperties}
-      >
-        <span className="flex items-baseline gap-1.5 select-none min-w-0" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
-          <span className="font-semibold text-[12px] text-txt/90 tracking-tight">Marionette</span>
-          <span className="text-faint/70 text-[9px] font-normal">|</span>
-          <span className="text-muted/80 text-[9px] font-medium tracking-wide uppercase truncate">
-            The Puppetmaster Harness
-          </span>
-        </span>
-        <div className="shrink-0" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
-          <StatusPill
-            status={pillStatus}
-            detail={
-              !transcriptStale && !answerChromeIdle && pillStatus !== "idle" && busyProgress.label
-                ? busyProgress.pill
-                : undefined
-            }
-          />
-        </div>
-      </header>
+      <ConversationHeader
+        pillStatus={pillStatus}
+        detail={
+          !transcriptStale && !answerChromeIdle && pillStatus !== "idle" && busyProgress.label
+            ? busyProgress.pill
+            : undefined
+        }
+      />
 
-      {openTabs.length > 0 && (
-        <div className="flex items-center gap-1 px-4 bg-panel border-b border-edge h-9 shrink-0 overflow-x-auto scrollbar-none select-none">
-          <button
-            onClick={() => setActiveTab("chat")}
-            className={`flex items-center h-full px-3 text-[12px] font-medium transition-colors border-b-2 ${
-              activeTab === "chat"
-                ? "border-accent text-accent bg-bg/50"
-                : "border-transparent text-muted hover:text-txt"
-            }`}
-          >
-            Chat
-          </button>
-          {openTabs.map((t) => {
-            const filename = t.path.split(/[/\\]/).pop() || t.path;
-            const isSelected = activeTab === t.path;
-            return (
-              <div
-                key={t.path}
-                className={`flex items-center h-full px-2 text-[12px] font-medium transition-colors border-b-2 group relative ${
-                  isSelected
-                    ? "border-accent text-accent bg-bg/50"
-                    : "border-transparent text-muted hover:text-txt"
-                }`}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setTabContextMenu({ x: e.clientX, y: e.clientY, path: t.path });
-                }}
-              >
-                <button
-                  onClick={() => setActiveTab(t.path)}
-                  className="flex items-center gap-1.5 h-full max-w-[150px]"
-                  title={t.path}
-                >
-                  {t.isDirty && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0" />
-                  )}
-                  <span className="truncate">{filename}</span>
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleCloseTab(t.path);
-                  }}
-                  className="ml-2 p-0.5 rounded hover:bg-panel2 text-muted hover:text-txt opacity-60 group-hover:opacity-100 transition-opacity"
-                >
-                  <X size={10} />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {tabContextMenu && (
-        <div
-          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[160px]"
-          style={{ top: tabContextMenu.y, left: tabContextMenu.x }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            onClick={async () => {
-              const path = tabContextMenu.path;
-              setTabContextMenu(null);
-              const res = await revealWorkspacePath(repoRoot, path);
-              if (!res.ok) {
-                window.dispatchEvent(
-                  new CustomEvent("harness-toast", {
-                    detail: res.error || "Could not reveal path",
-                  }),
-                );
-              }
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            {revealInFolderLabel()}
-          </button>
-          <button
-            onClick={async () => {
-              const path = tabContextMenu.path;
-              setTabContextMenu(null);
-              const abs = toAbsoluteWorkspacePath(repoRoot, path);
-              try {
-                await navigator.clipboard.writeText(abs);
-                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Path copied" }));
-              } catch {
-                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Could not copy path" }));
-              }
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Copy Path
-          </button>
-          <button
-            onClick={async () => {
-              const path = tabContextMenu.path;
-              setTabContextMenu(null);
-              try {
-                await navigator.clipboard.writeText(path.replace(/\\/g, "/"));
-                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Relative path copied" }));
-              } catch {
-                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Could not copy path" }));
-              }
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Copy Relative Path
-          </button>
-          <div className="border-t border-edge my-1" />
-          <button
-            onClick={() => {
-              const path = tabContextMenu.path;
-              setTabContextMenu(null);
-              handleCloseTab(path);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Close
-          </button>
-          <button
-            onClick={() => {
-              const path = tabContextMenu.path;
-              setTabContextMenu(null);
-              handleCloseOtherTabs(path);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Close others
-          </button>
-          <button
-            onClick={() => {
-              setTabContextMenu(null);
-              handleCloseAllTabs();
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Close all
-          </button>
-        </div>
-      )}
+      <EditorTabStrip
+        openTabs={openTabs}
+        activeTab={activeTab}
+        tabContextMenu={tabContextMenu}
+        repoRoot={repoRoot}
+        onSelectTab={setActiveTab}
+        onCloseTab={handleCloseTab}
+        onCloseOtherTabs={handleCloseOtherTabs}
+        onCloseAllTabs={handleCloseAllTabs}
+        onOpenContextMenu={setTabContextMenu}
+        onCloseContextMenu={() => setTabContextMenu(null)}
+      />
 
       {activeTab === "chat" ? (
-        <div className="flex flex-col flex-1 min-h-0">
-          <div ref={feedRef} className={`flex-1 overflow-y-auto ${panelOpacityClass(transcriptStale)}`}>
-        <div className="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-1">
-          {items.length === 0 && !transcriptStale && (
-            <div className="text-muted text-[13px] mt-32 text-center leading-relaxed">
-              Message the pilot. It plans, investigates via swarms, and explains.
-            </div>
-          )}
-          {transcriptStale && items.length === 0 && (
-            <div className="text-muted text-[13px] mt-32 text-center leading-relaxed">
-              Loading session…
-            </div>
-          )}
-          {/*
-            PERF: The transcript is rendered by TranscriptList, a React.memo
-            component whose props are deliberately independent of the composer
-            `input` state. Because typing only mutates `input` (which lives in
-            this parent) and none of TranscriptList's props change per keystroke,
-            React skips re-rendering the transcript on every keystroke. This
-            breaks the old coupling where items.map ran on the ENTIRE transcript
-            for each character typed (cost grew with message count).
-          */}
-          <TranscriptList
-            items={items}
-            status={status}
-            compactingStatus={compactingStatus}
-            editingIndex={editingIndex}
-            auto={auto}
-            plan={plan}
-            busyElapsedMs={busyElapsedMs}
-            turnOpen={turnOpen}
-            scrollContainerRef={feedRef}
-            onEditMessage={stableEditMessage}
-            onExecuteSend={stableExecuteSend}
-            onImageClick={handleTranscriptImageClick}
-            onSetCard={stableSetCard}
-            onExecutePlan={handleTranscriptExecutePlan}
-          />
-        </div>
-      </div>
-
-      <div className="px-6 pb-3 pt-0.5">
-        <div className="max-w-3xl mx-auto">
-          {wikiPrepared && wikiPrepared.pages.length > 0 && (
-            <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-accent/5 border border-accent/20 flex items-center gap-2 text-[11px] text-txt/85">
-              <Share2 size={11} className="text-accent shrink-0" />
-              <span className="flex-1">
-                Wiki: {wikiPrepared.pages.length} structured page{wikiPrepared.pages.length === 1 ? "" : "s"} ready
-                <span className="text-faint"> ({wikiPrepared.pages.map((p: any) => p.kind).filter((v: any, i: number, a: any[]) => a.indexOf(v) === i).join(", ")})</span>
-              </span>
-              <button
-                onClick={async () => {
-                  const pages = wikiPrepared.pages;
-                  setWikiPrepared(null);
-                  try {
-                    const res = await api.wikiIngestPrepared(pages);
-                    const notice = `Wiki: ${res.ingested} page${res.ingested === 1 ? "" : "s"} ingested`;
-                    setDistillNotice(notice);
-                    setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 6000);
-                  } catch {
-                    setDistillNotice("Wiki ingest failed");
-                  }
-                }}
-                className="shrink-0 px-2 py-0.5 rounded bg-accent/15 hover:bg-accent/25 text-accent font-medium transition text-[10.5px]"
-              >
-                Ingest
-              </button>
-              <button
-                onClick={() => setWikiPrepared(null)}
-                className="shrink-0 text-faint/60 hover:text-muted transition"
-                title="dismiss"
-              >
-                x
-              </button>
-            </div>
-          )}
-          {memoryProposals.length > 0 && (
-            <div className="mb-2 space-y-1.5">
-              {memoryProposals.map((prop) => (
-                <div
-                  key={prop.id}
-                  className="px-2.5 py-1.5 rounded-lg bg-accent/5 border border-accent/20 flex items-start gap-2 text-[11px] text-txt/85"
-                >
-                  <Brain size={11} className="text-accent shrink-0 mt-0.5" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-faint text-[10px] mb-0.5">
-                      Save to durable memory?
-                      <span className="ml-1 text-muted">({prop.category})</span>
-                    </div>
-                    <div className="truncate italic">&ldquo;{prop.text}&rdquo;</div>
-                  </div>
-                  <button
-                    onClick={async () => {
-                      setMemoryProposals((prev) => prev.filter((p) => p.id !== prop.id));
-                      try {
-                        const res = await api.memoryProposeAccept(prop.id);
-                        if (res.ok) {
-                          const notice = "Memory saved";
-                          setDistillNotice(notice);
-                          setSafeTimeout(() => setDistillNotice((cur) => (cur === notice ? null : cur)), 4000);
-                        }
-                      } catch {
-                        setDistillNotice("Memory save failed");
-                      }
-                    }}
-                    className="shrink-0 px-2 py-0.5 rounded bg-accent/15 hover:bg-accent/25 text-accent font-medium transition text-[10.5px]"
-                  >
-                    Save
-                  </button>
-                  <button
-                    onClick={async () => {
-                      setMemoryProposals((prev) => prev.filter((p) => p.id !== prop.id));
-                      try {
-                        await api.memoryProposeDismiss(prop.id);
-                      } catch {
-                        /* ignore -- card already dismissed locally */
-                      }
-                    }}
-                    className="shrink-0 px-2 py-0.5 rounded text-faint hover:text-muted transition text-[10.5px]"
-                  >
-                    Skip
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          {distillNotice && (
-            <div className="mb-2 px-1 flex items-center gap-2 text-[10.5px] text-faint/80">
-              <span className="flex-1 truncate">
-                {distillNotice}
-              </span>
-              <button
-                onClick={() => setDistillNotice(null)}
-                className="text-faint/50 hover:text-muted transition shrink-0"
-                title="dismiss"
-              >
-                x
-              </button>
-            </div>
-          )}
-          {msgQueue.length > 0 && (
-            <div className="mb-3 space-y-1.5">
-              <div className="flex items-center justify-between mb-1 px-1">
-                <span className="text-[10px] uppercase tracking-wider text-faint font-semibold">
-                  Queued ({msgQueue.length})
-                </span>
-                <button
-                  onClick={() => setMsgQueue([])}
-                  className="text-[10px] text-faint hover:text-muted transition font-semibold"
-                >
-                  Clear all
-                </button>
-              </div>
-              {msgQueue.map((qm, idx) => {
-                const isDragOver = dragOverIndex === idx;
-                const isDragging = dragIndex === idx;
-
-                return (
-                  <div
-                    key={idx}
-                    draggable
-                    onDragStart={() => handleDragStart(idx)}
-                    onDragOver={(e) => handleDragOver(e, idx)}
-                    onDragLeave={() => handleDragLeave(idx)}
-                    onDrop={(e) => handleDrop(e, idx)}
-                    onDragEnd={handleDragEnd}
-                    className={`flex items-center justify-between bg-panel2/60 border rounded-lg px-3 py-1.5 text-[12px] text-muted transition-all duration-150 select-none
-                      ${isDragging ? "opacity-40" : ""}
-                      ${isDragOver ? "border-accent/40 bg-accent/5" : "border-edge/60 hover:border-edge2"}`}
-                  >
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      {/* Grip handle */}
-                      <div className="text-faint hover:text-muted cursor-grab active:cursor-grabbing flex items-center justify-center p-0.5">
-                        <GripVertical size={12} />
-                      </div>
-                      {/* Position number */}
-                      <span className="text-faint text-[10px] font-mono select-none">
-                        {idx + 1}
-                      </span>
-                      {/* Message text with Click-to-edit */}
-                      <span
-                        onClick={() => {
-                          setInput(qm.text);
-                          setAuto(qm.auto);
-                          setPlan(qm.plan || false);
-                          setMsgQueue((prev) => prev.filter((_, i) => i !== idx));
-                          taRef.current?.focus();
-                        }}
-                        title="Click to edit message"
-                        className="truncate max-w-md cursor-pointer hover:text-txt hover:underline transition-colors select-none"
-                      >
-                        {qm.text}
-                      </span>
-                      {/* Badges */}
-                      {qm.plan && (
-                        <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 bg-accent/15 text-accent rounded whitespace-nowrap">
-                          plan
-                        </span>
-                      )}
-                      {qm.auto && (
-                        <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 bg-warn/15 text-warn rounded whitespace-nowrap">
-                          auto
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Controls (Up / Down / Cancel) */}
-                    <div className="flex items-center gap-1 ml-2 flex-shrink-0">
-                      <button
-                        onClick={() => moveQueueItem(idx, "up")}
-                        disabled={idx === 0}
-                        title="Move up"
-                        className="p-1 rounded text-faint hover:text-muted hover:bg-panel border border-transparent hover:border-edge/40 disabled:opacity-30 disabled:pointer-events-none transition-all"
-                      >
-                        <ChevronUp size={12} />
-                      </button>
-                      <button
-                        onClick={() => moveQueueItem(idx, "down")}
-                        disabled={idx === msgQueue.length - 1}
-                        title="Move down"
-                        className="p-1 rounded text-faint hover:text-muted hover:bg-panel border border-transparent hover:border-edge/40 disabled:opacity-30 disabled:pointer-events-none transition-all"
-                      >
-                        <ChevronDown size={12} />
-                      </button>
-                      <button
-                        onClick={() => {
-                          setMsgQueue((prev) => prev.filter((_, i) => i !== idx));
-                        }}
-                        title="Cancel/Remove"
-                        className="p-1 rounded text-faint hover:text-risk hover:bg-risk/10 border border-transparent hover:border-risk/20 transition-all"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
-              so the "runs next" items are always visible right over the input.
-              These prompts are drained by the backend one full turn at a time. */}
-          {queueItems.length > 0 && (
-            <div className="mb-2 space-y-1">
-              <div className="flex items-center justify-between px-1">
-                <span className="text-[10px] uppercase tracking-wider text-faint font-semibold">
-                  {queueItems.length} queued to send
-                </span>
-                {queueItems.length >= 2 && (
-                  <button
-                    onClick={handleQueueClearAll}
-                    className="text-[10px] text-faint hover:text-muted transition font-semibold"
-                  >
-                    Clear all
-                  </button>
-                )}
-              </div>
-              {queueItems.map((item, idx) => {
-                const isDragging = queueDragIndex === idx;
-                const isDragOverQ = queueDragOverIndex === idx;
-                return (
-                  <div
-                    key={item.id}
-                    draggable
-                    onDragStart={() => handleQueueDragStart(idx)}
-                    onDragOver={(e) => handleQueueDragOver(e, idx)}
-                    onDragLeave={() => handleQueueDragLeave(idx)}
-                    onDrop={(e) => handleQueueDrop(e, idx)}
-                    onDragEnd={handleQueueDragEnd}
-                    className={`flex items-center gap-2 bg-panel2/60 border rounded-lg px-2.5 py-1 text-[11px] text-muted transition-all duration-150 select-none
-                      ${isDragging ? "opacity-40" : ""}
-                      ${isDragOverQ ? "border-accent/40 bg-accent/5" : "border-edge/60 hover:border-edge2"}`}
-                  >
-                    <div className="text-faint hover:text-muted cursor-grab active:cursor-grabbing flex items-center justify-center shrink-0">
-                      <GripVertical size={11} />
-                    </div>
-                    {idx === 0 && (
-                      <span
-                        title="Runs next"
-                        className="shrink-0 text-[9px] uppercase font-bold px-1 py-0.5 bg-accent/15 text-accent rounded"
-                      >
-                        next
-                      </span>
-                    )}
-                    <span
-                      onClick={() => handleQueueEdit(item)}
-                      title={item.text}
-                      className="truncate flex-1 min-w-0 cursor-pointer hover:text-txt hover:underline transition-colors"
-                    >
-                      {item.text}
-                    </span>
-                    {item.images && item.images.length > 0 && (
-                      <span
-                        title={`${item.images.length} image attachment(s)`}
-                        className="shrink-0 flex items-center gap-0.5 text-[9px] font-semibold px-1 py-0.5 bg-panel border border-edge/60 text-faint rounded"
-                      >
-                        <ImageIcon size={9} />{item.images.length}
-                      </span>
-                    )}
-                    <button
-                      onClick={() => handleQueueRemove(item.id)}
-                      title="Remove from queue"
-                      className="p-0.5 rounded text-faint hover:text-risk hover:bg-risk/10 border border-transparent hover:border-risk/20 transition-all shrink-0"
-                    >
-                      <X size={11} />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {/* compact composer: input + a single tidy control row */}
-          <WorkspaceChip />
-          <div
-            onDragOver={handleComposerDragOver}
-            onDragLeave={handleComposerDragLeave}
-            onDrop={handleComposerDrop}
-            className={`relative bg-panel2/80 border rounded-2xl focus-within:border-edge2 shadow-lg shadow-black/20 transition ${
-              isDragOver ? "border-accent ring-1 ring-accent" : "border-edge"
-            }`}
-          >
-            {/* Editing / Revert chrome (Hermes-style rewind) */}
-            {(editingIndex !== null || canRevertEdit || editNotice) && (
-              <div className="flex items-center justify-between gap-2 px-3.5 py-1.5 bg-panel border-b border-edge text-[11.5px] text-accent select-none rounded-t-2xl">
-                <span className="flex items-center gap-1.5 min-w-0">
-                  <Pencil size={11} className="shrink-0" />
-                  <span className="truncate">
-                    {editingIndex !== null
-                      ? (editNotice || `Editing message #${editingIndex + 1}`)
-                      : (editNotice || "Prior turns set aside")}
-                  </span>
-                </span>
-                <span className="flex items-center gap-1 shrink-0">
-                  {canRevertEdit && (
-                    <button
-                      type="button"
-                      disabled={editBusy}
-                      onClick={() => handleRevertEdit()}
-                      className="text-accent hover:text-txt transition font-semibold text-[10px] px-1.5 py-0.5 rounded border border-accent/40 bg-accent/10 hover:bg-accent/20 disabled:opacity-50"
-                      title="Restore the conversation from before this edit"
-                    >
-                      Revert?
-                    </button>
-                  )}
-                  {editingIndex !== null && (
-                    <button
-                      type="button"
-                      disabled={editBusy}
-                      onClick={() => handleCancelEdit()}
-                      className="text-faint hover:text-muted transition font-medium text-[10px] px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2 disabled:opacity-50"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                  {editingIndex === null && canRevertEdit && (
-                    <button
-                      type="button"
-                      onClick={() => { setCanRevertEdit(false); setEditNotice(null); }}
-                      className="text-faint hover:text-muted transition font-medium text-[10px] px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2"
-                    >
-                      Dismiss
-                    </button>
-                  )}
-                </span>
-              </div>
-            )}
-
-            {/* Context Usage expandable panel */}
-            {showContextPanel && !contextUsage && (
-              <div className="flex items-center justify-between p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl animate-in slide-in-from-bottom duration-150">
-                <div className="flex items-center gap-2 text-faint">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span className="font-semibold text-txt">Context Usage</span>
-                  <span className="text-muted">loading...</span>
-                </div>
-                <button onClick={() => setShowContextPanel(false)} className="text-faint hover:text-muted transition p-0.5 rounded hover:bg-panel2" title="Close">
-                  <X size={13} />
-                </button>
-              </div>
-            )}
-            {showContextPanel && contextUsage && (
-              <div className="flex flex-col p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl animate-in slide-in-from-bottom duration-150">
-                <div className="flex items-center justify-between font-medium mb-2.5">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-semibold text-txt">Context Usage</span>
-                    <span className="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded-full font-mono">
-                      {Math.min(100, Math.round((contextUsage.total / contextUsage.limit) * 100))}% Full
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-faint font-mono text-[11px]">
-                      ~{(contextUsage.total / 1000).toFixed(1)}K / {(contextUsage.limit / 1000).toFixed(0)}K Tokens
-                    </span>
-                    <button
-                      onClick={() => setShowContextPanel(false)}
-                      className="text-faint hover:text-muted transition p-0.5 rounded hover:bg-panel2"
-                      title="Close"
-                    >
-                      <ChevronDown size={14} />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Segmented/stacked progress bar */}
-                <div className="w-full h-2 bg-panel2 border border-edge/60 rounded-full overflow-hidden flex mb-3">
-                  {(() => {
-                    const colors = [
-                      "bg-blue-500",    // System prompt
-                      "bg-emerald-500", // Tool definitions
-                      "bg-purple-500",  // Rules
-                      "bg-amber-500",   // Skills
-                      "bg-teal-500",    // MCP
-                      "bg-rose-500",    // Subagent
-                      "bg-pink-500",    // Summarized conversation
-                      "bg-indigo-500",  // Conversation
-                    ];
-                    
-                    return contextUsage.categories.map((cat, idx) => {
-                      if (cat.tokens <= 0) return null;
-                      const pct = (cat.tokens / contextUsage.limit) * 100;
-                      return (
-                        <div
-                          key={cat.name}
-                          className={`${colors[idx % colors.length]} h-full transition-all duration-300`}
-                          style={{ width: `${pct}%` }}
-                          title={`${cat.name}: ${(cat.tokens / 1000).toFixed(1)}K tokens (${Math.round(pct)}%)`}
-                        />
-                      );
-                    });
-                  })()}
-                </div>
-
-                {/* Categories breakdown grid */}
-                <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-txt/90">
-                  {(() => {
-                    const colors = [
-                      "bg-blue-500",    // System prompt
-                      "bg-emerald-500", // Tool definitions
-                      "bg-purple-500",  // Rules
-                      "bg-amber-500",   // Skills
-                      "bg-teal-500",    // MCP
-                      "bg-rose-500",    // Subagent
-                      "bg-pink-500",    // Summarized conversation
-                      "bg-indigo-500",  // Conversation
-                    ];
-
-                    return contextUsage.categories.map((cat, idx) => {
-                      if (cat.tokens <= 0) return null;
-                      return (
-                        <div key={cat.name} className="flex items-center justify-between text-[11px] font-mono py-0.5 border-b border-edge/10">
-                          <div className="flex items-center gap-1.5 truncate">
-                            <span className={`w-2 h-2 rounded-full ${colors[idx % colors.length]} shrink-0`} />
-                            <span className="truncate text-muted">{cat.name}</span>
-                          </div>
-                          <span className="text-txt font-medium shrink-0">
-                            {(cat.tokens / 1000).toFixed(1)}K
-                          </span>
-                        </div>
-                      );
-                    });
-                  })()}
-                </div>
-              </div>
-            )}
-
-            {/* Mention autocomplete dropdown */}
-            {mentionSearch !== null && (filteredFiles.length > 0 || symbolResults.length > 0 || mentionListingCap) && (
-              <div className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[250px] w-[340px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
-                {filteredFiles.length > 0 && (
-                  <>
-                    <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
-                      Files
-                    </div>
-                    {filteredFiles.map((file, idx) => {
-                      const isSelected = idx === selectedFileIndex;
-                      return (
-                        <div
-                          key={file}
-                          onClick={() => insertMention(file)}
-                          onMouseEnter={() => setSelectedFileIndex(idx)}
-                          className={`flex items-center gap-2 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
-                            isSelected ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
-                          }`}
-                        >
-                          <FileText size={11.5} className="shrink-0 opacity-60" />
-                          <span className="truncate flex-1 font-mono">{file}</span>
-                        </div>
-                      );
-                    })}
-                  </>
-                )}
-
-                {symbolResults.length > 0 && (
-                  <>
-                    <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none flex items-center justify-between">
-                      <span>Symbols</span>
-                      {codegraphStatus === "indexing" && (
-                        <span className="text-[9px] text-muted normal-case font-normal animate-pulse">indexing...</span>
-                      )}
-                    </div>
-                    {symbolResults.map((sym, idx) => {
-                      const globalIdx = filteredFiles.length + idx;
-                      const isSelected = globalIdx === selectedFileIndex;
-                      return (
-                        <div
-                          key={`${sym.path}:${sym.line}:${sym.name}`}
-                          onClick={() => insertSymbol(sym.name)}
-                          onMouseEnter={() => setSelectedFileIndex(globalIdx)}
-                          className={`flex flex-col gap-0.5 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
-                            isSelected ? "bg-panel2 text-accent" : "text-txt/90 hover:bg-panel2/50"
-                          }`}
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <Code size={11.5} className="shrink-0 opacity-60" />
-                            <span className="font-mono font-medium truncate flex-1 text-left">{sym.name}</span>
-                            <span className="text-[9px] font-mono px-1 py-0.2 bg-edge/30 rounded text-muted shrink-0 lowercase">
-                              {sym.kind}
-                            </span>
-                          </div>
-                          <span className="text-[10px] text-muted font-mono truncate pl-5 text-left">
-                            {sym.path}:{sym.line}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </>
-                )}
-
-                {filteredFiles.length > 0 && symbolResults.length === 0 && codegraphStatus === "indexing" && (
-                  <div className="px-3 py-1 text-[10px] text-muted/60 select-none italic text-right">
-                    symbols indexing...
-                  </div>
-                )}
-
-                {mentionListingCap && (
-                  <div className="px-3 py-1.5 text-[10px] text-muted border-t border-edge/20 select-none">
-                    {formatMentionListingCapMessage(mentionListingCap)}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Slash commands autocomplete dropdown */}
-            {slashSearch !== null && (() => {
-              const matchingSlash = allSlashCommands.filter(s => s.cmd.toLowerCase().startsWith("/" + slashSearch.toLowerCase()));
-              if (matchingSlash.length === 0) return null;
-              return (
-                <div className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[220px] w-[320px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
-                  <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
-                    Commands
-                  </div>
-                  {matchingSlash.map((s, idx) => {
-                    const isSelected = idx === selectedSlashIndex;
-                    return (
-                      <div
-                        key={s.cmd}
-                        onClick={() => insertSlashCommand(s.cmd)}
-                        onMouseEnter={() => setSelectedSlashIndex(idx)}
-                        className={`flex flex-col px-3 py-1.5 cursor-pointer transition select-none ${
-                          isSelected ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
-                        }`}
-                      >
-                        <div className="flex items-center gap-1.5 text-[11.5px] font-mono font-semibold">
-                          <span>{s.cmd}</span>
-                        </div>
-                        <span className="text-[10px] text-muted leading-tight">{s.desc}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-
-            {/* Attached images preview chips */}
-            {attachedImages.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 px-3 pt-2.5">
-                {attachedImages.map((img, idx) => (
-                  <div
-                    key={idx}
-                    className="relative group/thumb w-[40px] h-[40px] rounded-lg overflow-hidden border border-edge bg-panel/50 select-none animate-in fade-in zoom-in duration-150"
-                  >
-                    <img
-                      src={img.previewUrl}
-                      alt={img.name}
-                      onClick={() => setLightboxUrl(img.previewUrl)}
-                      className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
-                    />
-                    <button
-                      onClick={() => {
-                        setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
-                        URL.revokeObjectURL(img.previewUrl);
-                        setUploadError(null);
-                      }}
-                      className="absolute top-0 right-0 p-0.5 bg-black/60 text-txt hover:text-risk opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center transition rounded-bl"
-                      title="Remove image"
-                    >
-                      <X size={11} />
-                    </button>
-                  </div>
-                ))}
-                {attachedImages.length > 1 && (
-                  <span className="text-[10px] text-muted self-center ml-1 select-none font-medium">
-                    {attachedImages.length} images
-                  </span>
-                )}
-              </div>
-            )}
-
-            {uploadError && (
-              <div className="text-[11px] text-risk px-3 pt-1">
-                {uploadError}
-              </div>
-            )}
-
-            <textarea ref={taRef} value={input} 
-              onChange={(e) => handleInputChange(e.target.value, e.target.selectionStart)}
-              onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-              rows={1} placeholder={auto ? "Give the pilot an objective..." : "Message the pilot..."}
-              className="w-full bg-transparent px-3 pt-2.5 pb-1 text-[0.8125rem] resize-none focus:outline-none overflow-hidden placeholder:text-faint" />
-            <div className="flex items-center gap-1.5 px-3 pb-2">
-              <button onClick={() => {
-                setAuto((a) => {
-                  const next = !a;
-                  if (next) setPlan(false);
-                  return next;
-                });
-              }} title="Autopilot: the pilot plans and executes autonomously (vs. you steering each step)"
-                className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 transition
-                  ${auto ? "bg-warn/15 text-warn" : "text-faint hover:text-muted"}`}>
-                <Zap size={11} /> Autopilot
-              </button>
-              <button onClick={() => {
-                setPlan((p) => {
-                  const next = !p;
-                  if (next) setAuto(false);
-                  return next;
-                });
-              }} title="Plan mode -- get an actionable plan instead of execution (read-only)"
-                className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 transition
-                  ${plan ? "bg-accent/15 text-accent" : "text-faint hover:text-muted"}`}>
-                <ListChecks size={11} /> Plan
-              </button>
-              <PilotPicker config={config} />
-              <button
-                onClick={() => {
-                  setShowContextPanel(!showContextPanel);
-                  if (!showContextPanel) {
-                    fetchContextUsage();
-                  }
-                }}
-                title="View context window usage breakdown"
-                className={`px-1.5 h-[20px] rounded-md text-[10.5px] font-mono flex items-center gap-1 transition
-                  ${showContextPanel ? "bg-accent/15 text-accent border border-accent/20" : "text-faint hover:text-muted bg-panel2/40 border border-edge/30 hover:bg-panel2/80"}`}
-              >
-                <FileText size={11} />
-                <span>
-                  {contextUsage
-                    ? `${Math.min(100, Math.round((contextUsage.total / contextUsage.limit) * 100))}%`
-                    : "Usage"}
-                </span>
-              </button>
-              <div className="flex-1" />
-              {input.trim() && (
-                <button
-                  onClick={handleQueueAdd}
-                  title="Queue: runs after the current turn finishes (same as Cmd/Ctrl+Enter)"
-                  className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition"
-                >
-                  <ListChecks size={9} />Queue
-                </button>
-              )}
-              {composerBusy
-                ? <>
-                    <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
-                    <button onClick={send} disabled={transcriptStale || (!input.trim() && attachedImages.length === 0)}
-                      title="Steer: redirect the current turn now (Enter). Cmd/Ctrl+Enter or Queue = run after this turn finishes."
-                      className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
-                      <Send size={9} />Steer</button>
-                  </>
-                : <button onClick={send} disabled={transcriptStale || (!input.trim() && attachedImages.length === 0)}
-                    className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
-                    <Send size={9} />{auto ? "Run" : plan ? "Plan" : "Send"}</button>}
-            </div>
-          </div>
-
-        </div>
-      </div>
-    </div>
+        <ConversationChatColumn
+          feedRef={feedRef}
+          transcriptStale={transcriptStale}
+          items={items}
+          status={status}
+          compactingStatus={compactingStatus}
+          editingIndex={editingIndex}
+          auto={auto}
+          plan={plan}
+          busyElapsedMs={busyElapsedMs}
+          turnOpen={turnOpen}
+          onEditMessage={stableEditMessage}
+          onExecuteSend={stableExecuteSend}
+          onImageClick={handleTranscriptImageClick}
+          onSetCard={stableSetCard}
+          onExecutePlan={handleTranscriptExecutePlan}
+          composerDock={(
+      <ComposerDock
+        config={config}
+        taRef={taRef}
+        input={input}
+        auto={auto}
+        plan={plan}
+        composerBusy={composerBusy}
+        transcriptStale={transcriptStale}
+        wikiPrepared={wikiPrepared}
+        memoryProposals={memoryProposals}
+        distillNotice={distillNotice}
+        msgQueue={msgQueue}
+        dragIndex={dragIndex}
+        dragOverIndex={dragOverIndex}
+        queueItems={queueItems}
+        queueDragIndex={queueDragIndex}
+        queueDragOverIndex={queueDragOverIndex}
+        editingIndex={editingIndex}
+        canRevertEdit={canRevertEdit}
+        editNotice={editNotice}
+        editBusy={editBusy}
+        showContextPanel={showContextPanel}
+        contextUsage={contextUsage}
+        mentionSearch={mentionSearch}
+        filteredFiles={filteredFiles}
+        symbolResults={symbolResults}
+        mentionListingCap={mentionListingCap}
+        selectedFileIndex={selectedFileIndex}
+        codegraphStatus={codegraphStatus}
+        slashSearch={slashSearch}
+        selectedSlashIndex={selectedSlashIndex}
+        allSlashCommands={allSlashCommands}
+        attachedImages={attachedImages}
+        isDragOver={isDragOver}
+        uploadError={uploadError}
+        onSetWikiPrepared={setWikiPrepared}
+        onSetMemoryProposals={setMemoryProposals}
+        onSetDistillNotice={setDistillNotice}
+        onSetMsgQueue={setMsgQueue}
+        onSetInput={setInput}
+        onSetAuto={setAuto}
+        onSetPlan={setPlan}
+        onSetCanRevertEdit={setCanRevertEdit}
+        onSetEditNotice={setEditNotice}
+        onSetShowContextPanel={setShowContextPanel}
+        onSetSelectedFileIndex={setSelectedFileIndex}
+        onSetSelectedSlashIndex={setSelectedSlashIndex}
+        onSetAttachedImages={setAttachedImages}
+        onSetUploadError={setUploadError}
+        onSetLightboxUrl={setLightboxUrl}
+        setSafeTimeout={setSafeTimeout}
+        fetchContextUsage={fetchContextUsage}
+        handleDragStart={handleDragStart}
+        handleDragOver={handleDragOver}
+        handleDragLeave={handleDragLeave}
+        handleDrop={handleDrop}
+        handleDragEnd={handleDragEnd}
+        moveQueueItem={moveQueueItem}
+        handleQueueClearAll={handleQueueClearAll}
+        handleQueueDragStart={handleQueueDragStart}
+        handleQueueDragOver={handleQueueDragOver}
+        handleQueueDragLeave={handleQueueDragLeave}
+        handleQueueDrop={handleQueueDrop}
+        handleQueueDragEnd={handleQueueDragEnd}
+        handleQueueEdit={handleQueueEdit}
+        handleQueueRemove={handleQueueRemove}
+        handleComposerDragOver={handleComposerDragOver}
+        handleComposerDragLeave={handleComposerDragLeave}
+        handleComposerDrop={handleComposerDrop}
+        handleRevertEdit={handleRevertEdit}
+        handleCancelEdit={handleCancelEdit}
+        handleInputChange={handleInputChange}
+        handleKeyDown={handleKeyDown}
+        handlePaste={handlePaste}
+        insertMention={insertMention}
+        insertSymbol={insertSymbol}
+        insertSlashCommand={insertSlashCommand}
+        handleQueueAdd={handleQueueAdd}
+        stop={stop}
+        send={send}
+      />
+      )}
+        />
   ) : (
     <FileEditorPane
       path={activeTab}
@@ -3497,25 +2007,7 @@ export default function Conversation({
   )}
 
       {lightboxUrl && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm transition-opacity animate-in fade-in duration-200"
-          onClick={() => setLightboxUrl(null)}
-        >
-          <div className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center justify-center" onClick={(e) => e.stopPropagation()}>
-            <button
-              onClick={() => setLightboxUrl(null)}
-              className="absolute -top-10 right-0 p-1.5 text-faint hover:text-txt bg-panel border border-edge rounded-full transition-all focus:outline-none"
-              title="Close"
-            >
-              <X size={16} />
-            </button>
-            <img
-              src={lightboxUrl}
-              alt="Enlarged screenshot"
-              className="max-w-full max-h-[80vh] object-contain rounded-lg border border-edge shadow-2xl"
-            />
-          </div>
-        </div>
+        <ImageLightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />
       )}
 
     </main>
