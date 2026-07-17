@@ -534,43 +534,42 @@ export function turnHasLiveInvestigation(
   return false;
 }
 
-/** Hermes StreamStall: seconds of no transcript growth while still busy. */
-export const STREAM_STALL_MS = 2000;
-
 /**
- * Cheap activity signal for stall detection. Changes when tools/thinking/text
- * grow; stable during a long quiet run_command so the stall cue can reappear.
+ * True when some transcript chrome already visibly signals work in the current
+ * turn: a running tool card / tool_prep (Investigating spinner), a streaming
+ * thinking row, or a streaming assistant bubble.
  */
-export function streamActivityKey(items: TurnItem[], status: BusyStatus): string {
-  let cards = 0;
-  let running = 0;
-  let thinkLen = 0;
-  let msgLen = 0;
-  for (const it of items) {
-    if (it.kind === "card") {
-      cards += 1;
-      if ((it as { card: TurnCard }).card?.running) running += 1;
-    } else if (it.kind === "thinking") {
-      thinkLen += String((it as { text?: string }).text || "").length;
-    } else if (it.kind === "msg") {
-      const msg = (it as { msg: { role: string; text?: string } }).msg;
-      if (msg.role === "assistant") msgLen += (msg.text || "").length;
-    } else if (it.kind === "tool_prep") {
-      cards += 1;
-      running += 1;
+export function turnHasVisibleBusySurface(items: TurnItem[]): boolean {
+  for (const it of itemsInCurrentTurn(items)) {
+    if (it.kind === "card" && (it as { card: TurnCard }).card?.running) return true;
+    if (it.kind === "tool_prep") return true;
+    if (it.kind === "thinking" && (it as { streaming?: boolean }).streaming === true) {
+      return true;
+    }
+    if (it.kind === "msg") {
+      const msg = (it as { msg: { role: string; streaming?: boolean } }).msg;
+      if (msg.role === "assistant" && msg.streaming === true) return true;
     }
   }
-  return `${status}|n${items.length}|c${cards}|r${running}|t${thinkLen}|m${msgLen}`;
+  return false;
 }
 
-/** True when the turn is busy and the activity key has been quiet long enough. */
-export function streamStallVisible(
+/**
+ * Quiet "Still working" cue: shows the moment the turn is busy with nothing
+ * else on screen indicating work, and stays until a real busy surface takes
+ * over. No arming timer — the old 2s stall debounce left an idle-looking gap
+ * between tool calls (card finishes → footer hidden → cue not armed yet),
+ * which read as an idle→working flicker at every tool boundary.
+ */
+export function quietWorkingCueVisible(
+  items: TurnItem[],
   status: BusyStatus,
-  stalled: boolean,
   compacting: boolean,
+  busyFooterShown: boolean,
 ): boolean {
-  if (compacting || !stalled) return false;
-  return (
-    status === "thinking" || status === "executing" || status === "streaming"
-  );
+  if (compacting || busyFooterShown) return false;
+  const busy =
+    status === "thinking" || status === "executing" || status === "streaming";
+  if (!busy) return false;
+  return !turnHasVisibleBusySurface(items);
 }

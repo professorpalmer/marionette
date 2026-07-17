@@ -10,8 +10,8 @@ import {
   toolFocusPhrase,
   toolRowLabel,
   isRedundantToolGoal,
-  streamActivityKey,
-  streamStallVisible,
+  quietWorkingCueVisible,
+  turnHasVisibleBusySurface,
   turnHasLiveInvestigation,
   turnLooksAnswerComplete,
 } from "../lib/turnProgress";
@@ -411,22 +411,69 @@ describe("formatBusyElapsed", () => {
   });
 });
 
-describe("streamStallVisible / streamActivityKey (Hermes stall cue)", () => {
-  it("is visible only when busy, stalled, and not compacting", () => {
-    expect(streamStallVisible("executing", true, false)).toBe(true);
-    expect(streamStallVisible("thinking", true, false)).toBe(true);
-    expect(streamStallVisible("idle", true, false)).toBe(false);
-    expect(streamStallVisible("executing", false, false)).toBe(false);
-    expect(streamStallVisible("executing", true, true)).toBe(false);
+describe("quietWorkingCueVisible / turnHasVisibleBusySurface (no idle flicker)", () => {
+  it("shows immediately between tool batches (finished cards, loop busy)", () => {
+    // Card just finished, next tool not started — the exact gap that used to
+    // blink idle for up to 2s.
+    const items: Item[] = [
+      msg("user", "audit"),
+      card("1", "server.py", "read_file", false),
+    ];
+    expect(turnHasVisibleBusySurface(items)).toBe(false);
+    expect(quietWorkingCueVisible(items, "thinking", false, false)).toBe(true);
+    expect(quietWorkingCueVisible(items, "executing", false, false)).toBe(true);
   });
 
-  it("changes activity key when a running card appears", () => {
-    const before = streamActivityKey([msg("user", "go")], "thinking");
-    const after = streamActivityKey(
-      [msg("user", "go"), card("1", "pytest", "run_command", true)],
-      "executing",
-    );
-    expect(after).not.toBe(before);
+  it("hides while a running card owns the busy surface", () => {
+    const items: Item[] = [
+      msg("user", "audit"),
+      card("1", "server.py", "read_file", true),
+    ];
+    expect(turnHasVisibleBusySurface(items)).toBe(true);
+    expect(quietWorkingCueVisible(items, "executing", false, false)).toBe(false);
+  });
+
+  it("hides while thinking or assistant text streams", () => {
+    const thinkItems: Item[] = [
+      msg("user", "go"),
+      { kind: "thinking", text: "hm", streaming: true },
+    ];
+    expect(quietWorkingCueVisible(thinkItems, "thinking", false, false)).toBe(false);
+    const streamItems: Item[] = [
+      msg("user", "go"),
+      msg("assistant", "partial…", true),
+    ];
+    expect(quietWorkingCueVisible(streamItems, "streaming", false, false)).toBe(false);
+  });
+
+  it("hides on tool_prep (Investigating placeholder already shows)", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      { kind: "tool_prep", name: "grep" },
+    ];
+    expect(quietWorkingCueVisible(items, "thinking", false, false)).toBe(false);
+  });
+
+  it("hides when idle/done, compacting, or the busy footer is up", () => {
+    const items: Item[] = [
+      msg("user", "audit"),
+      card("1", "server.py", "read_file", false),
+    ];
+    expect(quietWorkingCueVisible(items, "idle", false, false)).toBe(false);
+    expect(quietWorkingCueVisible(items, "done", false, false)).toBe(false);
+    expect(quietWorkingCueVisible(items, "thinking", true, false)).toBe(false);
+    expect(quietWorkingCueVisible(items, "thinking", false, true)).toBe(false);
+  });
+
+  it("only inspects the current turn (prior-turn cards do not suppress)", () => {
+    const items: Item[] = [
+      msg("user", "first"),
+      card("old", "a.ts", "read_file", true),
+      msg("assistant", "done"),
+      msg("user", "second"),
+    ];
+    expect(turnHasVisibleBusySurface(items)).toBe(false);
+    expect(quietWorkingCueVisible(items, "thinking", false, false)).toBe(true);
   });
 });
 

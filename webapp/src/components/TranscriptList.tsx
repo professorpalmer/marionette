@@ -20,10 +20,8 @@ import {
   deriveBusyProgress,
   investigatingHeadline,
   shortenGoal,
+  quietWorkingCueVisible,
   shouldShowBusyFooter,
-  STREAM_STALL_MS,
-  streamActivityKey,
-  streamStallVisible,
   toolFocusPhrase,
   toolRowLabel,
   isRedundantToolGoal,
@@ -601,23 +599,17 @@ export const TranscriptList = memo(function TranscriptList({
   // or when the assistant answer already looks complete despite SSE lag (T5).
   const hideBusyFooter = turnHasLiveInvestigation(items, agentLoopOpen);
   const showBusyFooter = shouldShowBusyFooter(items, status) && !hideBusyFooter;
-  // Hermes StreamStall: after STREAM_STALL_MS with no transcript growth while
-  // still busy, resurface a quiet "still working" cue (covers long tool think
-  // time when the Investigating spinner is collapsed or between steps).
-  const activityKey = streamActivityKey(items, status);
-  const [stalled, setStalled] = useState(false);
-  useEffect(() => {
-    const busy =
-      status === "thinking" || status === "executing" || status === "streaming";
-    if (!busy || compactingStatus) {
-      setStalled(false);
-      return;
-    }
-    setStalled(false);
-    const id = window.setTimeout(() => setStalled(true), STREAM_STALL_MS);
-    return () => window.clearTimeout(id);
-  }, [activityKey, status, compactingStatus]);
-  const showStall = streamStallVisible(status, stalled, Boolean(compactingStatus));
+  // Quiet "Still working…" cue: whenever the turn is busy but no other chrome
+  // visibly signals work (no running card, no streaming thinking/answer, busy
+  // footer hidden by the investigation fold), show it IMMEDIATELY. The old 2s
+  // arming timer left a dead gap at every tool boundary that read as an
+  // idle→working flicker.
+  const showStall = quietWorkingCueVisible(
+    items,
+    status,
+    Boolean(compactingStatus),
+    showBusyFooter,
+  );
 
   return (
     <>
@@ -648,7 +640,7 @@ export const TranscriptList = memo(function TranscriptList({
           </span>
         </div>
       )}
-      {showStall && !showBusyFooter && (
+      {showStall && (
         <div
           className="flex items-center gap-1.5 py-1 text-[12px] text-muted/90 select-none mt-1 pl-0.5 min-w-0"
           data-testid="stream-stall"
