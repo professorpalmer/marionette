@@ -2702,6 +2702,23 @@ def _git_services():
     return GitServices(cfg=_cfg)
 
 
+def _review_services():
+    """Build ReviewServices from live server module globals (call-time lookup)."""
+    from .api.reviews import ReviewServices
+    return ReviewServices(
+        cfg=_cfg,
+        get_pilot=lambda: _pilot,
+        resolve_editor_path=_resolve_editor_path,
+        strip_markdown_fences=_strip_markdown_fences,
+    )
+
+
+def _registry_services():
+    """Build RegistryServices from live server module globals (call-time lookup)."""
+    from .api.registry import RegistryServices
+    return RegistryServices(diag=_diag)
+
+
 def _provider_services():
     """Build ProviderServices from live server module globals (call-time lookup)."""
     from .api.providers import ProviderServices
@@ -3752,19 +3769,14 @@ class Handler(BaseHTTPRequestHandler):
         repo = _cfg.repo
 
         if path == "/api/reviews/apply":
-            review_id = body.get("id", "").strip()
-            decisions = body.get("decisions", {})
-            if not review_id:
-                return self._send(400, json.dumps({"error": "Missing review id"}))
-            res = _pilot.apply_review(review_id, decisions)
-            return self._send(200, json.dumps(res))
+            from .api import reviews as _rev_api
+            status, payload = _rev_api.post_reviews_apply(body, _review_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/reviews/dismiss":
-            review_id = body.get("id", "").strip()
-            if not review_id:
-                return self._send(400, json.dumps({"error": "Missing review id"}))
-            success = _pilot.dismiss_review(review_id)
-            return self._send(200, json.dumps({"ok": success}))
+            from .api import reviews as _rev_api
+            status, payload = _rev_api.post_reviews_dismiss(body, _review_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/swarm/cancel":
             # Cooperative cancel for a swarm job. Auth/token already applied in
             # do_POST; body + dual-store resolve live in harness.api.jobs.
@@ -3904,61 +3916,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(status, json.dumps(payload))
 
         if path == "/api/inline-edit":
-            if not repo or not os.path.exists(repo):
-                return self._send(400, json.dumps({"error": "No open workspace"}))
-            rel_path = body.get("path", "").strip()
-            if not rel_path:
-                return self._send(400, json.dumps({"error": "Missing path parameter"}))
-            try:
-                _resolve_editor_path(repo, rel_path)
-            except ValueError as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            
-            selection = body.get("selection", "")
-            instruction = body.get("instruction", "")
-            prefix = body.get("prefix", "")
-            suffix = body.get("suffix", "")
-            language = body.get("language", "")
-            
-            if len(selection) > 20000:
-                return self._send(400, json.dumps({"error": "Selection size exceeds 20000 characters limit"}))
-            if len(prefix) > 4000:
-                return self._send(400, json.dumps({"error": "Prefix size exceeds 4000 characters limit"}))
-            if len(suffix) > 4000:
-                return self._send(400, json.dumps({"error": "Suffix size exceeds 4000 characters limit"}))
-            
-            system_msg = (
-                "You are a precise code-editing assistant. You rewrite ONLY the user's SELECTED code per their instruction. "
-                "Output ONLY the replacement code for the selection -- no markdown fences, no explanation, no surrounding code. "
-                "Preserve the surrounding indentation style. If the instruction cannot apply, output the selection unchanged."
-            )
-            
-            task_prompt = (
-                f"We are editing a file of language: {language or 'unknown'}.\n"
-                f"File Path: {rel_path}\n\n"
-                f"CONTEXT BEFORE THE SELECTION (Do not modify this, only use for context):\n"
-                f"---BEGIN PREFIX---\n{prefix}\n---END PREFIX---\n\n"
-                f"SELECTED CODE TO REWRITE:\n"
-                f"---BEGIN SELECTION---\n{selection}\n---END SELECTION---\n\n"
-                f"CONTEXT AFTER THE SELECTION (Do not modify this, only use for context):\n"
-                f"---BEGIN SUFFIX---\n{suffix}\n---END SUFFIX---\n\n"
-                f"INSTRUCTION: {instruction}\n\n"
-                f"Please output ONLY the new rewritten code that will replace the SELECTED CODE TO REWRITE. "
-                f"Do not output prefix context, suffix context, explanation, or markdown fences. Output the replacement code directly."
-            )
-            
-            try:
-                if not hasattr(_pilot, "pilot") or not _pilot.pilot:
-                    return self._send(200, json.dumps({"ok": False, "error": "No pilot driver configured"}))
-                
-                resp = _pilot.pilot.complete(task_prompt, system=system_msg)
-                if getattr(resp, "error", None):
-                    return self._send(200, json.dumps({"ok": False, "error": resp.error}))
-                
-                cleaned_text = _strip_markdown_fences(resp.text)
-                return self._send(200, json.dumps({"ok": True, "edit": cleaned_text}))
-            except Exception as e:
-                return self._send(200, json.dumps({"ok": False, "error": f"Failed during inline edit pilot execution: {str(e)}"}))
+            from .api import reviews as _rev_api
+            status, payload = _rev_api.post_inline_edit(body, _review_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/file/write":
             from .api import files as _files_api
@@ -4737,101 +4697,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(status, json.dumps(payload))
 
         if path == "/api/registry":
-            models = body.get("models")
-            if not isinstance(models, list):
-                return self._send(400, json.dumps({"error": "models must be a list"}))
-            
-            validated_models = []
-            for m in models:
-                if not isinstance(m, dict):
-                    return self._send(400, json.dumps({"error": "each model must be a dictionary"}))
-                
-                model_id = m.get("id")
-                if not isinstance(model_id, str) or not model_id.strip():
-                    return self._send(400, json.dumps({"error": "id must be a non-empty string"}))
-                
-                adapter = m.get("adapter")
-                if not isinstance(adapter, str):
-                    return self._send(400, json.dumps({"error": "adapter must be a string"}))
-                
-                try:
-                    score = int(m.get("capability_score", 0))
-                    score = max(0, min(100, score))
-                except (ValueError, TypeError):
-                    return self._send(400, json.dumps({"error": "capability_score must be an integer"}))
-                
-                m["id"] = model_id.strip()
-                m["adapter"] = adapter
-                m["capability_score"] = score
-                validated_models.append(m)
-                
-            from .registry_wizard import get_models_file_path, write_json_atomic
-            dest_path = get_models_file_path()
-            try:
-                write_json_atomic(dest_path, {"models": validated_models})
-                return self._send(200, json.dumps({"ok": True, "models": validated_models}))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to write registry: {str(e)}"}))
+            from .api import registry as _reg_api
+            status, payload = _reg_api.post_registry(body)
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/roles":
-            overrides = body.get("overrides", {})
-            policy = body.get("routing_policy")
-            
-            if not isinstance(overrides, dict):
-                return self._send(400, json.dumps({"error": "overrides must be a dictionary"}))
-            
-            validated_overrides = {}
-            from .registry_wizard import REAL_BASE_SCORES
-            for role, score in overrides.items():
-                if role not in REAL_BASE_SCORES:
-                    return self._send(400, json.dumps({"error": f"Unknown role: {role}"}))
-                try:
-                    clamped_score = max(0, min(100, int(score)))
-                    validated_overrides[role] = clamped_score
-                except (ValueError, TypeError):
-                    return self._send(400, json.dumps({"error": f"Invalid score for role {role}: {score}"}))
-            
-            if policy is not None:
-                valid_policies = {"balanced", "cheap", "quality", "escalating"}
-                if policy not in valid_policies:
-                    return self._send(400, json.dumps({"error": f"Invalid policy: {policy}; expected one of {list(valid_policies)}"}))
-            
-            from .registry_wizard import get_routing_file_path, write_json_atomic
-            dest_path = get_routing_file_path()
-            current_data = {}
-            if os.path.exists(dest_path):
-                try:
-                    with open(dest_path, encoding="utf-8", errors="replace") as f:
-                        current_data = json.load(f)
-                except Exception as e:
-                    _diag("server.routing_overrides_load", e)
-            
-            current_overrides = current_data.get("overrides", {})
-            current_overrides.update(validated_overrides)
-            current_data["overrides"] = current_overrides
-            
-            if policy is not None:
-                current_data["routing_policy"] = policy
-            elif "routing_policy" not in current_data:
-                current_data["routing_policy"] = "balanced"
-                
-            try:
-                write_json_atomic(dest_path, current_data, chmod_mode=0o600)
-                return self._send(200, json.dumps({"ok": True, "overrides": current_data["overrides"], "routing_policy": current_data["routing_policy"]}))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to save roles config: {str(e)}"}))
+            from .api import registry as _reg_api
+            status, payload = _reg_api.post_roles(body, _registry_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/pilot/validate":
-            driver = body.get("driver")
-            if not isinstance(driver, str):
-                return self._send(400, json.dumps({"error": "driver must be a string"}))
-                
-            from .registry_wizard import validate_pilot_driver
-            try:
-                res = validate_pilot_driver(driver)
-                return self._send(200, json.dumps(res))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": str(e)}))
+            from .api import registry as _reg_api
+            status, payload = _reg_api.post_pilot_validate(body)
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/worktrees/add":
             from .api import worktrees as _wt_api
@@ -5564,15 +5442,9 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            # Cold-attach placeholder has no review queue yet.
-            lock = getattr(_pilot, "_pending_reviews_lock", None)
-            pending = getattr(_pilot, "_pending_reviews", None)
-            if lock is None or pending is None:
-                reviews_list = []
-            else:
-                with lock:
-                    reviews_list = list(pending.values())
-            return self._send(200, json.dumps(reviews_list))
+            from .api import reviews as _rev_api
+            status, payload = _rev_api.get_reviews(_review_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/platform":
             return self._send(200, json.dumps(_get_platform_adapters()))
         if u.path == "/api/jobs":
@@ -5848,48 +5720,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(status, json.dumps(payload))
 
         if u.path == "/api/registry":
-            from .registry_wizard import get_models_file_path
-            path = get_models_file_path()
-            if os.path.exists(path):
-                try:
-                    with open(path, encoding="utf-8", errors="replace") as f:
-                        return self._send(200, f.read())
-                except Exception as e:
-                    return self._send(500, json.dumps({"error": f"Failed to read registry: {str(e)}"}))
-            return self._send(200, json.dumps({"models": []}))
+            from .api import registry as _reg_api
+            status, payload = _reg_api.get_registry()
+            # On-disk file content is already JSON text; empty default is a dict.
+            if isinstance(payload, str):
+                return self._send(status, payload)
+            return self._send(status, json.dumps(payload))
 
         if u.path == "/api/roles":
-            from .registry_wizard import REAL_BASE_SCORES, get_routing_file_path
-            path = get_routing_file_path()
-            overrides = {}
-            policy = "balanced"
-            if os.path.exists(path):
-                try:
-                    with open(path, encoding="utf-8", errors="replace") as f:
-                        data = json.load(f)
-                        overrides = data.get("overrides", {})
-                        policy = data.get("routing_policy", "balanced")
-                except Exception as e:
-                    _diag("server.roles_routing_load", e)
-            
-            roles_mapping = {}
-            for k, v in REAL_BASE_SCORES.items():
-                roles_mapping[k] = overrides.get(k, v)
-                
-            return self._send(200, json.dumps({
-                "roles": roles_mapping,
-                "policies": ["balanced", "cheap", "quality", "escalating"],
-                "routing_policy": policy,
-                "overrides": overrides
-            }))
+            from .api import registry as _reg_api
+            status, payload = _reg_api.get_roles(_registry_services())
+            return self._send(status, json.dumps(payload))
 
         if u.path == "/api/registry/recommend":
-            from .registry_wizard import get_recommendations
-            try:
-                rec = get_recommendations()
-                return self._send(200, json.dumps(rec))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": str(e)}))
+            from .api import registry as _reg_api
+            status, payload = _reg_api.get_registry_recommend()
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/run":
             q = parse_qs(u.query)
             imgs = []
