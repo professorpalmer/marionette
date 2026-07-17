@@ -2719,6 +2719,17 @@ def _registry_services():
     return RegistryServices(diag=_diag)
 
 
+def _platform_services():
+    """Build PlatformServices from live server module globals (call-time lookup)."""
+    from .api.platform import PlatformServices
+    return PlatformServices(
+        get_platform_json_path=_get_platform_json_path,
+        write_platform_json_atomic=_write_platform_json_atomic,
+        get_platform_adapters=_get_platform_adapters,
+        diag=_diag,
+    )
+
+
 def _provider_services():
     """Build ProviderServices from live server module globals (call-time lookup)."""
     from .api.providers import ProviderServices
@@ -4436,28 +4447,9 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _wiki_api.post_wiki_disconnect()
             return self._send(status, json.dumps(payload))
         if path == "/api/bedrock":
-            # AWS Bedrock BYOK: bearer token OR access-key pair + region/model.
-            action = str(body.get("action", "")).strip().lower()
-            if action == "clear" or body.get("clear") is True:
-                res = clear_bedrock_credentials()
-            else:
-                fields = body.get("bedrock") if isinstance(body.get("bedrock"), dict) else body
-                # Accept either {bedrock: {...}} or flat field names at the top level.
-                allowed = (
-                    "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID",
-                    "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-                    "AWS_REGION", "BEDROCK_REGION", "BEDROCK_MODEL_ID",
-                )
-                patch = {k: fields.get(k) for k in allowed if k in fields}
-                if not patch:
-                    return self._send(400, json.dumps({
-                        "error": "bedrock credentials required "
-                                 "(AWS_BEARER_TOKEN_BEDROCK or access key + secret)"
-                    }))
-                res = set_bedrock_credentials(patch)
-            from .auto_registry import sync_agentic_registry_safe
-            sync_agentic_registry_safe()
-            return self._send(200, json.dumps({"ok": True, **res}))
+            from .api import platform as _plat_api
+            status, payload = _plat_api.post_bedrock(body)
+            return self._send(status, json.dumps(payload))
         if path == "/api/auth/pools":
             from .api import auth as _auth_api
             status, payload = _auth_api.post_auth_pools(body)
@@ -4540,39 +4532,9 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _git_api.post_git_disconnect()
             return self._send(status, json.dumps(payload))
         if path == "/api/platform":
-            name = body.get("name")
-            enabled = body.get("enabled")
-            if name not in ("agentic", "cursor", "hermes", "claude-code", "codex", "openai"):
-                return self._send(400, json.dumps({"error": f"Unknown adapter: {name}"}))
-            if not isinstance(enabled, bool):
-                return self._send(400, json.dumps({"error": "enabled must be a boolean"}))
-            
-            path_file = _get_platform_json_path()
-            pdata = {}
-            if os.path.exists(path_file):
-                try:
-                    with open(path_file, "r", encoding="utf-8") as f:
-                        pdata = json.load(f)
-                except Exception as e:
-                    _diag("server.platform_toggle_load", e)
-            if not isinstance(pdata, dict):
-                pdata = {}
-            if "disabled" not in pdata or not isinstance(pdata["disabled"], list):
-                pdata["disabled"] = []
-            
-            disabled_list = pdata["disabled"]
-            if enabled:
-                pdata["disabled"] = [x for x in disabled_list if x != name]
-            else:
-                if name not in disabled_list:
-                    pdata["disabled"] = disabled_list + [name]
-            
-            try:
-                _write_platform_json_atomic(path_file, pdata)
-            except Exception as e:
-                return self._send(500, json.dumps({"error": f"Failed to save platform.json: {str(e)}"}))
-            
-            return self._send(200, json.dumps(_get_platform_adapters()))
+            from .api import platform as _plat_api
+            status, payload = _plat_api.post_platform(body, _platform_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/settings":
             requires_rebuild = False
             if "api_key" in body or body.get("clear_api_key") is True:
@@ -5401,7 +5363,9 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            return self._send(200, json.dumps(get_bedrock_status()))
+            from .api import platform as _plat_api
+            status, payload = _plat_api.get_bedrock()
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/auth/pools":
             if self._guard():
                 return
@@ -5446,7 +5410,9 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _rev_api.get_reviews(_review_services())
             return self._send(status, json.dumps(payload))
         if u.path == "/api/platform":
-            return self._send(200, json.dumps(_get_platform_adapters()))
+            from .api import platform as _plat_api
+            status, payload = _plat_api.get_platform(_platform_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/jobs":
             from .api import jobs as _jobs_api
             q = parse_qs(u.query)
