@@ -257,6 +257,7 @@ pmharness/        research rig (validates the driver layer; not the GUI contract
 harness/          the product (principal modules below; mixins compose the session)
   conversation.py   ConversationalSession facade (composes mixins; thin turn owner)
   send_loop.py      SendLoopMixin — send / _send_locked_inner turn kernel
+  send_loop_phases.py  peeled stream/prefetch/swarm/stdout thread helpers
   busy_control.py   BusyControlMixin — busy / interrupt / reap
   prompt_queue.py   PromptQueueMixin
   adapter_resolve.py AdapterResolveMixin (implement adapter pick)

@@ -26,9 +26,9 @@ def _fake_result(n=1):
 def _fast_swarm(monkeypatch):
     """Replace real Puppetmaster execution with an instant deterministic result."""
     fake = lambda intent, **kw: _fake_result(1)
-    # send_loop owns the run_swarm call site after the mixin peel; patch both
-    # bindings so either import path stays hermetic.
-    monkeypatch.setattr("harness.send_loop.execute_intent", fake)
+    # send_loop_phases owns the sync swarm thread target; conversation may still
+    # bind execute_intent for other paths — patch both so either stays hermetic.
+    monkeypatch.setattr("harness.send_loop_phases.execute_intent", fake)
     monkeypatch.setattr("harness.conversation.execute_intent", fake)
 
 

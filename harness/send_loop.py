@@ -10,9 +10,10 @@ defines no state and no __init__.
 
 Owns the turn orchestration entrypoints ``send`` / ``_send_locked`` /
 ``_send_locked_inner`` plus the small private helpers that exist only to
-support that loop (``_is_correction``, ``_get_codegraph_context``). Busy lock
-lifecycle stays on BusyControlMixin; per-tool ``_do_*`` handlers stay on
-ToolDispatchMixin.
+support that loop (``_is_correction``, ``_get_codegraph_context``). Background
+thread targets and prefetch map workers live in ``send_loop_phases`` so the
+kernel stays the public orchestration surface. Busy lock lifecycle stays on
+BusyControlMixin; per-tool ``_do_*`` handlers stay on ToolDispatchMixin.
 
 CRITICAL invariants — zero behavior change:
 - ConvEvent kinds/shapes unchanged
@@ -33,7 +34,6 @@ import threading
 import time
 from typing import Any, Iterator, Optional
 
-from pmharness.bridge import execute_intent
 from pmharness.intent import DriverIntent
 
 from ._exec import _puppetmaster_available, _puppetmaster_cmd
@@ -54,6 +54,12 @@ from .pilot_guards import (
     guards_active,
     new_turn_guard_state,
     record_action_execution,
+)
+from .send_loop_phases import (
+    read_stdout_thread,
+    run_prefetch,
+    run_stream,
+    stream_swarm,
 )
 from .text_clean import clean_say
 from .tool_dispatch import _strip_ansi, is_safe_path
@@ -628,34 +634,11 @@ class SendLoopMixin:
                             from .pilot import StreamingSayExtractor
                             q = queue.Queue()
 
-                            def run_stream():
-                                try:
-                                    import inspect
-                                    kwargs = {
-                                        "tools": tools_schema,
-                                        "system": sys_prompt,
-                                        "on_delta": lambda delta: q.put(("delta", delta)),
-                                        "on_reasoning_delta": lambda delta: q.put(("reasoning", delta)),
-                                        "on_tool_hint": lambda name: q.put(("tool_hint", name)),
-                                    }
-                                    try:
-                                        if "on_wait_notice" in inspect.signature(
-                                            self.pilot.chat_stream
-                                        ).parameters:
-                                            kwargs["on_wait_notice"] = (
-                                                lambda msg: q.put(("wait", msg))
-                                            )
-                                    except Exception:
-                                        pass
-                                    r = self.pilot.chat_stream(
-                                        self._elide_stale_reads(self._history[1:]),
-                                        **kwargs,
-                                    )
-                                    q.put(("done", r))
-                                except Exception as ex:
-                                    q.put(("error", ex))
-
-                            t = threading.Thread(target=run_stream, daemon=True)
+                            t = threading.Thread(
+                                target=run_stream,
+                                args=(self, q, tools_schema, sys_prompt),
+                                daemon=True,
+                            )
                             t.start()
 
                             # The model streams a raw JSON envelope ({"say": "...",
@@ -1083,34 +1066,13 @@ class SendLoopMixin:
 
             if len(prefetch_targets) >= 2 and not self._cancel.is_set():
                 from concurrent.futures import ThreadPoolExecutor
-
-                def run_prefetch(idx_and_act: tuple[int, PilotAction]):
-                    idx, act = idx_and_act
-                    kind = act.kind
-                    try:
-                        if kind == "read_file":
-                            return idx, self._do_read_file(act)
-                        elif kind == "list_dir":
-                            return idx, self._do_list_dir(act)
-                        elif kind == "search_codegraph":
-                            return idx, self._do_search_codegraph(act)
-                        elif kind == "search_files":
-                            return idx, self._do_search_files(act)
-                        elif kind == "web_search":
-                            return idx, self._do_web_search(act)
-                        elif kind == "web_fetch":
-                            return idx, self._do_web_fetch(act)
-                        elif kind == "read_pdf":
-                            return idx, self._do_read_pdf(act)
-                        elif kind == "view_image":
-                            return idx, self._do_view_image(act)
-                    except Exception as exc:
-                        return idx, (False, "exception", str(exc))
-                    return idx, (False, "exception", f"Unknown prefetch kind {kind}")
+                from functools import partial
 
                 max_workers = min(8, len(prefetch_targets))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    results = executor.map(run_prefetch, prefetch_targets)
+                    results = executor.map(
+                        partial(run_prefetch, self), prefetch_targets
+                    )
                     for idx, res in results:
                         prefetch[idx] = res
 
@@ -2099,20 +2061,11 @@ class SendLoopMixin:
                     import threading as _threading
                     _delta_q: "_queue.Queue" = _queue.Queue()
 
-                    def _stream_swarm(_intent=intent):
-                        try:
-                            r = execute_intent(
-                                _intent, state_dir=self.state_dir,
-                                session_id=self.harness_session_id or "",
-                                cwd=self.config.repo or None,
-                                on_delta=lambda wid, kind, text: _delta_q.put(
-                                    ("delta", (wid, kind, text))),
-                            )
-                            _delta_q.put(("done", r))
-                        except Exception as ex:  # noqa: BLE001 - surfaced below
-                            _delta_q.put(("error", ex))
-
-                    _swarm_thread = _threading.Thread(target=_stream_swarm, daemon=True)
+                    _swarm_thread = _threading.Thread(
+                        target=stream_swarm,
+                        args=(self, intent, _delta_q),
+                        daemon=True,
+                    )
                     _swarm_thread.start()
                     result = None
                     swarm_error = None
@@ -2715,17 +2668,6 @@ class SendLoopMixin:
                         import shutil
                         processes = []
                         threads = []
-
-                        def read_stdout_thread(p_info):
-                            try:
-                                for line in p_info["proc"].stdout:
-                                    p_info["lines"].append(line)
-                                    if not p_info["job_id"]:
-                                        m = re.search(r"\b(job_[a-fA-F0-9]{12})\b", line)
-                                        if m:
-                                            p_info["job_id"] = m.group(1)
-                            except Exception:
-                                pass
 
                         for idx, sub_goal in enumerate(goals):
                             sub_aid = sub_aids[idx]

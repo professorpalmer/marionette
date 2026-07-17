@@ -206,12 +206,15 @@ def post_session_interrupt(
 
 def post_session_rewind(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """POST /api/session/rewind."""
-    pilot = svc.get_pilot()
-    if not pilot:
+    if not svc.get_pilot():
         return 404, {"ok": False, "error": "no active session"}
     not_ready = svc.gate_active_pilot_ready()
     if not_ready is not None:
         return 409, not_ready
+    # Re-fetch after gate: ensure_ready may have swapped out a deferred placeholder.
+    pilot = svc.get_pilot()
+    if not pilot:
+        return 404, {"ok": False, "error": "no active session"}
     result = None
     if body.get("user_ordinal") is not None:
         try:
@@ -239,12 +242,14 @@ def post_session_rewind(body: dict, svc: SessionControlServices) -> tuple[int, J
 
 def post_session_rewind_restore(svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """POST /api/session/rewind/restore."""
-    pilot = svc.get_pilot()
-    if not pilot:
+    if not svc.get_pilot():
         return 404, {"ok": False, "error": "no active session"}
     not_ready = svc.gate_active_pilot_ready()
     if not_ready is not None:
         return 409, not_ready
+    pilot = svc.get_pilot()
+    if not pilot:
+        return 404, {"ok": False, "error": "no active session"}
     result = pilot.restore_rewind_stash()
     if not result.get("ok"):
         code = 409 if result.get("code") == "busy" else 400
@@ -270,12 +275,14 @@ def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, Js
         images = [p for p in images.split("|") if p]
     if not text and not images:
         return 400, {"error": "missing text"}
-    pilot = svc.get_pilot()
-    if not pilot:
+    if not svc.get_pilot():
         return 404, {"error": "no active session"}
     not_ready = svc.gate_active_pilot_ready()
     if not_ready is not None:
         return 409, not_ready
+    pilot = svc.get_pilot()
+    if not pilot:
+        return 404, {"error": "no active session"}
     valid_imgs, err = _validate_upload_images(images, svc.upload_dir)
     if err is not None:
         return err
@@ -288,12 +295,14 @@ def post_session_steer(body: dict, svc: SessionControlServices) -> tuple[int, Js
 
 def post_session_queue(body: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """POST /api/session/queue."""
-    pilot = svc.get_pilot()
-    if not pilot:
+    if not svc.get_pilot():
         return 404, {"error": "no active session"}
     not_ready = svc.gate_active_pilot_ready()
     if not_ready is not None:
         return 409, not_ready
+    pilot = svc.get_pilot()
+    if not pilot:
+        return 404, {"error": "no active session"}
     if body.get("clear") is True:
         try:
             n = pilot.clear_prompts()
