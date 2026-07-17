@@ -263,6 +263,179 @@ def test_dispatch_swarm_registers_and_surfaces_error():
     session._append_action_result.assert_called_once()
 
 
+def test_dispatch_swarm_registers_resolved_git_child(tmp_path):
+    """run_swarm local job cwd must be the git child, not the non-git home parent."""
+    import os
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from harness.repo_resolve import clear_effective_repo_cache, resolve_effective_repo
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    clear_effective_repo_cache()
+    home = tmp_path / "home" / ".marionette"
+    home.mkdir(parents=True)
+    child = home / "marionette"
+    child.mkdir()
+    subprocess.run(
+        ["git", "init"],
+        cwd=str(child),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    act = PilotAction(kind="run_swarm", goal="audit the peel", roles=["explore"])
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=str(home)),
+        _session_job_ids=[],
+        _register_local_job=MagicMock(),
+        _finish_local_job=MagicMock(),
+        _append_action_result=MagicMock(),
+        _display_transcript=[],
+    )
+    import harness.send_loop_dispatch as dispatch
+
+    def boom(session, intent, q):
+        q.put(("error", RuntimeError("stream failed")))
+
+    original = dispatch.stream_swarm
+    dispatch.stream_swarm = boom
+    try:
+        list(
+            dispatch_swarm_action(
+                session,
+                act,
+                "a6b",
+                True,
+                counters={"swarms": 0, "demo_swarms": 0},
+                turn_findings=[],
+            )
+        )
+    finally:
+        dispatch.stream_swarm = original
+        clear_effective_repo_cache()
+
+    expected = resolve_effective_repo(str(home))
+    assert session._register_local_job.called
+    cwd_kw = session._register_local_job.call_args.kwargs.get("cwd")
+    if cwd_kw is None and session._register_local_job.call_args.args:
+        # positional fallback if signature changes
+        cwd_kw = None
+    assert cwd_kw is not None
+    assert os.path.normcase(os.path.normpath(cwd_kw)) == os.path.normcase(
+        os.path.normpath(expected)
+    )
+    assert os.path.normcase(os.path.normpath(str(home))) != os.path.normcase(
+        os.path.normpath(expected)
+    )
+
+
+def test_dispatch_parallel_uses_resolved_git_child_cwd(tmp_path, monkeypatch):
+    """run_parallel must pin worker cwd to the git child under Marionette Home."""
+    import os
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from harness.repo_resolve import clear_effective_repo_cache, resolve_effective_repo
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    clear_effective_repo_cache()
+    home = tmp_path / "home" / ".marionette"
+    home.mkdir(parents=True)
+    child = home / "marionette"
+    child.mkdir()
+    subprocess.run(
+        ["git", "init"],
+        cwd=str(child),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    expected = resolve_effective_repo(str(home))
+
+    monkeypatch.setattr(
+        "harness.implement_guards.check_implement_workspace",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "harness.implement_guards.check_oversized_single_file_rewrite",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "harness.edit_engines.select_edit_engine",
+        lambda *_a, **_k: "native",
+    )
+    monkeypatch.setattr(
+        "harness.conversation._prewarm_worker_imports",
+        lambda: None,
+    )
+
+    act = PilotAction(
+        kind="run_parallel",
+        goals=["review auth"],
+        mode="analysis",
+    )
+    registered: list = []
+
+    def _register(job_id, goal, role="implement", cwd="", engine="", model=""):
+        registered.append({"job_id": job_id, "cwd": cwd, "goal": goal})
+
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=str(home), driver="test"),
+        _session_job_ids=[],
+        _append_action_result=MagicMock(),
+        _validate_target_repo=MagicMock(),
+        _resolve_requested_implement_adapter=MagicMock(return_value=("", "")),
+        _external_adapter_available=MagicMock(return_value=False),
+        _claim_objective=MagicMock(return_value=True),
+        _release_objective=MagicMock(),
+        _register_local_job=_register,
+        _submit_swarm=MagicMock(return_value=True),
+        _swarm_inflight=MagicMock(return_value=0),
+        _answer_remaining_tool_calls=MagicMock(return_value=iter(())),
+        _job_dispatch_label_args=MagicMock(return_value=[]),
+    )
+    import harness.send_loop_dispatch as dispatch
+
+    monkeypatch.setattr(dispatch, "_puppetmaster_available", lambda: False)
+
+    events = list(
+        dispatch_parallel_action(
+            session,
+            act,
+            "a7",
+            True,
+            turn_actions=[act],
+            action_idx=0,
+            action_seq=1,
+            step=0,
+            swarms=0,
+        )
+    )
+    clear_effective_repo_cache()
+
+    assert registered, "expected a local parallel job registration"
+    got = registered[0]["cwd"]
+    assert os.path.normcase(os.path.normpath(got)) == os.path.normcase(
+        os.path.normpath(expected)
+    )
+    assert os.path.normcase(os.path.normpath(str(home))) != os.path.normcase(
+        os.path.normpath(expected)
+    )
+    start = next(e for e in events if e.kind == "action_start")
+    assert os.path.normcase(os.path.normpath(start.data["cwd"])) == os.path.normcase(
+        os.path.normpath(expected)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Swarm quality gate: thin/generic findings must not read as a green success.
 

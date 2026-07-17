@@ -193,7 +193,13 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
 
     ``via_tool=False`` adapts the submit contract for native ProviderWorker
     analysis (final-message findings summary instead of submit_findings).
+
+    ``repo_cwd`` is resolved through ``resolve_effective_repo`` at this last mile
+    so a Marionette Home parent (non-git) never appears in the brief when a
+    single git child checkout exists.
     """
+    from harness.repo_resolve import resolve_effective_repo
+    repo_cwd = resolve_effective_repo(repo_cwd or "")
     lens = ROLE_LENSES.get(role, "")
     lens_line = f"\n\n{lens}" if lens else ""
     submit = _analysis_submit_contract(via_tool=via_tool)
@@ -936,16 +942,32 @@ def execute_intent(
     job_label = job_label_for_session(session_id or "")
 
     # Explicit per-runner cwd wins over the process-wide HARNESS_REPO view pointer.
+    # Resolve at this seam so callers that forget resolve_effective_repo still
+    # pin workers to the git checkout (Marionette Home parent → single child).
+    # Also rewrite HARNESS_REPO for the call when the env alone points at a
+    # non-git parent with exactly one git child, so adapters that read the env
+    # cannot bypass the pin.
+    from harness.repo_resolve import resolve_effective_repo
     explicit_cwd = (cwd or repo or "").strip()
+    if explicit_cwd:
+        explicit_cwd = resolve_effective_repo(explicit_cwd)
     prev_harness_repo = _os.environ.get("HARNESS_REPO")
     env_patched = False
     if explicit_cwd:
         _os.environ["HARNESS_REPO"] = explicit_cwd
         env_patched = True
+        repo_cwd = explicit_cwd
+    else:
+        env_repo = (prev_harness_repo or "").strip()
+        if env_repo:
+            repo_cwd = resolve_effective_repo(env_repo)
+            if repo_cwd != env_repo:
+                _os.environ["HARNESS_REPO"] = repo_cwd
+                env_patched = True
+        else:
+            repo_cwd = ""
 
     try:
-        repo_cwd = explicit_cwd or _os.environ.get("HARNESS_REPO", "").strip()
-
         if intent.action == "run_prewalk":
             if not repo_cwd:
                 raise ValueError(

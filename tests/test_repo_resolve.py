@@ -112,3 +112,147 @@ def test_result_is_cached(tmp_path, monkeypatch):
     second = resolve_effective_repo(str(home))
     assert _norm(second) == _norm(first)
     assert calls["n"] == 0
+
+
+def _marionette_home_layout(tmp_path):
+    """tmp/home/.marionette (non-git) + tmp/home/.marionette/marionette (git)."""
+    home = tmp_path / "home" / ".marionette"
+    home.mkdir(parents=True)
+    (home / "notes.txt").write_text("not a repo", encoding="utf-8")
+    child = home / "marionette"
+    child.mkdir()
+    _git_init(str(child))
+    return home, child
+
+
+def _brief_target_path(instruction: str) -> str:
+    """Extract the path after 'Analyze the REAL codebase at ' (before trailing '.')."""
+    marker = "Analyze the REAL codebase at "
+    assert marker in instruction
+    rest = instruction.split(marker, 1)[1]
+    # Brief continues: "<path>. Emit evidenced..."
+    return rest.split(". ", 1)[0].strip()
+
+
+def test_analysis_instruction_uses_git_child_not_parent(tmp_path):
+    """Swarm brief must name the clone, never the non-git Marionette Home parent."""
+    from pmharness.bridge import _analysis_instruction
+
+    home, child = _marionette_home_layout(tmp_path)
+    child_resolved = resolve_effective_repo(str(home))
+    assert _norm(child_resolved) == _norm(str(child))
+    inst = _analysis_instruction("audit the peel", str(home), "explore")
+    target = _brief_target_path(inst)
+    assert _norm(target) == _norm(child_resolved)
+    assert _norm(target) != _norm(str(home))
+
+
+def test_parallel_analysis_brief_uses_git_child_not_parent(tmp_path):
+    """Parallel/analysis workers call _analysis_instruction(via_tool=False); same pin."""
+    from pmharness.bridge import _analysis_instruction
+
+    home, child = _marionette_home_layout(tmp_path)
+    child_resolved = resolve_effective_repo(str(home))
+    assert _norm(child_resolved) == _norm(str(child))
+    # Matches harness/worker.py analysis path (expects_diff=False).
+    inst = _analysis_instruction(
+        "review auth", str(home), "explore", via_tool=False,
+    )
+    target = _brief_target_path(inst)
+    assert _norm(target) == _norm(child_resolved)
+    assert _norm(target) != _norm(str(home))
+
+
+def _capturing_swarm_harness(monkeypatch, bridge_mod, tmp_path):
+    """Shared WorkerSpec/Orchestrator fakes; returns (captured list, cleanup noop)."""
+    from dataclasses import dataclass, field
+    from typing import Any
+
+    captured: list = []
+
+    @dataclass
+    class _CapturingWorkerSpec:
+        role: str
+        instruction: str
+        adapter: str
+        payload: dict = field(default_factory=dict)
+
+        def __post_init__(self) -> None:
+            captured.append(self)
+
+    class _FakeJob:
+        id = "job_test"
+        status = "complete"
+
+    class _FakeResult:
+        job = _FakeJob()
+        status = "complete"
+        mode = "inline"
+        artifacts: list = []
+        summary = "ok"
+
+    class _FakeOrchestrator:
+        def __init__(self, store: Any) -> None:
+            self.store = store
+
+        def run(self, goal: str, specs=None, worker_mode=None, label=None):
+            return _FakeResult()
+
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge_mod, "_warn_if_unindexed", lambda *_a, **_k: None)
+    return captured
+
+
+def test_execute_intent_resolves_cwd_for_swarm_brief(monkeypatch, tmp_path):
+    """execute_intent belt-and-braces: unresolved parent cwd still pins brief + payload."""
+    import pmharness.bridge as bridge
+    from pmharness.intent import DriverIntent
+
+    home, child = _marionette_home_layout(tmp_path)
+    captured = _capturing_swarm_harness(monkeypatch, bridge, tmp_path)
+    monkeypatch.delenv("HARNESS_REPO", raising=False)
+
+    intent = DriverIntent(action="run_swarm", goal="audit auth", roles=["explore"])
+    result = bridge.execute_intent(
+        intent,
+        state_dir=str(tmp_path / "state"),
+        cwd=str(home),
+    )
+    assert result is not None
+    assert captured
+    child_resolved = resolve_effective_repo(str(home))
+    assert _norm(child_resolved) == _norm(str(child))
+    target = _brief_target_path(captured[0].instruction)
+    assert _norm(target) == _norm(child_resolved)
+    assert _norm(target) != _norm(str(home))
+    assert _norm(captured[0].payload.get("cwd") or "") == _norm(child_resolved)
+
+
+def test_execute_intent_resolves_harness_repo_env_for_swarm_brief(monkeypatch, tmp_path):
+    """When only HARNESS_REPO is the parent (no cwd kwarg), brief still names the child."""
+    import os
+
+    import pmharness.bridge as bridge
+    from pmharness.intent import DriverIntent
+
+    home, child = _marionette_home_layout(tmp_path)
+    captured = _capturing_swarm_harness(monkeypatch, bridge, tmp_path)
+    monkeypatch.setenv("HARNESS_REPO", str(home))
+
+    intent = DriverIntent(action="run_swarm", goal="audit auth", roles=["explore"])
+    result = bridge.execute_intent(
+        intent,
+        state_dir=str(tmp_path / "state"),
+    )
+    assert result is not None
+    assert captured
+    child_resolved = resolve_effective_repo(str(home))
+    assert _norm(child_resolved) == _norm(str(child))
+    target = _brief_target_path(captured[0].instruction)
+    assert _norm(target) == _norm(child_resolved)
+    assert _norm(target) != _norm(str(home))
+    assert _norm(captured[0].payload.get("cwd") or "") == _norm(child_resolved)
+    # Env is restored after the call so a mid-session parent view pointer stays put.
+    assert _norm(os.environ.get("HARNESS_REPO") or "") == _norm(str(home))

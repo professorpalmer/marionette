@@ -250,6 +250,61 @@ def test_stream_swarm_puts_done_and_forwards_deltas(monkeypatch):
     assert q.get_nowait() == ("done", result)
 
 
+def test_stream_swarm_passes_resolved_git_child_cwd(monkeypatch, tmp_path):
+    """stream_swarm must resolve Marionette Home parent before execute_intent."""
+    import os
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        import pytest
+        pytest.skip("git not available")
+
+    from harness.repo_resolve import clear_effective_repo_cache, resolve_effective_repo
+
+    clear_effective_repo_cache()
+    home = tmp_path / "home" / ".marionette"
+    home.mkdir(parents=True)
+    child = home / "marionette"
+    child.mkdir()
+    subprocess.run(
+        ["git", "init"],
+        cwd=str(child),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    q: queue.Queue = queue.Queue()
+    seen: dict = {}
+
+    def fake_execute(intent, **kwargs):
+        seen["cwd"] = kwargs.get("cwd")
+        seen["repo"] = kwargs.get("repo")
+        return SimpleNamespace(job_id="job_resolved")
+
+    monkeypatch.setattr(
+        "harness.send_loop_phases.execute_intent", fake_execute
+    )
+    session = SimpleNamespace(
+        state_dir=str(tmp_path / "state"),
+        harness_session_id="sess",
+        config=SimpleNamespace(repo=str(home)),
+    )
+    stream_swarm(session, intent=SimpleNamespace(), delta_q=q)
+    assert q.get_nowait()[0] == "done"
+    expected = resolve_effective_repo(str(home))
+    assert os.path.normcase(os.path.normpath(seen["cwd"])) == os.path.normcase(
+        os.path.normpath(expected)
+    )
+    assert os.path.normcase(os.path.normpath(seen["repo"])) == os.path.normcase(
+        os.path.normpath(expected)
+    )
+    assert os.path.normcase(os.path.normpath(str(home))) != os.path.normcase(
+        os.path.normpath(expected)
+    )
+    clear_effective_repo_cache()
+
+
 def test_stream_swarm_puts_error(monkeypatch):
     q: queue.Queue = queue.Queue()
 
