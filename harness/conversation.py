@@ -53,7 +53,7 @@ from .pilot import (
     is_invalid_action,
     parse_pilot_turn,
 )
-from .wiki import WikiClient, session_digest
+from .wiki import WikiClient
 from .text_clean import clean_say
 from .checkpoints import CheckpointStore
 from .tool_dispatch import (
@@ -67,6 +67,8 @@ from .steer_mixin import SteerMixin
 from .adapter_resolve import AdapterResolveMixin
 from .compaction_mixin import CompactionContextMixin
 from .local_jobs import LocalJobsMixin
+from .wiki_distill import WikiDistillMixin
+from .review_memory import ReviewMemoryMixin
 from .pilot_guards import (
     guards_active,
     check_pilot_guards,
@@ -263,7 +265,6 @@ def load_workspace_rules(repo: Optional[str]) -> str:
 
 
 from .skill_store import SkillStore
-from .skill_distiller import distill_session, distill_rules
 from .rule_store import RuleStore
 from .memory_store import MemoryStore
 
@@ -399,6 +400,8 @@ class ConversationalSession(
     AdapterResolveMixin,
     CompactionContextMixin,
     LocalJobsMixin,
+    WikiDistillMixin,
+    ReviewMemoryMixin,
     ToolDispatchMixin,
 ):
     def __init__(self, config: HarnessConfig) -> None:
@@ -764,160 +767,6 @@ class ConversationalSession(
             # is still tracked; a bulk drain elsewhere will clean it up.
             pass
         return True
-
-    def apply_review(self, review_id: str, decisions: dict) -> dict:
-        with self._pending_reviews_lock:
-            review = self._pending_reviews.get(review_id)
-            if not review:
-                return {
-                    "ok": False,
-                    "applied_files": [],
-                    "rejected_hunks": [],
-                    "checkpoint_id": None,
-                    "message": "Pending review not found"
-                }
-
-        rejected_hunks = []
-        all_hunks = []
-        for f in review["files"]:
-            for h in f["hunks"]:
-                h_id = h["id"]
-                all_hunks.append(h_id)
-                dec = decisions.get(h_id, "reject")
-                if dec == "reject":
-                    rejected_hunks.append(h_id)
-
-        # Reconstruct the accepted subset diff
-        from .diffreview import reconstruct_diff
-        accepted_diff = reconstruct_diff(review["files"], decisions)
-        
-        applied_files = []
-        for f in review["files"]:
-            if any(decisions.get(h["id"]) == "accept" for h in f["hunks"]):
-                applied_files.append(f["path"])
-
-        # If ALL hunks are rejected, do not apply anything, just remove the review
-        if len(rejected_hunks) == len(all_hunks):
-            with self._pending_reviews_lock:
-                self._pending_reviews.pop(review_id, None)
-            return {
-                "ok": True,
-                "applied_files": [],
-                "rejected_hunks": rejected_hunks,
-                "checkpoint_id": None,
-                "message": "All hunks were rejected. No changes applied."
-            }
-
-        mock_artifacts = [
-            {
-                "type": "patch",
-                "payload": {
-                    "files": applied_files,
-                    "unified_diff": accepted_diff
-                }
-            }
-        ]
-        
-        with self._apply_lock:
-            applied, files_changed, apply_msg = self._apply_worker_patch(mock_artifacts, review.get("job_id", ""))
-            cp_id = getattr(self, "_last_checkpoint_id", None)
-
-        if applied:
-            with self._pending_reviews_lock:
-                self._pending_reviews.pop(review_id, None)
-            return {
-                "ok": True,
-                "applied_files": files_changed,
-                "rejected_hunks": rejected_hunks,
-                "checkpoint_id": cp_id,
-                "message": f"Successfully applied: {apply_msg}"
-            }
-        else:
-            with self._pending_reviews_lock:
-                self._pending_reviews.pop(review_id, None)
-            return {
-                "ok": False,
-                "applied_files": [],
-                "rejected_hunks": rejected_hunks,
-                "checkpoint_id": cp_id,
-                "message": f"Failed to apply: {apply_msg}"
-            }
-
-    def dismiss_review(self, review_id: str) -> bool:
-        with self._pending_reviews_lock:
-            if review_id in self._pending_reviews:
-                self._pending_reviews.pop(review_id)
-                return True
-            return False
-
-    def _flush_turn_memory_proposals(self) -> list:
-        """Move queued mid-turn memory-add hints into pending Save/Skip cards.
-
-        Called only after assistant_done on interactive turns. Caps at 3
-        proposals. Nothing is written to the store until accept_memory_proposal.
-        """
-        queued = list(self._turn_memory_queue or [])
-        self._turn_memory_queue = []
-        if not queued:
-            return []
-        import uuid as _uuid
-        out = []
-        # Exact-text dedupe against already-persisted entries and against
-        # proposals already pending from earlier turns.
-        existing_texts = {
-            (e.text or "").strip().lower() for e in self._memory.list()
-        }
-        for p in self._pending_memory_proposals.values():
-            existing_texts.add((p.get("text") or "").strip().lower())
-        for item in queued:
-            if len(out) >= 3:
-                break
-            text = (item.get("text") or "").strip()
-            if not text:
-                continue
-            key = text.lower()
-            if key in existing_texts:
-                continue
-            existing_texts.add(key)
-            prop_id = "memprop_" + _uuid.uuid4().hex[:12]
-            cat = (item.get("category") or "general").strip() or "general"
-            prop = {
-                "id": prop_id,
-                "text": text,
-                "category": cat,
-            }
-            self._pending_memory_proposals[prop_id] = prop
-            out.append(prop)
-        return out
-
-    def accept_memory_proposal(self, proposal_id: str) -> dict:
-        """Persist a pending end-of-turn memory proposal (source=agent)."""
-        prop = self._pending_memory_proposals.pop(proposal_id, None)
-        if not prop:
-            return {"ok": False, "error": "proposal not found"}
-        text = (prop.get("text") or "").strip()
-        if not text:
-            return {"ok": False, "error": "empty proposal"}
-        entry = self._memory.add(
-            text=text,
-            category=(prop.get("category") or "general").strip() or "general",
-            source="agent",
-        )
-        return {
-            "ok": True,
-            "id": entry.id,
-            "text": entry.text,
-            "category": entry.category,
-            "source": entry.source,
-            "created_at": entry.created_at,
-        }
-
-    def dismiss_memory_proposal(self, proposal_id: str) -> dict:
-        """Drop a pending end-of-turn memory proposal without writing."""
-        if proposal_id in self._pending_memory_proposals:
-            self._pending_memory_proposals.pop(proposal_id, None)
-            return {"ok": True}
-        return {"ok": False, "error": "proposal not found"}
 
     @property
     def durable(self) -> DurableState:
@@ -1376,80 +1225,6 @@ class ConversationalSession(
             pass
         return cg_section
 
-    _WIKI_GROUNDING_MAX_CHARS = 8000  # ~2k tokens at chars//4
-
-    def _wiki_grounding_query(self, user_message: str) -> str:
-        """Build a compact wiki search query from the user turn and repo."""
-        parts: list[str] = []
-        repo = str(getattr(self.config, "repo", "") or "").strip()
-        if repo:
-            base = os.path.basename(os.path.normpath(repo))
-            if base and base not in (".", ".."):
-                parts.append(base)
-        msg = (user_message or "").strip()
-        if msg:
-            parts.append(msg[:400])
-        return " ".join(parts).strip()
-
-    def _build_turn_wiki_section(self, user_message: str) -> str:
-        wiki_section = ""
-        if not self._wiki.configured:
-            return wiki_section
-        try:
-            query = self._wiki_grounding_query(user_message)
-            if not query:
-                return wiki_section
-            hits = self._wiki.search_pages(query, limit=5)
-            if not hits:
-                self._wiki_cache_key = user_message
-                self._wiki_cache_section = ""
-                self._wiki_cache_pages = 0
-                return wiki_section
-
-            authoritative = (
-                "WIKI HAS ALREADY BEEN QUERIED FOR THIS TURN. Relevant notes and "
-                "decisions from your durable wiki are provided in the section below. "
-                "USE THIS as your primary source for prior decisions and findings. "
-                "Do NOT call query_wiki to re-fetch what is already here unless the "
-                "question is outside this injected slice.\n"
-            )
-            lines = [authoritative, "### Wiki grounding (auto-injected)"]
-            budget = self._WIKI_GROUNDING_MAX_CHARS - len(authoritative) - 40
-            per_hit = max(120, budget // max(1, len(hits)))
-            for hit in hits:
-                title = str(hit.get("title") or hit.get("slug") or "").strip()
-                slug = str(hit.get("slug") or "").strip()
-                snippet = str(hit.get("snippet") or "").strip()
-                if len(snippet) > per_hit:
-                    snippet = snippet[:per_hit].rstrip() + "…"
-                label = title or slug or "untitled"
-                if slug and slug != label:
-                    label = f"{label} ({slug})"
-                lines.append(f"- {label}: {snippet}" if snippet else f"- {label}")
-
-            wiki_section = "\n".join(lines)
-            if len(wiki_section) > self._WIKI_GROUNDING_MAX_CHARS:
-                wiki_section = wiki_section[: self._WIKI_GROUNDING_MAX_CHARS].rstrip() + "…"
-
-            try:
-                from pmharness.registry import resolve_price
-
-                price_in, _ = resolve_price(self.config.driver)
-                self._turn_economy.record_wiki_grounding(
-                    len(wiki_section),
-                    len(hits),
-                    price_in=price_in,
-                )
-            except Exception:
-                pass
-
-            self._wiki_cache_key = user_message
-            self._wiki_cache_section = wiki_section
-            self._wiki_cache_pages = len(hits)
-        except Exception:
-            pass
-        return wiki_section
-
     def _append_turn_context_trailer(self, message: str, user_message: str) -> str:
         try:
             parts = []
@@ -1527,22 +1302,6 @@ class ConversationalSession(
                 "tool_output_tokens_saved": 0,
                 "tool_output_savings_usd": 0.0,
                 "tool_output_compactions": 0,
-            }
-
-    def _wiki_grounding_fields(self) -> dict:
-        """Compact wiki grounding stats for context/usage APIs."""
-        try:
-            from pmharness.registry import resolve_price
-
-            price_in, _ = resolve_price(self.config.driver)
-            return self._turn_economy.wiki_grounding_fields(price_in)
-        except Exception:
-            return {
-                "wiki_groundings": 0,
-                "wiki_tokens_fed": 0,
-                "wiki_pages_fed": 0,
-                "wiki_estimated_reinference_tokens": 0,
-                "wiki_estimated_savings_usd": 0.0,
             }
 
     @property
@@ -3447,7 +3206,12 @@ class ConversationalSession(
                         self._append_action_result(act, aid, f"(write_file {aid} failed: {error_msg})", is_native)
                         continue
                     try:
-                        # Take checkpoint before write_file
+                        ok, status, msg = self._do_write_file(act, write=False)
+                        if not ok:
+                            yield ConvEvent("action_result", {"id": aid, "error": msg})
+                            self._append_action_result(act, aid, f"(write_file {act.path} failed: {msg})", is_native)
+                            continue
+
                         try:
                             cp_id = self._checkpoints.snapshot(
                                 label=f"Before writing {act.path}",
@@ -3464,19 +3228,13 @@ class ConversationalSession(
                             import sys
                             print(f"Checkpoint error before write_file: {cp_err}", file=sys.stderr)
 
-                        target_dir = os.path.dirname(target_path)
-                        os.makedirs(target_dir, exist_ok=True)
-                        import tempfile
-                        fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-")
-                        try:
-                            with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:
-                                f.write(act.content)
-                            os.replace(temp_path, target_path)
-                        except Exception as e:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                            raise e
-                        bytes_written = len(act.content.encode('utf-8'))
+                        ok, status, msg = self._do_write_file(act, write=True)
+                        if not ok:
+                            yield ConvEvent("action_result", {"id": aid, "error": msg})
+                            self._append_action_result(act, aid, f"(write_file {act.path} failed: {msg})", is_native)
+                            continue
+
+                        bytes_written = msg
                         yield ConvEvent("action_result", {
                             "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
                             "artifacts": [{"type": "file", "headline": f"Wrote {bytes_written} bytes to {act.path}"}],
@@ -3503,38 +3261,12 @@ class ConversationalSession(
                         self._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native)
                         continue
                     try:
-                        if not os.path.exists(target_path):
-                            error_msg = f"edit_file: file not found: {act.path} (use write_file to create new files)"
-                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                            self._append_action_result(act, aid, f"(edit_file {act.path} failed: {error_msg})", is_native)
-                            continue
-                        if os.path.isdir(target_path):
-                            error_msg = f"edit_file: path is a directory: {act.path}"
-                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                            self._append_action_result(act, aid, f"(edit_file {act.path} failed: {error_msg})", is_native)
+                        ok, status, msg = self._do_edit_file(act, write=False)
+                        if not ok:
+                            yield ConvEvent("action_result", {"id": aid, "error": msg})
+                            self._append_action_result(act, aid, f"(edit_file {act.path} failed: {msg})", is_native)
                             continue
 
-                        with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                            original_content = f.read()
-
-                        old_str = act.old_str
-                        new_str = act.new_str
-                        occurrences = original_content.count(old_str)
-                        if occurrences == 0:
-                            error_msg = f"edit_file: old_str not found in {act.path} (it must match the existing text EXACTLY, including whitespace/indentation)"
-                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                            self._append_action_result(act, aid, f"(edit_file {act.path} failed: {error_msg})", is_native)
-                            continue
-                        elif occurrences > 1:
-                            error_msg = f"edit_file: old_str matched {occurrences} times in {act.path}; add more surrounding context to make it unique"
-                            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
-                            self._append_action_result(act, aid, f"(edit_file {act.path} failed: {error_msg})", is_native)
-                            continue
-
-                        # Exactly 1 match. Construct the new content.
-                        new_content = original_content.replace(old_str, new_str, 1)
-
-                        # Take checkpoint before edit_file
                         try:
                             cp_id = self._checkpoints.snapshot(
                                 label=f"Before editing {act.path}",
@@ -3551,21 +3283,13 @@ class ConversationalSession(
                             import sys
                             print(f"Checkpoint error before edit_file: {cp_err}", file=sys.stderr)
 
-                        target_dir = os.path.dirname(target_path)
-                        os.makedirs(target_dir, exist_ok=True)
-                        import tempfile
-                        fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp-")
-                        try:
-                            with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:
-                                f.write(new_content)
-                            os.replace(temp_path, target_path)
-                        except Exception as e:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                            raise e
+                        ok, status, msg = self._do_edit_file(act, write=True)
+                        if not ok:
+                            yield ConvEvent("action_result", {"id": aid, "error": msg})
+                            self._append_action_result(act, aid, f"(edit_file {act.path} failed: {msg})", is_native)
+                            continue
 
-                        # Emit action result
-                        headline = f"edited {act.path}: replaced {len(old_str)} chars -> {len(new_str)} chars"
+                        headline = msg
                         yield ConvEvent("action_result", {
                             "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
                             "artifacts": [{"type": "file", "headline": headline}],
@@ -3645,45 +3369,26 @@ class ConversationalSession(
                         yield ConvEvent("action_result", {"id": aid, "error": error_msg})
                         self._append_action_result(act, aid, f"(run_command {aid} failed: {error_msg})", is_native)
                         continue
-                    from .command_policy import resolve_timeout, classify_command
-                    # FULL-AUTO safety guard: screen the command before running it
-                    # unattended. On a DANGER verdict, refuse this turn and feed the
-                    # reason back so the model picks a safer path or the user can
-                    # re-run interactively. Interactive co-working is unaffected (the
-                    # human already sees every command). A command the user explicitly
-                    # approved this session is allowed through.
-                    if self._auto_mode and self._auto_command_guard:
-                        verdict = classify_command(act.command or "")
-                        cmd_hash = hashlib.sha256((act.command or "").encode()).hexdigest()
-                        if verdict.danger and cmd_hash not in self._approved_commands:
-                            block_msg = (
-                                f"BLOCKED in full-auto: command matches '{verdict.category}' "
-                                f"({verdict.reason}; matched: {verdict.matched}). Autonomous "
-                                f"execution of irreversible/remote/escalating commands is gated. "
-                                f"Choose a safer approach, or the operator can run this manually."
-                            )
+                    # FULL-AUTO safety + cancellable execution live in
+                    # ToolDispatchMixin._do_run_command; yield/append stay here.
+                    ok, status, val = self._do_run_command(act)
+                    if not ok:
+                        if status == "blocked":
+                            block = val if isinstance(val, dict) else {"message": str(val)}
+                            block_msg = block.get("message") or str(val)
                             yield ConvEvent("command_blocked", {
                                 "id": aid, "command": act.command,
-                                "category": verdict.category, "reason": verdict.reason,
-                                "matched": verdict.matched,
+                                "category": block.get("category"),
+                                "reason": block.get("reason"),
+                                "matched": block.get("matched"),
                             })
                             self._append_action_result(act, aid, f"(run_command {aid} {block_msg})", is_native)
-                            continue
-                    cmd_timeout = resolve_timeout()
-                    # Cancellable run: polls self._cancel and kills the whole
-                    # process group on Stop, so a long/unbounded command can
-                    # actually be interrupted (plain subprocess.run blocks the
-                    # thread uninterruptibly -- Stop could not kill it).
-                    from .command_policy import run_cancellable
-                    output, exit_code, _run_status = run_cancellable(
-                        act.command,
-                        cwd=self.config.repo,
-                        timeout=cmd_timeout,
-                        cancel_event=self._cancel,
-                    )
-                    MAX_CAP = 50 * 1024
-                    if len(output) > MAX_CAP:
-                        output = output[:MAX_CAP] + "\n\n... (output truncated to 50KB) ..."
+                        else:
+                            yield ConvEvent("action_result", {"id": aid, "error": val})
+                            self._append_action_result(act, aid, f"(run_command {aid} failed: {val})", is_native)
+                        continue
+                    output = val["output"]
+                    exit_code = val["exit_code"]
                     yield ConvEvent("action_result", {
                         "id": aid, "num": 1, "types": ["command"], "adapter": "local", "mode": "tool",
                         "artifacts": [{"type": "command", "headline": f"Command exited with {exit_code}"}],
@@ -6414,164 +6119,6 @@ class ConversationalSession(
         finally:
             self._busy.release()
 
-    def _after_wiki_ingest(self) -> None:
-        """Notify server after a successful wiki write so graph/status cache refreshes."""
-        cb = getattr(self, "_on_wiki_ingest", None)
-        if cb is None:
-            return
-        try:
-            cb()
-        except Exception:
-            pass  # best-effort, like ingest itself
-
-    def _maybe_ingest(self, user_message: str, prose: list, findings: list) -> None:
-        """Auto-ingest a session digest to the wiki when enabled and there are
-        real findings worth capturing. Never fires the orchestrator (token-spend)."""
-        # accumulate for self-learning distillation (independent of wiki config)
-        if findings:
-            self._session_findings.extend(findings)
-            if not self._first_objective:
-                self._first_objective = user_message
-        if not (self._wiki_auto and self._wiki.configured and findings):
-            return
-        try:
-            digest = session_digest(user_message, prose, findings)
-            slug = f"harness-{_slugify(user_message)}"
-            r = self._wiki.ingest(slug, digest, note="auto-captured by pm-harness",
-                                  run_orchestrator=False)
-            if getattr(r, "ok", False):
-                self._after_wiki_ingest()
-        except Exception:
-            pass  # wiki capture is best-effort; never break the conversation
-
-    def prepare_wiki_pages(self) -> dict:
-        """Run the LOCAL pilot model to structure this session's digest into
-        entity/concept/decision wiki pages (the "backwards" orchestration pass),
-        cheaply, without a frontier orchestrator.
-
-        Returns {"status", "pages": [...], "auto_ingested"?: bool, "reason"?}.
-        status: prepared | empty | error | not_configured | no_signal.
-        Human-gated by default: pages are PREPARED and returned for approval.
-        With HARNESS_WIKI_ORCHESTRATE=auto they are also ingested immediately.
-        Never raises -- best-effort.
-        """
-        if not self._wiki.configured:
-            return {"status": "not_configured", "pages": []}
-        # Only act when there is genuinely new durable signal this session.
-        if len(self._session_findings) <= self._wiki_prepared_hwm or not self._session_findings:
-            return {"status": "no_signal", "pages": []}
-        try:
-            from .wiki_orchestrator import prepare_pages
-            digest = self._build_transcript_digest() or session_digest(
-                self._first_objective or "(session)", [], self._session_findings)
-            res = prepare_pages(self.pilot, self._first_objective or "(session)", digest)
-        except Exception as e:
-            return {"status": "error", "pages": [], "reason": str(e)}
-
-        self._wiki_prepared_hwm = len(self._session_findings)
-        pages = res.get("pages", [])
-        if res.get("status") != "prepared" or not pages:
-            return {"status": res.get("status", "empty"), "pages": []}
-
-        if self._wiki_orchestrate_auto:
-            ingested = self.ingest_prepared_pages(pages)
-            return {"status": "prepared", "pages": pages,
-                    "auto_ingested": True, "ingested": ingested}
-        return {"status": "prepared", "pages": pages, "auto_ingested": False}
-
-    def ingest_prepared_pages(self, pages: list) -> int:
-        """File approved structured pages into the wiki, one source each, with
-        run_orchestrator=False (the local model already did the structuring).
-        Returns the count successfully ingested. Best-effort."""
-        if not self._wiki.configured or not pages:
-            return 0
-        count = 0
-        for p in pages:
-            try:
-                kind = (p.get("kind") or "concept").strip()
-                title = (p.get("title") or "").strip()
-                slug = (p.get("slug") or _slugify(title)).strip()
-                body = (p.get("body") or "").strip()
-                if not slug or not body:
-                    continue
-                content = f"# {title}\n\n{body}\n" if title else body
-                r = self._wiki.ingest(
-                    f"{kind}-{slug}", content,
-                    note=f"pm-harness local orchestration ({kind})",
-                    run_orchestrator=False)
-                if getattr(r, "ok", False):
-                    count += 1
-            except Exception:
-                continue
-        if count > 0:
-            self._after_wiki_ingest()
-        return count
-
-    def _build_transcript_digest(self) -> str:
-        lines = []
-        for msg in self.export_display_transcript():
-            role = msg.get("role", "")
-            text = msg.get("text", "")
-            if role and text:
-                lines.append(f"{role.upper()}: {text}")
-        return "\n".join(lines)
-
-    def _maybe_auto_distill(self):
-        """If auto-distill is enabled and there is new signal, propose
-        PENDING candidates and yield a 'distilled' event. Best-effort."""
-        if not self._auto_distill:
-            return None
-        
-        has_new_findings = len(self._session_findings) > self._distilled_findings_hwm
-        has_new_turns = self._turn_count > self._distilled_turns_hwm
-        has_new_corrections = len(self._corrections) > self._distilled_corrections_hwm
-        
-        if not (has_new_findings or has_new_turns or has_new_corrections):
-            return None
-            
-        self._distilled_findings_hwm = len(self._session_findings)
-        self._distilled_turns_hwm = self._turn_count
-        self._distilled_corrections_hwm = len(self._corrections)
-        
-        try:
-            return self.distill()
-        except Exception as e:
-            return {"status": "error", "reason": str(e)}
-
-    def distill(self) -> dict:
-        """Propose PENDING candidate skill(s) AND rule(s) from this session's
-        accumulated findings. Human approval required before either loads into
-        context. Returns a combined status dict."""
-        out = {}
-        extra_context = ""
-        non_verification_findings = [f for f in self._session_findings if f.get("type") != "verification"]
-        
-        is_hard = (self._total_tool_calls >= 8) or getattr(self, "_error_then_recovery_seen", False)
-        if len(non_verification_findings) < 2 and is_hard:
-            extra_context = self._build_transcript_digest()
-            
-        try:
-            out["skill"] = distill_session(
-                self.pilot,
-                self._first_objective or "(session)",
-                self._session_findings,
-                self._skills,
-                extra_context=extra_context
-            )
-        except Exception as e:
-            out["skill"] = {"status": "error", "reason": str(e)}
-        try:
-            out["rules"] = distill_rules(
-                self.pilot,
-                self._first_objective or "(session)",
-                self._session_findings,
-                self._rules,
-                corrections=self._corrections
-            )
-        except Exception as e:
-            out["rules"] = {"status": "error", "reason": str(e)}
-        return out
-
     def _run_verification(self) -> tuple[bool, str]:
         import os
         import subprocess
@@ -6809,7 +6356,3 @@ class ConversationalSession(
                     self._maybe_ingest(objective, [], [])
                     return
 
-
-def _slugify(s: str) -> str:
-    import re
-    return (re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-") or "session")[:60]
