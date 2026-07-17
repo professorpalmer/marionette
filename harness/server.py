@@ -1352,6 +1352,7 @@ def _get_platform_adapters() -> dict:
 
 
 _WEB = Path(__file__).resolve().parent / "web"
+from .api.static import PUBLIC_GET_PATHS as _STATIC_PUBLIC_GET_PATHS  # noqa: E402
 # One shared session per server process (single-user local app).
 _state_dir = os.environ.get("HARNESS_STATE_DIR", "")
 _cfg = HarnessConfig.from_env()
@@ -1700,173 +1701,26 @@ def _pick_boot_workspace(ws_data: dict) -> str:
     return ""
 
 
-def _record_recent_workspace(target_repo: str, *, as_active: bool = True) -> list:
-    import json
-    import os
-    import tempfile as _tf
-    ws_json_path = _workspace_json_path()
-    ws_read_path = _resolve_existing_state_file("workspace.json")
-    try:
-        os.makedirs(os.path.dirname(ws_json_path), exist_ok=True)
-        recents = []
-        prior_repo = ""
-        if os.path.exists(ws_read_path):
-            try:
-                with open(ws_read_path, encoding="utf-8", errors="replace") as f:
-                    _ws_data = json.load(f)
-                    recents = _ws_data.get("recents", []) or []
-                    prior_repo = _ws_data.get("repo", "") or ""
-            except Exception:
-                recents = []
-        # never persist temp dirs (test/ephemeral state_dirs leak otherwise)
-        # and never persist the Marionette app checkout as a user project.
-        from .paths import _resolve
-        _tmproot = os.path.normcase(_resolve(_tf.gettempdir()))
-        def _persistable(_pth):
-            if not _pth:
-                return False
-            try:
-                _rp = os.path.normcase(_resolve(_pth))
-            except Exception:
-                return False
-            if "PYTEST_CURRENT_TEST" not in os.environ:
-                if _rp.startswith(_tmproot) or "/var/folders/" in _rp or "/T/tmp" in _pth:
-                    return False
-            if _is_app_install_root(_pth):
-                return False
-            return os.path.isdir(_pth)
-        # Stable order: if path already in recents (any slash/case spelling),
-        # leave its position; if new, append. Do NOT prepend-to-front on every
-        # open (that snapped the rail). Still persist active "repo" below for
-        # boot restore. Cap 8 + ephemeral guards unchanged. App install root is
-        # never added (manual open stays process-local only).
-        already = any(_paths_same_workspace(target_repo, r) for r in recents)
-        if target_repo and not already and _persistable(target_repo):
-            recents = list(recents) + [target_repo]
-        # Collapse slash/case duplicate spellings of the same root.
-        deduped = []
-        for r in recents:
-            if not _persistable(r):
-                continue
-            if any(_paths_same_workspace(r, kept) for kept in deduped):
-                continue
-            deduped.append(r)
-        recents = deduped[:8]
+# Recent-list persistence lives in harness.api.workspace; re-export historical
+# names for tests and boot/open callers. Path/app-install deps are injected.
+from .api.workspace import (  # noqa: E402
+    WorkspaceRecentDeps as _WorkspaceRecentDeps,
+    bind_recent_deps as _bind_workspace_recent_deps,
+    forget_recent_workspace as _forget_recent_workspace,
+    record_recent_workspace as _record_recent_workspace,
+)
 
-        # The "repo" key is what boot restores as the active workspace, so a
-        # temp dir / app checkout here resurrects as a phantom project on next
-        # launch. Keep the prior persisted repo when the new target is not a
-        # user project. as_active=False (Home seed) only appends to recents.
-        if as_active and _persistable(target_repo):
-            persisted_repo = target_repo
-        elif prior_repo and _persistable(prior_repo):
-            persisted_repo = prior_repo
-        elif as_active:
-            persisted_repo = ""
-        else:
-            persisted_repo = prior_repo if _persistable(prior_repo) else ""
+_bind_workspace_recent_deps(_WorkspaceRecentDeps(
+    # Late-bind through module globals so test monkeypatches on harness.server
+    # (e.g. _workspace_json_path) still reach recent-list persistence.
+    workspace_json_path=lambda: _workspace_json_path(),
+    resolve_existing_state_file=lambda name: _resolve_existing_state_file(name),
+    paths_same_workspace=lambda a, b: _paths_same_workspace(a, b),
+    is_app_install_root=lambda p: _is_app_install_root(p),
+    restrict_to_owner=lambda p: restrict_to_owner(p),
+    diag=lambda *a, **k: _diag(*a, **k),
+))
 
-        # Use atomic-write
-        target_dir = os.path.dirname(ws_json_path)
-        fd, temp_path = _tf.mkstemp(dir=target_dir, prefix=".tmp-")
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as f:
-                json.dump({"repo": persisted_repo, "recents": recents}, f)
-            os.replace(temp_path, ws_json_path)
-        except Exception as e:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-            raise e
-
-        if not restrict_to_owner(ws_json_path):
-            _diag("secure_files.restrict_failed", msg=ws_json_path)
-        return recents
-    except Exception:
-        # Fallback to get recents if possible
-        try:
-            if os.path.exists(ws_json_path):
-                with open(ws_json_path, encoding="utf-8", errors="replace") as f:
-                    return json.load(f).get("recents", []) or []
-        except Exception:
-            pass
-        return []
-
-def _forget_recent_workspace(forget_path: str) -> list:
-    import json
-    import os
-    import tempfile as _tf
-    ws_json_path = _workspace_json_path()
-    ws_read_path = _resolve_existing_state_file("workspace.json")
-    try:
-        os.makedirs(os.path.dirname(ws_json_path), exist_ok=True)
-        recents = []
-        repo = ""
-        if os.path.exists(ws_read_path):
-            try:
-                with open(ws_read_path, encoding="utf-8", errors="replace") as f:
-                    data = json.load(f)
-                    recents = data.get("recents", []) or []
-                    repo = data.get("repo", "")
-            except Exception:
-                recents = []
-        # never persist temp dirs (test/ephemeral state_dirs leak otherwise)
-        from .paths import _resolve
-        _tmproot = os.path.normcase(_resolve(_tf.gettempdir()))
-        def _persistable(_pth):
-            if not _pth:
-                return False
-            try:
-                _rp = os.path.normcase(_resolve(_pth))
-            except Exception:
-                return False
-            if "PYTEST_CURRENT_TEST" not in os.environ:
-                if _rp.startswith(_tmproot) or "/var/folders/" in _rp or "/T/tmp" in _pth:
-                    return False
-            if _is_app_install_root(_pth):
-                return False
-            return os.path.isdir(_pth)
-
-        # Drop every slash/case spelling of forget_path (exact == left siblings).
-        recents = [r for r in recents if not _paths_same_workspace(r, forget_path)]
-        recents = [r for r in recents if _persistable(r)]
-        recents = recents[:8]
-
-        # Forgetting the active workspace must clear the boot-restore repo key,
-        # otherwise buildProjectsList re-appends currentRepo and the row sticks
-        # as a phantom after Remove from list.
-        if repo and _paths_same_workspace(repo, forget_path):
-            repo = ""
-
-        # Use atomic-write
-        target_dir = os.path.dirname(ws_json_path)
-        fd, temp_path = _tf.mkstemp(dir=target_dir, prefix=".tmp-")
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as f:
-                json.dump({"repo": repo, "recents": recents}, f)
-            os.replace(temp_path, ws_json_path)
-        except Exception as e:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-            raise e
-
-        if not restrict_to_owner(ws_json_path):
-            _diag("secure_files.restrict_failed", msg=ws_json_path)
-        return recents
-    except Exception:
-        # Fallback to get recents if possible
-        try:
-            if os.path.exists(ws_json_path):
-                with open(ws_json_path, encoding="utf-8", errors="replace") as f:
-                    return json.load(f).get("recents", []) or []
-        except Exception:
-            pass
-        return []
 
 # DURABLE STATE must be anchored BEFORE workspace.json / workspace_drivers
 # restore. Saves write under ~/.pmharness/state/; if we restore first,
@@ -2555,10 +2409,11 @@ def _set_codegraph_status(
     (matches prior inline assignments for ready/unsupported). Passing an
     explicit ``reason`` (including ``None``) updates both.
     """
-    global _codegraph_status, _codegraph_status_reason
-    _codegraph_status = status
-    if reason is not _CODEGRAPH_REASON_UNSET:
-        _codegraph_status_reason = reason
+    from .api import codegraph_index as _cgi
+    if reason is _CODEGRAPH_REASON_UNSET:
+        _cgi.set_codegraph_status(status)
+    else:
+        _cgi.set_codegraph_status(status, reason)
 
 
 def _session_services():
@@ -2758,19 +2613,18 @@ def _platform_services():
 def _codegraph_services():
     """Build CodegraphServices from live server module globals (call-time lookup)."""
     from .api.codegraph import CodegraphServices
+    from .api import codegraph_index as _cgi
     import time as _time
 
     def _set_reason(reason: str) -> None:
-        global _codegraph_status_reason
-        _codegraph_status_reason = reason
+        _cgi.codegraph_status_reason = reason
 
     def _set_live_status(status: str) -> None:
-        global _codegraph_status
-        _codegraph_status = status
+        _cgi.codegraph_status = status
 
     def _status_cache_put(repo: str, payload) -> None:
-        _codegraph_status_cache[repo] = (
-            _time.monotonic() + _CODEGRAPH_STATUS_TTL, payload)
+        _cgi.codegraph_status_cache[repo] = (
+            _time.monotonic() + _cgi.CODEGRAPH_STATUS_TTL, payload)
 
     return CodegraphServices(
         cfg=_cfg,
@@ -2778,20 +2632,20 @@ def _codegraph_services():
         reindex_bg=_reindex_codegraph_bg,
         index_bg=_index_codegraph_bg,
         get_status=_get_codegraph_status,
-        get_reason=lambda: _codegraph_status_reason,
+        get_reason=lambda: _cgi.codegraph_status_reason,
         set_reason=_set_reason,
-        get_live_status=lambda: _codegraph_status,
+        get_live_status=lambda: _cgi.codegraph_status,
         set_live_status=_set_live_status,
-        get_preflight=lambda: _codegraph_preflight,
-        get_suggested_action=lambda: _codegraph_suggested_action,
+        get_preflight=lambda: _cgi.codegraph_preflight,
+        get_suggested_action=lambda: _cgi.codegraph_suggested_action,
         puppetmaster_available=_puppetmaster_available,
         codegraph_indexed=_codegraph_indexed,
-        status_cache_get=lambda repo: _codegraph_status_cache.get(repo),
+        status_cache_get=lambda repo: _cgi.codegraph_status_cache.get(repo),
         status_cache_put=_status_cache_put,
-        status_cache_pop=lambda repo: _codegraph_status_cache.pop(repo, None),
-        fail_until_for=lambda repo: float(_codegraph_fail_until.get(repo) or 0),
+        status_cache_pop=lambda repo: _cgi.codegraph_status_cache.pop(repo, None),
+        fail_until_for=lambda repo: float(_cgi.codegraph_fail_until.get(repo) or 0),
         puppetmaster_cmd=_puppetmaster_cmd,
-        status_ttl=_CODEGRAPH_STATUS_TTL,
+        status_ttl=_cgi.CODEGRAPH_STATUS_TTL,
     )
 
 
@@ -2802,15 +2656,15 @@ def _workspace_services():
     _UNSET = object()
 
     def _clear_active_codegraph() -> None:
-        global _codegraph_status, _codegraph_status_reason
-        _codegraph_status = "none"
-        _codegraph_status_reason = None
+        from .api.codegraph_index import clear_active_codegraph
+        clear_active_codegraph()
 
     def _set_codegraph_status(status: str, reason=_UNSET) -> None:
-        global _codegraph_status, _codegraph_status_reason
-        _codegraph_status = status
-        if reason is not _UNSET:
-            _codegraph_status_reason = reason
+        from .api import codegraph_index as _cgi
+        if reason is _UNSET:
+            _cgi.set_codegraph_status(status)
+        else:
+            _cgi.set_codegraph_status(status, reason)
 
     return WorkspaceServices(
         cfg=_cfg,
@@ -3315,448 +3169,45 @@ def _parse_bool(val) -> bool:
     return False
 
 
-_codegraph_status = "none"
-_codegraph_status_reason = None
-# Last preflight payload for the active repo (surfaced on /api/codegraph).
-_codegraph_preflight = None  # dict | None
-_codegraph_suggested_action = None  # dict | None
+# CodeGraph indexer runtime lives in harness.api.codegraph_index; re-export
+# historical names for tests and callers. Scalar status/proc state is read
+# through __getattr__ so assignments on the api module stay visible here.
+from .api.codegraph_index import (  # noqa: E402
+    CODEGRAPH_STALE_DEBOUNCE as _CODEGRAPH_STALE_DEBOUNCE,
+    CODEGRAPH_STATUS_TTL as _CODEGRAPH_STATUS_TTL,
+    CodegraphIndexDeps as _CodegraphIndexDeps,
+    bind_deps as _bind_codegraph_index_deps,
+    clear_active_codegraph as _clear_active_codegraph,
+    codegraph_api_payload as _codegraph_api_payload,
+    codegraph_fail_until as _codegraph_fail_until,
+    codegraph_index_alive as _codegraph_index_alive,
+    codegraph_index_lock as _codegraph_index_lock,
+    codegraph_index_log_path as _codegraph_index_log_path,
+    codegraph_indexed as _codegraph_indexed,
+    codegraph_is_stale as _codegraph_is_stale,
+    codegraph_status_cache as _codegraph_status_cache,
+    codegraph_stale_check_at as _codegraph_stale_check_at,
+    codegraph_tail_log as _codegraph_tail_log,
+    get_codegraph_status as _get_codegraph_status,
+    index_codegraph_bg as _index_codegraph_bg,
+    maybe_auto_index_codegraph as _maybe_auto_index_codegraph,
+    maybe_refresh_codegraph as _maybe_refresh_codegraph,
+    prepare_codegraph_scope as _prepare_codegraph_scope,
+    reindex_codegraph_bg as _reindex_codegraph_bg,
+)
+from .api import codegraph_index as _codegraph_index_mod  # noqa: E402
 
-# Short-TTL cache for the /api/codegraph status payload, keyed by repo path.
-# Reading codegraph status spawns a `puppetmaster codegraph status --json`
-# subprocess (interpreter cold-start + DB read) on every poll, which is the
-# source of the panel's load lag. The graph only changes on (re)index, so we
-# serve a cached payload for a few seconds and only re-spawn when stale. The
-# cache is bypassed entirely while status == "indexing" (that path never hits
-# the subprocess), so a fresh index is reflected as soon as it finishes.
-_codegraph_status_cache = {}  # repo -> (monotonic_expiry, payload_dict)
-_CODEGRAPH_STATUS_TTL = 30.0  # seconds
-# After an indexer failure, suppress GET auto-reindex for this many seconds so
-# a missing cwd / WinError 2 cannot spam the panel and log every poll.
-_codegraph_fail_until = {}  # repo -> monotonic timestamp
+_bind_codegraph_index_deps(_CodegraphIndexDeps(
+    # Late-bind through module globals so test monkeypatches on harness.server
+    # still reach the indexer runtime.
+    puppetmaster_available=lambda: _puppetmaster_available(),
+    puppetmaster_cmd=lambda *a, **k: _puppetmaster_cmd(*a, **k),
+    diag=lambda *a, **k: _diag(*a, **k),
+    get_state_dir=lambda: (_cfg.state_dir if _cfg else "") or os.path.expanduser("~/.pmharness/state"),
+    get_repo=lambda: _cfg.repo if _cfg else None,
+))
 
 _pilot._on_wiki_ingest = _clear_wiki_graph_cache
-
-
-# Handle to the in-flight CodeGraph indexer: (repo_path, Popen). Lets status
-# self-heal -- a wedged "indexing" flag can never outlive the actual job -- and
-# prevents a SECOND indexer from spawning while one runs (concurrent indexers
-# collide on the same SQLite and Puppetmaster fails them lock-busy, which
-# manifested as the panel locking up + metrics vanishing).
-_codegraph_index_proc = None  # tuple[str, subprocess.Popen] | None
-_codegraph_index_lock = threading.Lock()
-
-
-def _codegraph_indexed(repo_path: str) -> bool:
-    """True only when a built CodeGraph DB exists for the repo.
-
-    The `.codegraph/` directory alone is NOT proof of an index: `codegraph init`
-    writes `config.json` there before any indexing, and `codegraph status` hangs
-    on a config-only checkout (no DB) until it times out -- which surfaced as
-    "unsupported" on fresh installs. Gate on the actual DB file so an init'd-but-
-    unindexed checkout is treated as needing an index, not as ready.
-    """
-    try:
-        return os.path.isfile(os.path.join(repo_path, ".codegraph", "codegraph.db"))
-    except Exception:
-        return False
-
-
-def _codegraph_index_alive() -> bool:
-    """True only while the tracked indexer subprocess is actually running."""
-    p = _codegraph_index_proc
-    if p is None:
-        return False
-    try:
-        return p[1].poll() is None
-    except Exception:
-        return False
-
-
-def _codegraph_index_log_path() -> str:
-    state = (_cfg.state_dir if _cfg else "") or os.path.expanduser("~/.pmharness/state")
-    try:
-        os.makedirs(state, exist_ok=True)
-    except Exception:
-        pass
-    return os.path.join(state, "codegraph-index.log")
-
-
-def _codegraph_api_payload(repo, status=None):
-    """Shared /api/codegraph fields (reason, preflight, suggested_action)."""
-    st = status if status is not None else (_get_codegraph_status(repo) if repo else "none")
-    return {
-        "indexed": bool(repo and _codegraph_indexed(repo)),
-        "status": st,
-        "reason": _codegraph_status_reason,
-        "preflight": _codegraph_preflight,
-        "suggested_action": _codegraph_suggested_action,
-        "repo": repo or "",
-    }
-
-
-def _codegraph_tail_log(max_chars: int = 800) -> str:
-    path = _codegraph_index_log_path()
-    try:
-        if not os.path.isfile(path):
-            return ""
-        with open(path, encoding="utf-8", errors="replace") as f:
-            data = f.read()
-        if len(data) <= max_chars:
-            return data.strip()
-        return data[-max_chars:].strip()
-    except Exception:
-        return ""
-
-
-def _prepare_codegraph_scope(repo_path: str) -> dict:
-    """Run preflight; auto-apply asset excludes when scope is recommended.
-
-    Returns the preflight dict and updates globals for API/UI. Does not start
-    the indexer. Verdict ``unlikely`` means callers should NOT start a full
-    index; ``scope_recommended`` / ``ok`` may proceed (after excludes merge).
-    """
-    global _codegraph_status, _codegraph_status_reason
-    global _codegraph_preflight, _codegraph_suggested_action
-    from .codegraph_preflight import (
-        child_exclude_globs,
-        ensure_lua_includes,
-        merge_codegraph_excludes,
-        preflight_workspace,
-    )
-
-    pre = preflight_workspace(repo_path)
-    _codegraph_preflight = pre
-    _codegraph_suggested_action = None
-    verdict = pre.get("verdict") or "ok"
-
-    try:
-        ensure_lua_includes(repo_path)
-    except Exception as e:
-        _diag("server.codegraph_lua_include", e)
-
-    if verdict == "unlikely":
-        _codegraph_status = "needs_scope"
-        _codegraph_status_reason = pre.get("reason") or (
-            "Workspace has almost no indexable source under a huge tree."
-        )
-        roots = pre.get("suggested_roots") or []
-        excludes = pre.get("suggested_excludes") or []
-        if roots:
-            _codegraph_suggested_action = {
-                "kind": "open_subdir",
-                "path": os.path.join(repo_path, roots[0]),
-                "excludes": excludes,
-            }
-        elif excludes:
-            _codegraph_suggested_action = {
-                "kind": "write_excludes",
-                "excludes": excludes,
-            }
-        return pre
-
-    if verdict == "scope_recommended":
-        extra = child_exclude_globs(pre.get("suggested_excludes") or [])
-        try:
-            merge_codegraph_excludes(repo_path, extra_excludes=extra or None)
-        except Exception as e:
-            _diag("server.codegraph_merge_excludes", e)
-        _codegraph_status_reason = pre.get("reason") or (
-            "Large install detected; asset excludes applied before indexing."
-        )
-        roots = pre.get("suggested_roots") or []
-        if roots:
-            _codegraph_suggested_action = {
-                "kind": "open_subdir",
-                "path": os.path.join(repo_path, roots[0]),
-                "excludes": pre.get("suggested_excludes") or [],
-            }
-        else:
-            _codegraph_suggested_action = {
-                "kind": "write_excludes",
-                "excludes": pre.get("suggested_excludes") or [],
-            }
-        # Still index after excludes — do not leave the user on needs_scope
-        # when we can recover automatically.
-        return pre
-
-    # ok
-    try:
-        # Ensure lua is graphable even on normal repos that already have config.
-        ensure_lua_includes(repo_path)
-    except Exception:
-        pass
-    return pre
-
-
-def _index_codegraph_bg(repo_path: str):
-    global _codegraph_status, _codegraph_status_reason, _codegraph_status_cache
-    global _codegraph_preflight, _codegraph_suggested_action
-    if not _puppetmaster_available():
-        _codegraph_status = "unsupported"
-        _codegraph_status_reason = "puppetmaster not found -- codegraph/swarm unavailable"
-        return
-    global _codegraph_index_proc
-
-    # Missing/moved workspace: fail once with a clear reason. Spawning with a
-    # bad cwd on Windows surfaces as WinError 2/267 and the GET self-heal loop
-    # used to re-kick forever, stuffing codegraph-index.log into the panel.
-    if not repo_path or not os.path.isdir(repo_path):
-        _codegraph_status = "unsupported"
-        _codegraph_status_reason = (
-            f"Workspace path is missing or not a directory: {repo_path or '(empty)'}. "
-            "Open Folder on the real path (e.g. C:\\Ashita or C:\\Ashita\\addons) "
-            "and Remove the phantom from Projects."
-        )
-        _codegraph_suggested_action = None
-        if repo_path:
-            _codegraph_status_cache.pop(repo_path, None)
-        return
-
-    # Claim INDEXING immediately -- before preflight -- so /api/workspace/open
-    # and status polls never flash UNSUPPORTED while scope prep runs. Preflight
-    # may still override to needs_scope / unsupported on real failures.
-    _codegraph_status = "indexing"
-    _codegraph_status_reason = None
-    _codegraph_status_cache.pop(repo_path, None)
-
-    # Preflight before spawning: avoid a doomed 10-minute walk of game assets.
-    try:
-        pre = _prepare_codegraph_scope(repo_path)
-    except Exception as e:
-        _diag("server.codegraph_preflight", e)
-        pre = {"verdict": "ok"}
-    if (pre.get("verdict") or "") == "unlikely":
-        # Do not start indexer; status already needs_scope with reason.
-        _codegraph_status_cache.pop(repo_path, None)
-        return
-
-    # Guard against a second indexer while one is already running -- concurrent
-    # codegraph indexers collide on the same SQLite (lock-busy) and wedge the panel.
-    with _codegraph_index_lock:
-        if _codegraph_index_alive():
-            _codegraph_status = "indexing"
-            return
-        _codegraph_status = "indexing"
-        if not _codegraph_status_reason:
-            _codegraph_status_reason = None
-        # Invalidate any cached status for this repo so the panel does not show
-        # stale "ready" stats while a fresh (re)index is running.
-        _codegraph_status_cache.pop(repo_path, None)
-        _codegraph_fail_until.pop(repo_path, None)
-        log_path = _codegraph_index_log_path()
-        try:
-            import subprocess
-            log_f = open(log_path, "a", encoding="utf-8", errors="replace")
-            log_f.write(f"\n--- codegraph init --index @ {repo_path} ---\n")
-            log_f.flush()
-            proc = subprocess.Popen(
-                _puppetmaster_cmd("codegraph", "init", "--index"),
-                cwd=repo_path,
-                stdout=log_f,
-                stderr=subprocess.STDOUT,
-            )
-            _codegraph_index_proc = (repo_path, proc)
-        except Exception as e:
-            _codegraph_status = "unsupported"
-            _codegraph_status_reason = f"failed to start indexer: {e}"
-            return
-
-    # After scope/excludes, allow a longer run; still a backstop so a wedged
-    # process cannot pin the panel forever.
-    index_timeout = 1800
-
-    def wait_and_update():
-        global _codegraph_status, _codegraph_status_reason, _codegraph_index_proc
-        global _codegraph_suggested_action
-        timed_out = False
-        try:
-            proc.wait(timeout=index_timeout)
-            if proc.returncode == 0 and _codegraph_indexed(repo_path):
-                _codegraph_status = "ready"
-                _codegraph_status_reason = None
-            elif proc.returncode == 0:
-                _codegraph_status = "unsupported"
-                _codegraph_status_reason = (
-                    "Indexer exited 0 but no codegraph.db was written. "
-                    + (_codegraph_tail_log(max_chars=400) or "See codegraph-index.log.")
-                )
-            else:
-                _codegraph_status = "unsupported"
-                # One clean failure line — do not dump the whole repeated log.
-                tail = _codegraph_tail_log(max_chars=400)
-                # Prefer the last non-empty line of the tail.
-                last_line = ""
-                if tail:
-                    for line in reversed(tail.splitlines()):
-                        if line.strip():
-                            last_line = line.strip()
-                            break
-                _codegraph_status_reason = (
-                    f"Indexer failed (exit {proc.returncode}). "
-                    + (last_line or "See ~/.pmharness/state/codegraph-index.log.")
-                )
-                # Back off auto-reindex for this path so GET polling cannot
-                # restart a doomed indexer every few seconds.
-                _codegraph_fail_until[repo_path] = time.monotonic() + 120.0
-        except Exception:
-            timed_out = True
-            _codegraph_status = "unsupported"
-            _codegraph_status_reason = (
-                f"Indexing timed out after {index_timeout // 60} minutes. "
-                "The tree is likely still too large — open a code subdirectory "
-                "or apply asset excludes, then re-index."
-            )
-            _codegraph_fail_until[repo_path] = time.monotonic() + 120.0
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        finally:
-            try:
-                if proc.stdout:
-                    proc.stdout.close()
-            except Exception:
-                pass
-            with _codegraph_index_lock:
-                if _codegraph_index_proc and _codegraph_index_proc[1] is proc:
-                    _codegraph_index_proc = None
-            _codegraph_status_cache.pop(repo_path, None)
-            if timed_out:
-                _codegraph_suggested_action = {
-                    "kind": "write_excludes",
-                    "excludes": (pre.get("suggested_excludes") if isinstance(pre, dict) else None) or [],
-                }
-
-    threading.Thread(target=wait_and_update, daemon=True).start()
-
-
-def _reindex_codegraph_bg(repo_path: str):
-    global _codegraph_status, _codegraph_status_reason
-    if not _puppetmaster_available():
-        _codegraph_status = "unsupported"
-        _codegraph_status_reason = "puppetmaster not found -- codegraph/swarm unavailable"
-        return
-    # Force a fresh preflight + index (same path as init).
-    _index_codegraph_bg(repo_path)
-
-
-def _get_codegraph_status(repo_path: str) -> str:
-    """Resolve CodeGraph badge status for ``repo_path``.
-
-    ``unsupported`` is reserved for confirmed failures (PM missing, path
-    missing, indexer failed with a reason). The transient empty-index case
-    (PM available, path exists, no DB yet, no failure reason) returns
-    ``indexing`` so the LeftRail never flashes UNSUPPORTED before the
-    indexer starts.
-    """
-    global _codegraph_status, _codegraph_status_reason
-    if not repo_path:
-        return "none"
-    if not _puppetmaster_available():
-        _codegraph_status = "unsupported"
-        return "unsupported"
-    if not os.path.isdir(repo_path):
-        _codegraph_status = "unsupported"
-        return "unsupported"
-    # Self-heal: trust "indexing" while the indexer is alive OR while we are
-    # still in preflight/spawn (status=indexing but proc not assigned yet).
-    # Demoting that window to unsupported caused the LeftRail UNSUPPORTED flash.
-    if _codegraph_status == "indexing":
-        if _codegraph_index_alive():
-            return "indexing"
-        if _codegraph_indexed(repo_path):
-            _codegraph_status = "ready"
-            return "ready"
-        # Proc handle present but dead => indexer exited without a DB.
-        if _codegraph_index_proc is not None:
-            _codegraph_status = "unsupported"
-            if not _codegraph_status_reason:
-                _codegraph_status_reason = "Indexer stopped before writing codegraph.db"
-            return "unsupported"
-        # No proc yet (preflight / about to spawn) -- stay indexing.
-        return "indexing"
-    if _codegraph_status == "needs_scope":
-        return "needs_scope"
-    if _codegraph_indexed(repo_path):
-        _codegraph_status = "ready"
-        return "ready"
-    # Confirmed failure with a reason sticks; bare default / empty-index does not.
-    if _codegraph_status == "unsupported" and _codegraph_status_reason:
-        return "unsupported"
-    # Transient: PM ok, path ok, not indexed yet — never flash unsupported.
-    if _codegraph_status not in ("indexing", "pending"):
-        _codegraph_status = "indexing"
-    return "indexing"
-
-
-# Debounce: never re-check staleness more than once per this interval per repo,
-# so per-turn triggers cannot thrash the (CPU-heavy) reindex during rapid edits.
-_codegraph_stale_check_at = {}  # repo -> monotonic timestamp of last check
-_CODEGRAPH_STALE_DEBOUNCE = 20.0  # seconds
-
-
-def _codegraph_is_stale(repo_path: str) -> bool:
-    """True if the working tree has changed since the .codegraph index was built.
-
-    Detects edits AND deletions: we compare the index mtime against the newest
-    mtime of (a) every source FILE and (b) every DIRECTORY. Directory mtimes are
-    the key to catching deletions/renames -- removing a file bumps its parent
-    dir's mtime even though no surviving file looks newer (the original bug:
-    deleted files left the index referencing ghosts while this returned False).
-    """
-    try:
-        codegraph_path = os.path.join(repo_path, ".codegraph")
-        if not os.path.exists(codegraph_path):
-            return False
-        cg_mtime = os.path.getmtime(codegraph_path)
-        skip_dirs = {".git", "node_modules", ".venv", ".codegraph", "dist", "build", "__pycache__"}
-        extensions = {".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".swift", ".go", ".rs"}
-        for root, dirs, files in os.walk(repo_path):
-            dirs[:] = [d for d in dirs if d not in skip_dirs]
-            # (b) directory mtime -- catches deletions/renames/additions in this dir
-            try:
-                if os.path.getmtime(root) > cg_mtime:
-                    return True
-            except Exception:
-                pass
-            # (a) source file mtime -- catches in-place edits
-            for file in files:
-                _, ext = os.path.splitext(file)
-                if ext.lower() in extensions:
-                    try:
-                        if os.path.getmtime(os.path.join(root, file)) > cg_mtime:
-                            return True
-                    except Exception:
-                        pass
-    except Exception:
-        pass
-    return False
-
-
-def _maybe_refresh_codegraph(repo_path: str, *, force: bool = False) -> None:
-    """Debounced, background staleness-driven reindex. Safe to call on every turn
-    and on session switch -- the debounce + the indexing-guard ensure it never
-    thrashes. force=True bypasses the debounce (e.g. an explicit user action)."""
-    if not repo_path:
-        return
-    import time as _time
-    if not force:
-        last = _codegraph_stale_check_at.get(repo_path, 0.0)
-        if (_time.monotonic() - last) < _CODEGRAPH_STALE_DEBOUNCE:
-            return
-    _codegraph_stale_check_at[repo_path] = _time.monotonic()
-
-    def worker():
-        global _codegraph_status, _codegraph_status_reason
-        if _codegraph_status == "indexing":
-            return
-        if _codegraph_is_stale(repo_path):
-            _codegraph_status_reason = "files changed -- refreshing index"
-            _reindex_codegraph_bg(repo_path)
-    try:
-        threading.Thread(target=worker, daemon=True).start()
-    except Exception as e:
-        _diag("server.codegraph_stale_check_thread", e)
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -4469,7 +3920,8 @@ class Handler(BaseHTTPRequestHandler):
     # GET endpoints that are intentionally public (the same-origin renderer
     # bootstrap assets, which must load BEFORE the page has the token to make
     # authenticated calls). Everything else under /api requires the token.
-    _PUBLIC_GET_PATHS = frozenset({"/", "/index.html", "/app.js", "/app.css"})
+    # Owned by harness.api.static; Handler keeps the auth gate.
+    _PUBLIC_GET_PATHS = _STATIC_PUBLIC_GET_PATHS
 
     def do_GET(self):
         global _codegraph_status, _codegraph_status_reason
@@ -4493,17 +3945,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not self._token_ok():
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-        if u.path in ("/", "/index.html"):
-            html = (_WEB / "index.html").read_text()
-            # inject the auth token so the same-origin page can call the API
-            meta = '<meta name="harness-token" content="%s">' % _TOKEN
-            html = html.replace("</head>", meta + "</head>", 1) if "</head>" in html else meta + html
-            return self._send(200, html, "text/html")
-        if u.path == "/app.js":
-            return self._send(200, (_WEB / "app.js").read_text(),
-                              "application/javascript")
-        if u.path == "/app.css":
-            return self._send(200, (_WEB / "app.css").read_text(), "text/css")
+        from .api import static as _static_api
+        shell = _static_api.try_static_shell(u.path, web_root=_WEB, token=_TOKEN)
+        if shell is not None:
+            status, body, ctype = shell
+            return self._send(status, body, ctype)
         if u.path == "/api/git/status":
             if self._guard():
                 return
@@ -5252,33 +4698,6 @@ def _get_settings_dict():
     }
 
 
-_startup_index_fired = False
-
-
-def _maybe_auto_index_codegraph():
-    global _startup_index_fired, _codegraph_status, _codegraph_status_reason
-    if _startup_index_fired:
-        return
-    _startup_index_fired = True
-
-    repo = _cfg.repo
-    if repo and os.path.isdir(repo):
-        if not _puppetmaster_available():
-            _codegraph_status = "unsupported"
-            _codegraph_status_reason = "puppetmaster not found -- codegraph/swarm unavailable"
-            return
-        
-        if _codegraph_indexed(repo):
-            _codegraph_status = "ready"
-        else:
-            # No built DB yet (fresh checkout, or init'd-but-never-indexed):
-            # build it in the background so the panel comes up ready without a
-            # manual re-index. `_index_codegraph_bg` runs `codegraph init --index`.
-            def target():
-                _index_codegraph_bg(repo)
-            t = threading.Thread(target=target, daemon=True)
-            t.start()
-
 
 def _cleanup_marker(marker_path: str, pid: int) -> None:
     try:
@@ -5289,6 +4708,32 @@ def _cleanup_marker(marker_path: str, pid: int) -> None:
                 os.remove(marker_path)
     except Exception:
         pass
+
+
+# Read-through aliases so `harness.server._codegraph_status` (etc.) reflects
+# the owning module after the index-runtime peel. Writes should target
+# harness.api.codegraph_index (tests that assign on server are updated).
+_CODEGRAPH_STATE_ALIASES = {
+    "_codegraph_status": "codegraph_status",
+    "_codegraph_status_reason": "codegraph_status_reason",
+    "_codegraph_preflight": "codegraph_preflight",
+    "_codegraph_suggested_action": "codegraph_suggested_action",
+    "_codegraph_index_proc": "codegraph_index_proc",
+    "_startup_index_fired": "startup_index_fired",
+}
+
+
+def __getattr__(name: str):
+    alias = _CODEGRAPH_STATE_ALIASES.get(name)
+    if alias is not None:
+        from .api import codegraph_index as _cgi
+        return getattr(_cgi, alias)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(list(globals().keys()) + list(_CODEGRAPH_STATE_ALIASES.keys()))
+
 
 
 def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> None:

@@ -1,6 +1,8 @@
 """Codegraph admin HTTP route bodies (peeled from ``harness.server``).
 
 Owns POST reindex / apply-excludes and GET ``/api/codegraph`` status panel.
+Indexer runtime lives in :mod:`harness.api.codegraph_index` and is re-exported
+here so callers can import from ``harness.api.codegraph``.
 """
 
 from __future__ import annotations
@@ -11,6 +13,33 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Union
+
+from .codegraph_index import (  # noqa: F401
+    CODEGRAPH_STALE_DEBOUNCE,
+    CODEGRAPH_STATUS_TTL,
+    CodegraphIndexDeps,
+    bind_deps as bind_codegraph_index_deps,
+    clear_active_codegraph,
+    codegraph_api_payload,
+    codegraph_fail_until,
+    codegraph_index_alive,
+    codegraph_index_lock,
+    codegraph_index_log_path,
+    codegraph_indexed,
+    codegraph_is_stale,
+    codegraph_status_cache,
+    codegraph_stale_check_at,
+    codegraph_tail_log,
+    get_codegraph_status,
+    index_codegraph_bg,
+    maybe_auto_index_codegraph,
+    maybe_refresh_codegraph,
+    prepare_codegraph_scope,
+    reindex_codegraph_bg,
+    set_codegraph_status,
+)
+# Scalar / proc state is read via harness.api.codegraph_index.<name> so
+# reassignments stay coherent (from-import of str/None would snapshot).
 
 
 @dataclass

@@ -1,6 +1,8 @@
 """Workspace HTTP route bodies (peeled from ``harness.server``).
 
 Owns forget/get/symbols/workspaces CRUD and ``POST /api/workspace/open``.
+Also owns recent-list persistence helpers (``record_recent_workspace`` /
+``forget_recent_workspace``) with injected path/app-install deps.
 """
 
 from __future__ import annotations
@@ -11,6 +13,189 @@ import subprocess
 import tempfile as _tf
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Type, Union
+
+
+@dataclass
+class WorkspaceRecentDeps:
+    """Path/app-install deps for recent-list persistence (injected by server)."""
+
+    workspace_json_path: Callable[[], str]
+    resolve_existing_state_file: Callable[[str], str]
+    paths_same_workspace: Callable[[str, str], bool]
+    is_app_install_root: Callable[[str], bool]
+    restrict_to_owner: Callable[[str], bool]
+    diag: Callable[..., Any]
+
+
+_recent_deps: Optional[WorkspaceRecentDeps] = None
+
+
+def bind_recent_deps(deps: WorkspaceRecentDeps) -> None:
+    """Wire server path helpers once during server module import."""
+    global _recent_deps
+    _recent_deps = deps
+
+
+def _require_recent_deps() -> WorkspaceRecentDeps:
+    if _recent_deps is None:
+        raise RuntimeError("workspace.bind_recent_deps() was not called")
+    return _recent_deps
+
+
+def _persistable_recent_path(path: str, is_app_install_root: Callable[[str], bool]) -> bool:
+    """True when ``path`` may be written into workspace.json recents/repo."""
+    if not path:
+        return False
+    from ..paths import _resolve
+    try:
+        resolved = os.path.normcase(_resolve(path))
+    except Exception:
+        return False
+    tmproot = os.path.normcase(_resolve(_tf.gettempdir()))
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        if resolved.startswith(tmproot) or "/var/folders/" in resolved or "/T/tmp" in path:
+            return False
+    if is_app_install_root(path):
+        return False
+    return os.path.isdir(path)
+
+
+def record_recent_workspace(target_repo: str, *, as_active: bool = True) -> list:
+    """Append ``target_repo`` to workspace.json recents (cap 8, scrub ephemeral)."""
+    deps = _require_recent_deps()
+    ws_json_path = deps.workspace_json_path()
+    ws_read_path = deps.resolve_existing_state_file("workspace.json")
+    try:
+        os.makedirs(os.path.dirname(ws_json_path), exist_ok=True)
+        recents = []
+        prior_repo = ""
+        if os.path.exists(ws_read_path):
+            try:
+                with open(ws_read_path, encoding="utf-8", errors="replace") as f:
+                    ws_data = json.load(f)
+                    recents = ws_data.get("recents", []) or []
+                    prior_repo = ws_data.get("repo", "") or ""
+            except Exception:
+                recents = []
+
+        def persistable(path: str) -> bool:
+            return _persistable_recent_path(path, deps.is_app_install_root)
+
+        # Stable order: if path already in recents (any slash/case spelling),
+        # leave its position; if new, append. Do NOT prepend-to-front on every
+        # open (that snapped the rail). Still persist active "repo" below for
+        # boot restore. Cap 8 + ephemeral guards unchanged. App install root is
+        # never added (manual open stays process-local only).
+        already = any(deps.paths_same_workspace(target_repo, r) for r in recents)
+        if target_repo and not already and persistable(target_repo):
+            recents = list(recents) + [target_repo]
+        # Collapse slash/case duplicate spellings of the same root.
+        deduped = []
+        for recent in recents:
+            if not persistable(recent):
+                continue
+            if any(deps.paths_same_workspace(recent, kept) for kept in deduped):
+                continue
+            deduped.append(recent)
+        recents = deduped[:8]
+
+        # The "repo" key is what boot restores as the active workspace, so a
+        # temp dir / app checkout here resurrects as a phantom project on next
+        # launch. Keep the prior persisted repo when the new target is not a
+        # user project. as_active=False (Home seed) only appends to recents.
+        if as_active and persistable(target_repo):
+            persisted_repo = target_repo
+        elif prior_repo and persistable(prior_repo):
+            persisted_repo = prior_repo
+        elif as_active:
+            persisted_repo = ""
+        else:
+            persisted_repo = prior_repo if persistable(prior_repo) else ""
+
+        target_dir = os.path.dirname(ws_json_path)
+        fd, temp_path = _tf.mkstemp(dir=target_dir, prefix=".tmp-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                json.dump({"repo": persisted_repo, "recents": recents}, f)
+            os.replace(temp_path, ws_json_path)
+        except Exception as exc:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            raise exc
+
+        if not deps.restrict_to_owner(ws_json_path):
+            deps.diag("secure_files.restrict_failed", msg=ws_json_path)
+        return recents
+    except Exception:
+        try:
+            if os.path.exists(ws_json_path):
+                with open(ws_json_path, encoding="utf-8", errors="replace") as f:
+                    return json.load(f).get("recents", []) or []
+        except Exception:
+            pass
+        return []
+
+
+def forget_recent_workspace(forget_path: str) -> list:
+    """Remove ``forget_path`` from workspace.json recents (all path spellings)."""
+    deps = _require_recent_deps()
+    ws_json_path = deps.workspace_json_path()
+    ws_read_path = deps.resolve_existing_state_file("workspace.json")
+    try:
+        os.makedirs(os.path.dirname(ws_json_path), exist_ok=True)
+        recents = []
+        repo = ""
+        if os.path.exists(ws_read_path):
+            try:
+                with open(ws_read_path, encoding="utf-8", errors="replace") as f:
+                    data = json.load(f)
+                    recents = data.get("recents", []) or []
+                    repo = data.get("repo", "")
+            except Exception:
+                recents = []
+
+        def persistable(path: str) -> bool:
+            return _persistable_recent_path(path, deps.is_app_install_root)
+
+        # Drop every slash/case spelling of forget_path (exact == left siblings).
+        recents = [r for r in recents if not deps.paths_same_workspace(r, forget_path)]
+        recents = [r for r in recents if persistable(r)]
+        recents = recents[:8]
+
+        # Forgetting the active workspace must clear the boot-restore repo key,
+        # otherwise buildProjectsList re-appends currentRepo and the row sticks
+        # as a phantom after Remove from list.
+        if repo and deps.paths_same_workspace(repo, forget_path):
+            repo = ""
+
+        target_dir = os.path.dirname(ws_json_path)
+        fd, temp_path = _tf.mkstemp(dir=target_dir, prefix=".tmp-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                json.dump({"repo": repo, "recents": recents}, f)
+            os.replace(temp_path, ws_json_path)
+        except Exception as exc:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            raise exc
+
+        if not deps.restrict_to_owner(ws_json_path):
+            deps.diag("secure_files.restrict_failed", msg=ws_json_path)
+        return recents
+    except Exception:
+        try:
+            if os.path.exists(ws_json_path):
+                with open(ws_json_path, encoding="utf-8", errors="replace") as f:
+                    return json.load(f).get("recents", []) or []
+        except Exception:
+            pass
+        return []
 
 
 @dataclass

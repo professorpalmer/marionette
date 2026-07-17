@@ -13,21 +13,22 @@ from harness._exec import (
     _puppetmaster_cmd,
     _clear_puppetmaster_cache
 )
+import harness.api.codegraph_index as cgi
 import harness.server as server
 
 
 @pytest.fixture(autouse=True)
 def reset_cache():
     _clear_puppetmaster_cache()
-    # Reset server state variables too
-    server._startup_index_fired = False
-    server._codegraph_status = "unsupported"
-    server._codegraph_status_reason = None
+    # Reset indexer runtime state (owned by harness.api.codegraph_index).
+    cgi.startup_index_fired = False
+    cgi.codegraph_status = "unsupported"
+    cgi.codegraph_status_reason = None
     yield
     _clear_puppetmaster_cache()
-    server._startup_index_fired = False
-    server._codegraph_status = "unsupported"
-    server._codegraph_status_reason = None
+    cgi.startup_index_fired = False
+    cgi.codegraph_status = "unsupported"
+    cgi.codegraph_status_reason = None
 
 
 def test_ensure_node_on_path_prepends_found_dir(tmp_path, monkeypatch):
@@ -162,11 +163,11 @@ def test_startup_auto_index_skips_when_indexed(monkeypatch):
         monkeypatch.setattr(server, "_puppetmaster_available", lambda: True)
 
         mock_index_bg = MagicMock()
-        monkeypatch.setattr(server, "_index_codegraph_bg", mock_index_bg)
+        monkeypatch.setattr(cgi, "index_codegraph_bg", mock_index_bg)
 
         server._maybe_auto_index_codegraph()
 
-        assert server._codegraph_status == "ready"
+        assert cgi.codegraph_status == "ready"
         mock_index_bg.assert_not_called()
 
     finally:
@@ -188,7 +189,7 @@ def test_startup_auto_index_fires_when_dir_present_but_no_db(monkeypatch):
         monkeypatch.setattr(server, "_puppetmaster_available", lambda: True)
 
         mock_index_bg = MagicMock()
-        monkeypatch.setattr(server, "_index_codegraph_bg", mock_index_bg)
+        monkeypatch.setattr(cgi, "index_codegraph_bg", mock_index_bg)
 
         server._maybe_auto_index_codegraph()
         time.sleep(0.1)  # let the daemon thread run
@@ -207,9 +208,9 @@ def test_startup_auto_index_fires_when_not_exists(monkeypatch):
         monkeypatch.setattr(server._cfg, "repo", temp_dir)
         monkeypatch.setattr(server, "_puppetmaster_available", lambda: True)
 
-        # Mock _index_codegraph_bg
+        # Mock index_codegraph_bg (owned by harness.api.codegraph_index)
         mock_index_bg = MagicMock()
-        monkeypatch.setattr(server, "_index_codegraph_bg", mock_index_bg)
+        monkeypatch.setattr(cgi, "index_codegraph_bg", mock_index_bg)
 
         # Run the auto index startup check
         server._maybe_auto_index_codegraph()
@@ -217,7 +218,7 @@ def test_startup_auto_index_fires_when_not_exists(monkeypatch):
         # Give the background daemon thread a tiny moment to execute
         time.sleep(0.1)
 
-        # It should call _index_codegraph_bg
+        # It should call index_codegraph_bg
         mock_index_bg.assert_called_once_with(temp_dir)
 
     finally:

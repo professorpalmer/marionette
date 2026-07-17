@@ -272,18 +272,22 @@ harness/          the product (principal modules below; mixins compose the sessi
                     providers, files, attach, skills, auth, worktrees,
                     terminals, commands, hooks, checkpoints, git, reviews,
                     registry, platform, codegraph, workspace, settings,
-                    session_control, usage, pilot) wired from server.Handler.
-                    Handler keeps auth/token gates; route bodies live in api/*
-                    with *Services dataclasses. auth re-exports
-                    providers' pool/OAuth/Cursor-CLI handlers under an
-                    ownership name. platform also owns Bedrock BYOK;
-                    codegraph owns GET status panel plus POST
-                    reindex/apply-excludes; workspace owns open/forget/
-                    get/symbols/workspaces CRUD; settings owns /api/settings
-                    and /api/config; session_control owns stash/interrupt/
-                    rewind/steer/queue plus persist/compact/state/
-                    context_at/swarm-results and restart-prepare (process
-                    self-terminate stays on Handler); usage owns
+                    session_control, usage, pilot, static) wired from
+                    server.Handler. Handler keeps auth/token gates; route
+                    bodies live in api/* with *Services dataclasses. auth
+                    re-exports providers' pool/OAuth/Cursor-CLI handlers
+                    under an ownership name. platform also owns Bedrock
+                    BYOK; codegraph owns GET status panel plus POST
+                    reindex/apply-excludes and (via codegraph_index) the
+                    background indexer/status/stale-refresh runtime;
+                    workspace owns open/forget/get/symbols/workspaces CRUD
+                    plus recent-list persistence helpers; static owns the
+                    legacy browser-shell GET /, /index.html, /app.js,
+                    /app.css bodies (token meta injection); settings owns
+                    /api/settings and /api/config; session_control owns
+                    stash/interrupt/rewind/steer/queue plus persist/compact/
+                    state/context_at/swarm-results and restart-prepare
+                    (process self-terminate stays on Handler); usage owns
                     /api/usage and /api/context/usage; sse owns
                     /api/chat/events replay; pilot owns /api/pilot hot-swap;
                     terminals also owns /api/terminal/stream SSE.
