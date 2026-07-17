@@ -772,6 +772,24 @@ class ConversationalSession(
             pass
         return True
 
+    def _submit_housekeeping(self, fn, *args) -> bool:
+        """Fire-and-forget post-turn work (auto-distill / wiki prepare).
+
+        Must NOT register in ``_swarm_futures``: that set drives
+        ``has_pending_swarms`` / runners=running, and counting distill as a
+        "pending swarm" re-armed Still working / Stop after the turn already
+        finished (skill proposal appeared, then busy chrome came back).
+        Uses a daemon thread so it never steals swarm-pool capacity either.
+        """
+        try:
+            threading.Thread(
+                target=fn, args=args, daemon=True,
+                name="pmh-housekeeping",
+            ).start()
+            return True
+        except Exception:
+            return False
+
     @property
     def durable(self) -> DurableState:
         return DurableState(self.state_dir)

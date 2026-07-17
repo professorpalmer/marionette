@@ -263,16 +263,18 @@ class SendLoopMixin:
                         # AFTER the final answer (never mid-tool-loop).
                         for prop in self._flush_turn_memory_proposals():
                             yield ConvEvent("memory_propose", prop)
-                        # Interactive mode: background the work to keep the UI completely responsive
+                        # Interactive mode: background the work to keep the UI
+                        # responsive. Use housekeeping (not _submit_swarm) so
+                        # distill/wiki never flip runners=running / Still working
+                        # after assistant_done.
                         if self._auto_distill or self._wiki_orchestrate:
-                            if not self._submit_swarm(self._run_distill_and_wiki_background, user_message):
-                                # Background auto-distill/wiki is best-effort;
-                                # surface a compact notice and drop it rather
-                                # than piling on the executor.
+                            if not self._submit_housekeeping(
+                                self._run_distill_and_wiki_background, user_message
+                            ):
                                 yield ConvEvent("notice", {
                                     "message": (
-                                        f"Swarm capacity reached ({self._swarm_inflight()} in flight); "
-                                        "skipping background distill/wiki this turn."
+                                        "Could not start background distill/wiki "
+                                        "this turn (best-effort)."
                                     )
                                 })
                 else:
@@ -929,12 +931,16 @@ class SendLoopMixin:
                 self._history.append({"role": "assistant", "content": cleaned_say_text or "(acting)"})
 
             if self._turn_budget_exhausted():
-                self._maybe_ingest(user_message, turn_prose, turn_findings)
+                # Close the turn for the UI before wiki ingest (network I/O).
                 yield ConvEvent("assistant_done", {
                     "turns": step + 1,
                     "swarms": swarms,
                     "turn_budget_exhausted": True,
                 })
+                self._submit_housekeeping(
+                    self._maybe_ingest,
+                    user_message, list(turn_prose), list(turn_findings),
+                )
                 return
 
             if len(turn.actions) > 0 or (cleaned_say_text and len(cleaned_say_text.strip()) > 0):
@@ -1015,8 +1021,15 @@ class SendLoopMixin:
                     # completed one.
                     user_message = q_text
                     continue
-                self._maybe_ingest(user_message, turn_prose, turn_findings)
+                # assistant_done first; ingest in housekeeping so the busy lock
+                # releases immediately. Sync wiki I/O here used to leave the
+                # final answer painted while Stop/Still working stayed up
+                # (content sat in the Investigating fold until Stop flushed it).
                 yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
+                self._submit_housekeeping(
+                    self._maybe_ingest,
+                    user_message, list(turn_prose), list(turn_findings),
+                )
                 return
 
             # 4. Execute each action as a collapsible tool-call.
@@ -3162,9 +3175,12 @@ class SendLoopMixin:
                         continue
 
         # Hit the step cap -- close the turn gracefully.
-        self._maybe_ingest(user_message, turn_prose, turn_findings)
         limit_msg = "(Reached the investigation step limit for this message.)"
         yield ConvEvent("message", {"role": "assistant", "text": limit_msg})
         self._display_transcript.append({"type": "message", "role": "assistant", "text": limit_msg})
         yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
+        self._submit_housekeeping(
+            self._maybe_ingest,
+            user_message, list(turn_prose), list(turn_findings),
+        )
 
