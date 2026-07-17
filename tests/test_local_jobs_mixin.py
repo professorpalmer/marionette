@@ -51,12 +51,16 @@ def test_history_cap_lives_on_mixin():
     assert ConversationalSession._LOCAL_JOBS_HISTORY_CAP == 200
 
 
-def test_drain_swarm_results_stays_on_session():
-    # Busy/swarm drain must not have been swept into LocalJobsMixin.
+def test_drain_swarm_results_not_on_local_jobs_mixin():
+    # Swarm drain lives on ConversationJobsMixin, not LocalJobsMixin.
+    from harness.conversation_jobs import ConversationJobsMixin
+
     attr = getattr(ConversationalSession, "drain_swarm_results")
-    assert attr.__qualname__ == "ConversationalSession.drain_swarm_results", (
+    assert attr.__qualname__ == "ConversationJobsMixin.drain_swarm_results", (
         attr.__qualname__,
     )
+    assert "drain_swarm_results" not in LocalJobsMixin.__dict__
+    assert "drain_swarm_results" in ConversationJobsMixin.__dict__
 
 
 def test_session_cancel_stays_on_session():

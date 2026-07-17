@@ -265,6 +265,8 @@ harness/          the product (principal modules below; mixins compose the sessi
   prompt_queue.py   PromptQueueMixin
   adapter_resolve.py AdapterResolveMixin (implement adapter pick)
   steer_mixin.py / compaction_mixin.py / local_jobs.py
+  conversation_jobs.py ConversationJobsMixin — await/apply, provider worker,
+                    drain_swarm_results
   wiki_distill.py / review_memory.py
   turn_economy.py   TurnEconomy facade over budget/savings helpers
   pilot.py          PilotTurn / PilotAction contract + tool schema + PILOT_SYSTEM

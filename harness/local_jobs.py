@@ -9,9 +9,11 @@ contract: these methods operate through `self` (``_local_jobs``,
 ``harness_session_id``) provided by the concrete class -- the mixin defines no
 state and no __init__.
 
-``drain_swarm_results``, busy lifecycle, and swarm submit from the send loop
-stay on ConversationalSession. Session-level ``cancel`` / ``interrupt`` stay
-there too; this mixin owns only per-job local-job bookkeeping.
+``drain_swarm_results`` / ``_await_and_apply_job`` /
+``_run_provider_worker_background`` live on ConversationJobsMixin. Busy
+lifecycle stays on BusyControlMixin; swarm submit stays on SendLoopMixin.
+Session-level ``cancel`` stays on ConversationalSession; ``interrupt`` on
+BusyControlMixin. This mixin owns only per-job local-job bookkeeping.
 
 Method Resolution Order keeps behavior identical: ``_register_local_job``,
 ``live_local_jobs``, ``cancel_local_job``, etc. still resolve via inheritance.

@@ -59,7 +59,10 @@ def test_busy_send_swarm_not_folded_into_review_memory():
         ConversationalSession._send_locked_inner.__qualname__
         == "SendLoopMixin._send_locked_inner"
     )
+    from harness.conversation_jobs import ConversationJobsMixin
+
     attr = getattr(ConversationalSession, "_await_and_apply_job")
-    assert attr.__qualname__ == "ConversationalSession._await_and_apply_job", (
+    assert attr.__qualname__ == "ConversationJobsMixin._await_and_apply_job", (
         attr.__qualname__,
     )
+    assert "_await_and_apply_job" not in ReviewMemoryMixin.__dict__
