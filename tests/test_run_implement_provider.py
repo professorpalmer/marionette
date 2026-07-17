@@ -56,7 +56,10 @@ def test_run_implement_provider_default(monkeypatch):
         def mock_worker_run(self):
             run_called.append(True)
             # Assert correct config parameters flowed to the worker
-            assert self.repo == os.path.abspath(repo_dir)
+            # resolve_effective_repo canonicalizes via git toplevel, which can
+            # differ textually (Windows 8.3 short paths, macOS /private/var).
+            assert os.path.normcase(os.path.realpath(self.repo)) == os.path.normcase(
+                os.path.realpath(repo_dir))
             assert self.goal == "Add world to test.txt"
             return canned_result
 
