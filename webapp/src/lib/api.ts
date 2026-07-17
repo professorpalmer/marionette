@@ -846,6 +846,8 @@ export const api = {
   mcpRemove: (name: string) => postJSON<{ ok: boolean }>("/api/mcp/remove", { name }),
   mcpStart: (name: string) => postJSON<{ ok: boolean; tools?: number; error?: string }>("/api/mcp/start", { name }),
   mcpStop: (name: string) => postJSON<{ ok: boolean }>("/api/mcp/stop", { name }),
+  mcpRefresh: (name: string) =>
+    postJSON<{ ok: boolean; tools?: number; error?: string }>("/api/mcp/refresh", { name }),
   skills: () => getJSON<any[]>("/api/skills"),
   skillDistill: () => postJSON<{ skill?: any; rules?: any }>("/api/skills/distill", {}),
   wikiIngestPrepared: (pages: any[]) => postJSON<{ ok: boolean; ingested: number }>("/api/wiki/ingest-prepared", { pages }),

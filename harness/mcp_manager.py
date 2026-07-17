@@ -103,8 +103,19 @@ class McpManager:
     # ---- lifecycle ----------------------------------------------------------
     def start_server(self, name: str, server: Optional[dict] = None) -> List[McpTool]:
         with self._lock:
-            if name in self._clients and self._clients[name].alive:
+            existing = self._clients.get(name)
+            if existing is not None and existing.alive:
                 return [t for t in self._tools.values() if t.server == name]
+            # Drop a dead client so a later start (or Refresh) can reconnect
+            # after Docker/HTTP came back online.
+            if existing is not None:
+                try:
+                    existing.stop()
+                except Exception:
+                    pass
+                self._clients.pop(name, None)
+                for q in [q for q, t in self._tools.items() if t.server == name]:
+                    del self._tools[q]
             cfg = _expand(server or self.load_config().get(name, {}))
             if cfg.get("url"):
                 client = HttpMcpClient(name=name, url=cfg["url"], headers=cfg.get("headers"))
@@ -136,6 +147,21 @@ class McpManager:
             c.stop()
         for q in [q for q, t in self._tools.items() if t.server == name]:
             del self._tools[q]
+        self._errors.pop(name, None)
+
+    def refresh_server(self, name: str) -> List[McpTool]:
+        """Force reconnect: stop (clear client/tools/error) then start again.
+
+        Used by the State MCP Refresh button so Docker/HTTP servers that were
+        unreachable at first start can be re-probed without app restart.
+        """
+        name = (name or "").strip()
+        if not name:
+            raise McpError("refresh requires a server name")
+        if name not in self.load_config():
+            raise McpError(f"unknown MCP server '{name}'")
+        self.stop_server(name)
+        return self.start_server(name)
 
     def start_all(self) -> Dict[str, object]:
         """Start every configured server; return {name: tool_count | error_str}."""
@@ -217,6 +243,14 @@ class McpManager:
                 return {"ok": False, "error": "manage_mcp stop requires name"}
             self.stop_server(name)
             return {"ok": True, "name": name, "stopped": True}
+        if action == "refresh":
+            if not name:
+                return {"ok": False, "error": "manage_mcp refresh requires name"}
+            try:
+                tools = self.refresh_server(name)
+                return {"ok": True, "name": name, "tools": len(tools), "refreshed": True}
+            except Exception as e:
+                return {"ok": False, "name": name, "error": str(e)}
         if action == "remove":
             if not name:
                 return {"ok": False, "error": "manage_mcp remove requires name"}
@@ -224,7 +258,7 @@ class McpManager:
             return {"ok": True, "name": name, "removed": True}
         return {
             "ok": False,
-            "error": f"unknown manage_mcp action {action!r} (list|add|start|stop|remove)",
+            "error": f"unknown manage_mcp action {action!r} (list|add|start|stop|refresh|remove)",
         }
 
     def stop_all(self) -> None:

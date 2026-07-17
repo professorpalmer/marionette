@@ -183,9 +183,9 @@ class PilotAction:
         if self.kind == "manage_mcp":
             args = self.arguments if isinstance(self.arguments, dict) else {}
             action = (args.get("action") or self.memory_action or "").strip().lower()
-            if action not in ("list", "add", "start", "stop", "remove"):
+            if action not in ("list", "add", "start", "stop", "refresh", "remove"):
                 raise PilotError(
-                    "manage_mcp requires action=list|add|start|stop|remove"
+                    "manage_mcp requires action=list|add|start|stop|refresh|remove"
                 )
             if action in ("add", "start", "stop", "remove") and not (
                 args.get("name") or self.path or ""
@@ -1062,8 +1062,8 @@ def build_tools_schema(
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "add", "start", "stop", "remove"],
-                        "description": "MCP lifecycle operation",
+                        "enum": ["list", "add", "start", "stop", "refresh", "remove"],
+                        "description": "MCP lifecycle operation (refresh = force reconnect)",
                     },
                     "name": {
                         "type": "string",

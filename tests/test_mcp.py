@@ -100,3 +100,58 @@ def test_manager_start_all_reports_errors(tmp_path):
     finally:
         m.stop_all()
 
+
+def test_manager_refresh_reconnects(tmp_path):
+    """Refresh must stop then start so a previously-failed server can recover."""
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    try:
+        m.start_server("fake")
+        assert m.status()[0]["running"]
+        tools = m.refresh_server("fake")
+        assert {t.name for t in tools} == {"echo", "add"}
+        st = m.status()[0]
+        assert st["running"] and st["tools"] == 2 and not st["error"]
+        # manage_mcp refresh action mirrors the HTTP endpoint.
+        out = m.manage("refresh", name="fake")
+        assert out["ok"] and out.get("refreshed") and out["tools"] == 2
+    finally:
+        m.stop_all()
+
+
+def test_manager_refresh_clears_stale_error(tmp_path):
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("bad", {"command": "no-such-cmd-xyz-refresh"})
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    try:
+        try:
+            m.start_server("bad")
+        except McpError:
+            pass
+        assert m.status()[0]["name"] == "bad" or any(s["error"] for s in m.status())
+        # Bad stays errored; refresh on good still works independently.
+        tools = m.refresh_server("fake")
+        assert len(tools) == 2
+        fake = next(s for s in m.status() if s["name"] == "fake")
+        assert fake["running"] and not fake["error"]
+    finally:
+        m.stop_all()
+
+
+def test_post_mcp_refresh_handler(tmp_path):
+    from harness.api.mcp import McpServices, post_mcp_refresh
+
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    svc = McpServices(mcp=m)
+    try:
+        code, body = post_mcp_refresh({"name": "fake"}, svc)
+        assert code == 200 and body["ok"] and body["tools"] == 2
+        code, body = post_mcp_refresh({"name": "missing"}, svc)
+        assert code == 200 and not body["ok"] and "error" in body
+    finally:
+        m.stop_all()
+

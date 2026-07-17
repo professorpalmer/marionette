@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plug, Play, Square, Trash2, Plus, Check, X, ChevronDown, ChevronRight } from "lucide-react";
+import { Plug, Play, Square, Trash2, Plus, Check, X, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 
 const MCP_TOOLS_COLLAPSED_KEY = "pmharness.mcpPane.toolsCollapsed";
@@ -134,6 +134,17 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
 
   const start = async (n: string) => { setBusy(n); try { await api.mcpStart(n); await refresh(); } finally { setBusy(""); } };
   const stop = async (n: string) => { setBusy(n); try { await api.mcpStop(n); await refresh(); } finally { setBusy(""); } };
+  const refreshServer = async (n: string) => {
+    setBusy(n);
+    try {
+      // Force reconnect (stop then start) so Docker/HTTP MCP that came online
+      // after a failed first probe does not require closing the app.
+      await api.mcpRefresh(n);
+      await refresh();
+    } finally {
+      setBusy("");
+    }
+  };
   const remove = async (n: string) => { setBusy(n); try { await api.mcpRemove(n); await refresh(); } finally { setBusy(""); } };
 
   return (
@@ -190,6 +201,14 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
                 )}
               </span>
               <span className="text-faint text-[10px]">{s.running ? `${s.tools} tools` : "stopped"}</span>
+              <button
+                onClick={() => refreshServer(s.name)}
+                disabled={busy === s.name}
+                title="Refresh (reconnect and rediscover tools)"
+                className="text-muted hover:text-txt disabled:opacity-40"
+              >
+                <RefreshCw size={12} className={busy === s.name ? "animate-spin" : undefined} />
+              </button>
               {s.running
                 ? <button onClick={() => stop(s.name)} disabled={busy === s.name} title="Stop" className="text-muted hover:text-warn"><Square size={12} /></button>
                 : <button onClick={() => start(s.name)} disabled={busy === s.name} title="Start" className="text-muted hover:text-good"><Play size={12} /></button>}

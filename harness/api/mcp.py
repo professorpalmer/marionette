@@ -80,6 +80,15 @@ def post_mcp_stop(body: dict, svc: McpServices) -> tuple[int, dict]:
     return 200, {"ok": True}
 
 
+def post_mcp_refresh(body: dict, svc: McpServices) -> tuple[int, dict]:
+    """POST /api/mcp/refresh — force reconnect (stop then start)."""
+    try:
+        tools = svc.mcp.refresh_server(body.get("name", ""))
+        return 200, {"ok": True, "tools": len(tools)}
+    except Exception as e:
+        return 200, {"ok": False, "error": str(e)}
+
+
 def post_mcp_call(body: dict, svc: McpServices) -> tuple[int, dict]:
     """POST /api/mcp/call — invoke a qualified MCP tool."""
     args = body.get("arguments")

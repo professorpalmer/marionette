@@ -154,6 +154,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _mcp_api.post_mcp_start, services=svc.mcp_services),
         "/api/mcp/stop": post_json(
             _mcp_api.post_mcp_stop, services=svc.mcp_services),
+        "/api/mcp/refresh": post_json(
+            _mcp_api.post_mcp_refresh, services=svc.mcp_services),
         "/api/mcp/call": post_json(
             _mcp_api.post_mcp_call, services=svc.mcp_services),
         "/api/skills/distill": post_json(
