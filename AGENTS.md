@@ -1,11 +1,27 @@
-# AGENTS.md -- pm-harness
+# AGENTS.md -- Marionette
 
-Internal-first research rig. Conventions:
+Marionette is the product: a frontier/any pilot shell over a Puppetmaster
+kernel. The `pmharness/` package is the research/eval rig that validated the
+driver seam; it is not the shipping GUI contract.
+
+## Product vs research
+
+| Surface | Own it when… | Key modules |
+|---|---|---|
+| Product (lane B) | GUI/CLI pilot loop, tools, SSE, delegation | `harness/conversation.py` (turn loop only), `harness/pilot.py` (`PilotTurn` / schema), `harness/tool_dispatch.py`, `harness/tool_discovery.py`, `harness/pilot_guards.py`, `harness/hash_edit.py` |
+| Research rig | DriverIntent eval, scoring, Stage batteries | `pmharness/intent.py`, `pmharness/bridge.py`, `pmharness/drivers/`, `harness/session.py` (single-shot) |
+
+Ownership rule: new pilot tools -> `pilot.py` schema + `tool_dispatch` /
+`tool_discovery`; new orchestration -> Puppetmaster; do not grow
+`conversation.py` with per-tool handlers.
+
+## Conventions
 
 - No emojis or decorative pictographs anywhere (code, docs, commits, output).
   Plain words only.
-- stdlib-only for the rig itself (urllib, sqlite, dataclasses). Puppetmaster is
-  the single real dependency, installed editable from the local checkout.
+- stdlib-only for the harness/rig itself (urllib, sqlite, dataclasses).
+  Puppetmaster is the single real dependency, installed editable from the local
+  checkout.
 - The `pmharness/intent.py` layer must stay PM-free and pure so it unit-tests
   fast and hermetically. Execution coupling lives only in `bridge.py`.
 - Scoring is deterministic -- no LLM-as-judge. Every metric must be a function
