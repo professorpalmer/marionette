@@ -269,7 +269,11 @@ harness/          the product (principal modules below; mixins compose the sessi
   pilot_guards.py   pilot-loop safety / policy guards
   hash_edit.py      hashline surgical edit ops (optional via HARNESS_HASH_EDIT)
   api/              HTTP route peels (sessions, jobs, sse, streams, wiki, mcp,
-                    providers, files, attach) wired from server.Handler
+                    providers, files, attach, skills, auth, worktrees,
+                    terminals) wired from server.Handler. Handler keeps
+                    auth/token gates; route bodies live in api/* with
+                    *Services dataclasses. auth re-exports providers'
+                    pool/OAuth/Cursor-CLI handlers under an ownership name.
   session.py        single-shot Session core (DriverIntent path for the research rig)
   repair.py         intent-repair retry (research / bare-intent path)
   server.py         stdlib HTTP + SSE server shell (routes live in api/)

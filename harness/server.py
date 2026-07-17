@@ -2651,6 +2651,30 @@ def _mcp_services():
     return McpServices(mcp=_mcp)
 
 
+def _skills_services():
+    """Build SkillsServices from live server module globals (call-time lookup)."""
+    from .api.skills import SkillsServices
+    return SkillsServices(
+        skills=_skills,
+        rules=_rules,
+        memory=_memory,
+        get_pilot=lambda: _pilot,
+        memory_char_limit=MEMORY_CHAR_LIMIT,
+    )
+
+
+def _worktree_services():
+    """Build WorktreeServices from live server module globals (call-time lookup)."""
+    from .api.worktrees import WorktreeServices
+    return WorktreeServices(cfg=_cfg, parse_bool=_parse_bool)
+
+
+def _terminal_services():
+    """Build TerminalServices from live server module globals (call-time lookup)."""
+    from .api.terminals import TerminalServices
+    return TerminalServices(cfg=_cfg, pty=_pty)
+
+
 def _provider_services():
     """Build ProviderServices from live server module globals (call-time lookup)."""
     from .api.providers import ProviderServices
@@ -4122,7 +4146,9 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _mcp_api.post_mcp_call(body, _mcp_services())
             return self._send(status, json.dumps(payload))
         if path == "/api/skills/distill":
-            return self._send(200, json.dumps(_pilot.distill()))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_skills_distill(_skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/wiki/ingest-prepared":
             # One-click approve: file the locally-orchestrated pages into the wiki.
             from .api import wiki as _wiki_api
@@ -4138,128 +4164,67 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _prov_api.post_models_set(body, _provider_services())
             return self._send(status, json.dumps(payload))
         if path == "/api/skills/approve":
-            sk = _skills.set_state(body.get("slug", ""), "active")
-            return self._send(200, json.dumps({"ok": bool(sk)}))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_skills_approve(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/skills/add":
-            name = (body.get("name") or "").strip()
-            if not name:
-                return self._send(400, json.dumps({"error": "name is required"}))
-            from .skill_store import Skill
-            sk = Skill(
-                name=name,
-                description=(body.get("description") or "").strip(),
-                body=(body.get("body") or "").strip(),
-                state="active",
-                source="manual",
-            )
-            _skills.save(sk)
-            return self._send(200, json.dumps({
-                "ok": True,
-                "slug": sk.slug,
-                "name": sk.name,
-                "state": sk.state,
-                "source": sk.source,
-            }))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_skills_add(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/skills/update":
-            slug = (body.get("slug") or "").strip()
-            if not slug:
-                return self._send(400, json.dumps({"error": "slug is required"}))
-            sk = _skills.update(
-                slug,
-                name=body.get("name"),
-                description=body.get("description"),
-                body=body.get("body"),
-            )
-            if not sk:
-                return self._send(404, json.dumps({"error": "skill not found"}))
-            return self._send(200, json.dumps({
-                "ok": True,
-                "slug": sk.slug,
-                "name": sk.name,
-                "description": sk.description,
-                "state": sk.state,
-            }))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_skills_update(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/skills/remove":
-            ok = _skills.remove(body.get("slug", ""))
-            return self._send(200, json.dumps({"ok": ok}))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_skills_remove(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/skills/reject":
-            _skills.set_state(body.get("slug", ""), "archived")
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_skills_reject(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/skills/archive":
-            _skills.set_state(body.get("slug", ""), "archived")
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_skills_archive(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/rules/approve":
-            ok = _rules.set_state(body.get("slug", ""), "active")
-            return self._send(200, json.dumps({"ok": ok}))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_rules_approve(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/rules/add":
-            text = (body.get("text") or "").strip()
-            if not text:
-                return self._send(400, json.dumps({"error": "text is required"}))
-            from .rule_store import Rule
-            rule = Rule(
-                text=text,
-                scope=(body.get("scope") or "global").strip() or "global",
-                state="active",
-                source="manual",
-            )
-            _rules.add(rule)
-            return self._send(200, json.dumps({
-                "ok": True,
-                "slug": rule.slug,
-                "text": rule.text,
-                "scope": rule.scope,
-                "state": rule.state,
-                "source": rule.source,
-            }))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_rules_add(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/rules/update":
-            slug = (body.get("slug") or "").strip()
-            if not slug:
-                return self._send(400, json.dumps({"error": "slug is required"}))
-            rule = _rules.update(slug, text=body.get("text"), scope=body.get("scope"))
-            if not rule:
-                return self._send(404, json.dumps({"error": "rule not found"}))
-            return self._send(200, json.dumps({
-                "ok": True,
-                "slug": rule.slug,
-                "text": rule.text,
-                "scope": rule.scope,
-                "state": rule.state,
-            }))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_rules_update(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/rules/remove":
-            ok = _rules.remove(body.get("slug", ""))
-            return self._send(200, json.dumps({"ok": ok}))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_rules_remove(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/rules/reject":
-            _rules.set_state(body.get("slug", ""), "archived")
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_rules_reject(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/memory/add":
-            text = body.get("text", "")
-            category = body.get("category", "general")
-            entry = _memory.add(text, category=category, source="user")
-            return self._send(200, json.dumps({
-                "id": entry.id,
-                "text": entry.text,
-                "category": entry.category,
-                "created_at": entry.created_at,
-                "source": entry.source
-            }))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_memory_add(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/memory/remove":
-            entry_id = body.get("id", "")
-            ok = _memory.remove(entry_id)
-            return self._send(200, json.dumps({"ok": ok}))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_memory_remove(body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/memory/propose/accept":
-            proposal_id = (body.get("id") or "").strip()
-            if not proposal_id:
-                return self._send(400, json.dumps({"ok": False, "error": "missing id"}))
-            result = _pilot.accept_memory_proposal(proposal_id)
-            code = 200 if result.get("ok") else 404
-            return self._send(code, json.dumps(result))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_memory_propose_accept(
+                body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/memory/propose/dismiss":
-            proposal_id = (body.get("id") or "").strip()
-            if not proposal_id:
-                return self._send(400, json.dumps({"ok": False, "error": "missing id"}))
-            result = _pilot.dismiss_memory_proposal(proposal_id)
-            code = 200 if result.get("ok") else 404
-            return self._send(code, json.dumps(result))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.post_memory_propose_dismiss(
+                body, _skills_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/sessions/create":
             from .api import sessions as _sessions_api
             status, payload = _sessions_api.post_sessions_create(body, _session_services())
@@ -4486,32 +4451,21 @@ class Handler(BaseHTTPRequestHandler):
                     items = []
             return self._send(200, json.dumps({"ok": True, "items": items}))
         if path == "/api/terminal/create":
-            try:
-                # Reap any dead PTY sessions first so exited/stuck terminals do
-                # not pile up across restarts (the Restart button creates a fresh
-                # session each time; the old dead ones should be cleaned up).
-                _pty.reap()
-                cwd = _cfg.repo or os.path.expanduser("~")
-                cols = int(body.get("cols", 80)); rows = int(body.get("rows", 24))
-                sess = _pty.create(cwd=cwd, cols=cols, rows=rows)
-                return self._send(200, json.dumps({"id": sess.id, "cwd": sess._cwd}))
-            except Exception as e:
-                return self._send(500, json.dumps({"error": str(e)}))
+            from .api import terminals as _term_api
+            status, payload = _term_api.post_terminal_create(body, _terminal_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/terminal/write":
-            sess = _pty.get(body.get("id", ""))
-            if not sess:
-                return self._send(404, json.dumps({"error": "no such terminal"}))
-            sess.write(body.get("data", ""))
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import terminals as _term_api
+            status, payload = _term_api.post_terminal_write(body, _terminal_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/terminal/resize":
-            sess = _pty.get(body.get("id", ""))
-            if not sess:
-                return self._send(404, json.dumps({"error": "no such terminal"}))
-            sess.resize(int(body.get("rows", 24)), int(body.get("cols", 80)))
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import terminals as _term_api
+            status, payload = _term_api.post_terminal_resize(body, _terminal_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/terminal/kill":
-            _pty.kill(body.get("id", ""))
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import terminals as _term_api
+            status, payload = _term_api.post_terminal_kill(body, _terminal_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/wiki/config":
             from .api import wiki as _wiki_api
             status, payload = _wiki_api.post_wiki_config(body)
@@ -4544,62 +4498,62 @@ class Handler(BaseHTTPRequestHandler):
             sync_agentic_registry_safe()
             return self._send(200, json.dumps({"ok": True, **res}))
         if path == "/api/auth/pools":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_pools(body)
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_pools(body)
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/pools/add":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_pools_add(body, _provider_services())
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_pools_add(body, _provider_services())
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/pools/remove":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_pools_remove(body)
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_pools_remove(body)
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/pools/strategy":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_pools_strategy(body)
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_pools_strategy(body)
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/pools/reset":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_pools_reset(body)
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_pools_reset(body)
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/oauth/start":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_oauth_start(body)
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_oauth_start(body)
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/oauth/poll":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_oauth_poll(body)
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_oauth_poll(body)
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/oauth/complete":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_oauth_complete(body)
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_oauth_complete(body)
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/oauth/cancel":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_oauth_cancel(body)
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_oauth_cancel(body)
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/cursor-cli/status":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_cursor_cli_status(body)
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_cursor_cli_status(body)
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/cursor-cli/login":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_cursor_cli_login(
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_cursor_cli_login(
                 body, _provider_services())
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/cursor-cli/trust":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_cursor_cli_trust(
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_cursor_cli_trust(
                 body, _provider_services())
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/cursor-cli/logout":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_cursor_cli_logout()
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_cursor_cli_logout()
             return self._send(status, json.dumps(payload))
         if path == "/api/auth/cursor-cli/models":
-            from .api import providers as _prov_api
-            status, payload = _prov_api.post_auth_cursor_cli_models()
+            from .api import auth as _auth_api
+            status, payload = _auth_api.post_auth_cursor_cli_models()
             return self._send(status, json.dumps(payload))
         if path == "/api/wiki/handoff":
             # Mint a one-shot nonce and return a setup URL that carries a
@@ -4915,65 +4869,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(500, json.dumps({"error": str(e)}))
 
         if path == "/api/worktrees/add":
-            from . import worktrees as _wt
-            branch = body.get("branch", "").strip()
-            base = body.get("base") or "HEAD"
-            if not branch or branch.startswith("-") or (base and base.startswith("-")):
-                return self._send(400, json.dumps({"error": "invalid branch or base name"}))
-            try:
-                new_wt = _wt.add_worktree(_cfg.repo, branch, base)
-                _wt.cleanup_old_worktrees(_cfg.repo, _wt.get_max_worktrees())
-                return self._send(200, json.dumps(new_wt))
-            except ValueError as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            except Exception as e:
-                return self._send(400, json.dumps({"error": f"Failed to add worktree: {str(e)}"}))
+            from .api import worktrees as _wt_api
+            status, payload = _wt_api.post_worktrees_add(body, _worktree_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/worktrees/remove":
-            from . import worktrees as _wt
-            wt_path = body.get("path", "").strip()
-            force = _parse_bool(body.get("force"))
-            if not wt_path:
-                return self._send(400, json.dumps({"error": "missing path"}))
-            try:
-                _wt.remove_worktree(_cfg.repo, wt_path, force=force)
-                return self._send(200, json.dumps({"ok": True}))
-            except ValueError as e:
-                return self._send(400, json.dumps({"error": str(e)}))
-            except Exception as e:
-                return self._send(400, json.dumps({"error": f"Failed to remove worktree: {str(e)}"}))
+            from .api import worktrees as _wt_api
+            status, payload = _wt_api.post_worktrees_remove(body, _worktree_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/worktrees/prune":
-            from . import worktrees as _wt
-            try:
-                _wt.prune_worktrees(_cfg.repo)
-                return self._send(200, json.dumps({"ok": True}))
-            except Exception as e:
-                return self._send(400, json.dumps({"error": f"Failed to prune worktrees: {str(e)}"}))
+            from .api import worktrees as _wt_api
+            status, payload = _wt_api.post_worktrees_prune(_worktree_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/worktrees/prune-edit-branches":
-            from . import worktrees as _wt
-            try:
-                result = _wt.prune_orphan_edit_branches(_cfg.repo)
-                return self._send(200, json.dumps({
-                    "ok": True,
-                    "deleted": result.get("deleted", []),
-                    "count": int(result.get("count", 0) or 0),
-                }))
-            except Exception as e:
-                return self._send(400, json.dumps({
-                    "error": f"Failed to prune edit branches: {str(e)}",
-                }))
+            from .api import worktrees as _wt_api
+            status, payload = _wt_api.post_worktrees_prune_edit_branches(
+                _worktree_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/worktrees/max":
-            from . import worktrees as _wt
-            try:
-                max_val = int(body.get("max") or body.get("max_worktrees") or 25)
-                _wt.set_max_worktrees(max_val)
-                _wt.cleanup_old_worktrees(_cfg.repo, max_val)
-                return self._send(200, json.dumps({"ok": True}))
-            except (ValueError, TypeError):
-                return self._send(400, json.dumps({"error": "Invalid max value"}))
+            from .api import worktrees as _wt_api
+            status, payload = _wt_api.post_worktrees_max(body, _worktree_services())
+            return self._send(status, json.dumps(payload))
 
         if path == "/api/hooks/add":
             from . import hooks as _hk
@@ -5245,27 +5164,17 @@ class Handler(BaseHTTPRequestHandler):
                 ]
             }))
         if u.path == "/api/skills":
-            return self._send(200, json.dumps([
-                {"slug": sk.slug, "name": sk.name, "description": sk.description,
-                 "state": sk.state, "source": sk.source, "used_count": sk.used_count,
-                 "body": sk.body, "supersedes": getattr(sk, "supersedes", "")}
-                for sk in _skills.list()]))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.get_skills(_skills_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/rules":
-            return self._send(200, json.dumps([
-                {"slug": r.slug, "text": r.text, "scope": r.scope,
-                 "state": r.state, "source": r.source}
-                for r in _rules.list()]))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.get_rules(_skills_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/memory":
-            entries = _memory.list()
-            return self._send(200, json.dumps({
-                "memory": [
-                    {"id": e.id, "text": e.text, "category": e.category,
-                     "created_at": e.created_at, "source": e.source}
-                    for e in entries
-                ],
-                "total_chars": _memory.total_chars(),
-                "limit": MEMORY_CHAR_LIMIT
-            }))
+            from .api import skills as _skills_api
+            status, payload = _skills_api.get_memory(_skills_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/file/read":
             if self._guard():
                 return
@@ -5710,10 +5619,10 @@ class Handler(BaseHTTPRequestHandler):
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            from .api import providers as _prov_api
+            from .api import auth as _auth_api
             qs = parse_qs(u.query)
             pname = (qs.get("provider") or [""])[0].strip()
-            status, payload = _prov_api.get_auth_pools(provider=pname)
+            status, payload = _auth_api.get_auth_pools(provider=pname)
             return self._send(status, json.dumps(payload))
         if u.path == "/api/wiki/graph":
             if self._guard():
@@ -6201,11 +6110,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/workspaces":
             return self._send(200, json.dumps(_ws.list_workspaces(_cfg.repo)))
         if u.path == "/api/worktrees":
-            from . import worktrees as _wt
-            return self._send(200, json.dumps({
-                "worktrees": _wt.list_worktrees(_cfg.repo),
-                "max": _wt.get_max_worktrees()
-            }))
+            from .api import worktrees as _wt_api
+            status, payload = _wt_api.get_worktrees(_worktree_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/hooks":
             from . import hooks as _hk
             return self._send(200, json.dumps({
