@@ -11,8 +11,9 @@ defines no state and no __init__.
 Owns the turn orchestration entrypoints ``send`` / ``_send_locked`` /
 ``_send_locked_inner`` plus the small private helpers that exist only to
 support that loop (``_is_correction``, ``_get_codegraph_context``). Background
-thread targets, stream-queue drain, per-step metering, prefetch pool, and
-action-goal labeling live in ``send_loop_phases`` so the kernel stays the
+thread targets, stream-queue drain, per-step metering, prefetch pool,
+idle steer/queue finalization, read-only tool-result assembly, auto-verify,
+and action-goal labeling live in ``send_loop_phases`` so the kernel stays the
 public orchestration surface. Busy lock lifecycle stays on BusyControlMixin;
 per-tool ``_do_*`` handlers stay on ToolDispatchMixin.
 
@@ -59,9 +60,12 @@ from .pilot_guards import (
 from .send_loop_phases import (
     READ_ONLY_KINDS,
     action_display_goal,
+    dispatch_readonly_action,
+    drain_idle_turn,
     drain_stream_queue,
     meter_pilot_step,
     read_stdout_thread,
+    run_auto_verify,
     run_parallel_prefetch,
     run_stream,
     stream_swarm,
@@ -805,74 +809,18 @@ class SendLoopMixin:
             # piggyback inside _check_and_inject_steer); together they guarantee
             # any enqueued steer is eventually delivered and never stranded.
             if not turn.has_actions:
-                pending_steers = self.drain_steer()
-                if pending_steers:
-                    for steer in pending_steers:
-                        yield ConvEvent("steer", {"text": steer})
-                        self._history.append({"role": "user", "content": self._steer_marker(steer)})
-                    self._steer_pending = False
-                    continue
-                # Steer took priority above; only if no steer was pending do we
-                # look at the PROMPT QUEUE ("playlist"). A queued prompt runs as
-                # a genuine next-turn user message -- NOT wrapped in the OUT-OF-
-                # BAND marker used for steer -- so it flows through the pilot as
-                # a normal fresh turn. The `continue` re-enters the same step
-                # loop, which is bounded by the existing HARD_PILOT_STEPS /
-                # max_steps cap; the queue cannot make the loop unbounded.
-                # If the head item was stamped for a different pilot model
-                # (Hermes-style mid-turn picker change), stop this turn instead
-                # of draining it under the wrong driver -- idle drain + deferred
-                # swap will pick it up next.
-                if self._next_queued_needs_driver_swap():
-                    break
-                queued = self._pop_next_prompt()
-                if queued and queued.get("text"):
-                    q_text = queued.get("text", "")
-                    q_images = [p for p in (queued.get("images") or []) if p]
-                    yield ConvEvent("queued_prompt", {"id": queued.get("id", ""), "text": q_text, "images": list(q_images)})
-                    # A queued prompt is a genuine fresh user turn, so it carries
-                    # its image attachments the same way a normal turn does
-                    # (_send_locked_inner). The step loop already holds a valid
-                    # assistant history tail, so we deliver the images as vision
-                    # transcription appended to the user content -- identical to
-                    # the normal-turn plumbing above.
-                    content = q_text
-                    if q_images:
-                        try:
-                            from .vision import transcribe_images
-                            yield ConvEvent("vision", {"count": len(q_images), "status": "transcribing"})
-                            results = transcribe_images(q_images)
-                            blocks = []
-                            for path, r in zip(q_images, results):
-                                if getattr(r, "error", None):
-                                    yield ConvEvent("vision", {"path": path, "error": r.error})
-                                elif getattr(r, "text", ""):
-                                    blocks.append(f"[Image: {path}]\n{r.text}")
-                                    yield ConvEvent("vision", {"path": path,
-                                        "chars": len(r.text), "model": r.model,
-                                        "preview": r.text[:200]})
-                            if blocks:
-                                content = ("The user attached image(s). Transcription(s) below "
-                                           "(you cannot see the image, only this text):\n\n"
-                                           + "\n\n".join(blocks) + "\n\n---\n" + q_text)
-                        except Exception:
-                            pass
-                    self._history.append({"role": "user", "content": content})
-                    # Refresh the "current user message" reference so downstream
-                    # per-turn hooks (compaction, ingest, budget) attribute work
-                    # to the newly-running queued prompt instead of the previous
-                    # completed one.
-                    user_message = q_text
-                    continue
-                # assistant_done first; ingest in housekeeping so the busy lock
-                # releases immediately. Sync wiki I/O here used to leave the
-                # final answer painted while Stop/Still working stayed up
-                # (content sat in the Investigating fold until Stop flushed it).
-                yield ConvEvent("assistant_done", {"turns": step + 1, "swarms": swarms})
-                self._submit_housekeeping(
-                    self._maybe_ingest,
-                    user_message, list(turn_prose), list(turn_findings),
+                disposition, user_message = yield from drain_idle_turn(
+                    self,
+                    user_message=user_message,
+                    step=step,
+                    swarms=swarms,
+                    turn_prose=turn_prose,
+                    turn_findings=turn_findings,
                 )
+                if disposition == "continue":
+                    continue
+                if disposition == "break":
+                    break
                 return
 
             # 4. Execute each action as a collapsible tool-call.
@@ -1093,6 +1041,13 @@ class SendLoopMixin:
                             continue
                         record_action_execution(guard_state, act.kind, act)
 
+                # ---- read-only tool-result assembly (prefetch or live) ----
+                if act.kind in READ_ONLY_KINDS:
+                    yield from dispatch_readonly_action(
+                        self, act, idx, aid, prefetch, is_native
+                    )
+                    continue
+
                 # ---- open_project branch --------------------------------------
                 if act.kind == "open_project":
                     target_repo = (act.path or "").strip()
@@ -1274,49 +1229,6 @@ class SendLoopMixin:
                     self._append_action_result(act, aid, f"(session_bank returned)\n{val}", is_native)
                     continue
 
-                # ---- read_file branch -----------------------------------------
-                if act.kind == "read_file":
-                    if idx in prefetch:
-                        ok, status, val = prefetch[idx]
-                    else:
-                        ok, status, val = self._do_read_file(act)
-
-                    if ok:
-                        content = val
-                        yield ConvEvent("action_result", {
-                            "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
-                            "artifacts": [{"type": "file", "headline": f"Read {len(content)} chars from {act.path}"}],
-                        })
-                        self._append_action_result(act, aid, f"(read_file {act.path} returned)\n{content}", is_native)
-                    else:
-                        if status == "repo_not_open":
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(read_file {aid} failed: {val})", is_native)
-                        elif status == "path_traversal":
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(read_file {aid} failed: {val})", is_native)
-                        else:  # status == "exception"
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(read_file {act.path} failed: {val})", is_native)
-                    continue
-                # ---- view_image branch -----------------------------------------
-                if act.kind == "view_image":
-                    if idx in prefetch:
-                        ok, status, val = prefetch[idx]
-                    else:
-                        ok, status, val = self._do_view_image(act)
-
-                    if ok:
-                        text = val
-                        yield ConvEvent("action_result", {
-                            "id": aid, "num": 1, "types": ["image"], "adapter": "local", "mode": "tool",
-                            "artifacts": [{"type": "image", "headline": f"Viewed image {act.path}"}],
-                        })
-                        self._append_action_result(act, aid, f"(view_image {act.path}):\n{text}", is_native)
-                    else:
-                        yield ConvEvent("action_result", {"id": aid, "error": val})
-                        self._append_action_result(act, aid, f"(view_image {act.path} failed: {val})", is_native)
-                    continue
                 # ---- write_file branch ----------------------------------------
                 if act.kind == "write_file":
                     if not self.config.repo:
@@ -1522,142 +1434,6 @@ class SendLoopMixin:
                     })
                     self._append_action_result(act, aid, f"(run_command '{act.command}' completed with exit code {exit_code})\n{output}", is_native)
                     continue
-                # ---- list_dir branch ------------------------------------------
-                if act.kind == "list_dir":
-                    if idx in prefetch:
-                        ok, status, val = prefetch[idx]
-                    else:
-                        ok, status, val = self._do_list_dir(act)
-
-                    if ok:
-                        count, result_text = val
-                        yield ConvEvent("action_result", {
-                            "id": aid, "num": 1, "types": ["dir"], "adapter": "local", "mode": "tool",
-                            "artifacts": [{"type": "dir", "headline": f"Listed {count} items in {act.path or '/'}"}],
-                        })
-                        self._append_action_result(act, aid, f"(list_dir {act.path or '/'} returned)\n{result_text}", is_native)
-                    else:
-                        if status == "repo_not_open":
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(list_dir {aid} failed: {val})", is_native)
-                        elif status == "path_traversal":
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(list_dir {aid} failed: {val})", is_native)
-                        else:  # status == "exception"
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(list_dir {act.path or '/'} failed: {val})", is_native)
-                    continue
-                # ---- web_search branch ----------------------------------------
-                if act.kind == "web_search":
-                    if idx in prefetch:
-                        ok, status, val = prefetch[idx]
-                    else:
-                        ok, status, val = self._do_web_search(act)
-
-                    if ok:
-                        result_text = val
-                        yield ConvEvent("action_result", {
-                            "id": aid, "num": 1, "types": ["web_search"], "adapter": "local", "mode": "tool",
-                            "artifacts": [{"type": "web_search", "headline": f"Searched for '{act.query}'"}],
-                        })
-                        self._append_action_result(act, aid, f"(web_search '{act.query}' returned)\n{result_text}", is_native)
-                    else:
-                        yield ConvEvent("action_result", {"id": aid, "error": val})
-                        self._append_action_result(act, aid, f"(web_search '{act.query}' failed: {val})", is_native)
-                    continue
-                # ---- web_fetch branch -----------------------------------------
-                if act.kind == "web_fetch":
-                    if idx in prefetch:
-                        ok, status, val = prefetch[idx]
-                    else:
-                        ok, status, val = self._do_web_fetch(act)
-
-                    if ok:
-                        result_text = val
-                        yield ConvEvent("action_result", {
-                            "id": aid, "num": 1, "types": ["web_fetch"], "adapter": "local", "mode": "tool",
-                            "artifacts": [{"type": "web_fetch", "headline": f"Fetched {act.url}"}],
-                        })
-                        self._append_action_result(act, aid, f"(web_fetch '{act.url}' returned)\n{result_text}", is_native)
-                    else:
-                        yield ConvEvent("action_result", {"id": aid, "error": val})
-                        self._append_action_result(act, aid, f"(web_fetch '{act.url}' failed: {val})", is_native)
-                    continue
-                # ---- read_pdf branch ------------------------------------------
-                if act.kind == "read_pdf":
-                    if idx in prefetch:
-                        ok, status, val = prefetch[idx]
-                    else:
-                        ok, status, val = self._do_read_pdf(act)
-
-                    if ok:
-                        result_text = val
-                        yield ConvEvent("action_result", {
-                            "id": aid, "num": 1, "types": ["read_pdf"], "adapter": "local", "mode": "tool",
-                            "artifacts": [{"type": "read_pdf", "headline": f"Read PDF from {act.path or act.url}"}],
-                        })
-                        self._append_action_result(act, aid, f"(read_pdf '{act.path or act.url}' returned)\n{result_text}", is_native)
-                    else:
-                        if status == "repo_not_open":
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(read_pdf {aid} failed: {val})", is_native)
-                        elif status == "path_traversal":
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(read_pdf {aid} failed: {val})", is_native)
-                        else:  # status == "exception"
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(read_pdf '{act.path or act.url}' failed: {val})", is_native)
-                    continue
-                # ---- search_codegraph branch ----------------------------------
-                if act.kind == "search_codegraph":
-                    if idx in prefetch:
-                        ok, status, val = prefetch[idx]
-                    else:
-                        ok, status, val = self._do_search_codegraph(act)
-
-                    if ok:
-                        kind, output = val
-                        yield ConvEvent("action_result", {
-                            "id": aid, "num": 1, "types": ["search_codegraph"], "adapter": "local", "mode": "tool",
-                            "artifacts": [{"type": "search_codegraph", "headline": f"CodeGraph {kind}: {act.query}"}],
-                        })
-                        self._append_action_result(act, aid, f"(search_codegraph '{act.query}' returned)\n{output}", is_native)
-                    else:
-                        if status == "repo_not_open":
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(search_codegraph {aid} failed: {val})", is_native)
-                        elif status == "filenotfound":
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: CodeGraph CLI not found)", is_native)
-                        else:  # status == "exception"
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(search_codegraph '{act.query}' failed: {val})", is_native)
-                    continue
-                # ---- search_files branch --------------------------------------
-                if act.kind == "search_files":
-                    if idx in prefetch:
-                        ok, status, val = prefetch[idx]
-                    else:
-                        ok, status, val = self._do_search_files(act)
-
-                    if ok:
-                        output = val
-                        yield ConvEvent("action_result", {
-                            "id": aid, "num": 1, "types": ["search_files"], "adapter": "local", "mode": "tool",
-                            "artifacts": [{"type": "search_files", "headline": f"Search Files: {act.query}"}],
-                        })
-                        self._append_action_result(act, aid, f"(search_files '{act.query}' returned)\n{output}", is_native)
-                    else:
-                        if status == "repo_not_open":
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(search_files {aid} failed: {val})", is_native)
-                        elif status == "path_traversal":
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(search_files {aid} failed: {val})", is_native)
-                        else:  # status == "exception" or "invalid_arguments"
-                            yield ConvEvent("action_result", {"id": aid, "error": val})
-                            self._append_action_result(act, aid, f"(search_files '{act.query}' failed: {val})", is_native)
-                    continue
                 # ---- search_tools branch ---------------------------------------
                 if act.kind == "search_tools":
                     try:
@@ -1691,25 +1467,6 @@ class SendLoopMixin:
                     else:
                         yield ConvEvent("action_result", {"id": aid, "error": val})
                         self._append_action_result(act, aid, f"(search_state failed: {val})", is_native)
-                    continue
-                # ---- lsp branch ----------------------------------------------
-                if act.kind == "lsp":
-                    if idx in prefetch:
-                        ok, status, val = prefetch[idx]
-                    else:
-                        ok, status, val = self._do_lsp(act)
-
-                    if ok:
-                        lang = (act.arguments or {}).get("language") or "auto"
-                        mode = (act.arguments or {}).get("mode") or "diagnostics"
-                        yield ConvEvent("action_result", {
-                            "id": aid, "num": 1, "types": ["lsp"], "adapter": "local", "mode": "tool",
-                            "artifacts": [{"type": "lsp", "headline": f"LSP {lang}/{mode}"}],
-                        })
-                        self._append_action_result(act, aid, f"(lsp returned)\n{val}", is_native)
-                    else:
-                        yield ConvEvent("action_result", {"id": aid, "error": val})
-                        self._append_action_result(act, aid, f"(lsp failed: {val})", is_native)
                     continue
                 # ---- native browser / computer-use tools ----------------------
                 if act.kind in ("browser_navigate", "browser_snapshot", "browser_click",
@@ -2871,54 +2628,15 @@ class SendLoopMixin:
             # re-ask the model IN THE SAME user message so it self-corrects
             # without the user pointing out the mistake. Bounded by
             # _auto_verify_cap so it cannot loop forever. Silent on pass.
-            if (turn_changed_files
-                    and getattr(self.config, "auto_verify", True)
-                    and auto_verify_iters < _auto_verify_cap
-                    and not self._cancel.is_set()
-                    and not plan):
-                from harness import verify as _verify
-                override = (getattr(self.config, "verify_command", "") or "").strip()
-                _uniq_changed = list(dict.fromkeys(turn_changed_files))
-                if override:
-                    verify_cmd = override
-                else:
-                    try:
-                        verify_cmd = _verify.detect_verify_command(
-                            self.config.repo, _uniq_changed)
-                    except Exception:
-                        verify_cmd = None
-                if verify_cmd:
-                    _verify_display = (
-                        _verify._command_display(verify_cmd)
-                        if hasattr(_verify, "_command_display")
-                        else str(verify_cmd)
-                    )
-                    yield ConvEvent("verifying", {"cmd": _verify_display, "auto": True})
-                    try:
-                        _timeout = int(os.environ.get("HARNESS_AUTO_VERIFY_TIMEOUT", "30"))
-                    except ValueError:
-                        _timeout = 30
-                    try:
-                        passed, output = _verify.run_verify(
-                            self.config.repo, verify_cmd, _uniq_changed,
-                            timeout=_timeout, cancel_event=self._cancel)
-                    except Exception as _ve:  # never break the turn on verify
-                        passed, output = True, f"[auto-verify skipped: {_ve}]"
-                    excerpt = output[-1500:] if output else ""
-                    yield ConvEvent("auto_verify", {
-                        "passed": passed,
-                        "command": _verify_display,
-                        "output_excerpt": excerpt,
-                    })
-                    if not passed and not self._cancel.is_set():
-                        auto_verify_iters += 1
-                        feedback = (
-                            "[auto-verify] The project check failed after your edits:\n"
-                            f"$ {_verify_display}\n{output}\n"
-                            "Fix the issue, then continue."
-                        )
-                        self._history.append({"role": "user", "content": feedback})
-                        continue
+            auto_verify_iters, _verify_again = yield from run_auto_verify(
+                self,
+                turn_changed_files=turn_changed_files,
+                auto_verify_iters=auto_verify_iters,
+                auto_verify_cap=_auto_verify_cap,
+                plan=plan,
+            )
+            if _verify_again:
+                continue
 
         # Hit the step cap -- close the turn gracefully.
         limit_msg = "(Reached the investigation step limit for this message.)"

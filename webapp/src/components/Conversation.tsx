@@ -6,151 +6,91 @@ import { usePolling } from "../lib/usePolling";
 import PilotPicker from "./PilotPicker";
 import { pickFolder, revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../lib/transport";
 import FileEditorPane from "./FileEditorPane";
-import { TranscriptList, type Item, type Msg, type Card } from "./TranscriptList";
+import { TranscriptList, type Item, type Card } from "./TranscriptList";
 import {
   deriveBusyProgress,
-  normalizeToolKind,
   turnHasInvestigationActivity,
   turnHasLiveInvestigation,
   turnLooksAnswerComplete,
 } from "../lib/turnProgress";
 import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
 
-/**
- * Session-switch transcript hydrate: decide what to show while the target
- * transcript loads.
- *
- * - cache hit -> show cached items (authoritative for that session)
- * - cache miss -> empty + stale (loading). Never paint priorItems: that leaked
- *   session A's Investigated/swarm chunks into a brand-new empty session B.
- * - cleared session id -> empty is correct
- *
- * A brief empty flash on an uncached switch is preferable to cross-session
- * relic paint. Warm-cache hits still hydrate instantly with no flash.
- */
-export function resolveSwitchTranscript(args: {
-  nextId: string | null;
-  cached: Item[] | undefined;
-  priorItems: Item[];
-}): { items: Item[]; stale: boolean; blank: boolean } {
-  if (!args.nextId) {
-    return { items: [], stale: false, blank: true };
-  }
-  if (args.cached) {
-    return { items: args.cached, stale: false, blank: false };
-  }
-  // priorItems intentionally unused: never show another session's rows.
-  void args.priorItems;
-  return { items: [], stale: true, blank: false };
-}
+import {
+  resolveSwitchTranscript,
+  peekTranscriptCache,
+  writeTranscriptCache,
+} from "./conversation/transcriptCache";
+import {
+  deduplicateConsecutiveAssistantMessages,
+  transcriptResponseToItems,
+  mergeTranscriptItems,
+  transcriptFingerprint,
+} from "./conversation/transcriptItems";
+import {
+  finalizeStreamingThinking,
+  upsertStreamingThinking,
+  upsertToolPrep,
+  clearToolPrepPlaceholders,
+} from "./conversation/thinkingToolPrep";
+import {
+  nextAppliedCursor,
+  isTerminalStreamKind,
+  shouldPollChatEvents,
+  shouldArmChatEventsFromRunners,
+  isChatEventReplayMiss,
+  shouldAdvanceReplayCursor,
+  ringGenerationAfterReplayMiss,
+  shouldHydrateTranscriptOnReplayMiss,
+  cursorAfterReplayMiss,
+  chatFrameToStreamEvent,
+  CHAT_EVENTS_POLL_MS,
+} from "./conversation/chatEvents";
+import {
+  isWorkspaceOpenLeaseExhausted,
+  formatWorkspaceOpenLeaseExhaustedMessage,
+} from "./conversation/leaseExhausted";
 
-export function getSimilarity(s1: string, s2: string): number {
-  const norm1 = s1.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const norm2 = s2.toLowerCase().replace(/[^a-z0-9]/g, "");
-  
-  if (!norm1 || !norm2) return 0;
-  if (norm1 === norm2) return 1.0;
-  
-  if (norm1.startsWith(norm2) || norm2.startsWith(norm1)) {
-    return 1.0;
-  }
-  
-  const w1 = s1.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
-  const w2 = s2.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
-  const set1 = new Set(w1);
-  const set2 = new Set(w2);
-  let intersect = 0;
-  set1.forEach(w => {
-    if (set2.has(w)) intersect++;
-  });
-  const wordJaccard = intersect / (set1.size + set2.size - intersect);
-  
-  const getBigrams = (s: string) => {
-    const bigrams = new Set<string>();
-    for (let i = 0; i < s.length - 1; i++) {
-      bigrams.add(s.substring(i, i + 2));
-    }
-    return bigrams;
-  };
-  const b1 = getBigrams(norm1);
-  const b2 = getBigrams(norm2);
-  if (b1.size > 0 && b2.size > 0) {
-    let bIntersect = 0;
-    b1.forEach(b => {
-      if (b2.has(b)) bIntersect++;
-    });
-    const charJaccard = bIntersect / (b1.size + b2.size - bIntersect);
-    return Math.max(wordJaccard, charJaccard);
-  }
-  
-  return wordJaccard;
-}
-
-/**
- * Drop near-duplicate assistant narration within a turn.
- *
- * Pilots often restate the same diagnosis after each tool ("Found the root
- * causes…") with cards between the bubbles -- consecutive-only dedupe missed
- * that and left the user reading the same paragraph twice while tokens burned.
- * Scan back past cards/thinking within the current user turn; keep the longer
- * copy when similarity is high.
- */
-export function deduplicateAssistantNarration(items: Item[]): Item[] {
-  const result: Item[] = [];
-  // Indices into `result` of assistant msgs since the last user msg.
-  let turnAssistantIdx: number[] = [];
-
-  for (const item of items) {
-    if (item.kind === "msg" && item.msg.role === "user") {
-      turnAssistantIdx = [];
-      result.push(item);
-      continue;
-    }
-
-    if (item.kind === "msg" && item.msg.role === "assistant") {
-      // Never collapse an open stream into a prior bubble -- the typewriter
-      // still owns it; finalize path will re-run this after streaming:false.
-      if (item.msg.streaming) {
-        result.push(item);
-        turnAssistantIdx.push(result.length - 1);
-        continue;
-      }
-
-      const newText = item.msg.text || "";
-      let dupIdx = -1;
-      for (let i = turnAssistantIdx.length - 1; i >= 0; i--) {
-        const prev = result[turnAssistantIdx[i]];
-        if (!prev || prev.kind !== "msg") continue;
-        if (prev.msg.streaming) continue;
-        if (getSimilarity(prev.msg.text || "", newText) > 0.85) {
-          dupIdx = turnAssistantIdx[i];
-          break;
-        }
-      }
-
-      if (dupIdx >= 0) {
-        const prev = result[dupIdx] as { kind: "msg"; msg: Msg };
-        if (newText.length > (prev.msg.text || "").length) {
-          result[dupIdx] = item;
-        }
-        continue;
-      }
-
-      result.push(item);
-      turnAssistantIdx.push(result.length - 1);
-      continue;
-    }
-
-    result.push(item);
-  }
-  return result;
-}
-
-/** @deprecated use deduplicateAssistantNarration -- kept as alias for callers. */
-function deduplicateConsecutiveAssistantMessages(items: Item[]): Item[] {
-  return deduplicateAssistantNarration(items);
-}
-
+// Re-export pure helpers so existing test / LeftRail import paths keep working.
+export {
+  resolveSwitchTranscript,
+  clearTranscriptCache,
+  peekTranscriptCache,
+  writeTranscriptCache,
+} from "./conversation/transcriptCache";
+export {
+  getSimilarity,
+  deduplicateAssistantNarration,
+  dedupeDisplayItems,
+  transcriptResponseToItems,
+  shouldPreferLocalTranscript,
+  mergeTranscriptItems,
+  transcriptFingerprint,
+} from "./conversation/transcriptItems";
+export {
+  finalizeStreamingThinking,
+  upsertStreamingThinking,
+  type ToolPrepOpts,
+  upsertToolPrep,
+  clearToolPrepPlaceholders,
+} from "./conversation/thinkingToolPrep";
+export {
+  nextAppliedCursor,
+  isTerminalStreamKind,
+  shouldPollChatEvents,
+  shouldArmChatEventsFromRunners,
+  type ChatEventReplayMissFields,
+  isChatEventReplayMiss,
+  shouldAdvanceReplayCursor,
+  ringGenerationAfterReplayMiss,
+  shouldHydrateTranscriptOnReplayMiss,
+  cursorAfterReplayMiss,
+  chatFrameToStreamEvent,
+} from "./conversation/chatEvents";
+export {
+  isWorkspaceOpenLeaseExhausted,
+  formatWorkspaceOpenLeaseExhaustedMessage,
+} from "./conversation/leaseExhausted";
+export { composerStatusFromRunner } from "./conversation/composerStatus";
 
 const SLASH_COMMANDS = [
   { cmd: "/clear", desc: "Clear visible transcript" },
@@ -159,588 +99,6 @@ const SLASH_COMMANDS = [
   { cmd: "/model", desc: "Focus model picker to switch models" },
   { cmd: "/help", desc: "Render a small help note" }
 ];
-
-// Per-session transcript warm cache (Hermes-style sessionStateByRuntimeIdRef).
-// Survives activeSessionId switches so the UI hydrates instantly and a background
-// sessionTranscript refresh can land without blanking a cache hit. Module-level
-// so the map outlives a single Conversation mount within the SPA lifetime.
-type CachedTranscript = { items: Item[] };
-const transcriptCacheBySessionId = new Map<string, CachedTranscript>();
-
-/** Test helper: drop all warm-cache entries. */
-export function clearTranscriptCache() {
-  transcriptCacheBySessionId.clear();
-}
-
-/** Test helper: read cached items for a session (undefined on miss). */
-export function peekTranscriptCache(sessionId: string): Item[] | undefined {
-  return transcriptCacheBySessionId.get(sessionId)?.items;
-}
-
-/** Seed or overwrite the warm cache for a session. */
-export function writeTranscriptCache(sessionId: string, items: Item[]) {
-  transcriptCacheBySessionId.set(sessionId, { items: [...items] });
-}
-
-/** Map /api/sessions/transcript payload into transcript Item rows. */
-export function transcriptResponseToItems(res: {
-  history?: any[];
-  display?: any[];
-}): Item[] {
-  let loadedItems: Item[] = [];
-  if (res.display && res.display.length > 0) {
-    loadedItems = res.display.map((m: any) => {
-      if (m.type === "card") {
-        // result == null means still in flight (persisted at action_start).
-        const pending = m.result == null;
-        return {
-          kind: "card" as const,
-          card: {
-            id: m.id,
-            goal: m.goal,
-            cwd: m.cwd || null,
-            kind: m.kind,
-            running: pending,
-            open: false,
-            result: pending ? undefined : (m.result || undefined)
-          }
-        };
-      } else if (m.type === "swarm_result") {
-        return {
-          kind: "swarm_result" as const,
-          job_id: m.job_id || "",
-          applied: !!m.applied,
-          files: Array.isArray(m.files) ? m.files : [],
-          summary: m.summary || "",
-          error: m.error || null,
-          objective: m.objective || ""
-        };
-      } else {
-        return {
-          kind: "msg" as const,
-          msg: {
-            role: m.role as "user" | "assistant",
-            text: m.text || ""
-          }
-        };
-      }
-    });
-  } else {
-    loadedItems = (res.history || [])
-      .filter((m: any) => m.role === "assistant" || (m.role === "user" && m.content && !m.content.startsWith("(")))
-      .map((m: any) => ({
-        kind: "msg" as const,
-        msg: {
-          role: m.role as "user" | "assistant",
-          text: m.content || ""
-        }
-      }));
-  }
-  return deduplicateConsecutiveAssistantMessages(dedupeDisplayItems(loadedItems));
-}
-
-/**
- * Drop consecutive duplicate tool cards / swarm badges (same id).
- * Session-switch SSE races can re-append events already present after a
- * transcript poll replace; without this the Investigated block repeats forever.
- */
-export function dedupeDisplayItems(items: Item[]): Item[] {
-  const out: Item[] = [];
-  const seenCardIds = new Set<string>();
-  const seenSwarmIds = new Set<string>();
-  for (const item of items) {
-    if (item.kind === "card" && item.card?.id) {
-      const id = String(item.card.id);
-      if (seenCardIds.has(id)) continue;
-      seenCardIds.add(id);
-    } else if (item.kind === "swarm_result" && item.job_id) {
-      const id = String(item.job_id);
-      if (seenSwarmIds.has(id)) continue;
-      seenSwarmIds.add(id);
-    }
-    out.push(item);
-  }
-  return out;
-}
-
-function _cardCount(items: Item[]): number {
-  let n = 0;
-  for (const it of items) if (it.kind === "card") n += 1;
-  return n;
-}
-
-function _runningCardIds(items: Item[]): Set<string> {
-  const ids = new Set<string>();
-  for (const it of items) {
-    if (it.kind === "card" && it.card.running && it.card.id) {
-      ids.add(String(it.card.id));
-    }
-  }
-  return ids;
-}
-
-/**
- * True when applying `remote` (sessionTranscript poll) would erase live tool
- * rows the SSE stream already painted -- the Investigating blink / disappear
- * bug while run_command is still going.
- */
-export function shouldPreferLocalTranscript(local: Item[], remote: Item[]): boolean {
-  const localRunning = _runningCardIds(local);
-  if (localRunning.size > 0) {
-    for (const id of localRunning) {
-      const rem = remote.find((it) => it.kind === "card" && it.card.id === id);
-      if (!rem) return true;
-      // Remote still pending (result null → running) or completed: ok to take remote.
-    }
-  }
-  // Never shrink the tool timeline mid-session; poll payloads can lag saves.
-  if (_cardCount(local) > _cardCount(remote)) return true;
-  return false;
-}
-
-/**
- * Merge a disk/API transcript into the live feed without dropping in-flight
- * cards. Prefer remote message text when ids match; keep local-only cards.
- */
-export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
-  if (!shouldPreferLocalTranscript(local, remote)) return remote;
-  const remoteByCardId = new Map<string, Extract<Item, { kind: "card" }>>();
-  for (const it of remote) {
-    if (it.kind === "card" && it.card.id) {
-      remoteByCardId.set(String(it.card.id), it);
-    }
-  }
-  const merged = local.map((it) => {
-    if (it.kind !== "card" || !it.card.id) return it;
-    const rem = remoteByCardId.get(String(it.card.id));
-    if (!rem) return it;
-    // Remote finished the tool -- take its result, drop running.
-    if (!rem.card.running && rem.card.result) {
-      return {
-        kind: "card" as const,
-        card: {
-          ...it.card,
-          running: false,
-          result: rem.card.result,
-          goal: rem.card.goal || it.card.goal,
-          kind: rem.card.kind || it.card.kind,
-        },
-      };
-    }
-    return it;
-  });
-  // Append remote cards the local feed never saw (reattach gap).
-  const localIds = new Set(
-    local.filter((it) => it.kind === "card" && it.card.id).map((it) => String((it as Extract<Item, { kind: "card" }>).card.id)),
-  );
-  for (const it of remote) {
-    if (it.kind === "card" && it.card.id && !localIds.has(String(it.card.id))) {
-      merged.push(it);
-    }
-  }
-  return merged;
-}
-
-/** Cheap content fingerprint so busy-poll refresh can skip identical payloads. */
-export function transcriptFingerprint(items: Item[]): string {
-  let fp = `n=${items.length}`;
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    if (it.kind === "msg") {
-      fp += `|m:${it.msg.role}:${it.msg.text.length}:${it.msg.streaming ? 1 : 0}`;
-    } else if (it.kind === "card") {
-      const r = it.card.result;
-      fp += `|c:${it.card.id}:${it.card.running ? 1 : 0}:${r ? 1 : 0}`;
-    } else if (it.kind === "swarm_result") {
-      fp += `|s:${it.job_id}:${it.applied ? 1 : 0}`;
-    } else if (it.kind === "thinking") {
-      fp += `|t:${(it.text || "").length}:${(it as { streaming?: boolean }).streaming ? 1 : 0}`;
-    } else if (it.kind === "tool_prep") {
-      fp += `|p:${String((it as { name?: string }).name || "")}`;
-    } else {
-      fp += `|o:${it.kind}`;
-    }
-  }
-  return fp;
-}
-
-let __thinkingIdSeq = 0;
-function newThinkingId(): string {
-  __thinkingIdSeq += 1;
-  return `th-${Date.now().toString(36)}-${__thinkingIdSeq}`;
-}
-
-/** Drop streaming:true from live reasoning rows once the phase ends. */
-export function finalizeStreamingThinking(items: Item[]): Item[] {
-  return items.map((it) =>
-    it.kind === "thinking" && it.streaming
-      ? { kind: "thinking" as const, text: it.text, id: it.id || newThinkingId() }
-      : it
-  );
-}
-
-/** Append/update the open streaming reasoning row for the current turn.
- * Preserves a durable `id` across token upserts so the ActivityGroup React key
- * (and expand/scroll state) does not remount on every thinking delta. */
-export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i];
-    if (it.kind === "msg" && it.msg.role === "user") break;
-    if (it.kind === "thinking" && it.streaming) {
-      const copy = items.slice();
-      copy[i] = {
-        kind: "thinking",
-        text: it.text + chunk,
-        streaming: true,
-        id: it.id || newThinkingId(),
-      };
-      return copy;
-    }
-  }
-  return [...items, { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() }];
-}
-
-export type ToolPrepOpts = {
-  /** Path / command / query for the row (Cursor ACP locations / args). */
-  goal?: string;
-  /** Stable Cursor toolCallId / stream call_id — accumulate one row per id. */
-  id?: string;
-  /** pending | in_progress | completed | failed | cancelled */
-  status?: string;
-};
-
-/** Upsert a provisional running card for tool_prep so ActivityGroup appears
- * as soon as tools start. Cursor ACP/CLI pass call ids so each native tool
- * keeps its own row; legacy string-only hints still replace the anonymous
- * placeholder (pre-action_start). */
-export function upsertToolPrep(
-  items: Item[],
-  name: string,
-  opts?: ToolPrepOpts,
-): Item[] {
-  const callId = (opts?.id || "").trim();
-  const status = (opts?.status || "").toLowerCase().trim();
-  const done =
-    status === "completed" || status === "failed" || status === "cancelled";
-  const kind = normalizeToolKind(name) || (name || "").trim() || "tool_call";
-  // Real path/command/query only — never echo the kind as the goal
-  // ("Read" + "read file" / "Tool" + "tool" painted as doubled chrome).
-  const goalRaw = (opts?.goal || "").trim();
-  const prepId = callId ? `tool-prep:${callId}` : `tool-prep:${kind}`;
-
-  let lastUser = -1;
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i];
-    if (it.kind === "msg" && it.msg.role === "user") {
-      lastUser = i;
-      break;
-    }
-  }
-  const turnStart = lastUser + 1;
-
-  // Status-only / completed patch for a known call — never clobber a path
-  // goal with the bare kind label ("read file").
-  if (callId && done) {
-    let hit = false;
-    const patched = items.map((it, i) => {
-      if (i < turnStart || it.kind !== "card") return it;
-      if (it.card.id !== prepId) return it;
-      hit = true;
-      return {
-        ...it,
-        card: {
-          ...it.card,
-          running: false,
-          kind: (kind !== "tool_call" ? kind : it.card.kind) || kind,
-          goal: goalRaw || it.card.goal || "",
-          ...(status === "failed"
-            ? { result: { ...(it.card.result || {}), error: "failed" } }
-            : {}),
-        },
-      };
-    });
-    if (hit) {
-      return patched.filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
-    }
-  }
-
-  const card = {
-    id: prepId,
-    goal: goalRaw,
-    cwd: null as string | null,
-    kind,
-    running: !done,
-    open: false,
-    ...(status === "failed" ? { result: { error: "failed" } } : {}),
-  };
-
-  // With a stable call id: keep prior Cursor tool rows; update matching id.
-  if (callId) {
-    let replaced = false;
-    const next = items.map((it, i) => {
-      if (i < turnStart) return it;
-      if (it.kind === "tool_prep") return it; // drop below
-      if (it.kind === "card" && it.card.id === prepId) {
-        replaced = true;
-        return {
-          kind: "card" as const,
-          card: {
-            ...it.card,
-            ...card,
-            goal: goalRaw || it.card.goal || "",
-            kind: kind !== "tool_call" ? kind : (it.card.kind || kind),
-            running: card.running,
-          },
-        };
-      }
-      return it;
-    }).filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
-    if (replaced) {
-      return [...next, { kind: "tool_prep" as const, name: kind }];
-    }
-    return [
-      ...next,
-      { kind: "card" as const, card },
-      { kind: "tool_prep" as const, name: kind },
-    ];
-  }
-
-  // Legacy string-only hint: replace anonymous prep cards in this turn.
-  const next = items.filter((it, i) => {
-    if (i < turnStart) return true;
-    if (it.kind === "tool_prep") return false;
-    if (
-      it.kind === "card"
-      && typeof it.card.id === "string"
-      && it.card.id.startsWith("tool-prep:")
-    ) {
-      return false;
-    }
-    return true;
-  });
-  return [...next, { kind: "card" as const, card }, { kind: "tool_prep" as const, name: kind }];
-}
-
-/** Strip provisional tool-prep cards (and footer hints) before a real action_start. */
-export function clearToolPrepPlaceholders(items: Item[]): Item[] {
-  return items.filter((it) => {
-    if (it.kind === "tool_prep") return false;
-    if (
-      it.kind === "card"
-      && typeof it.card.id === "string"
-      && it.card.id.startsWith("tool-prep:")
-    ) {
-      return false;
-    }
-    return true;
-  });
-}
-
-/**
- * Composer chrome from runners poll (no local SSE).
- * When the active session's runner is "running", show Stop/Steer (thinking);
- * otherwise allow Send (idle). Used by Conversation and mirrored in tests.
- */
-export function composerStatusFromRunner(
-  activeSessionId: string | null,
-  runners: Record<string, "running" | "idle" | "attaching" | "missing"> | undefined,
-  localStreamActive: boolean,
-): "thinking" | "idle" | null {
-  if (localStreamActive || !activeSessionId) return null;
-  // "attaching" = deferred cold pilot build — not a user turn (no thinking chrome).
-  if (runners?.[activeSessionId] === "running") return "thinking";
-  return "idle";
-}
-
-/** Advance last-applied SSE ring cursor after a chatEvents replay batch. */
-export function nextAppliedCursor(
-  lastApplied: number,
-  frames: { cursor: number }[],
-  replayCursor?: number,
-): number {
-  let next = lastApplied;
-  for (const frame of frames) {
-    if (typeof frame.cursor === "number" && frame.cursor > next) {
-      next = frame.cursor;
-    }
-  }
-  if (typeof replayCursor === "number" && replayCursor > next) {
-    next = replayCursor;
-  }
-  return next;
-}
-
-/** Terminal SSE kinds that end a turn (stop mid-turn reattach polling). */
-export function isTerminalStreamKind(kind: string): boolean {
-  return (
-    kind === "assistant_done"
-    || kind === "done"
-    || kind === "error"
-    || kind === "auto_halt"
-  );
-}
-
-/** Whether a detached-busy session should keep polling chatEvents. */
-export function shouldPollChatEvents(opts: {
-  detachedBusy: boolean;
-  localStreamActive: boolean;
-  userStopped: boolean;
-  sawTerminal: boolean;
-}): boolean {
-  if (opts.sawTerminal || opts.userStopped || opts.localStreamActive) return false;
-  return opts.detachedBusy;
-}
-
-/**
- * When a turn starts outside this tab's EventSource (Discord bridge queue,
- * another client, session already open when the runner flips to running),
- * runners-poll must arm chatEvents reattach — transcript disk polls alone
- * stay empty until the turn finishes, which looks like a stuck
- * "Waiting on provider…" until restart hydrates the final message.
- */
-export function shouldArmChatEventsFromRunners(opts: {
-  runnerBusy: boolean;
-  localStreamActive: boolean;
-  userStopped: boolean;
-  chatEventsPollArmed: boolean;
-}): boolean {
-  if (!opts.runnerBusy || opts.localStreamActive || opts.userStopped) return false;
-  return !opts.chatEventsPollArmed;
-}
-
-/** Fields checked when classifying a chatEvents miss vs empty catch-up. */
-export type ChatEventReplayMissFields = {
-  ok?: boolean;
-  missed?: boolean;
-  available?: boolean;
-  code?: string;
-  generation?: number;
-};
-
-/** True when GET /api/chat/events reports the ring is unavailable (not catch-up). */
-export function isChatEventReplayMiss(replay: ChatEventReplayMissFields): boolean {
-  if (replay.missed === true) return true;
-  if (replay.ok === false) return true;
-  if (replay.available === false) return true;
-  return false;
-}
-
-/** Whether a replay response should advance lastAppliedCursor. */
-export function shouldAdvanceReplayCursor(replay: ChatEventReplayMissFields): boolean {
-  return !isChatEventReplayMiss(replay);
-}
-
-/** Refresh ring generation pin after a replay miss. */
-export function ringGenerationAfterReplayMiss(
-  replay: ChatEventReplayMissFields,
-  current: number | undefined,
-): number | undefined {
-  if (
-    replay.code === "generation_mismatch"
-    && typeof replay.generation === "number"
-    && replay.generation > 0
-  ) {
-    return replay.generation;
-  }
-  if (replay.code === "ring_miss") {
-    return undefined;
-  }
-  return current;
-}
-
-/**
- * On ring miss / generation mismatch / cursor gap, fall back to disk transcript
- * hydrate (busy-poll skips sessionTranscript while chatEvents poll owns the turn).
- */
-export function shouldHydrateTranscriptOnReplayMiss(replay: ChatEventReplayMissFields): boolean {
-  return isChatEventReplayMiss(replay);
-}
-
-/**
- * Cursor after a replay miss. Ring eviction / generation change / cursor gap
- * means our `since` is no longer contiguous — reset so the next poll can
- * catch up (or hydrate from disk).
- */
-export function cursorAfterReplayMiss(
-  replay: { code?: string },
-  current: number,
-): number {
-  if (
-    replay.code === "ring_miss"
-    || replay.code === "generation_mismatch"
-    || replay.code === "cursor_gap"
-  ) {
-    return 0;
-  }
-  return current;
-}
-
-/** Map a retained ring frame to the live stream-event shape. */
-export function chatFrameToStreamEvent(frame: {
-  kind: string;
-  data?: any;
-}): { kind: string; data?: any } {
-  return { kind: frame.kind, data: frame.data };
-}
-
-/** Bounded interval for mid-turn chatEvents reattach while detached-busy. */
-const CHAT_EVENTS_POLL_MS = 1000;
-
-/**
- * Same copy as LeftRail.SESSION_LEASE_EXHAUSTED_MESSAGE — duplicated here to
- * avoid a Conversation ↔ LeftRail circular import (LeftRail imports this file).
- */
-const SESSION_LEASE_EXHAUSTED_MESSAGE =
-  "This session could not start — too many sessions are busy right now. Wait a moment or stop another turn, then try again.";
-
-type LeaseExhaustedPayload = {
-  code?: string;
-  error?: string;
-  message?: string;
-  status?: number;
-  max_concurrent?: number;
-  active_count?: number;
-  busy_session_ids?: string[];
-  busy_session_titles?: string[];
-};
-
-/** True when WorkspaceChip open failed because session runner leases are full.
- * Mirrors LeftRail.isLeaseExhaustedError — duplicated here to avoid a
- * Conversation ↔ LeftRail circular import (LeftRail imports this file). */
-export function isWorkspaceOpenLeaseExhausted(err: unknown): boolean {
-  if (!err) return false;
-  const e = err as LeaseExhaustedPayload;
-  if (e.code === "lease_exhausted") return true;
-  const msg = String(e.message || e.error || err || "");
-  // Message-only fallbacks. Do NOT treat a bare "... -> 409" as lease exhaustion.
-  if (/lease_exhausted/i.test(msg)) return true;
-  if (/session runner lease exhausted/i.test(msg)) return true;
-  return false;
-}
-
-/** Hermes-style copy when the 409 body includes capacity / busy titles. */
-export function formatWorkspaceOpenLeaseExhaustedMessage(err: unknown): string {
-  const e = (err || {}) as LeaseExhaustedPayload;
-  const max = typeof e.max_concurrent === "number" ? e.max_concurrent : null;
-  const active = typeof e.active_count === "number" ? e.active_count : null;
-  const titles = (e.busy_session_titles || []).map((t) => String(t).trim()).filter(Boolean);
-  const capacity =
-    max != null
-      ? active != null
-        ? `${active}/${max}`
-        : `${max}`
-      : null;
-  if (titles.length && capacity) {
-    return `Too many sessions are busy (${capacity}). Stop one of: ${titles.map((t) => `"${t}"`).join(", ")} — then try again.`;
-  }
-  if (titles.length) {
-    return `Too many sessions are busy. Stop one of: ${titles.map((t) => `"${t}"`).join(", ")} — then try again.`;
-  }
-  if (capacity) {
-    return `This session could not start — session capacity is full (${capacity}). Wait a moment or stop another turn, then try again.`;
-  }
-  return SESSION_LEASE_EXHAUSTED_MESSAGE;
-}
 
 type MentionListingCap = {
   total?: number;
@@ -1553,7 +911,7 @@ export default function Conversation({
     if (prevId && prevId !== activeSessionId && !transcriptStaleRef.current) {
       // Only cache when the visible rows belong to prevId. Stale bleed (prior
       // session still painted) must not poison the warm cache.
-      transcriptCacheBySessionId.set(prevId, { items: [...itemsRef.current] });
+      writeTranscriptCache(prevId, itemsRef.current);
     }
 
     // Rewind-edit chrome is session-local; never carry Revert/prefill across ids.
@@ -1609,11 +967,11 @@ export default function Conversation({
       return;
     }
 
-    const cachedEntry = transcriptCacheBySessionId.get(activeSessionId);
-    const hadCache = !!cachedEntry;
+    const cachedItems = peekTranscriptCache(activeSessionId);
+    const hadCache = cachedItems !== undefined;
     const resolved = resolveSwitchTranscript({
       nextId: activeSessionId,
-      cached: cachedEntry?.items,
+      cached: cachedItems,
       priorItems: itemsRef.current,
     });
     // Always apply resolved items so a cache miss blanks prior session rows
@@ -1665,7 +1023,7 @@ export default function Conversation({
         setItems(loadedItems);
         itemsRef.current = loadedItems;
         transcriptFpRef.current = transcriptFingerprint(loadedItems);
-        transcriptCacheBySessionId.set(activeSessionId, { items: [...loadedItems] });
+        writeTranscriptCache(activeSessionId, loadedItems);
         setTranscriptStale(false);
 
         // Gather all artifacts from (a) card entries in res.display
@@ -1767,7 +1125,7 @@ export default function Conversation({
                   transcriptFpRef.current = fp;
                   setItems(next);
                   itemsRef.current = next;
-                  transcriptCacheBySessionId.set(missSid, { items: [...next] });
+                  writeTranscriptCache(missSid, next);
                   setTranscriptStale(false);
                   // Keep detached-busy chrome; do not clear status / poll.
                 }).catch(() => {});
@@ -1954,7 +1312,7 @@ export default function Conversation({
           transcriptFpRef.current = fp;
           setItems(next);
           itemsRef.current = next;
-          transcriptCacheBySessionId.set(sid, { items: [...next] });
+          writeTranscriptCache(sid, next);
           setTranscriptStale(false);
         }).catch(() => {});
       } else if (detachedBusyRef.current) {
@@ -1980,7 +1338,7 @@ export default function Conversation({
             transcriptFpRef.current = fp;
             setItems(next);
             itemsRef.current = next;
-            transcriptCacheBySessionId.set(sid, { items: [...next] });
+            writeTranscriptCache(sid, next);
             setTranscriptStale(false);
           })
           .catch(() => {});

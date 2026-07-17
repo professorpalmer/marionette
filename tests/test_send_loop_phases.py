@@ -1,7 +1,8 @@
 """Characterization tests for send_loop_phases peel from _send_locked_inner.
 
 Locks the extracted helper contracts (queue kinds, stream drain, metering,
-action-goal labels, prefetch pool, stdout job_id scrape) and asserts those
+action-goal labels, prefetch pool, stdout job_id scrape, idle steer/queue
+drain, read-only tool-result assembly, auto-verify) and asserts those
 helpers are module-level callables invoked from the mixin turn kernel — so
 unit tests can target them directly without nested closures.
 """
@@ -21,9 +22,12 @@ from harness.send_loop import SendLoopMixin
 from harness.send_loop_phases import (
     READ_ONLY_KINDS,
     action_display_goal,
+    dispatch_readonly_action,
+    drain_idle_turn,
     drain_stream_queue,
     meter_pilot_step,
     read_stdout_thread,
+    run_auto_verify,
     run_parallel_prefetch,
     run_prefetch,
     run_stream,
@@ -39,6 +43,9 @@ PHASE_HELPERS = (
     "action_display_goal",
     "drain_stream_queue",
     "meter_pilot_step",
+    "drain_idle_turn",
+    "dispatch_readonly_action",
+    "run_auto_verify",
 )
 
 
@@ -89,6 +96,32 @@ def test_mixin_calls_new_phase_helpers():
     assert "meter_pilot_step(" in src
     assert "action_display_goal(" in src
     assert "run_parallel_prefetch(" in src
+    assert "drain_idle_turn(" in src
+    assert "dispatch_readonly_action(" in src
+    assert "run_auto_verify(" in src
+
+
+def test_send_locked_inner_no_longer_inlines_readonly_branches():
+    """Read-only tool-result assembly must live in dispatch_readonly_action."""
+    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    inner = None
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "SendLoopMixin":
+            for item in node.body:
+                if (
+                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and item.name == "_send_locked_inner"
+                ):
+                    inner = item
+                    break
+    assert inner is not None
+    segment = ast.get_source_segment(src, inner) or ""
+    assert "---- read_file branch" not in segment
+    assert "---- list_dir branch" not in segment
+    assert "dispatch_readonly_action(" in segment
+    assert "drain_idle_turn(" in segment
+    assert "run_auto_verify(" in segment
 
 
 
@@ -450,4 +483,199 @@ def test_meter_pilot_step_estimates_tokens_in_from_prompt():
     meter_pilot_step(session, resp, prompt=prompt)
     assert session._tokens_in == 25
     assert session._last_prompt_tokens == 25
+
+
+def test_drain_idle_turn_delivers_steers_and_continues():
+    history = [{"role": "assistant", "content": "done"}]
+    steers = ["course correct"]
+
+    session = SimpleNamespace(
+        drain_steer=lambda: list(steers),
+        _history=history,
+        _steer_marker=lambda t: f"<steer>{t}</steer>",
+        _steer_pending=True,
+        _next_queued_needs_driver_swap=lambda: False,
+        _pop_next_prompt=lambda: None,
+        _submit_housekeeping=MagicMock(),
+        _maybe_ingest=MagicMock(),
+    )
+    events = []
+    gen = drain_idle_turn(
+        session,
+        user_message="orig",
+        step=0,
+        swarms=0,
+        turn_prose=[],
+        turn_findings=[],
+    )
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration as stop:
+        disposition, user_message = stop.value
+    assert disposition == "continue"
+    assert user_message == "orig"
+    assert session._steer_pending is False
+    assert events[0].kind == "steer"
+    assert history[-1]["content"] == "<steer>course correct</steer>"
+    session._submit_housekeeping.assert_not_called()
+
+
+def test_drain_idle_turn_finalizes_when_idle():
+    submitted = []
+
+    session = SimpleNamespace(
+        drain_steer=lambda: [],
+        _history=[],
+        _steer_pending=False,
+        _next_queued_needs_driver_swap=lambda: False,
+        _pop_next_prompt=lambda: None,
+        _submit_housekeeping=lambda fn, *a: submitted.append((fn, a)),
+        _maybe_ingest="ingest",
+    )
+    events = []
+    gen = drain_idle_turn(
+        session,
+        user_message="hi",
+        step=2,
+        swarms=1,
+        turn_prose=["p"],
+        turn_findings=["f"],
+    )
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration as stop:
+        disposition, user_message = stop.value
+    assert disposition == "return"
+    assert user_message == "hi"
+    assert events[0].kind == "assistant_done"
+    assert events[0].data == {"turns": 3, "swarms": 1}
+    assert submitted == [("ingest", ("hi", ["p"], ["f"]))]
+
+
+def test_drain_idle_turn_breaks_on_driver_swap():
+    session = SimpleNamespace(
+        drain_steer=lambda: [],
+        _next_queued_needs_driver_swap=lambda: True,
+        _pop_next_prompt=MagicMock(),
+        _submit_housekeeping=MagicMock(),
+    )
+    gen = drain_idle_turn(
+        session,
+        user_message="hi",
+        step=0,
+        swarms=0,
+        turn_prose=[],
+        turn_findings=[],
+    )
+    try:
+        next(gen)
+        raise AssertionError("expected immediate return")
+    except StopIteration as stop:
+        disposition, user_message = stop.value
+    assert disposition == "break"
+    assert user_message == "hi"
+    session._pop_next_prompt.assert_not_called()
+
+
+def test_dispatch_readonly_action_read_file_success():
+    act = PilotAction(kind="read_file", path="a.py")
+    appended = []
+    session = SimpleNamespace(
+        _do_read_file=MagicMock(return_value=(True, "ok", "body")),
+        _append_action_result=lambda *a, **k: appended.append((a, k)),
+    )
+    events = list(dispatch_readonly_action(session, act, 0, "a1", {}, True))
+    assert events[0].kind == "action_result"
+    assert events[0].data["types"] == ["file"]
+    session._do_read_file.assert_called_once_with(act)
+    assert appended and "returned" in appended[0][0][2]
+
+
+def test_dispatch_readonly_action_uses_prefetch_hit():
+    act = PilotAction(kind="list_dir", path=".")
+    session = SimpleNamespace(
+        _do_list_dir=MagicMock(),
+        _append_action_result=MagicMock(),
+    )
+    prefetch = {2: (True, "ok", (3, "a\nb\nc"))}
+    events = list(dispatch_readonly_action(session, act, 2, "a2", prefetch, False))
+    assert events[0].data["types"] == ["dir"]
+    session._do_list_dir.assert_not_called()
+    session._append_action_result.assert_called_once()
+
+
+def test_dispatch_readonly_action_read_file_error():
+    act = PilotAction(kind="read_file", path="missing.py")
+    session = SimpleNamespace(
+        _do_read_file=MagicMock(return_value=(False, "repo_not_open", "no repo")),
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_readonly_action(session, act, 0, "a1", {}, True))
+    assert events[0].data.get("error") == "no repo"
+    session._append_action_result.assert_called_once()
+
+
+def test_run_auto_verify_skips_when_no_changed_files():
+    session = SimpleNamespace(
+        config=SimpleNamespace(auto_verify=True, repo="/repo", verify_command=""),
+        _cancel=threading.Event(),
+        _history=[],
+    )
+    gen = run_auto_verify(
+        session,
+        turn_changed_files=[],
+        auto_verify_iters=0,
+        auto_verify_cap=2,
+        plan=False,
+    )
+    try:
+        next(gen)
+        raise AssertionError("expected silent return")
+    except StopIteration as stop:
+        iters, again = stop.value
+    assert iters == 0
+    assert again is False
+
+
+def test_run_auto_verify_retries_on_failure(monkeypatch):
+    import harness.verify as verify_mod
+
+    cancel = threading.Event()
+    session = SimpleNamespace(
+        config=SimpleNamespace(
+            auto_verify=True, repo="/repo", verify_command="pytest -q"
+        ),
+        _cancel=cancel,
+        _history=[],
+    )
+    monkeypatch.setattr(
+        verify_mod,
+        "run_verify",
+        lambda *a, **k: (False, "FAILED tests/test_x.py"),
+    )
+    monkeypatch.setattr(
+        verify_mod, "_command_display", lambda cmd: str(cmd), raising=False
+    )
+
+    events = []
+    gen = run_auto_verify(
+        session,
+        turn_changed_files=["a.py"],
+        auto_verify_iters=0,
+        auto_verify_cap=2,
+        plan=False,
+    )
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration as stop:
+        iters, again = stop.value
+    assert again is True
+    assert iters == 1
+    assert [e.kind for e in events] == ["verifying", "auto_verify"]
+    assert events[1].data["passed"] is False
+    assert session._history[-1]["role"] == "user"
+    assert "[auto-verify]" in session._history[-1]["content"]
 
