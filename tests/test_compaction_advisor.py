@@ -224,12 +224,15 @@ def test_advisor_compaction_error_keeps_default_trigger(monkeypatch, tmp_path):
     _journal_now_snapshot(tmp_path)
 
     monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", "1")
-    import harness.compaction_advisor as compaction_advisor
+    import harness.turn_economy as turn_economy
 
     def _raise(*_args, **_kwargs):
         raise RuntimeError("advisor failed")
 
-    monkeypatch.setattr(compaction_advisor, "assess_layer_pressure", _raise)
+    # TurnEconomy binds assess_layer_pressure at import time; patch that
+    # binding (not compaction_advisor.assess_layer_pressure) so the error
+    # path under _maybe_compact_history is exercised.
+    monkeypatch.setattr(turn_economy, "assess_layer_pressure", _raise)
     events = list(session._maybe_compact_history())
     assert events == []
 
