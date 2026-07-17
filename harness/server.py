@@ -2912,50 +2912,61 @@ def _sessions_state_dir() -> str:
     return _cfg.state_dir or _tf.gettempdir()
 
 
+_CODEGRAPH_REASON_UNSET = object()
+
+
+def _set_codegraph_status(
+    status: str,
+    reason: Any = _CODEGRAPH_REASON_UNSET,
+) -> None:
+    """Mutate codegraph status globals (injected into SessionServices).
+
+    Passing only ``status`` leaves ``_codegraph_status_reason`` untouched
+    (matches prior inline assignments for ready/unsupported). Passing an
+    explicit ``reason`` (including ``None``) updates both.
+    """
+    global _codegraph_status, _codegraph_status_reason
+    _codegraph_status = status
+    if reason is not _CODEGRAPH_REASON_UNSET:
+        _codegraph_status_reason = reason
+
+
+def _session_services():
+    """Build SessionServices from live server module globals (call-time lookup)."""
+    from .api.sessions import SessionServices
+    return SessionServices(
+        sessions=_sessions,
+        runners=_runners,
+        cfg=_cfg,
+        get_pilot=lambda: _pilot,
+        sessions_state_dir=_sessions_state_dir,
+        save_active_transcript=_save_active_transcript,
+        attach_view=_attach_view,
+        sync_pilot_session_id=_sync_pilot_session_id,
+        diag=_diag,
+        is_app_install_root=_is_app_install_root,
+        ensure_home_workspace=_ensure_home_workspace,
+        note_boot_repo=_note_boot_repo,
+        record_recent_workspace=_record_recent_workspace,
+        puppetmaster_available=_puppetmaster_available,
+        index_codegraph_bg=_index_codegraph_bg,
+        maybe_refresh_codegraph=_maybe_refresh_codegraph,
+        get_codegraph_status=_get_codegraph_status,
+        lease_exhausted_body=_lease_exhausted_body,
+        attach_view_transcript_payload=_attach_view_transcript_payload,
+        parse_bool=_parse_bool,
+        set_codegraph_status=_set_codegraph_status,
+    )
+
+
 def _remove_session_transcript(sid: str) -> None:
-    safe_sid = "".join(c for c in sid if c.isalnum() or c in ("-", "_"))
-    if not safe_sid:
-        return
-    state_dir = _sessions_state_dir()
-    trans_dir = os.path.abspath(os.path.join(state_dir, "transcripts"))
-    p = os.path.abspath(os.path.join(trans_dir, f"{safe_sid}.json"))
-    if p.startswith(trans_dir) and os.path.exists(p):
-        try:
-            os.remove(p)
-        except Exception as e:
-            _diag("server.session_delete_transcript", e, msg=f"sid={safe_sid}")
-    try:
-        from .session_fts import remove_session_from_index
-        remove_session_from_index(state_dir, safe_sid)
-    except Exception as e:
-        _diag("server.session_delete_fts", e, msg=f"sid={safe_sid}")
+    from .api.sessions import remove_session_transcript
+    remove_session_transcript(sid, state_dir=_sessions_state_dir(), diag=_diag)
 
 
 def _handle_session_delete(sid: str) -> tuple[int, dict]:
-    if not sid:
-        return 400, {"error": "missing session id"}
-    is_active = (_sessions.active == sid)
-    from .hooks import run_hooks
-    run_hooks("sessionEnd", {"session_id": sid})
-    new_active = _sessions.delete(sid)
-    _remove_session_transcript(sid)
-    try:
-        _runners.drop(sid)
-    except Exception as e:
-        _diag("server.session_delete_drop_runner", e)
-    if is_active:
-        if new_active:
-            try:
-                _attach_view(new_active)
-            except LeaseExhaustedError:
-                # Fall back to loading into the current global pilot pointer.
-                history = load_transcript(_sessions_state_dir(), new_active)
-                _pilot.load_history(history)
-                _sync_pilot_session_id()
-        else:
-            _pilot.load_history([])
-            _sync_pilot_session_id()
-    return 200, {"ok": True, "active": new_active}
+    from .api.sessions import handle_session_delete
+    return handle_session_delete(sid, _session_services())
 
 
 def _handle_session_relocate(body: dict) -> tuple[int, dict]:
@@ -2964,96 +2975,8 @@ def _handle_session_relocate(body: dict) -> tuple[int, dict]:
     Updates ``workspace_root``/``repo``, records the target in recents, opens
     the workspace as active, and keeps the same session id / transcript file.
     """
-    global _codegraph_status, _codegraph_status_reason
-    target_repo = (body.get("workspace_root") or body.get("path") or body.get("repo") or "").strip()
-    if not target_repo:
-        return 400, {"ok": False, "error": "workspace_root is required"}
-    if not os.path.isdir(target_repo):
-        return 400, {"ok": False, "error": f"path is not an existing directory: {target_repo}"}
-    if _is_app_install_root(target_repo):
-        return 400, {"ok": False, "error": "refusing to relocate into the Marionette app checkout"}
-
-    sid = (body.get("session_id") or body.get("session") or body.get("id") or "").strip()
-    if not sid:
-        sid = (_sessions.active or "").strip()
-    if not sid:
-        return 400, {"ok": False, "error": "no session_id and no active session"}
-
-    title = body.get("title")
-    _save_active_transcript()
-
-    prev_active = _sessions.active
-    prev_repo = _cfg.repo
-    prev_env_repo = os.environ.get("HARNESS_REPO")
-
-    branch = ""
-    try:
-        import subprocess
-        proc = subprocess.run(
-            ["git", "-C", target_repo, "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if proc.returncode == 0:
-            branch = (proc.stdout or "").strip()
-    except Exception:
-        pass
-
-    relocated = _sessions.relocate(
-        sid,
-        target_repo,
-        repo=target_repo,
-        branch=branch,
-        title=title if isinstance(title, str) else None,
-        make_active=True,
-    )
-    if not relocated:
-        return 404, {"ok": False, "error": "unknown session"}
-
-    _cfg.repo = target_repo
-    os.environ["HARNESS_REPO"] = target_repo
-    _note_boot_repo(target_repo)
-    try:
-        _record_recent_workspace(target_repo)
-    except Exception as e:
-        _diag("server.session_relocate_record_recent", e)
-
-    has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
-    if not has_codegraph:
-        if _puppetmaster_available():
-            _codegraph_status = "indexing"
-            _codegraph_status_reason = None
-        _index_codegraph_bg(target_repo)
-    else:
-        if _puppetmaster_available():
-            _codegraph_status = "ready"
-            _maybe_refresh_codegraph(target_repo)
-        else:
-            _codegraph_status = "unsupported"
-
-    try:
-        _attach_view(sid)
-    except LeaseExhaustedError as e:
-        if prev_active:
-            try:
-                _sessions.switch(prev_active)
-            except Exception as roll_e:
-                _diag("server.session_relocate_lease_rollback", roll_e)
-        if _cfg.repo != prev_repo:
-            _cfg.repo = prev_repo
-            if prev_env_repo is None:
-                os.environ.pop("HARNESS_REPO", None)
-            else:
-                os.environ["HARNESS_REPO"] = prev_env_repo
-        return 409, _lease_exhausted_body(e)
-
-    return 200, {
-        "ok": True,
-        "session": relocated,
-        "active": sid,
-        "repo": target_repo,
-        "workspace_root": target_repo,
-        "codegraph": _get_codegraph_status(target_repo),
-    }
+    from .api.sessions import handle_session_relocate
+    return handle_session_relocate(body, _session_services())
 
 
 def _apply_model_context_window():
@@ -3361,25 +3284,14 @@ restrict_dir_to_owner(_UPLOAD_DIR)
 # POSTs the payload here first and hands the stream only a short id via
 # ?mid=. Small in-process dict, capped so a client that stashes-and-never-
 # consumes (e.g. an abandoned tab) can't leak memory forever.
-_CHAT_STASH: dict[str, dict] = {}
-_CHAT_STASH_MAX = 32
-
-
-def _stash_put(message: str, images=None) -> str:
-    mid = _secrets.token_hex(8)
-    _CHAT_STASH[mid] = {"message": message, "images": images or []}
-    # Evict oldest entries beyond the cap (insertion order == age in a dict).
-    while len(_CHAT_STASH) > _CHAT_STASH_MAX:
-        try:
-            _CHAT_STASH.pop(next(iter(_CHAT_STASH)))
-        except StopIteration:
-            break
-    return mid
-
-
-def _stash_pop(mid: str):
-    """Returns the stashed {'message', 'images'} dict, or None if unknown/expired."""
-    return _CHAT_STASH.pop(mid, None)
+# Chat stash lives in harness.api.sessions; re-export historical names for
+# tests and SSE GET mid= resolution.
+from .api.sessions import (  # noqa: E402
+    _CHAT_STASH,
+    _CHAT_STASH_MAX,
+    stash_put as _stash_put,
+    stash_pop as _stash_pop,
+)
 
 # Per-process auth token (defense-in-depth). Written owner-only (chmod 600 on
 # POSIX, NTFS ACL on Windows) so the local client (Electron main / served page)
@@ -5060,196 +4972,32 @@ class Handler(BaseHTTPRequestHandler):
             code = 200 if result.get("ok") else 404
             return self._send(code, json.dumps(result))
         if path == "/api/sessions/create":
-            _save_active_transcript()
-            # Snapshot so a lease-exhausted attach can roll back without leaving
-            # the store pointed at an unattached session.
-            prev_active = _sessions.active
-            title = body.get("title") or "New session"
-            repo = (_cfg.repo or "").strip()
-            # No Open Folder: bind the session to the durable Home workspace so
-            # it appears under Projects -> Home (never a rootless orphan).
-            if not repo:
-                repo = _ensure_home_workspace()
-            branch = ""
-            if repo and os.path.isdir(repo):
-                import subprocess
-                try:
-                    proc = subprocess.run(
-                        ["git", "-C", repo, "rev-parse", "--is-inside-work-tree"],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if proc.returncode == 0:
-                        proc_branch = subprocess.run(
-                            ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
-                            capture_output=True, text=True, timeout=5
-                        )
-                        if proc_branch.returncode == 0:
-                            branch = proc_branch.stdout.strip()
-                except Exception:
-                    pass
-            res = _sessions.create(title, repo=repo, branch=branch, workspace_root=repo)
-            sid = res.get("id", "")
-            if sid:
-                try:
-                    # New session runner starts at zero meters (boot pill sums
-                    # carry + all live runners -- do not snapshot from active).
-                    _attach_view(
-                        sid,
-                        load_transcript_on_create=False,
-                        defer_cold_build=True,
-                    )
-                    _pilot.load_history([])
-                except LeaseExhaustedError as e:
-                    try:
-                        _sessions.delete(sid)
-                    except Exception as roll_e:
-                        _diag("server.session_create_lease_delete", roll_e)
-                    if prev_active:
-                        try:
-                            _sessions.switch(prev_active)
-                        except Exception as roll_e:
-                            _diag("server.session_create_lease_rollback", roll_e)
-                    return self._send(409, json.dumps(_lease_exhausted_body(e)))
-
-            from .hooks import run_hooks
-            run_hooks("sessionStart", {"session_id": sid, "title": title})
-
-            return self._send(200, json.dumps(res))
+            from .api import sessions as _sessions_api
+            status, payload = _sessions_api.post_sessions_create(body, _session_services())
+            return self._send(status, json.dumps(payload))
         if path in ("/api/sessions/relocate", "/api/sessions/move"):
             status, payload = _handle_session_relocate(body)
             return self._send(status, json.dumps(payload))
         if path == "/api/sessions/switch":
-            # Multi-session: switching VIEW must not 409 just because the
-            # outgoing (or another) runner is busy -- other sessions keep
-            # executing under the lease. Only LeaseExhaustedError blocks.
-            target_id = (body.get("id") or "").strip()
-            _save_active_transcript()
-            # Snapshot so a lease-exhausted attach can roll back active + repo.
-            prev_active = _sessions.active
-            prev_repo = _cfg.repo
-            prev_env_repo = os.environ.get("HARNESS_REPO")
-            res = _sessions.switch(target_id)
-            if res.get("ok") and _sessions.active:
-                target_sess = None
-                for s in _sessions.list():
-                    if s.get("id") == _sessions.active:
-                        target_sess = s
-                        break
-                target_repo = ""
-                if target_sess:
-                    target_repo = (
-                        session_stored_root(target_sess)
-                        or (target_sess.get("repo") or "").strip()
-                    )
-
-                # Never let a stale app-checkout session yank the live workspace
-                # back to ~/.marionette/marionette (or the running source tree).
-                # Conversation view still switches; only the project root is kept.
-                if (
-                    target_repo
-                    and os.path.isdir(target_repo)
-                    and target_repo != _cfg.repo
-                    and not _is_app_install_root(target_repo)
-                ):
-                    _cfg.repo = target_repo
-                    os.environ["HARNESS_REPO"] = target_repo
-                    _note_boot_repo(target_repo)
-                    # Session-switch repoints must land in recents too, or the
-                    # dir only exists in the projects list while it is current
-                    # and vanishes the moment the workspace moves elsewhere.
-                    try:
-                        _record_recent_workspace(target_repo)
-                    except Exception as e:
-                        _diag("server.session_switch_record_recent", e)
-
-                    has_codegraph = os.path.isdir(os.path.join(target_repo, ".codegraph"))
-                    if not has_codegraph:
-                        if _puppetmaster_available():
-                            _codegraph_status = "indexing"
-                            _codegraph_status_reason = None
-                        _index_codegraph_bg(target_repo)
-                    else:
-                        if _puppetmaster_available():
-                            _codegraph_status = "ready"
-                            _maybe_refresh_codegraph(target_repo)
-                        else:
-                            _codegraph_status = "unsupported"
-
-                try:
-                    _attach_view(_sessions.active, defer_cold_build=True)
-                except LeaseExhaustedError as e:
-                    if prev_active:
-                        try:
-                            _sessions.switch(prev_active)
-                        except Exception as roll_e:
-                            _diag("server.session_switch_lease_rollback", roll_e)
-                    if _cfg.repo != prev_repo:
-                        _cfg.repo = prev_repo
-                        if prev_env_repo is None:
-                            os.environ.pop("HARNESS_REPO", None)
-                        else:
-                            os.environ["HARNESS_REPO"] = prev_env_repo
-                    return self._send(409, json.dumps(_lease_exhausted_body(e)))
-
-                res["repo"] = _cfg.repo
-                res["codegraph"] = _get_codegraph_status(_cfg.repo) if _cfg.repo else "none"
-                # Hermes-style: runner status + transcript on the switch response
-                # so the UI can paint before deferred ConversationalSession lands.
-                # Building placeholders report running (lease/busy honesty).
-                active_id = _sessions.active or ""
-                res["state"] = _runners.status(active_id) if active_id else "missing"
-                res["transcript"] = _attach_view_transcript_payload(_pilot, active_id)
-
-            return self._send(200, json.dumps(res))
+            from .api import sessions as _sessions_api
+            status, payload = _sessions_api.post_sessions_switch(body, _session_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/sessions/delete":
-            sid = body.get("session") or body.get("id") or ""
-            status, payload = _handle_session_delete(sid)
+            from .api import sessions as _sessions_api
+            status, payload = _sessions_api.post_sessions_delete(body, _session_services())
             return self._send(status, json.dumps(payload))
         if path == "/api/sessions/clear":
-            repo_root = _cfg.repo or ""
-            state_dir = _sessions_state_dir()
-            prior_active = _sessions.active
-            deleted_ids, new_active = _sessions.clear_for_workspace(repo_root, state_dir)
-            from .hooks import run_hooks
-            for sid in deleted_ids:
-                run_hooks("sessionEnd", {"session_id": sid})
-                _remove_session_transcript(sid)
-                try:
-                    _runners.drop(sid)
-                except Exception as e:
-                    _diag("server.session_clear_drop_runner", e)
-            if prior_active in deleted_ids:
-                if new_active:
-                    try:
-                        _attach_view(new_active)
-                    except LeaseExhaustedError:
-                        history = load_transcript(state_dir, new_active)
-                        _pilot.load_history(history)
-                        _sync_pilot_session_id()
-                else:
-                    _pilot.load_history([])
-                    _sync_pilot_session_id()
-            return self._send(200, json.dumps({
-                "ok": True,
-                "deleted": len(deleted_ids),
-                "active": new_active,
-            }))
+            from .api import sessions as _sessions_api
+            status, payload = _sessions_api.post_sessions_clear(_session_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/sessions/archive":
-            sid = body.get("session") or body.get("id") or ""
-            if not sid:
-                return self._send(400, json.dumps({"error": "missing session id"}))
-            archived = _parse_bool(body.get("archived"))
-            _sessions.archive(sid, archived)
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import sessions as _sessions_api
+            status, payload = _sessions_api.post_sessions_archive(body, _session_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/sessions/rename":
-            sid = body.get("session") or body.get("id") or ""
-            title = body.get("title") or ""
-            if not sid:
-                return self._send(400, json.dumps({"error": "missing session id"}))
-            if not title:
-                return self._send(400, json.dumps({"error": "missing title"}))
-            ok = _sessions.rename(sid, title)
-            return self._send(200, json.dumps({"ok": ok}))
+            from .api import sessions as _sessions_api
+            status, payload = _sessions_api.post_sessions_rename(body, _session_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/chat/stash":
             # Companion to GET /api/chat's ?mid= param (see _CHAT_STASH above).
             # A large paste or autopilot objective can't fit in the URL that
@@ -8044,163 +7792,34 @@ class Handler(BaseHTTPRequestHandler):
                 "events": _hk.ALLOWED_EVENTS
             }))
         if u.path == "/api/sessions/transcript":
-            q = parse_qs(u.query)
-            sid = q.get("session", [None])[0] or _sessions.active or ""
-            # Prefer the live runner's in-memory transcript when present so a
-            # mid-turn detached UI poll sees cards as they land (not a stale
-            # disk snapshot). Fall back to disk for evicted / never-attached ids.
-            data = None
-            try:
-                live = _runners.get(sid) if sid else None
-                if live is not None and hasattr(live, "export_transcript_data"):
-                    data = live.export_transcript_data()
-            except Exception as e:
-                _diag("server.transcript_live_export", e)
-                data = None
-            if data is None:
-                data = load_transcript(_cfg.state_dir or _tf.gettempdir(), sid)
-            if isinstance(data, dict):
-                history_list = data.get("history", [])
-                display_list = data.get("display", [])
-                job_ids_list = data.get("job_ids", [])
-            else:
-                history_list = data
-                display_list = []
-                job_ids_list = []
-            return self._send(200, json.dumps({
-                "history": history_list,
-                "display": display_list,
-                "job_ids": job_ids_list
-            }))
+            from .api import sessions as _sessions_api
+            status, payload = _sessions_api.get_sessions_transcript(
+                parse_qs(u.query), _session_services()
+            )
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/sessions/export":
-            q = parse_qs(u.query)
-            sid = q.get("session", [None])[0] or _sessions.active or ""
-            fmt = q.get("format", ["json"])[0]
-            
-            meta = next((s for s in _sessions._sessions if s["id"] == sid), None)
-            data = load_transcript(_cfg.state_dir or _tf.gettempdir(), sid)
-            if isinstance(data, dict):
-                history = data.get("history", [])
-            else:
-                history = data
-            
-            title = meta.get("title", "Unknown Session") if meta else "Unknown Session"
-            filename_base = meta.get("title") if meta else ""
-            if not filename_base:
-                filename_base = sid or "session"
-            
-            import re
-            safe_title = re.sub(r'[^a-zA-Z0-9\-_]', '_', filename_base)
-            safe_title = re.sub(r'_+', '_', safe_title)
-            safe_title = safe_title.strip('_-')
-            if not safe_title:
-                safe_title = sid or "session"
-                
-            if fmt == "md":
-                import datetime
-                import time
-                created = meta.get("created") if meta else None
-                created_str = datetime.datetime.fromtimestamp(created).strftime('%Y-%m-%d %H:%M:%S') if created else "Unknown"
-                exported_str = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S')
-                
-                md_lines = []
-                md_lines.append(f"# {title or 'Unknown Session'}")
-                md_lines.append("")
-                md_lines.append(f"**Session ID:** {sid}  ")
-                md_lines.append(f"**Created:** {created_str}  ")
-                md_lines.append(f"**Exported:** {exported_str}")
-                md_lines.append("")
-                
-                for msg in history:
-                    role = msg.get("role", "").capitalize()
-                    content = msg.get("content", "")
-                    md_lines.append(f"## {role}")
-                    md_lines.append("")
-                    md_lines.append(content)
-                    md_lines.append("")
-                
-                body = "\n".join(md_lines)
-                data = body.encode("utf-8")
-                filename = f"{safe_title}.md"
-                ctype = "text/markdown"
-            else:
-                import time
-                created = meta.get("created") if meta else None
-                export_data = {
-                    "session_id": sid,
-                    "title": title or "Unknown Session",
-                    "created": created,
-                    "exported_at": time.time(),
-                    "messages": history
-                }
-                body = json.dumps(export_data, indent=2)
-                data = body.encode("utf-8")
-                filename = f"{safe_title}.json"
-                ctype = "application/json"
-                
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            self._cors()
-            self.end_headers()
-            self.wfile.write(data)
-            return
+            from .api import sessions as _sessions_api
+            return _sessions_api.write_sessions_export(
+                self, parse_qs(u.query), _session_services()
+            )
         if u.path == "/api/sessions":
-            # Optional ?repo=<path> lists sessions for that root WITHOUT switching
-            # the active workspace (LeftRail prefetches every project row).
-            # ?all=1 (or /api/sessions/bank) returns the cross-workspace bank.
-            q = parse_qs(u.query)
-            all_flag = (q.get("all", [""])[0] or "").strip().lower()
-            want_all = all_flag in ("1", "true", "yes", "on")
-            if want_all:
-                query = (q.get("q", [""])[0] or q.get("query", [""])[0] or "").strip()
-                try:
-                    limit = int((q.get("limit", ["50"])[0] or "50"))
-                except ValueError:
-                    limit = 50
-                return self._send(200, json.dumps(_sessions.list_bank(
-                    query=query,
-                    limit=limit,
-                    state_dir=_sessions_state_dir(),
-                )))
-            repo_override = (q.get("repo", [""])[0] or "").strip()
-            root = repo_override or (_cfg.repo or "")
-            if not repo_override and not root:
-                # No Open Folder: sidebar lists Home-bound sessions, not everything.
-                try:
-                    root = _ensure_home_workspace()
-                except Exception:
-                    root = ""
-            return self._send(200, json.dumps(_sessions.list(
-                workspace_root=root,
-                state_dir=_sessions_state_dir(),
-            )))
+            from .api import sessions as _sessions_api
+            status, payload = _sessions_api.get_sessions_list(
+                parse_qs(u.query), _session_services()
+            )
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/sessions/bank":
-            q = parse_qs(u.query)
-            query = (q.get("q", [""])[0] or q.get("query", [""])[0] or "").strip()
-            try:
-                limit = int((q.get("limit", ["50"])[0] or "50"))
-            except ValueError:
-                limit = 50
-            return self._send(200, json.dumps(_sessions.list_bank(
-                query=query,
-                limit=limit,
-                state_dir=_sessions_state_dir(),
-            )))
+            from .api import sessions as _sessions_api
+            status, payload = _sessions_api.get_sessions_bank(
+                parse_qs(u.query), _session_services()
+            )
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/sessions/search":
-            q = parse_qs(u.query)
-            query = (q.get("q", [""])[0] or q.get("query", [""])[0] or "").strip()
-            try:
-                limit = int((q.get("limit", ["20"])[0] or "20"))
-            except ValueError:
-                limit = 20
-            from .session_fts import search_sessions
-            return self._send(200, json.dumps(search_sessions(
-                _sessions_state_dir(),
-                query,
-                limit=limit,
-            )))
+            from .api import sessions as _sessions_api
+            status, payload = _sessions_api.get_sessions_search(
+                parse_qs(u.query), _session_services()
+            )
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/auto":
             q = parse_qs(u.query)
             objective = q.get("objective", [""])[0]
