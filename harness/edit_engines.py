@@ -308,11 +308,16 @@ def run_agentic_edit(
     try:
         repo_root = cwd or config.repo
         with managed_worktree_for_goal(repo_root, goal) as wt_path:
+            from pmharness.bridge import (
+                _router_supports_max_capability,
+                worker_token_budget,
+            )
             payload: dict = stamp_task_payload({
                 "mode": "implement",
                 "cwd": wt_path,
                 "prompt": goal,
                 "auto_route": not (provider and model),
+                "token_budget": worker_token_budget(),
             }, session_id=session_id, cwd=wt_path)
             if not (provider and model):
                 # Cost guardrail (mirrors the analysis-swarm cap in bridge.py):
@@ -330,7 +335,6 @@ def run_agentic_edit(
                             os.environ.get("HARNESS_IMPLEMENT_MAX_CAPABILITY", "86"))
                     except (TypeError, ValueError):
                         _cap = 86
-                    from pmharness.bridge import _router_supports_max_capability
                     _cap_key = ("max_capability"
                                 if _router_supports_max_capability()
                                 else "min_capability")

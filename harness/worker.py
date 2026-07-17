@@ -364,8 +364,16 @@ class ProviderWorker:
         if _governing is not None:
             self.budget = _governing.child()
         else:
+            try:
+                _default_tokens = int(
+                    os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "40000") or 40000
+                )
+            except (TypeError, ValueError):
+                _default_tokens = 40000
+            if _default_tokens < 1:
+                _default_tokens = 40000
             self.budget = budget or AutoBudget(
-                max_tokens=40000,
+                max_tokens=_default_tokens,
                 max_seconds=300,
                 max_swarms=2,
                 max_idle_steps=2

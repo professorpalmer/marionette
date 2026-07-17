@@ -96,6 +96,34 @@ def test_worker_not_git_repo():
         shutil.rmtree(temp_dir)
 
 
+def test_worker_default_token_budget_from_env(monkeypatch):
+    """Unsupervised ProviderWorker reads HARNESS_WORKER_TOKEN_BUDGET for AutoBudget."""
+    from harness.worker import ambient_budget, set_ambient_budget
+
+    set_ambient_budget(None)
+    monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "12321")
+    temp_dir = tempfile.mkdtemp()
+    try:
+        with ambient_budget(None):
+            worker = ProviderWorker(repo=temp_dir, goal="x")
+        assert worker.budget.max_tokens == 12321
+    finally:
+        shutil.rmtree(temp_dir)
+
+
+def test_worker_default_token_budget_fallback(monkeypatch):
+    monkeypatch.delenv("HARNESS_WORKER_TOKEN_BUDGET", raising=False)
+    from harness.worker import set_ambient_budget
+
+    set_ambient_budget(None)
+    temp_dir = tempfile.mkdtemp()
+    try:
+        worker = ProviderWorker(repo=temp_dir, goal="x")
+        assert worker.budget.max_tokens == 40000
+    finally:
+        shutil.rmtree(temp_dir)
+
+
 def test_worker_success(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:

@@ -156,6 +156,7 @@ def _isolate_pilot_env(monkeypatch):
     incomplete tasks". Tests that need a specific adapter set it explicitly."""
     for _var in (
         "HARNESS_MAX_PILOT_STEPS",
+        "HARNESS_WORKER_TOKEN_BUDGET",
         "HARNESS_AUTO_COMMAND_GUARD",
         "HARNESS_AUTO_DISTILL",
         "HARNESS_REVIEW_EDITS_BEFORE_APPLY",

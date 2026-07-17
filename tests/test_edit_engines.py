@@ -295,8 +295,31 @@ def test_agentic_payload_capability_key_and_default_cap(monkeypatch):
         assert payload["mode"] == "implement"
         assert payload["routing_policy"] == "balanced"
         assert payload["auto_route"] is True
+        assert payload["token_budget"] == 40000
         assert EXPECTED_CAP_KEY in payload
         assert payload[EXPECTED_CAP_KEY] == 86
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_payload_token_budget_from_env(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        captured: list[dict] = []
+        _install_agentic_mocks(monkeypatch, capture_payload=captured)
+        monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "7777")
+        monkeypatch.delenv("HARNESS_IMPLEMENT_PROVIDER", raising=False)
+        monkeypatch.delenv("HARNESS_IMPLEMENT_MODEL", raising=False)
+
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("diff content", ["test.txt"]),
+        )
+
+        result = run_agentic_edit(cfg, "make a change")
+        assert result.ok is True
+        assert captured[0]["token_budget"] == 7777
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from harness.mcp_client import StdioMcpClient, McpError
-from harness.mcp_manager import McpManager
+from harness.mcp_manager import CATALOG, McpManager
 
 FAKE = str(Path(__file__).parent / "fixtures" / "fake_mcp_server.py")
 
@@ -46,6 +46,14 @@ def test_client_missing_command():
         assert False, "should have raised"
     except McpError as e:
         assert "not found" in str(e).lower() or "no such" in str(e).lower()
+
+
+def test_catalog_includes_firecrawl():
+    entry = CATALOG["firecrawl"]
+    assert entry["command"] == "npx"
+    assert "firecrawl-mcp" in entry["args"]
+    assert entry["env_hint"] == ["FIRECRAWL_API_KEY"]
+    assert "Firecrawl" in entry["desc"] or "firecrawl" in entry["desc"].lower()
 
 
 def test_manager_config_roundtrip(tmp_path):

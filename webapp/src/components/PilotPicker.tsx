@@ -1,6 +1,7 @@
-import { useEffect, useState, useRef } from "react";
-import { ChevronDown, Check } from "lucide-react";
+import { useEffect, useMemo, useState, useRef } from "react";
+import { ChevronDown, Check, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
+import { organizePilotModels } from "../lib/pilotPickerModels";
 
 const REASONING_LEVELS: { value: ReasoningEffort; label: string }[] = [
   { value: "none", label: "None" },
@@ -37,7 +38,9 @@ export default function PilotPicker({ config }: {
   const [reasoning, setReasoning] = useState<ReasoningEffort>("low");
   const [modelOpen, setModelOpen] = useState(false);
   const [reasonOpen, setReasonOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
+  const filterRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (config) {
@@ -52,6 +55,16 @@ export default function PilotPicker({ config }: {
     window.addEventListener("harness-open-model-picker", handleOpen);
     return () => window.removeEventListener("harness-open-model-picker", handleOpen);
   }, []);
+
+  useEffect(() => {
+    if (!modelOpen) {
+      setQuery("");
+      return;
+    }
+    // Focus search when the model menu opens.
+    const t = window.setTimeout(() => filterRef.current?.focus(), 0);
+    return () => window.clearTimeout(t);
+  }, [modelOpen]);
 
   useEffect(() => {
     if (!modelOpen && !reasonOpen) return;
@@ -105,8 +118,6 @@ export default function PilotPicker({ config }: {
     }
   };
 
-  if (!config) return null;
-
   const shortOf = (spec: string) => (spec ? spec.split(":").pop() || "" : "");
   const shortCounts = models.reduce<Record<string, number>>((acc, m) => {
     const s = shortOf(m);
@@ -121,8 +132,34 @@ export default function PilotPicker({ config }: {
     }
     return short;
   };
+
+  const organized = useMemo(
+    () => organizePilotModels(models, current, query),
+    [models, current, query],
+  );
+
+  if (!config) return null;
+
   const currentLabel = labelOf(current);
   const showReasoning = supportsReasoningEffort(current);
+  const hasRows = !!organized.current || organized.groups.some((g) => g.items.length > 0);
+
+  const renderRow = (m: string) => {
+    const isSelected = m === current;
+    const label = labelOf(m);
+    return (
+      <div
+        key={m}
+        onClick={() => swap(m)}
+        className={`flex items-center justify-between px-3 py-1.5 text-[11.5px] hover:bg-panel2 cursor-pointer transition select-none ${
+          isSelected ? "text-accent font-medium bg-panel2/40" : "text-txt/90"
+        }`}
+      >
+        <span className="truncate max-w-[200px]" title={m}>{label}</span>
+        {isSelected && <Check size={11} className="shrink-0 ml-2" />}
+      </div>
+    );
+  };
 
   return (
     <div className="relative inline-flex items-center gap-1" ref={containerRef}>
@@ -140,23 +177,35 @@ export default function PilotPicker({ config }: {
         </button>
 
         {modelOpen && (
-          <div className="absolute left-0 bottom-full mb-1 z-50 min-w-[180px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden">
-            {models.map((m) => {
-              const isSelected = m === current;
-              const label = labelOf(m);
-              return (
-                <div
-                  key={m}
-                  onClick={() => swap(m)}
-                  className={`flex items-center justify-between px-3 py-1.5 text-[11.5px] hover:bg-panel2 cursor-pointer transition select-none ${
-                    isSelected ? "text-accent font-medium bg-panel2/40" : "text-txt/90"
-                  }`}
-                >
-                  <span className="truncate max-w-[200px]" title={m}>{label}</span>
-                  {isSelected && <Check size={11} className="shrink-0 ml-2" />}
-                </div>
-              );
-            })}
+          <div className="absolute left-0 bottom-full mb-1 z-50 min-w-[220px] max-w-[280px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 mb-0.5 border-b border-edge/50">
+              <Search size={12} className="text-faint shrink-0" />
+              <input
+                ref={filterRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.stopPropagation()}
+                placeholder="Search models or providers"
+                className="bg-transparent text-[11.5px] text-txt placeholder:text-faint outline-none w-full"
+              />
+            </div>
+            <div className="max-h-[280px] overflow-y-auto">
+              {!hasRows ? (
+                <div className="px-3 py-2 text-[11px] text-faint">No matching models</div>
+              ) : (
+                <>
+                  {organized.current && renderRow(organized.current)}
+                  {organized.groups.map((g) => (
+                    <div key={g.provider}>
+                      <div className="px-3 pt-1.5 pb-0.5 text-[9.5px] uppercase tracking-wider text-faint font-semibold select-none">
+                        {g.provider}
+                      </div>
+                      {g.items.map((m) => renderRow(m))}
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
           </div>
         )}
       </div>

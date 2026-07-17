@@ -162,6 +162,14 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
                 _set_env_setting("HARNESS_MAX_PILOT_STEPS", str(max(1, int(raw))))
             except (ValueError, TypeError):
                 return 400, {"error": "Invalid maxPilotSteps"}
+    if "workerTokenBudget" in body:
+        raw = str(body["workerTokenBudget"]).strip().lower()
+        try:
+            _set_env_setting(
+                "HARNESS_WORKER_TOKEN_BUDGET", str(max(1, int(raw)))
+            )
+        except (ValueError, TypeError):
+            return 400, {"error": "Invalid workerTokenBudget"}
     if "reasoning_effort" in body:
         from ..reasoning_effort import normalize_reasoning_effort
         normalized = normalize_reasoning_effort(body["reasoning_effort"])

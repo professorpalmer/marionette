@@ -79,6 +79,7 @@ def test_post_settings_budget_and_flags(monkeypatch):
             "auto_distill": True,
             "commandTimeout": "off",
             "maxPilotSteps": "unlimited",
+            "workerTokenBudget": "50000",
         },
         svc,
     )
@@ -88,6 +89,12 @@ def test_post_settings_budget_and_flags(monkeypatch):
     env = dict(calls["persist"])
     assert env["HARNESS_COMMAND_TIMEOUT"] == "0"
     assert env["HARNESS_MAX_PILOT_STEPS"] == "0"
+    assert env["HARNESS_WORKER_TOKEN_BUDGET"] == "50000"
+
+
+def test_post_settings_bad_worker_token_budget():
+    svc, _, _, _ = _svc()
+    assert post_settings({"workerTokenBudget": "nope"}, svc)[0] == 400
 
 
 def test_post_settings_bad_budget():

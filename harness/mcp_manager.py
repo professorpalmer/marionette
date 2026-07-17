@@ -38,6 +38,9 @@ CATALOG = {
             "desc": "AWS (via awslabs MCP servers)"},
     "vercel": {"command": "npx", "args": ["-y", "@vercel/mcp-adapter"],
                "env_hint": ["VERCEL_TOKEN"], "desc": "Vercel deployments + projects"},
+    "firecrawl": {"command": "npx", "args": ["-y", "firecrawl-mcp"],
+                  "env_hint": ["FIRECRAWL_API_KEY"],
+                  "desc": "Firecrawl web search/scrape (set FIRECRAWL_API_KEY)"},
 }
 
 

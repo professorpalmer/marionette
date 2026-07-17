@@ -54,6 +54,21 @@ def _analyze_max_turns() -> int:
         return 40
 
 
+def worker_token_budget() -> int:
+    """Default token ceiling stamped on analysis/implement worker payloads.
+
+    Mirrors the Settings "Worker run token ceiling" control
+    (HARNESS_WORKER_TOKEN_BUDGET, default 40000). Ambient AutoBudget still
+    governs native ProviderWorker spend when present; this value is the
+    agentic payload hint + unsupervised native default.
+    """
+    import os as _os
+    try:
+        return max(1, int(_os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "40000") or 40000))
+    except (TypeError, ValueError):
+        return 40000
+
+
 def _browser_swarm_enabled(goal: str) -> bool:
     """Whether a swarm worker should get the CDP browser toolset. Opt in either
     explicitly (HARNESS_SWARM_BROWSER=1) or when the goal reads as a
@@ -501,6 +516,8 @@ def _execute_prewalk(
     # job scoping and /api/swarm/live attribution stay consistent.
     for spec in specs:
         payload = dict(getattr(spec, "payload", None) or {})
+        if "token_budget" not in payload:
+            payload["token_budget"] = worker_token_budget()
         stamped = stamp_task_payload(
             payload, session_id=session_id or "", cwd=repo_cwd or ""
         )
@@ -656,6 +673,7 @@ def execute_intent(
                         # Extra turn headroom so broad-audit workers submit
                         # findings instead of starving out at max_turns.
                         "max_turns": _analyze_max_turns(),
+                        "token_budget": worker_token_budget(),
                         # Cost guardrail: several analysis roles (audit=85,
                         # security-review=90, conflict-auditor=75) carry a high
                         # role base score, which pushes the router to first-pick
@@ -693,6 +711,7 @@ def execute_intent(
                         "cwd": repo_cwd, "prompt": intent.goal,
                         "auto_route": False,
                         "max_turns": _analyze_max_turns(),
+                        "token_budget": worker_token_budget(),
                         # Route analysis through OpenRouter (funded, open models) by
                         # default; the OpenAI adapter speaks the OpenAI-compatible
                         # schema so base_url + key + an open model just works. Falls

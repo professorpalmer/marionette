@@ -1049,11 +1049,13 @@ def build_tools_schema(
             "name": "manage_mcp",
             "description": (
                 "Add/start/stop/remove/list Marionette MCP servers (State → MCP / "
-                "~/.pmharness/mcp.json). For a Docker HTTP MCP (e.g. discord-mcp on "
-                ":8085), action=add with name + url=http://localhost:PORT/mcp — do NOT "
-                "put Discord tokens in mcp.json when the container already has them in "
-                "env. Prefer this over run_command edits to mcp.json. After add, tools "
-                "appear for call_mcp."
+                "~/.pmharness/mcp.json). Seed catalog includes github, filesystem, "
+                "puppeteer, aws, vercel, firecrawl (FIRECRAWL_API_KEY). For a Docker "
+                "HTTP MCP (e.g. discord-mcp on :8085), action=add with name + "
+                "url=http://localhost:PORT/mcp — do NOT put Discord tokens in "
+                "mcp.json when the container already has them in env. Prefer this "
+                "over run_command edits to mcp.json. After add, tools appear for "
+                "call_mcp."
             ),
             "parameters": {
                 "type": "object",
