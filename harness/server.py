@@ -2792,6 +2792,21 @@ def _settings_services():
     )
 
 
+def _session_control_services():
+    """Build SessionControlServices from live server module globals."""
+    from .api.session_control import SessionControlServices
+    return SessionControlServices(
+        cfg=_cfg,
+        get_pilot=lambda: _pilot,
+        get_runners=lambda: _runners,
+        gate_active_pilot_ready=_gate_active_pilot_ready,
+        stash_put=_stash_put,
+        save_active_transcript=_save_active_transcript,
+        upload_dir=_UPLOAD_DIR,
+        diag=_diag,
+    )
+
+
 def _provider_services():
     """Build ProviderServices from live server module globals (call-time lookup)."""
     from .api.providers import ProviderServices
@@ -4231,21 +4246,11 @@ class Handler(BaseHTTPRequestHandler):
             status, payload = _sessions_api.post_sessions_rename(body, _session_services())
             return self._send(status, json.dumps(payload))
         if path == "/api/chat/stash":
-            # Companion to GET /api/chat's ?mid= param (see _CHAT_STASH above).
-            # A large paste or autopilot objective can't fit in the URL that
-            # EventSource requires for the SSE GET, so the client POSTs it
-            # here first and gets back a short id to reference instead.
-            message = body.get("message", "")
-            images = body.get("images") or []
-            if isinstance(images, str):
-                images = [p for p in images.split("|") if p]
-            if not message and not images:
-                return self._send(400, json.dumps({"error": "missing message"}))
-            mid = _stash_put(message, images)
-            return self._send(200, json.dumps({"id": mid}))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.post_chat_stash(
+                body, _session_control_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/session/interrupt":
-            # Optional session_id targets a background runner without attaching
-            # its view. Omitted => active pilot (backward compatible).
             sid = (body.get("session_id") or "").strip()
             if not sid:
                 try:
@@ -4253,181 +4258,35 @@ class Handler(BaseHTTPRequestHandler):
                     sid = (qs.get("session_id") or [""])[0].strip()
                 except Exception:
                     sid = ""
-            if sid:
-                target = _runners.get(sid)
-                if target is None:
-                    return self._send(
-                        404,
-                        json.dumps({"ok": False, "error": "session runner not found"}),
-                    )
-                target.interrupt()
-            else:
-                if _pilot is not None:
-                    _pilot.interrupt()
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.post_session_interrupt(
+                body, sid, _session_control_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/session/rewind":
-            # Hermes-style message edit: truncate transcript at a user turn,
-            # stash the tail for Revert, return composer prefill. Does not
-            # auto-send. Prefer user_ordinal (stable across UI-only items).
-            if not _pilot:
-                return self._send(404, json.dumps({"ok": False, "error": "no active session"}))
-            not_ready = _gate_active_pilot_ready()
-            if not_ready is not None:
-                return self._send(409, json.dumps(not_ready))
-            result = None
-            if body.get("user_ordinal") is not None:
-                try:
-                    user_ordinal = int(body.get("user_ordinal"))
-                except (TypeError, ValueError):
-                    return self._send(400, json.dumps({"ok": False, "error": "user_ordinal must be an int"}))
-                result = _pilot.rewind_to_user_ordinal(user_ordinal)
-            elif body.get("display_index") is not None:
-                try:
-                    display_index = int(body.get("display_index"))
-                except (TypeError, ValueError):
-                    return self._send(400, json.dumps({"ok": False, "error": "display_index must be an int"}))
-                result = _pilot.rewind_to_display_index(display_index)
-            else:
-                return self._send(400, json.dumps({"ok": False, "error": "user_ordinal or display_index required"}))
-            if not result.get("ok"):
-                code = 409 if result.get("code") == "busy" else 400
-                return self._send(code, json.dumps(result))
-            try:
-                _save_active_transcript()
-            except Exception as e:
-                _diag("server.rewind_persist", e)
-            return self._send(200, json.dumps(result))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.post_session_rewind(
+                body, _session_control_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/session/rewind/restore":
-            if not _pilot:
-                return self._send(404, json.dumps({"ok": False, "error": "no active session"}))
-            not_ready = _gate_active_pilot_ready()
-            if not_ready is not None:
-                return self._send(409, json.dumps(not_ready))
-            result = _pilot.restore_rewind_stash()
-            if not result.get("ok"):
-                code = 409 if result.get("code") == "busy" else 400
-                return self._send(code, json.dumps(result))
-            try:
-                _save_active_transcript()
-            except Exception as e:
-                _diag("server.rewind_restore_persist", e)
-            # Return the restored transcript so the UI can repaint without a
-            # separate GET (avoids a flash of the truncated view).
-            try:
-                data = _pilot.export_transcript_data()
-            except Exception:
-                data = {}
-            result["display"] = data.get("display") or []
-            result["history"] = data.get("history") or []
-            return self._send(200, json.dumps(result))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.post_session_rewind_restore(
+                _session_control_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/session/steer":
-            text = body.get("text", "").strip()
-            images = body.get("images") or []
-            if isinstance(images, str):
-                images = [p for p in images.split("|") if p]
-            if not text and not images:
-                return self._send(400, json.dumps({"error": "missing text"}))
-            if not _pilot:
-                return self._send(404, json.dumps({"error": "no active session"}))
-            not_ready = _gate_active_pilot_ready()
-            if not_ready is not None:
-                return self._send(409, json.dumps(not_ready))
-            # Validate every image path lives inside the upload dir (mirror
-            # /api/session/queue, /api/run, and /api/chat validation).
-            valid_imgs = []
-            upload_dir_real = os.path.realpath(_UPLOAD_DIR)
-            for p in images:
-                if not p:
-                    continue
-                real_p = os.path.realpath(p)
-                try:
-                    if os.path.commonpath([upload_dir_real, real_p]) == upload_dir_real:
-                        valid_imgs.append(p)
-                    else:
-                        return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
-                except ValueError:
-                    return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
-            # Route through steer_with_images so an attached screenshot is
-            # transcribed into the steer text (a steer is a text injection and
-            # cannot carry raw image blocks mid-turn).
-            if valid_imgs and hasattr(_pilot, "steer_with_images"):
-                _pilot.steer_with_images(text, valid_imgs)
-            else:
-                _pilot.enqueue_steer(text)
-            return self._send(200, json.dumps({"ok": True}))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.post_session_steer(
+                body, _session_control_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/session/queue":
-            # PROMPT QUEUE mutations, mirroring the auth/token guard already
-            # applied to every POST. Distinct from /api/session/steer: the queue
-            # is a "playlist" of FULL user prompts that each run as their own
-            # complete turn once the current one finishes. Never raises.
-            if not _pilot:
-                return self._send(404, json.dumps({"error": "no active session"}))
-            not_ready = _gate_active_pilot_ready()
-            if not_ready is not None:
-                return self._send(409, json.dumps(not_ready))
-            # DELETE-style body: {clear: true} clears the queue; {id: "..."}
-            # removes a single item. We accept these via POST so the browser
-            # transport shim (which lacks a DELETE helper) can drive both.
-            if body.get("clear") is True:
-                try:
-                    n = _pilot.clear_prompts()
-                except Exception:
-                    n = 0
-                return self._send(200, json.dumps({"ok": True, "cleared": n}))
-            rid = (body.get("id") or "").strip() if isinstance(body.get("id"), str) else ""
-            if rid:
-                try:
-                    ok = _pilot.remove_prompt(rid)
-                except Exception:
-                    ok = False
-                return self._send(200, json.dumps({"ok": bool(ok), "id": rid}))
-            # Otherwise: enqueue a new prompt.
-            text = (body.get("text") or "").strip()
-            if not text:
-                return self._send(400, json.dumps({"error": "missing text"}))
-            # Optional image attachments: accept a list or a '|'-joined string
-            # (mirror the steer endpoint) and validate every path lives inside
-            # the upload dir (mirror /api/run and /api/chat validation). A queued
-            # prompt runs as its own fresh turn so it can carry real images.
-            images = body.get("images") or []
-            if isinstance(images, str):
-                images = [p for p in images.split("|") if p]
-            valid_imgs = []
-            upload_dir_real = os.path.realpath(_UPLOAD_DIR)
-            for p in images:
-                if not p:
-                    continue
-                real_p = os.path.realpath(p)
-                try:
-                    if os.path.commonpath([upload_dir_real, real_p]) == upload_dir_real:
-                        valid_imgs.append(p)
-                    else:
-                        return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
-                except ValueError:
-                    return self._send(400, json.dumps({"error": f"Invalid image path: {p}"}))
-            try:
-                item = _pilot.enqueue_prompt(
-                    text, images=valid_imgs, model=_cfg.driver,
-                )
-            except Exception as e:
-                return self._send(500, json.dumps({"error": str(e)}))
-            if not item or not item.get("id"):
-                return self._send(400, json.dumps({"error": "enqueue failed"}))
-            return self._send(200, json.dumps({"ok": True, "item": item}))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.post_session_queue(
+                body, _session_control_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/session/queue/reorder":
-            if not _pilot:
-                return self._send(404, json.dumps({"error": "no active session"}))
-            ids = body.get("ids") or []
-            if not isinstance(ids, list):
-                return self._send(400, json.dumps({"error": "ids must be a list"}))
-            try:
-                items = _pilot.reorder_prompts([str(x) for x in ids])
-            except Exception:
-                try:
-                    items = _pilot.list_prompts()
-                except Exception:
-                    items = []
-            return self._send(200, json.dumps({"ok": True, "items": items}))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.post_session_queue_reorder(
+                body, _session_control_services())
+            return self._send(status, json.dumps(payload))
         if path == "/api/terminal/create":
             from .api import terminals as _term_api
             status, payload = _term_api.post_terminal_create(body, _terminal_services())
@@ -4763,20 +4622,14 @@ class Handler(BaseHTTPRequestHandler):
                 _checkpoint_transcript()
             return self._send(200, json.dumps({"results": results}))
         if u.path == "/api/session/queue":
-            # PROMPT QUEUE snapshot -- the sequential "playlist" of full user
-            # prompts that will each run as their own complete turn after the
-            # current one finishes. Distinct from /api/session/steer (which is
-            # a mid-turn interrupt on the CURRENT running turn).
             if self._guard():
                 return
             qtok = parse_qs(u.query).get("token", [""])[0]
             if qtok != _TOKEN and self.headers.get("X-Harness-Token", "") != _TOKEN:
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
-            try:
-                items = _pilot.list_prompts() if _pilot else []
-            except Exception:
-                items = []
-            return self._send(200, json.dumps({"items": items}))
+            from .api import session_control as _sc_api
+            status, payload = _sc_api.get_session_queue(_session_control_services())
+            return self._send(status, json.dumps(payload))
         if u.path == "/api/checkpoints":
             if self._guard():
                 return

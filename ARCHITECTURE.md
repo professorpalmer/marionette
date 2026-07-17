@@ -271,16 +271,18 @@ harness/          the product (principal modules below; mixins compose the sessi
   api/              HTTP route peels (sessions, jobs, sse, streams, wiki, mcp,
                     providers, files, attach, skills, auth, worktrees,
                     terminals, commands, hooks, checkpoints, git, reviews,
-                    registry, platform, codegraph, workspace, settings)
-                    wired from server.Handler. Handler keeps auth/token
-                    gates; route bodies live in api/* with *Services
-                    dataclasses. auth re-exports providers' pool/OAuth/
-                    Cursor-CLI handlers under an ownership name. platform
-                    also owns Bedrock BYOK; codegraph owns POST reindex/
-                    apply-excludes (GET status panel still on Handler);
-                    workspace owns forget/get/symbols/workspaces CRUD
-                    (open stays on Handler); settings owns /api/settings
-                    and /api/config.
+                    registry, platform, codegraph, workspace, settings,
+                    session_control) wired from server.Handler. Handler
+                    keeps auth/token gates; route bodies live in api/*
+                    with *Services dataclasses. auth re-exports
+                    providers' pool/OAuth/Cursor-CLI handlers under an
+                    ownership name. platform also owns Bedrock BYOK;
+                    codegraph owns POST reindex/apply-excludes (GET
+                    status panel still on Handler); workspace owns
+                    forget/get/symbols/workspaces CRUD (open stays on
+                    Handler); settings owns /api/settings and /api/config;
+                    session_control owns stash/interrupt/rewind/steer/
+                    queue (persist/restart/compact stay on Handler).
   session.py        single-shot Session core (DriverIntent path for the research rig)
   repair.py         intent-repair retry (research / bare-intent path)
   server.py         stdlib HTTP + SSE server shell (routes live in api/)
