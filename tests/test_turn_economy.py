@@ -227,10 +227,18 @@ def test_usage_fields_match_payload_helpers(tmp_path):
 
 
 def test_conversation_hot_path_routes_through_turn_economy():
-    """PR2: ConversationalSession must call TurnEconomy methods, not raw helpers."""
-    path = os.path.join(os.path.dirname(__file__), "..", "harness", "conversation.py")
-    source = open(path, encoding="utf-8").read()
-    tree = ast.parse(source)
+    """PR2: session hot path must call TurnEconomy methods, not raw helpers.
+
+    After the audit peel, call sites live across conversation.py and the
+    mixins it composes (send_loop, wiki_distill, compaction_mixin).
+    """
+    harness_dir = os.path.join(os.path.dirname(__file__), "..", "harness")
+    scan_files = (
+        "conversation.py",
+        "send_loop.py",
+        "wiki_distill.py",
+        "compaction_mixin.py",
+    )
 
     forbidden_direct = {
         "maybe_persist_result",
@@ -245,23 +253,24 @@ def test_conversation_hot_path_routes_through_turn_economy():
         "should_enable_append_only",
     }
     imported_names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                imported_names.add(alias.name)
+    called_attrs: set[str] = set()
+    for name in scan_files:
+        path = os.path.join(harness_dir, name)
+        source = open(path, encoding="utf-8").read()
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    imported_names.add(alias.name)
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "_turn_economy"
+            ):
+                called_attrs.add(node.attr)
 
     leaked = forbidden_direct & imported_names
-    assert not leaked, f"conversation.py still imports raw helpers: {sorted(leaked)}"
-
-    # Hot-path method names must appear as attribute calls on _turn_economy.
-    called_attrs: set[str] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Attribute)
-            and node.value.attr == "_turn_economy"
-        ):
-            called_attrs.add(node.attr)
+    assert not leaked, f"session modules still import raw helpers: {sorted(leaked)}"
 
     for required in (
         "persist_tool_result",
