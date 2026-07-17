@@ -139,6 +139,21 @@ def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch):
             # on registry rates; token honesty is the hard contract here.
             assert unscoped["session"]["est_cost_usd"] >= 0.25 - 1e-9
         finally:
+            # Process-global pilot meters would otherwise leak into later
+            # /api/usage boot-pill assertions in the same pytest process.
+            try:
+                for attr in (
+                    "_tokens_used",
+                    "_tokens_in",
+                    "_tokens_out",
+                    "_tokens_cached",
+                    "_worker_tokens_in",
+                    "_worker_tokens_out",
+                ):
+                    setattr(srv._pilot, attr, 0)
+                srv._pilot._worker_cost_usd = 0.0
+            except Exception:
+                pass
             httpd.shutdown()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
