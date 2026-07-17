@@ -97,12 +97,15 @@ def test_mixin_calls_new_phase_helpers():
     src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
     assert "drain_stream_queue(" in src
     assert "meter_pilot_step(" in src
-    assert "action_display_goal(" in src
-    assert "run_parallel_prefetch(" in src
     assert "drain_idle_turn(" in src
-    assert "dispatch_readonly_action(" in src
-    assert "dispatch_local_action(" in src
     assert "run_auto_verify(" in src
+    assert "execute_turn_actions(" in src
+    # Action-spree fan-out (prefetch / readonly / local) lives in send_loop_actions.
+    actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
+    assert "action_display_goal(" in actions_src
+    assert "run_parallel_prefetch(" in actions_src
+    assert "dispatch_readonly_action(" in actions_src
+    assert "dispatch_local_action(" in actions_src
 
 
 def test_send_locked_inner_no_longer_inlines_readonly_branches():
@@ -123,9 +126,11 @@ def test_send_locked_inner_no_longer_inlines_readonly_branches():
     segment = ast.get_source_segment(src, inner) or ""
     assert "---- read_file branch" not in segment
     assert "---- list_dir branch" not in segment
-    assert "dispatch_readonly_action(" in segment
+    assert "execute_turn_actions(" in segment
     assert "drain_idle_turn(" in segment
     assert "run_auto_verify(" in segment
+    actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
+    assert "dispatch_readonly_action(" in actions_src
 
 
 def test_send_locked_inner_no_longer_inlines_local_branches():
@@ -148,8 +153,10 @@ def test_send_locked_inner_no_longer_inlines_local_branches():
     assert "---- write_file branch" not in segment
     assert "---- hash_edit branch" not in segment
     assert "---- MCP tool call branch" not in segment
-    assert "dispatch_local_action(" in segment
-    assert "LOCAL_ACTION_KINDS" in segment
+    assert "execute_turn_actions(" in segment
+    actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
+    assert "dispatch_local_action(" in actions_src
+    assert "LOCAL_ACTION_KINDS" in actions_src
 
 
 def test_run_stream_puts_done_on_success():

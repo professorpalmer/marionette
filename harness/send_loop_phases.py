@@ -11,8 +11,9 @@ Public orchestration stays on SendLoopMixin.send / _send_locked /
 _send_locked_inner; this module owns background-thread targets, prefetch
 workers, stream-queue drain, per-step usage metering, idle steer/queue
 finalization, read-only tool-result assembly, local tool-result assembly,
-auto-verify, and small pure helpers the kernel calls. Swarm / implement /
-parallel / route_task / memory dispatch lives in ``send_loop_dispatch``.
+auto-verify, and small pure helpers the kernel calls. The per-step action
+spree lives in ``send_loop_actions``; swarm / implement / parallel /
+route_task / memory dispatch lives in ``send_loop_dispatch``.
 """
 
 import inspect

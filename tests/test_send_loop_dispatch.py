@@ -72,10 +72,13 @@ def test_mixin_still_owns_public_orchestration_surface():
 
 
 def test_mixin_calls_dispatch_helpers():
+    # Kernel fans out via execute_turn_actions; dispatch helpers are invoked there.
     src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
+    assert "execute_turn_actions(" in src
+    actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
     for name in DISPATCH_HELPERS:
-        assert f"{name}(" in src, name
-    assert "DISPATCH_ACTION_KINDS" in src
+        assert f"{name}(" in actions_src, name
+    assert "DISPATCH_ACTION_KINDS" in actions_src
 
 
 def test_send_locked_inner_no_longer_inlines_dispatch_branches():
@@ -85,12 +88,14 @@ def test_send_locked_inner_no_longer_inlines_dispatch_branches():
     assert "---- run_parallel branch" not in segment
     assert "---- route_task branch" not in segment
     assert "---- memory branch" not in segment
-    assert "dispatch_swarm_action(" in segment
-    assert "dispatch_implement_action(" in segment
-    assert "dispatch_parallel_action(" in segment
-    assert "dispatch_route_task_action(" in segment
-    assert "dispatch_memory_action(" in segment
-    assert "DISPATCH_ACTION_KINDS" in segment
+    assert "execute_turn_actions(" in segment
+    actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
+    assert "dispatch_swarm_action(" in actions_src
+    assert "dispatch_implement_action(" in actions_src
+    assert "dispatch_parallel_action(" in actions_src
+    assert "dispatch_route_task_action(" in actions_src
+    assert "dispatch_memory_action(" in actions_src
+    assert "DISPATCH_ACTION_KINDS" in actions_src
 
 
 def test_send_locked_inner_no_longer_nests_dispatch_helpers():
@@ -112,6 +117,7 @@ def test_send_locked_inner_no_longer_nests_dispatch_helpers():
                 ):
                     nested_names.add(child.name)
     assert not (nested_names & set(DISPATCH_HELPERS)), nested_names & set(DISPATCH_HELPERS)
+    assert "execute_turn_actions" not in nested_names
 
 
 def test_dispatch_route_task_requires_cli():
