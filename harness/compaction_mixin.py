@@ -21,6 +21,50 @@ import threading
 import time
 from typing import Iterator
 
+# grok-build-style quality floors (see xai-grok-compaction summary.rs /
+# intra_compaction/config.rs). Guards are best-effort: exceptions fall through
+# to prior behavior rather than raising on the hot path.
+MIN_SUMMARY_SEED_CHARS = 200
+MIN_COMPACTABLE_TOKENS = 5000
+MAX_REDUCTION_RATIO = 0.8
+_ZERO_WIDTH_SPACE = "\u200b"
+
+
+def neutralize_compaction_control_tokens(text: str) -> str:
+    """Defuse echoed compaction tags by inserting ZWSP after '<' (closers first)."""
+    return (
+        text.replace("</summary>", f"<{_ZERO_WIDTH_SPACE}/summary>")
+        .replace("<summary>", f"<{_ZERO_WIDTH_SPACE}summary>")
+        .replace("</analysis>", f"<{_ZERO_WIDTH_SPACE}/analysis>")
+        .replace("<analysis>", f"<{_ZERO_WIDTH_SPACE}analysis>")
+        .replace("</summary_request>", f"<{_ZERO_WIDTH_SPACE}/summary_request>")
+        .replace("<summary_request>", f"<{_ZERO_WIDTH_SPACE}summary_request>")
+    )
+
+
+def is_degenerate_summary(raw_summary: str) -> bool:
+    """True when the cleaned seed is too short to plausibly carry task state."""
+    cleaned = (raw_summary or "").strip()
+    return len(cleaned) < MIN_SUMMARY_SEED_CHARS
+
+
+def compaction_model_override() -> str:
+    """Return HARNESS_COMPACTION_MODEL when set; empty string keeps session pilot."""
+    try:
+        return (os.environ.get("HARNESS_COMPACTION_MODEL") or "").strip()
+    except Exception:
+        return ""
+
+
+def _min_compactable_tokens() -> int:
+    try:
+        raw = os.environ.get("HARNESS_MIN_COMPACTABLE_TOKENS")
+        if raw is None or str(raw).strip() == "":
+            return MIN_COMPACTABLE_TOKENS
+        return max(0, int(raw))
+    except Exception:
+        return MIN_COMPACTABLE_TOKENS
+
 
 class CompactionContextMixin:
     """Mixin holding compaction, token-estimate, and stale-read elision helpers.
@@ -207,8 +251,6 @@ class CompactionContextMixin:
         if not force and not advised_now and before_tokens < trigger:
             return
 
-        yield ConvEvent("compacting", {"message": "Summarizing chat context"})
-
         tail_budget = int(budget * 0.25)
         split_idx = len(self._history) - 6
         if split_idx < 2:
@@ -228,6 +270,19 @@ class CompactionContextMixin:
 
         middle_block = self._history[1:split_idx]
         recent_block = self._history[split_idx:]
+
+        # Minimum-compactable floor: scraps are not worth an LLM call.
+        # Forced compaction (mid-turn context-overflow recovery) must proceed
+        # regardless -- skipping there would leave the turn unrecoverable.
+        if not force:
+            try:
+                compactable_tokens = self._estimate_context_tokens_for_list(middle_block)
+                if compactable_tokens < _min_compactable_tokens():
+                    return
+            except Exception:
+                pass
+
+        yield ConvEvent("compacting", {"message": "Summarizing chat context"})
 
         # Pre-prune the middle block (cheap, pre-LLM)
         pruned_middle = []
@@ -281,6 +336,11 @@ class CompactionContextMixin:
         except ValueError:
             _compact_cooldown = 120.0
 
+        # Cheap compaction model knob. Driver.chat/complete have no model=
+        # kwarg today; when set we temporarily swap pilot.model if present
+        # (openai-compat seam). Empty default leaves the session pilot alone.
+        _compaction_model = compaction_model_override()
+
         summary = ""
         now = time.time()
         if now < float(getattr(self, "_compaction_fail_until", 0.0) or 0.0):
@@ -290,8 +350,14 @@ class CompactionContextMixin:
                 box: dict = {}
 
                 def _run_summarizer():
+                    prev_model = None
                     try:
+                        if _compaction_model and hasattr(self.pilot, "model"):
+                            prev_model = getattr(self.pilot, "model", None)
+                            self.pilot.model = _compaction_model
                         if hasattr(self.pilot, "chat"):
+                            # Seam: if Driver.chat gains model=, pass
+                            # _compaction_model here instead of swapping .model.
                             box["resp"] = self.pilot.chat(
                                 [{"role": "user", "content": content_to_summarize}],
                                 system=sys_msg,
@@ -302,6 +368,12 @@ class CompactionContextMixin:
                             )
                     except Exception as ex:
                         box["err"] = ex
+                    finally:
+                        if prev_model is not None:
+                            try:
+                                self.pilot.model = prev_model
+                            except Exception:
+                                pass
 
                 # Daemon thread + join timeout: never block shutdown on a hung
                 # summarizer (ThreadPoolExecutor.__exit__ would wait forever).
@@ -328,11 +400,32 @@ class CompactionContextMixin:
                 summary = self._make_fallback_summary(middle_block)
                 self._compaction_fail_until = time.time() + _compact_cooldown
 
+        # Degenerate-summary guard: one attempt, fail soft, keep history.
+        try:
+            if is_degenerate_summary(summary):
+                return
+        except Exception:
+            pass
+
+        # Control-token neutralization before injection into history.
+        try:
+            summary = neutralize_compaction_control_tokens(summary)
+        except Exception:
+            pass
+
         summary_msg = {
             "role": "user",
             "content": f"[Earlier conversation summarized to fit context]\n{summary}",
             "_compressed_summary": True
         }
+
+        # Insufficient-reduction guard: require at least 20% shrinkage.
+        try:
+            summary_tokens = self._estimate_context_tokens_for_list([summary_msg])
+            if summary_tokens > int(middle_tokens * MAX_REDUCTION_RATIO):
+                return
+        except Exception:
+            pass
 
         chars_before = sum(len(str(m.get("content") or "")) for m in middle_block)
         chars_after = len(summary_msg["content"])

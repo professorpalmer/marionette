@@ -6,8 +6,15 @@ import shutil
 import tempfile
 import time
 
+import pytest
+
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
+
+
+@pytest.fixture(autouse=True)
+def _allow_small_fixture_compaction(monkeypatch):
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
 
 
 class _HangPilot:

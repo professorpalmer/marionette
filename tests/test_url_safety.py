@@ -335,3 +335,45 @@ def test_cgnat_allowed_with_private_hatch(monkeypatch):
     _patch_resolve(monkeypatch, "100.64.0.1")
     ok, reason = is_safe_url("http://100.64.0.1/")
     assert ok, reason
+
+
+# -- IPv6-mapped IPv4 SSRF bypass (::ffff:x.x.x.x) ----------------------------
+# Explicit unwrap in _ip_is_blocked_range / _ip_is_metadata; do not rely on
+# newer ipaddress treating mapped addresses as private/loopback.
+
+
+def test_ipv6_mapped_loopback_blocked():
+    """::ffff:127.0.0.1 must be blocked on all supported Python floors."""
+    ok, reason = is_safe_url("http://[::ffff:127.0.0.1]/")
+    assert not ok
+    ok2, _, pinned = is_safe_url_pinned("http://[::ffff:127.0.0.1]/")
+    assert not ok2
+    assert pinned is None
+
+
+def test_ipv6_mapped_metadata_blocked():
+    """::ffff:169.254.169.254 must hit the metadata block (str form differs)."""
+    ok, reason = is_safe_url("http://[::ffff:169.254.169.254]/latest/meta-data/")
+    assert not ok
+    assert "metadata" in reason.lower()
+    ok2, reason2, pinned = is_safe_url_pinned(
+        "http://[::ffff:169.254.169.254]/latest/meta-data/"
+    )
+    assert not ok2
+    assert pinned is None
+    assert "metadata" in reason2.lower()
+
+
+def test_ipv6_mapped_private_blocked():
+    ok, reason = is_safe_url("http://[::ffff:10.0.0.5]/")
+    assert not ok
+    ok2, _, pinned = is_safe_url_pinned("http://[::ffff:192.168.1.1]/")
+    assert not ok2
+    assert pinned is None
+
+
+def test_ipv6_mapped_metadata_still_blocked_with_hatch(monkeypatch):
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
+    ok, reason = is_safe_url("http://[::ffff:169.254.169.254]/latest/meta-data/")
+    assert not ok
+    assert "metadata" in reason.lower()

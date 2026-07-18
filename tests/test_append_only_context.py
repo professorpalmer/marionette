@@ -208,9 +208,20 @@ def test_prefix_stable_turns_increments(monkeypatch):
 
 
 def test_prefix_stable_turns_resets_on_compaction(monkeypatch):
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    good_summary = (
+        "## Historical Task Snapshot\n"
+        "Append-only fixture summary seeded past the degenerate-char floor.\n"
+        "## Resolved\nPrefix stable turns reset after compaction.\n"
+        "## Pending / Open Questions\nNone.\n"
+        "## Key Facts / Decisions / Files\ntests/test_append_only_context.py\n"
+    )
     session, temp_dir = _make_session(monkeypatch, append_only="on")
     try:
-        session.pilot = _RecordingPilot(["summary text"])
+        # Small budget keeps a real compactable middle; the default ~96k window
+        # would expand the kept tail until the middle is a single scrap.
+        session.config.max_context_tokens = 1000
+        session.pilot = _RecordingPilot([good_summary])
         session._prefix_stable_turns = 3
         session._last_rendered_prompt = "prior prompt bytes"
         session._frozen_system_prompt = "frozen"

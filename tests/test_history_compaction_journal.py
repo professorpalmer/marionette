@@ -4,11 +4,26 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 
+import pytest
+
 from harness.history_compaction_journal import (
     history_compaction_payload,
     record_history_compaction,
     summarize_history_compactions,
 )
+
+_GOOD_SUMMARY = (
+    "## Historical Task Snapshot\n"
+    "Journal fixture summary seeded past the degenerate-char floor.\n"
+    "## Resolved\nHistory compaction journal record written.\n"
+    "## Pending / Open Questions\nNone.\n"
+    "## Key Facts / Decisions / Files\ntests/test_history_compaction_journal.py\n"
+)
+
+
+@pytest.fixture(autouse=True)
+def _allow_small_fixture_compaction(monkeypatch):
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
 
 
 def test_record_and_summarize_round_trip():
@@ -47,7 +62,7 @@ def test_compaction_journal_written_during_history_compact():
     class _MockPilot:
         name = "mock"
 
-        def __init__(self, return_text="Fixed mock summary"):
+        def __init__(self, return_text=_GOOD_SUMMARY):
             self.return_text = return_text
 
         def chat(self, messages, tools=None, system=None):

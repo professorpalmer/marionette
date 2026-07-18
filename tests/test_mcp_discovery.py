@@ -26,7 +26,29 @@ def test_stdio_mcp_client_env_filtering(mock_popen):
 
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
-        mock_proc.stdout.readline.return_value = '{"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"name": "test-srv"}, "capabilities": {}}}\n'
+        # One handshake line, then EOF. A constant return_value would feed the
+        # client's daemon _read_loop the same line forever -- an infinite hot
+        # loop mutating Mock state from a background thread that has crashed
+        # the interpreter (access violation during GC) on Windows.
+        _handshake = '{"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"name": "test-srv"}, "capabilities": {}}}\n'
+        import threading as _threading
+        import time as _time
+
+        def _readline_once(*_a, **_k):
+            if not getattr(_readline_once, "sent", False):
+                # Wait for the initialize request to be registered so the
+                # reader does not deliver (and drop) the response early.
+                for _ in range(200):
+                    if client._pending:
+                        break
+                    _time.sleep(0.01)
+                _readline_once.sent = True
+                return _handshake
+            # Park the daemon reader forever (dies with the process) instead
+            # of hot-looping or signaling EOF mid-handshake.
+            _threading.Event().wait()
+
+        mock_proc.stdout.readline.side_effect = _readline_once
         mock_proc.stderr = []
         mock_popen.return_value = mock_proc
 

@@ -81,15 +81,26 @@ def allow_private_urls() -> bool:
     return _is_truthy_value(os.environ.get("HARNESS_ALLOW_PRIVATE_URLS"))
 
 
+def _unwrap_ipv4_mapped(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
+    """Return the embedded IPv4 address for ::ffff:x.x.x.x, else *ip*.
+
+    Python's ipaddress flags for IPv6-mapped addresses have varied across
+    versions; always unwrap before range / metadata checks so SSRF gates do
+    not depend on interpreter behavior.
+    """
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
 def _ip_is_metadata(ip: ipaddress._BaseAddress) -> bool:
-    return str(ip) in METADATA_IPS
+    check = _unwrap_ipv4_mapped(ip)
+    return str(check) in METADATA_IPS
 
 
 def _ip_is_cgnat(ip: ipaddress._BaseAddress) -> bool:
     """True when *ip* is in RFC 6598 CGNAT space (100.64.0.0/10)."""
-    check = ip
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        check = ip.ipv4_mapped
+    check = _unwrap_ipv4_mapped(ip)
     try:
         return check in _CGNAT_NETWORK
     except TypeError:
@@ -97,6 +108,10 @@ def _ip_is_cgnat(ip: ipaddress._BaseAddress) -> bool:
 
 
 def _ip_is_blocked_range(ip: ipaddress._BaseAddress) -> bool:
+    # Unwrap ::ffff:x.x.x.x once so is_private/is_loopback/etc. see the
+    # embedded IPv4 address (mirrors _ip_is_cgnat). Without this, older
+    # Python floors can miss mapped loopback/private literals.
+    ip = _unwrap_ipv4_mapped(ip)
     return bool(
         ip.is_private
         or ip.is_loopback

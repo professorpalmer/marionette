@@ -10,29 +10,50 @@ import urllib.error
 import html.parser
 from typing import Optional
 
-from harness.url_safety import is_safe_url, is_safe_url_pinned, normalize_url_for_request
+from harness.url_safety import is_safe_url_pinned, normalize_url_for_request
 from harness.paths import path_within
 
 WEB_FETCH_LIMIT = 16000
 WEB_FETCH_MAX_BYTES = 8 * 1024 * 1024  # 8 MiB
 
 
-class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Re-validate EVERY redirect hop against is_safe_url.
+class _PinnedIP:
+    """Mutable pinned-IP holder shared by redirect + transport handlers.
 
-    is_safe_url() only guards the URL we are handed. urlopen()'s default opener
-    silently follows 30x redirects, so a safe-looking URL can 302 to an internal
-    address (cloud metadata 169.254.169.254, localhost, RFC-1918) and defeat the
-    check -- a classic SSRF. This handler intercepts each redirect and refuses to
-    follow one whose target fails is_safe_url, closing that hole.
+    Redirects re-resolve and update ``.ip`` so the next hop connects to the
+    newly validated address rather than the original pin (DNS-rebinding /
+    cross-host redirect safety).
     """
 
+    __slots__ = ("ip",)
+
+    def __init__(self, ip: Optional[str] = None):
+        self.ip = ip
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate EVERY redirect hop with is_safe_url_pinned.
+
+    urlopen()'s default opener silently follows 30x redirects, so a
+    safe-looking URL can 302 to an internal address (cloud metadata
+    169.254.169.254, localhost, RFC-1918) and defeat the initial check.
+    Each hop is re-validated with a fresh DNS resolve; when a shared
+    ``_PinnedIP`` is present the pin is updated so the next connection
+    matches the validated target.
+    """
+
+    def __init__(self, pin: Optional[_PinnedIP] = None, *args, **kwargs):
+        self._pin = pin
+        super().__init__(*args, **kwargs)
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        ok, reason = is_safe_url(newurl)
+        ok, reason, pinned_ip = is_safe_url_pinned(newurl)
         if not ok:
             raise urllib.error.HTTPError(
                 newurl, code, f"unsafe redirect target ({reason})", headers, fp
             )
+        if self._pin is not None and pinned_ip:
+            self._pin.ip = pinned_ip
         # Normalize the vetted target the same way direct fetches are normalized.
         newurl = normalize_url_for_request(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
@@ -94,14 +115,14 @@ class _PinnedIPHTTPSConnection(http.client.HTTPSConnection):
 class _PinnedIPHTTPHandler(urllib.request.HTTPHandler):
     """HTTPHandler that injects a pinned-IP transport."""
 
-    def __init__(self, pinned_ip=None, *args, **kwargs):
-        self._pinned_ip = pinned_ip
+    def __init__(self, pin: Optional[_PinnedIP] = None, *args, **kwargs):
+        self._pin = pin if pin is not None else _PinnedIP()
         super().__init__(*args, **kwargs)
 
     def http_open(self, req):
         return self.do_open(
             lambda *a, **kw: _PinnedIPHTTPConnection(
-                *a, pinned_ip=self._pinned_ip, **kw
+                *a, pinned_ip=self._pin.ip, **kw
             ),
             req,
         )
@@ -110,14 +131,14 @@ class _PinnedIPHTTPHandler(urllib.request.HTTPHandler):
 class _PinnedIPHTTPSHandler(urllib.request.HTTPSHandler):
     """HTTPSHandler that injects a pinned-IP transport."""
 
-    def __init__(self, pinned_ip=None, *args, **kwargs):
-        self._pinned_ip = pinned_ip
+    def __init__(self, pin: Optional[_PinnedIP] = None, *args, **kwargs):
+        self._pin = pin if pin is not None else _PinnedIP()
         super().__init__(*args, **kwargs)
 
     def https_open(self, req):
         return self.do_open(
             lambda *a, **kw: _PinnedIPHTTPSConnection(
-                *a, pinned_ip=self._pinned_ip, **kw
+                *a, pinned_ip=self._pin.ip, **kw
             ),
             req,
         )
@@ -126,11 +147,14 @@ class _PinnedIPHTTPSHandler(urllib.request.HTTPSHandler):
 def _make_pinned_opener(pinned_ip: str):
     """Build an opener that connects to *pinned_ip* while preserving the
     original hostname in HTTP Host headers and HTTPS SNI / certificate
-    verification (see _PinnedIPHTTPHandler / _PinnedIPHTTPSHandler)."""
+    verification. Redirect hops re-validate with is_safe_url_pinned and
+    update the shared pin so validation and connection always match.
+    """
+    pin = _PinnedIP(pinned_ip)
     return urllib.request.build_opener(
-        _PinnedIPHTTPHandler(pinned_ip=pinned_ip),
-        _PinnedIPHTTPSHandler(pinned_ip=pinned_ip),
-        _SafeRedirectHandler,
+        _PinnedIPHTTPHandler(pin=pin),
+        _PinnedIPHTTPSHandler(pin=pin),
+        _SafeRedirectHandler(pin=pin),
     )
 
 

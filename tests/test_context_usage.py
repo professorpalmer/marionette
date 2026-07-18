@@ -7,8 +7,23 @@ trigger + composer % meter track the driver's actual billed prompt tokens
 the offline-safe chars//4 fallback intact.
 """
 
+import pytest
+
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
+
+_GOOD_SUMMARY = (
+    "## Historical Task Snapshot\n"
+    "Context-usage fixture summary seeded past the degenerate-char floor.\n"
+    "## Resolved\nTrigger path exercised.\n"
+    "## Pending / Open Questions\nNone.\n"
+    "## Key Facts / Decisions / Files\ntests/test_context_usage.py\n"
+)
+
+
+@pytest.fixture(autouse=True)
+def _allow_small_fixture_compaction(monkeypatch):
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
 
 
 class MockDriverResponse:
@@ -23,7 +38,7 @@ class MockDriverResponse:
 class MockPilot:
     name = "mock"
 
-    def __init__(self, return_text="This is a summary."):
+    def __init__(self, return_text=_GOOD_SUMMARY):
         self.return_text = return_text
         self.chat_calls = []
         self.complete_calls = []
@@ -80,9 +95,14 @@ def test_estimate_keeps_heuristic_when_history_grew_past_real():
     assert s._estimate_context_tokens() == heuristic
 
 
-def test_compaction_trigger_fires_on_real_value():
+def test_compaction_trigger_fires_on_real_value(monkeypatch):
     """The 75% trigger must fire based on the larger (real) value even when the
     chars//4 heuristic alone is well under the trigger."""
+    # Tiny middle cannot clear degenerate/reduction floors; relax those so this
+    # test stays focused on the real-token trigger.
+    monkeypatch.setattr("harness.compaction_mixin.MIN_SUMMARY_SEED_CHARS", 1)
+    monkeypatch.setattr("harness.compaction_mixin.MAX_REDUCTION_RATIO", 1000.0)
+
     s = _session(budget=1000)  # trigger = 750
     s.pilot = MockPilot("Fixed mock summary")  # type: ignore
 

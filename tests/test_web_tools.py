@@ -288,3 +288,74 @@ def test_fetch_one_blocked_url_no_request(monkeypatch):
     result = _fetch_one("http://10.0.0.5/secret", 5)
     assert "unsafe URL" in result
     assert not called, "_safe_urlopen should not be called for blocked URLs"
+
+
+# -- Redirect SSRF: pinned validation + re-pin across hops --------------------
+
+def test_redirect_to_private_blocked(monkeypatch):
+    """Redirect targets must be validated with is_safe_url_pinned (not bare)."""
+    import urllib.error
+    import urllib.request
+    from harness.web_tools import _SafeRedirectHandler
+
+    _patch_resolve(monkeypatch, "10.0.0.5")
+    handler = _SafeRedirectHandler()
+    req = urllib.request.Request("https://example.com/start")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        handler.redirect_request(
+            req, fp=None, code=302, msg="Found",
+            headers={}, newurl="https://evil.example.com/internal",
+        )
+    assert "unsafe redirect" in str(exc.value).lower() or exc.value.code == 302
+
+
+def test_redirect_updates_shared_pin(monkeypatch):
+    """Cross-host redirect must re-resolve and update the shared pin."""
+    import urllib.request
+    from harness.web_tools import _PinnedIP, _SafeRedirectHandler, _make_pinned_opener
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        mapping = {
+            "first.example.com": "93.184.216.34",
+            "second.example.com": "1.1.1.1",
+        }
+        ip = mapping.get(host, "8.8.8.8")
+        return [(2, 1, 6, "", (ip, port or 0))]
+
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
+
+    pin = _PinnedIP("93.184.216.34")
+    handler = _SafeRedirectHandler(pin=pin)
+    req = urllib.request.Request("https://first.example.com/start")
+    new_req = handler.redirect_request(
+        req, fp=None, code=302, msg="Found",
+        headers={}, newurl="https://second.example.com/next",
+    )
+    assert pin.ip == "1.1.1.1"
+    assert new_req is not None
+    assert "second.example.com" in new_req.full_url
+
+    # Opener handlers must share one pin object so connect sees the update.
+    opener = _make_pinned_opener("93.184.216.34")
+    pins = []
+    for h in opener.handlers:
+        shared = getattr(h, "_pin", None)
+        if shared is not None:
+            pins.append(shared)
+    assert len(pins) >= 2
+    assert all(p is pins[0] for p in pins)
+
+
+def test_redirect_to_metadata_blocked_even_with_hatch(monkeypatch):
+    import urllib.error
+    import urllib.request
+    from harness.web_tools import _SafeRedirectHandler
+
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
+    handler = _SafeRedirectHandler()
+    req = urllib.request.Request("https://example.com/start")
+    with pytest.raises(urllib.error.HTTPError):
+        handler.redirect_request(
+            req, fp=None, code=302, msg="Found",
+            headers={}, newurl="http://169.254.169.254/latest/meta-data/",
+        )

@@ -20,7 +20,13 @@ import urllib.request
 import urllib.error
 from typing import Dict, List, Optional
 
-from .mcp_client import McpTool, McpError, PROTOCOL_VERSION, CLIENT_INFO
+from .mcp_client import (
+    McpTool,
+    McpError,
+    PROTOCOL_VERSION,
+    CLIENT_INFO,
+    MCP_MAX_RESPONSE_BYTES,
+)
 
 
 def mcp_allow_private_urls() -> bool:
@@ -164,22 +170,31 @@ class HttpMcpClient:
         ONE blocklist -- a bespoke copy here had drifted (it missed the
         metadata hostnames and the AWS IPv6 metadata address, and read a
         different escape-hatch env var). Metadata endpoints stay blocked even
-        with a hatch set. Returns the first validated resolved IP, or None if
-        the hostname could not be resolved (the request then fails at connect
-        time). Raises McpError if the URL is unsafe.
+        with a hatch set. Returns the first validated resolved IP. Unresolvable
+        hostnames fail closed unless private/loopback MCP URLs are allowed
+        (see mcp_allow_private_urls()), in which case None is returned and the
+        request proceeds without a pinned IP. Raises McpError if the URL is
+        unsafe.
         """
         from .url_safety import is_safe_url_pinned
 
         # User-configured MCP endpoints (Docker localhost, LAN) are allowed by
         # default; metadata stays blocked. See mcp_allow_private_urls().
+        allow_private = mcp_allow_private_urls()
         ok, reason, pinned_ip = is_safe_url_pinned(
-            url, allow_private=mcp_allow_private_urls(),
+            url, allow_private=allow_private,
         )
         if ok:
             ip = pinned_ip or ""
             return ip.split("%")[0] if "%" in ip else (pinned_ip or None)
+        # Fail closed on DNS failure unless private URLs are allowed (local /
+        # Docker MCP hosts may not resolve in the parent namespace).
         if "could not be resolved" in reason:
-            return None  # can't resolve, will fail on connect
+            if allow_private:
+                return None
+            raise McpError(
+                f"Unsafe MCP URL: hostname could not be resolved: {reason}"
+            )
         raise McpError(f"Unsafe MCP URL: {reason}")
 
     @staticmethod
@@ -240,8 +255,17 @@ class HttpMcpClient:
                 sid = r.headers.get("Mcp-Session-Id")
                 if sid:
                     self._session_id = sid
-                raw = r.read().decode()
+                # Cap body size so a malicious MCP server cannot OOM the harness.
+                raw_bytes = r.read(MCP_MAX_RESPONSE_BYTES + 1)
+                if len(raw_bytes) > MCP_MAX_RESPONSE_BYTES:
+                    raise McpError(
+                        f"MCP server '{self.name}': response exceeded "
+                        f"{MCP_MAX_RESPONSE_BYTES} bytes"
+                    )
+                raw = raw_bytes.decode()
                 ctype = r.headers.get("Content-Type", "")
+        except McpError:
+            raise
         except urllib.error.HTTPError as e:
             raise McpError(f"MCP server '{self.name}' HTTP {e.code}: {e.read()[:200].decode(errors='replace')}")
         except urllib.error.URLError as e:

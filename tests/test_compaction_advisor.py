@@ -1,5 +1,7 @@
 """Tests for layer-pressure compaction advisor."""
 
+import pytest
+
 from harness.compaction_advisor import (
     _HOT_L1_COMBO_RATIO,
     _HOT_NOW_RATIO,
@@ -11,6 +13,13 @@ from harness.compaction_advisor import (
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 from harness.memory_layers import record_memory_layer_snapshot, snapshot_memory_layers
+
+
+@pytest.fixture(autouse=True)
+def _allow_small_fixture_compaction(monkeypatch):
+    # Advisor fixtures use tiny budgets; quality-guard floors are covered
+    # separately. Floor=0 lets the advisor path reach the compacting event.
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
 
 
 class _FakeConversation:

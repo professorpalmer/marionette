@@ -22,14 +22,18 @@ they already have:
 
 import json
 import os
+import queue
 import subprocess
 import threading
-import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 PROTOCOL_VERSION = "2024-11-05"
 CLIENT_INFO = {"name": "pm-harness", "version": "0.1"}
+
+# Cap MCP tool / JSON-RPC response bodies so a malicious or buggy server cannot
+# exhaust harness memory. Shared by stdio and HTTP transports.
+MCP_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 # Safe environment baseline to prevent leaking parent API keys/tokens to MCP subprocesses
 _SAFE_ENV_KEYS = {
@@ -92,7 +96,12 @@ class StdioMcpClient:
         self.startup_timeout = startup_timeout
         self._proc: Optional[subprocess.Popen] = None
         self._id = 0
+        # Serializes request writes + pending-map bookkeeping only. Blocking
+        # waits for responses happen outside the lock (see _request / _read_loop).
         self._lock = threading.Lock()
+        self._pending: Dict[int, "queue.Queue[Union[dict, BaseException]]"] = {}
+        self._reader_thread: Optional[threading.Thread] = None
+        self._reader_error: Optional[BaseException] = None
         self._server_info: dict = {}
         self._capabilities: dict = {}
 
@@ -126,7 +135,7 @@ class StdioMcpClient:
         except FileNotFoundError as e:
             raise McpError(f"MCP server '{self.name}': command not found: {self.command} ({e})")
         # Drain stderr on a background thread so a chatty server cannot fill the OS
-        # pipe buffer and deadlock the child (we only read stdout in _request).
+        # pipe buffer and deadlock the child (stdout is read on _read_loop).
         self._stderr_tail: List[str] = []
         def _drain():
             try:
@@ -138,6 +147,9 @@ class StdioMcpClient:
                 pass
         self._stderr_thread = threading.Thread(target=_drain, daemon=True)
         self._stderr_thread.start()
+        self._reader_error = None
+        self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader_thread.start()
         # handshake
         resp = self._request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
@@ -173,6 +185,7 @@ class StdioMcpClient:
                 except Exception:
                     pass
         self._proc = None
+        self._fail_pending(McpError(f"MCP server '{self.name}' stopped"))
 
     @property
     def alive(self) -> bool:
@@ -191,20 +204,44 @@ class StdioMcpClient:
         self._proc.stdin.flush()
 
     def _notify(self, method: str, params: dict) -> None:
-        self._send({"jsonrpc": "2.0", "method": method, "params": params})
-
-    def _request(self, method: str, params: dict, timeout: float = 60.0) -> dict:
         with self._lock:
-            rid = self._next_id()
-            self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-            deadline = time.time() + timeout
-            # read newline-delimited json until we see our id (skip notifications)
-            while time.time() < deadline:
-                line = self._proc.stdout.readline()
-                if line == "":
-                    # process died -- surface captured stderr tail (drained on a thread)
-                    err = "".join(getattr(self, "_stderr_tail", []))
-                    raise McpError(f"MCP server '{self.name}' closed the connection. {err[-400:]}")
+            self._send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def _readline_bounded(self) -> Optional[str]:
+        """Read one stdout line, rejecting bodies larger than MCP_MAX_RESPONSE_BYTES."""
+        assert self._proc is not None and self._proc.stdout is not None
+        # TextIO.readline(size) returns at most `size` characters; a full line
+        # longer than the cap arrives without a trailing newline.
+        line = self._proc.stdout.readline(MCP_MAX_RESPONSE_BYTES + 1)
+        if line == "":
+            return None
+        if len(line) > MCP_MAX_RESPONSE_BYTES:
+            raise McpError(
+                f"MCP server '{self.name}': response exceeded "
+                f"{MCP_MAX_RESPONSE_BYTES} bytes"
+            )
+        return line
+
+    def _fail_pending(self, exc: BaseException) -> None:
+        self._reader_error = exc
+        with self._lock:
+            waiters = list(self._pending.values())
+            self._pending.clear()
+        for q in waiters:
+            try:
+                q.put_nowait(exc)
+            except queue.Full:
+                pass
+
+    def _read_loop(self) -> None:
+        """Demux stdout JSON-RPC responses to per-request queues (no lock held)."""
+        try:
+            while True:
+                if self._proc is None:
+                    break
+                line = self._readline_bounded()
+                if line is None:
+                    break
                 line = line.strip()
                 if not line:
                     continue
@@ -213,12 +250,55 @@ class StdioMcpClient:
                 except json.JSONDecodeError:
                     # servers sometimes log to stdout; ignore non-JSON noise
                     continue
-                if msg.get("id") == rid:
-                    if "error" in msg:
-                        raise McpError(f"{method} -> {msg['error']}")
-                    return msg.get("result", {})
-                # else: a notification or another response -> keep reading
+                mid = msg.get("id")
+                if mid is None:
+                    continue  # notification
+                with self._lock:
+                    q = self._pending.get(mid)
+                if q is not None:
+                    q.put(msg)
+        except McpError as e:
+            self._fail_pending(e)
+            return
+        except Exception as e:
+            self._fail_pending(
+                McpError(f"MCP server '{self.name}' read failed: {e}")
+            )
+            return
+        err = "".join(getattr(self, "_stderr_tail", []))
+        self._fail_pending(
+            McpError(
+                f"MCP server '{self.name}' closed the connection. {err[-400:]}"
+            )
+        )
+
+    def _request(self, method: str, params: dict, timeout: float = 60.0) -> dict:
+        if self._reader_error is not None:
+            raise McpError(str(self._reader_error))
+        waiter: "queue.Queue[Union[dict, BaseException]]" = queue.Queue(maxsize=1)
+        with self._lock:
+            rid = self._next_id()
+            self._pending[rid] = waiter
+            try:
+                self._send(
+                    {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+                )
+            except Exception:
+                self._pending.pop(rid, None)
+                raise
+        try:
+            msg = waiter.get(timeout=timeout)
+        except queue.Empty:
+            with self._lock:
+                self._pending.pop(rid, None)
             raise McpError(f"MCP server '{self.name}': timeout waiting for {method}")
+        with self._lock:
+            self._pending.pop(rid, None)
+        if isinstance(msg, BaseException):
+            raise msg if isinstance(msg, McpError) else McpError(str(msg))
+        if "error" in msg:
+            raise McpError(f"{method} -> {msg['error']}")
+        return msg.get("result", {})
 
     # ---- MCP methods --------------------------------------------------------
     def list_tools(self) -> List[McpTool]:

@@ -2020,6 +2020,26 @@ _commands = CommandStore()
 _memory = MemoryStore()
 _UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "harness-uploads")
 os.makedirs(_UPLOAD_DIR, mode=0o700, exist_ok=True)
+
+# Default cap for JSON POST bodies (DoS gate in Handler._read_json). 8 MiB
+# matches WEB_FETCH_MAX_BYTES and sits under the upload multipart cap (10 MiB);
+# transcript-sized JSON POSTs fit comfortably. Override via env.
+_DEFAULT_JSON_BODY_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _json_body_max_bytes() -> int:
+    return int(
+        os.environ.get("HARNESS_JSON_BODY_MAX_BYTES", str(_DEFAULT_JSON_BODY_MAX_BYTES))
+    )
+
+
+class _JsonBodyTooLarge(Exception):
+    """Raised by Handler._read_json when Content-Length exceeds the cap."""
+
+    def __init__(self, size: int, limit: int):
+        self.size = size
+        self.limit = limit
+        super().__init__(size, limit)
 # The mode above only applies when the dir is created (and is umask-clipped);
 # harden explicitly so uploaded images are never world-readable under the
 # shared system temp dir -- on Windows too (icacls), where makedirs mode is a
@@ -2340,9 +2360,20 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, json.dumps({"error": "not found"}))
 
     def _read_json(self) -> dict:
-        n = int(self.headers.get("Content-Length", 0) or 0)
+        """Parse the request JSON body, rejecting oversized Content-Length first.
+
+        Cap mirrors the upload DoS gate style: refuse before ``rfile.read`` so a
+        huge POST cannot exhaust memory on the thread-per-request server.
+        """
+        try:
+            n = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            n = 0
         if not n:
             return {}
+        limit = _json_body_max_bytes()
+        if n > limit:
+            raise _JsonBodyTooLarge(n, limit)
         data = self.rfile.read(n)
         try:
             decoded = data.decode()
@@ -2353,6 +2384,16 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_post_json(self, path):
         try:
             body = self._read_json()
+        except _JsonBodyTooLarge as exc:
+            return self._send(
+                413,
+                json.dumps({
+                    "error": (
+                        f"request body too large: {exc.size} bytes exceeds "
+                        f"cap of {exc.limit}"
+                    ),
+                }),
+            )
         except json.JSONDecodeError:
             return self._send(400, json.dumps({"error": "invalid JSON"}))
         route = _post_json_routes().get(path)

@@ -5,6 +5,21 @@ from unittest.mock import MagicMock
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession, ConvEvent
 
+# Clears the production min-compactable floor so small fixture histories still
+# exercise the summarizer path; quality-guard coverage lives in
+# test_compaction_quality_guards.py.
+_GOOD_SUMMARY = (
+    "## Historical Task Snapshot\n"
+    "Compaction fixture summary with enough seed characters to pass guards.\n"
+    "## Resolved\nPrior turns were compacted for the unit test.\n"
+    "## Pending / Open Questions\nNone.\n"
+    "## Key Facts / Decisions / Files\ntests/test_compaction.py\n"
+)
+
+
+@pytest.fixture(autouse=True)
+def _allow_small_fixture_compaction(monkeypatch):
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
 
 
 class MockDriverResponse:
@@ -16,7 +31,7 @@ class MockDriverResponse:
 
 class MockPilot:
     name = "mock"
-    def __init__(self, return_text="This is a summary."):
+    def __init__(self, return_text=_GOOD_SUMMARY):
         self.return_text = return_text
         self.chat_calls = []
         self.complete_calls = []
@@ -70,7 +85,7 @@ def test_maybe_compact_history_above_trigger():
     cfg = HarnessConfig(max_context_tokens=1000)
     s = ConversationalSession(cfg)
     s._history[0]["content"] = "sys"
-    s.pilot = MockPilot("Fixed mock summary")  # type: ignore
+    s.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
     
     # Let's add many large messages so we exceed 750 tokens
     # (need > 3000 chars total)
@@ -95,7 +110,7 @@ def test_maybe_compact_history_above_trigger():
     # The middle block should be replaced by exactly ONE summary message (which is at index 1)
     assert s._history[1]["role"] == "user"
     assert "[Earlier conversation summarized to fit context]" in s._history[1]["content"]
-    assert "Fixed mock summary" in s._history[1]["content"]
+    assert "Compaction fixture summary" in s._history[1]["content"]
     
     # The recent messages at the end should be preserved verbatim
     # Let's check that the very last message is untouched
@@ -145,7 +160,7 @@ def test_fallback_truncation_on_pilot_failure():
 def test_no_orphaned_tool_messages_in_kept_window():
     cfg = HarnessConfig(max_context_tokens=1000)
     s = ConversationalSession(cfg)
-    s.pilot = MockPilot("Summary block")  # type: ignore
+    s.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
     
     # Setup history where initial split_idx = 4
     # Total messages: 10
@@ -186,7 +201,7 @@ def test_single_writer_synchronous_compaction():
     cfg = HarnessConfig(max_context_tokens=1000)
     s = ConversationalSession(cfg)
     s._history[0]["content"] = "sys"
-    s.pilot = MockPilot("Sync compact")  # type: ignore
+    s.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
     
     # Add large history (> 3000 chars to trigger compaction)
     for i in range(10):
