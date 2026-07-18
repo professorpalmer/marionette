@@ -3,7 +3,7 @@
  * backend runner is busy -- even after SSE detach on session switch.
  */
 
-import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import { useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api } from "../../lib/api";
 import { usePolling } from "../../lib/usePolling";
 import type { Item } from "../TranscriptList";
@@ -59,6 +59,9 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
     setCompactingStatus,
   } = deps;
 
+  // Consecutive idle sightings while detachedBusy; reset whenever runners busy.
+  const consecutiveIdlePollsRef = useRef(0);
+
   // Poll runners so composer shows Stop/Steer while the active session's
   // backend runner is busy -- even after SSE detach on session switch.
   usePolling(() => {
@@ -67,6 +70,7 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
     if (userStoppedRef.current) {
       // Stop must stick: ignore runners=running while the abandoned generator
       // unwinds; keep chrome idle until the user sends again.
+      consecutiveIdlePollsRef.current = 0;
       detachedBusyRef.current = false;
       clearChatEventsPoll();
       setStatus((prev) => userStoppedBusyChrome(prev));
@@ -78,18 +82,20 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
       if (userStoppedRef.current) return;
       const runners = res?.runners || {};
       const running = runners[sid] === "running";
-      const tick = runnersBusyTickDecision({
-        userStopped: userStoppedRef.current,
-        localStreamActive: localStreamActiveRef.current,
-        runnerBusy: running,
-        detachedBusy: detachedBusyRef.current,
-        chatEventsPollArmed: chatEventsPollTimerRef.current != null,
-        items: itemsRef.current,
-      });
       if (running) {
+        consecutiveIdlePollsRef.current = 0;
         detachedBusyRef.current = true;
         setTurnOpen(true);
         setStatus((prev) => preserveOrThinking(prev));
+        const tick = runnersBusyTickDecision({
+          userStopped: userStoppedRef.current,
+          localStreamActive: localStreamActiveRef.current,
+          runnerBusy: true,
+          detachedBusy: true,
+          chatEventsPollArmed: chatEventsPollTimerRef.current != null,
+          items: itemsRef.current,
+          consecutiveIdlePolls: 0,
+        });
         // Queue/bridge turns start without this tab's EventSource. Arm the
         // chatEvents ring poll so tokens paint live (not only after restart).
         if (tick.kind === "arm_reattach") {
@@ -121,11 +127,25 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
         }).catch(() => {});
       } else if (detachedBusyRef.current) {
         // Runner went idle after a detached busy view -- finalize + refresh.
-        // Do not clear busy chrome while live tool rows are still painted;
-        // a lagging runners map was wiping Investigating → idle mid-command.
-        if (tick.kind === "hold_live_investigation") {
+        // Require consecutive idle polls so a single false not-running blip
+        // cannot clear Stop; live surfaces still hold immediately.
+        consecutiveIdlePollsRef.current += 1;
+        const tick = runnersBusyTickDecision({
+          userStopped: userStoppedRef.current,
+          localStreamActive: localStreamActiveRef.current,
+          runnerBusy: false,
+          detachedBusy: true,
+          chatEventsPollArmed: chatEventsPollTimerRef.current != null,
+          items: itemsRef.current,
+          consecutiveIdlePolls: consecutiveIdlePollsRef.current,
+        });
+        if (
+          tick.kind === "hold_live_investigation"
+          || tick.kind === "hold_idle_unconfirmed"
+        ) {
           return;
         }
+        consecutiveIdlePollsRef.current = 0;
         detachedBusyRef.current = false;
         clearChatEventsPoll();
         setTurnOpen(false);

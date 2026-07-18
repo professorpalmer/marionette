@@ -58,6 +58,10 @@ export {
   appendStreamingTextToItems,
   finalizeOpenPilotBubble,
   typewriterCharsPerFrame,
+  assistantProseCovers,
+  sealedAssistantTextsInTurn,
+  sealedAssistantCoversDelta,
+  PROSE_COVER_MIN_CHUNK,
 } from "./streamBubbles";
 export { derivePillStatus } from "./pillStatus";
 export { workspaceLeafName } from "./workspaceDisplay";
@@ -145,6 +149,7 @@ export {
   userStoppedBusyChrome,
   preserveOrThinking,
   runnersBusyTickDecision,
+  RUNNERS_IDLE_CONFIRM_POLLS,
 } from "./runnersBusy";
 export {
   CONTEXT_USAGE_COLORS,

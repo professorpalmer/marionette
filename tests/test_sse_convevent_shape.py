@@ -42,6 +42,25 @@ def test_chat_sse_frame_omits_turn():
     assert "turn" not in payload
 
 
+def test_chat_sse_message_preserves_streamed_metadata():
+    """send_loop flags already-deltaed prose with streamed=true; wire must keep it."""
+    ev = ConvEvent(
+        "message",
+        {"role": "assistant", "text": "Looking at the read path first.", "streamed": True},
+    )
+    raw = _encode_chat_sse_frame(ev)
+    payload = json.loads(raw[len(b"data: "):].split(b"\n\n", 1)[0])
+    assert payload["kind"] == "message"
+    assert payload["data"]["streamed"] is True
+    assert payload["data"]["text"] == "Looking at the read path first."
+
+    # Ring replay must also retain the flag for cursor_gap hydrate+replay.
+    ring = SseEventRing("sess-streamed", 1)
+    ring.append("message", {"role": "assistant", "text": "hi", "streamed": True})
+    snap = ring.since(0)
+    assert snap["events"][0]["data"]["streamed"] is True
+
+
 def test_run_sse_frame_includes_turn():
     ev = SessionEvent("intent", 2, {"action": "answer"})
     raw = _encode_run_sse_frame(ev)

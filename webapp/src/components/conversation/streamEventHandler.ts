@@ -6,7 +6,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { Card, Item } from "../TranscriptList";
 import {
-  finalizeStreamingThinking,
   upsertStreamingThinking,
   upsertToolPrep,
 } from "./thinkingToolPrep";
@@ -37,7 +36,10 @@ import {
   truncateWaitHint,
   workspaceRootFromActionResult,
 } from "./streamApply";
-import { finalizeOpenPilotBubble } from "./streamBubbles";
+import {
+  finalizeOpenPilotBubble,
+  sealedAssistantCoversDelta,
+} from "./streamBubbles";
 import { turnHasLiveInvestigation } from "../../lib/turnProgress";
 
 export type StreamEvent = { kind: string; data?: any };
@@ -163,6 +165,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setStatus((prev) =>
         prev === "streaming" || prev === "executing" ? prev : "thinking"
       );
+      // Drain typewriter before sealing so buffered prose cannot orphan after
+      // a later tool card (same barrier as tool_prep / action_start).
+      flushTypewriter();
       if (d.delta && chunk) {
         // Seal any open pilot bubble first so thinking cannot reopen or
         // re-parent streamed assistant text into a reasoning row.
@@ -178,6 +183,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setStatus((prev) =>
         prev === "streaming" || prev === "executing" ? prev : "thinking"
       );
+      // Flush buffered typewriter text into the open bubble BEFORE sealing so
+      // pre-tool narration stays above the tool card (never orphans after it).
+      flushTypewriter();
       // Seal thinking + assistant surfaces; tool cards only ever hold tool data.
       setItems((p) =>
         upsertToolPrep(sealOpenStreamSurfaces(p), name || "tool_call", {
@@ -195,10 +203,25 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // from top to bottom" after hard commands. Bare prose turns still
       // use the cadence typewriter. ensureAssistantStreamingBubble seals
       // open thinking so reasoning stays on its own finalized row.
-      const investigating = turnHasLiveInvestigation(itemsRef.current, true);
-      setItems((p) => ensureAssistantStreamingBubble(p, { isPlan: planTurnRef.current }));
       const chunk = d.text || "";
       if (!chunk) return;
+      // Cover check + bubble open must run inside the state updater so
+      // synchronous chatEvents replay / back-to-back SSE never consults an
+      // effect-lagged itemsRef and drop a live post-tool delta.
+      let skipCovered = false;
+      let investigating = false;
+      setItems((p) => {
+        itemsRef.current = p;
+        if (sealedAssistantCoversDelta(p, chunk)) {
+          skipCovered = true;
+          return p;
+        }
+        investigating = turnHasLiveInvestigation(p, true);
+        const next = ensureAssistantStreamingBubble(p, { isPlan: planTurnRef.current });
+        itemsRef.current = next;
+        return next;
+      });
+      if (skipCovered) return;
       if (investigating) {
         flushTypewriter();
         appendStreamingText(chunk);
@@ -226,10 +249,18 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setStatus("thinking");
       // Drain any queued typed text before finalizing, so the bubble is whole.
       flushTypewriter();
-      setItems((p0) => finalizePilotMessage(p0, d.text, { isPlan: planTurnRef.current }));
+      setItems((p0) => finalizePilotMessage(p0, d.text, {
+        isPlan: planTurnRef.current,
+        // Backend flags prose already painted via message_delta so we merge
+        // into the sealed bubble instead of appending a duplicate after tools.
+        streamed: Boolean(d.streamed),
+      }));
     } else if (ev.kind === "action_start") {
       setCompactingStatus(null);
       setStatus("executing");
+      // Flush typewriter before seal inside appendActionStartCard so buffered
+      // prose cannot land after the tool card.
+      flushTypewriter();
       // Idempotent: a late/replayed action_start with the same id must not
       // stack another card (session-switch SSE race → infinite Investigated).
       // Default tool cards to collapsed always: they used to mount open while
@@ -337,6 +368,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setTurnOpen(false);
       setWaitHint(null);
       setStatus("done");
+      // Drain + seal any remaining live surfaces so a turn cannot close with an
+      // open typewriter / streaming bubble still painted as in-flight.
+      flushTypewriter();
       // Sync local-swarm-* ids finish inside the turn; anything still spinning
       // for those is an orphan. Background job_*/local-* stay live so their
       // pills keep spinning until swarm_result arrives.
@@ -345,7 +379,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       );
       setPendingJobIds(liveIds);
       setItems((p) =>
-        finalizeOrphanSwarmPills(finalizeStreamingThinking(p), liveIds),
+        finalizeOrphanSwarmPills(sealOpenStreamSurfaces(p), liveIds),
       );
       fetchContextUsage();
       // Backend may also set_title_if_default; refresh meters/title if the

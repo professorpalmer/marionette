@@ -1,6 +1,60 @@
 import type { Item, Msg } from "../TranscriptList";
 
 /**
+ * Short shared prefixes ("I will") must never suppress a distinct post-tool
+ * answer. Cursor-gap replay chunks are typically longer fragments of the
+ * sealed bubble; require this many trimmed chars before prefix/suffix cover.
+ */
+export const PROSE_COVER_MIN_CHUNK = 12;
+
+/**
+ * True when `existing` already holds `incoming` as exact text or a proven
+ * continuation fragment (substantial prefix/suffix of the sealed bubble).
+ * Bare mid-string `includes` and short shared prefixes are not cover.
+ */
+export function assistantProseCovers(existing: string, incoming: string): boolean {
+  const a = (existing || "").trim();
+  const b = (incoming || "").trim();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (b.length < PROSE_COVER_MIN_CHUNK) return false;
+  // Proven replay only: chunk is already painted as a prefix/suffix of sealed.
+  // Do not treat incoming-longer (b.startsWith(a)) as cover — that is a new answer.
+  if (a.startsWith(b) || a.endsWith(b)) return true;
+  return false;
+}
+
+/** Current-turn sealed (non-streaming) assistant texts, newest last. */
+export function sealedAssistantTextsInTurn(items: Item[]): string[] {
+  const texts: string[] = [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "msg" && it.msg.role === "user") break;
+    if (it.kind !== "msg" || it.msg.role !== "assistant") continue;
+    if (it.msg.streaming || it.msg.workerStream) continue;
+    const t = (it.msg.text || "").trim();
+    if (t) texts.push(t);
+  }
+  return texts.reverse();
+}
+
+/**
+ * Durable hydrate + ring replay guard: when there is no open pilot stream,
+ * skip deltas whose prose is already present in a sealed assistant bubble.
+ */
+export function sealedAssistantCoversDelta(items: Item[], chunk: string): boolean {
+  const piece = (chunk || "").trim();
+  if (!piece) return false;
+  if (findStreamingBubbleIdx(items, { excludeWorkerStream: true }) >= 0) {
+    return false;
+  }
+  for (const text of sealedAssistantTextsInTurn(items)) {
+    if (assistantProseCovers(text, piece)) return true;
+  }
+  return false;
+}
+
+/**
  * Find the open streaming assistant bubble, scanning back past decoration
  * items (reasoning rows, tool cards, codegraph chips) that may land after it
  * while the typewriter is still draining.
@@ -53,6 +107,11 @@ export function appendStreamingTextToItems(
       msg: { ...bubble.msg, text: bubble.msg.text + chunk },
     };
     return updated;
+  }
+  // cursor_gap / ring_miss replay after durable hydrate: never open a second
+  // bubble for prose that already landed in a sealed assistant row.
+  if (sealedAssistantCoversDelta(items, chunk)) {
+    return items;
   }
   return [
     ...items,

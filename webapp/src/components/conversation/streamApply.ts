@@ -254,7 +254,7 @@ export function ensureWorkerStreamingBubble(
 export function finalizePilotMessage(
   items: Item[],
   text: string | undefined,
-  opts?: { isPlan?: boolean },
+  opts?: { isPlan?: boolean; streamed?: boolean },
 ): Item[] {
   // Drop trailing worker-stream preview before finalizing the pilot's own text.
   const p = finalizeStreamingThinking(
@@ -279,6 +279,47 @@ export function finalizePilotMessage(
     return deduplicateConsecutiveAssistantMessages(updatedItems);
   }
   if (!text) return p;
+  const incoming = text.trim();
+  if (!incoming) return p;
+
+  // Idempotent finals: exact identity always no-ops. Streamed finals may only
+  // extend a sealed bubble when nothing (card/tool/thinking/msg) follows it —
+  // never rewrite a pre-tool bubble above a later card (that reorders narration).
+  for (let j = p.length - 1; j >= 0; j--) {
+    const it = p[j];
+    if (it.kind === "msg" && it.msg.role === "user") break;
+    if (it.kind !== "msg" || it.msg.role !== "assistant") continue;
+    if (it.msg.streaming || it.msg.workerStream) continue;
+    const prior = (it.msg.text || "").trim();
+    if (!prior) continue;
+    if (prior === incoming) return p;
+
+    if (!opts?.streamed) continue;
+    if (!(incoming.startsWith(prior) && incoming.length > prior.length)) continue;
+    const hasLaterSurface = p.slice(j + 1).some((later) => (
+      later.kind === "card"
+      || later.kind === "tool_prep"
+      || later.kind === "thinking"
+      || (
+        later.kind === "msg"
+        && later.msg.role === "assistant"
+      )
+    ));
+    // Card (or any later surface) after this bubble → append a new answer.
+    if (hasLaterSurface) continue;
+    const updated = [...p];
+    updated[j] = {
+      kind: "msg",
+      msg: {
+        ...it.msg,
+        text,
+        streaming: false,
+        isPlan: opts?.isPlan ?? it.msg.isPlan,
+      },
+    };
+    return deduplicateConsecutiveAssistantMessages(updated);
+  }
+
   return deduplicateConsecutiveAssistantMessages([
     ...p,
     {

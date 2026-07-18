@@ -2,11 +2,14 @@
  * Pure decisions for the detached-busy runners poll (session switch / Stop).
  */
 
-import { turnHasLiveInvestigation } from "../../lib/turnProgress";
+import { turnHasVisibleBusySurface } from "../../lib/turnProgress";
 import type { Item } from "../TranscriptList";
 import { shouldArmChatEventsFromRunners } from "./chatEvents";
 
 export type BusyStatus = "idle" | "thinking" | "executing" | "done" | "error" | "streaming";
+
+/** Idle polls required before clearing detached busy (resist one false idle). */
+export const RUNNERS_IDLE_CONFIRM_POLLS = 2;
 
 /** Force idle while userStopped sticks through runner unwind. */
 export function userStoppedBusyChrome(status: BusyStatus): BusyStatus {
@@ -30,6 +33,7 @@ export type RunnersBusyTickDecision =
   | { kind: "skip_disk_while_reattach" }
   | { kind: "refresh_busy_transcript" }
   | { kind: "hold_live_investigation" }
+  | { kind: "hold_idle_unconfirmed" }
   | { kind: "finalize_idle_refresh" }
   | { kind: "noop" };
 
@@ -44,6 +48,10 @@ export function runnersBusyTickDecision(opts: {
   detachedBusy: boolean;
   chatEventsPollArmed: boolean;
   items: Item[];
+  /** Consecutive idle polls while detachedBusy (1 = first idle sighting). */
+  consecutiveIdlePolls?: number;
+  /** Idle polls required before finalize (default RUNNERS_IDLE_CONFIRM_POLLS). */
+  idleConfirmPolls?: number;
 }): RunnersBusyTickDecision {
   if (opts.userStopped) return { kind: "force_idle" };
   if (opts.localStreamActive) return { kind: "noop" };
@@ -64,8 +72,17 @@ export function runnersBusyTickDecision(opts: {
   }
 
   if (opts.detachedBusy) {
-    if (turnHasLiveInvestigation(opts.items, true)) {
+    // Runner already idle: only hold while a surface is actually live
+    // (running card / tool_prep / streaming). Completed cards must NOT keep
+    // Stop forever — sticky-between-batches applies while runnerBusy is true.
+    if (turnHasVisibleBusySurface(opts.items)) {
       return { kind: "hold_live_investigation" };
+    }
+    // Resist a single transient false idle poll before clearing Stop.
+    const needed = opts.idleConfirmPolls ?? RUNNERS_IDLE_CONFIRM_POLLS;
+    const idlePolls = opts.consecutiveIdlePolls ?? 0;
+    if (idlePolls < needed) {
+      return { kind: "hold_idle_unconfirmed" };
     }
     return { kind: "finalize_idle_refresh" };
   }

@@ -1425,7 +1425,13 @@ export default function Conversation({
   // thinking/tool events do not split the stream into a second bubble.
   const appendStreamingText = (chunk: string) => {
     if (!chunk) return;
-    setItems((p) => appendStreamingTextToItems(p, chunk, { isPlan: planTurnRef.current }));
+    setItems((p) => {
+      const next = appendStreamingTextToItems(p, chunk, { isPlan: planTurnRef.current });
+      // Keep itemsRef aligned inside the updater so synchronous replay /
+      // flush-then-seal never reads an effect-lagged sealed turn.
+      itemsRef.current = next;
+      return next;
+    });
   };
 
   // Drain the typewriter buffer at a steady cadence. While the stream is live we
