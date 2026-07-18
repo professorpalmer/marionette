@@ -163,7 +163,9 @@ export {
 
 export {
   FEED_PIN_THRESHOLD_PX,
+  FEED_SETTLE_TIMEOUT_MS,
   isPinnedToBottom,
+  pinStateFromScrollGeometry,
   shouldUnpinOnWheel,
   shouldUnpinOnTouchMove,
   settleFrameResult,

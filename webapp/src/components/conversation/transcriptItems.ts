@@ -107,24 +107,43 @@ export function deduplicateConsecutiveAssistantMessages(items: Item[]): Item[] {
   return deduplicateAssistantNarration(items);
 }
 
+function preferCardOver(prev: Extract<Item, { kind: "card" }>["card"], next: Extract<Item, { kind: "card" }>["card"]): boolean {
+  // Poll/SSE interleave: keep the completed / result-bearing row over in-flight.
+  if (prev.running && !next.running) return true;
+  if (!prev.result && !!next.result) return true;
+  return false;
+}
+
 /**
- * Drop consecutive duplicate tool cards / swarm badges (same id).
- * Session-switch SSE races can re-append events already present after a
- * transcript poll replace; without this the Investigated block repeats forever.
+ * Collapse tool cards / swarm badges by stable identity (tool call id / job id),
+ * regardless of arrival order. Session-switch SSE races and poll/SSE interleave
+ * can otherwise leave duplicate Investigated rows forever.
  */
 export function dedupeDisplayItems(items: Item[]): Item[] {
   const out: Item[] = [];
-  const seenCardIds = new Set<string>();
-  const seenSwarmIds = new Set<string>();
+  const cardIndexById = new Map<string, number>();
+  const swarmIndexById = new Map<string, number>();
   for (const item of items) {
     if (item.kind === "card" && item.card?.id) {
       const id = String(item.card.id);
-      if (seenCardIds.has(id)) continue;
-      seenCardIds.add(id);
-    } else if (item.kind === "swarm_result" && item.job_id) {
+      const prevIdx = cardIndexById.get(id);
+      if (prevIdx != null) {
+        const prev = out[prevIdx];
+        if (prev.kind === "card" && preferCardOver(prev.card, item.card)) {
+          out[prevIdx] = item;
+        }
+        continue;
+      }
+      cardIndexById.set(id, out.length);
+      out.push(item);
+      continue;
+    }
+    if (item.kind === "swarm_result" && item.job_id) {
       const id = String(item.job_id);
-      if (seenSwarmIds.has(id)) continue;
-      seenSwarmIds.add(id);
+      if (swarmIndexById.has(id)) continue;
+      swarmIndexById.set(id, out.length);
+      out.push(item);
+      continue;
     }
     out.push(item);
   }
@@ -228,7 +247,9 @@ export function shouldPreferLocalTranscript(local: Item[], remote: Item[]): bool
  * cards. Prefer remote message text when ids match; keep local-only cards.
  */
 export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
-  if (!shouldPreferLocalTranscript(local, remote)) return remote;
+  if (!shouldPreferLocalTranscript(local, remote)) {
+    return dedupeDisplayItems(remote);
+  }
   const remoteByCardId = new Map<string, Extract<Item, { kind: "card" }>>();
   for (const it of remote) {
     if (it.kind === "card" && it.card.id) {
@@ -263,7 +284,8 @@ export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
       merged.push(it);
     }
   }
-  return merged;
+  // Harden against poll/SSE interleave leaving duplicate tool-call ids in local.
+  return dedupeDisplayItems(merged);
 }
 
 /** Cheap content fingerprint so busy-poll refresh can skip identical payloads. */

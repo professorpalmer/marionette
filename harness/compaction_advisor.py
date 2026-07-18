@@ -76,7 +76,11 @@ def advisor_enabled() -> bool:
 
 
 def advisor_compaction_enabled() -> bool:
-    """Behavior-changing early-compaction toggle; default OFF."""
+    """Behavior-changing early-compaction toggle; default OFF.
+
+    When on, ``CompactionContextMixin._maybe_compact_history`` proactively
+    compacts once advice reaches level ``now`` (before the hard 75% trigger).
+    """
     return _env_enabled("HARNESS_ADVISOR_COMPACTION", False)
 
 

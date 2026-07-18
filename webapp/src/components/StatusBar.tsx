@@ -187,11 +187,13 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     window.addEventListener("harness-config-changed", onRefresh);
     window.addEventListener("harness-project-selected", onRefresh);
     window.addEventListener("harness-new-session", onRefresh);
+    window.addEventListener("harness-usage-refresh", onRefresh);
     return () => {
       clearInterval(interval);
       window.removeEventListener("harness-config-changed", onRefresh);
       window.removeEventListener("harness-project-selected", onRefresh);
       window.removeEventListener("harness-new-session", onRefresh);
+      window.removeEventListener("harness-usage-refresh", onRefresh);
     };
   }, []);
 

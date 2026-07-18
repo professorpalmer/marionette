@@ -5,6 +5,8 @@
 export const FEED_PIN_THRESHOLD_PX = 120;
 export const FEED_SETTLE_STABLE_FRAMES = 5;
 export const FEED_SETTLE_MAX_FRAMES = 90;
+/** Hard wall-clock cap so settle glue cannot outlive stream height churn. */
+export const FEED_SETTLE_TIMEOUT_MS = 1000;
 
 export function isPinnedToBottom(
   scrollHeight: number,
@@ -13,6 +15,21 @@ export function isPinnedToBottom(
   thresholdPx: number = FEED_PIN_THRESHOLD_PX,
 ): boolean {
   return scrollHeight - scrollTop - clientHeight < thresholdPx;
+}
+
+/**
+ * Pin state from live scroll geometry. Settling must never force-true — the
+ * [items] effect keeps glue via scrollSettlingRef separately.
+ */
+export function pinStateFromScrollGeometry(
+  scrollHeight: number,
+  scrollTop: number,
+  clientHeight: number,
+  _settling: boolean,
+  thresholdPx: number = FEED_PIN_THRESHOLD_PX,
+): boolean {
+  void _settling;
+  return isPinnedToBottom(scrollHeight, scrollTop, clientHeight, thresholdPx);
 }
 
 /** Upward wheel should unpin (unless settle glue is active). */
@@ -36,11 +53,23 @@ export function settleFrameResult(opts: {
   lastHeight: number;
   stableFrames: number;
   frame: number;
+  /** Wall-clock start of the settle loop (performance.now() or Date). */
+  startedAtMs?: number;
+  /** Current time paired with startedAtMs. */
+  nowMs?: number;
+  timeoutMs?: number;
 }): { stableFrames: number; frame: number; done: boolean } {
   const stableFrames =
     opts.height === opts.lastHeight ? opts.stableFrames + 1 : 0;
   const frame = opts.frame + 1;
+  const timeoutMs = opts.timeoutMs ?? FEED_SETTLE_TIMEOUT_MS;
+  const timedOut =
+    opts.startedAtMs != null &&
+    opts.nowMs != null &&
+    opts.nowMs - opts.startedAtMs >= timeoutMs;
   const done =
-    stableFrames >= FEED_SETTLE_STABLE_FRAMES || frame > FEED_SETTLE_MAX_FRAMES;
+    timedOut ||
+    stableFrames >= FEED_SETTLE_STABLE_FRAMES ||
+    frame > FEED_SETTLE_MAX_FRAMES;
   return { stableFrames, frame, done };
 }

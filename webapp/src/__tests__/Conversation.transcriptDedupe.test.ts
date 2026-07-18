@@ -56,6 +56,87 @@ describe("dedupeDisplayItems", () => {
     ];
     expect(dedupeDisplayItems(items)).toHaveLength(1);
   });
+
+  it("collapses interleaved poll/SSE duplicate tool rows by tool call id", () => {
+    // Abnormal re-render churn: SSE running card, poll completed card, then
+    // another SSE echo of the same id — must be one row, preferring completed.
+    const items: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "card",
+        card: {
+          id: "tool-42",
+          goal: "pytest",
+          cwd: null,
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+      msg("assistant", "running tests"),
+      {
+        kind: "card",
+        card: {
+          id: "tool-42",
+          goal: "pytest",
+          cwd: null,
+          kind: "run_command",
+          running: false,
+          open: false,
+          result: { adapter: "local", duration_ms: 40 },
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "tool-42",
+          goal: "pytest",
+          cwd: null,
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+    const out = dedupeDisplayItems(items);
+    const cards = out.filter((i) => i.kind === "card") as Extract<Item, { kind: "card" }>[];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].card.id).toBe("tool-42");
+    expect(cards[0].card.running).toBe(false);
+    expect(cards[0].card.result?.duration_ms).toBe(40);
+  });
+
+  it("mergeTranscriptItems dedupes local duplicate tool ids from poll/SSE churn", () => {
+    const local: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "card",
+        card: {
+          id: "run-9",
+          goal: "ls",
+          cwd: null,
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "run-9",
+          goal: "ls",
+          cwd: null,
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+    const remote: Item[] = [msg("user", "go")];
+    expect(shouldPreferLocalTranscript(local, remote)).toBe(true);
+    const merged = mergeTranscriptItems(local, remote);
+    expect(merged.filter((i) => i.kind === "card")).toHaveLength(1);
+  });
 });
 
 describe("transcriptFingerprint", () => {

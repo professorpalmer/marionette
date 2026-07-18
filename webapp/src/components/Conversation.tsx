@@ -46,9 +46,9 @@ import {
   formatSteerErrorMessage,
   shouldBlockEmptySend,
 } from "./conversation/composerSend";
-import {
+  import {
   FEED_PIN_THRESHOLD_PX,
-  isPinnedToBottom,
+  pinStateFromScrollGeometry,
   settleFrameResult,
   shouldUnpinOnTouchMove,
   shouldUnpinOnWheel,
@@ -712,25 +712,23 @@ export default function Conversation({
   // the bottom (which re-pins). A programmatic scroll-to-bottom lands at the
   // bottom, so it never un-pins itself, and there is no fight with the stream.
   const pinnedToBottomRef = useRef(true);
-  // Hermes session-switch settle: while true, force-glue to bottom and ignore
-  // unpin until layout height stabilizes (avoids ~10 scroll jumps on hydrate).
+  // Hermes session-switch settle: while true, the [items] effect keeps scrolling
+  // to bottom until height stabilizes (or wall-clock timeout). onScroll still
+  // tracks real geometry so keyboard/scrollbar unpin is not swallowed.
   const scrollSettlingRef = useRef(false);
   useEffect(() => {
     const el = feedRef.current;
     if (!el) return;
     const onScroll = () => {
-      if (scrollSettlingRef.current) {
-        pinnedToBottomRef.current = true;
-        return;
-      }
-      pinnedToBottomRef.current = isPinnedToBottom(
+      pinnedToBottomRef.current = pinStateFromScrollGeometry(
         el.scrollHeight,
         el.scrollTop,
         el.clientHeight,
+        scrollSettlingRef.current,
         FEED_PIN_THRESHOLD_PX,
       );
     };
-    // Unpin on the first upward wheel/touch before the next thinking token
+    // Fast-path unpin on upward wheel/touch before the next thinking token
     // re-runs stick-to-bottom -- otherwise long reasoning streams keep yanking
     // the feed back to the end and the user cannot scroll the Thought block.
     const onWheel = (e: WheelEvent) => {
@@ -769,7 +767,7 @@ export default function Conversation({
   }, [items]);
 
   // On session switch: stop follow thrash, glue to true bottom until height is
-  // stable for ~5 frames, then re-lock stick-to-bottom (Hermes list.tsx settle).
+  // stable for ~5 frames (or ~1s wall-clock), then re-lock stick-to-bottom.
   useLayoutEffect(() => {
     const el = feedRef.current;
     if (!el || !activeSessionId) return;
@@ -780,6 +778,7 @@ export default function Conversation({
     let stableFrames = 0;
     let lastHeight = el.scrollHeight;
     let rafId = 0;
+    const startedAtMs = performance.now();
     const settle = () => {
       const node = feedRef.current;
       if (!node) {
@@ -792,6 +791,8 @@ export default function Conversation({
         lastHeight,
         stableFrames,
         frame,
+        startedAtMs,
+        nowMs: performance.now(),
       });
       stableFrames = step.stableFrames;
       frame = step.frame;

@@ -6,6 +6,9 @@
 // tokens_used, tokens_cached) and degrades gracefully -- any field that is
 // absent or zero simply renders nothing rather than "$0.000000" noise or NaN.
 
+import { useState } from "react";
+import { api } from "../lib/api";
+
 export type CostBreakdownData = {
   tokens_used: number;
   est_cost_usd: number;
@@ -37,6 +40,26 @@ export type CostBreakdownData = {
   price_out?: number;
 };
 
+/** Calm user-facing copy for compaction advice. Machine reasons stay in title. */
+export function compactionAdvicePresentation(
+  level: string | undefined,
+): { label: string; message: string; showCompactAction: boolean } {
+  if (level === "soon") {
+    return {
+      label: "Long session",
+      message:
+        "This conversation is getting long. Older history can be tidied to keep responses fast and costs down.",
+      showCompactAction: true,
+    };
+  }
+  return {
+    label: "Needs attention",
+    message:
+      "This conversation is very long. Compact it now or start a fresh session for best results.",
+    showCompactAction: true,
+  };
+}
+
 // Local formatter so this subcomponent stays self-contained. Mirrors the
 // StatusBar cost formatting (coarser as the number grows) but never emits a
 // bare "$0.00" for a value that is meaningfully zero -- callers gate on that.
@@ -62,6 +85,7 @@ function fmtBytes(num: number): string {
 }
 
 export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
+  const [compactState, setCompactState] = useState<"idle" | "working" | "done" | "error">("idle");
   const est = isFinite(data.est_cost_usd) ? data.est_cost_usd : 0;
   const billed = data.cost_source === "provider";
   const spendLabel = billed
@@ -140,12 +164,24 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
             : "") ||
           (data.history_compaction_ran ? "history compaction ran under context pressure" : ""))
       : "";
-  const interventionLabel = needsIntervention ? "Needs attention" : "Compaction advice";
+  const adviceCopy = compactionAdvicePresentation(compactionAdviceLevel);
 
   const layerLabel = (id: string) => {
     const layer = data.memory_layers?.[id];
     const bytes = typeof layer?.bytes === "number" && isFinite(layer.bytes) ? layer.bytes : 0;
     return `${id} ${fmtBytes(bytes)}`;
+  };
+
+  const onCompactNow = () => {
+    if (compactState === "working") return;
+    setCompactState("working");
+    api
+      .compactSession()
+      .then(() => {
+        setCompactState("done");
+        window.dispatchEvent(new Event("harness-usage-refresh"));
+      })
+      .catch(() => setCompactState("error"));
   };
 
   return (
@@ -228,15 +264,30 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
 
       {showCompactionAdvice ? (
         <div
-          className="flex items-center justify-between mb-1 rounded px-1.5 py-1 -mx-0.5 bg-amber-500/10 border border-amber-500/25 text-amber-200/90"
+          className="mb-1 rounded px-1.5 py-1.5 -mx-0.5 bg-amber-500/10 border border-amber-500/25 text-amber-200/90"
           role="status"
           title={compactionAdviceReason || "Context pressure needs attention"}
         >
-          <span className="font-medium">{interventionLabel}</span>
-          <span className="tabular-nums text-right max-w-[55%]">
-            {compactionAdviceLevel || "warn"}
-            {compactionAdviceReason ? ` — ${compactionAdviceReason}` : ""}
-          </span>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <span className="font-medium">{adviceCopy.label}</span>
+            {adviceCopy.showCompactAction ? (
+              <button
+                type="button"
+                onClick={onCompactNow}
+                disabled={compactState === "working"}
+                className="shrink-0 rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
+              >
+                {compactState === "working"
+                  ? "Compacting..."
+                  : compactState === "done"
+                    ? "Compacted"
+                    : compactState === "error"
+                      ? "Retry compact"
+                      : "Compact now"}
+              </button>
+            ) : null}
+          </div>
+          <p className="leading-snug text-amber-100/80 m-0">{adviceCopy.message}</p>
         </div>
       ) : null}
 

@@ -129,7 +129,9 @@ import {
 } from "../components/conversation/contextUsageColors";
 import {
   FEED_SETTLE_STABLE_FRAMES,
+  FEED_SETTLE_TIMEOUT_MS,
   isPinnedToBottom,
+  pinStateFromScrollGeometry,
   settleFrameResult,
   shouldUnpinOnTouchMove,
   shouldUnpinOnWheel,
@@ -880,6 +882,50 @@ describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
     expect(shouldUnpinOnTouchMove(10, 20, false)).toBe(true);
     expect(
       settleFrameResult({ height: 10, lastHeight: 10, stableFrames: FEED_SETTLE_STABLE_FRAMES - 1, frame: 1 }).done,
+    ).toBe(true);
+    // Settle loop must bail on wall-clock even while height keeps growing (stream).
+    expect(
+      settleFrameResult({
+        height: 200,
+        lastHeight: 100,
+        stableFrames: 0,
+        frame: 3,
+        startedAtMs: 0,
+        nowMs: FEED_SETTLE_TIMEOUT_MS - 1,
+      }).done,
+    ).toBe(false);
+    {
+      let height = 100;
+      let lastHeight = 0;
+      let stableFrames = 0;
+      let frame = 0;
+      let done = false;
+      const startedAtMs = 0;
+      for (let t = 0; !done && t < 5000; t += 16) {
+        height += 10;
+        const step = settleFrameResult({
+          height,
+          lastHeight,
+          stableFrames,
+          frame,
+          startedAtMs,
+          nowMs: t,
+        });
+        lastHeight = height;
+        stableFrames = step.stableFrames;
+        frame = step.frame;
+        done = step.done;
+      }
+      expect(done).toBe(true);
+      // Timed out near the wall-clock cap, not via the 90-frame fallback.
+      expect(frame).toBeLessThanOrEqual(Math.ceil(FEED_SETTLE_TIMEOUT_MS / 16) + 2);
+    }
+    // onScroll during settling recomputes pin from geometry (scrolled-up unpins).
+    expect(
+      pinStateFromScrollGeometry(2000, 0, 400, true),
+    ).toBe(false);
+    expect(
+      pinStateFromScrollGeometry(2000, 1600, 400, true),
     ).toBe(true);
     expect(streamOnDoneDecision({ turnSettled: false, userStopped: false }).kind).toBe("abort_error");
     expect(streamOnErrorDecision({ turnSettled: true, userStopped: false }).kind).toBe(

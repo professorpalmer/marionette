@@ -206,6 +206,7 @@ def test_advisor_compaction_env_off_leaves_default_trigger(monkeypatch, tmp_path
 
 
 def test_advisor_compaction_fires_between_65_and_75_percent(monkeypatch, tmp_path):
+    """Opt-in advisor at level now compacts even below the hard 75% trigger."""
     session = _session_in_advisor_trigger_window(tmp_path)
     tokens = session._estimate_context_tokens()
     assert 650 <= tokens < 750
@@ -215,6 +216,33 @@ def test_advisor_compaction_fires_between_65_and_75_percent(monkeypatch, tmp_pat
     events = list(session._maybe_compact_history())
     assert len(events) >= 1
     assert events[0].kind == "compacting"
+
+
+def test_advisor_compaction_proactive_at_now_below_soft_trigger(monkeypatch, tmp_path):
+    """With HARNESS_ADVISOR_COMPACTION on, level now forces compaction promptly."""
+    cfg = HarnessConfig(max_context_tokens=1000, state_dir=str(tmp_path))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "advisor-trigger"
+    session._history[0]["content"] = "system prompt"
+    session.pilot = _MockPilot()  # type: ignore[assignment]
+    for i in range(8):
+        session._history.append({"role": "user", "content": f"user turn {i}"})
+        session._history.append({"role": "assistant", "content": f"assistant turn {i}"})
+    tokens = session._estimate_context_tokens()
+    assert tokens < 650
+    _journal_now_snapshot(tmp_path)
+
+    monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", "1")
+    events = list(session._maybe_compact_history())
+    assert len(events) >= 1
+    assert events[0].kind == "compacting"
+
+    monkeypatch.delenv("HARNESS_ADVISOR_COMPACTION", raising=False)
+    session2 = ConversationalSession(cfg)
+    session2.harness_session_id = "advisor-trigger"
+    session2._history = list(session._history)
+    session2.pilot = _MockPilot()  # type: ignore[assignment]
+    assert list(session2._maybe_compact_history()) == []
 
 
 def test_advisor_compaction_error_keeps_default_trigger(monkeypatch, tmp_path):

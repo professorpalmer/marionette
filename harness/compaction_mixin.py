@@ -22,10 +22,6 @@ import time
 from typing import Iterator
 
 
-# Soften the 75% hard trigger when the compaction advisor says "now".
-_ADVISED_TRIGGER_RATIO = 0.65
-
-
 class CompactionContextMixin:
     """Mixin holding compaction, token-estimate, and stale-read elision helpers.
 
@@ -183,6 +179,10 @@ class CompactionContextMixin:
 
         budget = getattr(self.config, "max_context_tokens", 96000)
         trigger = int(budget * 0.75)
+        # Opt-in (HARNESS_ADVISOR_COMPACTION): when the layer-pressure advisor
+        # says level "now", compact proactively before the next turn instead of
+        # waiting for the estimated token count to cross the hard 75% trigger.
+        advised_now = False
 
         if not force:
             try:
@@ -199,12 +199,12 @@ class CompactionContextMixin:
                             budget, snapshot=snapshot
                         )
                         if advice.get("level") == "now":
-                            trigger = int(budget * _ADVISED_TRIGGER_RATIO)
+                            advised_now = True
             except Exception:
                 pass
 
         before_tokens = self._estimate_context_tokens()
-        if not force and before_tokens < trigger:
+        if not force and not advised_now and before_tokens < trigger:
             return
 
         yield ConvEvent("compacting", {"message": "Summarizing chat context"})
