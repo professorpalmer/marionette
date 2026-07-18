@@ -46,8 +46,7 @@ def test_git_toplevel_cache_evicts_when_over_cap(tmp_path, monkeypatch):
         assert len(paths._git_toplevel_cache) <= 2
 
 
-def test_git_toplevel_cache_expires_ttl(tmp_path, monkeypatch):
-    monkeypatch.setattr(paths, "_GIT_TOPLEVEL_CACHE_TTL_S", 0.05)
+def test_git_toplevel_cache_expires_ttl(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     _git_init(str(root))
@@ -58,7 +57,12 @@ def test_git_toplevel_cache_expires_ttl(tmp_path, monkeypatch):
     with mock.patch.object(paths.subprocess, "run", wraps=paths.subprocess.run) as wrapped:
         assert paths.git_toplevel(str(root)) is not None
         assert wrapped.call_count == 0
-        time.sleep(0.06)
+        # Deterministically expire every entry (no wall-clock sleeps: CI timing
+        # around a tiny TTL flaked). Expiry must force a fresh subprocess probe.
+        with paths._git_toplevel_lock:
+            expired = time.monotonic() - 1.0
+            for key, (value, _exp) in list(paths._git_toplevel_cache.items()):
+                paths._git_toplevel_cache[key] = (value, expired)
         assert paths.git_toplevel(str(root)) is not None
         assert wrapped.call_count >= 1
 
