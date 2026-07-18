@@ -28,8 +28,9 @@ def test_debounced_save_coalesces_mutations(tmp_path, monkeypatch):
     real_replace = sessions.os.replace
 
     def counting_replace(src, dst, *args, **kwargs):
+        result = real_replace(src, dst, *args, **kwargs)
         replaces["n"] += 1
-        return real_replace(src, dst, *args, **kwargs)
+        return result
 
     monkeypatch.setattr(sessions.os, "replace", counting_replace)
 
@@ -64,8 +65,9 @@ def test_delete_flushes_immediately_outside_pytest(tmp_path, monkeypatch):
     real_replace = sessions.os.replace
 
     def counting_replace(src, dst, *args, **kwargs):
+        result = real_replace(src, dst, *args, **kwargs)
         replaces["n"] += 1
-        return real_replace(src, dst, *args, **kwargs)
+        return result
 
     monkeypatch.setattr(sessions.os, "replace", counting_replace)
     store.delete(row["id"])
