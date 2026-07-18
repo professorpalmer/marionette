@@ -10,6 +10,7 @@ pilot to split via ``run_parallel``.
 
 import os
 import re
+import tempfile
 from typing import Optional
 
 # Default ceiling: one worker may own this many lines of a single-file rewrite
@@ -246,10 +247,11 @@ def check_implement_workspace(repo: str, *, goal: str = "") -> Optional[str]:
         return None
     repo = (repo or "").strip()
     if not repo:
+        tmp_dir = tempfile.gettempdir()
         return (
             "REFUSED: no workspace directory is open. Open a Project (a git "
             "checkout) in Marionette, or pass repo=<absolute path to a git "
-            "repo>. For ad-hoc filesystem tasks (clone/compare under /tmp), "
+            f"repo>. For ad-hoc filesystem tasks (clone/compare under {tmp_dir}), "
             "use run_command instead of run_implement."
         )
     if not os.path.isdir(repo):

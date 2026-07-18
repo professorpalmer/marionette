@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 
+import harness.sessions as sessions
 from harness.sessions import (
     SessionStore,
     attach_session_previews,
@@ -80,3 +81,51 @@ def test_attach_session_previews_empty_ok(tmp_path):
     rows = [{"id": "missing000001", "title": "x"}]
     attach_session_previews(rows, str(tmp_path))
     assert rows[0]["preview"] == ""
+
+
+def test_list_preview_cache_skips_reread(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    row = store.create(title="T", repo=str(tmp_path / "repo"))
+    sid = row["id"]
+    save_transcript(
+        str(tmp_path),
+        sid,
+        {
+            "history": [{"role": "user", "content": "cached preview line"}],
+            "display": [],
+            "job_ids": [],
+        },
+    )
+    with sessions._preview_cache_lock:
+        sessions._preview_cache.clear()
+
+    opens = {"n": 0}
+    real_open = open
+
+    def counting_open(file, *args, **kwargs):
+        path = file if isinstance(file, str) else str(file)
+        if "transcripts" in path.replace("\\", "/") and path.endswith(".json"):
+            opens["n"] += 1
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counting_open)
+    listed = store.list(state_dir=str(tmp_path))
+    assert next(r for r in listed if r["id"] == sid).get("preview") == "cached preview line"
+    after_first = opens["n"]
+    assert after_first >= 1
+    listed2 = store.list(state_dir=str(tmp_path))
+    assert next(r for r in listed2 if r["id"] == sid).get("preview") == "cached preview line"
+    assert opens["n"] == after_first
+
+    save_transcript(
+        str(tmp_path),
+        sid,
+        {
+            "history": [{"role": "user", "content": "after rewrite"}],
+            "display": [],
+            "job_ids": [],
+        },
+    )
+    listed3 = store.list(state_dir=str(tmp_path))
+    assert next(r for r in listed3 if r["id"] == sid).get("preview") == "after rewrite"
+    assert opens["n"] > after_first

@@ -12,6 +12,7 @@ Workspace scoping (``session_visible_for_workspace``):
   that carries a ``cwd``; if none, show in every workspace (never hide silently).
 """
 
+import atexit
 import json
 import os
 import re
@@ -19,6 +20,7 @@ import tempfile
 import threading
 import time
 import uuid
+import weakref
 from dataclasses import dataclass, asdict
 from typing import Optional, Any, List
 
@@ -31,6 +33,43 @@ _USER_CONTENT_RE = re.compile(
     r'"role"\s*:\s*"user"\s*,\s*"content"\s*:\s*"((?:\\.|[^"\\])*)"',
     re.DOTALL,
 )
+
+# Coalesce rapid SessionStore mutations into one atomic rewrite. Under pytest
+# (_save checks PYTEST_CURRENT_TEST) writes stay synchronous so tests see
+# durable state immediately.
+_SAVE_DEBOUNCE_S = 0.15
+
+# Preview snippets keyed by (transcript_path, max_chars) -> (mtime, text).
+# Invalidated when mtime changes (save_transcript / external rewrite).
+_preview_cache_lock = threading.Lock()
+_preview_cache: dict[tuple[str, int], tuple[float, str]] = {}
+
+# Live stores flushed on process exit (weak so tests do not pin instances).
+_live_session_stores: weakref.WeakSet = weakref.WeakSet()
+_atexit_flush_registered = False
+
+
+def _register_session_store(store: "SessionStore") -> None:
+    global _atexit_flush_registered
+    _live_session_stores.add(store)
+    if not _atexit_flush_registered:
+        atexit.register(_flush_all_session_stores)
+        _atexit_flush_registered = True
+
+
+def _flush_all_session_stores() -> None:
+    for store in list(_live_session_stores):
+        try:
+            store.flush()
+        except Exception:
+            pass
+
+
+def _invalidate_preview_cache(path: str) -> None:
+    with _preview_cache_lock:
+        doomed = [key for key in _preview_cache if key[0] == path]
+        for key in doomed:
+            del _preview_cache[key]
 
 
 @dataclass
@@ -55,7 +94,10 @@ class SessionStore:
         self._sessions: list[dict] = []
         self._active: Optional[str] = None
         self._lock = threading.RLock()
+        self._dirty = False
+        self._save_timer: Optional[threading.Timer] = None
         self._load()
+        _register_session_store(self)
 
     def _load(self) -> None:
         if os.path.exists(self.path):
@@ -81,28 +123,70 @@ class SessionStore:
         if len(kept) != len(self._sessions):
             self._sessions = kept
             try:
-                self._save()
+                self._save(immediate=True)
             except Exception:
                 pass
 
-    def _save(self) -> None:
+    def _cancel_save_timer_unlocked(self) -> None:
+        timer = self._save_timer
+        self._save_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_save_unlocked(self) -> None:
+        if self._save_timer is not None:
+            return
+        timer = threading.Timer(_SAVE_DEBOUNCE_S, self._debounced_flush)
+        timer.daemon = True
+        self._save_timer = timer
+        timer.start()
+
+    def _debounced_flush(self) -> None:
         with self._lock:
-            # Atomic write (temp + os.replace) so a crash or concurrent reader never
-            # sees a truncated session file -- matches memory_store/rule_store/keys.
-            target_dir = os.path.dirname(self.path) or "."
-            os.makedirs(target_dir, exist_ok=True)
-            payload = {"sessions": self._sessions, "active": self._active}
-            tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".sessions_")
+            self._save_timer = None
+            self._flush_unlocked()
+
+    def _flush_unlocked(self) -> None:
+        """Atomic rewrite when dirty. Caller must hold ``_lock``."""
+        if not self._dirty:
+            return
+        # Atomic write (temp + os.replace) so a crash or concurrent reader never
+        # sees a truncated session file -- matches memory_store/rule_store/keys.
+        target_dir = os.path.dirname(self.path) or "."
+        os.makedirs(target_dir, exist_ok=True)
+        payload = {"sessions": self._sessions, "active": self._active}
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".sessions_")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, self.path)
+            self._dirty = False
+        except Exception:
             try:
-                with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as f:
-                    json.dump(payload, f)
-                os.replace(tmp_path, self.path)
-            except Exception:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def flush(self) -> None:
+        """Force any pending debounced write to disk (process-exit / durability)."""
+        with self._lock:
+            self._cancel_save_timer_unlocked()
+            self._flush_unlocked()
+
+    def _save(self, *, immediate: bool = False) -> None:
+        """Mark the store dirty and schedule a coalesced atomic rewrite.
+
+        Under ``PYTEST_CURRENT_TEST`` (or when ``immediate=True``) flush now so
+        delete/promote and the test suite see durable state without waiting.
+        """
+        with self._lock:
+            self._dirty = True
+            if immediate or "PYTEST_CURRENT_TEST" in os.environ:
+                self._cancel_save_timer_unlocked()
+                self._flush_unlocked()
+                return
+            self._schedule_save_unlocked()
 
     def list(
         self,
@@ -196,6 +280,9 @@ class SessionStore:
 
     def delete(self, sid: str) -> Optional[str]:
         with self._lock:
+            # Durability: flush any coalesced mutations before promote/read.
+            self._cancel_save_timer_unlocked()
+            self._flush_unlocked()
             deleted_root = ""
             for s in self._sessions:
                 if s["id"] == sid:
@@ -204,7 +291,7 @@ class SessionStore:
             self._sessions = [s for s in self._sessions if s["id"] != sid]
             if self._active == sid:
                 self._active = self._pick_next_active(deleted_root)
-            self._save()
+            self._save(immediate=True)
             return self._active
 
     def rows(self) -> list[dict]:
@@ -220,6 +307,8 @@ class SessionStore:
         Callers own transcript-file cleanup for the returned ids.
         """
         with self._lock:
+            self._cancel_save_timer_unlocked()
+            self._flush_unlocked()
             doomed = {sid for sid in sids if sid}
             removed = [s["id"] for s in self._sessions if s["id"] in doomed]
             if not removed:
@@ -233,7 +322,7 @@ class SessionStore:
             self._sessions = [s for s in self._sessions if s["id"] not in doomed]
             if self._active in doomed:
                 self._active = self._pick_next_active(active_root)
-            self._save()
+            self._save(immediate=True)
             return removed
 
     def activate_newest_for_root(self, workspace_root: str) -> Optional[str]:
@@ -245,10 +334,14 @@ class SessionStore:
         or nothing, never a session from a third workspace.
         """
         with self._lock:
+            # Durability: promote reads the in-memory set after flushing pending
+            # coalesced writes so boot never races a debounced rewrite.
+            self._cancel_save_timer_unlocked()
+            self._flush_unlocked()
             candidate = self._pick_next_active(workspace_root)
             if candidate != self._active:
                 self._active = candidate
-                self._save()
+                self._save(immediate=True)
             return candidate
 
     def _pick_next_active(self, preferred_root: str) -> Optional[str]:
@@ -281,7 +374,7 @@ class SessionStore:
                 # Everything visible in this workspace is gone; do not promote
                 # a session from another workspace (see _pick_next_active).
                 self._active = self._pick_next_active(workspace_root)
-            self._save()
+            self._save(immediate=True)
             return deleted, self._active
 
     def archive(self, sid: str, archived: bool = True) -> None:
@@ -534,6 +627,7 @@ def save_transcript(state_dir: str, session_id: str, messages: Any) -> None:
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             json.dump(messages, f, indent=2)
         os.replace(tmp, p)
+        _invalidate_preview_cache(p)
     except Exception:
         pass
     # Best-effort FTS index update — never raise on the hot persist path.
@@ -605,6 +699,8 @@ def transcript_preview(
 
     Small transcripts are JSON-parsed; large files use a prefix regex so the
     sidebar never hydrates a multi-MB history just to show a one-line preview.
+    Cached per path/mtime so ``list()`` does not re-read every transcript on
+    every call; ``save_transcript`` (or mtime change) invalidates the entry.
     """
     if not state_dir or not session_id:
         return ""
@@ -616,23 +712,34 @@ def transcript_preview(
         return ""
     try:
         size = os.path.getsize(path)
+        mtime = os.path.getmtime(path)
     except OSError:
         return ""
     cap = max(1, int(max_chars or 120))
+    cache_key = (path, cap)
+    with _preview_cache_lock:
+        hit = _preview_cache.get(cache_key)
+        if hit is not None and hit[0] == mtime:
+            return hit[1]
     try:
         if size <= _PREVIEW_READ_BYTES:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return _preview_from_messages(data, cap)
-        with open(path, "r", encoding="utf-8") as f:
-            head = f.read(_PREVIEW_READ_BYTES)
-        match = _USER_CONTENT_RE.search(head)
-        if not match:
-            return ""
-        text = " ".join(_unescape_json_string(match.group(1)).split())
-        return text[:cap]
+            text = _preview_from_messages(data, cap)
+        else:
+            with open(path, "r", encoding="utf-8") as f:
+                head = f.read(_PREVIEW_READ_BYTES)
+            match = _USER_CONTENT_RE.search(head)
+            if not match:
+                text = ""
+            else:
+                text = " ".join(_unescape_json_string(match.group(1)).split())
+                text = text[:cap]
     except Exception:
         return ""
+    with _preview_cache_lock:
+        _preview_cache[cache_key] = (mtime, text)
+    return text
 
 
 def attach_session_previews(

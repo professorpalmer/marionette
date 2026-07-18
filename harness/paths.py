@@ -19,12 +19,19 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
+from collections import OrderedDict
 from typing import Optional
 
 # Cache git toplevel lookups by resolved workspace path. Nested workspaces under
 # the same clone hit this on every read_file; subprocess cost is not worth repeating.
+# Bounded + TTL so a long-lived backend that touches many workspaces cannot leak
+# memory or serve a stale toplevel after a repo is moved.
+_GIT_TOPLEVEL_CACHE_CAP = 256
+_GIT_TOPLEVEL_CACHE_TTL_S = 300.0
 _git_toplevel_lock = threading.Lock()
-_git_toplevel_cache: dict[str, Optional[str]] = {}
+# key -> (toplevel_or_None, expires_at_monotonic); OrderedDict for LRU eviction.
+_git_toplevel_cache: OrderedDict[str, tuple[Optional[str], float]] = OrderedDict()
 
 
 def _resolve(path: str) -> str:
@@ -34,6 +41,9 @@ def _resolve(path: str) -> str:
     path does not exist (ntpath iterates parent directories via the Win32 API).
     On POSIX we keep realpath for symlink-resilient confinement; on Windows we
     fall back to ``abspath + normpath`` which is safe and fast.
+
+    All path normalization inside this module must go through ``_resolve`` — never
+    call bare ``os.path.realpath`` on caller-supplied paths (they may not exist).
     """
     if os.name == "nt":
         normalized = os.path.normpath(os.path.abspath(path))
@@ -62,6 +72,30 @@ def _resolve(path: str) -> str:
     except Exception:
         return os.path.normpath(os.path.abspath(path))
 
+
+def _git_toplevel_cache_get(key: str) -> tuple[bool, Optional[str]]:
+    """Return ``(hit, value)`` under the module lock; expired entries are dropped."""
+    now = time.monotonic()
+    with _git_toplevel_lock:
+        hit = _git_toplevel_cache.get(key)
+        if hit is None:
+            return False, None
+        value, expires_at = hit
+        if now >= expires_at:
+            del _git_toplevel_cache[key]
+            return False, None
+        _git_toplevel_cache.move_to_end(key)
+        return True, value
+
+
+def _git_toplevel_cache_put(key: str, toplevel: Optional[str]) -> None:
+    """Store a lookup result with TTL; evict oldest entries past the cap."""
+    expires_at = time.monotonic() + _GIT_TOPLEVEL_CACHE_TTL_S
+    with _git_toplevel_lock:
+        _git_toplevel_cache[key] = (toplevel, expires_at)
+        _git_toplevel_cache.move_to_end(key)
+        while len(_git_toplevel_cache) > _GIT_TOPLEVEL_CACHE_CAP:
+            _git_toplevel_cache.popitem(last=False)
 
 def path_within(path: str, parent: str, *, allow_equal: bool) -> bool:
     """Return True if ``path`` resolves inside ``parent`` (symlinks resolved).
@@ -148,9 +182,9 @@ def git_toplevel(repo: str) -> Optional[str]:
         key = _resolve(repo)
     except Exception:
         key = os.path.normpath(os.path.abspath(repo))
-    with _git_toplevel_lock:
-        if key in _git_toplevel_cache:
-            return _git_toplevel_cache[key]
+    hit, cached = _git_toplevel_cache_get(key)
+    if hit:
+        return cached
     toplevel: Optional[str] = None
     try:
         proc = subprocess.run(
@@ -167,8 +201,7 @@ def git_toplevel(repo: str) -> Optional[str]:
                 toplevel = _resolve(out)
     except Exception:
         toplevel = None
-    with _git_toplevel_lock:
-        _git_toplevel_cache[key] = toplevel
+    _git_toplevel_cache_put(key, toplevel)
     return toplevel
 
 
