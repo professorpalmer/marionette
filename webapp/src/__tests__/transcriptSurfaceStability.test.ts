@@ -273,7 +273,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
           kind: "read_file",
           running: false,
           open: false,
-          result: "ok",
+          result: { status: "ok" },
         },
       },
     ];
@@ -302,7 +302,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
           kind: "read_file",
           running: false,
           open: false,
-          result: { ok: true },
+          result: { status: "ok" },
         },
       },
     ];
@@ -367,7 +367,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
           kind: "read_file",
           running: false,
           open: false,
-          result: { ok: true },
+          result: { status: "ok" },
         },
       },
     ];
@@ -397,7 +397,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
           kind: "read_file",
           running: false,
           open: false,
-          result: "ok",
+          result: { status: "ok" },
         },
       },
     ];
@@ -439,7 +439,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
           kind: "read_file",
           running: false,
           open: false,
-          result: "ok",
+          result: { status: "ok" },
         },
       },
     ];
@@ -519,7 +519,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
           kind: "read_file",
           running: false,
           open: false,
-          result: "ok",
+          result: { status: "ok" },
         },
       },
     ];
@@ -608,7 +608,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
           kind: "read_file",
           running: false,
           open: false,
-          result: "ok",
+          result: { status: "ok" },
         },
       },
     ];

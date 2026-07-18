@@ -246,7 +246,7 @@ describe("detached-busy mid-tool-batch reattach", () => {
           kind: "read_file",
           running: false,
           open: false,
-          result: "ok",
+          result: { status: "ok" },
         },
       },
       {
@@ -272,7 +272,7 @@ describe("detached-busy mid-tool-batch reattach", () => {
           kind: "read_file",
           running: false,
           open: false,
-          result: "ok from disk",
+          result: { message: "ok from disk" },
         },
       },
     ];
@@ -281,7 +281,7 @@ describe("detached-busy mid-tool-batch reattach", () => {
       (i): i is Extract<Item, { kind: "card" }> => i.kind === "card",
     );
     expect(cards.map((c) => c.card.id)).toEqual(["a1", "a2"]);
-    expect(cards[0].card.result).toBe("ok from disk");
+    expect(cards[0].card.result).toEqual({ message: "ok from disk" });
     expect(cards[1].card.running).toBe(true);
     // Ring replay of the same action_start must stay idempotent.
     const again = appendActionStartCard(merged, {
