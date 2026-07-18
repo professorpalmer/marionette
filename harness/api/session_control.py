@@ -90,20 +90,77 @@ def post_session_persist(svc: SessionControlServices) -> tuple[int, JsonPayload]
     return 500, {"ok": False, "error": err}
 
 
+def _event_kind(event: Any) -> str:
+    """Kind of a compaction-stream event (ConvEvent or plain dict)."""
+    kind = getattr(event, "kind", None)
+    if kind is None and isinstance(event, dict):
+        kind = event.get("kind")
+    return str(kind or "")
+
+
+def _record_post_compaction_snapshot(pilot: Any, svc: SessionControlServices) -> None:
+    """Best-effort: journal a fresh L0-L3 layer snapshot after manual compaction.
+
+    /api/usage builds its compaction advice from the LATEST recorded layer
+    snapshot; without this refresh it keeps serving the pre-compaction L0, so
+    the "Compact now" advisor stays visible (and survives reopen) even though
+    the history really shrank.
+    """
+    try:
+        from ..memory_layers import (
+            record_memory_layer_snapshot,
+            snapshot_memory_layers,
+        )
+
+        state_dir = getattr(pilot, "state_dir", "") or svc.cfg.state_dir or ""
+        if not state_dir:
+            return
+        session_id = getattr(pilot, "harness_session_id", "") or "default"
+        history = getattr(pilot, "_history", None) or []
+        user_turns = sum(
+            1 for m in history if isinstance(m, dict) and m.get("role") == "user"
+        )
+        turn = max(1, user_turns)
+        record_memory_layer_snapshot(
+            state_dir,
+            session_id,
+            turn,
+            snapshot_memory_layers(
+                pilot,
+                state_dir,
+                session_id,
+                repo=getattr(svc.cfg, "repo", "") or "",
+            ),
+        )
+    except Exception:
+        pass
+
+
 def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]:
-    """POST /api/session/compact."""
+    """POST /api/session/compact.
+
+    Manual "Compact now": force a compaction attempt and report success ONLY
+    when a real ``compaction`` event was emitted (history actually shrank).
+    No-ops -- history too small to split, degenerate summary, insufficient
+    reduction -- return 409 with ``ok: false`` so the UI can offer a retry
+    instead of flashing a false "Compacted".
+    """
     not_ready = svc.gate_active_pilot_ready()
     if not_ready is not None:
         return 409, not_ready
     pilot = svc.get_pilot()
     before = pilot._estimate_context_tokens()
-    orig_tokens = getattr(svc.cfg, "max_context_tokens", 96000)
-    svc.cfg.max_context_tokens = 1
-    try:
-        list(pilot._maybe_compact_history())
-    finally:
-        svc.cfg.max_context_tokens = orig_tokens
+    events = list(pilot._maybe_compact_history(force=True))
+    compacted = any(_event_kind(ev) == "compaction" for ev in events)
     after = pilot._estimate_context_tokens()
+    if not compacted:
+        return 409, {
+            "ok": False,
+            "compacted": False,
+            "before_tokens": before,
+            "after_tokens": after,
+            "error": "no compaction occurred (history too small or summary rejected)",
+        }
     sessions = svc.get_sessions() if svc.get_sessions is not None else None
     if sessions is not None and sessions.active and svc.save_transcript is not None:
         svc.save_transcript(
@@ -111,8 +168,10 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
             sessions.active,
             pilot.export_transcript_data(),
         )
+    _record_post_compaction_snapshot(pilot, svc)
     return 200, {
         "ok": True,
+        "compacted": True,
         "before_tokens": before,
         "after_tokens": after,
     }

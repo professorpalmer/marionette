@@ -144,31 +144,117 @@ def test_persist_and_restart_prepare():
     assert code == 200 and payload["ok"] is True
 
 
+class _CompactingPilot:
+    """Pilot stub whose forced compaction really shrinks the estimate."""
+
+    state_dir = ""
+    harness_session_id = "s1"
+
+    def __init__(self):
+        self.force_calls = []
+        self.exports = 0
+        self._tokens = 50
+        self._history = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+        ]
+
+    def _estimate_context_tokens(self):
+        return self._tokens
+
+    def _maybe_compact_history(self, force=False):
+        self.force_calls.append(force)
+        yield {"kind": "compacting", "data": {}}
+        self._tokens = 20
+        yield {"kind": "compaction", "data": {"before_tokens": 50, "after_tokens": 20}}
+
+    def export_transcript_data(self):
+        self.exports += 1
+        return {}
+
+    def state(self):
+        return "idle"
+
+    def has_pending_swarms(self):
+        return False
+
+
+class _NoopPilot:
+    """Pilot stub whose compaction attempt yields nothing (history too small)."""
+
+    state_dir = ""
+    harness_session_id = "s1"
+
+    def __init__(self):
+        self.exports = 0
+
+    def _estimate_context_tokens(self):
+        return 50
+
+    def _maybe_compact_history(self, force=False):
+        return iter(())
+
+    def export_transcript_data(self):
+        self.exports += 1
+        return {}
+
+    def state(self):
+        return "idle"
+
+    def has_pending_swarms(self):
+        return False
+
+
 def test_compact_and_state():
-    class _Pilot:
-        def _estimate_context_tokens(self):
-            return 50
-
-        def _maybe_compact_history(self):
-            yield {"kind": "compact"}
-
-        def export_transcript_data(self):
-            return {}
-
-        def state(self):
-            return "idle"
-
-        def has_pending_swarms(self):
-            return False
-
-    svc = _svc(pilot=_Pilot(), sessions=SimpleNamespace(active=None))
+    pilot = _CompactingPilot()
+    svc = _svc(pilot=pilot, sessions=SimpleNamespace(active=None))
     code, payload = post_session_compact(svc)
-    assert code == 200 and payload["before_tokens"] == 50
+    assert code == 200
+    assert payload["ok"] is True and payload["compacted"] is True
+    assert payload["before_tokens"] == 50 and payload["after_tokens"] == 20
+    # Manual compaction must bypass the 75% trigger.
+    assert pilot.force_calls == [True]
 
     code2, state = get_session_state(svc)
     assert code2 == 200
     assert state["state"] == "idle"
     assert state["active_view_id"] == "v1"
+
+
+def test_compact_noop_is_not_success():
+    pilot = _NoopPilot()
+    saved = {"n": 0}
+    svc = _svc(pilot=pilot, sessions=SimpleNamespace(active="s1"))
+    svc.save_transcript = lambda *a, **k: saved.__setitem__("n", saved["n"] + 1)
+    code, payload = post_session_compact(svc)
+    assert code == 409
+    assert payload["ok"] is False and payload["compacted"] is False
+    assert payload["before_tokens"] == 50 and payload["after_tokens"] == 50
+    assert "error" in payload
+    # A no-op must not persist the transcript.
+    assert saved["n"] == 0 and pilot.exports == 0
+
+
+def test_compact_success_persists_and_refreshes_snapshot(tmp_path):
+    from harness.memory_layers import latest_layer_snapshot
+
+    pilot = _CompactingPilot()
+    pilot.state_dir = str(tmp_path)
+    saved = {"n": 0}
+    svc = _svc(pilot=pilot, sessions=SimpleNamespace(active="s1"))
+    svc.save_transcript = lambda *a, **k: saved.__setitem__("n", saved["n"] + 1)
+
+    assert latest_layer_snapshot(str(tmp_path), "s1") == {}
+    code, payload = post_session_compact(svc)
+    assert code == 200 and payload["ok"] is True
+    assert saved["n"] == 1 and pilot.exports == 1
+    # Fresh post-compaction snapshot recorded so /api/usage advice no longer
+    # reads the stale pre-compaction L0.
+    snap = latest_layer_snapshot(str(tmp_path), "s1")
+    assert snap and "L0" in snap
+    assert snap["L0"]["entries"] == len(pilot._history) - 1
 
 
 def test_context_at_and_swarm_results():

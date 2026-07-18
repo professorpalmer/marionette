@@ -177,7 +177,21 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
     setCompactState("working");
     api
       .compactSession()
-      .then(() => {
+      .then((res) => {
+        // Only celebrate a REAL reduction: the backend sets compacted=true
+        // when a compaction event fired; older backends are checked by token
+        // delta. Anything else is a no-op the user should be able to retry.
+        const trulyReduced =
+          res?.ok === true &&
+          (res.compacted === true ||
+            (res.compacted === undefined &&
+              isFinite(res.before_tokens) &&
+              isFinite(res.after_tokens) &&
+              res.after_tokens < res.before_tokens));
+        if (!trulyReduced) {
+          setCompactState("error");
+          return;
+        }
         setCompactState("done");
         window.dispatchEvent(new Event("harness-usage-refresh"));
       })

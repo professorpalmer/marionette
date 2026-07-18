@@ -436,6 +436,15 @@ class CompactionContextMixin:
         # could land at the same length). Explicitly invalidate.
         self._invalidate_ctx_cache()
         self._reset_append_only_freeze()
+        # The provider-reported prompt-token count refers to the PRE-compaction
+        # history; _estimate_context_tokens() takes max(real, heuristic), so a
+        # stale real count would mask the reduction we just made (after_tokens
+        # == before_tokens and the pressure advisor never clears). Drop it; the
+        # next billed turn repopulates it from actual usage.
+        try:
+            self._last_prompt_tokens = 0
+        except Exception:
+            pass
 
         try:
             from harness.history_compaction_journal import record_history_compaction

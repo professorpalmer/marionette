@@ -963,7 +963,8 @@ export const api = {
   mkdir: (path: string) =>
     postJSON<{ ok: boolean; path?: string; error?: string }>("/api/file/mkdir", { path }),
   inlineEdit: (path: string, selection: string, instruction: string, prefix: string, suffix: string, language: string) => postJSON<{ ok: boolean; edit?: string; error?: string }>("/api/inline-edit", { path, selection, instruction, prefix, suffix, language }),
-  compactSession: () => postJSON<{ ok: boolean; before_tokens: number; after_tokens: number }>("/api/session/compact", {}),
+  compactSession: () =>
+    postJSON<{ ok: boolean; compacted?: boolean; before_tokens: number; after_tokens: number; error?: string }>("/api/session/compact", {}),
   steerSession: (text: string, images?: string[]) =>
     postJSON<{ ok: boolean }>("/api/session/steer", { text, images: images && images.length ? images : undefined }),
   // PROMPT QUEUE: a "playlist" of full user prompts that each run as their own

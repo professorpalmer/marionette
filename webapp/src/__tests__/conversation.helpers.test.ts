@@ -126,6 +126,7 @@ import {
 import {
   contextUsagePercent,
   formatTokenK,
+  normalizeContextUsage,
 } from "../components/conversation/contextUsageColors";
 import {
   FEED_SETTLE_STABLE_FRAMES,
@@ -937,6 +938,65 @@ describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
     expect(classifySwarmPollEvent({ kind: "pilot_resume" }).kind).toBe("pilot_resume");
     expect(appendMemoryProposal([], { id: "1", text: "t", category: "g" })).toHaveLength(1);
     expect(appendMemoryProposal([{ id: "1", text: "t", category: "g" }], { id: "1", text: "t", category: "g" })).toHaveLength(1);
+  });
+
+  it("keeps context-usage display helpers finite on malformed inputs", () => {
+    expect(contextUsagePercent(NaN, 100)).toBe(0);
+    expect(contextUsagePercent(50, NaN)).toBe(0);
+    expect(contextUsagePercent(Infinity, 100)).toBe(0);
+    expect(contextUsagePercent(50, 0)).toBe(0);
+    expect(contextUsagePercent(-10, 100)).toBe(0);
+    expect(contextUsagePercent(250, 100)).toBe(100);
+
+    expect(formatTokenK(NaN)).toBe("0.0");
+    expect(formatTokenK(Infinity)).toBe("0.0");
+    expect(formatTokenK(NaN, 0)).toBe("0");
+    expect(formatTokenK(2500)).toBe("2.5");
+  });
+
+  it("accepts only well-formed context-usage payloads in normalizeContextUsage", () => {
+    const valid = {
+      total: 1200,
+      limit: 200000,
+      categories: [
+        { name: "System prompt", tokens: 800 },
+        { name: "Conversation", tokens: 400 },
+      ],
+      spill_count: 2,
+    };
+    // Valid payloads pass through unchanged, extra fields included.
+    expect(normalizeContextUsage(valid)).toEqual(valid);
+    expect(normalizeContextUsage({ total: 0, limit: 1, categories: [] })).toEqual({
+      total: 0,
+      limit: 1,
+      categories: [],
+    });
+
+    expect(normalizeContextUsage(null)).toBeNull();
+    expect(normalizeContextUsage(undefined)).toBeNull();
+    expect(normalizeContextUsage("nope")).toBeNull();
+    expect(normalizeContextUsage({})).toBeNull();
+    // Missing categories array (fresh-session partial payload).
+    expect(normalizeContextUsage({ total: 100, limit: 1000 })).toBeNull();
+    // Non-finite / negative totals and limits.
+    expect(normalizeContextUsage({ total: NaN, limit: 1000, categories: [] })).toBeNull();
+    expect(normalizeContextUsage({ total: 100, limit: NaN, categories: [] })).toBeNull();
+    expect(normalizeContextUsage({ total: -1, limit: 1000, categories: [] })).toBeNull();
+    expect(normalizeContextUsage({ total: 100, limit: 0, categories: [] })).toBeNull();
+    expect(normalizeContextUsage({ total: 100, limit: Infinity, categories: [] })).toBeNull();
+    // Malformed category entries.
+    expect(
+      normalizeContextUsage({ total: 100, limit: 1000, categories: [{ name: "", tokens: 5 }] }),
+    ).toBeNull();
+    expect(
+      normalizeContextUsage({ total: 100, limit: 1000, categories: [{ name: "Rules", tokens: NaN }] }),
+    ).toBeNull();
+    expect(
+      normalizeContextUsage({ total: 100, limit: 1000, categories: [{ name: "Rules", tokens: -3 }] }),
+    ).toBeNull();
+    expect(
+      normalizeContextUsage({ total: 100, limit: 1000, categories: [null] }),
+    ).toBeNull();
   });
 
   it("drives typewriter flush/cancel helpers", () => {

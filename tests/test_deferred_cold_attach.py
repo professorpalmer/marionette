@@ -612,9 +612,16 @@ def test_mutation_apis_gate_on_deferred_ready(tmp_path, monkeypatch):
             assert not is_deferred_placeholder(srv._pilot)
 
             # Compact + steer against the now-ready pilot (no AttributeError).
-            resp2 = _post(port, "/api/session/compact", {}, srv._TOKEN)
-            assert resp2.status == 200
-            assert json.loads(resp2.read().decode()).get("ok") is True
+            # The three-turn transcript is too small to actually shrink, so the
+            # endpoint reports a truthful no-op instead of a false success.
+            try:
+                _post(port, "/api/session/compact", {}, srv._TOKEN)
+                assert False, "tiny transcript should report no-op compaction"
+            except urllib.error.HTTPError as e:
+                assert e.code == 409
+                noop = json.loads(e.read().decode())
+                assert noop.get("ok") is False
+                assert noop.get("compacted") is False
 
             resp3 = _post(
                 port, "/api/session/steer", {"text": "nudge"}, srv._TOKEN

@@ -108,13 +108,21 @@ def test_ergonomics_session_compact():
             "X-Harness-Token": srv._TOKEN
         }
 
-        # 2. POST /api/session/compact with token -> 200 and compacts
-        res = _post(port, "/api/session/compact", {}, headers)
-        assert res.status == 200
-        data = json.loads(res.read().decode())
-        assert data["ok"] is True
-        assert "before_tokens" in data
-        assert "after_tokens" in data
+        # 2. POST /api/session/compact with token: too little history to
+        # compact, so the endpoint reports a truthful no-op (409) instead of
+        # a false success. Trim history first so the no-op is deterministic
+        # regardless of what other tests left on the module singleton.
+        srv._pilot._history[:] = srv._pilot._history[:1]
+        try:
+            _post(port, "/api/session/compact", {}, headers)
+            assert False, "tiny history should report no-op compaction"
+        except urllib.error.HTTPError as e:
+            assert e.code == 409
+            data = json.loads(e.read().decode())
+            assert data["ok"] is False
+            assert data["compacted"] is False
+            assert "before_tokens" in data
+            assert "after_tokens" in data
 
     finally:
         httpd.shutdown()

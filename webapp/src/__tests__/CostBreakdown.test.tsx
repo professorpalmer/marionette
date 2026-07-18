@@ -57,7 +57,12 @@ describe("compactionAdvicePresentation", () => {
 describe("CostBreakdown", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCompactSession.mockResolvedValue({ ok: true, before_tokens: 1000, after_tokens: 400 });
+    mockCompactSession.mockResolvedValue({
+      ok: true,
+      compacted: true,
+      before_tokens: 1000,
+      after_tokens: 400,
+    });
   });
 
   it("renders the session cost fields it is given", () => {
@@ -146,6 +151,75 @@ describe("CostBreakdown", () => {
     await waitFor(() => expect(mockCompactSession).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Compacted" })).toBeInTheDocument(),
+    );
+  });
+
+  const nowAdviceData: CostBreakdownData = {
+    tokens_used: 1000,
+    est_cost_usd: 0.01,
+    compaction_advice: {
+      level: "now",
+      needs_intervention: true,
+      warning_reason: "hot context at 80 percent of budget",
+      reasons: [],
+    },
+  };
+
+  it("shows Compacted and refreshes usage only after a true reduction", async () => {
+    const refreshes: Event[] = [];
+    const onRefresh = (e: Event) => refreshes.push(e);
+    window.addEventListener("harness-usage-refresh", onRefresh);
+    try {
+      render(<CostBreakdown data={nowAdviceData} />);
+      fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Compacted" })).toBeInTheDocument(),
+      );
+      expect(refreshes).toHaveLength(1);
+    } finally {
+      window.removeEventListener("harness-usage-refresh", onRefresh);
+    }
+  });
+
+  it("shows Retry compact when the backend reports a no-op", async () => {
+    mockCompactSession.mockResolvedValue({
+      ok: false,
+      compacted: false,
+      before_tokens: 1000,
+      after_tokens: 1000,
+      error: "no compaction occurred",
+    });
+    const refreshes: Event[] = [];
+    const onRefresh = (e: Event) => refreshes.push(e);
+    window.addEventListener("harness-usage-refresh", onRefresh);
+    try {
+      render(<CostBreakdown data={nowAdviceData} />);
+      fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Retry compact" })).toBeInTheDocument(),
+      );
+      expect(screen.queryByRole("button", { name: "Compacted" })).not.toBeInTheDocument();
+      expect(refreshes).toHaveLength(0);
+    } finally {
+      window.removeEventListener("harness-usage-refresh", onRefresh);
+    }
+  });
+
+  it("shows Retry compact when the request itself fails", async () => {
+    mockCompactSession.mockRejectedValue(new Error("/api/session/compact -> 409"));
+    render(<CostBreakdown data={nowAdviceData} />);
+    fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Retry compact" })).toBeInTheDocument(),
+    );
+  });
+
+  it("falls back to token delta for legacy responses without a compacted flag", async () => {
+    mockCompactSession.mockResolvedValue({ ok: true, before_tokens: 1000, after_tokens: 1000 });
+    render(<CostBreakdown data={nowAdviceData} />);
+    fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Retry compact" })).toBeInTheDocument(),
     );
   });
 

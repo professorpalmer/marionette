@@ -214,6 +214,12 @@ export default function ComposerDock({
       ? filterSlashCommands(allSlashCommands, slashSearch)
       : [];
 
+  // Defense in depth: usage is validated upstream (normalizeContextUsage),
+  // but a malformed payload must degrade to an empty breakdown, not a crash.
+  const contextCategories = Array.isArray(contextUsage?.categories)
+    ? contextUsage.categories
+    : [];
+
   return (
     <div className="px-6 pb-3 pt-0.5">
       <div className="max-w-3xl mx-auto">
@@ -571,9 +577,10 @@ export default function ComposerDock({
               </div>
 
               <div className="w-full h-2 bg-panel2 border border-edge/60 rounded-full overflow-hidden flex mb-3">
-                {contextUsage.categories.map((cat, idx) => {
+                {contextCategories.map((cat, idx) => {
                   if (cat.tokens <= 0) return null;
-                  const pct = (cat.tokens / contextUsage.limit) * 100;
+                  const rawPct = (cat.tokens / contextUsage.limit) * 100;
+                  const pct = Number.isFinite(rawPct) ? rawPct : 0;
                   return (
                     <div
                       key={cat.name}
@@ -586,7 +593,7 @@ export default function ComposerDock({
               </div>
 
               <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-txt/90">
-                {contextUsage.categories.map((cat, idx) => {
+                {contextCategories.map((cat, idx) => {
                   if (cat.tokens <= 0) return null;
                   return (
                     <div key={cat.name} className="flex items-center justify-between text-[11px] font-mono py-0.5 border-b border-edge/10">

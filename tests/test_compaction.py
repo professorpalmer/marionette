@@ -121,6 +121,38 @@ def test_maybe_compact_history_above_trigger():
     assert after_tokens <= 500
 
 
+def test_compaction_clears_stale_prompt_token_telemetry():
+    """A stale provider prompt-token count must not mask the reduction.
+
+    ``_estimate_context_tokens()`` takes max(real, heuristic); after compaction
+    the "real" number still describes the PRE-compaction history, so keeping it
+    would report after_tokens == before_tokens and the pressure advisor would
+    never clear.
+    """
+    cfg = HarnessConfig(max_context_tokens=1000)
+    s = ConversationalSession(cfg)
+    s._history[0]["content"] = "sys"
+    s.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+
+    for i in range(10):
+        s._history.append({"role": "user", "content": f"User message number {i}: " + ("A" * 150)})
+        s._history.append({"role": "assistant", "content": f"Assistant response number {i}: " + ("B" * 150)})
+
+    # Simulate a billed turn that reported the (large) pre-compaction prompt.
+    s._last_prompt_tokens = 5000
+    assert s._estimate_context_tokens() == 5000
+
+    events = list(s._maybe_compact_history(force=True))
+    assert [e.kind for e in events] == ["compacting", "compaction"]
+
+    assert s._last_prompt_tokens == 0
+    payload = events[-1].data
+    assert payload["before_tokens"] == 5000
+    assert payload["after_tokens"] < payload["before_tokens"]
+    # The live estimate now reflects the compacted history, not the stale real.
+    assert s._estimate_context_tokens() == payload["after_tokens"]
+
+
 def test_fallback_truncation_on_pilot_failure():
     cfg = HarnessConfig(max_context_tokens=1500)
     s = ConversationalSession(cfg)

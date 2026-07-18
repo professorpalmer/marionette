@@ -98,6 +98,7 @@ import {
   tabHasDirty,
   upsertOpenTab,
 } from "./conversation/openFileTabs";
+import { normalizeContextUsage } from "./conversation/contextUsageColors";
 
 // Re-export pure helpers so existing test / LeftRail import paths keep working.
 export * from "./conversation/reexports";
@@ -816,7 +817,13 @@ export default function Conversation({
     if (!activeSessionId) return;
     return api.getContextUsage()
       .then((res) => {
-        setContextUsage(res);
+        // Fresh sessions can return partial/non-finite payloads; keep the
+        // panel in its loading state rather than rendering NaN or crashing.
+        const usage = normalizeContextUsage(res);
+        if (!usage) {
+          console.warn("Ignoring malformed context usage payload:", res);
+        }
+        setContextUsage(usage);
       })
       .catch((err) => console.error("Failed to fetch context usage:", err));
   };

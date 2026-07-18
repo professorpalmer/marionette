@@ -148,6 +148,7 @@ export {
   CONTEXT_USAGE_COLORS,
   contextUsagePercent,
   formatTokenK,
+  normalizeContextUsage,
 } from "./contextUsageColors";
 export { default as EditorTabStrip } from "./EditorTabStrip";
 export { default as ComposerDock } from "./ComposerDock";
