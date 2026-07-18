@@ -30,6 +30,7 @@ import {
   shouldArmChatEventsFromRunners,
   shouldHydrateTranscriptOnReplayMiss,
   shouldPollChatEvents,
+  shouldRetryRingAfterReplayMiss,
 } from "../components/conversation/chatEvents";
 import {
   formatWorkspaceOpenLeaseExhaustedMessage,
@@ -64,6 +65,9 @@ import {
 import {
   appendActionStartCard,
   appendAuthFailure,
+  appendAutoHalt,
+  appendAutoStatus,
+  appendCommandApproval,
   appendCommandBlocked,
   applySwarmResultToItems,
   ensureAssistantStreamingBubble,
@@ -76,6 +80,7 @@ import {
   patchCardInItems,
   shouldPaintThinking,
   truncateWaitHint,
+  updateCommandApproval,
   workspaceRootFromActionResult,
 } from "../components/conversation/streamApply";
 import {
@@ -244,6 +249,135 @@ describe("transcriptItems module", () => {
     expect(items[1]).toMatchObject({ kind: "msg", msg: { role: "assistant", text: "hi" } });
   });
 
+  it("transcriptResponseToItems restores pending command_approval display rows", () => {
+    const hash = "a".repeat(64);
+    const items = transcriptResponseToItems({
+      display: [
+        { type: "message", role: "user", text: "go" },
+        {
+          type: "command_approval",
+          id: "call-1",
+          command: "ssh prod reboot",
+          command_hash: hash,
+          session_id: "session-a",
+          workspace_root: "/workspace/a",
+          category: "remote",
+          reason: "ssh",
+          matched: "ssh",
+          status: "pending",
+        },
+      ],
+    });
+    expect(items).toHaveLength(2);
+    expect(items[1]).toMatchObject({
+      kind: "command_approval",
+      commandHash: hash,
+      status: "pending",
+      sessionId: "session-a",
+      workspaceRoot: "/workspace/a",
+    });
+  });
+
+  it("transcriptResponseToItems skips malformed/empty approval hashes then keeps a later valid card", () => {
+    const validHash = "c".repeat(64);
+    const items = transcriptResponseToItems({
+      display: [
+        { type: "message", role: "user", text: "go" },
+        {
+          type: "command_approval",
+          id: "bad-empty",
+          command: "echo hello",
+          command_hash: "",
+          session_id: "session-a",
+          workspace_root: "/workspace/a",
+          status: "pending",
+        },
+        {
+          type: "command_approval",
+          id: "bad-shape",
+          command: "echo hello",
+          command_hash: "not-a-hash",
+          session_id: "session-a",
+          workspace_root: "/workspace/a",
+          status: "pending",
+        },
+        {
+          type: "command_approval",
+          id: "call-good",
+          command: "ssh prod reboot",
+          command_hash: validHash,
+          session_id: "session-a",
+          workspace_root: "/workspace/a",
+          category: "remote",
+          reason: "ssh",
+          matched: "ssh",
+          status: "pending",
+        },
+      ],
+    });
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ kind: "msg", msg: { role: "user", text: "go" } });
+    expect(items[1]).toMatchObject({
+      kind: "command_approval",
+      commandHash: validHash,
+      status: "pending",
+      id: "call-good",
+    });
+  });
+
+  it("mergeTranscriptItems keeps pending approval on equal-card-count remote hydrate", () => {
+    const hash = "b".repeat(64);
+    const local: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "card",
+        card: {
+          id: "a1",
+          goal: "run",
+          cwd: null,
+          kind: "run_command",
+          running: false,
+          open: false,
+          result: { adapter: "local" },
+        },
+      },
+      {
+        kind: "command_approval",
+        id: "call-9",
+        command: "rm -rf /",
+        commandHash: hash,
+        sessionId: "session-a",
+        workspaceRoot: "/workspace/a",
+        category: "destructive",
+        reason: "rm -rf",
+        matched: "rm -rf",
+        status: "pending",
+      },
+    ];
+    const remote: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "card",
+        card: {
+          id: "a1",
+          goal: "run",
+          cwd: null,
+          kind: "run_command",
+          running: false,
+          open: false,
+          result: { adapter: "local", duration_ms: 9 },
+        },
+      },
+    ];
+    // Equal tool-card counts take the remote path — approval must still survive.
+    const merged = mergeTranscriptItems(local, remote);
+    expect(
+      merged.some((i) => i.kind === "command_approval" && i.commandHash === hash && i.status === "pending"),
+    ).toBe(true);
+    const card = merged.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(card.card.result?.duration_ms).toBe(9);
+  });
+
   it("mergeTranscriptItems keeps extra local cards and appends remote-only ones", () => {
     const local: Item[] = [
       {
@@ -380,6 +514,21 @@ describe("chatEvents module", () => {
   it("resets cursor on ring_miss and keeps generation otherwise", () => {
     expect(cursorAfterReplayMiss({ code: "ring_miss" }, 9)).toBe(0);
     expect(ringGenerationAfterReplayMiss({ code: "cursor_gap" }, 2)).toBe(2);
+  });
+
+  it("retries ring only for cursor_gap / refreshed generation_mismatch", () => {
+    expect(shouldRetryRingAfterReplayMiss(
+      { code: "cursor_gap" },
+      { alreadyRetried: false },
+    )).toBe(true);
+    expect(shouldRetryRingAfterReplayMiss(
+      { code: "ring_miss" },
+      { alreadyRetried: false },
+    )).toBe(false);
+    expect(shouldRetryRingAfterReplayMiss(
+      { code: "generation_mismatch" },
+      { alreadyRetried: false, prevGeneration: 1, nextGeneration: 2 },
+    )).toBe(true);
   });
 });
 
@@ -706,6 +855,77 @@ describe("streamApply module", () => {
     expect(shouldPaintThinking({ text: "a", delta: true }).painting).toBe(true);
     expect(workspaceRootFromActionResult({ path: "/repo" }, "(workspace root)")).toBe("/repo");
     expect(appendCommandBlocked([], { command: "rm" })[0].kind).toBe("command_blocked");
+    const approvals = appendCommandApproval([], {
+      id: "call-1",
+      command: "ssh prod reboot",
+      command_hash: "a".repeat(64),
+      session_id: "session-a",
+      workspace_root: "/workspace/a",
+    });
+    expect(approvals[0]).toMatchObject({
+      kind: "command_approval",
+      status: "pending",
+      sessionId: "session-a",
+    });
+    expect(appendCommandApproval(approvals, {
+      command_hash: "a".repeat(64),
+    })).toBe(approvals);
+    expect(updateCommandApproval(
+      approvals,
+      "a".repeat(64),
+      { status: "rejected" },
+    )[0]).toMatchObject({ status: "rejected" });
+    const statusItems = appendAutoStatus([], 1, { swarms_used: 0, max_swarms: 5 });
+    expect(appendAutoStatus(statusItems, 2, { swarms_used: 1, max_swarms: 5 })).toHaveLength(1);
+    expect(appendAutoHalt([], "cancelled", { swarms_used: 0, max_swarms: 5 })[0]).toMatchObject({
+      kind: "auto_halt",
+      reason: "cancelled",
+    });
+  });
+
+  it("appendCommandApproval ignores malformed/empty hashes without poisoning dedupe", () => {
+    const validHash = "b".repeat(64);
+    const afterEmpty = appendCommandApproval([], {
+      id: "bad-empty",
+      command: "echo hello",
+      command_hash: "",
+      session_id: "session-a",
+      workspace_root: "/workspace/a",
+    });
+    expect(afterEmpty).toEqual([]);
+
+    const afterMalformed = appendCommandApproval(afterEmpty, {
+      id: "bad-shape",
+      command: "echo hello",
+      command_hash: "not-a-hash",
+      session_id: "session-a",
+      workspace_root: "/workspace/a",
+    });
+    expect(afterMalformed).toEqual([]);
+
+    const withValid = appendCommandApproval(afterMalformed, {
+      id: "call-good",
+      command: "ssh prod reboot",
+      command_hash: validHash,
+      session_id: "session-a",
+      workspace_root: "/workspace/a",
+    });
+    expect(withValid).toHaveLength(1);
+    expect(withValid[0]).toMatchObject({
+      kind: "command_approval",
+      commandHash: validHash,
+      status: "pending",
+    });
+
+    // A later empty/malformed event must not suppress or replace the valid card.
+    expect(appendCommandApproval(withValid, {
+      command_hash: "",
+      command: "rm -rf /",
+    })).toBe(withValid);
+    expect(appendCommandApproval(withValid, {
+      command_hash: "zzz",
+      command: "rm -rf /",
+    })).toBe(withValid);
   });
 });
 

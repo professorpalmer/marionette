@@ -690,3 +690,93 @@ def test_mutation_apis_409_when_deferred_build_fails(tmp_path, monkeypatch):
         srv._pilot = old_pilot
         srv._cfg.state_dir = old_state
         httpd.shutdown()
+
+
+def test_deferred_cold_attach_restores_pending_command_approval(tmp_path, monkeypatch):
+    """Cold deferred hydrate must rebuild decidable pending DANGER approvals."""
+    import hashlib
+
+    import harness.server as srv
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    old_state = srv._cfg.state_dir
+    old_repo = srv._cfg.repo
+    try:
+        state_dir = str(tmp_path / "state")
+        os.makedirs(state_dir, exist_ok=True)
+        repo = str(tmp_path / "repo")
+        os.makedirs(repo, exist_ok=True)
+        srv._cfg.state_dir = state_dir
+        srv._cfg.repo = repo
+        reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+        srv._runners = reg
+
+        created = srv._sessions.create(title="Approval")
+        sid = created["id"]
+        command = "ssh prod reboot"
+        command_hash = hashlib.sha256(command.encode()).hexdigest()
+        workspace = os.path.realpath(repo)
+        marker = {
+            "history": [{"role": "user", "content": "go"}],
+            "display": [
+                {"type": "message", "role": "user", "text": "go"},
+                {
+                    "type": "command_approval",
+                    "id": "call-deferred",
+                    "command": command,
+                    "command_hash": command_hash,
+                    "session_id": sid,
+                    "workspace_root": workspace,
+                    "category": "remote",
+                    "reason": "ssh",
+                    "matched": "ssh",
+                    "status": "pending",
+                },
+            ],
+            "job_ids": [],
+        }
+        save_transcript(state_dir, sid, marker)
+
+        gate = threading.Event()
+
+        def blocked_build():
+            gate.wait(timeout=5.0)
+            return ConversationalSession(
+                HarnessConfig(repo=repo, state_dir=str(tmp_path / "st"))
+            )
+
+        with patch.object(srv, "_build_conversational_pilot", side_effect=blocked_build):
+            out = srv._attach_view(sid, defer_cold_build=True)
+            assert is_deferred_placeholder(out)
+            display = out.export_transcript_data()["display"]
+            assert any(
+                isinstance(row, dict)
+                and row.get("type") == "command_approval"
+                and row.get("status") == "pending"
+                and row.get("command_hash") == command_hash
+                for row in display
+            )
+            gate.set()
+            real = out.ensure_ready(timeout=5.0)
+
+        assert isinstance(real, ConversationalSession)
+        assert real.harness_session_id == sid
+        assert command_hash in real._pending_command_approvals
+        assert command_hash not in real._approved_commands
+        decided = real.decide_command_approval(
+            command_hash=command_hash,
+            workspace_root=workspace,
+            approve=True,
+        )
+        assert decided is not None
+        assert command_hash not in real._pending_command_approvals
+        assert command_hash in real._approved_commands
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._cfg.state_dir = old_state
+        srv._cfg.repo = old_repo

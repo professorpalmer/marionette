@@ -133,6 +133,11 @@ class SendLoopMixin:
                 yield ConvEvent("error", {"error": "session busy: another request is in flight"})
                 return
         busy_gen = self._mark_busy_acquired()
+        # Stream any Stop↔steer drop notice recorded by interrupt or the
+        # post-Stop late-steer cleanup in _mark_busy_acquired.
+        flush = getattr(self, "_flush_steer_drop_notice", None)
+        if callable(flush):
+            yield from flush()
         # Time-travel journal (round 6): snapshot the active check specs and
         # behavior toggles for this turn. Observability only; never raises.
         try:
@@ -495,12 +500,20 @@ class SendLoopMixin:
         yield from self._maybe_compact_history()
 
         for step in _step_iter:
+            # Heal dangling tool pairs from a prior mid-spree abandon (steer/
+            # cancel) BEFORE the cancel check so an interrupt never freezes
+            # invalid history into the next request / export.
+            self._sanitize_tool_pairs()
             if self._cancel.is_set():
+                flush = getattr(self, "_flush_steer_drop_notice", None)
+                if callable(flush):
+                    yield from flush()
                 yield ConvEvent("interrupted", {"reason": "session interrupted"})
                 return
 
             # Consume any pending steer at the start of the step: it's now in
             # history and the model will see it this iteration, so clear the flag.
+            # (_check_and_inject_steer itself refuses inject after Stop.)
             self._steer_pending = False
             yield from self._check_and_inject_steer()
             self._steer_pending = False
@@ -571,6 +584,11 @@ class SendLoopMixin:
             resp = None
             self._streamed_prose = ""  # reset per step; set if this step streams
             for attempt in range(2):
+                # Sanitize BEFORE rendering/dispatch so both chat() and
+                # complete() see healed tool_use/tool_result pairs. (A prior
+                # interrupted spree — cancel/steer/worker-ceiling/exception —
+                # otherwise 400s the next provider request.)
+                self._sanitize_tool_pairs()
                 if append_only:
                     sys_prompt = self._ensure_frozen_system_prompt(base_sys)
                     prompt = self._render_history()
@@ -602,10 +620,6 @@ class SendLoopMixin:
                     self._history[0]["content"] = sys_prompt
                     prompt = self._render_history()
 
-                # Guarantee tool_use/tool_result pairing so a prior interrupted
-                # spree (cancel/steer/worker-ceiling/exception) can't 400 the next
-                # request with a dangling tool_use.
-                self._sanitize_tool_pairs()
                 try:
                     if hasattr(self.pilot, "chat"):
                         tools_schema = self._build_visible_tools_schema()
@@ -633,7 +647,11 @@ class SendLoopMixin:
                             streamed_prose, resp = yield from drain_stream_queue(q)
                             self._streamed_prose = streamed_prose
                         else:
-                            resp = self.pilot.chat(self._elide_stale_reads(self._history[1:]), tools=tools_schema, system=sys_prompt)
+                            resp = self.pilot.chat(
+                                self._messages_for_provider(),
+                                tools=tools_schema,
+                                system=sys_prompt,
+                            )
                     else:
                         resp = self.pilot.complete(prompt, system=sys_prompt)
                 except Exception as e:
@@ -824,6 +842,9 @@ class SendLoopMixin:
             swarms = _action_counters["swarms"]
             demo_swarms = _action_counters["demo_swarms"]
             if _action_disposition == "return":
+                # Cancel mid-spree: heal unanswered tool_calls before exit so
+                # the next send/resume/export never sees a dangling tool_use.
+                self._sanitize_tool_pairs()
                 return
 
             # ---- AUTO-VERIFY LOOP ----------------------------------------

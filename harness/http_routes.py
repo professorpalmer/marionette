@@ -82,6 +82,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import auth as _auth_api
     from .api import checkpoints as _ckpt_api
     from .api import codegraph as _cg_api
+    from .api import command_approvals as _command_approval_api
     from .api import commands as _cmd_api
     from .api import files as _files_api
     from .api import git as _git_api
@@ -126,6 +127,12 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _cg_api.post_codegraph_apply_excludes, services=svc.codegraph_services),
         "/api/commands/render": post_json(
             _cmd_api.post_commands_render, services=svc.commands_services),
+        "/api/commands/approve": post_json(
+            _command_approval_api.post_command_approval,
+            services=svc.command_approval_services),
+        "/api/commands/reject": post_json(
+            _command_approval_api.post_command_rejection,
+            services=svc.command_approval_services),
         "/api/inline-edit": post_json(
             _rev_api.post_inline_edit, services=svc.review_services),
         "/api/file/write": post_json(

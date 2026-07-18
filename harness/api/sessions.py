@@ -125,11 +125,11 @@ def handle_session_delete(sid: str, svc: SessionServices) -> tuple[int, dict]:
             except LeaseExhaustedError:
                 # Fall back to loading into the current global pilot pointer.
                 history = load_transcript(svc.sessions_state_dir(), new_active)
-                pilot.load_history(history)
                 svc.sync_pilot_session_id()
+                pilot.load_history(history)
         else:
-            pilot.load_history([])
             svc.sync_pilot_session_id()
+            pilot.load_history([])
     return 200, {"ok": True, "active": new_active}
 
 
@@ -404,11 +404,11 @@ def post_sessions_clear(svc: SessionServices) -> tuple[int, dict]:
                 svc.attach_view(new_active)
             except LeaseExhaustedError:
                 history = load_transcript(state_dir, new_active)
-                pilot.load_history(history)
                 svc.sync_pilot_session_id()
+                pilot.load_history(history)
         else:
-            pilot.load_history([])
             svc.sync_pilot_session_id()
+            pilot.load_history([])
     return 200, {
         "ok": True,
         "deleted": len(deleted_ids),

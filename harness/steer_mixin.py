@@ -28,6 +28,82 @@ class SteerMixin:
     instance state of its own.
     """
 
+    def _steer_boundary_blocks_inject(self) -> bool:
+        """True when Stop has abandoned the active turn — steers must not inject.
+
+        Covers both the sticky idle hold (``_stop_holds_idle``) and the
+        cooperative cancel window while an abandoned generator may still be
+        unwinding mid-spree.
+        """
+        if getattr(self, "_stop_holds_idle", False):
+            return True
+        try:
+            cancel = getattr(self, "_cancel", None)
+            if cancel is not None and cancel.is_set() and getattr(
+                self, "_interrupt_requested", False
+            ):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def drop_queued_steers(self) -> list[str]:
+        """Atomically discard pending steers and clear the mid-spree pending flag.
+
+        Used at the Stop/interrupt boundary so queued content cannot inject into
+        an abandoned generator or contaminate a later unrelated user send.
+        """
+        with self._steer_lock:
+            items = list(self._steer_queue)
+            self._steer_queue.clear()
+        try:
+            self._steer_pending = False
+        except Exception:
+            pass
+        return items
+
+    @staticmethod
+    def _steer_drop_notice_text(dropped: list[str]) -> str:
+        n = len(dropped)
+        return (
+            f"Dropped {n} queued steer message(s) after Stop. "
+            "They were not injected into the interrupted turn and will not "
+            "apply to the next send."
+        )
+
+    def _record_steer_drop_notice(self, dropped: list[str]) -> Optional[str]:
+        """Persist a durable + streamable notice that steers were dropped."""
+        if not dropped:
+            return None
+        text = self._steer_drop_notice_text(dropped)
+        try:
+            display = getattr(self, "_display_transcript", None)
+            if display is not None:
+                display.append({
+                    "type": "message",
+                    "role": "assistant",
+                    "text": text,
+                })
+        except Exception:
+            pass
+        # Omit ConvEvent data.kind so the UI wait-hint path surfaces the
+        # message live; reason carries the machine-readable drop cause.
+        self._pending_steer_drop_notice = {
+            "message": text,
+            "reason": "steer_dropped",
+            "count": len(dropped),
+        }
+        return text
+
+    def _flush_steer_drop_notice(self) -> Iterator["ConvEvent"]:
+        """Yield a streamed notice for a prior drop, if one is pending."""
+        pending = getattr(self, "_pending_steer_drop_notice", None)
+        if not pending:
+            return
+        self._pending_steer_drop_notice = None
+        from .conversation import ConvEvent
+        yield ConvEvent("notice", dict(pending))
+
     def steer_with_images(self, text: str, images: Optional[list] = None) -> None:
         """Enqueue a steer, transcribing any attached images into the steer text.
 
@@ -53,8 +129,38 @@ class SteerMixin:
         if combined:
             self.enqueue_steer(combined)
 
+    def _abandoned_turn_blocks_steer_enqueue(self) -> bool:
+        """True only while a Stop-abandoned generator may still own the turn.
+
+        ``_stop_holds_idle`` alone is sticky for UI/resume suppression and can
+        linger on an otherwise ready idle session (including across tests that
+        share the module pilot). Refuse enqueue only when that hold coincides
+        with ``_busy`` still locked — the actually abandoned generation.
+        """
+        if not getattr(self, "_stop_holds_idle", False):
+            return False
+        busy = getattr(self, "_busy", None)
+        if busy is None:
+            # Minimal hosts without a busy lock: honor the explicit abandon mark.
+            return bool(getattr(self, "_steer_boundary_drop_on_acquire", False))
+        try:
+            return bool(busy.locked())
+        except Exception:
+            # Fail closed under Stop hold if the lock is unreadable.
+            return True
+
     def enqueue_steer(self, text: str) -> None:
-        """Append an out-of-band user message."""
+        """Append an out-of-band user message.
+
+        While an abandoned generator still holds ``_busy`` after Stop, refuse
+        to queue: a steer has nowhere truthful to go. Ready/idle sessions keep
+        standard enqueue/drain even if ``_stop_holds_idle`` is still sticky for
+        runners chrome (cleared on the next real user send).
+        """
+        if self._abandoned_turn_blocks_steer_enqueue():
+            if text:
+                self._record_steer_drop_notice([text])
+            return
         with self._steer_lock:
             self._steer_queue.append(text)
 
@@ -102,8 +208,18 @@ class SteerMixin:
 
         Sets self._steer_pending so the action loop can stop the current spree
         and re-ask the model, which now sees the steer in the tool output.
+
+        After Stop / cooperative interrupt, queued steers are dropped (never
+        injected into an abandoned generator) and a durable/streamed notice is
+        emitted instead.
         """
         from .conversation import ConvEvent
+        if self._steer_boundary_blocks_inject():
+            dropped = self.drop_queued_steers()
+            if dropped:
+                self._record_steer_drop_notice(dropped)
+            yield from self._flush_steer_drop_notice()
+            return
         steers = self.drain_steer()
         if not steers:
             return

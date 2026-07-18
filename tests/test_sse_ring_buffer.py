@@ -323,6 +323,103 @@ def test_api_chat_events_cursor_gap_after_cap_prune():
         httpd.shutdown()
 
 
+def test_api_chat_events_mid_tool_batch_cursor_gap_then_retained_tail():
+    """Detached mid-tool-batch: gap refuses fake catch-up; since=0 returns tool tail."""
+    server._sse_ring_clear_for_tests()
+    ring = server._sse_ring_begin("sess-tools")
+    ring.cap = 3
+    # Early frames (thinking + first tools) will be pruned by the cap.
+    ring.append("thinking", {"text": "plan"})
+    ring.append("action_start", {"id": "a1", "goal": "read a", "kind": "read_file"})
+    ring.append("action_result", {"id": "a1", "ok": True})
+    ring.append("action_start", {"id": "a2", "goal": "read b", "kind": "read_file"})
+    ring.append("action_start", {"id": "a3", "goal": "run", "kind": "run_command"})
+    # Retained cursors are 3,4,5 (a1 result + a2/a3 starts). Client last saw 1.
+
+    httpd, port = _api_server()
+    try:
+        gap = json.loads(
+            _get(
+                port,
+                "/api/chat/events?session=sess-tools&since=1&generation=%d"
+                % ring.generation,
+                token=server._TOKEN,
+            ).read().decode()
+        )
+        assert gap["ok"] is False
+        assert gap["code"] == "cursor_gap"
+        assert gap["missed"] is True
+        assert gap["available"] is False
+        assert gap["events"] == []
+        # Must not invent the pruned thinking/action_start frames.
+        assert gap["cursor"] == 5
+        assert gap["retained"] == 3
+
+        # After client resets since→0 (hydrate path), retained tool tail only.
+        tail = json.loads(
+            _get(
+                port,
+                "/api/chat/events?session=sess-tools&since=0&generation=%d"
+                % ring.generation,
+                token=server._TOKEN,
+            ).read().decode()
+        )
+        assert tail["ok"] is True
+        assert tail.get("missed") is False
+        kinds = [e["kind"] for e in tail["events"]]
+        assert kinds == ["action_result", "action_start", "action_start"]
+        assert [e["data"]["id"] for e in tail["events"]] == ["a1", "a2", "a3"]
+        assert "thinking" not in kinds
+    finally:
+        httpd.shutdown()
+
+
+def test_api_chat_events_long_ring_miss_after_ttl_empty():
+    """Long detach: TTL empties retained frames; behind since is cursor_gap, not ok empty."""
+    server._sse_ring_clear_for_tests()
+    ring = server._sse_ring_begin("sess-long")
+    ring.ttl = 0.05
+    ring.append("action_start", {"id": "a1", "goal": "old"})
+    ring.append("action_result", {"id": "a1", "ok": True})
+    time.sleep(0.08)
+
+    httpd, port = _api_server()
+    try:
+        # Client still pinned mid-turn after the ring aged out.
+        gap = json.loads(
+            _get(
+                port,
+                "/api/chat/events?session=sess-long&since=1&generation=%d"
+                % ring.generation,
+                token=server._TOKEN,
+            ).read().decode()
+        )
+        assert gap["ok"] is False
+        assert gap["code"] == "cursor_gap"
+        assert gap["missed"] is True
+        assert gap["available"] is False
+        assert gap["events"] == []
+        assert gap["retained"] == 0
+        assert gap["cursor"] == 2
+
+        # Full ring eviction (session gone) is ring_miss — still not fake catch-up.
+        server._sse_ring_clear_for_tests()
+        miss = json.loads(
+            _get(
+                port,
+                "/api/chat/events?session=sess-long&since=0",
+                token=server._TOKEN,
+            ).read().decode()
+        )
+        assert miss["ok"] is False
+        assert miss["code"] == "ring_miss"
+        assert miss["missed"] is True
+        assert miss["available"] is False
+        assert miss["events"] == []
+    finally:
+        httpd.shutdown()
+
+
 def test_usage_response_cache_ttl_hit(monkeypatch):
     # _usage_cache_get bypasses under PYTEST_CURRENT_TEST; clear it so this
     # unit test can exercise the real TTL hit/miss path.

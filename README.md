@@ -224,6 +224,7 @@ Research rig (offline, no keys):
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e /path/to/Puppetmaster pytest
 .venv/bin/python -m pytest -q                              # full suite, offline
+.venv/bin/python -m pytest -q -m full_auto_safety          # Wave 6 offline safety gate
 .venv/bin/python scripts/run_eval.py --drivers stub-oracle # offline oracle ceiling
 ```
 

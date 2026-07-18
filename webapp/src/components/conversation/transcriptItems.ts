@@ -1,5 +1,8 @@
 import type { Item, Msg } from "../TranscriptList";
 
+/** Same SHA-256 hex gate as SSE ``appendCommandApproval`` (streamApply). */
+const COMMAND_HASH_HEX = /^[0-9a-f]{64}$/;
+
 export function getSimilarity(s1: string, s2: string): number {
   const norm1 = s1.toLowerCase().replace(/[^a-z0-9]/g, "");
   const norm2 = s2.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -123,6 +126,7 @@ export function dedupeDisplayItems(items: Item[]): Item[] {
   const out: Item[] = [];
   const cardIndexById = new Map<string, number>();
   const swarmIndexById = new Map<string, number>();
+  const approvalIndexByHash = new Map<string, number>();
   for (const item of items) {
     if (item.kind === "card" && item.card?.id) {
       const id = String(item.card.id);
@@ -145,6 +149,25 @@ export function dedupeDisplayItems(items: Item[]): Item[] {
       out.push(item);
       continue;
     }
+    if (item.kind === "command_approval" && item.commandHash) {
+      const hash = String(item.commandHash);
+      const prevIdx = approvalIndexByHash.get(hash);
+      if (prevIdx != null) {
+        const prev = out[prevIdx];
+        // Keep a terminal decision over a still-pending SSE/poll duplicate.
+        if (
+          prev.kind === "command_approval"
+          && prev.status === "pending"
+          && item.status !== "pending"
+        ) {
+          out[prevIdx] = item;
+        }
+        continue;
+      }
+      approvalIndexByHash.set(hash, out.length);
+      out.push(item);
+      continue;
+    }
     out.push(item);
   }
   return out;
@@ -157,11 +180,11 @@ export function transcriptResponseToItems(res: {
 }): Item[] {
   let loadedItems: Item[] = [];
   if (res.display && res.display.length > 0) {
-    loadedItems = res.display.map((m: any) => {
+    loadedItems = res.display.flatMap((m: any): Item[] => {
       if (m.type === "card") {
         // result == null means still in flight (persisted at action_start).
         const pending = m.result == null;
-        return {
+        return [{
           kind: "card" as const,
           card: {
             id: m.id,
@@ -172,9 +195,9 @@ export function transcriptResponseToItems(res: {
             open: false,
             result: pending ? undefined : (m.result || undefined)
           }
-        };
+        }];
       } else if (m.type === "swarm_result") {
-        return {
+        return [{
           kind: "swarm_result" as const,
           job_id: m.job_id || "",
           applied: !!m.applied,
@@ -182,15 +205,41 @@ export function transcriptResponseToItems(res: {
           summary: m.summary || "",
           error: m.error || null,
           objective: m.objective || ""
-        };
+        }];
+      } else if (m.type === "command_approval") {
+        // Reject empty/malformed hashes so hydrate cannot create colliding
+        // keys or invalid cards that suppress a later valid approval.
+        const commandHash = (m.command_hash || "").trim().toLowerCase();
+        if (!COMMAND_HASH_HEX.test(commandHash)) {
+          return [];
+        }
+        const status = (
+          m.status === "approved"
+          || m.status === "rejected"
+          || m.status === "approving"
+          || m.status === "error"
+        ) ? m.status : "pending";
+        return [{
+          kind: "command_approval" as const,
+          id: m.id || m.action_id || commandHash,
+          command: m.command || "",
+          commandHash,
+          sessionId: m.session_id || "",
+          workspaceRoot: m.workspace_root || "",
+          category: m.category || "",
+          reason: m.reason || "",
+          matched: m.matched || "",
+          status,
+          ...(typeof m.error === "string" && m.error ? { error: m.error } : {}),
+        }];
       } else {
-        return {
+        return [{
           kind: "msg" as const,
           msg: {
             role: m.role as "user" | "assistant",
             text: m.text || ""
           }
-        };
+        }];
       }
     });
   } else {
@@ -223,6 +272,31 @@ function runningCardIds(items: Item[]): Set<string> {
   return ids;
 }
 
+/** Keep still-pending local approval cards when remote hydrate omits them. */
+function appendMissingPendingApprovals(base: Item[], local: Item[]): Item[] {
+  const have = new Set(
+    base
+      .filter((it): it is Extract<Item, { kind: "command_approval" }> => (
+        it.kind === "command_approval"
+      ))
+      .map((it) => String(it.commandHash || ""))
+      .filter(Boolean),
+  );
+  const out = [...base];
+  for (const it of local) {
+    if (
+      it.kind === "command_approval"
+      && it.status === "pending"
+      && it.commandHash
+      && !have.has(String(it.commandHash))
+    ) {
+      out.push(it);
+      have.add(String(it.commandHash));
+    }
+  }
+  return out;
+}
+
 /**
  * True when applying `remote` (sessionTranscript poll) would erase live tool
  * rows the SSE stream already painted -- the Investigating blink / disappear
@@ -244,11 +318,14 @@ export function shouldPreferLocalTranscript(local: Item[], remote: Item[]): bool
 
 /**
  * Merge a disk/API transcript into the live feed without dropping in-flight
- * cards. Prefer remote message text when ids match; keep local-only cards.
+ * cards. Prefer remote message text when ids match; keep local-only cards
+ * and still-pending command approval cards.
  */
 export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
   if (!shouldPreferLocalTranscript(local, remote)) {
-    return dedupeDisplayItems(remote);
+    // Equal card counts take remote, but never drop a still-pending approval
+    // the SSE stream already painted (ring_miss / cursor_gap hydrate).
+    return dedupeDisplayItems(appendMissingPendingApprovals(remote, local));
   }
   const remoteByCardId = new Map<string, Extract<Item, { kind: "card" }>>();
   for (const it of remote) {
@@ -285,7 +362,7 @@ export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
     }
   }
   // Harden against poll/SSE interleave leaving duplicate tool-call ids in local.
-  return dedupeDisplayItems(merged);
+  return dedupeDisplayItems(appendMissingPendingApprovals(merged, local));
 }
 
 /** Cheap content fingerprint so busy-poll refresh can skip identical payloads. */
@@ -300,6 +377,8 @@ export function transcriptFingerprint(items: Item[]): string {
       fp += `|c:${it.card.id}:${it.card.running ? 1 : 0}:${r ? 1 : 0}`;
     } else if (it.kind === "swarm_result") {
       fp += `|s:${it.job_id}:${it.applied ? 1 : 0}`;
+    } else if (it.kind === "command_approval") {
+      fp += `|ca:${it.commandHash}:${it.status}`;
     } else if (it.kind === "thinking") {
       fp += `|t:${(it.text || "").length}:${(it as { streaming?: boolean }).streaming ? 1 : 0}`;
     } else if (it.kind === "tool_prep") {

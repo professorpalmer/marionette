@@ -169,13 +169,15 @@ def test_run_stream_puts_done_on_success():
         kwargs["on_delta"]("hello")
         return resp
 
+    history = [{"role": "system"}, {"role": "user", "content": "hi"}]
     session = SimpleNamespace(
         pilot=SimpleNamespace(
             chat_stream=chat_stream,
             supports_streaming=True,
         ),
-        _history=[{"role": "system"}, {"role": "user", "content": "hi"}],
+        _history=history,
         _elide_stale_reads=lambda msgs: msgs,
+        _messages_for_provider=lambda: history[1:],
     )
     run_stream(session, q, [{"name": "t"}], "sys")
     kinds = []
@@ -190,10 +192,12 @@ def test_run_stream_puts_error_on_failure():
     def chat_stream(messages, **kwargs):
         raise RuntimeError("boom")
 
+    history = [{"role": "system"}, {"role": "user", "content": "hi"}]
     session = SimpleNamespace(
         pilot=SimpleNamespace(chat_stream=chat_stream),
-        _history=[{"role": "system"}, {"role": "user", "content": "hi"}],
+        _history=history,
         _elide_stale_reads=lambda msgs: msgs,
+        _messages_for_provider=lambda: history[1:],
     )
     run_stream(session, q, [], "sys")
     kind, val = q.get_nowait()
@@ -361,12 +365,14 @@ def test_read_stdout_thread_tolerates_stdout_errors():
 def test_run_stream_usable_as_thread_target():
     q: queue.Queue = queue.Queue()
     resp = SimpleNamespace(text="ok")
+    history = [{"role": "system"}, {"role": "user", "content": "hi"}]
     session = SimpleNamespace(
         pilot=SimpleNamespace(
             chat_stream=lambda messages, **kwargs: resp,
         ),
-        _history=[{"role": "system"}, {"role": "user", "content": "hi"}],
+        _history=history,
         _elide_stale_reads=lambda msgs: msgs,
+        _messages_for_provider=lambda: history[1:],
     )
     t = threading.Thread(
         target=run_stream, args=(session, q, [], "sys"), daemon=True
@@ -773,14 +779,24 @@ def test_dispatch_local_action_run_command_blocked():
             return_value=(
                 False,
                 "blocked",
-                {"message": "blocked destructive", "category": "destructive"},
+                {
+                    "message": "blocked destructive",
+                    "category": "destructive",
+                    "command_hash": "a" * 64,
+                },
             )
         ),
+        register_pending_command_approval=MagicMock(return_value={
+            "session_id": "session-a",
+            "workspace_root": "/repo",
+        }),
         _append_action_result=MagicMock(),
     )
     events = list(dispatch_local_action(session, act, "a3", True, []))
-    assert events[0].kind == "command_blocked"
+    assert events[0].kind == "command_approval_pending"
     assert events[0].data["command"] == "rm -rf /"
+    assert events[0].data["command_hash"] == "a" * 64
+    session.register_pending_command_approval.assert_called_once()
     session._append_action_result.assert_called_once()
 
 

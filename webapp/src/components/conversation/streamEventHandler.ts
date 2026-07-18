@@ -14,8 +14,10 @@ import {
   appendActionStartCard,
   appendAuthFailure,
   appendAutoHalt,
+  appendAutoStatus,
   appendCheckpoint,
   appendCodegraphContext,
+  appendCommandApproval,
   appendCommandBlocked,
   appendCompaction,
   appendNonStreamingThinking,
@@ -110,6 +112,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setCompactingStatus(d.message || "Summarizing chat context");
     } else if (ev.kind === "command_blocked") {
       setItems((p) => appendCommandBlocked(p, d));
+    } else if (ev.kind === "command_approval_pending") {
+      setItems((p) => appendCommandApproval(p, d));
     } else if (ev.kind === "swarm_auth_failure") {
       // A provider rejected the API key. Surface it as a loud, persistent
       // banner so a dead/revoked key is never silently read as a generic
@@ -283,7 +287,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         return prev;
       });
     } else if (ev.kind === "auto_status") {
+      // Progress receipt only — keep turnOpen sticky until auto_halt / Stop.
       setStatus("executing");
+      setItems((p) => appendAutoStatus(p, d.cycle || 0, d.snapshot));
     } else if (ev.kind === "distilled") {
       // Only surface self-learning when it produced something WORTH the user's
       // attention -- a newly PROPOSED skill or rule(s). Skips, duplicates, and
@@ -299,7 +305,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       turnSettledRef.current = true;
       setTurnOpen(false);
       setStatus("done");
-      setItems((p) => appendAutoHalt(p, d.reason || ""));
+      setItems((p) => appendAutoHalt(p, d.reason || "", d.snapshot));
     } else if (ev.kind === "swarm_pending") {
       const job_ids = d.job_ids || [];
       setPendingJobIds((p) => [...p, ...job_ids]);

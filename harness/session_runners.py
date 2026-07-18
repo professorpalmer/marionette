@@ -210,6 +210,18 @@ class SessionRunnerRegistry:
             pass
         if self._active_view_id == session_id:
             self._active_view_id = None
+        # S3: session-switch / eviction owns this runner — close warm ACP so
+        # Windows cannot retain orphan agent acp children after drop.
+        try:
+            release = getattr(runner, "release_warm_acp", None)
+            if callable(release):
+                release(reason="session_switch")
+            else:
+                from pmharness.drivers.cursor_acp import release_owned_warm_acp
+
+                release_owned_warm_acp(runner, reason="session_switch")
+        except Exception:
+            pass
         if notify and self._on_drop is not None:
             try:
                 self._on_drop(session_id, runner)

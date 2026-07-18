@@ -1,16 +1,38 @@
 """Tests for tool_use/tool_result pairing sanitizer (prevents Anthropic 400 on a
 dangling tool_use after an interrupted spree) and the configurable/unlimited
-pilot step ceiling."""
+pilot step ceiling.
+
+Wave 2 also covers provider call-site coverage (sanitize immediately before
+dispatch), cancel-mid-tool-spree healing, and crash/resume stub-vs-real races.
+
+Wave 4: steer-mid-tool-spree must heal dangling pairs at the same tool-batch
+boundary as cancel (safe-boundary cancel/steer).
+"""
+import json
 import os
 import tempfile
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
+from harness.pilot import PilotAction
 
 
 def _session():
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     return ConversationalSession(cfg)
+
+
+def _assert_all_tool_calls_answered(history):
+    answered = {m.get("tool_call_id") for m in history if m.get("role") == "tool"}
+    called = set()
+    for m in history:
+        for tc in (m.get("tool_calls") or []):
+            if tc.get("id"):
+                called.add(tc["id"])
+    assert called <= answered, f"dangling tool_use ids: {called - answered}"
+    # Uniqueness: one result per id
+    tool_ids = [m.get("tool_call_id") for m in history if m.get("role") == "tool"]
+    assert len(tool_ids) == len(set(tool_ids)), f"duplicate tool_result ids: {tool_ids}"
 
 
 def test_sanitize_inserts_stub_for_dangling_tool_call():
@@ -216,3 +238,316 @@ def test_max_pilot_steps_env_custom(monkeypatch):
     monkeypatch.setenv("HARNESS_MAX_PILOT_STEPS", "100")
     val = int(os.environ.get("HARNESS_MAX_PILOT_STEPS", "40"))
     assert val == 100
+
+
+def test_messages_for_provider_sanitizes_before_returning():
+    s = _session()
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "assistant", "content": "acting", "tool_calls": [
+            {"id": "toolu_A", "type": "function", "function": {"name": "list_dir", "arguments": "{}"}},
+        ]},
+        # dangling
+    ]
+    messages = s._messages_for_provider()
+    _assert_all_tool_calls_answered(s._history)
+    assert any(
+        m.get("role") == "tool" and m.get("tool_call_id") == "toolu_A"
+        for m in messages
+    )
+
+
+def test_append_action_result_replaces_interruption_stub_not_duplicate():
+    """Crash/resume race: stub already present, real result arrives later."""
+    s = _session()
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "assistant", "content": "acting", "tool_calls": [
+            {"id": "toolu_A", "type": "function",
+             "function": {"name": "run_command", "arguments": "{}"}},
+        ]},
+        s._interruption_stub("toolu_A"),
+    ]
+    act = PilotAction(
+        kind="run_command",
+        tool="run_command",
+        tool_call_id="toolu_A",
+        arguments={},
+    )
+    s._append_action_result(act, "a1", "real command output", is_native=True)
+    results = [
+        m for m in s._history
+        if m.get("role") == "tool" and m.get("tool_call_id") == "toolu_A"
+    ]
+    assert len(results) == 1
+    assert results[0]["content"] == "real command output"
+    assert not results[0]["content"].startswith("(no result:")
+
+
+def test_append_action_result_does_not_duplicate_real_result():
+    s = _session()
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "assistant", "content": "acting", "tool_calls": [
+            {"id": "toolu_A", "type": "function",
+             "function": {"name": "run_command", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "toolu_A", "content": "first real"},
+    ]
+    act = PilotAction(
+        kind="run_command",
+        tool="run_command",
+        tool_call_id="toolu_A",
+        arguments={},
+    )
+    s._append_action_result(act, "a1", "second real (should drop)", is_native=True)
+    results = [
+        m for m in s._history
+        if m.get("role") == "tool" and m.get("tool_call_id") == "toolu_A"
+    ]
+    assert len(results) == 1
+    assert results[0]["content"] == "first real"
+
+
+class _Resp:
+    def __init__(self, text, meta=None):
+        self.text = text
+        self.error = None
+        self.meta = meta or {}
+        self.tokens_out = 5
+        self.tokens_in = 5
+
+
+class _CancelMidSpreePilot:
+    """Issues a multi-tool spree; cancel fires after the first action starts."""
+    supports_streaming = False
+
+    def __init__(self, session):
+        self.session = session
+        self.calls = 0
+        self.histories = []
+
+    def chat(self, hist, tools=None, system=""):
+        self.calls += 1
+        self.histories.append([dict(m) for m in hist])
+        if self.calls == 1:
+            # Cancel before sibling tools run: first list_dir will execute,
+            # then the action loop sees cancel and abandons the rest.
+            self.session._cancel.set()
+            return _Resp("", {"tool_calls": [
+                {"id": "toolu_A", "type": "function",
+                 "function": {"name": "list_dir", "arguments": json.dumps({"path": "."})}},
+                {"id": "toolu_B", "type": "function",
+                 "function": {"name": "list_dir", "arguments": json.dumps({"path": "."})}},
+                {"id": "toolu_C", "type": "function",
+                 "function": {"name": "list_dir", "arguments": json.dumps({"path": "."})}},
+            ]})
+        return _Resp('{"say":"done","actions":[]}')
+
+
+def test_cancel_mid_tool_spree_heals_dangling_pairs(tmp_path):
+    cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
+    s = ConversationalSession(cfg)
+    pilot = _CancelMidSpreePilot(s)
+    s.pilot = pilot
+
+    kinds = []
+    for ev in s.send("run several tools"):
+        kinds.append(ev.kind)
+
+    assert "interrupted" in kinds
+    _assert_all_tool_calls_answered(s._history)
+    # Abandoned siblings must have interruption stubs, not missing results.
+    by_id = {
+        m.get("tool_call_id"): m
+        for m in s._history
+        if m.get("role") == "tool"
+    }
+    assert "toolu_B" in by_id and "toolu_C" in by_id
+    assert "interrupted" in by_id["toolu_B"]["content"]
+    assert "interrupted" in by_id["toolu_C"]["content"]
+
+
+class _SteerMidSpreePilot:
+    """Issues a multi-tool spree; steer arrives after the first tool result."""
+    supports_streaming = False
+
+    def __init__(self, session):
+        self.session = session
+        self.calls = 0
+        self.saw_steer = False
+
+    def chat(self, hist, tools=None, system=""):
+        self.calls += 1
+        for m in hist:
+            if "OUT-OF-BAND" in str(m.get("content", "")):
+                self.saw_steer = True
+        if self.saw_steer:
+            return _Resp('{"say":"Steered.","actions":[]}')
+        if self.calls == 1:
+            # Enqueue steer so the action loop injects it after toolu_A and
+            # abandons toolu_B / toolu_C at the tool-batch boundary.
+            self.session.enqueue_steer("change direction")
+            return _Resp("", {"tool_calls": [
+                {"id": "toolu_A", "type": "function",
+                 "function": {"name": "list_dir", "arguments": json.dumps({"path": "."})}},
+                {"id": "toolu_B", "type": "function",
+                 "function": {"name": "list_dir", "arguments": json.dumps({"path": "."})}},
+                {"id": "toolu_C", "type": "function",
+                 "function": {"name": "list_dir", "arguments": json.dumps({"path": "."})}},
+            ]})
+        return _Resp('{"say":"done","actions":[]}')
+
+
+def test_steer_mid_tool_spree_heals_dangling_pairs(tmp_path):
+    """Wave 4: steer abandon must not leave unanswered tool_calls."""
+    cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
+    s = ConversationalSession(cfg)
+    pilot = _SteerMidSpreePilot(s)
+    s.pilot = pilot
+
+    kinds = []
+    for ev in s.send("run several tools"):
+        kinds.append(ev.kind)
+
+    assert "steer" in kinds
+    assert pilot.saw_steer
+    _assert_all_tool_calls_answered(s._history)
+    by_id = {
+        m.get("tool_call_id"): m
+        for m in s._history
+        if m.get("role") == "tool"
+    }
+    assert "toolu_B" in by_id and "toolu_C" in by_id
+    assert "interrupted" in by_id["toolu_B"]["content"]
+    assert "interrupted" in by_id["toolu_C"]["content"]
+    # Steer piggybacked on an adjacent tool result (not a synthetic user turn).
+    assert any("OUT-OF-BAND" in str(m.get("content", "")) for m in s._history)
+
+
+class _CallSitePilot:
+    supports_streaming = False
+
+    def __init__(self):
+        self.calls = 0
+        self.saw_sanitize_before_chat = False
+        self._session = None
+        self._sanitize_count_at_chat = None
+
+    def bind(self, session, counter):
+        self._session = session
+        self._counter = counter
+
+    def chat(self, hist, tools=None, system=""):
+        self.calls += 1
+        # Sanitize must have run at least once before this provider call.
+        self._sanitize_count_at_chat = self._counter["n"]
+        self.saw_sanitize_before_chat = self._counter["n"] > 0
+        return _Resp('{"say":"ok","actions":[]}')
+
+
+def test_send_sanitizes_before_provider_chat(tmp_path):
+    cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
+    s = ConversationalSession(cfg)
+    counter = {"n": 0}
+    real = s._sanitize_tool_pairs
+
+    def tracked():
+        counter["n"] += 1
+        return real()
+
+    s._sanitize_tool_pairs = tracked
+    pilot = _CallSitePilot()
+    pilot.bind(s, counter)
+    s.pilot = pilot
+
+    list(s.send("hello"))
+    assert pilot.calls >= 1
+    assert pilot.saw_sanitize_before_chat, "send() must sanitize before pilot.chat"
+    assert pilot._sanitize_count_at_chat >= 1
+
+
+def test_resume_sanitizes_before_provider_chat(tmp_path):
+    cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
+    s = ConversationalSession(cfg)
+    # Seed a keep-alive continuation shape: history already ends on a user turn.
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "prior"},
+        {"role": "assistant", "content": "working", "tool_calls": [
+            {"id": "toolu_Z", "type": "function",
+             "function": {"name": "list_dir", "arguments": "{}"}},
+        ]},
+        # dangling until sanitize
+        {"role": "user", "content": "[background job finished] continue"},
+    ]
+    counter = {"n": 0}
+    real = s._sanitize_tool_pairs
+
+    def tracked():
+        counter["n"] += 1
+        return real()
+
+    s._sanitize_tool_pairs = tracked
+    pilot = _CallSitePilot()
+    pilot.bind(s, counter)
+    s.pilot = pilot
+
+    list(s.send("(resume)", resume=True))
+    assert pilot.calls >= 1
+    assert pilot.saw_sanitize_before_chat
+    _assert_all_tool_calls_answered(s._history)
+
+
+def test_run_auto_sanitizes_before_provider_chat(tmp_path, monkeypatch):
+    from harness.autobudget import AutoBudget
+
+    cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
+    # Skip codegraph gate for this unit test.
+    s = ConversationalSession(cfg)
+    counter = {"n": 0}
+    real = s._sanitize_tool_pairs
+
+    def tracked():
+        counter["n"] += 1
+        return real()
+
+    s._sanitize_tool_pairs = tracked
+    pilot = _CallSitePilot()
+    pilot.bind(s, counter)
+    s.pilot = pilot
+
+    budget = AutoBudget(max_swarms=1, max_tokens=10_000, max_seconds=30)
+    list(s.run_auto("do the thing", budget, require_codegraph=False))
+    assert pilot.calls >= 1
+    assert pilot.saw_sanitize_before_chat, "run_auto→send must sanitize before chat"
+
+
+def test_run_stream_uses_messages_for_provider():
+    """Streaming dispatch must go through the shared sanitize seam."""
+    from harness import send_loop_phases
+
+    seen = {"messages_for_provider": 0, "chat_stream": 0}
+
+    class _Session:
+        def _messages_for_provider(self):
+            seen["messages_for_provider"] += 1
+            return [{"role": "user", "content": "hi"}]
+
+        class pilot:
+            @staticmethod
+            def chat_stream(messages, **kwargs):
+                seen["chat_stream"] += 1
+                assert messages == [{"role": "user", "content": "hi"}]
+                return _Resp("streamed")
+
+    q: list = []
+
+    class _Q:
+        def put(self, item):
+            q.append(item)
+
+    send_loop_phases.run_stream(_Session(), _Q(), tools_schema=[], sys_prompt="sys")
+    assert seen["messages_for_provider"] == 1
+    assert seen["chat_stream"] == 1
+    assert q and q[-1][0] == "done"

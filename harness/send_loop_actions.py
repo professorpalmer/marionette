@@ -137,14 +137,34 @@ def execute_turn_actions(
     turn.actions = dedupe_dispatch_actions(turn.actions)
     for idx, act in enumerate(turn.actions):
         if idx > 0:
+            # Cancel before steer inject so a Stop mid-spree never delivers
+            # queued steers into an abandoned generator (S2 boundary).
+            if session._cancel.is_set():
+                session._sanitize_tool_pairs()
+                flush = getattr(session, "_flush_steer_drop_notice", None)
+                if callable(flush):
+                    yield from flush()
+                yield ConvEvent("interrupted", {"reason": "session interrupted"})
+                counters["action_seq"] = action_seq
+                counters["swarms"] = swarms
+                counters["demo_swarms"] = demo_swarms
+                return ("return", turn_changed_files)
             yield from session._check_and_inject_steer()
             if session._steer_pending:
                 # A user steer arrived mid-spree. Abandon the REMAINING queued
                 # actions and loop back to re-ask the model, which now sees the
-                # steer as its current instruction. This is what makes a steer
-                # actually interrupt instead of being ignored until the spree ends.
+                # steer as its current instruction. Heal unanswered sibling
+                # tool_calls at this tool-batch boundary BEFORE the next
+                # provider request (same seam as cancel) so steer never leaves
+                # dangling tool_use ids.
+                session._sanitize_tool_pairs()
                 break
         if session._cancel.is_set():
+            # Heal unanswered sibling tool_calls before abandoning the spree.
+            session._sanitize_tool_pairs()
+            flush = getattr(session, "_flush_steer_drop_notice", None)
+            if callable(flush):
+                yield from flush()
             yield ConvEvent("interrupted", {"reason": "session interrupted"})
             counters["action_seq"] = action_seq
             counters["swarms"] = swarms

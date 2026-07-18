@@ -71,52 +71,28 @@ def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
         svc.diag("server.swarm_cancel_local", e)
 
     # 2) Durable Puppetmaster store job -- best-effort mark cancelled.
-    # Check BOTH stores the tracker reads: the harness store and the
-    # per-project CLI store (jobs started via `python -m puppetmaster`
-    # live only there; cancel used to 404 on them).
-    def _candidate_stores():
+    # Canonical dual-store seam (harness then CLI): shared with
+    # BusyControlMixin.interrupt so membership/cancel cannot diverge.
+    try:
+        from ..job_cancel import cancel_job_dual_store
+
+        harness_store = None
+        harness_list_jobs = None
         try:
             state_obj = svc.get_session().state()
-            yield getattr(state_obj, "store", None), state_obj.list_jobs
+            harness_store = getattr(state_obj, "store", None)
+            harness_list_jobs = getattr(state_obj, "list_jobs", None)
         except Exception as e:
             svc.diag("server.swarm_cancel_harness_store", e)
-        try:
-            from ..cli_job_merge import open_cli_durable_state
-            cli_state = open_cli_durable_state(svc.cfg.repo or "")
-            if cli_state is not None:
-                yield cli_state.store, cli_state.store.list_jobs
-        except Exception as e:
-            svc.diag("server.swarm_cancel_cli_store", e)
 
-    def _mark_cancelled(store) -> bool:
-        for meth in ("cancel_job", "set_job_status", "update_job_status"):
-            fn = getattr(store, meth, None)
-            if fn is None:
-                continue
-            try:
-                fn(job_id) if meth == "cancel_job" else fn(job_id, "cancelled")
-                return True
-            except Exception:
-                continue
-        return False
-
-    try:
-        for store, list_jobs in _candidate_stores():
-            if store is None:
-                continue
-            try:
-                known = any(
-                    (j.get("id") if isinstance(j, dict) else getattr(j, "id", None)) == job_id
-                    for j in list_jobs()
-                )
-            except Exception:
-                known = False
-            if not known:
-                continue
-            return 200, {
-                "ok": True, "job_id": job_id, "durable": True,
-                "marked": _mark_cancelled(store),
-            }
+        result = cancel_job_dual_store(
+            job_id,
+            harness_store=harness_store,
+            harness_list_jobs=harness_list_jobs,
+            repo_root=svc.cfg.repo or "",
+        )
+        if result is not None:
+            return 200, result
     except Exception as e:
         svc.diag("server.swarm_cancel_durable", e)
     return 404, {"ok": False, "error": "unknown job_id", "job_id": job_id}

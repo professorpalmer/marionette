@@ -50,8 +50,13 @@ runs from source.
 1. Branch off `main`: `git checkout -b fix/<short-name>`.
 2. Make the change. Add/adjust tests -- behavioral changes need a test.
 3. Run `.venv/bin/python -m pytest -q` and `cd webapp && npm run build` locally.
-4. Open a PR against `main`. CI runs the same pytest matrix + frontend build and
-   must pass before merge.
+   When touching full-auto / command policy / SSE reattach / tool-pair repair,
+   also run the Wave 6 offline safety gate:
+   `.venv/bin/python -m pytest -q -m full_auto_safety`
+   (AutoBudget, command policy/approvals, tool-pair sanitizer, SSE ring-miss,
+   stub deterministic eval — no live keys).
+4. Open a PR against `main`. CI runs the same pytest matrix + frontend build +
+   the `full-auto-safety` marker job and must pass before merge.
 5. Keep commits scoped: don't fold unrelated work into one commit. A release
    commit is its own commit.
 

@@ -2,7 +2,11 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react
 import { api, type Config } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import FileEditorPane from "./FileEditorPane";
-import { type Item, type Card } from "./TranscriptList";
+import {
+  type Card,
+  type CommandApprovalItem,
+  type Item,
+} from "./TranscriptList";
 import {
   deriveBusyProgress,
   turnHasInvestigationActivity,
@@ -33,6 +37,7 @@ import {
   applySwarmResultToItems,
   finalizeOrphanSwarmPills,
   patchCardInItems,
+  updateCommandApproval,
 } from "./conversation/streamApply";
 import {
   classifyLocalSlashCommand,
@@ -138,6 +143,8 @@ export default function Conversation({
   const applyStreamEventRef = useRef<(ev: { kind: string; data?: any }) => void>(() => {});
   const flushTypewriterRef = useRef<() => void>(() => {});
   const maybeRunQueuedResumeRef = useRef<() => void>(() => {});
+  const maybeRunApprovedCommandRetryRef = useRef<() => void>(() => {});
+  const approvedCommandRetryRef = useRef<string | null>(null);
   const maybeDrainQueueRef = useRef<() => void>(() => {});
   // Session-load effect installs the reattach starter; runners-poll calls it when
   // a turn begins without a local EventSource (e.g. Discord Bridge queue drain).
@@ -1567,6 +1574,7 @@ export default function Conversation({
          cancelRef.current = null;
          localStreamActiveRef.current = false;
          setCompactingStatus(null);
+         maybeRunApprovedCommandRetryRef.current();
          maybeRunQueuedResume();
          maybeDrainQueue();
        },
@@ -1597,6 +1605,7 @@ export default function Conversation({
          cancelRef.current = null;
          localStreamActiveRef.current = false;
          setCompactingStatus(null);
+         maybeRunApprovedCommandRetryRef.current();
          maybeRunQueuedResume();
          maybeDrainQueue();
        });
@@ -1671,6 +1680,20 @@ export default function Conversation({
     }, 60);
   };
   maybeRunQueuedResumeRef.current = maybeRunQueuedResume;
+
+  const maybeRunApprovedCommandRetry = () => {
+    const command = approvedCommandRetryRef.current;
+    if (!command || cancelRef.current || userStoppedRef.current) return;
+    approvedCommandRetryRef.current = null;
+    executeSendRef.current(
+      "The operator approved one execution of this exact command. Retry it "
+        + "without changing any character, then continue the objective:\n\n"
+        + command,
+      true,
+      false,
+    );
+  };
+  maybeRunApprovedCommandRetryRef.current = maybeRunApprovedCommandRetry;
 
   // A pilot_resume can also arrive via the swarm-results poll while the session is
   // idle (the common background-job case). Trigger a continuation immediately.
@@ -1876,6 +1899,39 @@ export default function Conversation({
     (id: string, patch: Partial<Card>) => setCardRef.current(id, patch),
     []
   );
+  const handleCommandApproval = useCallback(
+    (item: CommandApprovalItem, approve: boolean) => {
+      setItems((current) => updateCommandApproval(
+        current,
+        item.commandHash,
+        { status: "approving", error: undefined },
+      ));
+      const request = approve
+        ? api.approveCommand(item.sessionId, item.workspaceRoot, item.commandHash)
+        : api.rejectCommand(item.sessionId, item.workspaceRoot, item.commandHash);
+      void request.then((response) => {
+        setItems((current) => updateCommandApproval(
+          current,
+          item.commandHash,
+          { status: approve ? "approved" : "rejected", error: undefined },
+        ));
+        if (approve && "retry_command" in response && response.retry_command) {
+          approvedCommandRetryRef.current = response.retry_command;
+          maybeRunApprovedCommandRetryRef.current();
+        }
+      }).catch((error) => {
+        setItems((current) => updateCommandApproval(
+          current,
+          item.commandHash,
+          {
+            status: "error",
+            error: error instanceof Error ? error.message : String(error),
+          },
+        ));
+      });
+    },
+    [],
+  );
   const handleTranscriptImageClick = useCallback((url: string) => setLightboxUrl(url), []);
   const handleTranscriptExecutePlan = useCallback((planText: string) => {
     setAuto(true);
@@ -1929,6 +1985,7 @@ export default function Conversation({
           onImageClick={handleTranscriptImageClick}
           onSetCard={stableSetCard}
           onExecutePlan={handleTranscriptExecutePlan}
+          onCommandApproval={handleCommandApproval}
           composerDock={(
       <ComposerDock
         config={config}

@@ -27,6 +27,13 @@ import {
   isRedundantToolGoal,
   turnHasLiveInvestigation,
 } from "../lib/turnProgress";
+import {
+  autoHaltPresentation,
+  autoStatusPresentation,
+  commandApprovalStatusCopy,
+  commandBlockedPresentation,
+  type AutoBudgetSnapshot,
+} from "../lib/autoReceipts";
 
 export type Msg = {
   role: "user" | "assistant";
@@ -66,6 +73,20 @@ export type SwarmPendingItem = {
   terminal_job_ids?: string[];
 };
 
+export type CommandApprovalItem = {
+  kind: "command_approval";
+  id: string;
+  command: string;
+  commandHash: string;
+  sessionId: string;
+  workspaceRoot: string;
+  category: string;
+  reason: string;
+  matched: string;
+  status: "pending" | "approving" | "approved" | "rejected" | "error";
+  error?: string;
+};
+
 export type Item =
   | { kind: "msg"; msg: Msg }
   | { kind: "card"; card: Card }
@@ -77,6 +98,9 @@ export type Item =
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
+  | CommandApprovalItem
+  | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
+  | { kind: "auto_halt"; reason: string; snapshot: AutoBudgetSnapshot }
   | { kind: "auth_failure"; message: string; id?: string }
   | { kind: "steer"; text: string };
 
@@ -89,6 +113,9 @@ export type GroupedItem =
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
+  | CommandApprovalItem
+  | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
+  | { kind: "auto_halt"; reason: string; snapshot: AutoBudgetSnapshot }
   | { kind: "auth_failure"; message: string; id?: string }
   | { kind: "steer"; text: string }
   | { kind: "activity_group"; items: ActivityItem[] };
@@ -184,7 +211,16 @@ function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): Groupe
       // collapsed investigation as the action card that produced them. Rendering
       // them as standalone chips made the transcript vertically noisy.
       currentGroup.push(item);
-    } else if (item.kind === "swarm_pending" || item.kind === "compaction" || item.kind === "command_blocked" || item.kind === "auth_failure" || item.kind === "steer") {
+    } else if (
+      item.kind === "swarm_pending"
+      || item.kind === "compaction"
+      || item.kind === "command_blocked"
+      || item.kind === "command_approval"
+      || item.kind === "auto_status"
+      || item.kind === "auto_halt"
+      || item.kind === "auth_failure"
+      || item.kind === "steer"
+    ) {
       flush();
       grouped.push(item);
     } else if (item.kind === "card" || item.kind === "thinking" || item.kind === "codegraph_context") {
@@ -280,6 +316,12 @@ function stableItemKey(it: GroupedItem, i: number): string {
       return `cg-${i}-${it.symbols}`;
     case "command_blocked":
       return `blk-${i}-${it.category}`;
+    case "command_approval":
+      return `cmd-approval-${it.commandHash}`;
+    case "auto_status":
+      return `auto-status-${it.cycle}`;
+    case "auto_halt":
+      return `auto-halt-${i}-${(it.reason || "").slice(0, 24)}`;
     case "auth_failure":
       return `auth-${it.id || i}`;
     case "steer":
@@ -335,6 +377,7 @@ export type TranscriptListProps = {
   onImageClick: (url: string) => void;
   onSetCard: (id: string, patch: Partial<Card>) => void;
   onExecutePlan: (planText: string) => void;
+  onCommandApproval: (item: CommandApprovalItem, approve: boolean) => void;
 };
 
 export const TranscriptList = memo(function TranscriptList({
@@ -352,6 +395,7 @@ export const TranscriptList = memo(function TranscriptList({
   onImageClick,
   onSetCard,
   onExecutePlan,
+  onCommandApproval,
 }: TranscriptListProps) {
   const agentLoopOpen =
     turnOpen
@@ -528,13 +572,93 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       );
     } else if (it.kind === "command_blocked") {
+      const blocked = commandBlockedPresentation(it);
       return (
-        <div key={key} className="flex items-start gap-1.5 py-1.5 px-3 rounded-lg bg-red-500/8 border border-red-500/30 text-[11px] text-red-300/90 w-fit max-w-full my-1 select-none" title={it.matched ? `matched: ${it.matched}` : undefined}>
-          <span className="font-medium shrink-0">Blocked in full-auto:</span>
+        <div
+          key={key}
+          className="flex items-start gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-risk/25 text-[10.5px] text-muted w-fit max-w-full my-1 select-none"
+          title={it.matched ? `matched: ${it.matched}` : "Full-auto did not execute this command"}
+        >
+          <span className="font-medium shrink-0 text-risk/80">{blocked.label}</span>
           <span className="min-w-0">
-            <span className="text-red-300/70">{it.reason}</span>
+            <span className="text-faint">{blocked.detail}</span>
             {it.command ? <code className="block mt-0.5 text-[10px] text-faint/80 font-mono truncate">{it.command}</code> : null}
           </span>
+        </div>
+      );
+    } else if (it.kind === "command_approval") {
+      const decisionPending = it.status === "pending" || it.status === "error";
+      const statusCopy = commandApprovalStatusCopy(it.status);
+      return (
+        <div
+          key={key}
+          role="alert"
+          className="w-full max-w-2xl rounded-md border border-edge bg-panel2/40 px-3.5 py-3 text-[11px] text-txt my-1.5"
+        >
+          <div className="flex items-start gap-2">
+            <XCircle size={15} className="mt-0.5 shrink-0 text-risk/80" />
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-txt">Command needs approval</div>
+              <div className="mt-0.5 text-muted">
+                Full-auto did not run this command.{" "}
+                {it.reason || it.category || "Safety policy requires an explicit decision."}
+              </div>
+              <code className="mt-2 block max-h-28 overflow-auto rounded border border-edge bg-panel/60 p-2 font-mono text-[10.5px] text-muted whitespace-pre-wrap break-all select-text">
+                {it.command}
+              </code>
+              {it.error ? <div className="mt-1.5 text-risk/90">{it.error}</div> : null}
+              <div className="mt-2 flex items-center gap-2">
+                {decisionPending ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onCommandApproval(it, true)}
+                      className="rounded-md border border-edge bg-panel px-2.5 py-1 font-medium text-txt hover:border-accent/40"
+                    >
+                      Approve once and retry
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onCommandApproval(it, false)}
+                      className="rounded-md border border-edge bg-panel2/60 px-2.5 py-1 text-muted hover:text-txt"
+                    >
+                      Reject
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-faint">{statusCopy}</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    } else if (it.kind === "auto_status") {
+      const status = autoStatusPresentation(it.cycle, it.snapshot);
+      return (
+        <div
+          key={key}
+          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-edge/10 text-[10.5px] text-faint w-fit my-1 select-none font-mono"
+          title="AutoBudget progress — not a completion or compaction receipt"
+        >
+          <span>{status.label}</span>
+          {status.detail ? <span className="text-muted/80">· {status.detail}</span> : null}
+        </div>
+      );
+    } else if (it.kind === "auto_halt") {
+      const halt = autoHaltPresentation(it.reason, it.snapshot);
+      return (
+        <div
+          key={key}
+          className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-[10.5px] w-fit my-1 select-none font-mono ${
+            halt.metObjective
+              ? "bg-panel2/15 border-edge/20 text-muted"
+              : "bg-panel2/10 border-edge/15 text-faint"
+          }`}
+          title={it.reason || "Full-auto ended"}
+        >
+          <span className={halt.metObjective ? "text-good/80" : "text-muted"}>{halt.label}</span>
+          <span className="text-faint">· {halt.detail}</span>
         </div>
       );
     } else if (it.kind === "auth_failure") {

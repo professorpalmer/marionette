@@ -177,6 +177,50 @@ def test_api_session_steer_auth(tmp_path):
         httpd.shutdown()
 
 
+def test_api_session_steer_after_idle_interrupt_still_enqueues(tmp_path):
+    """Sticky Stop hold on a ready idle pilot must not discard authenticated steers."""
+    import harness.server as srv
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
+    port = httpd.server_address[1]
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+
+    srv._cfg.state_dir = str(tmp_path)
+    srv._sessions.path = str(tmp_path / "harness_sessions.json")
+    srv._sessions._sessions = []
+
+    try:
+        # Mirror suite order: an earlier interrupt leaves _stop_holds_idle sticky
+        # on the shared module pilot without an abandoned busy generation.
+        srv._pilot._cancel.clear()
+        srv._pilot.interrupt()
+        assert srv._pilot._stop_holds_idle is True
+        assert not srv._pilot._busy.locked()
+        assert srv._pilot.drain_steer() == []
+
+        req_valid = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/session/steer",
+            data=json.dumps({"text": "course correction after stop"}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Harness-Token": srv._TOKEN,
+            },
+            method="POST",
+        )
+        resp = urllib.request.urlopen(req_valid, timeout=5)
+        assert resp.status == 200
+        assert json.loads(resp.read().decode())["ok"] is True
+        assert srv._pilot.drain_steer() == ["course correction after stop"]
+    finally:
+        # Clear sticky Stop markers so later suite tests see a ready pilot.
+        srv._pilot._stop_holds_idle = False
+        srv._pilot._steer_boundary_drop_on_acquire = False
+        srv._pilot._interrupt_requested = False
+        srv._pilot._cancel.clear()
+        httpd.shutdown()
+
+
 def test_api_session_steer_image_path_traversal_blocked(tmp_path):
     """Steer image attachments must be validated like queue/chat/run."""
     import harness.server as srv

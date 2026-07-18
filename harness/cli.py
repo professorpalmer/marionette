@@ -116,12 +116,13 @@ def _run_auto(argv) -> int:
             n = ev.data.get("num", 0)
             print(_c("32", f"     {n} artifacts ({ev.data.get('adapter')})"))
         elif ev.kind == "auto_status":
-            snap = ev.data.get("snapshot", {})
-            print(_c("90", f"  [cycle {ev.data.get('cycle')}] "
-                           f"{snap.get('swarms_used')}/{snap.get('max_swarms')} swarms, "
-                           f"{snap.get('elapsed_s')}s"))
+            from .auto_receipts import format_auto_status_receipt
+            print(_c("90", "  " + format_auto_status_receipt(
+                ev.data.get("cycle"), ev.data.get("snapshot"))))
         elif ev.kind == "auto_halt":
-            print(_c("35", f"  HALT: {ev.data.get('reason')}"))
+            from .auto_receipts import format_auto_halt_receipt
+            print(_c("35", "  " + format_auto_halt_receipt(
+                ev.data.get("reason", ""), ev.data.get("snapshot"))))
             return 0
         elif ev.kind == "error":
             print(_c("31", f"  error: {ev.data.get('error','')}"))

@@ -3,6 +3,10 @@ makes a live API call fails FAST instead of hanging the whole suite.
 
 Tests that legitimately need the network (the live-key analysis/eval tests) opt
 back in with @pytest.mark.network, and are deselected by default in CI runs.
+
+Wave 6 offline full-auto safety gate: modules listed in
+``_FULL_AUTO_SAFETY_MODULES`` are auto-tagged ``full_auto_safety`` so CI can
+run ``pytest -m full_auto_safety`` as a named invariant gate without live keys.
 """
 import socket
 import os
@@ -10,6 +14,23 @@ import shutil
 import stat
 import tempfile
 import pytest
+
+# Offline full-auto safety invariants (Wave 6). Keep live-key / @network /
+# @swarm evals out of this set — they stay opt-in and must not gate PRs.
+_FULL_AUTO_SAFETY_MODULES = frozenset({
+    "test_autobudget",
+    "test_auto",
+    "test_command_policy",
+    "test_command_guard_integration",
+    "test_api_command_approvals",
+    "test_auto_receipts",
+    "test_safe_boundary_cancel_steer",
+    "test_tool_pair_sanitizer",
+    "test_sse_ring_buffer",
+    "test_stub_eval_deterministic",
+    "test_warm_acp_lifecycle",
+    "test_deferred_cold_attach",
+})
 
 os.environ["PMHARNESS_MCP_ALLOW_PRIVATE"] = "1"
 
@@ -87,9 +108,22 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     config.addinivalue_line("markers", "network: test requires real network access")
     config.addinivalue_line("markers", "swarm: test drives real Puppetmaster (slow subprocess spawns)")
+    config.addinivalue_line(
+        "markers",
+        "full_auto_safety: offline full-auto safety invariants "
+        "(AutoBudget, command policy/approvals, tool-pair sanitizer, "
+        "SSE ring-miss honesty, stub deterministic eval)",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
+    safety = pytest.mark.full_auto_safety
+    for item in items:
+        mod = getattr(item.module, "__name__", "") or ""
+        leaf = mod.rsplit(".", 1)[-1]
+        if leaf in _FULL_AUTO_SAFETY_MODULES:
+            item.add_marker(safety)
+
     if config.getoption("--swarm"):
         return
     skip = pytest.mark.skip(reason="real-Puppetmaster swarm test; run with --swarm")

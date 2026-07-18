@@ -756,6 +756,28 @@ export const api = {
   // getJSON/postJSON, so a DELETE falls through to an unroutable fetch.
   deleteSession: (id: string) =>
     postJSON<{ ok: boolean; active: string | null }>("/api/sessions/delete", { id }),
+  approveCommand: (sessionId: string, workspaceRoot: string, commandHash: string) =>
+    postJSON<{
+      ok: boolean;
+      decision: "approved";
+      session_id: string;
+      workspace_root: string;
+      command_hash: string;
+      retry_command: string;
+    }>("/api/commands/approve", {
+      session_id: sessionId,
+      workspace_root: workspaceRoot,
+      command_hash: commandHash,
+    }),
+  rejectCommand: (sessionId: string, workspaceRoot: string, commandHash: string) =>
+    postJSON<{ ok: boolean; decision: "rejected"; command_hash: string }>(
+      "/api/commands/reject",
+      {
+        session_id: sessionId,
+        workspace_root: workspaceRoot,
+        command_hash: commandHash,
+      },
+    ),
   clearSessions: () =>
     postJSON<{ ok: boolean; deleted: number; active: string | null }>(withToken("/api/sessions/clear"), {}),
   archiveSession: (id: string, archived: boolean) => postJSON<{ ok: boolean }>("/api/sessions/archive", { session: id, archived }),

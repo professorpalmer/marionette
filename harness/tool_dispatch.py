@@ -670,8 +670,13 @@ class ToolDispatchMixin:
         if getattr(self, "_auto_mode", False) and getattr(self, "_auto_command_guard", None):
             verdict = classify_command(act.command or "")
             cmd_hash = hashlib.sha256((act.command or "").encode()).hexdigest()
-            approved = getattr(self, "_approved_commands", set())
-            if verdict.danger and cmd_hash not in approved:
+            consume_approval = getattr(self, "consume_command_approval", None)
+            approved_for_retry = (
+                bool(consume_approval(cmd_hash))
+                if verdict.danger and consume_approval is not None
+                else cmd_hash in getattr(self, "_approved_commands", set())
+            )
+            if verdict.danger and not approved_for_retry:
                 block_msg = (
                     f"BLOCKED in full-auto: command matches '{verdict.category}' "
                     f"({verdict.reason}; matched: {verdict.matched}). Autonomous "
@@ -683,7 +688,11 @@ class ToolDispatchMixin:
                     "category": verdict.category,
                     "reason": verdict.reason,
                     "matched": verdict.matched,
+                    "command_hash": cmd_hash,
                 }
+            # One-shot is already enforced by consume_command_approval above.
+            # Do not unlocked-discard again: a fresh same-hash re-approval raced
+            # in after consume must survive for its own retry.
 
         cmd_timeout = resolve_timeout()
         output, exit_code, _run_status = run_cancellable(

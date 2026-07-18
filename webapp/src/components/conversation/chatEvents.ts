@@ -106,6 +106,8 @@ export function shouldHydrateTranscriptOnReplayMiss(replay: ChatEventReplayMissF
  * Cursor after a replay miss. Ring eviction / generation change / cursor gap
  * means our `since` is no longer contiguous — reset so the next poll can
  * catch up (or hydrate from disk).
+ *
+ * Never invent mid-gap cursors: a miss is not successful catch-up.
  */
 export function cursorAfterReplayMiss(
   replay: { code?: string },
@@ -119,6 +121,35 @@ export function cursorAfterReplayMiss(
     return 0;
   }
   return current;
+}
+
+/**
+ * After applying miss recovery (cursor reset + optional gen pin + disk hydrate),
+ * whether to immediately retry GET /api/chat/events once.
+ *
+ * - ``cursor_gap``: ring still holds a tool/activity tail — retry with since=0
+ *   so retained frames apply without waiting for the poll interval.
+ * - ``generation_mismatch``: retry only when the pin refreshed to the live gen.
+ * - ``ring_miss``: nothing to replay; hydrate-only (no fake catch-up).
+ */
+export function shouldRetryRingAfterReplayMiss(
+  replay: ChatEventReplayMissFields,
+  opts: {
+    alreadyRetried: boolean;
+    prevGeneration?: number;
+    nextGeneration?: number;
+  },
+): boolean {
+  if (opts.alreadyRetried) return false;
+  if (replay.code === "cursor_gap") return true;
+  if (
+    replay.code === "generation_mismatch"
+    && opts.nextGeneration != null
+    && opts.nextGeneration !== opts.prevGeneration
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /** Map a retained ring frame to the live stream-event shape. */

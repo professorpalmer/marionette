@@ -1,4 +1,12 @@
-import type { Card, Item, Msg, SwarmPendingItem, SwarmPendingStatus } from "../TranscriptList";
+import type {
+  Card,
+  CommandApprovalItem,
+  Item,
+  Msg,
+  SwarmPendingItem,
+  SwarmPendingStatus,
+} from "../TranscriptList";
+import type { AutoBudgetSnapshot } from "../../lib/autoReceipts";
 import {
   clearToolPrepPlaceholders,
   finalizeStreamingThinking,
@@ -90,6 +98,61 @@ export function appendCommandBlocked(
       matched: d.matched || "",
     },
   ];
+}
+
+const COMMAND_HASH_HEX = /^[0-9a-f]{64}$/;
+
+export function appendCommandApproval(
+  items: Item[],
+  data: {
+    id?: string;
+    command?: string;
+    command_hash?: string;
+    session_id?: string;
+    workspace_root?: string;
+    category?: string;
+    reason?: string;
+    matched?: string;
+  },
+): Item[] {
+  // Reject empty/malformed hashes so they cannot occupy the empty-string
+  // dedupe key and suppress later valid approval cards.
+  const commandHash = (data.command_hash || "").trim().toLowerCase();
+  if (!COMMAND_HASH_HEX.test(commandHash)) {
+    return items;
+  }
+  if (items.some(
+    (item) => item.kind === "command_approval" && item.commandHash === commandHash,
+  )) {
+    return items;
+  }
+  return [
+    ...items,
+    {
+      kind: "command_approval",
+      id: data.id || commandHash,
+      command: data.command || "",
+      commandHash,
+      sessionId: data.session_id || "",
+      workspaceRoot: data.workspace_root || "",
+      category: data.category || "",
+      reason: data.reason || "",
+      matched: data.matched || "",
+      status: "pending",
+    },
+  ];
+}
+
+export function updateCommandApproval(
+  items: Item[],
+  commandHash: string,
+  patch: Partial<CommandApprovalItem>,
+): Item[] {
+  return items.map((item) => (
+    item.kind === "command_approval" && item.commandHash === commandHash
+      ? { ...item, ...patch, kind: "command_approval" }
+      : item
+  ));
 }
 
 export function appendCodegraphContext(
@@ -334,10 +397,37 @@ export function appendQueuedPromptUserBubble(
   ];
 }
 
-export function appendAutoHalt(items: Item[], reason: string): Item[] {
+/** Quiet AutoBudget progress chip — replaces a trailing auto_status to avoid spam. */
+export function appendAutoStatus(
+  items: Item[],
+  cycle: number,
+  snapshot?: AutoBudgetSnapshot | null,
+): Item[] {
+  const next = {
+    kind: "auto_status" as const,
+    cycle: Number.isFinite(cycle) ? Math.max(0, Math.round(cycle)) : 0,
+    snapshot: (snapshot && typeof snapshot === "object") ? snapshot : {},
+  };
+  const last = items[items.length - 1];
+  if (last?.kind === "auto_status") {
+    return [...items.slice(0, -1), next];
+  }
+  return [...items, next];
+}
+
+/** Terminal full-auto receipt — not an assistant chat bubble. */
+export function appendAutoHalt(
+  items: Item[],
+  reason: string,
+  snapshot?: AutoBudgetSnapshot | null,
+): Item[] {
   return [
     ...items,
-    { kind: "msg", msg: { role: "assistant", text: "HALT: " + (reason || "") } },
+    {
+      kind: "auto_halt" as const,
+      reason: reason || "",
+      snapshot: (snapshot && typeof snapshot === "object") ? snapshot : {},
+    },
   ];
 }
 

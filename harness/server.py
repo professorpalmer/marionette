@@ -1500,6 +1500,12 @@ def _commands_services():
     return CommandsServices(commands=_commands, cfg=_cfg)
 
 
+def _command_approval_services():
+    """Build command approval services from the session runner registry."""
+    from .api.command_approvals import CommandApprovalServices
+    return CommandApprovalServices(get_runners=lambda: _runners)
+
+
 def _hooks_services():
     """Build HooksServices from live server module globals (call-time lookup)."""
     from .api.hooks import HooksServices
@@ -1862,6 +1868,13 @@ def _perform_pilot_swap(model: str) -> None:
             _freeze_pilot_meters_into_boot_carry(old_pilot)
         except Exception:
             pass
+        # S3: pilot swap owns the outgoing warm ACP process.
+        try:
+            release = getattr(old_pilot, "release_warm_acp", None)
+            if callable(release):
+                release(reason="session_switch")
+        except Exception:
+            pass
         _cfg.driver = model
         _apply_model_context_window()
         # Frozen per-runner config; meters already in carry -- start clean.
@@ -2008,11 +2021,15 @@ _migrate_orphan_sessions_to_home()
 # and register it as the active view in the runner registry.
 if _sessions.active:
     _startup_history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
-    if _startup_history:
-        _pilot.load_history(_startup_history)
     _runners.get_or_create(_sessions.active, lambda: _pilot)
     _runners.set_active_view(_sessions.active)
-_sync_pilot_session_id()
+    # Session ownership before hydrate so pending DANGER approval restore
+    # validates display rows against the owning session.
+    _sync_pilot_session_id()
+    if _startup_history:
+        _pilot.load_history(_startup_history)
+else:
+    _sync_pilot_session_id()
 
 _skills = SkillStore()
 _rules = RuleStore()
@@ -2210,6 +2227,7 @@ def _route_services():
         checkpoint_services=_checkpoint_services,
         codegraph_services=_codegraph_services,
         commands_services=_commands_services,
+        command_approval_services=_command_approval_services,
         file_services=_file_services,
         workspace_services=_workspace_services,
         mcp_services=_mcp_services,
@@ -2898,10 +2916,32 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
     # SECURITY/RESOURCE: ensure spawned MCP child processes are reaped on exit
     # (Ctrl-C, SIGTERM, SystemExit) instead of being orphaned.
     import signal
+
+    def _shutdown_warm_acp() -> None:
+        """S3: reap owned Cursor warm ACP children on process shutdown."""
+        try:
+            for runner in list(_runners.runners()):
+                release = getattr(runner, "release_warm_acp", None)
+                if callable(release):
+                    release(reason="shutdown")
+        except Exception:
+            pass
+        try:
+            release = getattr(_pilot, "release_warm_acp", None)
+            if callable(release):
+                release(reason="shutdown")
+        except Exception:
+            pass
+
     atexit.register(_mcp.stop_all)
+    atexit.register(_shutdown_warm_acp)
     atexit.register(_cleanup_marker, marker_path, os.getpid())
 
     def _graceful(signum, frame):
+        try:
+            _shutdown_warm_acp()
+        except Exception:
+            pass
         try:
             _mcp.stop_all()
         finally:

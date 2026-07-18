@@ -45,6 +45,98 @@ def cursor_acp_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def _normalize_workspace(cwd: Optional[str]) -> Optional[str]:
+    raw = (cwd or "").strip()
+    if not raw:
+        return None
+    try:
+        return str(Path(raw).resolve())
+    except OSError:
+        return raw
+
+
+def _reap_acp_child_tree(pid: Optional[int]) -> bool:
+    """Reap the owned ``agent acp`` process tree on Windows.
+
+    Only targets the pid we spawned (plus its children via ``taskkill /T``).
+    Never scans the system for strangers, and never signals this process or
+    its parent. Returns True when a reap was attempted. No-op on non-Windows
+    so POSIX keep the existing terminate/kill path.
+    """
+    if pid is None:
+        return False
+    try:
+        pid_i = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid_i <= 1:
+        return False
+    if sys.platform != "win32" and os.name != "nt":
+        return False
+    try:
+        me = os.getpid()
+        parent = os.getppid()
+        if pid_i in (me, parent):
+            return False
+        subprocess.run(
+            ["taskkill", "/PID", str(pid_i), "/T", "/F"],
+            capture_output=True,
+            timeout=5,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def release_owned_warm_acp(
+    owner: Any,
+    *,
+    reason: str = "close",
+    cwd: Optional[str] = None,
+) -> None:
+    """Best-effort close of a ``CursorAcpDriver`` owned by a session/runner.
+
+    ``reason`` selects the ownership hook (session_switch / workspace /
+    interrupt / shutdown) so callers stay explicit; unknown reasons fall
+    through to ``close``. ``cwd`` overrides the workspace root for
+    ``on_workspace_change`` (live ``HARNESS_REPO`` / server cfg). Never raises.
+    """
+    if owner is None:
+        return
+    driver = getattr(owner, "pilot", owner)
+    if driver is None:
+        return
+    hook_name = {
+        "session_switch": "on_session_switch",
+        "workspace": "on_workspace_change",
+        "interrupt": "on_interrupt",
+        "shutdown": "on_shutdown",
+    }.get(reason or "close", "")
+    try:
+        if hook_name:
+            hook = getattr(driver, hook_name, None)
+            if callable(hook):
+                if hook_name == "on_workspace_change":
+                    target = cwd
+                    if target is None:
+                        try:
+                            cfg = getattr(owner, "config", None)
+                            target = (
+                                getattr(cfg, "repo", None) if cfg is not None else None
+                            )
+                        except Exception:
+                            target = None
+                    hook(target)
+                else:
+                    hook()
+                return
+        close = getattr(driver, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        pass
+
+
 def _extract_update_text(update: Any) -> str:
     """Best-effort assistant text from a session/update payload."""
     if not isinstance(update, dict):
@@ -281,12 +373,24 @@ class AcpTransport:
                 pass
 
     def close(self) -> None:
+        """Idempotent teardown of the ACP stdio process (and Windows child tree)."""
+        if self._closed:
+            return
         self._closed = True
+        pid = None
+        try:
+            pid = getattr(self.proc, "pid", None)
+        except Exception:
+            pid = None
         try:
             if self.proc.stdin:
                 self.proc.stdin.close()
         except Exception:
             pass
+        # Windows: terminate() only hits the top-level shim; agent-spawned
+        # children detach and linger. Reap the owned pid tree first, then
+        # still terminate() so local stdio handles/reader threads unblock.
+        _reap_acp_child_tree(pid)
         try:
             self.proc.terminate()
         except Exception:
@@ -457,14 +561,54 @@ class WarmAcpSession:
         self.transport: Optional[AcpTransport] = None
         self.session_id: Optional[str] = None
         self._lock = threading.Lock()
+        # Bumped on every close so in-flight ensure/prewarm can detect abort
+        # and reap the transport it created (no orphan agent children).
+        self._epoch = 0
+        self._inflight: Optional[AcpTransport] = None
 
     def close(self) -> None:
+        """Idempotent: drop transport + session id; reap any in-flight ensure."""
         with self._lock:
-            t = self.transport
+            self._epoch += 1
+            owned: list = []
+            if self.transport is not None:
+                owned.append(self.transport)
+            if (
+                self._inflight is not None
+                and self._inflight is not self.transport
+            ):
+                owned.append(self._inflight)
             self.transport = None
             self.session_id = None
-        if t is not None:
-            t.close()
+            self._inflight = None
+        for victim in owned:
+            try:
+                victim.close()
+            except Exception:
+                pass
+
+    def retarget_cwd(self, cwd: Optional[str]) -> bool:
+        """Update workspace cwd; close warm process when the root actually changes.
+
+        Returns True when a live session was closed so the next ``ensure()``
+        respawns against the new root. Same-root retargets are a no-op.
+        """
+        new_cwd = _normalize_workspace(cwd)
+        with self._lock:
+            old_cwd = _normalize_workspace(self.cwd)
+            if old_cwd == new_cwd:
+                self.cwd = new_cwd
+                return False
+            self.cwd = new_cwd
+            alive = (
+                self.transport is not None
+                or self.session_id is not None
+                or self._inflight is not None
+            )
+        if alive:
+            self.close()
+            return True
+        return False
 
     def ensure(self) -> AcpTransport:
         with self._lock:
@@ -473,6 +617,7 @@ class WarmAcpSession:
             old = self.transport
             self.transport = None
             self.session_id = None
+            start_epoch = self._epoch
         if old is not None:
             try:
                 old.close()
@@ -483,16 +628,53 @@ class WarmAcpSession:
             if self._transport_factory is not None
             else self._spawn_transport()
         )
-        self._handshake(transport)
         with self._lock:
-            if self.transport is not None and self.transport.alive() and self.session_id:
+            if self._epoch != start_epoch:
+                discard_before_handshake = True
+            else:
+                self._inflight = transport
+                discard_before_handshake = False
+        if discard_before_handshake:
+            try:
+                transport.close()
+            except Exception:
+                pass
+            raise RuntimeError("warm ACP session closed during ensure")
+        try:
+            session_id = self._handshake(transport)
+        except Exception:
+            with self._lock:
+                if self._inflight is transport:
+                    self._inflight = None
+            try:
+                transport.close()
+            except Exception:
+                pass
+            raise
+        with self._lock:
+            if self._inflight is transport:
+                self._inflight = None
+            if self._epoch != start_epoch:
+                pass  # closed during handshake — reap below
+            elif (
+                self.transport is not None
+                and self.transport.alive()
+                and self.session_id
+            ):
                 try:
                     transport.close()
                 except Exception:
                     pass
                 return self.transport
-            self.transport = transport
-            return transport
+            else:
+                self.transport = transport
+                self.session_id = session_id
+                return transport
+        try:
+            transport.close()
+        except Exception:
+            pass
+        raise RuntimeError("warm ACP session closed during ensure")
 
     def _spawn_transport(self) -> AcpTransport:
         exec_prefix = resolve_agent_exec()
@@ -515,7 +697,10 @@ class WarmAcpSession:
         proc = subprocess.Popen(cmd, **popen_kwargs)
         return AcpTransport(proc)
 
-    def _handshake(self, transport: AcpTransport) -> None:
+    def _handshake(self, transport: AcpTransport) -> str:
+        """Run ACP initialize/session/new. Returns session id; does not publish
+        ``self.session_id`` — ``ensure`` assigns under the lock after close checks.
+        """
         init = transport.request(
             "initialize",
             {
@@ -557,15 +742,16 @@ class WarmAcpSession:
         sid = result.get("sessionId") or result.get("session_id")
         if not sid:
             raise RuntimeError("acp session/new returned no sessionId")
-        self.session_id = str(sid)
+        session_id = str(sid)
         # Prefer ask/plan when Marionette asked for a read-only CLI mode.
         mode = (os.environ.get("HARNESS_CURSOR_CLI_MODE") or "").strip() or "ask"
         if mode in ("ask", "plan"):
             transport.request(
                 "session/set_mode",
-                {"sessionId": self.session_id, "modeId": mode},
+                {"sessionId": session_id, "modeId": mode},
                 timeout=5.0,
             )
+        return session_id
 
     def prompt(
         self,
@@ -674,13 +860,8 @@ class CursorAcpDriver:
         self.mode = mode
         self.agent_binary = agent_binary
         self.cwd = cwd
-        workspace = None
         raw = (cwd or os.environ.get("HARNESS_REPO") or "").strip()
-        if raw:
-            try:
-                workspace = str(Path(raw).resolve())
-            except OSError:
-                workspace = raw
+        workspace = _normalize_workspace(raw)
         self._workspace = workspace
         self._session = session or WarmAcpSession(
             model=model, cwd=workspace, timeout=timeout
@@ -710,7 +891,29 @@ class CursorAcpDriver:
             self._acp_fail_reason = str(exc)
 
     def close(self) -> None:
+        """Idempotent owner close — reaps the warm ACP child tree when present."""
         self._session.close()
+
+    def on_session_switch(self) -> None:
+        """Owner path: session drop/replace — release the warm ACP process."""
+        self.close()
+
+    def on_workspace_change(self, cwd: Optional[str] = None) -> None:
+        """Owner path: workspace root changed — drop stale ACP for the old cwd."""
+        raw = cwd if cwd is not None else (os.environ.get("HARNESS_REPO") or "")
+        workspace = _normalize_workspace(raw)
+        self.cwd = cwd if cwd is not None else self.cwd
+        self._workspace = workspace
+        # Same root → no-op (keeps warm session). Different root → close/reap.
+        self._session.retarget_cwd(workspace)
+
+    def on_interrupt(self) -> None:
+        """Owner path: cooperative Stop — unblock stuck ACP I/O by reaping."""
+        self.close()
+
+    def on_shutdown(self) -> None:
+        """Owner path: process shutdown — reap owned ACP children."""
+        self.close()
 
     def _run_acp(
         self,

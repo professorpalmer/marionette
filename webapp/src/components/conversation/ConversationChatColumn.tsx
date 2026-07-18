@@ -5,7 +5,12 @@
 
 import type { ReactNode, RefObject } from "react";
 import { panelOpacityClass } from "../../lib/panelTransition";
-import { TranscriptList, type Card, type Item } from "../TranscriptList";
+import {
+  TranscriptList,
+  type Card,
+  type CommandApprovalItem,
+  type Item,
+} from "../TranscriptList";
 import TranscriptEmptyState from "./TranscriptEmptyState";
 
 export default function ConversationChatColumn({
@@ -24,6 +29,7 @@ export default function ConversationChatColumn({
   onImageClick,
   onSetCard,
   onExecutePlan,
+  onCommandApproval,
   composerDock,
 }: {
   feedRef: RefObject<HTMLDivElement | null>;
@@ -41,6 +47,7 @@ export default function ConversationChatColumn({
   onImageClick: (url: string) => void;
   onSetCard: (id: string, patch: Partial<Card>) => void;
   onExecutePlan: (planText: string) => void;
+  onCommandApproval: (item: CommandApprovalItem, approve: boolean) => void;
   composerDock: ReactNode;
 }) {
   return (
@@ -72,6 +79,7 @@ export default function ConversationChatColumn({
             onImageClick={onImageClick}
             onSetCard={onSetCard}
             onExecutePlan={onExecutePlan}
+            onCommandApproval={onCommandApproval}
           />
         </div>
       </div>

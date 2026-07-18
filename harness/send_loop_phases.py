@@ -72,8 +72,9 @@ def run_stream(
                 )
         except Exception:
             pass
+        # Sanitize immediately before dispatch (same seam as sync chat).
         r = session.pilot.chat_stream(
-            session._elide_stale_reads(session._history[1:]),
+            session._messages_for_provider(),
             **kwargs,
         )
         q.put(("done", r))
@@ -404,6 +405,21 @@ def drain_idle_turn(
     Same ConvEvent shapes and history mutations as the former inline block.
     """
     from .conversation import ConvEvent
+
+    # S2 Stop↔steer boundary: never promote queued steers into a new user
+    # message after cooperative interrupt — drop + notice instead.
+    blocks = getattr(session, "_steer_boundary_blocks_inject", None)
+    if callable(blocks) and blocks():
+        drop = getattr(session, "drop_queued_steers", None)
+        dropped = drop() if callable(drop) else []
+        if dropped:
+            record = getattr(session, "_record_steer_drop_notice", None)
+            if callable(record):
+                record(dropped)
+        flush = getattr(session, "_flush_steer_drop_notice", None)
+        if callable(flush):
+            yield from flush()
+        return ("return", user_message)
 
     pending_steers = session.drain_steer()
     if pending_steers:
@@ -1159,11 +1175,24 @@ def dispatch_local_action(
             if status == "blocked":
                 block = val if isinstance(val, dict) else {"message": str(val)}
                 block_msg = block.get("message") or str(val)
-                yield ConvEvent("command_blocked", {
-                    "id": aid, "command": act.command,
-                    "category": block.get("category"),
-                    "reason": block.get("reason"),
-                    "matched": block.get("matched"),
+                command_hash = block.get("command_hash") or ""
+                pending = session.register_pending_command_approval(
+                    command=act.command or "",
+                    command_hash=command_hash,
+                    action_id=aid,
+                    category=block.get("category") or "",
+                    reason=block.get("reason") or "",
+                    matched=block.get("matched") or "",
+                )
+                yield ConvEvent("command_approval_pending", {
+                    "id": aid,
+                    "command": act.command,
+                    "command_hash": command_hash,
+                    "session_id": pending.get("session_id"),
+                    "workspace_root": pending.get("workspace_root"),
+                    "category": pending.get("category") or block.get("category"),
+                    "reason": pending.get("reason") or block.get("reason"),
+                    "matched": pending.get("matched") or block.get("matched"),
                 })
                 session._append_action_result(act, aid, f"(run_command {aid} {block_msg})", is_native)
             else:

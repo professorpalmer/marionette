@@ -94,6 +94,17 @@ def attach_view(
                     pass
                 svc.bind_pilot_services(svc.get_pilot())
                 svc.sync_pilot_session_id()
+                # S3: warm-reuse after relocate/workspace-open may leave ACP on
+                # the previous root — retarget closes only when cwd differs.
+                try:
+                    release = getattr(svc.get_pilot(), "release_warm_acp", None)
+                    if callable(release):
+                        release(
+                            reason="workspace",
+                            cwd=getattr(svc.cfg, "repo", None),
+                        )
+                except Exception as e:
+                    svc.diag("server.attach_warm_acp_workspace", e)
             return svc.get_pilot()
 
     created = True
@@ -139,6 +150,9 @@ def attach_view(
         def _on_done(real: Any) -> None:
             try:
                 svc.bind_pilot_services(real)
+                # Session ownership must be set before hydrate so pending
+                # command-approval restore can refuse foreign display rows.
+                real.harness_session_id = session_id
                 # Prefer the placeholder's live transcript: callers may
                 # load_history() after cold attach (tests + resume paths)
                 # while this build was still in flight. The attach-time
@@ -155,7 +169,6 @@ def attach_view(
                 )
                 if load_transcript_on_create and hydrate:
                     real.load_history(hydrate)
-                real.harness_session_id = session_id
             except Exception as e:
                 svc.diag("server.deferred_pilot_hydrate", e)
                 placeholder.mark_failed(e)
@@ -205,11 +218,13 @@ def attach_view(
         except Exception:
             pass
         svc.bind_pilot_services(svc.get_pilot())
+        # Session ownership before hydrate so pending DANGER approval restore
+        # validates display rows against the owning session.
+        svc.sync_pilot_session_id()
         # Existing runners already hold live history (including in-flight turns).
         # Only hydrate from disk when the runner was just created.
         if created and load_transcript_on_create:
             svc.get_pilot().load_history(history)
-        svc.sync_pilot_session_id()
     return svc.get_pilot()
 
 
@@ -325,6 +340,14 @@ def rebuild_pilot_and_session(svc: AttachServices) -> None:
             svc.freeze_pilot_meters_into_boot_carry(old_pilot)
         except Exception:
             pass
+        # S3: rebuild owns the outgoing warm ACP — close before pointer swap
+        # so Windows cannot orphan agent acp children (drop also releases).
+        try:
+            release = getattr(old_pilot, "release_warm_acp", None)
+            if callable(release):
+                release(reason="session_switch")
+        except Exception as e:
+            svc.diag("server.rebuild_warm_acp_close", e)
         svc.set_session(new_session)
         svc.set_pilot(new_pilot)
         svc.get_pilot()._history = old_history

@@ -27,3 +27,8 @@ include = ["pmharness*", "harness*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "network: test requires real network access",
+    "swarm: test drives real Puppetmaster (slow subprocess spawns)",
+    "full_auto_safety: offline full-auto safety invariants (Wave 6 CI gate)",
+]

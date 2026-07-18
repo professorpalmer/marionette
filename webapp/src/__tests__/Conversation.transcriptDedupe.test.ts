@@ -238,4 +238,42 @@ describe("shouldPreferLocalTranscript / mergeTranscriptItems", () => {
     const remote: Item[] = [card("a")];
     expect(shouldPreferLocalTranscript(local, remote)).toBe(true);
   });
+
+  it("equal card counts take remote but keep a still-pending approval card", () => {
+    const hash = "c".repeat(64);
+    const local: Item[] = [
+      card("run-1"),
+      {
+        kind: "command_approval",
+        id: "call-1",
+        command: "ssh prod reboot",
+        commandHash: hash,
+        sessionId: "s1",
+        workspaceRoot: "/repo",
+        category: "remote",
+        reason: "ssh",
+        matched: "ssh",
+        status: "pending",
+      },
+    ];
+    const remote: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "run-1",
+          goal: "g-run-1",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+          result: { adapter: "local", duration_ms: 3 },
+        },
+      },
+    ];
+    expect(shouldPreferLocalTranscript(local, remote)).toBe(false);
+    const merged = mergeTranscriptItems(local, remote);
+    expect(merged.some((i) => i.kind === "command_approval" && i.status === "pending")).toBe(true);
+    const c = merged.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(c.card.result?.duration_ms).toBe(3);
+  });
 });

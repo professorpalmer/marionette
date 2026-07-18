@@ -16,6 +16,7 @@ import {
   shouldAdvanceReplayCursor,
   shouldHydrateTranscriptOnReplayMiss,
   shouldPollChatEvents,
+  shouldRetryRingAfterReplayMiss,
 } from "./chatEvents";
 import {
   mergeTranscriptItems,
@@ -82,7 +83,36 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     setStatus,
   } = deps;
 
-  const pullChatEvents = async (generationMismatchRetried = false): Promise<boolean> => {
+  const hydrateDurableTranscript = async (): Promise<void> => {
+    // Busy-poll skips disk refresh while chatEvents poll is armed — await a
+    // durable baseline before any ring retry so tool/activity tails merge
+    // coherently (transcript first, then retained frames).
+    const missHydrateGen = ++runnerBusyPollGenRef.current;
+    const missSid = reattachSid;
+    try {
+      const tres = await api.sessionTranscript(missSid);
+      if (missHydrateGen !== runnerBusyPollGenRef.current) return;
+      if (cancelled()) return;
+      if (loadGen !== transcriptLoadGenRef.current) return;
+      if (streamGenRef.current !== reattachGen) return;
+      if (cachedSessionIdRef.current !== missSid) return;
+      if (localStreamActiveRef.current) return;
+      const loadedItems = transcriptResponseToItems(tres);
+      const next = mergeTranscriptItems(itemsRef.current, loadedItems);
+      const fp = transcriptFingerprint(next);
+      if (fp === transcriptFpRef.current) return;
+      transcriptFpRef.current = fp;
+      setItems(next);
+      itemsRef.current = next;
+      writeTranscriptCache(missSid, next);
+      setTranscriptStale(false);
+      // Keep detached-busy chrome; do not clear status / poll.
+    } catch {
+      // Disk hydrate is best-effort; ring retry / poll may still catch up.
+    }
+  };
+
+  const pullChatEvents = async (missRetried = false): Promise<boolean> => {
     if (cancelled()) return false;
     if (loadGen !== transcriptLoadGenRef.current) return false;
     if (streamGenRef.current !== reattachGen) return false;
@@ -110,35 +140,18 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
           replay,
           lastAppliedCursorRef.current,
         );
-        // Busy-poll skips disk refresh while chatEvents poll is armed —
-        // hydrate once (per miss) so mid-turn UI does not freeze.
         if (shouldHydrateTranscriptOnReplayMiss(replay)) {
-          const missHydrateGen = ++runnerBusyPollGenRef.current;
-          const missSid = reattachSid;
-          void api.sessionTranscript(missSid).then((tres) => {
-            if (missHydrateGen !== runnerBusyPollGenRef.current) return;
-            if (cancelled()) return;
-            if (loadGen !== transcriptLoadGenRef.current) return;
-            if (streamGenRef.current !== reattachGen) return;
-            if (cachedSessionIdRef.current !== missSid) return;
-            if (localStreamActiveRef.current) return;
-            const loadedItems = transcriptResponseToItems(tres);
-            const next = mergeTranscriptItems(itemsRef.current, loadedItems);
-            const fp = transcriptFingerprint(next);
-            if (fp === transcriptFpRef.current) return;
-            transcriptFpRef.current = fp;
-            setItems(next);
-            itemsRef.current = next;
-            writeTranscriptCache(missSid, next);
-            setTranscriptStale(false);
-            // Keep detached-busy chrome; do not clear status / poll.
-          }).catch(() => {});
+          await hydrateDurableTranscript();
         }
+        // cursor_gap / refreshed generation_mismatch: retry once with the
+        // recovered cursor/gen so the retained tool/activity tail applies now.
+        // ring_miss stays hydrate-only — never synthesize missing frames.
         if (
-          replay.code === "generation_mismatch"
-          && !generationMismatchRetried
-          && ringGenerationRef.current != null
-          && ringGenerationRef.current !== prevGen
+          shouldRetryRingAfterReplayMiss(replay, {
+            alreadyRetried: missRetried,
+            prevGeneration: prevGen,
+            nextGeneration: ringGenerationRef.current,
+          })
         ) {
           return pullChatEvents(true);
         }

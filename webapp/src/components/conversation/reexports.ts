@@ -32,6 +32,7 @@ export {
   ringGenerationAfterReplayMiss,
   shouldHydrateTranscriptOnReplayMiss,
   cursorAfterReplayMiss,
+  shouldRetryRingAfterReplayMiss,
   chatFrameToStreamEvent,
 } from "./chatEvents";
 export {
@@ -86,6 +87,7 @@ export {
   appendCheckpoint,
   appendQueuedPromptUserBubble,
   appendAutoHalt,
+  appendAutoStatus,
   appendStreamError,
   appendNonStreamingThinking,
   applySwarmResultToItems,

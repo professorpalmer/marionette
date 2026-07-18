@@ -87,6 +87,9 @@ from .diag import note as _diag_note
 
 
 _WORKER_IMPORTS_WARMED = False
+# Serializes first-touch install of approval lock/containers on legacy/minimal
+# sessions constructed via ``__new__`` (see ``_command_approval_lock_guard``).
+_COMMAND_APPROVAL_INSTALL_LOCK = threading.Lock()
 
 
 def _prewarm_worker_imports() -> None:
@@ -405,6 +408,7 @@ ConvEventKind = Literal[
     "checkpoint",
     "codegraph_context",
     "command_blocked",
+    "command_approval_pending",
     "compacting",
     "compaction",
     "distilled",
@@ -548,6 +552,9 @@ class ConversationalSession(
         self._steer_queue = collections.deque()
         self._steer_lock = threading.Lock()
         self._steer_pending = False
+        # Set by drop_queued_steers / interrupt; flushed as ConvEvent("notice")
+        # by the abandoned stream or the next inject/drain boundary check.
+        self._pending_steer_drop_notice = None
         # PROMPT QUEUE: distinct from and complementary to the steer queue.
         # steer = an OUT-OF-BAND interrupt that redirects the CURRENT running turn
         # (injected into the last tool result or delivered at finalization).
@@ -619,6 +626,10 @@ class ConversationalSession(
         # After Stop: report runners idle + suppress swarm keep-alive resume until
         # the next real user send (abandoned generator may still hold _busy).
         self._stop_holds_idle = False
+        # Set by interrupt() only when _busy was held: late steers raced during
+        # that abandoned generation are dropped on the next acquire. Idle-session
+        # Stop must not wipe legitimate ready-session steers on the next send.
+        self._steer_boundary_drop_on_acquire = False
         # Generation guard for the single-writer lock. The watchdog can force-
         # release a wedged turn's _busy so drain/new turns recover (audit finding
         # #6); the generation lets the reaped turn's own finally detect it was
@@ -668,6 +679,7 @@ class ConversationalSession(
         self._pending_memory_proposals: dict = {}
         self._turn_memory_queue: list = []
         self._pending_command_approvals = {}
+        self._command_approval_lock = threading.Lock()
         self._approved_commands = set()  # command hashes the user one-click approved
         self._state = "idle"
         
@@ -758,6 +770,215 @@ class ConversationalSession(
             return "awaiting_swarm"
         return self._state
 
+    def _command_approval_lock_guard(self) -> threading.Lock:
+        """Return the approval lock, installing one on legacy/minimal sessions.
+
+        Reload/rewind helpers and some unit fixtures construct a
+        ``ConversationalSession`` via ``__new__`` without running ``__init__``.
+        Pending-approval restore must still be safe there without weakening
+        locking on fully constructed sessions (always a real ``threading.Lock``).
+
+        Installation of the lock and empty containers is serialized through a
+        module-level install lock so concurrent first-touch on a minimal session
+        cannot publish distinct Lock/set/dict instances.
+        """
+        lock = getattr(self, "_command_approval_lock", None)
+        pending = getattr(self, "_pending_command_approvals", None)
+        approved = getattr(self, "_approved_commands", None)
+        if lock is not None and pending is not None and approved is not None:
+            return lock
+        with _COMMAND_APPROVAL_INSTALL_LOCK:
+            lock = getattr(self, "_command_approval_lock", None)
+            if lock is None:
+                lock = threading.Lock()
+                self._command_approval_lock = lock
+            if getattr(self, "_pending_command_approvals", None) is None:
+                self._pending_command_approvals = {}
+            if getattr(self, "_approved_commands", None) is None:
+                self._approved_commands = set()
+            return lock
+
+    @staticmethod
+    def _approval_workspace_key(workspace_root: str) -> str:
+        return os.path.normcase(os.path.realpath(workspace_root or ""))
+
+    _COMMAND_HASH_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+    def _display_command_approval_row(
+        self,
+        pending: dict,
+        *,
+        status: str,
+    ) -> dict:
+        """Serialize a durable display-transcript command-approval card."""
+        return {
+            "type": "command_approval",
+            "id": pending.get("action_id") or pending.get("command_hash") or "",
+            "command": pending.get("command") or "",
+            "command_hash": pending.get("command_hash") or "",
+            "session_id": pending.get("session_id") or "",
+            "workspace_root": pending.get("workspace_root") or "",
+            "category": pending.get("category") or "",
+            "reason": pending.get("reason") or "",
+            "matched": pending.get("matched") or "",
+            "status": status,
+        }
+
+    def _pending_command_approval_from_display_row(self, row: Any) -> Optional[dict]:
+        """Validate a durable pending approval card for decision-state restore.
+
+        Decided, mismatched, or malformed rows return ``None`` and stay
+        display-only. Never trusts a row enough to pre-approve a command.
+        """
+        if not isinstance(row, dict):
+            return None
+        if row.get("type") != "command_approval":
+            return None
+        if (row.get("status") or "") != "pending":
+            return None
+        command_hash = str(row.get("command_hash") or "").strip().lower()
+        if not self._COMMAND_HASH_HEX.fullmatch(command_hash):
+            return None
+        command = row.get("command") or ""
+        if not isinstance(command, str) or not command.strip():
+            return None
+        # Cryptographic bind: refuse benign-card / evil-hash escalation.
+        # Mismatched rows stay display-only and can never authorize.
+        expected_hash = hashlib.sha256(command.encode("utf-8")).hexdigest()
+        if command_hash != expected_hash:
+            return None
+        session_id = str(row.get("session_id") or "").strip()
+        if not session_id:
+            return None
+        owning = (self.harness_session_id or "").strip()
+        if owning and session_id != owning:
+            return None
+        workspace_root = str(row.get("workspace_root") or "").strip()
+        if not workspace_root:
+            return None
+        canonical = self._approval_workspace_key(self.config.repo or "")
+        row_key = self._approval_workspace_key(workspace_root)
+        if not canonical or not row_key or row_key != canonical:
+            return None
+        return {
+            "session_id": session_id,
+            "workspace_root": os.path.realpath(self.config.repo or ""),
+            "command": command,
+            "command_hash": command_hash,
+            "action_id": str(row.get("action_id") or row.get("id") or ""),
+            "category": str(row.get("category") or ""),
+            "reason": str(row.get("reason") or ""),
+            "matched": str(row.get("matched") or ""),
+        }
+
+    def _restore_pending_command_approvals_from_display(self) -> None:
+        """Rebuild in-memory pending decisions from durable display cards.
+
+        One-shot ``_approved_commands`` never survive hydrate — the operator
+        must decide again via ``decide_command_approval`` after restore.
+        """
+        restored: dict = {}
+        for row in self._display_transcript or []:
+            pending = self._pending_command_approval_from_display_row(row)
+            if pending is None:
+                continue
+            restored[pending["command_hash"]] = pending
+        with self._command_approval_lock_guard():
+            self._pending_command_approvals = restored
+            self._approved_commands.clear()
+
+    def _upsert_display_command_approval(
+        self,
+        pending: dict,
+        *,
+        status: str,
+    ) -> None:
+        """Keep the display transcript in sync with pending/decided approvals."""
+        command_hash = pending.get("command_hash") or ""
+        if not command_hash:
+            return
+        row = self._display_command_approval_row(pending, status=status)
+        display = self._display_transcript
+        for i, existing in enumerate(display):
+            if (
+                isinstance(existing, dict)
+                and existing.get("type") == "command_approval"
+                and existing.get("command_hash") == command_hash
+            ):
+                display[i] = row
+                return
+        display.append(row)
+
+    def register_pending_command_approval(
+        self,
+        *,
+        command: str,
+        command_hash: str,
+        action_id: str,
+        category: str = "",
+        reason: str = "",
+        matched: str = "",
+    ) -> dict:
+        """Retain one blocked full-auto command for an operator decision.
+
+        Also writes a pending ``command_approval`` row into the display
+        transcript so ring-miss / cursor-gap hydrate can restore the card
+        without depending on retained SSE frames.
+        """
+        pending = {
+            "session_id": self.harness_session_id,
+            "workspace_root": os.path.realpath(self.config.repo or ""),
+            "command": command,
+            "command_hash": command_hash,
+            "action_id": action_id,
+            "category": category or "",
+            "reason": reason or "",
+            "matched": matched or "",
+        }
+        with self._command_approval_lock_guard():
+            self._pending_command_approvals[command_hash] = pending
+            self._upsert_display_command_approval(pending, status="pending")
+        return dict(pending)
+
+    def decide_command_approval(
+        self,
+        *,
+        command_hash: str,
+        workspace_root: str,
+        approve: bool,
+    ) -> Optional[dict]:
+        """Apply a one-shot operator decision to this session's pending command."""
+        requested_workspace = self._approval_workspace_key(workspace_root)
+        with self._command_approval_lock_guard():
+            pending = self._pending_command_approvals.get(command_hash)
+            if pending is None:
+                return None
+            pending_workspace = self._approval_workspace_key(
+                pending.get("workspace_root") or ""
+            )
+            if not requested_workspace or requested_workspace != pending_workspace:
+                raise PermissionError("command approval workspace does not match")
+            if pending.get("session_id") != self.harness_session_id:
+                raise PermissionError("command approval session does not match")
+            self._pending_command_approvals.pop(command_hash, None)
+            if approve:
+                self._approved_commands.add(command_hash)
+            else:
+                self._approved_commands.discard(command_hash)
+            self._upsert_display_command_approval(
+                pending,
+                status="approved" if approve else "rejected",
+            )
+            return dict(pending)
+
+    def consume_command_approval(self, command_hash: str) -> bool:
+        """Consume one exact command-hash approval atomically."""
+        with self._command_approval_lock_guard():
+            if command_hash not in self._approved_commands:
+                return False
+            self._approved_commands.remove(command_hash)
+            return True
+
     def has_pending_swarms(self) -> bool:
         with self._swarm_futures_lock:
             return len(self._swarm_futures) > 0
@@ -845,7 +1066,32 @@ class ConversationalSession(
         return [dict(m) for m in self._history[1:]]
 
     def export_display_transcript(self) -> list:
-        return list(self._display_transcript)
+        """Return the display transcript, restoring any still-pending approvals.
+
+        Pending DANGER approvals live in session state; if a prior save omitted
+        the card (or a sibling poll raced ahead of the upsert), fold them back
+        in so hydrate/reattach never drops a waiting operator decision.
+        """
+        display = list(self._display_transcript)
+        with self._command_approval_lock_guard():
+            pending_rows = [
+                self._display_command_approval_row(pending, status="pending")
+                for pending in self._pending_command_approvals.values()
+            ]
+        if not pending_rows:
+            return display
+        seen = {
+            row.get("command_hash")
+            for row in display
+            if isinstance(row, dict) and row.get("type") == "command_approval"
+        }
+        for row in pending_rows:
+            command_hash = row.get("command_hash") or ""
+            if not command_hash or command_hash in seen:
+                continue
+            display.append(row)
+            seen.add(command_hash)
+        return display
 
     def has_pending_user_turn(self) -> bool:
         """True when the transcript ends on a user turn with no assistant reply
@@ -883,6 +1129,9 @@ class ConversationalSession(
         # Heal a previously-corrupted transcript (dangling or non-adjacent
         # tool_use) on load so we never send an invalid history to the model.
         self._sanitize_tool_pairs()
+        # Durable pending DANGER cards must remain decidable after cold
+        # attach/restart — rebuild decision state from validated display rows.
+        self._restore_pending_command_approvals_from_display()
 
     def rewind_to_user_ordinal(self, user_ordinal: int) -> dict:
         """Hermes-style undo for message edit: truncate at the Nth user turn (0-based).
@@ -1376,6 +1625,29 @@ class ConversationalSession(
             "content": "(no result: the previous action was interrupted before it completed)",
         }
 
+    def _replace_stub_tool_result(self, tool_call_id: str, msg: dict) -> bool:
+        """Replace an interruption stub for ``tool_call_id`` with ``msg``.
+
+        Returns True when a stub was replaced (or a real result already exists
+        and the append should be skipped). Returns False when the caller should
+        append ``msg`` normally.
+        """
+        if not tool_call_id:
+            return False
+        for i in range(len(self._history) - 1, -1, -1):
+            existing = self._history[i]
+            if existing.get("role") != "tool":
+                continue
+            if existing.get("tool_call_id") != tool_call_id:
+                continue
+            if _is_stub_tool_result(existing):
+                self._history[i] = msg
+                self._invalidate_ctx_cache()
+                return True
+            # A real result already answers this id — drop the duplicate.
+            return True
+        return False
+
     def _sanitize_tool_pairs(self) -> None:
         """Guarantee every assistant tool_call has a matching tool result before
         the next model request. Anthropic 400s ("tool_use ids were found without
@@ -1464,6 +1736,16 @@ class ConversationalSession(
         # zero orphans while inserting zero stubs) -- the len-keyed cache
         # would then stale-read. Explicitly invalidate.
         self._invalidate_ctx_cache()
+
+    def _messages_for_provider(self) -> list:
+        """Heal tool_use/tool_result pairs, then return the elided non-system
+        history for an outbound provider chat/chat_stream call.
+
+        Call this immediately before every provider dispatch so interactive
+        send, streaming, resume, and steer-after-interrupt share one seam.
+        """
+        self._sanitize_tool_pairs()
+        return self._elide_stale_reads(self._history[1:])
 
     def _grounded_wiki_answer(self, question: str, raw: str) -> str:
         """Grounded synthesis over a raw wiki query result.
@@ -1588,11 +1870,18 @@ class ConversationalSession(
 
         if is_native:
             msg = {"role": "tool", "tool_call_id": tc_id, "content": clamped_content}
+            if read_path:
+                msg["_read_path"] = read_path
+            # Crash/resume race: an interruption stub may already answer this
+            # id (export/load/sanitize after cancel). Prefer the real result
+            # in place so we never emit duplicate tool_result rows for one id.
+            if not self._replace_stub_tool_result(tc_id, msg):
+                self._history.append(msg)
         else:
             msg = {"role": "user", "content": clamped_content}
-        if read_path:
-            msg["_read_path"] = read_path
-        self._history.append(msg)
+            if read_path:
+                msg["_read_path"] = read_path
+            self._history.append(msg)
 
         # Loop-guard cache: remember successful results so identical repeats
         # within the turn can replay instead of re-executing (token bleed).
@@ -1647,6 +1936,22 @@ class ConversationalSession(
         except Exception:
             pass
         return roots
+
+    def release_warm_acp(
+        self, *, reason: str = "close", cwd: Optional[str] = None
+    ) -> None:
+        """Best-effort close/reap of an owned Cursor warm ACP session.
+
+        Ownership reasons: ``session_switch``, ``workspace``, ``interrupt``,
+        ``shutdown``. ``cwd`` is the live workspace root for workspace retargets.
+        No-op when the pilot is not a warm ACP driver. Never raises.
+        """
+        try:
+            from pmharness.drivers.cursor_acp import release_owned_warm_acp
+
+            release_owned_warm_acp(self, reason=reason, cwd=cwd)
+        except Exception:
+            pass
 
     def cancel(self) -> None:
         """Signal any in-flight run_auto/send to stop at the next checkpoint."""
