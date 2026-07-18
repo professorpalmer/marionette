@@ -76,12 +76,15 @@ def advisor_enabled() -> bool:
 
 
 def advisor_compaction_enabled() -> bool:
-    """Behavior-changing early-compaction toggle; default OFF.
+    """Behavior-changing early-compaction toggle; default ON.
 
     When on, ``CompactionContextMixin._maybe_compact_history`` proactively
-    compacts once advice reaches level ``now`` (before the hard 75% trigger).
+    compacts once advice reaches level ``now`` (before the hard 75% trigger),
+    so users never have to compact by hand -- matching Hermes, which
+    auto-compresses at threshold with only a quiet receipt. Set
+    ``HARNESS_ADVISOR_COMPACTION=0`` to fall back to the hard trigger only.
     """
-    return _env_enabled("HARNESS_ADVISOR_COMPACTION", False)
+    return _env_enabled("HARNESS_ADVISOR_COMPACTION", True)
 
 
 def _none_advice() -> dict[str, Any]:

@@ -247,7 +247,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_AUTO_MAX_SWARMS` / `_TOKENS` / `_SECONDS` / `_MAX_IDLE` | Full-auto budget governor ceilings. |
 | `HARNESS_APPEND_ONLY_CONTEXT` | Force append-only KV-cache context mode (auto-detected for local/cache-discounting endpoints when unset). |
 | `HARNESS_COMPACTION_ADVISOR` | Surface layer-pressure compaction advice in `/api/usage` (default on). |
-| `HARNESS_ADVISOR_COMPACTION` | When on, proactively run history compaction before the next turn once advice reaches level `now`. Default off (measurement-only unless opted in). |
+| `HARNESS_ADVISOR_COMPACTION` | Proactively run history compaction before the next turn once advice reaches level `now` (default on; set `0` to rely on the hard 75% trigger only). |
 
 Swarm job costs in the UI come from measured usage priced against `~/.puppetmaster/models.json`, then the live OpenRouter `/models` map (cached under `~/.pmharness/or_models_cache.json`), then the router pre-flight estimate. Bedrock agentic workers use the same usage ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ `price_job` / tracker path (including cache-read discount). No manual registry entry is required for OpenRouter-hosted models like `z-ai/glm-5.2`.
 

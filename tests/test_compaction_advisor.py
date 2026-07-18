@@ -200,9 +200,20 @@ def test_advisor_compaction_env_off_leaves_default_trigger(monkeypatch, tmp_path
     assert 650 <= tokens < 750
     _journal_now_snapshot(tmp_path)
 
-    monkeypatch.delenv("HARNESS_ADVISOR_COMPACTION", raising=False)
+    monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", "0")
     events = list(session._maybe_compact_history())
     assert events == []
+
+
+def test_advisor_compaction_default_on(monkeypatch, tmp_path):
+    """Unset env defaults to auto-compaction at advisor level now."""
+    session = _session_in_advisor_trigger_window(tmp_path)
+    _journal_now_snapshot(tmp_path)
+
+    monkeypatch.delenv("HARNESS_ADVISOR_COMPACTION", raising=False)
+    events = list(session._maybe_compact_history())
+    assert len(events) >= 1
+    assert events[0].kind == "compacting"
 
 
 def test_advisor_compaction_fires_between_65_and_75_percent(monkeypatch, tmp_path):
@@ -237,7 +248,7 @@ def test_advisor_compaction_proactive_at_now_below_soft_trigger(monkeypatch, tmp
     assert len(events) >= 1
     assert events[0].kind == "compacting"
 
-    monkeypatch.delenv("HARNESS_ADVISOR_COMPACTION", raising=False)
+    monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", "0")
     session2 = ConversationalSession(cfg)
     session2.harness_session_id = "advisor-trigger"
     session2._history = list(session._history)
