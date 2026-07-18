@@ -67,6 +67,16 @@ function readPmHarnessStateFile(name) {
 }
 
 const { decideBackendPortRefresh } = require("./backend-marker.cjs");
+const {
+  INTENTIONAL_RESTART_SIGNAL,
+  shouldUnlinkBackendMarker,
+  classifyBackendExit,
+  shouldRespawnAfterBackendExit,
+  isFreshIntentionalRestartSignal,
+  shouldCountTowardCrashLoop,
+  shutdownOwnedBackendTree,
+  WINDOWS_SHUTDOWN_GRACE_MS,
+} = require("./backend-lifecycle.cjs");
 
 /** Re-point renderer globals + notify panels after backendPort/token change. */
 function reinjectBackendIntoRenderer() {
@@ -326,6 +336,8 @@ function loginShellEnv() {
 
 let backend = null;
 let backendPort = 8799;
+/** True when this Electron process spawned the live backend (vs adopted via marker). */
+let backendOwned = false;
 let win = null;
 let quitting = false;
 // Self-dev Vite dev server: when Live Self-Editing is on, we serve the React UI
@@ -575,6 +587,23 @@ function unlinkMarker() {
   }
 }
 
+function unlinkMarkerIfOwned(owned = backendOwned) {
+  // Accept an explicit ownership snapshot so callers that already cleared the
+  // global flag (exit handler) can still unlink when THEY owned the backend.
+  if (!shouldUnlinkBackendMarker(owned)) return;
+  unlinkMarker();
+}
+
+function consumeIntentionalRestartSignal() {
+  const raw = readPmHarnessStateFile(INTENTIONAL_RESTART_SIGNAL);
+  const intentional = isFreshIntentionalRestartSignal(raw);
+  if (!raw) return false;
+  for (const dir of [pmharnessStateDir(), pmharnessHome()]) {
+    try { fs.unlinkSync(path.join(dir, INTENTIONAL_RESTART_SIGNAL)); } catch {}
+  }
+  return intentional;
+}
+
 function startBackend() {
   // Coalesce overlapping starts onto one in-flight promise so we never launch a
   // second backend against the same SQLite while the first is still starting up.
@@ -592,6 +621,7 @@ async function _startBackendOnce() {
       await waitForBackend(m.port, 2000);
       backendPort = m.port;
       backend = null; // not ours to kill
+      backendOwned = false;
       // Adopt the running backend's token (minted by whichever main spawned it)
       // so our renderer/IPC authenticate against IT rather than our own unused
       // freshly-minted token.
@@ -681,26 +711,53 @@ async function _startBackendOnce() {
     // fast relaunch dies against them ("stuck until manual restart").
     detached: process.platform !== "win32",
   });
+  backendOwned = true;
 
   backend.on("error", (e) => _dbg(`spawn error: ${e.message}`));
-  // Recover from an unexpected backend death instead of leaving the window
-  // stranded against a dead port (graph/wiki/terminal all fail at once until the
-  // user reopens). cleanupBackend() nulls `backend` on intentional teardown, so a
-  // non-null ref here means the exit was NOT us -> respawn and tell the renderer.
+  // Recover from an unexpected backend death (or honor POST /api/restart) instead
+  // of leaving the window stranded against a dead port. cleanupBackend() nulls
+  // `backend` on Electron-driven teardown, so a non-null ref here means the exit
+  // was NOT us. Capture ownership BEFORE clearing the global so we can still
+  // unlink our marker (adopted markers stay untouched).
   backend.on("exit", (code, signal) => {
-    const wasOurs = backend;   // non-null => unexpected (not cleanupBackend/quit)
+    const wasOurs = backend;   // non-null => not cleanupBackend/quit
+    const owned = backendOwned;
+    const intentionalRestart = consumeIntentionalRestartSignal();
     backend = null;
-    if (!wasOurs || quitting) return;
-    _dbg(`[backend EXITED unexpectedly] code=${code} signal=${signal} -- respawning`);
-    unlinkMarker();
-    // Crash-loop guard: if it keeps dying, stop auto-respawning and wait for the
-    // next window activate so we don't spin the CPU fighting a hard failure.
-    const now = Date.now();
-    respawnTimes = respawnTimes.filter((t) => now - t < 60000);
-    respawnTimes.push(now);
-    if (respawnTimes.length > 5) {
-      _dbg("[backend] too many respawns in 60s -- pausing auto-respawn until next activate");
+    backendOwned = false;
+    const exitKind = classifyBackendExit({
+      backendRef: wasOurs,
+      backendOwned: owned,
+      quitting,
+      restarting,
+      intentionalRestart,
+    });
+    if (!shouldRespawnAfterBackendExit({
+      backendRef: wasOurs,
+      backendOwned: owned,
+      quitting,
+      restarting,
+      intentionalRestart,
+    })) {
       return;
+    }
+    // Unlink using the captured ownership snapshot — the global is already false.
+    unlinkMarkerIfOwned(owned);
+    if (exitKind === "intentional_restart") {
+      _dbg(`[backend] intentional restart (api/restart) code=${code} signal=${signal} -- respawning`);
+    } else {
+      _dbg(`[backend EXITED unexpectedly] code=${code} signal=${signal} -- respawning`);
+      // Crash-loop guard: only unexpected exits count. Intentional /api/restart
+      // must not pause auto-respawn or look like a crash storm.
+      const now = Date.now();
+      respawnTimes = respawnTimes.filter((t) => now - t < 60000);
+      if (shouldCountTowardCrashLoop(exitKind)) {
+        respawnTimes.push(now);
+      }
+      if (respawnTimes.length > 5) {
+        _dbg("[backend] too many respawns in 60s -- pausing auto-respawn until next activate");
+        return;
+      }
     }
     startBackend()
       .then(() => {
@@ -802,8 +859,9 @@ async function restartBackend() {
     // Best-effort: flush the current transcript before we kill the backend, so
     // the fresh process restores exactly where we left off.
     try { await backendRequest("POST", "/api/session/persist", {}); } catch { /* older backend: relies on per-turn saves */ }
-    try { cleanupBackend(); } catch { /* already gone */ }
-    // Give the OS a beat to release the port/SQLite locks before respawning.
+    try { await cleanupBackend(); } catch { /* already gone */ }
+    // cleanupBackend already awaited the graceful shutdown window; a short beat
+    // covers lingering OS handle release before we bind the replacement.
     await new Promise((r) => setTimeout(r, 300));
     await startBackend();
     try {
@@ -953,9 +1011,12 @@ registerUpdateBridge(ipcMain, app, shell, {
   // (same recovery the backend uses) so its child tools resolve like a terminal.
   getEnv: () => (isDev ? process.env : buildUpdaterEnv({ processEnv: process.env, shellEnv: loginShellEnv() })),
   relaunch: () => {
-    try { cleanupBackend(); } catch { /* ignore */ }
-    app.relaunch();
-    app.exit(0);
+    Promise.resolve(cleanupBackend())
+      .catch(() => {})
+      .finally(() => {
+        app.relaunch();
+        app.exit(0);
+      });
   },
 });
 
@@ -1652,47 +1713,36 @@ app.on("open-url", (event, url) => {
   });
 });
 
-function killBackendTree(b) {
+async function killBackendTree(b) {
   // Kill the backend AND its children (workers, codegraph node, wiki backend).
-  // Killing only the backend pid leaves orphans holding the SQLite lock and
-  // ports; a fast relaunch then spawns a backend that dies against them and the
-  // app sits "stuck" until a manual restart from Settings.
-  if (process.platform === "win32") {
-    // taskkill /T walks the child tree; TerminateProcess via b.kill() does not.
-    try {
-      require("node:child_process").spawnSync(
-        "taskkill", ["/pid", String(b.pid), "/T", "/F"],
-        { windowsHide: true, timeout: 5000 },
-      );
-    } catch {}
-    try { b.kill(); } catch {}
-    return;
-  }
-  // POSIX: the backend was spawned detached (own process group), so a negative
-  // pid signals the whole group.
-  try { process.kill(-b.pid, "SIGTERM"); } catch { try { b.kill("SIGTERM"); } catch {} }
-  try {
-    setTimeout(() => {
-      try { process.kill(-b.pid, "SIGKILL"); } catch { try { if (!b.killed) b.kill("SIGKILL"); } catch {} }
-    }, 800);
-  } catch {}
+  // Ownership-safe + awaited: soft signal, bounded grace, then force. Callers
+  // must await this before spawning a replacement so SQLite/port locks release.
+  const spawnSync = require("node:child_process").spawnSync;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  return shutdownOwnedBackendTree({
+    platform: process.platform,
+    child: b,
+    spawnSync,
+    sleep,
+    graceMs: WINDOWS_SHUTDOWN_GRACE_MS,
+  });
 }
 
-function cleanupBackend() {
+async function cleanupBackend() {
   // Tear the backend down on a REAL quit so the next launch always starts a fresh
   // backend running the latest code. Two things matter for the "Cmd+Q then reopen
   // picks up my changes" workflow:
-  //   1. Remove the marker FIRST -- startBackend adopts any healthy backend it
-  //      finds on the marker port, so a lingering survivor would be reused (old
-  //      code). No marker => reopen can only spawn fresh.
-  //   2. Kill the whole process tree (see killBackendTree), so a backend that is
-  //      slow to exit (mid tool call / draining) can never survive into the next
-  //      session and strand the relaunch.
-  unlinkMarker();
-  if (backend) {
+  //   1. Remove the marker FIRST when WE own the backend -- startBackend adopts
+  //      any healthy backend it finds on the marker port, so a lingering survivor
+  //      would be reused (old code). Adopted backends keep their marker.
+  //   2. Await the whole owned process-tree shutdown so a slow-to-exit backend
+  //      cannot retain locks into the next session / replacement spawn.
+  unlinkMarkerIfOwned();
+  if (backend && backendOwned) {
     const b = backend;
     backend = null;
-    killBackendTree(b);
+    backendOwned = false;
+    await killBackendTree(b);
   }
 }
 app.on("window-all-closed", () => {
@@ -1701,21 +1751,27 @@ app.on("window-all-closed", () => {
   // then reopen, or Dock click) loads a renderer against a dead backend and every
   // API call errors. The backend is torn down only on a real quit (before-quit).
   if (process.platform !== "darwin") {
-    cleanupBackend();
-    cleanupVite();
-    app.quit();
+    Promise.resolve(cleanupBackend())
+      .catch(() => {})
+      .finally(() => {
+        cleanupVite();
+        app.quit();
+      });
   }
 });
 let quitFinalized = false;
 app.on("before-quit", (e) => {
   quitting = true;
   if (quitFinalized) return;
-  // Hold the quit open just long enough for the SIGTERM->SIGKILL grace timer to
-  // run. Without this the event loop tears down at ~0ms, the escalation never
-  // fires, and a slow-to-exit backend survives into the next launch -- the
-  // "closed fast, now it's stuck until manual restart" failure.
+  // Hold quit open until the awaited graceful->force shutdown finishes. The
+  // previous fire-and-forget setTimeout race let relaunches start while the old
+  // owned tree still held SQLite/port locks.
   e.preventDefault();
-  cleanupBackend();
-  cleanupVite();
-  setTimeout(() => { quitFinalized = true; app.quit(); }, 1000);
+  Promise.resolve(cleanupBackend())
+    .catch(() => {})
+    .finally(() => {
+      cleanupVite();
+      quitFinalized = true;
+      app.quit();
+    });
 });

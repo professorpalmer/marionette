@@ -85,7 +85,7 @@ test("runRebuildWithRetry: a first-try success does not retry", async () => {
   assert.equal(res.code, 0);
 });
 
-test("planPuppetmasterUpgrade: a plain PyPI install upgrades to puppetmaster-ai latest", () => {
+test("planPuppetmasterUpgrade: a plain PyPI install upgrades to the pinned Puppetmaster release", () => {
   const plan = pm.planPuppetmasterUpgrade({
     specEnv: "",
     pipShowOutput: "Name: puppetmaster-ai\nVersion: 1.1.0\nLocation: /app/.venv/lib/python3.11/site-packages",

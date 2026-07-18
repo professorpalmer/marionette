@@ -278,15 +278,27 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             import json
             cmd = _puppetmaster_cmd(adapter, act.goal, '--cwd', effective_repo, '--mode', 'implement', '--allow-dirty', '--allow-non-worktree', *session._job_dispatch_label_args())
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=effective_repo, encoding='utf-8', errors='replace')
+            try:
+                from harness.worktrees import bind_worktree_subprocess
+                bind_worktree_subprocess(effective_repo, p, kind="worker")
+            except Exception:
+                pass
             job_id = None
             all_output_lines = []
-            for line in p.stdout:
-                all_output_lines.append(line)
-                if not job_id:
-                    match = re.search('\\b(job_[a-fA-F0-9]{12})\\b', line)
-                    if match:
-                        job_id = match.group(1)
-            p.wait(timeout=600)
+            try:
+                for line in p.stdout:
+                    all_output_lines.append(line)
+                    if not job_id:
+                        match = re.search('\\b(job_[a-fA-F0-9]{12})\\b', line)
+                        if match:
+                            job_id = match.group(1)
+                p.wait(timeout=600)
+            finally:
+                try:
+                    from harness.worktrees import release_worktree_subprocess
+                    release_worktree_subprocess(effective_repo, p)
+                except Exception:
+                    pass
             if job_id:
                 session._session_job_ids.append(job_id)
                 if not session._submit_swarm(session._run_swarm_background, job_id, act.goal, None):
@@ -449,6 +461,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             cmd = _puppetmaster_cmd('--state-dir', state_dir, adapter, sub_goal, '--cwd', effective_repo, '--mode', mode, '--allow-dirty', '--allow-non-worktree', *session._job_dispatch_label_args())
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=effective_repo, encoding='utf-8', errors='replace')
+                try:
+                    from harness.worktrees import bind_worktree_subprocess
+                    bind_worktree_subprocess(effective_repo, proc, kind="worker")
+                except Exception:
+                    pass
                 p_info = {'proc': proc, 'goal': sub_goal, 'id': sub_aid, 'job_id': None, 'lines': [], 'state_dir': state_dir}
                 processes.append(p_info)
                 t = threading.Thread(target=read_stdout_thread, args=(p_info,), daemon=True)
@@ -459,10 +476,17 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 shutil.rmtree(state_dir, ignore_errors=True)
         for p_info in processes:
             try:
-                p_info['proc'].wait(timeout=600)
-            except subprocess.TimeoutExpired:
-                p_info['proc'].kill()
-                p_info['proc'].wait()
+                try:
+                    p_info['proc'].wait(timeout=600)
+                except subprocess.TimeoutExpired:
+                    p_info['proc'].kill()
+                    p_info['proc'].wait()
+            finally:
+                try:
+                    from harness.worktrees import release_worktree_subprocess
+                    release_worktree_subprocess(effective_repo, p_info['proc'])
+                except Exception:
+                    pass
         for t in threads:
             t.join(timeout=5)
         aggregate_artifacts_summary = []

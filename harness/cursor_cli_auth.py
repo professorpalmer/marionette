@@ -23,6 +23,7 @@ from pmharness.drivers.cursor_cli import (
     DEFAULT_CURSOR_CLI_MODELS,
     INSTALL_HINT,
     resolve_agent_binary,
+    resolve_agent_exec,
 )
 
 _STATUS_TIMEOUT = 8
@@ -43,14 +44,20 @@ def _run_agent(args: list[str], *, timeout: int = _STATUS_TIMEOUT) -> subprocess
     binary = resolve_agent_binary()
     if not binary:
         raise FileNotFoundError(INSTALL_HINT)
-    return subprocess.run(
-        [binary, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
+    exec_prefix = resolve_agent_exec(binary)
+    if not exec_prefix:
+        raise FileNotFoundError(INSTALL_HINT)
+    run_kwargs: dict = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": timeout,
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.run([*exec_prefix, *args], **run_kwargs)
 
 
 def _parse_status_json(stdout: str) -> Dict[str, Any]:

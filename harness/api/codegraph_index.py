@@ -278,6 +278,12 @@ def index_codegraph_bg(repo_path: str):
                 stderr=subprocess.STDOUT,
             )
             codegraph_index_proc = (repo_path, proc)
+            try:
+                from ..worktrees import bind_worktree_subprocess
+
+                bind_worktree_subprocess(repo_path, proc, kind="indexer")
+            except Exception:
+                pass
         except Exception as e:
             codegraph_status = "unsupported"
             codegraph_status_reason = f"failed to start indexer: {e}"
@@ -334,6 +340,12 @@ def index_codegraph_bg(repo_path: str):
             except Exception:
                 pass
         finally:
+            try:
+                from ..worktrees import release_worktree_subprocess
+
+                release_worktree_subprocess(repo_path, proc)
+            except Exception:
+                pass
             try:
                 if proc.stdout:
                     proc.stdout.close()

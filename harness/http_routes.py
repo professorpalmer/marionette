@@ -297,6 +297,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     _post_session_interrupt._svc = svc  # type: ignore[attr-defined]
     _post_wiki_handoff._svc = svc  # type: ignore[attr-defined]
     _post_restart._svc = svc  # type: ignore[attr-defined]
+    _post_restart._mcp = svc.mcp_services  # type: ignore[attr-defined]
     return routes
 
 
@@ -332,10 +333,22 @@ def _post_wiki_handoff(handler: Any, body: dict) -> Any:
 
 def _post_restart(handler: Any, body: dict) -> Any:
     from .api import session_control as _sc_api
+    from .backend_restart_signal import write_intentional_restart_signal
     svc = _post_restart._svc  # type: ignore[attr-defined]
     ok, err = _sc_api.prepare_session_restart(svc.session_control_services())
     if not ok:
         svc.diag("server.self_edit_restart_persist", Exception(err or "persist failed"))
+    try:
+        mcp_svc = _post_restart._mcp()  # type: ignore[attr-defined]
+        mcp_svc.mcp.stop_all()
+    except Exception as exc:
+        svc.diag("server.self_edit_restart_mcp", exc)
+    # Signal Electron before self-terminate so the child-exit handler treats
+    # this as an intentional restart (not an unexpected crash).
+    try:
+        write_intentional_restart_signal()
+    except Exception as exc:
+        svc.diag("server.self_edit_restart_signal", exc)
     handler._send(200, json.dumps({"ok": True, "restarting": True}))
 
     def _delayed_self_terminate():

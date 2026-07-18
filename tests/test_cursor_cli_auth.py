@@ -215,3 +215,50 @@ def test_list_models_live_parses_text(monkeypatch):
     models = auth.list_models(live=True)
     assert "composer-2.5" in models
     assert "cursor-grok-4.5-medium" in models
+
+
+def test_run_agent_uses_direct_exec_and_devnull_stdin(monkeypatch):
+    captured: dict = {}
+
+    def fake_exec(binary=None):
+        assert binary == r"C:\Users\me\AppData\Local\cursor-agent\agent.cmd"
+        return [r"C:\Users\me\AppData\Local\cursor-agent\versions\2026.01.01-abc\node.exe",
+                r"C:\Users\me\AppData\Local\cursor-agent\versions\2026.01.01-abc\index.js"]
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "{}", "")
+
+    monkeypatch.setattr(auth, "resolve_agent_binary", lambda: r"C:\Users\me\AppData\Local\cursor-agent\agent.cmd")
+    monkeypatch.setattr(auth, "resolve_agent_exec", fake_exec)
+    monkeypatch.setattr(auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(auth.sys, "platform", "win32")
+    monkeypatch.setattr(auth.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+
+    auth._run_agent(["status", "--format", "json"])
+
+    assert captured["cmd"][0].endswith("node.exe")
+    assert captured["cmd"][1].endswith("index.js")
+    assert captured["cmd"][2:] == ["status", "--format", "json"]
+    assert captured["kwargs"]["stdin"] is auth.subprocess.DEVNULL
+    assert captured["kwargs"]["encoding"] == "utf-8"
+    assert captured["kwargs"]["creationflags"] == 0x08000000
+
+
+def test_run_agent_falls_back_to_binary_when_exec_unresolved(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(auth, "resolve_agent_binary", lambda: "/fake/agent")
+    monkeypatch.setattr(auth, "resolve_agent_exec", lambda _b=None: ["/fake/agent"])
+    monkeypatch.setattr(auth.subprocess, "run", fake_run)
+    monkeypatch.setattr(auth.sys, "platform", "linux")
+
+    auth._run_agent(["about"])
+
+    assert captured["cmd"] == ["/fake/agent", "about"]
+    assert captured  # run was invoked

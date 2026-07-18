@@ -2762,6 +2762,23 @@ _sys.modules[__name__].__class__ = _HarnessServerModule
 
 
 
+def boot_mcp_servers(mcp: Any = None, diag: Any = None) -> None:
+    """Start configured MCP servers and record failures via ``diag``.
+
+    Extracted from the serve() boot thread so tests exercise the real
+    production path (msg=/exc= kwargs) instead of reimplementing the body.
+    """
+    mcp_client = _mcp if mcp is None else mcp
+    note = _diag if diag is None else diag
+    try:
+        report = mcp_client.start_all()
+        for name, result in report.items():
+            if isinstance(result, str):
+                note("mcp.boot_error", msg=f"{name}: {result}")
+    except Exception as exc:
+        note("mcp.boot_fail", exc=exc)
+
+
 def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> None:
     import errno
     import sys
@@ -2903,16 +2920,7 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
         _maybe_auto_index_codegraph()
         # Connect configured MCP servers (incl. local Docker HTTP) without
         # blocking the GUI bind. Failures land on status().error for State→MCP.
-        def _boot_mcp() -> None:
-            try:
-                report = _mcp.start_all()
-                for _name, _res in report.items():
-                    if isinstance(_res, str):
-                        _diag("mcp.boot_error", name=_name, error=_res)
-            except Exception as _e:
-                _diag("mcp.boot_fail", error=str(_e))
-
-        threading.Thread(target=_boot_mcp, name="mcp-boot", daemon=True).start()
+        threading.Thread(target=boot_mcp_servers, name="mcp-boot", daemon=True).start()
         srv.serve_forever()
     except SystemExit:
         raise

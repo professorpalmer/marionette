@@ -402,7 +402,7 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     }
 
     // Puppetmaster -- the one integral runtime dep -- ships independently of this
-    // repo (unpinned PyPI package), so a git pull never carries a PM release.
+    // repo (separately versioned PyPI package), so a git pull never carries a PM release.
     // Upgrade it on every update so overhauls reach existing installs, unless a
     // dev/custom spec owns it. Non-fatal: a PyPI blip or offline machine must
     // never strand an otherwise-successful app update -- PM just stays put.

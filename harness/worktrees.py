@@ -7,6 +7,7 @@ import json
 import logging
 import subprocess
 import tempfile
+import threading
 from typing import Optional
 
 from .paths import path_within
@@ -14,6 +15,110 @@ from .secure_files import restrict_to_owner
 from .diag import note as _diag
 
 logger = logging.getLogger("pmharness.worktrees")
+
+_managed_lock = threading.Lock()
+# Normalized worktree path -> {pid: kind}
+_managed_processes: dict[str, dict[int, str]] = {}
+
+
+def _normalize_worktree_path(path: str) -> str:
+    try:
+        return os.path.realpath(path)
+    except Exception:
+        return os.path.abspath(path)
+
+
+def managed_worktree_root(path: str) -> Optional[str]:
+    """Return the worktree root when ``path`` is under ``.pmharness-worktrees``."""
+    try:
+        real = _normalize_worktree_path(path)
+        marker = f".pmharness-worktrees{os.sep}"
+        idx = real.find(marker)
+        if idx < 0:
+            norm = real.replace("\\", "/")
+            slash_marker = "/.pmharness-worktrees/"
+            slash_idx = norm.find(slash_marker)
+            if slash_idx < 0:
+                return None
+            root = norm[: slash_idx + len(slash_marker)]
+            rest = norm[slash_idx + len(slash_marker) :]
+            name = rest.split("/", 1)[0]
+            if not name:
+                return None
+            return _normalize_worktree_path(root.replace("/", os.sep) + name)
+        root = real[: idx + len(marker)]
+        rest = real[idx + len(marker) :]
+        name = rest.split(os.sep, 1)[0]
+        if not name:
+            return None
+        return _normalize_worktree_path(os.path.join(root, name))
+    except Exception:
+        return None
+
+
+def register_worktree_process(
+    worktree_or_cwd: str, pid: int, *, kind: str = "worker"
+) -> None:
+    """Record a Marionette-spawned process tree root for orphan reaping."""
+    if pid <= 1:
+        return
+    root = managed_worktree_root(worktree_or_cwd)
+    if not root:
+        return
+    key = _normalize_worktree_path(root)
+    with _managed_lock:
+        bucket = _managed_processes.setdefault(key, {})
+        bucket[int(pid)] = kind or "worker"
+
+
+def unregister_worktree_process(worktree_or_cwd: str, pid: int) -> None:
+    root = managed_worktree_root(worktree_or_cwd)
+    if not root:
+        return
+    key = _normalize_worktree_path(root)
+    with _managed_lock:
+        bucket = _managed_processes.get(key)
+        if not bucket:
+            return
+        bucket.pop(int(pid), None)
+        if not bucket:
+            _managed_processes.pop(key, None)
+
+
+def bind_worktree_subprocess(
+    worktree_or_cwd: str, proc: object, *, kind: str = "worker"
+) -> None:
+    """Register a spawned child for registry-only reaping (spawn-site helper)."""
+    pid = getattr(proc, "pid", None)
+    if pid is None:
+        return
+    register_worktree_process(worktree_or_cwd, int(pid), kind=kind)
+
+
+def release_worktree_subprocess(worktree_or_cwd: str, proc: object) -> None:
+    """Drop a finished child from the registry so PID reuse cannot kill a stranger."""
+    pid = getattr(proc, "pid", None)
+    if pid is None:
+        return
+    unregister_worktree_process(worktree_or_cwd, int(pid))
+
+
+def clear_worktree_process_registry(path: str) -> None:
+    key = _normalize_worktree_path(path)
+    with _managed_lock:
+        _managed_processes.pop(key, None)
+
+
+def _registered_pids_for_worktree(path: str) -> list[int]:
+    key = _normalize_worktree_path(path)
+    with _managed_lock:
+        return list(_managed_processes.get(key, {}).keys())
+
+
+def clear_managed_process_registry_for_tests() -> None:
+    """Test helper: drop all registered worktree process provenance."""
+    with _managed_lock:
+        _managed_processes.clear()
 
 def _git(repo: str, *args: str, timeout: int = 15) -> tuple[int, str, str]:
     if not repo:
@@ -376,12 +481,12 @@ def _taskkill_tree(pid: int) -> None:
 
 
 def reap_worktree_processes(path: str) -> int:
-    """Terminate any still-running process whose cwd is inside worktree `path`.
+    """Terminate registered Marionette worker/indexer trees for this worktree.
 
-    Orphaned `codegraph index` (+ node) subprocesses can outlive their worker
-    worktree, reparent to init, and keep walking the now-deleted dir -- a real
-    resource leak. Reap them BEFORE the dir is removed so their cwd still
-    resolves: POSIX uses SIGTERM then SIGKILL; Windows uses taskkill /T /F.
+    Only PIDs explicitly registered via :func:`register_worktree_process` are
+    reaped. Foreign processes whose cwd happens to lie under the worktree are
+    never targeted. Orphaned registered subprocesses (e.g. codegraph indexers)
+    are still cleaned up before the directory is removed.
     Best-effort: never raises; returns the count signaled. Never signals
     pid<=1, this process, or its parent.
     """
@@ -391,9 +496,10 @@ def reap_worktree_processes(path: str) -> int:
         import time as _time
         me = os.getpid()
         parent = os.getppid()
+        wt_key = _normalize_worktree_path(path)
         targets = [
-            pid for pid, cwd in _worktree_pid_cwds()
-            if pid > 1 and pid != me and pid != parent and _cwd_under(cwd, path)
+            pid for pid in _registered_pids_for_worktree(wt_key)
+            if pid > 1 and pid != me and pid != parent
         ]
         if os.name != "posix":
             for pid in targets:
@@ -402,6 +508,7 @@ def reap_worktree_processes(path: str) -> int:
                     signaled += 1
                 except Exception:
                     continue
+            clear_worktree_process_registry(wt_key)
             return signaled
         for pid in targets:
             try:
@@ -417,6 +524,7 @@ def reap_worktree_processes(path: str) -> int:
                     os.kill(pid, _signal.SIGKILL)
                 except Exception:
                     continue
+        clear_worktree_process_registry(wt_key)
     except Exception:
         return signaled
     return signaled
