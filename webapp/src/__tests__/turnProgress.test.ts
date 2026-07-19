@@ -239,6 +239,26 @@ describe("turnHasLiveInvestigation", () => {
     ];
     expect(turnHasLiveInvestigation(items, true)).toBe(true);
   });
+
+  it("is true while nested worker actions are still running", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "card",
+        card: {
+          id: "p1",
+          goal: "parallel",
+          kind: "run_parallel",
+          running: false,
+          open: false,
+          actions: [
+            { action_id: "n1", kind: "read_file", goal: "a.py", status: "running" },
+          ],
+        },
+      },
+    ];
+    expect(turnHasLiveInvestigation(items)).toBe(true);
+  });
 });
 
 describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {

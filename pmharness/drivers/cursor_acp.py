@@ -251,6 +251,9 @@ def _extract_tool_event(update: Any) -> Optional[dict]:
         or ""
     ).strip()
     status = str(inner.get("status") or "").strip().lower()
+    # Normalize error-ish ACP statuses so late prep patches carry failed.
+    if status in ("error", "errored", "cancelled", "canceled"):
+        status = "failed"
     # Internal "think" tool rows duplicate the reasoning stream — skip.
     acp_kind = str(inner.get("kind") or "").strip()
     if acp_kind.lower() == "think":
@@ -693,6 +696,10 @@ class WarmAcpSession:
             "bufsize": 1,
         }
         if sys.platform == "win32":
+            # Hide the top-level `agent acp` console only. Cursor Agent's Node
+            # process may still spawn MCP grandchildren without windowsHide /
+            # CREATE_NO_WINDOW; that must be fixed upstream in Cursor — Python
+            # creationflags on this Popen cannot reach those grandchildren.
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         proc = subprocess.Popen(cmd, **popen_kwargs)
         return AcpTransport(proc)

@@ -23,6 +23,27 @@ import {
   normalizeSwarmJobIds,
   swarmPendingStatusOf,
 } from "./swarmPendingIdentity";
+import {
+  boundActionField,
+  isTerminalJobStatus,
+  MAX_ACTION_ERROR_CHARS,
+  MAX_ACTION_GOAL_CHARS,
+  MAX_ACTION_ID_CHARS,
+  MAX_ACTION_KIND_CHARS,
+  MAX_JOB_ACTIONS,
+  normalizeNestedActionStatus,
+} from "./nestedActionBounds";
+
+export {
+  boundActionField,
+  isTerminalJobStatus,
+  MAX_ACTION_ERROR_CHARS,
+  MAX_ACTION_GOAL_CHARS,
+  MAX_ACTION_ID_CHARS,
+  MAX_ACTION_KIND_CHARS,
+  MAX_JOB_ACTIONS,
+  normalizeNestedActionStatus,
+} from "./nestedActionBounds";
 
 /**
  * Seal every open stream surface (thinking row + pilot bubble) before a new
@@ -100,18 +121,47 @@ export function applyActionResultCard(
   },
 ): Item[] {
   const id = String(d.id || "").trim();
-  if (!id) return items;
+  const callId = d.call_id ? String(d.call_id).trim() : "";
+  if (!id && !callId) return items;
   const sealed = finalizeStreamingBubbleOnActionResult(items);
-  const existing = sealed.some((it) => it.kind === "card" && it.card.id === id);
-  if (existing) {
-    return patchCardInItems(sealed, id, {
-      running: false,
-      open: false,
-      result: d as Card["result"],
-      ...(d.kind ? { kind: String(d.kind) } : {}),
-      ...(d.goal != null && String(d.goal).trim() ? { goal: String(d.goal) } : {}),
-      ...(Array.isArray(d.goals) ? { goals: d.goals.map(String) } : {}),
-      ...(d.call_id ? { call_id: String(d.call_id) } : {}),
+  const matchIdx = sealed.findIndex((it) => {
+    if (it.kind !== "card") return false;
+    const card = it.card;
+    if (id && card.id === id) return true;
+    if (callId && (card.call_id === callId || card.id === callId || card.id === `tool-prep:${callId}`)) {
+      return true;
+    }
+    return false;
+  });
+  const outcome: TerminalJobOutcome = d.error
+    || String(d.status || "").toLowerCase() === "failed"
+    ? "failed"
+    : String(d.status || "").toLowerCase() === "cancelled"
+      || String(d.status || "").toLowerCase() === "canceled"
+      ? "cancelled"
+      : "complete";
+  if (matchIdx >= 0) {
+    const prev = sealed[matchIdx];
+    if (prev.kind !== "card") return sealed;
+    const settledActions = settleNestedRunning(prev.card.actions, outcome);
+    return sealed.map((it, i) => {
+      if (i !== matchIdx || it.kind !== "card") return it;
+      return {
+        kind: "card" as const,
+        card: {
+          ...it.card,
+          running: false,
+          open: false,
+          result: d as Card["result"],
+          ...(d.kind ? { kind: String(d.kind) } : {}),
+          ...(d.goal != null && String(d.goal).trim() ? { goal: String(d.goal) } : {}),
+          ...(Array.isArray(d.goals) ? { goals: d.goals.map(String) } : {}),
+          ...(callId || it.card.call_id
+            ? { call_id: callId || it.card.call_id }
+            : {}),
+          ...(settledActions !== it.card.actions ? { actions: settledActions } : {}),
+        },
+      };
     });
   }
   const kind = String(d.kind || "").trim();
@@ -124,11 +174,11 @@ export function applyActionResultCard(
     {
       kind: "card" as const,
       card: {
-        id,
+        id: id || callId,
         goal: goal || (Array.isArray(d.goals) ? d.goals.map(String).join(", ") : ""),
         cwd: d.cwd ?? null,
         kind: kind || undefined,
-        call_id: d.call_id ? String(d.call_id) : undefined,
+        call_id: callId || undefined,
         goals: Array.isArray(d.goals) ? d.goals.map(String) : undefined,
         running: false,
         open: false,
@@ -138,7 +188,133 @@ export function applyActionResultCard(
   ];
 }
 
-/** True when a late swarmLive poll still belongs to the active session load. */
+export type TerminalJobOutcome = "complete" | "failed" | "cancelled";
+
+function cardMatchesJobId(card: Card, jobId: string): boolean {
+  const raw = String(card.result?.job_id || "").trim();
+  if (!raw || !jobId) return false;
+  if (raw === jobId) return true;
+  return raw.split(",").map((p) => p.trim()).filter(Boolean).includes(jobId);
+}
+
+function settleNestedRunning(
+  actions: NonNullable<Card["actions"]> | undefined,
+  outcome: TerminalJobOutcome,
+): NonNullable<Card["actions"]> | undefined {
+  if (!actions || actions.length === 0) return actions;
+  const nextStatus: "complete" | "failed" =
+    outcome === "complete" ? "complete" : "failed";
+  const err =
+    outcome === "cancelled"
+      ? "cancelled"
+      : outcome === "failed"
+        ? "failed"
+        : "";
+  let changed = false;
+  const next = actions.map((row) => {
+    if (row.status !== "running") return row;
+    changed = true;
+    return {
+      ...row,
+      status: nextStatus,
+      error: row.error || err,
+    };
+  });
+  return changed ? next : actions;
+}
+
+/**
+ * Idempotent scoped terminal reconciler: only cards whose result.job_id matches
+ * (including comma-separated run_parallel child ids) clear card.running and
+ * settle nested running rows. Unrelated live jobs/cards stay untouched.
+ */
+export function reconcileTerminalJobCards(
+  items: Item[],
+  jobId: string,
+  outcome: TerminalJobOutcome = "complete",
+): Item[] {
+  const jid = String(jobId || "").trim();
+  if (!jid) return items;
+  let changed = false;
+  const next = items.map((it) => {
+    if (it.kind !== "card") return it;
+    if (!cardMatchesJobId(it.card, jid)) return it;
+    const settledActions = settleNestedRunning(it.card.actions, outcome);
+    const actionsChanged = settledActions !== it.card.actions;
+    if (!it.card.running && !actionsChanged) return it;
+    changed = true;
+    return {
+      kind: "card" as const,
+      card: {
+        ...it.card,
+        running: false,
+        ...(actionsChanged ? { actions: settledActions } : {}),
+      },
+    };
+  });
+  return changed ? next : items;
+}
+
+export function terminalOutcomeFromSwarmResult(resObj: {
+  applied?: boolean;
+  error?: string | null;
+}): TerminalJobOutcome {
+  return swarmResultLooksFailed(resObj) ? "failed" : "complete";
+}
+
+export function terminalOutcomeFromJobStatus(
+  status: string | undefined | null,
+): TerminalJobOutcome {
+  const s = String(status || "").trim().toLowerCase();
+  if (s === "cancelled" || s === "canceled") return "cancelled";
+  if (s === "failed" || s === "error") return "failed";
+  return "complete";
+}
+
+/**
+ * At assistant_done / turn boundary: settle orphan result:null and tool-prep
+ * cards only when they are not owned by a still-live job id. Never globally
+ * clear real background workers.
+ */
+export function reconcileOrphanInvestigationCards(
+  items: Item[],
+  liveJobIds: ReadonlySet<string> | readonly string[],
+): Item[] {
+  const live = liveJobIds instanceof Set ? liveJobIds : new Set(liveJobIds);
+  let changed = false;
+  const next = items.map((it) => {
+    if (it.kind !== "card") return it;
+    const card = it.card;
+    const jobId = String(card.result?.job_id || "").trim();
+    if (jobId) {
+      const parts = jobId.split(",").map((p) => p.trim()).filter(Boolean);
+      if (parts.some((p) => live.has(p))) return it;
+      // Card already has a job ack but no live tracker entry — leave nested
+      // settle to swarm_result / mergeJobActions; only clear orphan running
+      // when the parent has no result body at all.
+    }
+    const isPrep =
+      typeof card.id === "string" && card.id.startsWith("tool-prep:");
+    const orphanPending = card.running && !card.result && !jobId;
+    if (!isPrep && !orphanPending) return it;
+    if (!card.running && !(card.actions || []).some((a) => a.status === "running")) {
+      return it;
+    }
+    changed = true;
+    return {
+      kind: "card" as const,
+      card: {
+        ...card,
+        running: false,
+        actions: settleNestedRunning(card.actions, "complete"),
+        result: card.result || { status: "interrupted", error: "missing action_result" },
+      },
+    };
+  });
+  return changed ? next : items;
+}
+
+/** True when a late swarmLive / runners-busy poll still belongs to the active session. */
 export function shouldApplySwarmLiveMerge(opts: {
   pollGen: number;
   currentGen: number;
@@ -154,78 +330,185 @@ export function shouldApplySwarmLiveMerge(opts: {
   return true;
 }
 
+export type SwarmLiveReloadJob = {
+  id?: string;
+  status?: string;
+  actions?: unknown;
+};
+
+/**
+ * Fold swarmLive jobs into items after sessionTranscript reload.
+ *
+ * Empty local-job snapshots are not proof that non-job tool cards are orphaned —
+ * mid-turn reload can race chatEvents reattach. Orphan settlement belongs only
+ * at authoritative turn terminals (assistant_done / error / Stop). Returns the
+ * prior items unchanged when there is nothing authoritative to merge.
+ */
+export function foldSwarmLiveJobsAfterReload(
+  prev: Item[],
+  jobs: readonly SwarmLiveReloadJob[],
+): Item[] {
+  const list = Array.isArray(jobs) ? jobs : [];
+  const hasActions = list.some(
+    (j) => Array.isArray(j.actions) && j.actions.length > 0,
+  );
+  const hasTerminal = list.some((j) => isTerminalJobStatus(j?.status));
+  if (!hasActions && !hasTerminal) {
+    return prev;
+  }
+  return mergeJobActionsIntoItems(prev, list as Array<{
+    id?: string;
+    actions?: unknown;
+    status?: string;
+  }>);
+}
+
+function nestedRowsEqual(
+  a: NonNullable<Card["actions"]>,
+  b: NonNullable<Card["actions"]>,
+): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((p, i) =>
+    p.action_id === b[i].action_id
+    && p.status === b[i].status
+    && p.kind === b[i].kind
+    && (p.goal || "") === (b[i].goal || "")
+    && (p.error || "") === (b[i].error || "")
+    && (p.duration_ms ?? null) === (b[i].duration_ms ?? null)
+    && (p.worker_id || "") === (b[i].worker_id || "")
+  );
+}
+
+function prevRowsForWorker(
+  prev: NonNullable<Card["actions"]>,
+  workerId: string,
+): NonNullable<Card["actions"]> {
+  return prev.filter((row) =>
+    row.worker_id === workerId
+    || row.action_id.startsWith(`${workerId}:`)
+  );
+}
+
 /** Merge sanitized local-job actions[] onto investigation cards by job_id. */
 export function mergeJobActionsIntoItems(
   items: Item[],
   jobs: Array<{ id?: string; actions?: unknown; status?: string }>,
 ): Item[] {
   if (!jobs.length) return items;
-  const byJob = new Map<string, Card["actions"]>();
+  const byJob = new Map<string, NonNullable<Card["actions"]>>();
+  const statusByJob = new Map<string, string>();
   for (const job of jobs) {
     const jid = String(job.id || "").trim();
-    if (!jid || !Array.isArray(job.actions)) continue;
+    if (!jid) continue;
+    if (job.status != null && String(job.status).trim()) {
+      statusByJob.set(jid, String(job.status).trim().toLowerCase());
+    }
+    if (!Array.isArray(job.actions)) continue;
     const rows: NonNullable<Card["actions"]> = [];
     for (const raw of job.actions) {
       if (!raw || typeof raw !== "object") continue;
       const r = raw as Record<string, unknown>;
       const actionId = String(r.action_id || "").trim();
       if (!actionId) continue;
-      const statusRaw = String(r.status || "running").toLowerCase();
-      const status =
-        statusRaw === "complete" || statusRaw === "failed" || statusRaw === "running"
-          ? statusRaw
-          : (r.error ? "failed" : "running");
       rows.push({
-        action_id: actionId,
-        kind: String(r.kind || "tool_call"),
-        goal: String(r.goal || ""),
-        status,
+        action_id: boundActionField(actionId, MAX_ACTION_ID_CHARS),
+        kind: boundActionField(r.kind || "tool_call", MAX_ACTION_KIND_CHARS) || "tool_call",
+        goal: boundActionField(r.goal || "", MAX_ACTION_GOAL_CHARS),
+        status: normalizeNestedActionStatus(r.status, r.error),
         duration_ms: typeof r.duration_ms === "number" ? r.duration_ms : null,
-        error: r.error ? String(r.error) : "",
+        error: r.error ? boundActionField(r.error, MAX_ACTION_ERROR_CHARS) : "",
         worker_id: jid,
       });
     }
     byJob.set(jid, rows);
   }
-  if (byJob.size === 0) return items;
+  if (byJob.size === 0 && statusByJob.size === 0) return items;
   let changed = false;
-  const next = items.map((it) => {
+  let next = items.map((it) => {
     if (it.kind !== "card") return it;
     const jobId = String(it.card.result?.job_id || "").trim();
     if (!jobId) return it;
     const parts = jobId.split(",").map((p) => p.trim()).filter(Boolean);
+    const prev = it.card.actions || [];
     let merged: NonNullable<Card["actions"]> = [];
+    let sawSnapshot = false;
+
     if (parts.length <= 1) {
       const rows = byJob.get(jobId);
-      if (!rows) return it;
-      merged = rows;
+      if (rows) {
+        sawSnapshot = true;
+        merged = rows;
+      } else if (!statusByJob.has(jobId)) {
+        return it;
+      } else {
+        merged = prev;
+      }
     } else {
       for (const part of parts) {
         const rows = byJob.get(part);
-        if (!rows) continue;
-        for (const row of rows) {
-          merged.push({
-            ...row,
-            action_id: row.action_id.startsWith(`${part}:`)
-              ? row.action_id
-              : `${part}:${row.action_id}`,
-            worker_id: part,
-          });
+        if (rows) {
+          sawSnapshot = true;
+          for (const row of rows) {
+            merged.push({
+              ...row,
+              action_id: row.action_id.startsWith(`${part}:`)
+                ? row.action_id
+                : `${part}:${row.action_id}`,
+              worker_id: part,
+            });
+          }
+        } else {
+          // Partial live snapshot omitted this sibling — keep already-known rows.
+          for (const row of prevRowsForWorker(prev, part)) {
+            merged.push(row);
+          }
         }
       }
-      if (merged.length === 0) return it;
+      if (!sawSnapshot && !parts.some((p) => statusByJob.has(p))) {
+        return it;
+      }
     }
-    const prev = it.card.actions || [];
+
+    if (merged.length > MAX_JOB_ACTIONS) {
+      merged = merged.slice(-MAX_JOB_ACTIONS);
+    }
+
+    const terminalParts = parts.filter((p) => isTerminalJobStatus(statusByJob.get(p)));
+    const allPartsTerminal =
+      parts.length > 0 && parts.every((p) => isTerminalJobStatus(statusByJob.get(p)));
+    // Single-id card: terminal when that job is terminal. Multi-id: only clear
+    // parent running when every sibling is terminal; still settle nested rows
+    // belonging to terminal parts.
+    let actionsOut = merged;
+    if (terminalParts.length > 0) {
+      const outcomeFor = (workerId: string): TerminalJobOutcome =>
+        terminalOutcomeFromJobStatus(statusByJob.get(workerId));
+      actionsOut = merged.map((row) => {
+        const wid = String(row.worker_id || "").trim();
+        const owner =
+          wid
+          || parts.find((p) => row.action_id.startsWith(`${p}:`))
+          || (parts.length === 1 ? parts[0] : "");
+        if (!owner || !terminalParts.includes(owner)) return row;
+        if (row.status !== "running") return row;
+        const outcome = outcomeFor(owner);
+        return {
+          ...row,
+          status: outcome === "complete" ? "complete" as const : "failed" as const,
+          error: row.error || (
+            outcome === "cancelled" ? "cancelled" : outcome === "failed" ? "failed" : ""
+          ),
+        };
+      });
+    }
+
+    const clearRunning = allPartsTerminal
+      || (parts.length <= 1 && isTerminalJobStatus(statusByJob.get(jobId)));
+    const runningOut = clearRunning ? false : it.card.running;
     if (
-      prev.length === merged.length
-      && prev.every((p, i) =>
-        p.action_id === merged[i].action_id
-        && p.status === merged[i].status
-        && p.kind === merged[i].kind
-        && (p.goal || "") === (merged[i].goal || "")
-        && (p.error || "") === (merged[i].error || "")
-        && (p.duration_ms ?? null) === (merged[i].duration_ms ?? null)
-      )
+      nestedRowsEqual(prev, actionsOut)
+      && runningOut === it.card.running
+      && (parts.length === 1 ? parts[0] : it.card.worker_id) === it.card.worker_id
     ) {
       return it;
     }
@@ -234,11 +517,28 @@ export function mergeJobActionsIntoItems(
       kind: "card" as const,
       card: {
         ...it.card,
-        actions: merged,
+        running: runningOut,
+        actions: actionsOut,
         worker_id: parts.length === 1 ? parts[0] : it.card.worker_id,
       },
     };
   });
+
+  // Status-only terminal jobs (no actions array in this snapshot) still need
+  // scoped card.running / nested settle via the reconciler.
+  for (const [jid, status] of statusByJob) {
+    if (!isTerminalJobStatus(status)) continue;
+    if (byJob.has(jid) && (byJob.get(jid) || []).length > 0) continue;
+    const reconciled = reconcileTerminalJobCards(
+      next,
+      jid,
+      terminalOutcomeFromJobStatus(status),
+    );
+    if (reconciled !== next) {
+      changed = true;
+      next = reconciled;
+    }
+  }
   return changed ? next : items;
 }
 
@@ -868,7 +1168,8 @@ export function applySwarmResultToItems(
   const finalObjective = d.objective || pendingItem?.objective || "";
 
   // Idempotent across poll/SSE/rehydrate even when session-switch clears the
-  // processed-job ref: terminal pill + existing result row → no-op.
+  // processed-job ref: terminal pill + existing result row → still reconcile
+  // matching investigation cards (spinner settle) then no-op the pill/result.
   if (
     alreadyHasResult
     && pendingItem
@@ -883,7 +1184,11 @@ export function applySwarmResultToItems(
       )
     )
   ) {
-    return items;
+    return reconcileTerminalJobCards(
+      items,
+      jobId,
+      terminalOutcomeFromSwarmResult(resObj),
+    );
   }
 
   const updated = items.map((item, idx) => {
@@ -924,15 +1229,20 @@ export function applySwarmResultToItems(
     return withPendingTerminal(item, status, terminalJobIds);
   });
 
+  // Swarm pill terminalization alone leaves card.running / nested action.status
+  // spinning — reconcile matching investigation cards even when polling stops.
+  const outcome = terminalOutcomeFromSwarmResult(resObj);
+  const reconciled = reconcileTerminalJobCards(updated, jobId, outcome);
+
   if (
     alreadyHasResult
-    || updated.some((it) => it.kind === "swarm_result" && it.job_id === jobId)
+    || reconciled.some((it) => it.kind === "swarm_result" && it.job_id === jobId)
   ) {
-    return updated;
+    return reconciled;
   }
 
   return [
-    ...updated,
+    ...reconciled,
     {
       kind: "swarm_result" as const,
       job_id: jobId,

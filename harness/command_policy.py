@@ -209,7 +209,10 @@ def run_cancellable(
         # Put the child in its own process group so we can signal the entire
         # tree (shell + everything it spawned). start_new_session is POSIX-only;
         # on Windows the equivalent is the CREATE_NEW_PROCESS_GROUP flag, and
-        # tree-kill goes through taskkill in _kill_group.
+        # tree-kill goes through taskkill in _kill_group. harness.win_console
+        # then ORs CREATE_NO_WINDOW onto this flag (CREATE_NEW_PROCESS_GROUP is
+        # not an explicit console choice), so run_command retains
+        # CREATE_NEW_PROCESS_GROUP|CREATE_NO_WINDOW on Windows.
         group_kwargs = (
             {"start_new_session": True}
             if os.name == "posix"

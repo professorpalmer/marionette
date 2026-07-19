@@ -93,23 +93,34 @@ export function upsertToolPrep(
   const turnStart = lastUser + 1;
 
   // Status-only / completed patch for a known call — never clobber a path
-  // goal with the bare kind label ("read file").
+  // goal with the bare kind label ("read file"). Match the provisional prep
+  // id OR a promoted durable card that carries the same call_id / id.
   if (callId && done) {
     let hit = false;
     const patched = items.map((it, i) => {
       if (i < turnStart || it.kind !== "card") return it;
-      if (it.card.id !== prepId) return it;
+      const card = it.card;
+      const matchesPrep = card.id === prepId;
+      const matchesPromoted =
+        card.call_id === callId
+        || card.id === callId;
+      if (!matchesPrep && !matchesPromoted) return it;
       hit = true;
+      const terminalResult =
+        status === "failed"
+          ? { ...(card.result || {}), error: "failed" }
+          : status === "cancelled"
+            ? { ...(card.result || {}), error: "cancelled", status: "interrupted" }
+            : (card.result || (matchesPromoted ? { status: "complete" } : undefined));
       return {
         ...it,
         card: {
-          ...it.card,
+          ...card,
           running: false,
-          kind: (kind !== "tool_call" ? kind : it.card.kind) || kind,
-          goal: goalRaw || it.card.goal || "",
-          ...(status === "failed"
-            ? { result: { ...(it.card.result || {}), error: "failed" } }
-            : {}),
+          call_id: card.call_id || callId,
+          kind: (kind !== "tool_call" ? kind : card.kind) || kind,
+          goal: goalRaw || card.goal || "",
+          ...(terminalResult ? { result: terminalResult } : {}),
         },
       };
     });
@@ -123,6 +134,9 @@ export function upsertToolPrep(
     goal: goalRaw,
     cwd: null as string | null,
     kind,
+    // Stamp stable call identity on create so late completed/failed prep and
+    // action_result can patch this row (or its promoted durable successor).
+    ...(callId ? { call_id: callId } : {}),
     running: !done,
     open: false,
     ...(status === "failed" ? { result: { error: "failed" } } : {}),

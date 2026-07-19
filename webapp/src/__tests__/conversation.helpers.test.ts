@@ -80,7 +80,11 @@ import {
   finalizeStreamingBubbleOnActionResult,
   formatDistilledNotice,
   formatWikiAutoIngestNotice,
+  foldSwarmLiveJobsAfterReload,
   mergeJobActionsIntoItems,
+  reconcileOrphanInvestigationCards,
+  reconcileTerminalJobCards,
+  sealOpenStreamSurfaces,
   shouldApplySwarmLiveMerge,
   noticeShowsWaitHint,
   patchCardInItems,
@@ -88,6 +92,9 @@ import {
   truncateWaitHint,
   updateCommandApproval,
   workspaceRootFromActionResult,
+  MAX_JOB_ACTIONS,
+  MAX_ACTION_GOAL_CHARS,
+  boundActionField,
 } from "../components/conversation/streamApply";
 import {
   collectDisplayArtifacts,
@@ -1543,5 +1550,527 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
       cachedSessionId: "s1",
       activeSessionId: "s2",
     })).toBe(false);
+  });
+
+  it("shouldApplySwarmLiveMerge busy-poll fence rejects late session-A poll for session B", () => {
+    // Same contract useRunnersBusyPoll uses inside setItems: generation +
+    // cached + active must all still match the poll's session id.
+    // useSessionSwitch bumps runnerBusyPollGenRef on switch so generation alone
+    // also rejects an in-flight session-A poll before B's next tick.
+    const pollFromA = {
+      pollGen: 3,
+      currentGen: 4, // session switch bumped gen
+      pollSessionId: "session-a",
+      cachedSessionId: "session-b",
+      activeSessionId: "session-b",
+    };
+    expect(shouldApplySwarmLiveMerge(pollFromA)).toBe(false);
+    // Session-id mismatch alone (gen not yet bumped) must still reject.
+    expect(shouldApplySwarmLiveMerge({
+      pollGen: 3,
+      currentGen: 3,
+      pollSessionId: "session-a",
+      cachedSessionId: "session-b",
+      activeSessionId: "session-b",
+    })).toBe(false);
+    expect(shouldApplySwarmLiveMerge({
+      pollGen: 4,
+      currentGen: 4,
+      pollSessionId: "session-b",
+      cachedSessionId: "session-b",
+      activeSessionId: "session-b",
+    })).toBe(true);
+  });
+
+  it("foldSwarmLiveJobsAfterReload leaves running tool-prep alone when live jobs empty", () => {
+    // Mid-turn / reconnecting reload: empty swarmLive is not an authoritative
+    // turn terminal — must not false-complete non-job tool-prep cards.
+    const items: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "tool-prep:call-mid",
+          goal: "foo.ts",
+          kind: "Read",
+          running: true,
+          open: true,
+          call_id: "call-mid",
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "orphan-cmd",
+          goal: "pytest",
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+    const next = foldSwarmLiveJobsAfterReload(items, []);
+    expect(next).toBe(items);
+    expect((next[0] as Extract<Item, { kind: "card" }>).card.running).toBe(true);
+    expect((next[1] as Extract<Item, { kind: "card" }>).card.running).toBe(true);
+    // Contrast: empty liveIds reconcile would clear them (turn-terminal only).
+    const wrongly = reconcileOrphanInvestigationCards(items, []);
+    expect((wrongly[0] as Extract<Item, { kind: "card" }>).card.running).toBe(false);
+  });
+
+  it("foldSwarmLiveJobsAfterReload merges terminal/actions without orphan-settling prep", () => {
+    const items: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "tool-prep:call-keep",
+          goal: "bar.ts",
+          kind: "Read",
+          running: true,
+          open: true,
+          call_id: "call-keep",
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "a1",
+          goal: "implement",
+          kind: "run_implement",
+          running: true,
+          open: false,
+          result: { job_id: "local-xyz", status: "pending" },
+        },
+      },
+    ];
+    const next = foldSwarmLiveJobsAfterReload(items, [{
+      id: "local-xyz",
+      status: "completed",
+      actions: [
+        { action_id: "n1", kind: "read_file", goal: "x.py", status: "complete", duration_ms: 3 },
+      ],
+    }]);
+    const prep = (next[0] as Extract<Item, { kind: "card" }>).card;
+    const jobCard = (next[1] as Extract<Item, { kind: "card" }>).card;
+    expect(prep.running).toBe(true);
+    expect(prep.id).toBe("tool-prep:call-keep");
+    expect(jobCard.actions?.map((a) => a.action_id)).toEqual(["n1"]);
+  });
+});
+
+describe("investigation terminal reconciliation + live ordering", () => {
+  it("reconcileTerminalJobCards settles matching job and leaves unrelated alone", () => {
+    const items: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "a1",
+          goal: "implement",
+          kind: "run_implement",
+          running: true,
+          open: false,
+          result: { job_id: "local-done" },
+          actions: [
+            { action_id: "n1", kind: "read_file", goal: "a.py", status: "running" },
+          ],
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "a2",
+          goal: "other",
+          kind: "run_implement",
+          running: true,
+          open: false,
+          result: { job_id: "local-live" },
+          actions: [
+            { action_id: "n2", kind: "write_file", goal: "b.py", status: "running" },
+          ],
+        },
+      },
+    ];
+    const next = reconcileTerminalJobCards(items, "local-done", "complete");
+    const done = (next[0] as Extract<Item, { kind: "card" }>).card;
+    const live = (next[1] as Extract<Item, { kind: "card" }>).card;
+    expect(done.running).toBe(false);
+    expect(done.actions?.[0].status).toBe("complete");
+    expect(live.running).toBe(true);
+    expect(live.actions?.[0].status).toBe("running");
+  });
+
+  it("applySwarmResultToItems clears matching card.running and nested spinners", () => {
+    let items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-xyz"],
+        objective: "fix it",
+        status: "running",
+      },
+      {
+        kind: "card",
+        card: {
+          id: "a1",
+          goal: "fix it",
+          kind: "run_implement",
+          running: true,
+          open: false,
+          result: { job_id: "local-xyz", status: "pending" },
+          actions: [
+            { action_id: "t1", kind: "read_file", goal: "x.py", status: "running" },
+          ],
+        },
+      },
+    ];
+    items = applySwarmResultToItems(items, {
+      job_id: "local-xyz",
+      objective: "fix it",
+      applied: true,
+      summary: "done",
+    });
+    const card = items.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(card.card.running).toBe(false);
+    expect(card.card.actions?.[0].status).toBe("complete");
+    const pill = items.find((i) => i.kind === "swarm_pending") as Extract<Item, { kind: "swarm_pending" }>;
+    expect(pill.status).toBe("done");
+  });
+
+  it("run_parallel siblings: terminal child settles only its nested rows", () => {
+    const items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "p1",
+        goal: "",
+        kind: "run_parallel",
+        running: true,
+        open: false,
+        result: { job_id: "local-aa,local-bb", status: "pending" },
+        actions: [
+          { action_id: "local-aa:t1", kind: "read_file", goal: "a.py", status: "running", worker_id: "local-aa" },
+          { action_id: "local-bb:t2", kind: "write_file", goal: "b.py", status: "running", worker_id: "local-bb" },
+        ],
+      },
+    }];
+    const next = mergeJobActionsIntoItems(items, [
+      {
+        id: "local-aa",
+        status: "completed",
+        actions: [
+          { action_id: "t1", kind: "read_file", goal: "a.py", status: "complete", duration_ms: 2 },
+        ],
+      },
+    ]);
+    const card = (next[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.running).toBe(true); // sibling still live
+    expect(card.actions?.find((a) => a.action_id.endsWith("t1"))?.status).toBe("complete");
+    expect(card.actions?.find((a) => a.action_id.endsWith("t2"))?.status).toBe("running");
+  });
+
+  it("partial live snapshot preserves omitted sibling rows", () => {
+    const items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "p1",
+        goal: "",
+        kind: "run_parallel",
+        running: true,
+        open: false,
+        result: { job_id: "local-aa,local-bb" },
+        actions: [
+          { action_id: "local-aa:t1", kind: "read_file", goal: "a.py", status: "complete", worker_id: "local-aa" },
+          { action_id: "local-bb:t2", kind: "write_file", goal: "b.py", status: "running", worker_id: "local-bb" },
+        ],
+      },
+    }];
+    const next = mergeJobActionsIntoItems(items, [{
+      id: "local-aa",
+      status: "completed",
+      actions: [
+        { action_id: "t1", kind: "read_file", goal: "a.py", status: "complete" },
+      ],
+    }]);
+    const card = (next[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.actions?.map((a) => a.action_id)).toEqual([
+      "local-aa:t1",
+      "local-bb:t2",
+    ]);
+  });
+
+  it("mergeJobActionsIntoItems caps combined multi-job list at MAX_JOB_ACTIONS", () => {
+    const actions = Array.from({ length: MAX_JOB_ACTIONS + 10 }, (_, i) => ({
+      action_id: `n${i}`,
+      kind: "read_file",
+      goal: `f${i}.py`,
+      status: "complete" as const,
+    }));
+    const items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "a1",
+        goal: "big",
+        kind: "run_implement",
+        running: false,
+        open: false,
+        result: { job_id: "local-big" },
+      },
+    }];
+    const next = mergeJobActionsIntoItems(items, [{
+      id: "local-big",
+      status: "completed",
+      actions,
+    }]);
+    const card = (next[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.actions?.length).toBe(MAX_JOB_ACTIONS);
+  });
+
+  it("completed tool_prep patches a promoted durable card by call_id", () => {
+    let items: Item[] = [{ kind: "msg", msg: { role: "user", text: "go" } }];
+    items = upsertToolPrep(items, "Read", { id: "call-9", goal: "a.ts", status: "in_progress" });
+    items = appendActionStartCard(items, {
+      id: "a9",
+      kind: "read_file",
+      goal: "a.ts",
+      call_id: "call-9",
+    });
+    items = upsertToolPrep(items, "Read", { id: "call-9", goal: "a.ts", status: "completed" });
+    const card = items.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(card.card.id).toBe("a9");
+    expect(card.card.running).toBe(false);
+    expect(card.card.call_id).toBe("call-9");
+  });
+
+  it("reconcileOrphanInvestigationCards settles missing action_result without live job", () => {
+    const items: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "orphan-1",
+          goal: "pytest",
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "bg-1",
+          goal: "implement",
+          kind: "run_implement",
+          running: true,
+          open: false,
+          result: { job_id: "local-bg", status: "pending" },
+        },
+      },
+    ];
+    const next = reconcileOrphanInvestigationCards(items, ["local-bg"]);
+    const orphan = (next[0] as Extract<Item, { kind: "card" }>).card;
+    const bg = (next[1] as Extract<Item, { kind: "card" }>).card;
+    expect(orphan.running).toBe(false);
+    expect(orphan.result?.error).toBe("missing action_result");
+    expect(bg.running).toBe(true);
+  });
+
+  it("live row ordering: reasoning → prep → later reasoning keeps prep slot", () => {
+    let items: Item[] = [{ kind: "msg", msg: { role: "user", text: "audit" } }];
+    items = upsertStreamingThinking(items, "analysis-1");
+    items = upsertToolPrep(sealOpenStreamSurfaces(items), "Read", {
+      id: "call-r",
+      goal: "foo.ts",
+    });
+    items = upsertStreamingThinking(items, "analysis-2");
+    const kinds = items.map((it) => {
+      if (it.kind === "card") return `card:${it.card.id}`;
+      if (it.kind === "thinking") return "thinking";
+      if (it.kind === "tool_prep") return "tool_prep";
+      return it.kind;
+    });
+    expect(kinds).toEqual([
+      "msg",
+      "thinking",
+      "card:tool-prep:call-r",
+      "tool_prep",
+      "thinking",
+    ]);
+    items = appendActionStartCard(items, {
+      id: "call-r",
+      kind: "read_file",
+      goal: "foo.ts",
+      call_id: "call-r",
+    });
+    const after = items.map((it) => {
+      if (it.kind === "card") return `card:${it.card.id}`;
+      if (it.kind === "thinking") return "thinking";
+      return it.kind;
+    });
+    expect(after).toEqual([
+      "msg",
+      "thinking",
+      "card:call-r",
+      "thinking",
+    ]);
+  });
+
+  it("reload merge replaces tool-prep slot instead of appending after later reasoning", () => {
+    const local: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      { kind: "thinking", text: "reason-1" },
+      {
+        kind: "card",
+        card: {
+          id: "tool-prep:call-z",
+          goal: "z.ts",
+          kind: "read_file",
+          running: true,
+          open: false,
+          call_id: "call-z",
+        },
+      },
+      { kind: "thinking", text: "reason-2" },
+    ];
+    const remote: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      { kind: "thinking", text: "reason-1" },
+      { kind: "thinking", text: "reason-2" },
+      {
+        kind: "card",
+        card: {
+          id: "a-z",
+          goal: "z.ts",
+          kind: "read_file",
+          running: false,
+          open: false,
+          call_id: "call-z",
+          result: { status: "complete", duration_ms: 3 },
+        },
+      },
+    ];
+    const merged = mergeTranscriptItems(local, remote);
+    const kinds = merged.map((it) => {
+      if (it.kind === "card") return `card:${it.card.id}`;
+      if (it.kind === "thinking") return `thinking:${(it as Extract<Item, { kind: "thinking" }>).text}`;
+      return it.kind;
+    });
+    expect(kinds).toEqual([
+      "msg",
+      "thinking:reason-1",
+      "card:a-z",
+      "thinking:reason-2",
+    ]);
+    expect(merged.some((it) => it.kind === "card" && it.card.id === "tool-prep:call-z")).toBe(false);
+  });
+
+  it("unknown nested status fallback aligns hydrate vs live merge", () => {
+    const hydrated = transcriptResponseToItems({
+      display: [{
+        type: "card",
+        id: "h1",
+        kind: "run_implement",
+        goal: "g",
+        result: { job_id: "local-h" },
+        actions: [{ action_id: "x", kind: "read_file", goal: "a.py", status: "weird" }],
+      }],
+    });
+    const live = mergeJobActionsIntoItems([{
+      kind: "card",
+      card: {
+        id: "h1",
+        goal: "g",
+        kind: "run_implement",
+        running: true,
+        open: false,
+        result: { job_id: "local-h" },
+      },
+    }], [{
+      id: "local-h",
+      actions: [{ action_id: "x", kind: "read_file", goal: "a.py", status: "weird" }],
+    }]);
+    const hStatus = (hydrated[0] as Extract<Item, { kind: "card" }>).card.actions?.[0].status;
+    const lStatus = (live[0] as Extract<Item, { kind: "card" }>).card.actions?.[0].status;
+    expect(hStatus).toBe("complete");
+    expect(lStatus).toBe("complete");
+  });
+
+  it("mergeJobActionsIntoItems bounds client action strings", () => {
+    const hugeGoal = "g".repeat(MAX_ACTION_GOAL_CHARS + 40);
+    const items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "b1",
+        goal: "bound",
+        kind: "run_implement",
+        running: true,
+        open: false,
+        result: { job_id: "local-b" },
+      },
+    }];
+    const next = mergeJobActionsIntoItems(items, [{
+      id: "local-b",
+      actions: [{
+        action_id: "n1",
+        kind: "read_file",
+        goal: hugeGoal,
+        status: "complete",
+        error: "e".repeat(300),
+      }],
+    }]);
+    const row = (next[0] as Extract<Item, { kind: "card" }>).card.actions?.[0];
+    expect(row).toBeTruthy();
+    expect((row?.goal || "").length).toBeLessThanOrEqual(MAX_ACTION_GOAL_CHARS);
+    expect((row?.error || "").length).toBeLessThanOrEqual(240);
+    expect(boundActionField(hugeGoal, MAX_ACTION_GOAL_CHARS).endsWith("…")).toBe(true);
+  });
+
+  it("applyActionResultCard settles nested running rows on the matched card", () => {
+    const items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "a1",
+        goal: "implement",
+        kind: "run_implement",
+        running: true,
+        open: false,
+        call_id: "call-a1",
+        result: { job_id: "local-x", status: "pending" },
+        actions: [
+          { action_id: "n1", kind: "read_file", goal: "a.py", status: "running" },
+        ],
+      },
+    }];
+    const next = applyActionResultCard(items, {
+      id: "a1",
+      kind: "run_implement",
+      goal: "implement",
+      status: "complete",
+      job_id: "local-x",
+    });
+    const card = (next[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.running).toBe(false);
+    expect(card.actions?.[0].status).toBe("complete");
+  });
+
+  it("tool_prep stamps call_id on provisional card create", () => {
+    let items: Item[] = [{ kind: "msg", msg: { role: "user", text: "go" } }];
+    items = upsertToolPrep(items, "Read", { id: "call-stamp", goal: "s.ts" });
+    const card = items.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(card.card.id).toBe("tool-prep:call-stamp");
+    expect(card.card.call_id).toBe("call-stamp");
+  });
+
+  it("hydrate settles nested running when parent result is terminal", () => {
+    const hydrated = transcriptResponseToItems({
+      display: [{
+        type: "card",
+        id: "h2",
+        kind: "run_implement",
+        goal: "g",
+        result: { job_id: "local-h2", status: "completed" },
+        actions: [
+          { action_id: "x", kind: "read_file", goal: "a.py", status: "running" },
+        ],
+      }],
+    });
+    const card = (hydrated[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.running).toBe(false);
+    expect(card.actions?.[0].status).toBe("complete");
   });
 });

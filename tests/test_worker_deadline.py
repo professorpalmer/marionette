@@ -67,3 +67,22 @@ def test_bounded_worker_propagates_exception(monkeypatch):
         assert False, "exception should propagate"
     except RuntimeError as e:
         assert "engine exploded" in str(e)
+
+
+def test_deadline_zero_disables_timeout_but_cancel_still_settles(monkeypatch, tmp_path):
+    """HARNESS_WORKER_DEADLINE_SECONDS=0 is an intentional disable; cancel still settles."""
+    monkeypatch.setenv("HARNESS_WORKER_DEADLINE_SECONDS", "0")
+    from harness.config import HarnessConfig
+    from harness.conversation import ConvEvent, ConversationalSession
+
+    sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
+    assert sess._worker_deadline_seconds() == 0.0
+    sess._register_local_job("local-dl0", "work")
+    sess._upsert_local_job_action(
+        "local-dl0",
+        ConvEvent("action_start", {"id": "t1", "kind": "read_file", "goal": "a.py"}),
+    )
+    assert sess.cancel_local_job("local-dl0") is True
+    actions = sess._local_jobs["local-dl0"]["actions"]
+    assert actions
+    assert all(a["status"] != "running" for a in actions)

@@ -38,6 +38,7 @@ import {
   finalizeOrphanSwarmPills,
   mergeJobActionsIntoItems,
   patchCardInItems,
+  reconcileOrphanInvestigationCards,
   shouldApplySwarmLiveMerge,
   updateCommandApproval,
 } from "./conversation/streamApply";
@@ -1451,8 +1452,34 @@ export default function Conversation({
               return api.getSessionState();
             }
             const jobs = Array.isArray(live?.jobs) ? live.jobs : [];
-            if (jobs.some((j) => Array.isArray(j.actions) && j.actions.length > 0)) {
-              setItems((prev) => mergeJobActionsIntoItems(prev, jobs));
+            const hasActions = jobs.some(
+              (j) => Array.isArray(j.actions) && j.actions.length > 0,
+            );
+            const hasTerminal = jobs.some((j) => {
+              const s = String(j?.status || "").toLowerCase();
+              return (
+                s === "completed"
+                || s === "failed"
+                || s === "cancelled"
+                || s === "canceled"
+                || s === "done"
+              );
+            });
+            if (hasActions || hasTerminal) {
+              setItems((prev) => {
+                // Re-fence inside the updater: a session switch between the
+                // await and React applying this update must not mutate items.
+                if (!shouldApplySwarmLiveMerge({
+                  pollGen,
+                  currentGen: transcriptLoadGenRef.current,
+                  pollSessionId: pollSid,
+                  cachedSessionId: cachedSessionIdRef.current,
+                  activeSessionId: cachedSessionIdRef.current,
+                })) {
+                  return prev;
+                }
+                return mergeJobActionsIntoItems(prev, jobs);
+              });
             }
             return api.getSessionState();
           });
@@ -1927,7 +1954,12 @@ export default function Conversation({
       (id) => !id.startsWith("local-swarm-"),
     );
     setPendingJobIds(liveIds);
-    setItems((p) => finalizeOrphanSwarmPills(p, liveIds));
+    setItems((p) =>
+      reconcileOrphanInvestigationCards(
+        finalizeOrphanSwarmPills(p, liveIds),
+        liveIds,
+      ),
+    );
     api.interruptSession().catch((e) => console.error("Failed to interrupt session on backend:", e));
   };
 

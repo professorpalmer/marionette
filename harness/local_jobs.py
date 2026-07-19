@@ -25,6 +25,7 @@ import threading
 from typing import Any, Iterable, Optional
 
 from .job_actions import (
+    MAX_JOB_ACTIONS,
     ingest_worker_events,
     sanitize_actions_list,
     sanitize_worker_event,
@@ -32,6 +33,9 @@ from .job_actions import (
     snapshot_actions,
     upsert_action_row,
 )
+
+# Job statuses that must never accept a fresh status=running nested row.
+_TERMINAL_LOCAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
 class LocalJobsMixin:
@@ -347,6 +351,9 @@ class LocalJobsMixin:
 
         Progressive UI reads ``/api/swarm/live`` — this path must NOT mutate
         ``_display_transcript`` (worker-thread race with send/export).
+
+        Post-terminal callbacks (late on_event after cancel/finish) must not
+        reintroduce status=running rows; settle them immediately.
         """
         row = sanitize_worker_event(ev)
         if row is None:
@@ -355,7 +362,15 @@ class LocalJobsMixin:
             job = self._local_jobs.get(job_id)
             if not job:
                 return
-            job["actions"] = upsert_action_row(list(job.get("actions") or []), row)
+            parent_status = str(job.get("status") or "")
+            if parent_status in _TERMINAL_LOCAL_JOB_STATUSES:
+                row = self._terminalize_late_action_row(row, parent_status)
+                actions = upsert_action_row(list(job.get("actions") or []), row)
+                job["actions"] = self._settle_post_terminal_actions(
+                    actions, parent_status,
+                )
+            else:
+                job["actions"] = upsert_action_row(list(job.get("actions") or []), row)
             import time
             job["updated_at"] = time.time()
             self._persist_local_jobs_locked()
@@ -365,20 +380,61 @@ class LocalJobsMixin:
 
         Returns a deep-copied snapshot of the resulting actions list.
         Does not touch ``_display_transcript``; drain under ``_busy`` mirrors.
+        Post-terminal ingest settles any late running rows instead of spinning.
         """
         incoming = ingest_worker_events(events)
         with self._local_jobs_lock:
             job = self._local_jobs.get(job_id)
             if not job:
                 return snapshot_actions(incoming)
+            parent_status = str(job.get("status") or "")
+            terminal = parent_status in _TERMINAL_LOCAL_JOB_STATUSES
             actions = list(job.get("actions") or [])
             for row in incoming:
+                if terminal:
+                    row = self._terminalize_late_action_row(row, parent_status)
                 actions = upsert_action_row(actions, row)
+            if terminal:
+                actions = self._settle_post_terminal_actions(actions, parent_status)
             job["actions"] = actions
             import time
             job["updated_at"] = time.time()
             self._persist_local_jobs_locked()
             return snapshot_actions(actions)
+
+    @staticmethod
+    def _terminalize_late_action_row(row: dict, job_status: str = "") -> dict:
+        """Settle a late progressive row to match the parent job outcome.
+
+        completed -> complete (not failed/red); failed/cancelled -> failed with a
+        short safe error. Never leaves status=running after the parent is terminal.
+        """
+        if not isinstance(row, dict):
+            return row
+        if str(row.get("status") or "").lower() != "running":
+            return row
+        out = dict(row)
+        parent = str(job_status or "").strip().lower()
+        if parent == "completed":
+            out["status"] = "complete"
+            return out
+        out["status"] = "failed"
+        if not out.get("error"):
+            out["error"] = (
+                "cancelled" if parent == "cancelled" else "job already finished"
+            )
+        return out
+
+    @staticmethod
+    def _settle_post_terminal_actions(actions: list, job_status: str) -> list:
+        """Safety-net settle for any running rows still present after terminalize."""
+        parent = str(job_status or "").strip().lower()
+        if parent == "completed":
+            return settle_running_actions(
+                actions, reason="job already finished", to_status="complete",
+            )
+        reason = "cancelled" if parent == "cancelled" else "job already finished"
+        return settle_running_actions(actions, reason=reason, to_status="failed")
 
     def _mirror_local_job_actions_to_display(self, job_id: str) -> None:
         """Mirror sanitized actions onto display cards (safe drain / main path).
@@ -423,6 +479,8 @@ class LocalJobsMixin:
                 if len(job_ids) > 1:
                     # Parent parallel card: merge this worker's rows under a
                     # stable per-job namespace so siblings do not collide.
+                    # Cap the combined multi-job list at MAX_JOB_ACTIONS (same
+                    # as per-job persistence) so N×80 cannot balloon the card.
                     existing = list(entry.get("actions") or [])
                     prefixed = []
                     for row in snap:
@@ -436,9 +494,11 @@ class LocalJobsMixin:
                         prefixed.append(cloned)
                     for row in prefixed:
                         existing = upsert_action_row(existing, row)
+                    if len(existing) > MAX_JOB_ACTIONS:
+                        existing = existing[-MAX_JOB_ACTIONS:]
                     entry["actions"] = existing
                 else:
-                    entry["actions"] = snap
+                    entry["actions"] = snap[:MAX_JOB_ACTIONS]
                     entry["worker_id"] = job_id
         except Exception:
             pass

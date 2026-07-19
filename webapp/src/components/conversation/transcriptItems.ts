@@ -3,6 +3,15 @@ import {
   mergeSwarmPendingItems,
   swarmPendingIdentityKey,
 } from "./swarmPendingIdentity";
+import {
+  boundActionField,
+  isTerminalJobStatus,
+  MAX_ACTION_ERROR_CHARS,
+  MAX_ACTION_GOAL_CHARS,
+  MAX_ACTION_ID_CHARS,
+  MAX_ACTION_KIND_CHARS,
+  normalizeNestedActionStatus,
+} from "./nestedActionBounds";
 
 /** Same SHA-256 hex gate as SSE ``appendCommandApproval`` (streamApply). */
 const COMMAND_HASH_HEX = /^[0-9a-f]{64}$/;
@@ -210,22 +219,45 @@ export function transcriptResponseToItems(res: {
         const goals = Array.isArray(m.goals)
           ? m.goals.map((g: unknown) => String(g || "")).filter(Boolean)
           : undefined;
+        const parentStatus = m.result && typeof m.result === "object"
+          ? String((m.result as { status?: unknown }).status || "")
+          : "";
+        const parentTerminal =
+          !pending
+          && (
+            isTerminalJobStatus(parentStatus)
+            || parentStatus === "complete"
+            || parentStatus === "interrupted"
+            || Boolean((m.result as { error?: unknown } | null)?.error)
+          );
+        const settleOutcome: "complete" | "failed" =
+          parentStatus === "failed"
+          || parentStatus === "error"
+          || parentStatus === "cancelled"
+          || parentStatus === "canceled"
+          || parentStatus === "interrupted"
+          || Boolean((m.result as { error?: unknown } | null)?.error)
+            ? "failed"
+            : "complete";
         const actions = Array.isArray(m.actions)
           ? m.actions
             .filter((a: any) => a && typeof a === "object" && a.action_id)
-            .map((a: any) => ({
-              action_id: String(a.action_id),
-              kind: String(a.kind || "tool_call"),
-              goal: String(a.goal || ""),
-              status: (
-                a.status === "complete" || a.status === "failed" || a.status === "running"
-                  ? a.status
-                  : (a.error ? "failed" : "complete")
-              ) as "running" | "complete" | "failed",
-              duration_ms: typeof a.duration_ms === "number" ? a.duration_ms : null,
-              error: a.error ? String(a.error) : "",
-              worker_id: a.worker_id ? String(a.worker_id) : undefined,
-            }))
+            .map((a: any) => {
+              let status = normalizeNestedActionStatus(a.status, a.error);
+              // Durable reload: a finished parent must not resurrect nested spinners.
+              if (parentTerminal && status === "running") {
+                status = settleOutcome;
+              }
+              return {
+                action_id: boundActionField(a.action_id, MAX_ACTION_ID_CHARS),
+                kind: boundActionField(a.kind || "tool_call", MAX_ACTION_KIND_CHARS) || "tool_call",
+                goal: boundActionField(a.goal || "", MAX_ACTION_GOAL_CHARS),
+                status,
+                duration_ms: typeof a.duration_ms === "number" ? a.duration_ms : null,
+                error: a.error ? boundActionField(a.error, MAX_ACTION_ERROR_CHARS) : "",
+                worker_id: a.worker_id ? String(a.worker_id) : undefined,
+              };
+            })
           : undefined;
         return [{
           kind: "card" as const,
@@ -394,22 +426,57 @@ export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
           result: rem.card.result,
           goal: rem.card.goal || it.card.goal,
           kind: rem.card.kind || it.card.kind,
+          call_id: rem.card.call_id || it.card.call_id,
+          actions: rem.card.actions || it.card.actions,
         },
       };
     }
     return it;
   });
-  // Append remote cards the local feed never saw (reattach gap).
+  // Promote remote durable cards into local tool-prep:{call_id} slots in place
+  // so reload/hydrate never appends the action beneath later reasoning.
+  const consumedRemoteIds = new Set<string>();
+  const withSlots = merged.map((it) => {
+    if (it.kind !== "card" || !it.card.id) return it;
+    const id = String(it.card.id);
+    if (!id.startsWith("tool-prep:")) return it;
+    const callKey = id.slice("tool-prep:".length);
+    if (!callKey) return it;
+    for (const rem of remote) {
+      if (rem.kind !== "card" || !rem.card.id) continue;
+      const remId = String(rem.card.id);
+      if (consumedRemoteIds.has(remId)) continue;
+      const remCall = String(rem.card.call_id || rem.card.id || "").trim();
+      if (remCall !== callKey && remId !== callKey) continue;
+      consumedRemoteIds.add(remId);
+      return {
+        kind: "card" as const,
+        card: {
+          ...rem.card,
+          // Keep the provisional slot's visible metadata when remote is sparse.
+          goal: rem.card.goal || it.card.goal,
+          kind: rem.card.kind || it.card.kind,
+          call_id: rem.card.call_id || callKey,
+        },
+      };
+    }
+    return it;
+  });
+  // Append remote cards the local feed never saw (reattach gap), skipping
+  // ones already consumed into a prep slot.
   const localIds = new Set(
-    local.filter((it) => it.kind === "card" && it.card.id).map((it) => String((it as Extract<Item, { kind: "card" }>).card.id)),
+    withSlots
+      .filter((it) => it.kind === "card" && it.card.id)
+      .map((it) => String((it as Extract<Item, { kind: "card" }>).card.id)),
   );
   for (const it of remote) {
-    if (it.kind === "card" && it.card.id && !localIds.has(String(it.card.id))) {
-      merged.push(it);
-    }
+    if (it.kind !== "card" || !it.card.id) continue;
+    const remId = String(it.card.id);
+    if (consumedRemoteIds.has(remId) || localIds.has(remId)) continue;
+    withSlots.push(it);
   }
   // Harden against poll/SSE interleave leaving duplicate tool-call ids in local.
-  return dedupeDisplayItems(appendMissingPendingApprovals(merged, local));
+  return dedupeDisplayItems(appendMissingPendingApprovals(withSlots, local));
 }
 
 /** Cheap content fingerprint so busy-poll refresh can skip identical payloads. */

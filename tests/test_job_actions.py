@@ -9,6 +9,9 @@ from harness.config import HarnessConfig
 from harness.conversation import ConvEvent, ConversationalSession
 from harness.job_actions import (
     MAX_ACTION_ERROR_CHARS,
+    MAX_ACTION_GOAL_CHARS,
+    MAX_ACTION_ID_CHARS,
+    MAX_ACTION_KIND_CHARS,
     ingest_worker_events,
     sanitize_action_row,
     sanitize_actions_list,
@@ -279,3 +282,201 @@ def test_snapshot_actions_is_independent():
     snap[0]["goal"] = "changed"
     assert rows[0]["goal"] == "g"
     assert copy.deepcopy(rows)[0]["goal"] == "g"
+
+
+def test_post_terminal_upsert_completed_parent_settles_complete(tmp_path):
+    sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
+    sess._register_local_job("local-term1", "do work")
+    sess._upsert_local_job_action(
+        "local-term1",
+        ConvEvent("action_start", {"id": "t1", "kind": "read_file", "goal": "x.py"}),
+    )
+    sess._finish_local_job("local-term1", ok=True, summary="done")
+    assert sess._local_jobs["local-term1"]["status"] == "completed"
+    # Late progressive callback after successful finish must not leave a spinner
+    # and must not paint red — match the completed parent outcome.
+    sess._upsert_local_job_action(
+        "local-term1",
+        ConvEvent("action_start", {"id": "late", "kind": "write_file", "goal": "y.py"}),
+    )
+    actions = sess._local_jobs["local-term1"]["actions"]
+    assert all(a["status"] != "running" for a in actions)
+    late = next(a for a in actions if a["action_id"] == "late")
+    assert late["status"] == "complete"
+    assert not late.get("error")
+
+
+def test_post_terminal_upsert_failed_parent_settles_failed(tmp_path):
+    sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
+    sess._register_local_job("local-fail1", "do work")
+    sess._finish_local_job("local-fail1", ok=False, summary="boom", status="failed")
+    assert sess._local_jobs["local-fail1"]["status"] == "failed"
+    sess._upsert_local_job_action(
+        "local-fail1",
+        ConvEvent("action_start", {"id": "late", "kind": "write_file", "goal": "y.py"}),
+    )
+    actions = sess._local_jobs["local-fail1"]["actions"]
+    assert all(a["status"] != "running" for a in actions)
+    late = next(a for a in actions if a["action_id"] == "late")
+    assert late["status"] == "failed"
+    assert "finished" in (late.get("error") or "")
+
+
+def test_post_terminal_ingest_settles_running(tmp_path):
+    sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
+    sess._register_local_job("local-term2", "do work")
+    sess._finish_local_job("local-term2", ok=False, summary="boom", status="failed")
+    snap = sess._ingest_local_job_events("local-term2", [
+        ConvEvent("action_start", {"id": "n1", "kind": "read_file", "goal": "a.py"}),
+        ConvEvent("action_result", {"id": "n1", "kind": "read_file", "goal": "a.py"}),
+    ])
+    assert snap[0]["status"] == "complete"
+    # A trailing late start is terminalized to failed for a failed parent.
+    snap2 = sess._ingest_local_job_events("local-term2", [
+        ConvEvent("action_start", {"id": "n2", "kind": "edit_file", "goal": "b.py"}),
+    ])
+    assert snap2[-1]["action_id"] == "n2"
+    assert snap2[-1]["status"] == "failed"
+
+
+def test_post_terminal_ingest_completed_parent_late_start_is_complete(tmp_path):
+    sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
+    sess._register_local_job("local-term3", "do work")
+    sess._finish_local_job("local-term3", ok=True, summary="done")
+    snap = sess._ingest_local_job_events("local-term3", [
+        ConvEvent("action_start", {"id": "n1", "kind": "edit_file", "goal": "b.py"}),
+    ])
+    assert snap[-1]["action_id"] == "n1"
+    assert snap[-1]["status"] == "complete"
+    assert not snap[-1].get("error")
+
+
+def test_post_terminal_ingest_cancelled_parent_late_start_is_failed(tmp_path):
+    sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
+    sess._register_local_job("local-term4", "do work")
+    assert sess.cancel_local_job("local-term4") is True
+    assert sess._local_jobs["local-term4"]["status"] == "cancelled"
+    snap = sess._ingest_local_job_events("local-term4", [
+        ConvEvent("action_start", {"id": "n1", "kind": "edit_file", "goal": "b.py"}),
+    ])
+    assert snap[-1]["action_id"] == "n1"
+    assert snap[-1]["status"] == "failed"
+    assert snap[-1].get("error") == "cancelled"
+    assert all(a["status"] != "running" for a in snap)
+
+
+def test_parallel_mirror_caps_combined_actions_at_max(tmp_path):
+    from harness.job_actions import MAX_JOB_ACTIONS
+
+    sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
+    sess._register_local_job("local-aa", "worker a")
+    sess._register_local_job("local-bb", "worker b")
+    sess._display_transcript.append({
+        "type": "card",
+        "id": "parallel-1",
+        "kind": "run_parallel",
+        "goal": "",
+        "result": {"job_id": "local-aa,local-bb", "status": "pending"},
+    })
+    # Seed more than MAX rows across both workers via upsert + mirror.
+    for i in range(MAX_JOB_ACTIONS):
+        sess._upsert_local_job_action(
+            "local-aa",
+            ConvEvent("action_start", {
+                "id": f"a{i}", "kind": "read_file", "goal": f"a{i}.py",
+            }),
+        )
+    for i in range(20):
+        sess._upsert_local_job_action(
+            "local-bb",
+            ConvEvent("action_start", {
+                "id": f"b{i}", "kind": "write_file", "goal": f"b{i}.py",
+            }),
+        )
+    sess._mirror_local_job_actions_to_display("local-aa")
+    sess._mirror_local_job_actions_to_display("local-bb")
+    card = sess._display_transcript[0]
+    assert len(card["actions"]) <= MAX_JOB_ACTIONS
+
+
+def test_post_cancel_late_action_start_settles(tmp_path):
+    sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
+    sess._register_local_job("local-cancel1", "do work")
+    sess._upsert_local_job_action(
+        "local-cancel1",
+        ConvEvent("action_start", {"id": "t1", "kind": "read_file", "goal": "x.py"}),
+    )
+    assert sess.cancel_local_job("local-cancel1") is True
+    assert sess._local_jobs["local-cancel1"]["status"] == "cancelled"
+    sess._upsert_local_job_action(
+        "local-cancel1",
+        ConvEvent("action_start", {"id": "late", "kind": "edit_file", "goal": "z.py"}),
+    )
+    actions = sess._local_jobs["local-cancel1"]["actions"]
+    assert all(a["status"] != "running" for a in actions)
+    late = next(a for a in actions if a["action_id"] == "late")
+    assert late["status"] == "failed"
+    assert late.get("error") == "cancelled"
+
+
+def test_upsert_late_duration_keeps_failed_status_and_error():
+    """Failed rows may accept late duration_ms without status/error regression."""
+    rows = [
+        sanitize_action_row(
+            action_id="a1",
+            kind="read_file",
+            goal="x.py",
+            status="failed",
+            error="boom",
+        )
+    ]
+    assert rows[0] is not None
+    late = sanitize_action_row(
+        action_id="a1",
+        kind="read_file",
+        goal="x.py",
+        status="complete",
+        duration_ms=42,
+        error="",
+    )
+    assert late is not None
+    out = upsert_action_row(rows, late)
+    assert out[0]["status"] == "failed"
+    assert out[0]["error"] == "boom"
+    assert out[0]["duration_ms"] == 42
+
+
+def test_sanitize_bounds_kind_goal_action_id():
+    row = sanitize_action_row(
+        action_id="i" * (MAX_ACTION_ID_CHARS + 20),
+        kind="k" * (MAX_ACTION_KIND_CHARS + 20),
+        goal="g" * (MAX_ACTION_GOAL_CHARS + 20),
+        status="running",
+    )
+    assert row is not None
+    assert len(row["action_id"]) <= MAX_ACTION_ID_CHARS
+    assert len(row["kind"]) <= MAX_ACTION_KIND_CHARS
+    assert len(row["goal"]) <= MAX_ACTION_GOAL_CHARS
+
+
+def test_assistant_done_settles_missing_action_result_cards(tmp_path, monkeypatch):
+    """Turn finalization must settle orphan result:null display cards."""
+    sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
+
+    def _fake_send_locked(*_a, **_k):
+        yield ConvEvent("action_start", {
+            "id": "a-orphan",
+            "kind": "read_file",
+            "goal": "missing.py",
+        })
+        yield ConvEvent("assistant_done", {"text": "done"})
+
+    monkeypatch.setattr(sess, "_send_locked", _fake_send_locked)
+    list(sess.send("hi"))
+    card = next(
+        c for c in sess._display_transcript
+        if isinstance(c, dict) and c.get("id") == "a-orphan"
+    )
+    assert card.get("result") is not None
+    assert card["result"].get("error") == "missing action_result"
+    assert card["result"].get("status") == "interrupted"

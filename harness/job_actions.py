@@ -188,6 +188,8 @@ def upsert_action_row(actions: list, row: dict) -> list:
             merged["goal"] = new_goal
         if row.get("status"):
             merged["status"] = _monotonic_status(merged.get("status"), row["status"])
+        # Late duration_ms is always welcome (telemetry) and must not change a
+        # failed status/error — monotonic status already blocked failed→complete.
         if row.get("duration_ms") is not None:
             merged["duration_ms"] = row["duration_ms"]
         if row.get("error"):
@@ -271,8 +273,16 @@ def settle_running_actions(
     actions: Optional[list],
     *,
     reason: str = "interrupted",
+    to_status: str = "failed",
 ) -> list:
-    """Flip remaining status=running rows to failed with a short safe reason."""
+    """Flip remaining status=running rows to a terminal status.
+
+    Default is failed (interrupt / job-failed paths). Pass ``to_status="complete"``
+    when the parent job completed successfully so late stragglers are not painted red.
+    """
+    terminal = _normalize_status(to_status, failed=(to_status != "complete"))
+    if terminal == "running":
+        terminal = "failed"
     err = _bound_str(reason, MAX_ACTION_ERROR_CHARS) or "interrupted"
     out: list = []
     for raw in actions or []:
@@ -280,8 +290,8 @@ def settle_running_actions(
             continue
         row = dict(raw)
         if _normalize_status(row.get("status")) == "running":
-            row["status"] = "failed"
-            if not row.get("error"):
+            row["status"] = terminal
+            if terminal == "failed" and not row.get("error"):
                 row["error"] = err
         out.append(row)
     return sanitize_actions_list(out)

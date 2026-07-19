@@ -898,13 +898,23 @@ function ActivityGroup({
   const cgItems = items.filter((it) => it.kind === "codegraph_context") as { kind: "codegraph_context"; symbols: number; query: string }[];
   const checkpointItems = items.filter((it) => it.kind === "checkpoint") as { kind: "checkpoint"; id: string; label: string; trigger: string }[];
   const swarmResults = items.filter((it) => it.kind === "swarm_result") as { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }[];
-  const actionCount = cards.length;
-  const anyRunning = cards.some((c) => c.card.running);
+  // Recount incrementally from visible top-level cards AND nested worker rows
+  // so Explored / Investigating tracks the investigation timeline the user sees.
+  const nestedRows = cards.flatMap((c) => c.card.actions || []);
+  const actionCount = cards.length + nestedRows.length;
+  const anyRunning = cards.some(
+    (c) => c.card.running || (c.card.actions || []).some((a) => a.status === "running"),
+  );
   // Keep Investigating across gaps between tool steps (loop still open).
   const investigating = anyRunning || (loopOpen && actionCount > 0);
   const runningCard = [...cards].reverse().find((c) => c.card.running)?.card;
-  const runningKind = toolFocusPhrase(runningCard?.kind || "");
-  const runningGoal = shortenGoal(runningCard?.goal || "");
+  const runningNested = [...nestedRows].reverse().find((a) => a.status === "running");
+  const runningKind = toolFocusPhrase(
+    runningCard?.kind || runningNested?.kind || "",
+  );
+  const runningGoal = shortenGoal(
+    runningCard?.goal || runningNested?.goal || "",
+  );
   const narrationMsgs = items.filter(
     (it) => it.kind === "msg" && (it as { kind: "msg"; msg: Msg }).msg.text.trim()
   ) as { kind: "msg"; msg: Msg }[];
@@ -939,9 +949,10 @@ function ActivityGroup({
         : "");
 
   // Cursor-style kind buckets ("3 files, 1 search") for Explored / Investigating.
-  const kindSummary = aggregateExplorationSummary(
-    cards.map((c) => c.card.kind || "action"),
-  );
+  const kindSummary = aggregateExplorationSummary([
+    ...cards.map((c) => c.card.kind || "action"),
+    ...nestedRows.map((a) => a.kind || "action"),
+  ]);
   const stepHeadline = investigatingHeadline(
     actionCount,
     investigating,

@@ -176,10 +176,10 @@ class SendLoopMixin:
         # every provider under append-only). PLAN_SYSTEM_SUFFIX rides on the
         # user turn in _send_locked_inner instead; action filtering still uses
         # the plan= flag.
+        pending_cards: dict = {}
         try:
             import time
             action_starts = {}
-            pending_cards = {}
             for ev in self._send_locked(user_message, images=images, plan=plan, resume=resume):
                 if ev.kind == "action_start":
                     self._total_tool_calls += 1
@@ -280,6 +280,17 @@ class SendLoopMixin:
 
                 if ev.kind == "assistant_done":
                     self._turn_count += 1
+                    # Settle leftover result:null display cards owned by this
+                    # turn so reload/export cannot resurrect forever-spinning
+                    # rows after a missing action_result. Background jobs that
+                    # already received a dispatch ack are not in pending_cards.
+                    for _aid, _card in list(pending_cards.items()):
+                        if isinstance(_card, dict) and _card.get("result") is None:
+                            _card["result"] = {
+                                "status": "interrupted",
+                                "error": "missing action_result",
+                            }
+                        pending_cards.pop(_aid, None)
                     # Emit assistant_done first so the UI paints the final answer
                     # before any non-blocking Save/Skip cards.
                     yield ev
@@ -320,6 +331,15 @@ class SendLoopMixin:
                 else:
                     yield ev
         finally:
+            # Cancel/error unwind (or any path that skipped assistant_done): settle
+            # owned result:null cards so export/reload cannot resurrect spinners.
+            for _aid, _card in list(pending_cards.items()):
+                if isinstance(_card, dict) and _card.get("result") is None:
+                    _card["result"] = {
+                        "status": "interrupted",
+                        "error": "missing action_result",
+                    }
+                pending_cards.pop(_aid, None)
             # Append-only freezes an enriched system prompt (MCP catalog, pilot
             # identity, …). Restoring the pre-turn base would desync history
             # from the frozen prefix and break prompt.startswith stability.

@@ -32,6 +32,7 @@ import {
   formatDistilledNotice,
   formatWikiAutoIngestNotice,
   noticeShowsWaitHint,
+  reconcileOrphanInvestigationCards,
   sealOpenStreamSurfaces,
   shouldPaintThinking,
   truncateWaitHint,
@@ -382,7 +383,10 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       );
       setPendingJobIds(liveIds);
       setItems((p) =>
-        finalizeOrphanSwarmPills(sealOpenStreamSurfaces(p), liveIds),
+        reconcileOrphanInvestigationCards(
+          finalizeOrphanSwarmPills(sealOpenStreamSurfaces(p), liveIds),
+          liveIds,
+        ),
       );
       fetchContextUsage();
       // Backend may also set_title_if_default; refresh meters/title if the
@@ -399,7 +403,10 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       );
       setPendingJobIds(liveIds);
       setItems((p) =>
-        finalizeOrphanSwarmPills(appendStreamError(p, d.error || ""), liveIds),
+        reconcileOrphanInvestigationCards(
+          finalizeOrphanSwarmPills(appendStreamError(p, d.error || ""), liveIds),
+          liveIds,
+        ),
       );
     }
   };

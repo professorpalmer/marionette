@@ -106,6 +106,31 @@ def test_consume_tool_hint_unwraps_generic_tool_key():
     assert hints[1]["id"] == "c9"
 
 
+def test_consume_tool_hint_failed_status_carries_call_id():
+    lines = [
+        json.dumps({
+            "type": "tool_call",
+            "subtype": "started",
+            "call_id": "c-fail",
+            "tool_call": {
+                "tool": {"name": "Read", "args": {"path": "x.py"}},
+            },
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "subtype": "failed",
+            "call_id": "c-fail",
+            "tool_call": {
+                "tool": {"name": "Read", "args": {"path": "x.py"}},
+            },
+        }),
+    ]
+    hints = []
+    consume_stream_json(lines, on_tool_hint=hints.append)
+    assert hints[-1]["id"] == "c-fail"
+    assert hints[-1]["status"] == "failed"
+
+
 def test_consume_mcp_tool_hint_uses_server_and_tool_name():
     """mcpToolCall must not paint as 'Tool Call MCP: tool'."""
     lines = [

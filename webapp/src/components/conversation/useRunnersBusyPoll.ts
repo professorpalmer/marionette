@@ -18,6 +18,7 @@ import {
   runnersBusyTickDecision,
   userStoppedBusyChrome,
 } from "./runnersBusy";
+import { shouldApplySwarmLiveMerge } from "./streamApply";
 import type { SessionStatus } from "./useSessionSwitch";
 
 export type UseRunnersBusyPollDeps = {
@@ -109,21 +110,45 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
         // dump lands without blanking thinking chrome.
         const pollGen = ++runnerBusyPollGenRef.current;
         return api.sessionTranscript(sid).then((tres) => {
-          if (pollGen !== runnerBusyPollGenRef.current) return;
-          if (cachedSessionIdRef.current !== sid) return;
+          // Live active id is the cached fence (useSessionSwitch keeps them
+          // aligned); do not trust a render-scoped activeSessionId closure.
+          if (!shouldApplySwarmLiveMerge({
+            pollGen,
+            currentGen: runnerBusyPollGenRef.current,
+            pollSessionId: sid,
+            cachedSessionId: cachedSessionIdRef.current,
+            activeSessionId: cachedSessionIdRef.current,
+          })) {
+            return;
+          }
           if (localStreamActiveRef.current) return;
           const loadedItems = transcriptResponseToItems(tres);
-          const local = itemsRef.current;
-          const next = mergeTranscriptItems(local, loadedItems);
-          const fp = transcriptFingerprint(next);
-          // Identical payload: keep existing object identities so React does not
-          // remount every Investigated/card row (the periodic blink).
-          if (fp === transcriptFpRef.current) return;
-          transcriptFpRef.current = fp;
-          setItems(next);
-          itemsRef.current = next;
-          writeTranscriptCache(sid, next);
-          setTranscriptStale(false);
+          let applied = false;
+          setItems((prev) => {
+            // Re-fence inside the updater: a session switch between the await
+            // and React applying this update must not mutate session B.
+            if (!shouldApplySwarmLiveMerge({
+              pollGen,
+              currentGen: runnerBusyPollGenRef.current,
+              pollSessionId: sid,
+              cachedSessionId: cachedSessionIdRef.current,
+              activeSessionId: cachedSessionIdRef.current,
+            })) {
+              return prev;
+            }
+            if (localStreamActiveRef.current) return prev;
+            const next = mergeTranscriptItems(prev, loadedItems);
+            const fp = transcriptFingerprint(next);
+            // Identical payload: keep existing object identities so React does
+            // not remount every Investigated/card row (the periodic blink).
+            if (fp === transcriptFpRef.current) return prev;
+            transcriptFpRef.current = fp;
+            itemsRef.current = next;
+            writeTranscriptCache(sid, next);
+            applied = true;
+            return next;
+          });
+          if (applied) setTranscriptStale(false);
         }).catch(() => {});
       } else if (detachedBusyRef.current) {
         // Runner went idle after a detached busy view -- finalize + refresh.
@@ -151,19 +176,42 @@ export function useRunnersBusyPoll(deps: UseRunnersBusyPollDeps) {
         setTurnOpen(false);
         setStatus("idle");
         setCompactingStatus(null);
+        const pollGen = ++runnerBusyPollGenRef.current;
         return api.sessionTranscript(sid)
           .then((tres) => {
-            if (cachedSessionIdRef.current !== sid) return;
+            if (!shouldApplySwarmLiveMerge({
+              pollGen,
+              currentGen: runnerBusyPollGenRef.current,
+              pollSessionId: sid,
+              cachedSessionId: cachedSessionIdRef.current,
+              activeSessionId: cachedSessionIdRef.current,
+            })) {
+              return;
+            }
             if (localStreamActiveRef.current) return;
             const loadedItems = transcriptResponseToItems(tres);
-            const next = mergeTranscriptItems(itemsRef.current, loadedItems);
-            const fp = transcriptFingerprint(next);
-            if (fp === transcriptFpRef.current) return;
-            transcriptFpRef.current = fp;
-            setItems(next);
-            itemsRef.current = next;
-            writeTranscriptCache(sid, next);
-            setTranscriptStale(false);
+            let applied = false;
+            setItems((prev) => {
+              if (!shouldApplySwarmLiveMerge({
+                pollGen,
+                currentGen: runnerBusyPollGenRef.current,
+                pollSessionId: sid,
+                cachedSessionId: cachedSessionIdRef.current,
+                activeSessionId: cachedSessionIdRef.current,
+              })) {
+                return prev;
+              }
+              if (localStreamActiveRef.current) return prev;
+              const next = mergeTranscriptItems(prev, loadedItems);
+              const fp = transcriptFingerprint(next);
+              if (fp === transcriptFpRef.current) return prev;
+              transcriptFpRef.current = fp;
+              itemsRef.current = next;
+              writeTranscriptCache(sid, next);
+              applied = true;
+              return next;
+            });
+            if (applied) setTranscriptStale(false);
           })
           .catch(() => {});
       }

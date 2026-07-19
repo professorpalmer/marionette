@@ -23,7 +23,10 @@ import { createChatEventsReattach } from "./chatEventsReattach";
 import { cancelTypewriterWithoutFlush } from "./streamTypewriter";
 import { gatherSessionArtifacts } from "./sessionArtifacts";
 import { releaseAllTranscriptPreviewBlobs } from "./transcriptImageBlobs";
-import { mergeJobActionsIntoItems } from "./streamApply";
+import {
+  foldSwarmLiveJobsAfterReload,
+  shouldApplySwarmLiveMerge,
+} from "./streamApply";
 
 export type SessionStatus =
   | "idle"
@@ -142,7 +145,10 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
 
     // Detach SSE only -- closing EventSource is OK; interrupt would kill the turn.
     // Bump streamGen so any late onmessage from the closed stream is ignored.
+    // Bump runnerBusyPollGen so an in-flight session-A transcript poll cannot
+    // pass the shared shouldApplySwarmLiveMerge generation fence after switch.
     streamGenRef.current += 1;
+    runnerBusyPollGenRef.current += 1;
     streamSessionIdRef.current = null;
     if (cancelRef.current) {
       cancelRef.current();
@@ -242,13 +248,34 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
 
         // Nested worker actions survive restart on local jobs; fold onto cards
         // after display hydrate so investigation rows stay complete on reload.
+        // Same shouldApplySwarmLiveMerge fence as the busy-poll path in Conversation.
         void api.swarmLive().then((live) => {
-          if (loadGen !== transcriptLoadGenRef.current) return;
-          if (cachedSessionIdRef.current !== activeSessionId) return;
+          const pollSid = activeSessionId;
+          if (!shouldApplySwarmLiveMerge({
+            pollGen: loadGen,
+            currentGen: transcriptLoadGenRef.current,
+            pollSessionId: pollSid,
+            cachedSessionId: cachedSessionIdRef.current,
+            activeSessionId: cachedSessionIdRef.current,
+          })) {
+            return;
+          }
           const jobs = Array.isArray(live?.jobs) ? live.jobs : [];
-          if (!jobs.some((j) => Array.isArray(j.actions) && j.actions.length > 0)) return;
           setItems((prev) => {
-            const next = mergeJobActionsIntoItems(prev, jobs);
+            if (!shouldApplySwarmLiveMerge({
+              pollGen: loadGen,
+              currentGen: transcriptLoadGenRef.current,
+              pollSessionId: pollSid,
+              cachedSessionId: cachedSessionIdRef.current,
+              activeSessionId: cachedSessionIdRef.current,
+            })) {
+              return prev;
+            }
+            // Empty swarmLive must not orphan-settle tool-prep / non-job cards —
+            // that races mid-turn chatEvents reattach. Only fold authoritative
+            // actions/terminal job rows; orphan settle is assistant_done/Stop.
+            const next = foldSwarmLiveJobsAfterReload(prev, jobs);
+            if (next === prev) return prev;
             itemsRef.current = next;
             transcriptFpRef.current = transcriptFingerprint(next);
             writeTranscriptCache(activeSessionId, next);

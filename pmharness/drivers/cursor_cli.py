@@ -489,18 +489,22 @@ def consume_stream_json(
                     tool_calls.append(_openai_tool_call(call_id, name, args))
                 elif not call_id:
                     tool_calls.append(_openai_tool_call("", name, args))
-            elif subtype == "completed" and on_tool_hint is not None and (
+            elif subtype in ("completed", "failed", "error") and on_tool_hint is not None and (
                 name or call_id
             ):
                 # Mark the provisional card done so the investigation fold
                 # keeps each Cursor-native tool row instead of one sticky
-                # "tool tool" placeholder.
+                # "tool tool" placeholder. Carry completed/failed status with
+                # the stable call_id for late prep → durable-card patches.
+                hint_status = (
+                    "failed" if subtype in ("failed", "error") else "completed"
+                )
                 on_tool_hint(
                     _tool_hint_payload(
                         name or "tool_call",
                         args,
                         call_id=call_id,
-                        status="completed",
+                        status=hint_status,
                     )
                 )
             continue
@@ -752,7 +756,11 @@ class CursorCliDriver:
             "errors": "replace",
         }
         if sys.platform == "win32":
-            # Hide console flash; CREATE_NO_WINDOW=0x08000000
+            # Hide the top-level `agent` console. CREATE_NO_WINDOW does NOT
+            # propagate to Cursor Agent's Node grandchildren (MCP servers the
+            # agent spawns). Those flashes require upstream Cursor to pass
+            # windowsHide / CREATE_NO_WINDOW when launching MCP children —
+            # Marionette cannot fix that from Python alone.
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
         # Leave the composer on the thinking spinner until real model/tool

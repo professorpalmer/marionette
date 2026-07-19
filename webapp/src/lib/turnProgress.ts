@@ -13,6 +13,7 @@ export type TurnCard = {
   goal: string;
   kind: string;
   running: boolean;
+  actions?: Array<{ status?: string; kind?: string; goal?: string }>;
 };
 
 export type TurnItem =
@@ -519,7 +520,12 @@ export function turnHasLiveInvestigation(
   agentLoopOpen: boolean = false,
 ): boolean {
   for (const it of itemsInCurrentTurn(items)) {
-    if (it.kind === "card" && (it as { card: TurnCard }).card?.running) return true;
+    if (it.kind === "card") {
+      const card = (it as { card: TurnCard }).card;
+      if (card?.running) return true;
+      // Nested worker rows keep Investigating while a parent fold is settled.
+      if ((card?.actions || []).some((a) => a.status === "running")) return true;
+    }
     if (it.kind === "tool_prep") return true;
     if (
       it.kind === "thinking"
