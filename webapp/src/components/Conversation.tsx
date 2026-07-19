@@ -204,8 +204,29 @@ export default function Conversation({
       if (!filePath) return;
       const line = e.detail.line;
       const col = e.detail.col;
-      setOpenTabs((prev) => upsertOpenTab(prev, filePath, line, col));
-      setActiveTab(filePath);
+      const openResolved = (resolvedPath: string) => {
+        setOpenTabs((prev) => upsertOpenTab(prev, resolvedPath, line, col));
+        setActiveTab(resolvedPath);
+      };
+      // Agent prose often cites an unqualified basename (`routing_savings.py`).
+      // Resolve read-only hints before opening so a unique nested file works
+      // like Cursor; exact tree paths still return immediately. Older backends
+      // fall back to the original path.
+      void api.resolveFile(filePath)
+        .then((resolved) => {
+          if (resolved?.ok && resolved.path) {
+            openResolved(resolved.path);
+            return;
+          }
+          if (Array.isArray(resolved?.candidates) && resolved.candidates.length > 1) {
+            window.dispatchEvent(new CustomEvent("harness-toast", {
+              detail: `Multiple files match ${filePath}; use a more specific path.`,
+            }));
+            return;
+          }
+          openResolved(filePath);
+        })
+        .catch(() => openResolved(filePath));
     };
     window.addEventListener("harness-open-file", handleOpenFile as EventListener);
     return () => {

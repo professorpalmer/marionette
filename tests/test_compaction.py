@@ -547,3 +547,70 @@ def test_advisory_compact_once_per_user_turn_not_per_tool_step(monkeypatch, tmp_
     # force=True path remains callable (overflow last resort).
     list(session._maybe_compact_history(force=True))
     assert any(c["force"] for c in compact_calls)
+
+
+def test_million_token_window_keeps_bounded_tail_and_reduces_large_session():
+    cfg = HarnessConfig(max_context_tokens=1_048_576)
+    session = ConversationalSession(cfg)
+    session.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+    session._history[0]["content"] = "system"
+    # About 215k heuristic tokens. The old 25%-of-window tail (262k) selected
+    # only a tiny middle and returned summary_rejected.
+    for i in range(62):
+        session._history.append({
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"turn {i}\n" + ("x" * 13_850),
+        })
+
+    before = session._estimate_context_tokens()
+    assert 200_000 < before < 240_000
+    events = list(session._maybe_compact_history(force=True))
+
+    assert [event.kind for event in events] == ["compacting", "compaction"]
+    assert session._estimate_context_tokens() < before * 0.5
+    assert session._history[-1]["content"].startswith("turn 61")
+
+
+def test_degenerate_model_summary_uses_deterministic_fallback():
+    cfg = HarnessConfig(max_context_tokens=1_000)
+    session = ConversationalSession(cfg)
+    session.pilot = MockPilot("I cannot summarize this conversation.")  # type: ignore
+    session._history[0]["content"] = "system"
+    for i in range(16):
+        session._history.append({
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"important decision {i}: " + ("z" * 180),
+        })
+
+    events = list(session._maybe_compact_history(force=True))
+
+    assert [event.kind for event in events] == ["compacting", "compaction"]
+    summary = session._history[1]["content"]
+    assert "I cannot summarize" not in summary
+    assert "Historical Task Snapshot" in summary
+
+
+def test_advisor_soon_triggers_safe_boundary_compaction(monkeypatch):
+    monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", "1")
+    monkeypatch.setattr(
+        "harness.memory_layers.latest_layer_snapshot",
+        lambda *_args, **_kwargs: {"L0": {"tokens": 2000}},
+    )
+    cfg = HarnessConfig(max_context_tokens=20_000)
+    session = ConversationalSession(cfg)
+    session.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+    monkeypatch.setattr(
+        "harness.turn_economy.TurnEconomy.advise_compaction",
+        lambda *_args, **_kwargs: {"level": "soon"},
+    )
+    session._history[0]["content"] = "system"
+    for i in range(80):
+        session._history.append({
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"turn {i}: " + ("q" * 500),
+        })
+    assert session._estimate_context_tokens() < 15_000
+
+    events = list(session._maybe_compact_history())
+
+    assert [event.kind for event in events] == ["compacting", "compaction"]

@@ -561,6 +561,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _skills_api.get_memory, services=svc.skills_services),
         "/api/file/read": get_json(
             _files_api.get_file_read, services=svc.file_services, qs_arg="path"),
+        "/api/file/resolve": get_json(
+            _files_api.get_file_resolve, services=svc.file_services, qs_arg="path"),
         "/api/file/raw": _get_file_raw,
         "/api/image": _get_image,
         "/api/workspace/files": get_json(

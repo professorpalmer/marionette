@@ -59,6 +59,32 @@ export function spendIsEstimated(data: Pick<CostBreakdownData, "cost_source" | "
   return true;
 }
 
+/** Additive list-price value shown in both footer and receipt. */
+export function listPriceValueTotal(
+  data: Pick<
+    CostBreakdownData,
+    | "cache_savings_gross_usd"
+    | "cache_savings_usd"
+    | "cache_saved_usd_swarm"
+    | "routing_saved_usd"
+    | "tool_output_savings_usd"
+  >,
+): number {
+  const positive = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+  const pilotCache =
+    typeof data.cache_savings_gross_usd === "number" &&
+    Number.isFinite(data.cache_savings_gross_usd)
+      ? positive(data.cache_savings_gross_usd)
+      : positive(data.cache_savings_usd);
+  return (
+    pilotCache
+    + positive(data.cache_saved_usd_swarm)
+    + positive(data.routing_saved_usd)
+    + positive(data.tool_output_savings_usd)
+  );
+}
+
 /** Calm user-facing copy for compaction advice. Machine reasons stay in title. */
 export function compactionAdvicePresentation(
   level: string | undefined,
@@ -149,6 +175,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
     typeof data.tool_output_savings_usd === "number" && isFinite(data.tool_output_savings_usd) && data.tool_output_savings_usd > 0
       ? data.tool_output_savings_usd
       : 0;
+  const valueTotal = listPriceValueTotal(data);
   const compactTokens =
     typeof data.tool_output_tokens_saved === "number" && isFinite(data.tool_output_tokens_saved) && data.tool_output_tokens_saved > 0
       ? data.tool_output_tokens_saved
@@ -293,6 +320,16 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         <div className="flex items-center justify-between mb-1">
           <span className="text-muted">Compact tool outputs saved</span>
           <span className="text-accent font-medium tabular-nums">~{fmtCost(compactSavings)}</span>
+        </div>
+      ) : null}
+
+      {valueTotal > 0 ? (
+        <div
+          className="mt-1.5 pt-1.5 border-t border-edge/50 flex items-center justify-between font-medium"
+          title="Prompt-cache value + routing value + compact-output value. Additive list-price value, not a cash refund or billed-spend subtraction."
+        >
+          <span className="text-txt">Total value saved</span>
+          <span className="text-good tabular-nums">~{fmtCost(valueTotal)}</span>
         </div>
       ) : null}
 

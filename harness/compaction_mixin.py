@@ -28,6 +28,7 @@ MIN_SUMMARY_SEED_CHARS = 200
 MIN_COMPACTABLE_TOKENS = 5000
 MAX_REDUCTION_RATIO = 0.8
 PREFERRED_RECENT_MESSAGES = 6
+DEFAULT_MAX_RETAINED_TAIL_TOKENS = 64000
 _ZERO_WIDTH_SPACE = "\u200b"
 _PRIOR_SUMMARY_WRAPPER = "PREVIOUS HISTORICAL CONVERSATION SUMMARY:\n"
 _INJECTED_SUMMARY_PREFIX = "[Earlier conversation summarized to fit context]\n"
@@ -80,6 +81,17 @@ def _min_compactable_tokens() -> int:
         return max(0, int(raw))
     except Exception:
         return MIN_COMPACTABLE_TOKENS
+
+
+def _max_retained_tail_tokens() -> int:
+    """Absolute cap for verbatim recent history kept after compaction."""
+    try:
+        raw = os.environ.get("HARNESS_COMPACTION_TAIL_TOKENS")
+        if raw is None or str(raw).strip() == "":
+            return DEFAULT_MAX_RETAINED_TAIL_TOKENS
+        return max(1, int(raw))
+    except Exception:
+        return DEFAULT_MAX_RETAINED_TAIL_TOKENS
 
 
 class CompactionContextMixin:
@@ -421,10 +433,11 @@ class CompactionContextMixin:
 
         budget = getattr(self.config, "max_context_tokens", 96000)
         trigger = int(budget * 0.75)
-        # Opt-in (HARNESS_ADVISOR_COMPACTION): when the layer-pressure advisor
-        # says level "now", compact proactively before the next turn instead of
-        # waiting for the estimated token count to cross the hard 75% trigger.
-        advised_now = False
+        # When the layer-pressure advisor says "soon" or "now", compact at the
+        # next safe turn boundary instead of waiting for the model-window
+        # percentage. Large-window models can otherwise remain above the
+        # advisor's absolute pressure threshold indefinitely.
+        advised = False
 
         if not force:
             try:
@@ -440,13 +453,13 @@ class CompactionContextMixin:
                         advice = self._turn_economy.advise_compaction(
                             budget, snapshot=snapshot
                         )
-                        if advice.get("level") == "now":
-                            advised_now = True
+                        if advice.get("level") in ("soon", "now"):
+                            advised = True
             except Exception:
                 pass
 
         before_tokens = self._estimate_context_tokens()
-        if not force and not advised_now and before_tokens < trigger:
+        if not force and not advised and before_tokens < trigger:
             self._set_compaction_attempt(
                 REASON_BELOW_TRIGGER,
                 before_tokens=before_tokens,
@@ -454,7 +467,19 @@ class CompactionContextMixin:
             )
             return
 
-        tail_budget = int(budget * 0.25)
+        # A pure percentage is pathological for million-token models: 25% of a
+        # 1M window retains 262k tokens, so a 215k-token session selects only a
+        # tiny prefix and "compacts" nothing. Keep a bounded recent tail, then
+        # calibrate downward when the provider's real prompt count shows that
+        # the local chars/4 estimate under-counts this transcript.
+        tail_budget = min(int(budget * 0.25), _max_retained_tail_tokens())
+        try:
+            local_history_tokens = self._estimate_context_tokens_for_list(self._history)
+            if local_history_tokens > 0 and before_tokens > local_history_tokens:
+                provider_ratio = before_tokens / local_history_tokens
+                tail_budget = max(1, int(tail_budget / provider_ratio))
+        except Exception:
+            pass
         split_idx = self._choose_compaction_split(tail_budget=tail_budget)
         if split_idx is None:
             self._set_compaction_attempt(
@@ -611,15 +636,19 @@ class CompactionContextMixin:
                 summary = _fallback()
                 self._compaction_fail_until = time.time() + _compact_cooldown
 
-        # Degenerate-summary guard: one attempt, fail soft, keep history.
+        # Degenerate model output is not a reason to strand an over-limit
+        # session. Retry once with the bounded deterministic extractive summary;
+        # only reject if that safety fallback is also invalid.
         try:
             if is_degenerate_summary(summary):
-                self._set_compaction_attempt(
-                    REASON_SUMMARY_REJECTED,
-                    before_tokens=before_tokens,
-                    detail="degenerate_summary",
-                )
-                return
+                summary = _fallback()
+                if is_degenerate_summary(summary):
+                    self._set_compaction_attempt(
+                        REASON_SUMMARY_REJECTED,
+                        before_tokens=before_tokens,
+                        detail="degenerate_summary",
+                    )
+                    return
         except Exception:
             pass
 
@@ -635,18 +664,33 @@ class CompactionContextMixin:
             "_compressed_summary": True
         }
 
-        # Insufficient-reduction guard: require at least 20% shrinkage.
+        # Insufficient-reduction guard: require at least 20% shrinkage. A
+        # verbose model summary gets one deterministic bounded fallback before
+        # the history is left unchanged.
         try:
             summary_tokens = self._estimate_context_tokens_for_list([summary_msg])
             if summary_tokens > int(middle_tokens * MAX_REDUCTION_RATIO):
-                self._set_compaction_attempt(
-                    REASON_SUMMARY_REJECTED,
-                    before_tokens=before_tokens,
-                    detail="insufficient_reduction",
-                    summary_tokens=summary_tokens,
-                    middle_tokens=middle_tokens,
-                )
-                return
+                fallback_summary = neutralize_compaction_control_tokens(_fallback())
+                fallback_msg = {
+                    "role": "user",
+                    "content": f"{_INJECTED_SUMMARY_PREFIX}{fallback_summary}",
+                    "_compressed_summary": True,
+                }
+                fallback_tokens = self._estimate_context_tokens_for_list([fallback_msg])
+                if (
+                    is_degenerate_summary(fallback_summary)
+                    or fallback_tokens > int(middle_tokens * MAX_REDUCTION_RATIO)
+                ):
+                    self._set_compaction_attempt(
+                        REASON_SUMMARY_REJECTED,
+                        before_tokens=before_tokens,
+                        detail="insufficient_reduction",
+                        summary_tokens=fallback_tokens,
+                        middle_tokens=middle_tokens,
+                    )
+                    return
+                summary = fallback_summary
+                summary_msg = fallback_msg
         except Exception:
             pass
 

@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.98, deliberately pre-1.0. Long-session compaction now handles oversized recent turns; savings use uncapped cache value and actual delegated usage; replayed swarm pills and delayed images remain stable, vetted privately before any wider release.
+> Status: v0.9.99, deliberately pre-1.0. Large-window compaction now guarantees a bounded recent tail and deterministic fallback; savings receipts reconcile to their headline; live tools stay visible; unique nested file links resolve correctly.
 
 ## Documentation
 

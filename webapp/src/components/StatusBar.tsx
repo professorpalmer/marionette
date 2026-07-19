@@ -3,7 +3,7 @@ import { Circle, GitBranch, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle, Re
 import { api, type Config, type SessionState, type UsageData } from "../lib/api";
 import { isDesktop } from "../lib/transport";
 import { usePolling } from "../lib/usePolling";
-import CostBreakdown, { spendIsEstimated } from "./CostBreakdown";
+import CostBreakdown, { listPriceValueTotal, spendIsEstimated } from "./CostBreakdown";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
 
 type FooterRuntimeStatus = "ready" | "thinking" | "busy";
@@ -270,10 +270,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                   ? usage.cache_savings_gross_usd
                   : usage.cache_savings_usd || 0)
                 + (usage.cache_saved_usd_swarm || 0);
-              const savedUsd =
-                cacheValue
-                + (usage.tool_output_savings_usd || 0)
-                + (usage.routing_saved_usd || 0);
+              const savedUsd = listPriceValueTotal(usage);
               if (cached <= 0 && compacted <= 0 && savedUsd <= 0) return null;
               const detail = [
                 cached > 0
@@ -335,8 +332,11 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                       estimated: usage.estimated,
                       tokens_cached: usage.tokens_cached,
                       cache_savings_usd: usage.cache_savings_usd,
+                      cache_savings_gross_usd: usage.cache_savings_gross_usd,
                       cache_savings_basis: usage.cache_savings_basis,
                       routing_saved_usd: usage.routing_saved_usd,
+                      routing_savings_basis: usage.routing_savings_basis,
+                      routing_tokens_compared: usage.routing_tokens_compared,
                       cache_saved_usd_swarm: usage.cache_saved_usd_swarm,
                       tool_output_tokens_saved: usage.tool_output_tokens_saved,
                       tool_output_savings_usd: usage.tool_output_savings_usd,

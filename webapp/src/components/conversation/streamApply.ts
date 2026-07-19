@@ -335,8 +335,59 @@ export function appendActionStartCard(
   d: { id: string; goal?: string; cwd?: string | null; kind?: string },
 ): Item[] {
   // Seal thinking + pilot bubbles first so tool cards never absorb prior text.
-  const base = clearToolPrepPlaceholders(sealOpenStreamSurfaces(items));
-  if (base.some((it) => it.kind === "card" && it.card.id === d.id)) return base;
+  const sealed = sealOpenStreamSurfaces(items);
+  if (sealed.some((it) => it.kind === "card" && it.card.id === d.id)) {
+    return sealed.filter((it) => it.kind !== "tool_prep");
+  }
+
+  // Promote the eager provider tool hint into the real action row IN PLACE.
+  // Clearing and re-appending the provisional card briefly removed the only
+  // visible execution surface between React updates ("Still working…" with no
+  // terminal row). Prefer exact goal+kind, then kind, then the oldest prep.
+  const prepIndexes: number[] = [];
+  for (let i = 0; i < sealed.length; i++) {
+    const it = sealed[i];
+    if (
+      it.kind === "card"
+      && typeof it.card.id === "string"
+      && it.card.id.startsWith("tool-prep:")
+    ) {
+      prepIndexes.push(i);
+    }
+  }
+  const goal = String(d.goal || "").trim();
+  const kind = String(d.kind || "").trim();
+  const prepIdx =
+    prepIndexes.find((i) => {
+      const card = (sealed[i] as Extract<Item, { kind: "card" }>).card;
+      return goal && card.goal === goal && (!kind || card.kind === kind);
+    })
+    ?? prepIndexes.find((i) => {
+      const card = (sealed[i] as Extract<Item, { kind: "card" }>).card;
+      return kind && card.kind === kind;
+    })
+    ?? prepIndexes[0];
+  if (prepIdx != null) {
+    return sealed
+      .map((it, i) => (
+        i === prepIdx
+          ? {
+              kind: "card" as const,
+              card: {
+                id: d.id,
+                goal: d.goal as string,
+                cwd: d.cwd,
+                running: true,
+                open: false,
+                kind: d.kind,
+              },
+            }
+          : it
+      ))
+      .filter((it) => it.kind !== "tool_prep");
+  }
+
+  const base = clearToolPrepPlaceholders(sealed);
   return [
     ...base,
     {

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within, waitFor } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CostBreakdown, {
   compactionAdvicePresentation,
+  listPriceValueTotal,
   spendIsEstimated,
   type CostBreakdownData,
 } from "../components/CostBreakdown";
@@ -91,6 +92,25 @@ describe("CostBreakdown", () => {
     expect(badge).toHaveAttribute(
       "title",
       "hot context above 150000 tokens on a large window",
+    );
+  });
+
+  it("reconciles the visible additive value total using gross cache value", () => {
+    const data: CostBreakdownData = {
+      ...baseData,
+      cache_savings_usd: 0.1,
+      cache_savings_gross_usd: 1.14,
+      cache_saved_usd_swarm: 0.22,
+      routing_saved_usd: 2.46,
+      tool_output_savings_usd: 0.76,
+    };
+    expect(listPriceValueTotal(data)).toBeCloseTo(4.58, 8);
+    render(<CostBreakdown data={data} />);
+    const totalRow = screen.getByText("Total value saved").closest("div");
+    expect(within(totalRow!).getByText("~$4.58")).toBeInTheDocument();
+    expect(totalRow).toHaveAttribute(
+      "title",
+      expect.stringMatching(/not a cash refund/i),
     );
   });
 

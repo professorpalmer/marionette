@@ -65,7 +65,7 @@ def _session(budget: int = 20000) -> ConversationalSession:
     return session
 
 
-def test_degenerate_summary_rejected(monkeypatch):
+def test_degenerate_summary_uses_bounded_fallback(monkeypatch):
     monkeypatch.setattr(
         "harness.compaction_mixin.MIN_COMPACTABLE_TOKENS",
         1,
@@ -73,13 +73,12 @@ def test_degenerate_summary_rejected(monkeypatch):
     session = _session(budget=2000)
     session.pilot = _RecordingPilot(return_text="too short")  # type: ignore[assignment]
     _fat_history(session, pairs=12, pad=200)
-    original = list(session._history)
-
     events = list(session._maybe_compact_history(force=True))
 
     assert any(e.kind == "compacting" for e in events)
-    assert not any(e.kind == "compaction" for e in events)
-    assert session._history == original
+    assert any(e.kind == "compaction" for e in events)
+    assert "too short" not in session._history[1]["content"]
+    assert "Historical Task Snapshot" in session._history[1]["content"]
     assert is_degenerate_summary("too short")
     assert not is_degenerate_summary(_GOOD_SUMMARY)
     assert MIN_SUMMARY_SEED_CHARS == 200

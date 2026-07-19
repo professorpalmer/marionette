@@ -186,6 +186,13 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
       "thinking",
       "card:read_file",
     ]);
+    const promoted = items.find(
+      (it) => it.kind === "card" && it.card.id === "action-1",
+    ) as Extract<Item, { kind: "card" }>;
+    expect(promoted.card.running).toBe(true);
+    expect(items.some(
+      (it) => it.kind === "card" && it.card.id.startsWith("tool-prep:"),
+    )).toBe(false);
     expect(thinkingTexts(items)).toEqual(["reason-A ", "reason-C"]);
     expect(assistantTexts(items)).toEqual(["narration-B"]);
     // Prefix through sealed thinking rows is unchanged across tool_prep → action_start

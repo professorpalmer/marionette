@@ -993,6 +993,14 @@ export const api = {
       withToken("/api/workspace/files"),
     ),
   searchSymbols: (q: string) => getJSON<{ symbols: { name: string; kind: string; path: string; line: number }[]; status?: string }>(withToken("/api/workspace/symbols?q=" + encodeURIComponent(q))),
+  resolveFile: (path: string) =>
+    getJSONSoft<{
+      ok?: boolean;
+      path?: string;
+      exact?: boolean;
+      error?: string;
+      candidates?: string[];
+    }>("/api/file/resolve?path=" + encodeURIComponent(path)),
   readFile: (path: string) =>
     getJSONSoft<{
       ok: boolean;

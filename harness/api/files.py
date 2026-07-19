@@ -411,6 +411,85 @@ def save_upload(body: bytes, content_type: str, upload_dir: str) -> tuple[int, d
 # GET readers / previews / tree
 # ---------------------------------------------------------------------------
 
+_RESOLVE_SKIP_DIRS = {
+    ".git", ".codegraph", ".venv", "venv", "node_modules", "__pycache__",
+    "dist", "build", "release", ".puppetmaster", ".pytest_cache",
+}
+
+
+def get_file_resolve(rel_path: str, svc: FileServices) -> tuple[int, dict]:
+    """Resolve a transcript file hint to one unique workspace-confined file.
+
+    Exact paths win. A missing relative path may fall back to a bounded,
+    read-only basename/suffix scan. This resolver is deliberately separate
+    from every mutation endpoint: writes remain exact and workspace-confined.
+    """
+    repo, err = _repo_or_error(svc)
+    if err is not None:
+        return err
+    query = (rel_path or "").strip()
+    if not query:
+        return 400, {"error": "Missing path parameter"}
+    try:
+        full_path, rel_posix = resolve_editor_path(repo, query)
+    except ValueError as e:
+        return _read_path_error_status(str(e)), {"error": str(e)}
+    if os.path.isfile(full_path):
+        return 200, {"ok": True, "path": rel_posix, "exact": True}
+
+    # Never reinterpret an absolute path or traversal-looking hint as a fuzzy
+    # lookup. resolve_editor_path already performed containment above.
+    drive, _ = os.path.splitdrive(query)
+    normalized = query.replace("\\", "/").strip("/")
+    if drive or os.path.isabs(query) or not normalized or ".." in normalized.split("/"):
+        return 404, {"error": "File not found", "path": rel_posix}
+
+    try:
+        max_files = max(1, int(os.environ.get("HARNESS_FILE_RESOLVE_MAX_FILES", "20000")))
+    except Exception:
+        max_files = 20000
+    needle = normalized.casefold()
+    basename_only = "/" not in normalized
+    matches: list[str] = []
+    visited = 0
+    for root, dirs, files in os.walk(repo, topdown=True):
+        dirs[:] = [
+            d for d in dirs
+            if d not in _RESOLVE_SKIP_DIRS
+        ]
+        for filename in files:
+            visited += 1
+            if visited > max_files:
+                return 422, {
+                    "error": "File lookup limit reached; use a more specific path",
+                    "path": normalized,
+                }
+            candidate_abs = os.path.join(root, filename)
+            candidate_rel = os.path.relpath(candidate_abs, repo).replace("\\", "/")
+            folded = candidate_rel.casefold()
+            matched = (
+                filename.casefold() == needle
+                if basename_only
+                else folded == needle or folded.endswith("/" + needle)
+            )
+            if matched:
+                matches.append(candidate_rel)
+                if len(matches) > 20:
+                    break
+        if len(matches) > 20:
+            break
+    matches.sort(key=lambda value: (value.count("/"), value.casefold()))
+    if len(matches) == 1:
+        return 200, {"ok": True, "path": matches[0], "exact": False}
+    if len(matches) > 1:
+        return 409, {
+            "error": "File path is ambiguous; use a more specific path",
+            "path": normalized,
+            "candidates": matches[:20],
+        }
+    return 404, {"error": "File not found", "path": normalized}
+
+
 def get_file_read(rel_path: str, svc: FileServices) -> tuple[int, dict]:
     """GET /api/file/read — UTF-8 text (or binary metadata) under workspace."""
     repo, err = _repo_or_error(svc)
