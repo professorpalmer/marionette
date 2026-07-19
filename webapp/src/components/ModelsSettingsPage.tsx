@@ -3,29 +3,72 @@ import { Search, RefreshCw, ChevronRight, ChevronDown } from "lucide-react";
 import { api, type ModelCatalogEntry } from "../lib/api";
 
 const COLLAPSE_THRESHOLD = 12;
+const CATALOG_SNAPSHOT_KEY = "pmharness.models.catalogSnapshot";
+let memoryCatalogSnapshot: ModelCatalogEntry[] | null = null;
 
 type ProviderGroup = { provider: string; display: string; items: ModelCatalogEntry[] };
+
+export function clearCatalogSnapshot() {
+  memoryCatalogSnapshot = null;
+  try {
+    localStorage.removeItem(CATALOG_SNAPSHOT_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readCatalogSnapshot(): ModelCatalogEntry[] {
+  if (memoryCatalogSnapshot) return memoryCatalogSnapshot;
+  try {
+    const raw = localStorage.getItem(CATALOG_SNAPSHOT_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(parsed?.catalog)) {
+      memoryCatalogSnapshot = parsed.catalog;
+      return parsed.catalog;
+    }
+  } catch {
+    /* stale/corrupt cache is disposable */
+  }
+  return [];
+}
+
+function writeCatalogSnapshot(catalog: ModelCatalogEntry[]) {
+  memoryCatalogSnapshot = catalog;
+  try {
+    localStorage.setItem(CATALOG_SNAPSHOT_KEY, JSON.stringify({
+      catalog,
+      savedAt: Date.now(),
+    }));
+  } catch {
+    /* storage pressure must not break Settings */
+  }
+}
 
 // Models settings page: toggle which provider models appear in the pilot picker
 // dropdown (Cursor/Hermes-style). Grouped by provider; only providers with a
 // present key are shown. The enabled set is persisted server-side and feeds
 // /api/pilot picker via model_visibility.enabled_pilots().
 export default function ModelsSettingsPage() {
-  const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
+  const [catalog, setCatalog] = useState<ModelCatalogEntry[]>(readCatalogSnapshot);
   const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => catalog.length === 0);
   const [busy, setBusy] = useState<string | null>(null);
   // Explicit user toggles win; otherwise large catalogs (OpenRouter) start
   // collapsed so Anthropic/OpenAI/xAI are reachable without endless scroll.
   const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>({});
 
   const load = async (opts?: { refresh?: boolean }) => {
-    setLoading(true);
+    const hadSnapshot = readCatalogSnapshot().length > 0;
+    if (opts?.refresh || !hadSnapshot) setLoading(true);
     try {
       const res = await api.modelCatalog({ refresh: !!opts?.refresh });
-      setCatalog(res.catalog || []);
+      const next = res.catalog || [];
+      setCatalog(next);
+      writeCatalogSnapshot(next);
     } catch {
-      setCatalog([]);
+      // Stale-while-revalidate: keep the last truthful snapshot instead of
+      // flashing an empty page during a transient backend/provider delay.
+      setCatalog((prev) => (prev.length === 0 ? [] : prev));
     } finally {
       setLoading(false);
     }
@@ -39,14 +82,22 @@ export default function ModelsSettingsPage() {
     const next = !entry.enabled;
     setBusy(entry.spec);
     // optimistic
-    setCatalog((prev) => prev.map((c) => (c.spec === entry.spec ? { ...c, enabled: next } : c)));
+    setCatalog((prev) => {
+      const updated = prev.map((c) => (c.spec === entry.spec ? { ...c, enabled: next } : c));
+      writeCatalogSnapshot(updated);
+      return updated;
+    });
     try {
       await api.toggleModel(entry.spec, next);
       // tell the picker to refetch its list
       window.dispatchEvent(new Event("harness-config-changed"));
     } catch {
       // revert on failure
-      setCatalog((prev) => prev.map((c) => (c.spec === entry.spec ? { ...c, enabled: !next } : c)));
+      setCatalog((prev) => {
+        const reverted = prev.map((c) => (c.spec === entry.spec ? { ...c, enabled: !next } : c));
+        writeCatalogSnapshot(reverted);
+        return reverted;
+      });
     } finally {
       setBusy(null);
     }

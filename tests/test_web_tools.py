@@ -1,4 +1,5 @@
 import os
+import socket
 import sys
 import tempfile
 import urllib.request
@@ -78,6 +79,18 @@ def mock_urlopen(monkeypatch):
         else:
             return FakeResponse(b"Bare text response", {"Content-Type": "text/plain"})
 
+    def _mock_getaddrinfo(host, port, *args, **kwargs):
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", port or 0),
+            )
+        ]
+
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", _mock_getaddrinfo)
     import harness.web_tools as _wt; monkeypatch.setattr(_wt, "_safe_urlopen", _mock)
     return calls
 

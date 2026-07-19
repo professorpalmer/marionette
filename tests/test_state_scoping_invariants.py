@@ -360,3 +360,136 @@ def test_remove_session_transcript_is_idempotent(tmp_path):
     remove_session_transcript("abc", state_dir=state_dir)
     assert not path.exists()
     remove_session_transcript("abc", state_dir=state_dir)  # no raise
+
+
+# ---------------------------------------------------------------------------
+# 6) Test-session pollution: live ~/.pmharness must stay untouched under pytest
+# ---------------------------------------------------------------------------
+
+
+def test_force_throwaway_harness_state_dir_overrides_live_preset(monkeypatch, tmp_path):
+    """Contaminated HARNESS_STATE_DIR under ~/.pmharness must be overwritten."""
+    from conftest import force_throwaway_harness_state_dir, _path_under_dir
+
+    fake_home = tmp_path / "userhome"
+    live_state = fake_home / ".pmharness" / "state"
+    live_state.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(live_state))
+
+    effective = force_throwaway_harness_state_dir()
+    assert effective
+    assert effective != str(live_state)
+    assert not _path_under_dir(effective, str(fake_home / ".pmharness"))
+    assert os.path.isdir(effective)
+
+
+def test_force_throwaway_harness_state_dir_preserves_non_live_preset(
+    monkeypatch, tmp_path
+):
+    """A non-live preset (CI / explicit temp root) must not be rewritten."""
+    from conftest import force_throwaway_harness_state_dir
+
+    preset = tmp_path / "explicit-state"
+    preset.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(preset))
+    assert force_throwaway_harness_state_dir() == str(preset)
+
+
+def test_tmp_path_session_store_persists_under_pytest(tmp_path):
+    """Defense-in-depth must not block legitimate temp SessionStore writes."""
+    path = tmp_path / "harness_sessions.json"
+    store = SessionStore(str(path))
+    store.create(title="Cold")
+    assert path.is_file()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert any(s.get("title") == "Cold" for s in data.get("sessions") or [])
+
+
+def test_session_store_skips_writes_into_live_pmharness_under_pytest(
+    tmp_path, monkeypatch
+):
+    """When PYTEST_CURRENT_TEST is set, refuse writes into real ~/.pmharness."""
+    fake_home = tmp_path / "userhome"
+    live_state = fake_home / ".pmharness" / "state"
+    live_state.mkdir(parents=True)
+    durable = live_state / "harness_sessions.json"
+    prior = {
+        "sessions": [
+            {
+                "id": "keepme",
+                "title": "Keep",
+                "created": 1.0,
+                "active": True,
+                "workspace_root": str(tmp_path / "real-project"),
+            }
+        ],
+        "active": "keepme",
+    }
+    durable.write_text(json.dumps(prior), encoding="utf-8")
+    before = durable.read_bytes()
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv(
+        "PYTEST_CURRENT_TEST",
+        "test_state_scoping_invariants.py::test_session_store_skips_writes",
+    )
+
+    store = SessionStore(str(durable))
+    store.create(title="Cold")
+    assert durable.read_bytes() == before
+    assert "Cold" not in durable.read_text(encoding="utf-8")
+
+
+def test_srv_sessions_create_cold_does_not_mutate_live_durable(tmp_path, monkeypatch):
+    """Preset live HARNESS_STATE_DIR + srv._sessions.create('Cold') must not
+    rewrite the durable harness_sessions.json under the live tree.
+
+    Covers the audit root cause: module-global SessionStore path binding plus
+    a contaminated shell env. Autouse rebind + write guard both apply.
+    """
+    fake_home = tmp_path / "userhome"
+    live_state = fake_home / ".pmharness" / "state"
+    live_state.mkdir(parents=True)
+    durable = live_state / "harness_sessions.json"
+    prior = {
+        "sessions": [
+            {
+                "id": "keepme",
+                "title": "Keep",
+                "created": 1.0,
+                "active": True,
+                "workspace_root": str(tmp_path / "real-project"),
+            }
+        ],
+        "active": "keepme",
+    }
+    durable.write_text(json.dumps(prior), encoding="utf-8")
+    before = durable.read_bytes()
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    # Contaminated shell: looks like a post-import live anchor.
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(live_state))
+
+    from conftest import _path_under_dir
+    import harness.server as srv
+
+    # Autouse fixture must have rebound off the live tree already.
+    live_root = str(fake_home / ".pmharness")
+    assert not _path_under_dir(srv._sessions.path, live_root)
+
+    srv._sessions.create(title="Cold")
+    assert durable.read_bytes() == before
+
+    # Even a poisoned rebound must not mutate live durable under pytest.
+    poisoned = SessionStore(str(durable))
+    old = srv._sessions
+    srv._sessions = poisoned
+    try:
+        srv._sessions.create(title="Cold")
+    finally:
+        srv._sessions = old
+    assert durable.read_bytes() == before

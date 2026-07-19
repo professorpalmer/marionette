@@ -261,7 +261,12 @@ export default function App() {
             <Resizer side="right" onResize={(dx) => setRightW((w) => clamp(w + dx, 280, 640))} />
             <div style={{ width: rightW }} className="shrink-0 h-full overflow-hidden">
               <ErrorBoundary label="Side panel">
-                <RightPane artifacts={artifacts} onOpenWizard={() => setShowWizard(true)} />
+                <RightPane
+                  artifacts={artifacts}
+                  onOpenWizard={() => setShowWizard(true)}
+                  onCollapse={() => setRightOpen(false)}
+                  initialTab={pendingRightTab.current}
+                />
               </ErrorBoundary>
             </div>
           </>

@@ -39,6 +39,40 @@ _USER_CONTENT_RE = re.compile(
 # durable state immediately.
 _SAVE_DEBOUNCE_S = 0.15
 
+
+def _path_under_live_pmharness(path: str) -> bool:
+    """True when ``path`` resolves inside the real user ``~/.pmharness`` tree.
+
+    Best-effort: any resolution error returns False so callers never crash.
+    """
+    try:
+        live_root = os.path.normcase(
+            os.path.realpath(os.path.expanduser("~/.pmharness"))
+        )
+        target = os.path.normcase(os.path.realpath(path))
+        if not live_root or not target:
+            return False
+        if target == live_root:
+            return True
+        return os.path.commonpath([live_root, target]) == live_root
+    except (ValueError, OSError, TypeError):
+        return False
+
+
+def _pytest_blocks_live_session_write(path: str) -> bool:
+    """Defense-in-depth: under pytest, refuse writes into live ~/.pmharness.
+
+    Temp pytest stores (tmp_path / forced HARNESS_STATE_DIR) must keep working;
+    only the real user tree is blocked. Best-effort — never raises.
+    """
+    try:
+        if "PYTEST_CURRENT_TEST" not in os.environ:
+            return False
+        return _path_under_live_pmharness(path)
+    except Exception:
+        return False
+
+
 # Preview snippets keyed by (transcript_path, max_chars) -> (mtime, text).
 # Invalidated when mtime changes (save_transcript / external rewrite).
 _preview_cache_lock = threading.Lock()
@@ -149,6 +183,12 @@ class SessionStore:
     def _flush_unlocked(self) -> None:
         """Atomic rewrite when dirty. Caller must hold ``_lock``."""
         if not self._dirty:
+            return
+        # Under pytest, never mutate the developer's live ~/.pmharness tree
+        # (import-time SessionStore path binding / contaminated HARNESS_STATE_DIR).
+        # Drop dirty so debounced/atexit retries do not keep aiming at live disk.
+        if _pytest_blocks_live_session_write(self.path):
+            self._dirty = False
             return
         # Atomic write (temp + os.replace) so a crash or concurrent reader never
         # sees a truncated session file -- matches memory_store/rule_store/keys.

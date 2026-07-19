@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, Fragment } from "react";
-import { Database, Globe, FolderTree, GitBranch, GitFork, Settings, SquareTerminal, Columns, Rows, Split, X, History, GitPullRequest, Network } from "lucide-react";
+import { Database, Globe, FolderTree, GitBranch, GitFork, Settings, SquareTerminal, Columns, Rows, Split, X, History, GitPullRequest, Network, PanelRightClose } from "lucide-react";
 import StatePane from "./StatePane";
 import BrowserPane from "./BrowserPane";
 import FileTree from "./FileTree";
@@ -57,9 +57,11 @@ interface SplitState {
   percent: number;
 }
 
-export default function RightPane({ artifacts, onOpenWizard }: {
+export default function RightPane({ artifacts, onOpenWizard, onCollapse, initialTab }: {
   artifacts: { type: string; headline: string; confidence?: number }[];
   onOpenWizard: () => void;
+  onCollapse: () => void;
+  initialTab?: string | null;
 }) {
   const asideRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -132,6 +134,9 @@ export default function RightPane({ artifacts, onOpenWizard }: {
 
   // Split state (persisted in localStorage)
   const [splitState, setSplitState] = useState<SplitState>(() => {
+    const requestedTab = CANONICAL_ORDER.includes(initialTab as Tab)
+      ? initialTab as Tab
+      : null;
     const saved = localStorage.getItem("pmharness.splitState");
     if (saved) {
       try {
@@ -146,7 +151,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
         const secondaryTab = remap(parsed.secondaryTab || "terminal");
         return {
           isSplit: !!parsed.isSplit,
-          primaryTab,
+          primaryTab: requestedTab || primaryTab,
           secondaryTab,
           direction: parsed.direction === "vertical" ? "vertical" : "horizontal",
           percent: (typeof parsed.percent === "number" && parsed.percent >= 20 && parsed.percent <= 80) ? parsed.percent : 50,
@@ -157,7 +162,7 @@ export default function RightPane({ artifacts, onOpenWizard }: {
     }
     return {
       isSplit: false,
-      primaryTab: "state",
+      primaryTab: requestedTab || "state",
       secondaryTab: "terminal",
       direction: "horizontal",
       percent: 50,
@@ -424,8 +429,10 @@ export default function RightPane({ artifacts, onOpenWizard }: {
                 </Fragment>
               );
             })}
-            {/* Settings pinned to the far end */}
-            <span className="flex-1 min-w-[4px]" aria-hidden />
+            {/* Collapse affordance in the intentional flex-1 gutter before Settings */}
+            <div className="flex-1 flex items-center justify-end min-w-[4px] px-0.5">
+              <PanelCollapseBtn onCollapse={onCollapse} />
+            </div>
             <TabBtn
               active={splitState.primaryTab === PINNED_LAST}
               onClick={() => updateSplitState({ primaryTab: PINNED_LAST })}
@@ -517,7 +524,9 @@ export default function RightPane({ artifacts, onOpenWizard }: {
                   </Fragment>
                 );
               })}
-              <span className="flex-1 min-w-[4px]" aria-hidden />
+              <div className="flex-1 flex items-center justify-end min-w-[4px] px-0.5">
+                <PanelCollapseBtn onCollapse={onCollapse} />
+              </div>
               <TabBtn
                 active={splitState.secondaryTab === PINNED_LAST}
                 onClick={() => updateSplitState({ secondaryTab: PINNED_LAST })}
@@ -554,6 +563,21 @@ export default function RightPane({ artifacts, onOpenWizard }: {
         )}
       </div>
     </aside>
+  );
+}
+
+function PanelCollapseBtn({ onCollapse }: { onCollapse: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onCollapse}
+      title="Close side panel (Ctrl/Cmd+J)"
+      aria-label="Close side panel"
+      data-testid="panel-collapse-btn"
+      className="p-1.5 text-faint hover:text-txt hover:bg-edge/40 rounded transition-colors shrink-0"
+    >
+      <PanelRightClose size={12} />
+    </button>
   );
 }
 

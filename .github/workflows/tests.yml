@@ -46,7 +46,7 @@ jobs:
           # Floor matches the accounting/routing fixes this release needs.
           # Unpinned `puppetmaster-ai` + pip cache can leave CI on an older
           # wheel (e.g. 1.14.0) and fail fallback-pricing regressions.
-          pip install -e ".[dev]" "puppetmaster-ai==1.20.1"
+          pip install -e ".[dev]" "puppetmaster-ai==1.20.2"
 
       - name: Run the offline test suite
         run: python -m pytest -q -p no:cacheprovider
@@ -75,7 +75,7 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" "puppetmaster-ai==1.20.1"
+          pip install -e ".[dev]" "puppetmaster-ai==1.20.2"
 
       - name: Full-auto safety invariants (offline)
         run: python -m pytest -q -p no:cacheprovider -m full_auto_safety
