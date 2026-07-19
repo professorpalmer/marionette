@@ -2303,16 +2303,9 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _token_ok(self) -> bool:
-        if self.headers.get("X-Harness-Token", "") == _TOKEN:
-            return True
-        # Accept the token as a query param too, matching do_GET's checks. The IPC
-        # POST bridge sends the header, so this changes no current behavior -- it
-        # removes an asymmetry where a query-token caller was rejected only on POST.
-        try:
-            qtok = parse_qs(urlparse(self.path).query).get("token", [""])[0]
-        except Exception:
-            qtok = ""
-        return qtok == _TOKEN
+        # Only accept the auth token in the header. Any query-string token is
+        # treated as untrusted data (prevents token leakage into logs/errors).
+        return self.headers.get("X-Harness-Token", "") == _TOKEN
 
     def _send(self, code, body, ctype="application/json"):
         data = body.encode() if isinstance(body, str) else body

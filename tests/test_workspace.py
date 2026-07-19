@@ -86,7 +86,7 @@ def test_open_workspace_endpoints():
             assert data["branch"] == "main"
 
             # 4. GET /api/workspace -> verify it returns the open workspace info
-            res_get = _get(port, f"/api/workspace?token={srv._TOKEN}", {"X-Harness-Token": srv._TOKEN})
+            res_get = _get(port, "/api/workspace", {"X-Harness-Token": srv._TOKEN})
             assert res_get.status == 200
             data_get = json.loads(res_get.read().decode())
             assert data_get["repo"] == real_tmp

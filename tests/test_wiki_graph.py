@@ -355,6 +355,65 @@ def test_wiki_connect_and_disconnect_endpoints(tmp_path, monkeypatch):
         httpd.shutdown()
 
 
+def test_wiki_connect_rejects_expired_nonce(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    httpd, port, srv = _server()
+    try:
+        import harness.api.wiki as wiki_api
+
+        # Freeze monotonic so we can deterministically expire the one-shot nonce.
+        now = [100.0]
+        monkeypatch.setattr(wiki_api.time, "monotonic", lambda: now[0])
+
+        nonce = srv._mint_wiki_connect_nonce()
+        personal = "https://portablellm.wiki/acme/llm?t=fresh-token"
+        connect_path = (
+            "/api/wiki/connect?nonce=%s&url=%s"
+            % (nonce, urllib.parse.quote(personal, safe=""))
+        )
+
+        # Expire beyond TTL so consume_wiki_connect_nonce must fail.
+        now[0] += wiki_api.WIKI_CONNECT_NONCE_TTL + 1.0
+        try:
+            _get(port, connect_path)
+            assert False, "expected 403 for expired nonce"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+            body = e.read().decode("utf-8", errors="ignore")
+            assert "Link expired" in body or "expired" in body.lower()
+    finally:
+        httpd.shutdown()
+
+
+def test_wiki_connect_rejects_non_loopback_host_even_pre_auth(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
+    httpd, port, srv = _server()
+    try:
+        nonce = srv._mint_wiki_connect_nonce()
+        personal = "https://portablellm.wiki/acme/llm?t=fresh-token"
+        connect_path = (
+            "/api/wiki/connect?nonce=%s&url=%s"
+            % (nonce, urllib.parse.quote(personal, safe=""))
+        )
+        # Wiki connect is pre-auth, but still must be loopback-only.
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{connect_path}",
+            headers={"Host": "evil.com"},
+            method="GET",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "expected 403 for non-loopback Host"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+    finally:
+        httpd.shutdown()
+
+
 def test_wiki_handoff_returns_loopback_setup_url():
     httpd, port, srv = _server()
     try:

@@ -19,6 +19,10 @@ const crypto = require("node:crypto");
 const { readLiveUpdateMarker } = require("./update-marker.cjs");
 const { isInstallComplete, runBootstrap, reinjectPortableTools } = require("./bootstrap.cjs");
 const { buildUpdaterEnv, windowsShellEnv } = require("./update-env.cjs");
+const {
+  isExactOriginAuthenticatedApiRequest,
+  probeActiveLoopbackAliasesForPort,
+} = require("./resource-auth.cjs");
 
 // Must run before any git/npm/uv child spawns: on Windows the portable tools
 // installed by first-run bootstrap are only on PATH in-memory, per process.
@@ -104,6 +108,9 @@ function tryRefreshBackendPortFromMarker() {
   backendPort = decision.port;
   const t = readPmHarnessStateFile("token");
   if (t && t.trim()) harnessToken = t.trim();
+  // If the backend moved ports, re-probe which loopback aliases resolve to
+  // the same active endpoint for this runtime session.
+  void refreshAllowedLoopbackAliases();
   reinjectBackendIntoRenderer();
   return true;
 }
@@ -198,7 +205,14 @@ let _wikiConnectedNotifyAt = 0;
 function isLoopbackWikiConnectUrl(url) {
   if (typeof url !== "string") return false;
   if (!/\/api\/wiki\/connect(\?|$|#)/i.test(url)) return false;
-  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(url);
+  if (!/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(url)) return false;
+  try {
+    const u = new URL(url);
+    const nonce = u.searchParams.get("nonce") || "";
+    return !!nonce;
+  } catch {
+    return false;
+  }
 }
 
 /** Always notify the MAIN Marionette window — never the Connect popout. */
@@ -359,6 +373,22 @@ let harnessToken = crypto.randomBytes(16).toString("hex");
 // crash respawn) inherit it via env so boot cost/savings meters restore from
 // disk; a full app quit+relaunch mints a new id and the status bar starts fresh.
 const harnessAppRunId = process.env.HARNESS_APP_RUN_ID || crypto.randomBytes(16).toString("hex");
+// Backends bind to the canonical 127.0.0.1 host; allow other loopback aliases
+// (like `localhost` or `::1`) only if they resolve to the same active
+// endpoint for this runtime.
+let allowedLoopbackHostnames = new Set(["127.0.0.1"]);
+
+async function refreshAllowedLoopbackAliases() {
+  try {
+    const next = await probeActiveLoopbackAliasesForPort(backendPort);
+    // Ensure the canonical host is always allowed even if probing fails.
+    next.add("127.0.0.1");
+    allowedLoopbackHostnames = next;
+  } catch {
+    // Token injection correctness is more important than probing aliases.
+    allowedLoopbackHostnames = new Set(["127.0.0.1"]);
+  }
+}
 // Timestamps of recent unexpected respawns -- caps a crash loop (see backend.on exit).
 let respawnTimes = [];
 // Coalesces concurrent startBackend() calls. Two overlapping starts (app 'ready'
@@ -628,6 +658,7 @@ async function _startBackendOnce() {
       const t = readPmHarnessStateFile("token");
       if (t && t.trim()) harnessToken = t.trim();
       console.log(`[backend] reusing existing backend on ${backendPort}`);
+      void refreshAllowedLoopbackAliases();
       return;
     }
   } catch {}
@@ -771,6 +802,7 @@ async function _startBackendOnce() {
   backend.stderr.on("data", (d) => { _dbg(`[err] ${d}`); process.stderr.write(`[backend] ${d}`); });
   await waitForBackend(backendPort);
   try { fs.writeFileSync(markerPath(), JSON.stringify({ port: backendPort, pid: backend.pid, at: Date.now() })); } catch {}
+  void refreshAllowedLoopbackAliases();
 }
 
 // ---- transport seam over IPC: proxy to the local backend ----
@@ -945,7 +977,7 @@ ipcMain.handle("harness:pickFolder", async () => {
 // the one-shot cancel listener so connections + listeners never leak.
 ipcMain.on("harness:stream", (event, channelId, apiPath) => {
   const tok = authToken();
-  const streamPath = tok ? apiPath + (apiPath.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok) : apiPath;
+  const streamPath = apiPath;
   let req = null;
   let finished = false;
 
@@ -969,7 +1001,12 @@ ipcMain.on("harness:stream", (event, channelId, apiPath) => {
 
   const onCancel = () => { cleanup(); };
 
-  req = http.get({ host: "127.0.0.1", port: backendPort, path: streamPath }, (res) => {
+  req = http.get({
+    host: "127.0.0.1",
+    port: backendPort,
+    path: streamPath,
+    headers: tok ? { "X-Harness-Token": tok } : {},
+  }, (res) => {
     res.setEncoding("utf8");
     let buf = "";
     res.on("data", (chunk) => {
@@ -1144,6 +1181,43 @@ function trackWindowState(w) {
   w.on("maximize", debounced);
   w.on("unmaximize", debounced);
   w.on("close", () => saveWindowState(w));
+}
+
+/**
+ * Set up request interception to inject X-Harness-Token header into loopback
+ * requests. This allows <img>, <a>, and other subresources to authenticate
+ * with the backend without using query-string tokens.
+ *
+ * Only injects headers for loopback URLs (127.0.0.1 or localhost or [::1]).
+ * External URLs never receive the token.
+ */
+function setupRequestInterception() {
+  const { session } = require("electron");
+  const defaultSession = session.defaultSession;
+  
+  if (!defaultSession) return;
+  
+  // Inject X-Harness-Token header for authenticated subresource requests to
+  // the active backend origin only.
+  //
+  // Important: the `urls` filter is broad (loopback ports) but the injection
+  // predicate is strict: exact backend host+port, and pathname `/api/` only.
+  defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ["http://127.0.0.1:*/*", "http://localhost:*/*", "http://[::1]:*/*"] },
+    (details, callback) => {
+      try {
+        const headers = details.requestHeaders || {};
+        const shouldInject = isExactOriginAuthenticatedApiRequest(details.url, {
+          activePort: backendPort,
+          allowedLoopbackHostnames,
+        });
+        if (shouldInject) headers["X-Harness-Token"] = harnessToken;
+        callback({ requestHeaders: headers });
+      } catch {
+        callback({ requestHeaders: details.requestHeaders || {} });
+      }
+    }
+  );
 }
 
 function createWindow() {
@@ -1653,6 +1727,7 @@ app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return; // a prior instance owns the backend
   registerMarionetteProtocol();
   configureBrowserSession();
+  setupRequestInterception();
   // A GUI launch (Finder/Dock on macOS, Start menu on Windows) inherits a minimal
   // PATH that omits Homebrew, Node version managers, npm globals, and uv -- so the
   // FIRST-RUN bootstrap (git/node/uv discovery) can wrongly fail with "Node too

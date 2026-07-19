@@ -43,8 +43,9 @@ def test_api_artifacts_returns_payload(monkeypatch):
     httpd, port = _server()
     try:
         req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/artifacts?job_id=j1&token={server._TOKEN}",
+            f"http://127.0.0.1:{port}/api/artifacts?job_id=j1",
             method="GET",
+            headers={"X-Harness-Token": server._TOKEN},
         )
         resp = urllib.request.urlopen(req, timeout=10)
         assert resp.status == 200
@@ -62,8 +63,9 @@ def test_api_artifacts_degrades_on_locked(monkeypatch):
     httpd, port = _server()
     try:
         req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/artifacts?job_id=j1&token={server._TOKEN}",
+            f"http://127.0.0.1:{port}/api/artifacts?job_id=j1",
             method="GET",
+            headers={"X-Harness-Token": server._TOKEN},
         )
         resp = urllib.request.urlopen(req, timeout=10)
         assert resp.status == 200

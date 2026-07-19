@@ -26,7 +26,14 @@ function parseWikiConnectDeepLink(raw) {
 function isLoopbackWikiConnectUrl(url) {
   if (typeof url !== "string") return false;
   if (!/\/api\/wiki\/connect(\?|$|#)/i.test(url)) return false;
-  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(url);
+  if (!/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(url)) return false;
+  try {
+    const u = new URL(url);
+    const nonce = u.searchParams.get("nonce") || "";
+    return !!nonce;
+  } catch {
+    return false;
+  }
 }
 
 describe("parseWikiConnectDeepLink", () => {
@@ -58,7 +65,7 @@ describe("isLoopbackWikiConnectUrl", () => {
       true,
     );
     assert.equal(
-      isLoopbackWikiConnectUrl("http://localhost:8765/api/wiki/connect"),
+      isLoopbackWikiConnectUrl("http://localhost:8765/api/wiki/connect?nonce=abc"),
       true,
     );
   });
@@ -70,6 +77,10 @@ describe("isLoopbackWikiConnectUrl", () => {
     );
     assert.equal(
       isLoopbackWikiConnectUrl("http://127.0.0.1:8765/api/wiki/status"),
+      false,
+    );
+    assert.equal(
+      isLoopbackWikiConnectUrl("http://127.0.0.1:8765/api/wiki/connect"),
       false,
     );
     assert.equal(isLoopbackWikiConnectUrl(""), false);

@@ -109,7 +109,7 @@ def test_get_chat_mid_resolves_stashed_message():
 
             # The mid is tiny -- this URL is nowhere near any length limit,
             # unlike embedding huge_message directly would be.
-            url = f"/api/chat?mid={mid}&token={srv_inst._TOKEN}"
+            url = f"/api/chat?mid={mid}"
             assert len(url) < 200
 
             res = _get(port, url, headers)
@@ -147,7 +147,7 @@ def test_get_chat_unknown_mid_does_not_crash():
             sess = srv_inst._sessions.create()
             srv_inst._sessions._active = sess["id"]
 
-            res = _get(port, f"/api/chat?mid=doesnotexist&token={srv_inst._TOKEN}", headers)
+            res = _get(port, "/api/chat?mid=doesnotexist", headers)
             assert res.status == 200
             while True:
                 line = res.readline().decode()

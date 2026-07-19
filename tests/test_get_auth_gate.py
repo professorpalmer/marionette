@@ -86,3 +86,22 @@ def test_protected_get_accepts_valid_token():
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_protected_get_rejects_query_token_even_if_correct():
+    """Query-string tokens must not authenticate (header-only policy)."""
+    srv, httpd, port = _serve()
+    token = srv._TOKEN
+    try:
+        url = f"http://127.0.0.1:{port}/api/memory?token={token}"
+        req = urllib.request.Request(url, method="GET")
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "expected 403"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+            body = e.read().decode("utf-8", errors="ignore")
+            assert token not in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

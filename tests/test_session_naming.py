@@ -120,7 +120,7 @@ def test_first_message_auto_titles(tmp_path):
         # Mock actual streaming chat call
         # It should trigger set_title_if_default
         try:
-            _get(port, f"/api/chat?message={urllib.parse.quote('why does /api/usage return 0?')}&token={srv._TOKEN}")
+            _get(port, f"/api/chat?message={urllib.parse.quote('why does /api/usage return 0?')}")
         except Exception:
             # We don't care if the actual stream fails (e.g. key/preflight issues)
             # because the auto-titling logic runs first

@@ -59,7 +59,7 @@ def test_symbols_endpoint_basic():
                     ])
                 }
 
-                res = _get(port, f"/api/workspace/symbols?q=foo&token={srv._TOKEN}", headers)
+                res = _get(port, "/api/workspace/symbols?q=foo", headers)
                 assert res.status == 200
                 data = json.loads(res.read().decode())
                 assert "symbols" in data
@@ -89,7 +89,7 @@ def test_symbols_endpoint_error_handling():
             srv._cfg.repo = real_tmp
 
             srv._cfg.repo = None
-            res_none = _get(port, f"/api/workspace/symbols?q=foo&token={srv._TOKEN}", headers)
+            res_none = _get(port, "/api/workspace/symbols?q=foo", headers)
             assert res_none.status == 200
             data_none = json.loads(res_none.read().decode())
             assert data_none["symbols"] == []
@@ -100,7 +100,7 @@ def test_symbols_endpoint_error_handling():
                  patch("puppetmaster.codegraph.codegraph_ready", return_value=True), \
                  patch("puppetmaster.codegraph.codegraph_query", side_effect=ValueError("Test crash")):
                 
-                res = _get(port, f"/api/workspace/symbols?q=foo&token={srv._TOKEN}", headers)
+                res = _get(port, "/api/workspace/symbols?q=foo", headers)
                 assert res.status == 200
                 data = json.loads(res.read().decode())
                 assert data["symbols"] == []
@@ -163,7 +163,7 @@ def test_at_symbol_resolution_on_send():
                 sess = srv_inst._sessions.create()
                 srv_inst._sessions._active = sess["id"]
 
-                res = _get(port, f"/api/chat?message=Check+out+@symbol:myfunc&token={srv_inst._TOKEN}", headers)
+                res = _get(port, "/api/chat?message=Check+out+@symbol:myfunc", headers)
                 
                 # Consume line by line until we hit 'done'
                 while True:
@@ -229,7 +229,7 @@ def test_at_symbol_resolution_confinement():
                 sess = srv_inst._sessions.create()
                 srv_inst._sessions._active = sess["id"]
 
-                res = _get(port, f"/api/chat?message=@symbol:outside_func&token={srv_inst._TOKEN}", headers)
+                res = _get(port, "/api/chat?message=@symbol:outside_func", headers)
                 
                 # Consume line by line until we hit 'done'
                 while True:

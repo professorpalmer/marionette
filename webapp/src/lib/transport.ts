@@ -55,20 +55,18 @@ export function getHarnessIpc(): any {
 }
 
 // Per-process auth token (defense-in-depth against unauthenticated localhost
-// access). Electron injects window.__HARNESS_TOKEN__; the served web page reads
-// it from a meta tag. Host/Origin validation server-side is the primary guard.
+// access). Electron injects window.__HARNESS_TOKEN__ via the preload bridge.
 function authToken(): string {
   if (typeof window === "undefined") return "";
   const w = window as any;
   if (w.__HARNESS_TOKEN__) return w.__HARNESS_TOKEN__;
-  const meta = document.querySelector('meta[name="harness-token"]');
-  return (meta && meta.getAttribute("content")) || "";
+  return "";
 }
 
 export function withToken(path: string): string {
-  const tok = authToken();
-  if (!tok) return path;
-  return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok);
+  // Auth is supplied via the `X-Harness-Token` header; we never append auth
+  // tokens to URLs.
+  return path;
 }
 
 /** True for loopback backend briefly gone (respawn / port flip). */
@@ -148,15 +146,57 @@ export function stream(
 ): () => void {
   const bridge = getHarnessIpc();
   if (bridge?.stream) return bridge.stream(path, onEvent, onDone, onError);
-  const es = new EventSource(withToken(path));
-  es.onmessage = (m) => {
-    let ev: StreamEvent;
-    try { ev = JSON.parse(m.data); } catch { return; }
-    if (ev.kind === "done") { es.close(); onDone?.(); return; }
-    onEvent(ev);
-  };
-  es.onerror = (e) => { es.close(); onError?.(e); };
-  return () => es.close();
+
+  // Browser: SSE via fetch so we can attach the auth header (EventSource
+  // cannot set custom headers).
+  const controller = new AbortController();
+  (async () => {
+    let resp: Response | null = null;
+    try {
+      resp = await fetch(path, {
+        method: "GET",
+        headers: { "X-Harness-Token": authToken() },
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        throw new Error(`stream ${path} -> ${resp.status}`);
+      }
+      const body = resp.body;
+      if (!body) throw new Error(`stream ${path}: missing response body`);
+
+      const reader = body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const line = frame.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          const payload = line.slice(6);
+          let ev: StreamEvent;
+          try { ev = JSON.parse(payload); } catch { continue; }
+          if (ev.kind === "done") {
+            controller.abort();
+            onDone?.();
+            return;
+          }
+          onEvent(ev);
+        }
+      }
+    } catch (e: any) {
+      if (!controller.signal.aborted) onError?.(e);
+    } finally {
+      try { resp?.body?.cancel(); } catch {}
+    }
+  })();
+
+  return () => controller.abort();
 }
 
 // Upload a file (multipart). In Electron a browser File object cannot cross the

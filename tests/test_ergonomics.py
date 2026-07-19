@@ -73,8 +73,8 @@ def test_ergonomics_workspace_files():
             res_open = _post(port, "/api/workspace/open", {"path": real_tmp}, headers)
             assert res_open.status == 200
 
-            # GET /api/workspace/files with token
-            res_files = _get(port, f"/api/workspace/files?token={srv._TOKEN}", headers)
+            # GET /api/workspace/files with auth header
+            res_files = _get(port, "/api/workspace/files", headers)
             assert res_files.status == 200
             data = json.loads(res_files.read().decode())
             

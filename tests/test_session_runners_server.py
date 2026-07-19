@@ -335,7 +335,7 @@ def test_session_state_exposes_runner_statuses():
         srv._pilot = runner
         srv._sessions.switch(sid)
 
-        resp = _get(port, f"/api/session/state?token={srv._TOKEN}", srv._TOKEN)
+        resp = _get(port, "/api/session/state", srv._TOKEN)
         payload = json.loads(resp.read().decode())
         assert "runners" in payload
         assert payload["runners"].get(sid) == "idle"

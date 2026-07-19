@@ -89,3 +89,116 @@ def test_upload_rejects_oversized_body():
         else:
             os.environ["HARNESS_UPLOAD_MAX_BYTES"] = old_cap
         httpd.shutdown()
+
+
+def test_upload_rejects_multipart_without_boundary():
+    httpd, port = _start_server(None)
+    try:
+        base = f"http://127.0.0.1:{port}"
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+            "890000000a49444154789c6360000002000154a24f3f0000000049454e44ae426082"
+        )
+        body, _ctype = _multipart("file", "x.png", png)
+
+        import harness.server as _srv
+        bad_ctype = "multipart/form-data"  # missing required boundary
+        req = urllib.request.Request(
+            base + "/api/upload",
+            data=body,
+            headers={"Content-Type": bad_ctype, "X-Harness-Token": _srv._TOKEN},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "expected HTTP 400 for missing boundary"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+    finally:
+        httpd.shutdown()
+
+
+def test_upload_rejects_content_type_with_multipart_substring_but_wrong_media_type():
+    httpd, port = _start_server(None)
+    try:
+        base = f"http://127.0.0.1:{port}"
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+            "890000000a49444154789c6360000002000154a24f3f0000000049454e44ae426082"
+        )
+        body, _ctype = _multipart("file", "x.png", png)
+
+        import harness.server as _srv
+        # Has "multipart/form-data" as a substring but is not the exact media
+        # type required by our strict parser.
+        bad_ctype = "multipart/form-dataX; boundary=----harnessboundary"
+        req = urllib.request.Request(
+            base + "/api/upload",
+            data=body,
+            headers={"Content-Type": bad_ctype, "X-Harness-Token": _srv._TOKEN},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "expected HTTP 400 for wrong media type"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+    finally:
+        httpd.shutdown()
+
+
+def test_upload_accepts_quoted_boundary_variant():
+    httpd, port = _start_server(None)
+    try:
+        base = f"http://127.0.0.1:{port}"
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+            "890000000a49444154789c6360000002000154a24f3f0000000049454e44ae426082"
+        )
+        body, _ctype = _multipart("file", "x.png", png)
+
+        import harness.server as _srv
+        boundary = "----harnessboundary"
+        good_ctype = f'multipart/form-data; boundary="{boundary}"'
+        req = urllib.request.Request(
+            base + "/api/upload",
+            data=body,
+            headers={"Content-Type": good_ctype, "X-Harness-Token": _srv._TOKEN},
+            method="POST",
+        )
+        res = json.load(urllib.request.urlopen(req, timeout=10))
+        assert res["saved"] and res["saved"][0]["path"].endswith(".png")
+    finally:
+        httpd.shutdown()
+
+
+def test_upload_rejects_single_quoted_boundary():
+    """RFC 7578: boundary parameter must use double quotes, not single quotes."""
+    httpd, port = _start_server(None)
+    try:
+        base = f"http://127.0.0.1:{port}"
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+            "890000000a49444154789c6360000002000154a24f3f0000000049454e44ae426082"
+        )
+        body, _ctype = _multipart("file", "x.png", png)
+
+        import harness.server as _srv
+        # Single-quoted boundary should be rejected (non-RFC)
+        boundary = "----harnessboundary"
+        bad_ctype = f"multipart/form-data; boundary='{boundary}'"
+        req = urllib.request.Request(
+            base + "/api/upload",
+            data=body,
+            headers={"Content-Type": bad_ctype, "X-Harness-Token": _srv._TOKEN},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "expected HTTP 400 for single-quoted boundary"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            data = json.loads(e.read().decode())
+            assert "quoted" in data["error"].lower() or "boundary" in data["error"].lower()
+    finally:
+        httpd.shutdown()

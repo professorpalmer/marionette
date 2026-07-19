@@ -162,8 +162,16 @@ def _make_wiki_client(svc: WikiServices):
 def handle_wiki_connect(qs: dict) -> tuple[int, str, str]:
     """Apply wiki config from a loopback handoff (nonce + personal LLM URL).
 
-    Caller must already enforce loopback Host. Returns HTML bodies (success
-    and failure) with the historical status codes.
+    This route is intentionally *pre-auth*: the browser reaches it via a
+    plain navigation (popout/window handoff) and cannot reliably attach
+    `X-Harness-Token` headers to the GET request.
+
+    The caller must already enforce loopback Host, and this handler enforces
+    nonce strictness: it consumes the one-shot nonce before saving any config
+    so replays and stale/nonces always fail.
+
+    Returns HTML bodies (success and failure) with the historical status
+    codes.
     """
     nonce = (qs.get("nonce") or [""])[0]
     raw_url = (qs.get("url") or [""])[0]

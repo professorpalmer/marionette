@@ -51,8 +51,12 @@ def _spin_server():
 
 
 def _session_state(port, token):
-    resp = urllib.request.urlopen(
-        f"http://127.0.0.1:{port}/api/session/state?token={token}", timeout=5)
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/session/state",
+        headers={"X-Harness-Token": token},
+        method="GET",
+    )
+    resp = urllib.request.urlopen(req, timeout=5)
     return json.loads(resp.read().decode("utf-8"))
 
 
@@ -94,7 +98,7 @@ def test_session_state_reports_resume_pending_after_explicit_latch():
         ]
         # Arm via the same endpoint Electron calls before respawn.
         req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/session/persist?token={srv._TOKEN}",
+            f"http://127.0.0.1:{port}/api/session/persist",
             data=b"{}",
             headers={"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
             method="POST",
@@ -128,7 +132,7 @@ def test_session_persist_endpoint_writes_transcript(tmp_path):
             {"role": "user", "content": "remember me"},
         ]
         req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/session/persist?token={srv._TOKEN}",
+            f"http://127.0.0.1:{port}/api/session/persist",
             data=b"{}",
             headers={"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
             method="POST",

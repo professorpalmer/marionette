@@ -312,6 +312,62 @@ def post_file_reveal(body: dict, svc: FileServices) -> tuple[int, dict]:
         return 500, {"error": f"Failed to reveal: {e}"}
 
 
+def _parse_multipart_form_data_content_type(
+    content_type: str,
+) -> tuple[bool, str]:
+    """Validate an upload Content-Type is exactly multipart/form-data.
+
+    Returns (ok, boundary_or_reason). We keep this strict to avoid accepting
+    arbitrary substring occurrences that don't correspond to real multipart
+    bodies.
+    """
+    if not content_type or not isinstance(content_type, str):
+        return False, "missing content type"
+    if "\r" in content_type or "\n" in content_type:
+        return False, "invalid content type"
+
+    parts = [p.strip() for p in content_type.split(";")]
+    media_type = (parts[0] or "").strip().lower()
+    if media_type != "multipart/form-data":
+        return False, "expected multipart/form-data"
+
+    params: dict[str, str] = {}
+    for p in parts[1:]:
+        if not p:
+            continue
+        if "=" not in p:
+            continue
+        k, v = p.split("=", 1)
+        k = k.strip().lower()
+        v = v.strip()
+        if not k:
+            continue
+        # RFC 7578: parameter values may be quoted; only double quotes are valid.
+        # Reject single-quoted values for multipart parameters.
+        if v and v[0] == "'" and v[-1] == "'":
+            return False, "single-quoted boundary not permitted"
+        if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+            v = v[1:-1]
+        params[k] = v
+
+    boundary = params.get("boundary") or ""
+    if not boundary:
+        return False, "missing boundary"
+
+    # Boundary must be a single token (no whitespace/control chars) so it can
+    # be safely used to synthesize a MIME header line.
+    if any(ch.isspace() for ch in boundary):
+        return False, "invalid boundary"
+    if any(ch in boundary for ch in {'"', "'", "\r", "\n"}):
+        return False, "invalid boundary"
+
+    # Hard cap: extremely long boundaries can stress parsing.
+    if len(boundary) > 200:
+        return False, "boundary too long"
+
+    return True, boundary
+
+
 def check_upload_request(
     content_type: str, content_length: int
 ) -> tuple[int, dict] | None:
@@ -320,8 +376,9 @@ def check_upload_request(
     Returns ``(status, error_dict)`` to send immediately, or ``None`` when the
     handler may safely ``rfile.read(content_length)``.
     """
-    if "multipart/form-data" not in content_type:
-        return 400, {"error": "expected multipart/form-data"}
+    ok, boundary_or_reason = _parse_multipart_form_data_content_type(content_type)
+    if not ok:
+        return 400, {"error": str(boundary_or_reason) or "expected multipart/form-data"}
     # Reject oversized bodies BEFORE parsing. Without a ceiling, a large
     # multipart POST is read straight off the socket into memory on a
     # thread-per-request server -- a cheap memory-exhaustion DoS. Cap by the

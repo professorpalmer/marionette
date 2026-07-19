@@ -54,7 +54,7 @@ def test_workspace_files_cap_is_alphabetical_head(monkeypatch):
 
         srv._cfg.repo = real_tmp
         headers = {"X-Harness-Token": srv._TOKEN}
-        res = _get(port, f"/api/workspace/files?token={srv._TOKEN}", headers)
+        res = _get(port, "/api/workspace/files", headers)
         data = json.loads(res.read().decode())
 
         assert data["total"] == 8

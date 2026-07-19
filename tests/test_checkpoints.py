@@ -245,7 +245,7 @@ def test_api_endpoints_protection(temp_git_repo):
         assert exc.value.code == 403
 
         # 2. GET /api/checkpoints with token -> 200
-        resp = _get(port, f"/api/checkpoints?token={srv._TOKEN}")
+        resp = _get(port, "/api/checkpoints", headers={"X-Harness-Token": srv._TOKEN})
         assert resp.status == 200
         data = json.loads(resp.read().decode())
         assert isinstance(data, list)
@@ -369,7 +369,11 @@ def test_api_checkpoints_diff_protection(temp_git_repo):
         assert exc.value.code == 403
 
         # 2. GET /api/checkpoints/diff with token -> 200
-        resp = _get(port, f"/api/checkpoints/diff?id={c1}&token={srv._TOKEN}")
+        resp = _get(
+            port,
+            f"/api/checkpoints/diff?id={c1}",
+            headers={"X-Harness-Token": srv._TOKEN},
+        )
         assert resp.status == 200
         data = json.loads(resp.read().decode())
         assert data["ok"] is True

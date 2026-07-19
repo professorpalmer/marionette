@@ -73,8 +73,12 @@ def test_chat_stream_client_disconnect_does_not_cancel_turn():
         try:
             sess = srv._sessions.create()
             srv._sessions._active = sess["id"]
-            url = f"http://127.0.0.1:{port}/api/chat?message=hi&token={srv._TOKEN}"
-            req = urllib.request.Request(url, method="GET")
+            url = f"http://127.0.0.1:{port}/api/chat?message=hi"
+            req = urllib.request.Request(
+                url,
+                method="GET",
+                headers={"X-Harness-Token": srv._TOKEN},
+            )
             resp = urllib.request.urlopen(req, timeout=10)
             # Read one SSE frame, then drop the connection (view detach).
             line = resp.readline()
@@ -117,8 +121,12 @@ def test_auto_stream_client_disconnect_does_not_cancel_turn():
         try:
             sess = srv._sessions.create()
             srv._sessions._active = sess["id"]
-            url = f"http://127.0.0.1:{port}/api/auto?objective=go&token={srv._TOKEN}"
-            req = urllib.request.Request(url, method="GET")
+            url = f"http://127.0.0.1:{port}/api/auto?objective=go"
+            req = urllib.request.Request(
+                url,
+                method="GET",
+                headers={"X-Harness-Token": srv._TOKEN},
+            )
             resp = urllib.request.urlopen(req, timeout=10)
             line = resp.readline()
             assert line, "expected at least one SSE frame before detach"
@@ -171,10 +179,12 @@ def test_opening_session_with_trailing_user_does_not_arm_resume_latch():
             {"role": "user", "content": "unanswered from a past session"},
         ]
         assert srv._pilot.has_pending_user_turn() is True
-        resp = urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/api/session/state?token={srv._TOKEN}",
-            timeout=5,
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/session/state",
+            headers={"X-Harness-Token": srv._TOKEN},
+            method="GET",
         )
+        resp = urllib.request.urlopen(req, timeout=5)
         data = json.loads(resp.read().decode("utf-8"))
         assert data["resume_pending"] is False
         assert data["state"] == "idle"

@@ -45,8 +45,8 @@ def test_export_json_and_md(tmp_path):
         save_transcript(str(tmp_path), sid, messages)
         
         # 3. Request JSON export
-        url_json = f"/api/sessions/export?session={sid}&format=json&token={srv._TOKEN}"
-        resp_json = _get(port, url_json)
+        url_json = f"/api/sessions/export?session={sid}&format=json"
+        resp_json = _get(port, url_json, headers={"X-Harness-Token": srv._TOKEN})
         assert resp_json.status == 200
         
         # Check Headers
@@ -65,8 +65,8 @@ def test_export_json_and_md(tmp_path):
         assert data_json["messages"] == messages
         
         # 4. Request MD export
-        url_md = f"/api/sessions/export?session={sid}&format=md&token={srv._TOKEN}"
-        resp_md = _get(port, url_md)
+        url_md = f"/api/sessions/export?session={sid}&format=md"
+        resp_md = _get(port, url_md, headers={"X-Harness-Token": srv._TOKEN})
         assert resp_md.status == 200
         
         # Check Headers
@@ -96,8 +96,8 @@ def test_export_unknown_session_does_not_500(tmp_path):
     srv._sessions._sessions = []
     
     try:
-        url_json = f"/api/sessions/export?session=unknown-id&format=json&token={srv._TOKEN}"
-        resp = _get(port, url_json)
+        url_json = f"/api/sessions/export?session=unknown-id&format=json"
+        resp = _get(port, url_json, headers={"X-Harness-Token": srv._TOKEN})
         assert resp.status == 200
         
         content_disp = resp.headers.get("Content-Disposition")
@@ -107,6 +107,49 @@ def test_export_unknown_session_does_not_500(tmp_path):
         assert data["session_id"] == "unknown-id"
         assert data["title"] == "Unknown Session"
         assert data["messages"] == []
+        
+    finally:
+        httpd.shutdown()
+
+
+def test_export_requires_header_auth_not_query_string(tmp_path):
+    """Verify exports authenticate via X-Harness-Token header, not query string.
+    
+    Query-string tokens are no longer accepted (removed for security hardening).
+    Only header-based auth works.
+    """
+    httpd, port, srv = _server()
+    srv._cfg.state_dir = str(tmp_path)
+    srv._sessions.path = str(tmp_path / "harness_sessions.json")
+    srv._sessions._sessions = []
+    
+    try:
+        # Create a session
+        sess_meta = srv._sessions.create("Test Export Auth!")
+        sid = sess_meta["id"]
+        
+        # Save a transcript for this session id
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"}
+        ]
+        save_transcript(str(tmp_path), sid, messages)
+        
+        # 1. Query-string token should be rejected (even with token value)
+        url = f"/api/sessions/export?session={sid}&format=json&token={srv._TOKEN}"
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{url}", method="GET")
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "expected HTTP 403 with query-string token (not supported)"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+        
+        # 2. Header-based token should work
+        url = f"/api/sessions/export?session={sid}&format=json"
+        resp = _get(port, url, headers={"X-Harness-Token": srv._TOKEN})
+        assert resp.status == 200
+        data = json.loads(resp.read().decode("utf-8"))
+        assert data["session_id"] == sid
         
     finally:
         httpd.shutdown()

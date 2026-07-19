@@ -14,7 +14,7 @@ def test_public_get_paths_match_handler():
     )
 
 
-def test_try_static_shell_injects_harness_token(tmp_path):
+def test_try_static_shell_injects_harness_token_when_opted_in(tmp_path, monkeypatch):
     web = tmp_path / "web"
     web.mkdir()
     (web / "index.html").write_text(
@@ -24,9 +24,8 @@ def test_try_static_shell_injects_harness_token(tmp_path):
     (web / "app.js").write_text("console.log(1)", encoding="utf-8")
     (web / "app.css").write_text("body{}", encoding="utf-8")
 
-    status, html, ctype = static_api.try_static_shell(
-        "/", web_root=web, token="abc123"
-    )
+    monkeypatch.setenv("HARNESS_DEV_ALLOW_TOKEN_META", "1")
+    status, html, ctype = static_api.try_static_shell("/", web_root=web, token="abc123")
     assert status == 200 and ctype == "text/html"
     assert 'name="harness-token" content="abc123"' in html
     assert "</head>" in html
@@ -48,6 +47,18 @@ def test_try_static_shell_ignores_api_paths(tmp_path):
     assert static_api.try_static_shell(
         "/api/config", web_root=Path(tmp_path), token="x"
     ) is None
+
+
+def test_try_static_shell_does_not_inject_harness_token_by_default(tmp_path):
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "index.html").write_text(
+        "<html><head><title>t</title></head><body></body></html>",
+        encoding="utf-8",
+    )
+    status, html, ctype = static_api.try_static_shell("/", web_root=web, token="abc123")
+    assert status == 200 and ctype == "text/html"
+    assert 'name="harness-token"' not in html
 
 
 def test_server_web_root_still_points_at_harness_web():

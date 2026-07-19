@@ -328,8 +328,12 @@ def test_api_session_state_endpoint():
         except urllib.error.HTTPError as e:
             assert e.code == 403
             
-        # 2. 200 with token
-        resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/session/state?token={srv._TOKEN}", timeout=5)
+        # 2. 200 with token (header-only auth)
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/session/state",
+            headers={"X-Harness-Token": srv._TOKEN},
+        )
+        resp = urllib.request.urlopen(req, timeout=5)
         assert resp.status == 200
         data = json.loads(resp.read().decode("utf-8"))
         assert data["state"] == "idle"

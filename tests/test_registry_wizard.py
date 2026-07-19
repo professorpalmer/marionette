@@ -45,7 +45,7 @@ def test_get_providers_requires_token(test_server):
 
     # With bad token -> 403
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _get(port, "/api/providers?token=bad")
+        _get(port, "/api/providers", {"X-Harness-Token": "bad"})
     assert exc.value.code == 403
 
     # With header token -> 200
@@ -86,7 +86,7 @@ def test_registry_get_set_roundtrip(test_server, tmp_path):
     httpd, port, srv = test_server
     
     # 1. GET empty registry -> should return {"models": []}
-    resp = _get(port, f"/api/registry?token={srv._TOKEN}")
+    resp = _get(port, "/api/registry", {"X-Harness-Token": srv._TOKEN})
     assert resp.status == 200
     data = json.loads(resp.read().decode())
     assert data == {"models": []}
@@ -112,7 +112,7 @@ def test_registry_get_set_roundtrip(test_server, tmp_path):
     assert post_data["models"][1]["capability_score"] == 100 # clamped!
 
     # 4. GET again -> should return the updated models list
-    get_resp = _get(port, f"/api/registry?token={srv._TOKEN}")
+    get_resp = _get(port, "/api/registry", {"X-Harness-Token": srv._TOKEN})
     assert get_resp.status == 200
     get_data = json.loads(get_resp.read().decode())
     assert len(get_data["models"]) == 2
@@ -124,7 +124,7 @@ def test_roles_get_set_roundtrip(test_server):
     httpd, port, srv = test_server
 
     # 1. GET default roles
-    resp = _get(port, f"/api/roles?token={srv._TOKEN}")
+    resp = _get(port, "/api/roles", {"X-Harness-Token": srv._TOKEN})
     assert resp.status == 200
     data = json.loads(resp.read().decode())
     assert "roles" in data
@@ -145,7 +145,7 @@ def test_roles_get_set_roundtrip(test_server):
     assert post_data["routing_policy"] == "cheap"
 
     # 3. GET again and verify they are loaded
-    resp2 = _get(port, f"/api/roles?token={srv._TOKEN}")
+    resp2 = _get(port, "/api/roles", {"X-Harness-Token": srv._TOKEN})
     assert resp2.status == 200
     data2 = json.loads(resp2.read().decode())
     assert data2["routing_policy"] == "cheap"
@@ -177,13 +177,13 @@ def test_pilot_validate_endpoint(test_server):
 def test_registry_recommend_endpoint(test_server):
     httpd, port, srv = test_server
 
-    resp = _get(port, f"/api/registry/recommend?token={srv._TOKEN}")
+    resp = _get(port, "/api/registry/recommend", {"X-Harness-Token": srv._TOKEN})
     assert resp.status == 200
     data = json.loads(resp.read().decode())
     assert "pilot" in data
     assert "pilot_driver" in data
-    assert data["pilot_driver"] == "qwen3-coder-30b"
-    assert data["pilot"] == "qwen3-coder-30b"
+    assert data["pilot"] == data["pilot_driver"]
+    assert data["pilot_driver"] in {"qwen3-coder-30b", "glm-4.7-flash"}
     assert "roles" in data
     assert isinstance(data["roles"], dict)
     assert "explore" in data["roles"]

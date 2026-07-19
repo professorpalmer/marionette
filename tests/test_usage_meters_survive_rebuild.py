@@ -31,7 +31,7 @@ def _spin_server():
 
 def _get_usage(port, token):
     req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/usage?token={token}",
+        f"http://127.0.0.1:{port}/api/usage",
         headers={"X-Harness-Token": token},
     )
     resp = urllib.request.urlopen(req, timeout=10)

@@ -141,3 +141,42 @@ def test_image_serve_requires_token():
             assert e.code == 403
     finally:
         httpd.shutdown()
+
+
+def test_image_serve_requires_header_auth_not_query_string():
+    """Verify images authenticate via X-Harness-Token header, not query string.
+    
+    Query-string tokens are no longer accepted (removed for security hardening).
+    Only header-based auth works.
+    """
+    httpd, port = _start_server()
+    try:
+        import harness.server as srv
+        os.makedirs(srv._UPLOAD_DIR, exist_ok=True)
+        path = os.path.join(srv._UPLOAD_DIR, "test_serve_header_auth.png")
+        with open(path, "wb") as f:
+            f.write(_PNG)
+        base = f"http://127.0.0.1:{port}"
+        
+        # 1. Query-string token should be rejected (even with token value)
+        req = urllib.request.Request(
+            base + f"/api/image?path={path}&token={srv._TOKEN}",
+            method="GET"
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, "expected HTTP 403 with query-string token (not supported)"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+        
+        # 2. Header-based token should work
+        req = urllib.request.Request(
+            base + "/api/image?path=" + path,
+            headers={"X-Harness-Token": srv._TOKEN},
+            method="GET",
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        assert resp.status == 200
+        assert resp.read() == _PNG
+    finally:
+        httpd.shutdown()
