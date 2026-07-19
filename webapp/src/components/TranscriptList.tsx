@@ -4,7 +4,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
-import { api } from "../lib/api";
 import {
   openAgentLink,
   openAgentFile,
@@ -34,6 +33,7 @@ import {
   commandBlockedPresentation,
   type AutoBudgetSnapshot,
 } from "../lib/autoReceipts";
+import { TranscriptImage } from "./conversation/TranscriptImage";
 
 export type Msg = {
   role: "user" | "assistant";
@@ -1473,23 +1473,15 @@ function Bubble({
             )}
             {msg.images && msg.images.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-2">
-                {msg.images.map((img, idx) => {
-                  // The composer's blob: previewUrl is revoked right after send
-                  // (and never exists at all for a reloaded transcript), so a
-                  // SENT message must load its thumbnail from the durable saved
-                  // file via api.imageUrl(img.path), not the transient blob URL.
-                  const durableSrc = img.path ? api.imageUrl(img.path) : img.previewUrl;
-                  return (
-                    <div key={idx} className="relative w-11 h-11 rounded overflow-hidden border border-edge bg-panel flex-shrink-0">
-                      <img
-                        src={durableSrc}
-                        alt={img.name}
-                        onClick={() => onImageClick?.(durableSrc)}
-                        className="w-full h-full object-cover rounded cursor-pointer hover:opacity-85 transition-opacity"
-                      />
-                    </div>
-                  );
-                })}
+                {msg.images.map((img, idx) => (
+                  <TranscriptImage
+                    key={`${img.path || img.name}-${idx}`}
+                    path={img.path}
+                    name={img.name}
+                    previewUrl={img.previewUrl}
+                    onImageClick={onImageClick}
+                  />
+                ))}
               </div>
             )}
           </div>

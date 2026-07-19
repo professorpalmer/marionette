@@ -820,19 +820,24 @@ export const api = {
     }
     return saved[0];
   },
-  // Durable src for an uploaded image: the composer's blob: preview URL is
-  // revoked right after send, so sent-message thumbnails (and reloaded
-  // transcripts) must load the saved file from disk via this tokened GET.
+  // Durable src for an uploaded image. Sent-message thumbnails (and reloaded
+  // transcripts) load the saved file from disk via this GET; a newly sent
+  // message may briefly show a composer blob: preview until this URL succeeds.
   // An <img> tag loads a raw browser resource -- it does NOT route through the
   // Electron IPC transport the way getJSON/stream do. In the packaged app the
   // renderer is served from file:// (win.loadFile), so a RELATIVE "/api/image"
   // src resolves to file:///api/image and fails -> broken thumbnail. Build an
   // ABSOLUTE backend URL using the port Electron injects as window.__HARNESS_PORT__
-  // (present on load and respawn), with the token in the query so the tag can
-  // authenticate (an <img> cannot send headers). Falls back to a relative,
-  // tokened path for the plain web build (served same-origin from the backend).
-  imageUrl: (path: string): string => {
-    const rel = withToken("/api/image?path=" + encodeURIComponent(path));
+  // (present on load and respawn). Auth is NOT a query token: Electron's
+  // session webRequest injects X-Harness-Token on exact-origin loopback /api/
+  // subresources; the plain web build relies on same-origin cookies/headers.
+  // Optional `retry` is a harmless cache-buster so the browser issues a fresh
+  // request after a transient failure / port respawn.
+  imageUrl: (path: string, opts?: { retry?: number }): string => {
+    let rel = withToken("/api/image?path=" + encodeURIComponent(path));
+    if (opts?.retry != null && opts.retry > 0) {
+      rel += `&_r=${opts.retry}`;
+    }
     if (typeof window !== "undefined") {
       const port = (window as any).__HARNESS_PORT__;
       if (port) return `http://127.0.0.1:${port}${rel}`;
@@ -991,7 +996,7 @@ export const api = {
       ext?: string;
       sqlite_tables?: string[];
     }>("/api/file/read?path=" + encodeURIComponent(path)),
-  /** Tokened absolute URL for PDF/image/HTML iframe or <img> preview. */
+  /** Absolute URL for PDF/image/HTML iframe or <img> preview (header auth in Electron). */
   fileRawUrl: (path: string): string => {
     const rel = withToken("/api/file/raw?path=" + encodeURIComponent(path));
     if (typeof window !== "undefined") {

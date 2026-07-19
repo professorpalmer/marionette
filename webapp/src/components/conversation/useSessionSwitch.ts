@@ -22,6 +22,7 @@ import {
 import { createChatEventsReattach } from "./chatEventsReattach";
 import { cancelTypewriterWithoutFlush } from "./streamTypewriter";
 import { gatherSessionArtifacts } from "./sessionArtifacts";
+import { releaseAllTranscriptPreviewBlobs } from "./transcriptImageBlobs";
 
 export type SessionStatus =
   | "idle"
@@ -133,6 +134,9 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     setEditBusy(false);
     if (prevId && prevId !== activeSessionId) {
       setInput("");
+      // Owned sent-image blob previews belong to the outgoing session; durable
+      // /api/image paths remain on warm-cache rows for reload recovery.
+      releaseAllTranscriptPreviewBlobs();
     }
 
     // Detach SSE only -- closing EventSource is OK; interrupt would kill the turn.

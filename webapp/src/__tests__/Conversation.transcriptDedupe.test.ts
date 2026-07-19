@@ -57,6 +57,54 @@ describe("dedupeDisplayItems", () => {
     expect(dedupeDisplayItems(items)).toHaveLength(1);
   });
 
+  it("collapses duplicate swarm_pending rows by normalized job ids", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["b", "a"],
+        objective: "wave",
+        status: "running",
+        terminal_job_ids: [],
+      },
+      {
+        kind: "swarm_pending",
+        job_ids: ["a", "b"],
+        objective: "wave",
+        status: "failed",
+        resolved: true,
+        terminal_job_ids: ["a"],
+      },
+    ];
+    const out = dedupeDisplayItems(items);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      kind: "swarm_pending",
+      job_ids: ["a", "b"],
+      status: "failed",
+      terminal_job_ids: ["a"],
+    });
+  });
+
+  it("does not collapse distinct swarm jobs that share an objective", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["job_one"],
+        objective: "same goal",
+        status: "running",
+        terminal_job_ids: [],
+      },
+      {
+        kind: "swarm_pending",
+        job_ids: ["job_two"],
+        objective: "same goal",
+        status: "running",
+        terminal_job_ids: [],
+      },
+    ];
+    expect(dedupeDisplayItems(items)).toHaveLength(2);
+  });
+
   it("collapses interleaved poll/SSE duplicate tool rows by tool call id", () => {
     // Abnormal re-render churn: SSE running card, poll completed card, then
     // another SSE echo of the same id — must be one row, preferring completed.

@@ -53,8 +53,11 @@ function makeApplyDeps(opts: {
   itemsRef: { current: Item[] };
   typeBufRef: { current: string };
   order?: string[];
+  pendingJobIds?: string[];
 }) {
   const order = opts.order;
+  let pendingJobIds = opts.pendingJobIds || [];
+  const pendingJobIdsRef = { current: pendingJobIds };
   const setItems = (updater: Item[] | ((prev: Item[]) => Item[])) => {
     order?.push("setItems");
     const prev = opts.items;
@@ -87,8 +90,12 @@ function makeApplyDeps(opts: {
     setWaitHint: () => {},
     setStatus: () => {},
     setTurnOpen: () => {},
-    setPendingJobIds: () => {},
-    pendingJobIdsRef: { current: [] as string[] },
+    setPendingJobIds: (updater: string[] | ((prev: string[]) => string[])) => {
+      pendingJobIds = typeof updater === "function" ? updater(pendingJobIds) : updater;
+      pendingJobIdsRef.current = pendingJobIds;
+      if (opts.pendingJobIds) opts.pendingJobIds = pendingJobIds;
+    },
+    pendingJobIdsRef,
     setSafeTimeout: () => {},
     itemsRef: opts.itemsRef,
     planTurnRef: { current: false },
@@ -106,6 +113,9 @@ function makeApplyDeps(opts: {
     fetchContextUsage: () => {},
     get items() {
       return opts.items;
+    },
+    get pendingJobIds() {
+      return pendingJobIds;
     },
   };
 }
@@ -656,5 +666,27 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     apply({ kind: "assistant_done", data: {} });
     expect(surfaceKinds(state.items)).toEqual(["msg:user", "msg:assistant"]);
     expect(assistantTexts(state.items)).toEqual(["almost done"]);
+  });
+
+  it("replayed swarm_pending stays one pill and set-unions pendingJobIds", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+      pendingJobIds: [] as string[],
+    };
+    state.itemsRef.current = state.items;
+    const deps = makeApplyDeps(state);
+    const apply = createApplyStreamEvent(deps);
+
+    for (let i = 0; i < 20; i++) {
+      apply({
+        kind: "swarm_pending",
+        data: { job_ids: ["local-swarm-a1"], objective: "fix auth" },
+      });
+    }
+    expect(state.items.filter((it) => it.kind === "swarm_pending")).toHaveLength(1);
+    expect(deps.pendingJobIds).toEqual(["local-swarm-a1"]);
+    expect(state.items).toHaveLength(2);
   });
 });

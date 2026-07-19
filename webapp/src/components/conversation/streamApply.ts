@@ -17,6 +17,13 @@ import {
   findStreamingBubbleIdx,
 } from "./streamBubbles";
 import { deduplicateConsecutiveAssistantMessages } from "./transcriptItems";
+import {
+  findCanonicalSwarmPendingIndex,
+  isSwarmPendingTerminal,
+  mergeSwarmPendingReplay,
+  normalizeSwarmJobIds,
+  swarmPendingStatusOf,
+} from "./swarmPendingIdentity";
 
 /**
  * Seal every open stream surface (thinking row + pilot bubble) before a new
@@ -28,14 +35,7 @@ export function sealOpenStreamSurfaces(items: Item[]): Item[] {
 }
 
 export function swarmPendingStatus(item: SwarmPendingItem): SwarmPendingStatus {
-  if (item.status) return item.status;
-  if (item.resolved) return "done";
-  return "running";
-}
-
-function isSwarmPendingTerminal(item: SwarmPendingItem): boolean {
-  const status = swarmPendingStatus(item);
-  return status === "done" || status === "failed" || status === "ended";
+  return swarmPendingStatusOf(item);
 }
 
 function swarmResultLooksFailed(resObj: {
@@ -389,17 +389,54 @@ export function workspaceRootFromActionResult(
   return String(d.workspace_root || d.path || d.repo || cardGoal || "").trim();
 }
 
+/**
+ * Upsert a swarm lifecycle pill by canonical job-id identity. Replay / SSE
+ * echoes update the existing row in place and never resurrect running over a
+ * terminal status (done / failed / ended).
+ */
 export function appendSwarmPending(
   items: Item[],
   jobIds: string[],
   objective: string,
 ): Item[] {
+  const normalizedIds = normalizeSwarmJobIds(jobIds);
+  const obj = objective || "";
+  if (normalizedIds.length === 0 && !obj.trim()) return items;
+
+  const existingIdx = findCanonicalSwarmPendingIndex(
+    items,
+    normalizedIds,
+    obj,
+    // Pending replay must not collapse distinct jobs that merely share a goal.
+    { allowObjectiveAlias: false },
+  );
+  if (existingIdx >= 0 && items[existingIdx].kind === "swarm_pending") {
+    const existing = items[existingIdx] as SwarmPendingItem;
+    const merged = mergeSwarmPendingReplay(existing, normalizedIds, obj);
+    if (
+      merged.status === existing.status
+      && merged.resolved === existing.resolved
+      && merged.objective === existing.objective
+      && merged.job_ids.length === existing.job_ids.length
+      && merged.job_ids.every((id, i) => id === existing.job_ids[i])
+      && (merged.terminal_job_ids || []).length === (existing.terminal_job_ids || []).length
+      && (merged.terminal_job_ids || []).every(
+        (id, i) => id === (existing.terminal_job_ids || [])[i],
+      )
+    ) {
+      return items;
+    }
+    const updated = items.slice();
+    updated[existingIdx] = merged;
+    return updated;
+  }
+
   return [
     ...items,
     {
       kind: "swarm_pending" as const,
-      job_ids: jobIds,
-      objective,
+      job_ids: normalizedIds,
+      objective: obj,
       resolved: false,
       status: "running" as const,
       terminal_job_ids: [],
@@ -492,6 +529,69 @@ export function appendNonStreamingThinking(items: Item[], text: string): Item[] 
  * by job_id). For run_parallel pills that list several ids, the chip stays
  * running until every constituent job has a terminal result.
  */
+function findSwarmPendingForResult(
+  items: Item[],
+  jobId: string,
+  objective?: string,
+): number {
+  // Prefer the most advanced row that already lists this job id (handles
+  // historical duplicate pills before display dedupe collapses them).
+  let bestIdx = -1;
+  let bestRank = -1;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind !== "swarm_pending" || !it.job_ids.includes(jobId)) continue;
+    const rank = isSwarmPendingTerminal(it)
+      ? swarmPendingStatus(it) === "failed"
+        ? 3
+        : swarmPendingStatus(it) === "done"
+          ? 2
+          : 1
+      : 0;
+    if (bestIdx < 0 || rank > bestRank) {
+      bestIdx = i;
+      bestRank = rank;
+    }
+  }
+  if (bestIdx >= 0) return bestIdx;
+
+  // Sync run_swarm emits pending as local-swarm-{aid} but swarm_result may
+  // carry the substrate job id — conservative single-id objective alias only
+  // when at least one side is a local-swarm placeholder (never collapse two
+  // distinct substrate jobs that share a goal).
+  if (!objective) return -1;
+  let aliasIdx = -1;
+  let aliasRank = -1;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind !== "swarm_pending") continue;
+    if (it.job_ids.length !== 1) continue;
+    if (it.objective !== objective) continue;
+    const existingId = it.job_ids[0];
+    if (
+      existingId !== jobId
+      && !existingId.startsWith("local-swarm-")
+      && !jobId.startsWith("local-swarm-")
+    ) {
+      continue;
+    }
+    const rank = isSwarmPendingTerminal(it)
+      ? swarmPendingStatus(it) === "failed"
+        ? 3
+        : swarmPendingStatus(it) === "done"
+          ? 2
+          : 1
+      : 0;
+    // Prefer still-running so a spinner clears; otherwise keep most advanced.
+    const prefer = !isSwarmPendingTerminal(it) ? 10 : rank;
+    if (aliasIdx < 0 || prefer > aliasRank) {
+      aliasIdx = i;
+      aliasRank = prefer;
+    }
+  }
+  return aliasIdx;
+}
+
 export function applySwarmResultToItems(
   items: Item[],
   d: {
@@ -504,33 +604,41 @@ export function applySwarmResultToItems(
     error?: string | null;
   },
 ): Item[] {
-  const jobId = d.job_id;
+  const jobId = String(d.job_id || "").trim();
   if (!jobId) return items;
 
   const resObj = d.result || d;
   const resultFailed = swarmResultLooksFailed(resObj);
-
-  let pendingIdx = items.findIndex(
-    (it) => it.kind === "swarm_pending" && it.job_ids.includes(jobId),
+  const alreadyHasResult = items.some(
+    (it) => it.kind === "swarm_result" && it.job_id === jobId,
   );
-  // Sync run_swarm emits pending as local-swarm-{aid} but swarm_result may
-  // carry the substrate job id — fall back to objective match for a single
-  // still-running pill so the spinner does not stick next to a failed card.
-  if (pendingIdx < 0 && d.objective) {
-    pendingIdx = items.findIndex(
-      (it) =>
-        it.kind === "swarm_pending"
-        && !isSwarmPendingTerminal(it)
-        && it.objective === d.objective
-        && it.job_ids.length === 1,
-    );
-  }
+
+  const pendingIdx = findSwarmPendingForResult(items, jobId, d.objective);
 
   const pendingItem =
     pendingIdx >= 0 && items[pendingIdx].kind === "swarm_pending"
       ? (items[pendingIdx] as SwarmPendingItem)
       : null;
   const finalObjective = d.objective || pendingItem?.objective || "";
+
+  // Idempotent across poll/SSE/rehydrate even when session-switch clears the
+  // processed-job ref: terminal pill + existing result row → no-op.
+  if (
+    alreadyHasResult
+    && pendingItem
+    && isSwarmPendingTerminal(pendingItem)
+    && (
+      (pendingItem.terminal_job_ids || []).includes(jobId)
+      || pendingItem.job_ids.includes(jobId)
+      || (
+        pendingItem.job_ids.length === 1
+        && Boolean(d.objective)
+        && pendingItem.objective === d.objective
+      )
+    )
+  ) {
+    return items;
+  }
 
   const updated = items.map((item, idx) => {
     if (idx !== pendingIdx || item.kind !== "swarm_pending") return item;
@@ -540,11 +648,15 @@ export function applySwarmResultToItems(
       : item.job_ids.length === 1
         ? item.job_ids
         : [jobId];
-    const terminalJobIds = [
-      ...new Set([...(item.terminal_job_ids || []), ...creditedIds]),
-    ];
+    const terminalJobIds = normalizeSwarmJobIds([
+      ...(item.terminal_job_ids || []),
+      ...creditedIds,
+    ]);
     const allTerminal = item.job_ids.every((id) => terminalJobIds.includes(id));
     if (!allTerminal) {
+      if (isSwarmPendingTerminal(item)) {
+        return { ...item, terminal_job_ids: terminalJobIds };
+      }
       return {
         ...item,
         terminal_job_ids: terminalJobIds,
@@ -566,7 +678,10 @@ export function applySwarmResultToItems(
     return withPendingTerminal(item, status, terminalJobIds);
   });
 
-  if (updated.some((it) => it.kind === "swarm_result" && it.job_id === jobId)) {
+  if (
+    alreadyHasResult
+    || updated.some((it) => it.kind === "swarm_result" && it.job_id === jobId)
+  ) {
     return updated;
   }
 

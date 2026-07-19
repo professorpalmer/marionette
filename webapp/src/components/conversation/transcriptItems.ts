@@ -1,4 +1,8 @@
 import type { Item, Msg } from "../TranscriptList";
+import {
+  mergeSwarmPendingItems,
+  swarmPendingIdentityKey,
+} from "./swarmPendingIdentity";
 
 /** Same SHA-256 hex gate as SSE ``appendCommandApproval`` (streamApply). */
 const COMMAND_HASH_HEX = /^[0-9a-f]{64}$/;
@@ -126,6 +130,7 @@ export function dedupeDisplayItems(items: Item[]): Item[] {
   const out: Item[] = [];
   const cardIndexById = new Map<string, number>();
   const swarmIndexById = new Map<string, number>();
+  const swarmPendingIndexByKey = new Map<string, number>();
   const approvalIndexByHash = new Map<string, number>();
   for (const item of items) {
     if (item.kind === "card" && item.card?.id) {
@@ -139,6 +144,24 @@ export function dedupeDisplayItems(items: Item[]): Item[] {
         continue;
       }
       cardIndexById.set(id, out.length);
+      out.push(item);
+      continue;
+    }
+    if (item.kind === "swarm_pending") {
+      // Collapse historical duplicate lifecycle pills by normalized job ids.
+      // Objective alone is never a key — distinct jobs sharing a goal stay distinct.
+      const key = swarmPendingIdentityKey(item.job_ids);
+      if (key) {
+        const prevIdx = swarmPendingIndexByKey.get(key);
+        if (prevIdx != null) {
+          const prev = out[prevIdx];
+          if (prev.kind === "swarm_pending") {
+            out[prevIdx] = mergeSwarmPendingItems(prev, item);
+          }
+          continue;
+        }
+        swarmPendingIndexByKey.set(key, out.length);
+      }
       out.push(item);
       continue;
     }

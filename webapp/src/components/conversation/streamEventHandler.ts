@@ -339,7 +339,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setItems((p) => appendAutoHalt(p, d.reason || "", d.snapshot));
     } else if (ev.kind === "swarm_pending") {
       const job_ids = d.job_ids || [];
-      setPendingJobIds((p) => [...p, ...job_ids]);
+      // Set-union — replayed swarm_pending must not grow the tracker forever.
+      setPendingJobIds((p) => [...new Set([...p, ...job_ids])]);
       setItems((p) => appendSwarmPending(p, job_ids, d.objective || ""));
     } else if (ev.kind === "checkpoint") {
       setItems((p) => appendCheckpoint(p, d));

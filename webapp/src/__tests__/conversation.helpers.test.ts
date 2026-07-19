@@ -7,6 +7,7 @@ import {
 } from "../components/conversation/transcriptCache";
 import {
   deduplicateAssistantNarration,
+  dedupeDisplayItems,
   getSimilarity,
   mergeTranscriptItems,
   transcriptFingerprint,
@@ -69,6 +70,7 @@ import {
   appendAutoStatus,
   appendCommandApproval,
   appendCommandBlocked,
+  appendSwarmPending,
   applySwarmResultToItems,
   ensureAssistantStreamingBubble,
   failSwarmPendingForActionError,
@@ -840,6 +842,113 @@ describe("streamApply module", () => {
     ];
     const next = failSwarmPendingForActionError(items, "a3");
     expect(next[0]).toMatchObject({ status: "failed", resolved: true });
+  });
+
+  it("60 identical swarm_pending replays keep one lifecycle row (scroll-stable)", () => {
+    let items: Item[] = [];
+    for (let i = 0; i < 60; i++) {
+      items = appendSwarmPending(items, ["local-swarm-a1"], "fix auth");
+    }
+    const pills = items.filter((it) => it.kind === "swarm_pending");
+    expect(pills).toHaveLength(1);
+    expect(pills[0]).toMatchObject({
+      job_ids: ["local-swarm-a1"],
+      status: "running",
+      objective: "fix auth",
+    });
+    // Scroll stability proxy: duplicate replay must not change transcript length.
+    const afterReplay = appendSwarmPending(items, ["local-swarm-a1"], "fix auth");
+    expect(afterReplay).toHaveLength(items.length);
+    expect(afterReplay).toBe(items);
+  });
+
+  it("running → done → pending replay stays one done row", () => {
+    let items = appendSwarmPending([], ["local-swarm-a1"], "fix auth");
+    items = applySwarmResultToItems(items, {
+      job_id: "local-swarm-a1",
+      objective: "fix auth",
+      applied: true,
+      files: [],
+      summary: "ok",
+      error: null,
+    });
+    expect(items.filter((it) => it.kind === "swarm_pending")).toHaveLength(1);
+    expect(items[0]).toMatchObject({ status: "done", resolved: true });
+
+    const lenBefore = items.length;
+    items = appendSwarmPending(items, ["local-swarm-a1"], "fix auth");
+    expect(items).toHaveLength(lenBefore);
+    expect(items.filter((it) => it.kind === "swarm_pending")).toHaveLength(1);
+    expect(items[0]).toMatchObject({ status: "done", resolved: true });
+  });
+
+  it("keeps distinct job ids / objectives as separate lifecycle rows", () => {
+    let items = appendSwarmPending([], ["local-swarm-a1"], "shared goal");
+    items = appendSwarmPending(items, ["local-swarm-a2"], "shared goal");
+    items = appendSwarmPending(items, ["job_other"], "different goal");
+    const pills = items.filter((it) => it.kind === "swarm_pending");
+    expect(pills).toHaveLength(3);
+  });
+
+  it("result alias updates the local-swarm pill in place (idempotent rehydrate)", () => {
+    let items = appendSwarmPending([], ["local-swarm-a1"], "audit auth");
+    items = applySwarmResultToItems(items, {
+      job_id: "job_deadbeef1234",
+      objective: "audit auth",
+      applied: true,
+      files: ["a.ts"],
+      summary: "done",
+      error: null,
+    });
+    expect(items.filter((it) => it.kind === "swarm_pending")).toHaveLength(1);
+    expect(items[0]).toMatchObject({ status: "done", resolved: true });
+    expect(items.filter((it) => it.kind === "swarm_result")).toHaveLength(1);
+
+    // Session-switch clears processed-job refs; re-applying must not grow the feed.
+    const again = applySwarmResultToItems(items, {
+      job_id: "job_deadbeef1234",
+      objective: "audit auth",
+      applied: true,
+      files: ["a.ts"],
+      summary: "done",
+      error: null,
+    });
+    expect(again).toBe(items);
+    expect(again.filter((it) => it.kind === "swarm_result")).toHaveLength(1);
+  });
+
+  it("dedupeDisplayItems collapses hydrate duplicate swarm_pending rows", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-swarm-a1"],
+        objective: "fix auth",
+        status: "running",
+        terminal_job_ids: [],
+      },
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-swarm-a1"],
+        objective: "fix auth",
+        status: "done",
+        resolved: true,
+        terminal_job_ids: ["local-swarm-a1"],
+      },
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-swarm-a1"],
+        objective: "fix auth",
+        status: "running",
+        terminal_job_ids: [],
+      },
+    ];
+    const out = dedupeDisplayItems(items);
+    expect(out.filter((it) => it.kind === "swarm_pending")).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      status: "done",
+      resolved: true,
+      terminal_job_ids: ["local-swarm-a1"],
+    });
   });
 
   it("formats notices and wait hints", () => {

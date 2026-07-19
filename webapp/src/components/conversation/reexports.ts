@@ -102,6 +102,11 @@ export {
   formatWikiAutoIngestNotice,
 } from "./streamApply";
 export {
+  normalizeSwarmJobIds,
+  swarmPendingIdentityKey,
+  mergeSwarmPendingItems,
+} from "./swarmPendingIdentity";
+export {
   collectDisplayArtifacts,
   mergeUniqueArtifacts,
   emptySessionSwitchState,

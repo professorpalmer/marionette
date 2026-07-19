@@ -1355,8 +1355,11 @@ export default function Conversation({
     const job_id = d.job_id;
     if (!job_id) return;
 
-    if (processedSwarmJobIdsRef.current.includes(job_id)) return;
-    processedSwarmJobIdsRef.current.push(job_id);
+    // Ref is a fast path only — applySwarmResultToItems is the real idempotency
+    // gate so poll/SSE/rehydrate stay safe after session-switch clears the ref.
+    if (!processedSwarmJobIdsRef.current.includes(job_id)) {
+      processedSwarmJobIdsRef.current.push(job_id);
+    }
 
     setPendingJobIds((p) => p.filter(id => id !== job_id));
 
