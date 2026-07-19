@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.100, deliberately pre-1.0. The right dock now has an explicit collapse affordance, Settings paints instantly from a safe local snapshot, and test-created sessions cannot pollute live Home state.
+> Status: v0.9.101, deliberately pre-1.0. Provider outages now terminate repeated no-progress and keep-alive loops calmly, model-selection value is measured separately from narrow router savings, session listings snapshot mutable state safely, and manual compaction avoids tiny-history stalls.
 
 ## Documentation
 
