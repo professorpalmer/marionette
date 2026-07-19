@@ -727,6 +727,14 @@ class ConversationalSession(
         # loop where a duplicate worker races the original against a moving tree.
         self._inflight_objectives: set[str] = set()
         self._inflight_lock = threading.Lock()
+        # Per-originating-user-turn guard / stagnation / failed-resume state.
+        # Cleared on fresh user messages; preserved across model steps and
+        # keep-alive resume for the same originating turn.
+        self._turn_guard_state = None
+        self._stagnation_last_prose = None
+        self._stagnation_last_actions = None
+        self._stagnation_streak = 0
+        self._failed_objective_resume_counts: dict[str, int] = {}
         # Per-message CodeGraph slice cache. The codegraph_context() call is a
         # blocking Node subprocess (~270-500ms) -- recomputing it on every step
         # of a multi-step turn (same query) is pure dead time stacked in front of

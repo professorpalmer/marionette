@@ -24,9 +24,14 @@ export type CostBreakdownData = {
   /** catalog | capped | unknown — how reconciled cache savings were attributed. */
   cache_savings_basis?: "catalog" | "capped" | "unknown";
   routing_saved_usd?: number;
-  /** actual_usage | estimated | unknown — how routing value was measured. */
+  /** actual_usage | estimated | unknown — how routing decision value was measured. */
   routing_savings_basis?: "actual_usage" | "estimated" | "unknown";
   routing_tokens_compared?: number;
+  /** Model-selection value: worker usage at frontier baseline vs chosen model. */
+  delegation_saved_usd?: number;
+  /** actual_usage | unknown — how delegation value was measured. */
+  delegation_savings_basis?: "actual_usage" | "estimated" | "unknown";
+  delegation_tokens_compared?: number;
   cache_saved_usd_swarm?: number;
   tool_output_tokens_saved?: number;
   tool_output_savings_usd?: number;
@@ -66,6 +71,8 @@ export function listPriceValueTotal(
     | "cache_savings_gross_usd"
     | "cache_savings_usd"
     | "cache_saved_usd_swarm"
+    | "delegation_saved_usd"
+    | "delegation_savings_basis"
     | "routing_saved_usd"
     | "tool_output_savings_usd"
   >,
@@ -77,10 +84,16 @@ export function listPriceValueTotal(
     Number.isFinite(data.cache_savings_gross_usd)
       ? positive(data.cache_savings_gross_usd)
       : positive(data.cache_savings_usd);
+  const delegationMeasured = data.delegation_savings_basis === "actual_usage";
+  const delegation = positive(data.delegation_saved_usd);
+  const modelSelection =
+    delegationMeasured || delegation > 0
+      ? delegation
+      : positive(data.routing_saved_usd);
   return (
     pilotCache
     + positive(data.cache_saved_usd_swarm)
-    + positive(data.routing_saved_usd)
+    + modelSelection
     + positive(data.tool_output_savings_usd)
   );
 }
@@ -164,6 +177,17 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       ? data.routing_saved_usd
       : 0;
   const routingEstimated = data.routing_savings_basis === "estimated";
+  const delegationSaved =
+    typeof data.delegation_saved_usd === "number" && isFinite(data.delegation_saved_usd) && data.delegation_saved_usd > 0
+      ? data.delegation_saved_usd
+      : 0;
+  const delegationMeasured = data.delegation_savings_basis === "actual_usage";
+  const modelSelectionSaved =
+    delegationMeasured || delegationSaved > 0 ? delegationSaved : routingSaved;
+  const showRoutingDecision =
+    routingSaved > 0
+    && (delegationMeasured || delegationSaved > 0)
+    && Math.abs(routingSaved - delegationSaved) > 0.0001;
   const swarmCacheSaved =
     typeof data.cache_saved_usd_swarm === "number" && isFinite(data.cache_saved_usd_swarm) && data.cache_saved_usd_swarm > 0
       ? data.cache_saved_usd_swarm
@@ -293,19 +317,31 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         </div>
       ) : null}
 
-      {routingSaved > 0 ? (
+      {modelSelectionSaved > 0 ? (
         <div
           className="flex items-center justify-between mb-1"
           title={
-            routingEstimated
-              ? "Running estimate vs frontier-equivalent list price (preflight). Not a cash refund."
-              : "List-price value vs a frontier-equivalent baseline on the same actual tokens. Not a cash refund."
+            delegationSaved > 0
+              ? "Full list-price value of choosing cheaper worker models vs a frontier-equivalent baseline on the same actual tokens (ignores prompt-cache discounts). Not a cash refund."
+              : routingEstimated
+                ? "Running estimate vs frontier-equivalent list price (preflight). Not a cash refund."
+                : "List-price value vs a frontier-equivalent baseline on the same actual tokens. Not a cash refund."
           }
         >
           <span className="text-muted">
-            Routing value{routingEstimated ? " (est.)" : ""}
+            Model selection value{routingEstimated && delegationSaved <= 0 ? " (est.)" : ""}
           </span>
-          <span className="text-accent font-medium tabular-nums">~{fmtCost(routingSaved)}</span>
+          <span className="text-accent font-medium tabular-nums">~{fmtCost(modelSelectionSaved)}</span>
+        </div>
+      ) : null}
+
+      {showRoutingDecision ? (
+        <div
+          className="flex items-center justify-between mb-1 text-faint"
+          title="Narrow router-decision delta (balanced/cheap policies only; includes prompt-cache discount in counterfactual). Shown separately from model-selection value."
+        >
+          <span>Routing decision value</span>
+          <span className="tabular-nums">~{fmtCost(routingSaved)}</span>
         </div>
       ) : null}
 
@@ -326,7 +362,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {valueTotal > 0 ? (
         <div
           className="mt-1.5 pt-1.5 border-t border-edge/50 flex items-center justify-between font-medium"
-          title="Prompt-cache value + routing value + compact-output value. Additive list-price value, not a cash refund or billed-spend subtraction."
+          title="Prompt-cache value + model-selection value + compact-output value. Additive list-price value, not a cash refund or billed-spend subtraction."
         >
           <span className="text-txt">Total value saved</span>
           <span className="text-good tabular-nums">~{fmtCost(valueTotal)}</span>
@@ -408,15 +444,15 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {/* (c) Additive value framing — routing list-price + cache + compact
           are separate mechanisms (not overlapping cash refunds). */}
       <div className="mt-2 pt-2 border-t border-edge/60 text-[10px] leading-snug text-muted/90">
-        {promptCacheSaved > 0 || compactSavings > 0 || routingSaved > 0 ? (
+        {promptCacheSaved > 0 || compactSavings > 0 || modelSelectionSaved > 0 ? (
           <span>
             Routed per-step to the cheapest capable model
-            {routingSaved > 0 ? (
+            {modelSelectionSaved > 0 ? (
               <>
                 , with{" "}
-                <span className="text-accent">~{fmtCost(routingSaved)}</span> routing
-                value vs frontier-equivalent list price
-                {routingEstimated ? " (estimate)" : ""}
+                <span className="text-accent">~{fmtCost(modelSelectionSaved)}</span> model
+                selection value vs frontier-equivalent list price
+                {routingEstimated && delegationSaved <= 0 ? " (estimate)" : ""}
               </>
             ) : null}
             {promptCacheSaved > 0 ? (

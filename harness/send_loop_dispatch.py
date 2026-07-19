@@ -271,8 +271,46 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         if not adapter_remap_note:
             adapter_remap_note = f"adapter '{requested_adapter}' unavailable; using standalone agentic/native"
         requested_adapter = ''
+    # Broad read-only audit/review goals must not silently default bare
+    # run_implement to edit-capable implement mode — force analysis, or (when
+    # the model already asked for implement on a clear audit) refuse with a
+    # swarm/parallel-analysis redirect below.
+    try:
+        _requested_mode = (getattr(act, 'mode', None) or 'implement').strip().lower()
+    except Exception:
+        _requested_mode = 'implement'
+    if _requested_mode not in ('implement', 'analysis', 'review'):
+        _requested_mode = 'implement'
+    _force_analysis = False
+    if _requested_mode == 'implement':
+        try:
+            from harness.pilot_guards import is_read_only_analysis_goal
+            _force_analysis = is_read_only_analysis_goal(act.goal or '')
+        except Exception:
+            _force_analysis = False
+
     if use_external:
         adapter = requested_adapter
+        # External CLIs: refuse edit-capable implement for read-only audits and
+        # redirect to swarm / parallel analysis (external path has no local
+        # analysis-mode worker wiring here).
+        if _force_analysis:
+            refuse_msg = (
+                'run_implement refused: this goal looks like a read-only '
+                'audit/review. Re-dispatch with mode=analysis or mode=review '
+                'on a provider worker, or use run_swarm / run_parallel with '
+                'analysis roles instead of edit-capable implement mode.'
+            )
+            yield ConvEvent('action_start', {
+                'id': aid, 'kind': 'run_implement', 'goal': act.goal,
+                'cwd': effective_repo,
+            })
+            yield ConvEvent('action_result', {'id': aid, 'error': refuse_msg})
+            session._append_action_result(
+                act, aid, f'(run_implement {aid} refused: {refuse_msg})', is_native,
+            )
+            session._release_objective(act.goal)
+            return None
         yield ConvEvent('action_start', {'id': aid, 'kind': 'run_implement', 'goal': act.goal, 'cwd': effective_repo})
         try:
             import json
@@ -328,12 +366,9 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     else:
         from harness.edit_engines import select_edit_engine
         engine = select_edit_engine(session.config, requested_adapter)
-        try:
-            _mode = (getattr(act, 'mode', None) or 'implement').strip().lower()
-        except Exception:
-            _mode = 'implement'
-        if _mode not in ('implement', 'analysis', 'review'):
-            _mode = 'implement'
+        _mode = _requested_mode
+        if _force_analysis:
+            _mode = 'analysis'
         expects_diff = _mode not in ('analysis', 'review')
         yield ConvEvent('action_start', {'id': aid, 'kind': 'run_implement', 'goal': act.goal, 'cwd': effective_repo, 'mode': engine})
         try:
@@ -354,6 +389,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             dispatch_msg = f'Dispatched background swarm job {job_id}'
             if adapter_remap_note:
                 dispatch_msg = f'{dispatch_msg} ({adapter_remap_note})'
+            if _force_analysis:
+                dispatch_msg = (
+                    f'{dispatch_msg} (forced mode=analysis for read-only '
+                    'audit/review goal; use run_swarm for multi-role coverage)'
+                )
             yield ConvEvent('action_result', {'id': aid, 'job_id': job_id, 'status': 'pending', 'message': dispatch_msg})
             session._append_action_result(act, aid, f'(run_implement {aid} dispatched in background: job {job_id}' + (f'; {adapter_remap_note}' if adapter_remap_note else '') + ')', is_native)
             yield from session._answer_remaining_tool_calls(turn_actions, action_idx, is_native, action_seq)

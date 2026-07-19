@@ -41,6 +41,7 @@ class JobServices:
     cost_source_label: Callable[..., str]
     # Optional: rich routing detail (basis + tokens). Older test stubs omit it.
     routing_saved_usd_detail: Callable[..., dict] | None = None
+    delegation_saved_usd_detail: Callable[..., dict] | None = None
 
 
 def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
@@ -237,6 +238,10 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             job_routing_basis = "unknown"
             job_routing_tokens = 0
             job_routing_counted = False
+            job_delegation_saved = 0.0
+            job_delegation_basis = "unknown"
+            job_delegation_tokens = 0
+            job_delegation_counted = False
             try:
                 detail_fn = svc.routing_saved_usd_detail
                 if detail_fn is not None:
@@ -291,6 +296,32 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                         job_routing_saved = 0.0
                 except Exception:
                     job_routing_saved = 0.0
+            try:
+                ddetail_fn = svc.delegation_saved_usd_detail
+                if ddetail_fn is not None:
+                    try:
+                        ddetail = ddetail_fn(
+                            raw_arts,
+                            registry,
+                            active_price_in=price_in,
+                            active_price_out=price_out,
+                        )
+                    except TypeError:
+                        ddetail = ddetail_fn(raw_arts, registry)
+                    job_delegation_saved = round(
+                        float(ddetail.get("delegation_saved_usd") or 0.0), 6
+                    )
+                    job_delegation_basis = str(
+                        ddetail.get("delegation_savings_basis") or "unknown"
+                    )
+                    job_delegation_tokens = int(
+                        ddetail.get("delegation_tokens_compared") or 0
+                    )
+                    job_delegation_counted = bool(
+                        ddetail.get("delegation_savings_counted")
+                    )
+            except Exception:
+                job_delegation_saved = 0.0
             try:
                 job_cache_saved = round(
                     svc.cache_saved_usd_swarm(raw_arts, registry), 6
@@ -361,6 +392,10 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "routing_savings_basis": job_routing_basis,
                 "routing_tokens_compared": job_routing_tokens,
                 "routing_savings_counted": job_routing_counted,
+                "delegation_saved_usd": job_delegation_saved,
+                "delegation_savings_basis": job_delegation_basis,
+                "delegation_tokens_compared": job_delegation_tokens,
+                "delegation_savings_counted": job_delegation_counted,
                 "cache_saved_usd": job_cache_saved,
                 "artifacts": artifacts_list,
                 "artifacts_complete": artifacts_complete,
@@ -405,11 +440,15 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     # Mid-run savings: sum per-job routing/cache meters so the live
     # session block matches /api/usage (pilot cache stays separate).
     live_routing_saved = 0.0
+    live_delegation_saved = 0.0
     live_cache_saved = 0.0
     live_routing_tokens = 0
+    live_delegation_tokens = 0
     saw_routing_actual = False
     saw_routing_estimated = False
     saw_routing_unknown = False
+    saw_delegation_actual = False
+    saw_delegation_unknown = False
     swarm_cached = 0
     job_tokens_sum = 0
     store_job_cost = 0.0
@@ -419,8 +458,10 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 continue
             store_job_cost += float(j.get("est_cost_usd") or 0.0)
             live_routing_saved += float(j.get("routing_saved_usd") or 0.0)
+            live_delegation_saved += float(j.get("delegation_saved_usd") or 0.0)
             live_cache_saved += float(j.get("cache_saved_usd") or 0.0)
             live_routing_tokens += int(j.get("routing_tokens_compared") or 0)
+            live_delegation_tokens += int(j.get("delegation_tokens_compared") or 0)
             if j.get("routing_savings_counted"):
                 basis = str(j.get("routing_savings_basis") or "")
                 if basis == "actual_usage":
@@ -429,6 +470,12 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                     saw_routing_estimated = True
                 else:
                     saw_routing_unknown = True
+            if j.get("delegation_savings_counted"):
+                dbasis = str(j.get("delegation_savings_basis") or "")
+                if dbasis == "actual_usage":
+                    saw_delegation_actual = True
+                else:
+                    saw_delegation_unknown = True
             swarm_cached += int(j.get("tokens_cached") or 0)
             job_tokens_sum += int(j.get("tokens") or 0)
     except Exception:
@@ -439,6 +486,10 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         live_routing_basis = "estimated"
     else:
         live_routing_basis = "unknown"
+    if saw_delegation_actual:
+        live_delegation_basis = "actual_usage"
+    else:
+        live_delegation_basis = "unknown"
 
     pilot = svc.get_pilot()
     if repo_scoped:
@@ -541,6 +592,9 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             "routing_saved_usd": round(live_routing_saved, 6),
             "routing_savings_basis": live_routing_basis,
             "routing_tokens_compared": int(live_routing_tokens),
+            "delegation_saved_usd": round(live_delegation_saved, 6),
+            "delegation_savings_basis": live_delegation_basis,
+            "delegation_tokens_compared": int(live_delegation_tokens),
             "cache_saved_usd_swarm": round(live_cache_saved, 6),
             **tool_savings,
         },

@@ -168,6 +168,10 @@ export type Job = {
   tokens_cached?: number;
   /** Router baseline-vs-chosen savings for this job (balanced/cheap). */
   routing_saved_usd?: number;
+  /** Model-selection value: worker usage at frontier baseline vs chosen model. */
+  delegation_saved_usd?: number;
+  /** actual_usage | unknown — how delegation value was measured. */
+  delegation_savings_basis?: "actual_usage" | "estimated" | "unknown";
   /** Swarm prompt-cache savings priced from this job's usage x registry. */
   cache_saved_usd?: number;
   tool_output_tokens_saved?: number;
@@ -230,9 +234,13 @@ export type SwarmLive = {
     /** catalog | capped | unknown — how reconciled cache savings were attributed. */
     cache_savings_basis?: "catalog" | "capped" | "unknown";
     routing_saved_usd?: number;
-    /** actual_usage | estimated | unknown — how routing value was measured. */
+    /** actual_usage | estimated | unknown — how routing decision value was measured. */
     routing_savings_basis?: "actual_usage" | "estimated" | "unknown";
     routing_tokens_compared?: number;
+    delegation_saved_usd?: number;
+    /** actual_usage | unknown — how delegation value was measured. */
+    delegation_savings_basis?: "actual_usage" | "estimated" | "unknown";
+    delegation_tokens_compared?: number;
     cache_saved_usd_swarm?: number;
     tool_output_tokens_saved?: number;
     tool_output_savings_usd?: number;
@@ -411,10 +419,16 @@ export type UsageData = {
     cache_savings_basis?: "catalog" | "capped" | "unknown";
     /** Router baseline-vs-chosen list-price value (balanced/cheap policies only). */
     routing_saved_usd?: number;
-    /** actual_usage | estimated | unknown — how routing value was measured. */
+    /** actual_usage | estimated | unknown — how routing decision value was measured. */
     routing_savings_basis?: "actual_usage" | "estimated" | "unknown";
     /** Tokens used in actual-usage routing counterfactuals. */
     routing_tokens_compared?: number;
+    /** Model-selection value: worker usage at frontier baseline vs chosen model. */
+    delegation_saved_usd?: number;
+    /** actual_usage | unknown — how delegation value was measured. */
+    delegation_savings_basis?: "actual_usage" | "estimated" | "unknown";
+    /** Tokens used in delegation/model-selection counterfactuals. */
+    delegation_tokens_compared?: number;
     /** Swarm prompt-cache savings priced from usage artifacts x registry. */
     cache_saved_usd_swarm?: number;
     tool_output_tokens_saved?: number;

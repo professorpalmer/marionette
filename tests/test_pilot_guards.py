@@ -573,19 +573,26 @@ def test_session_suppresses_duplicate_read(monkeypatch, tmp_path):
     session = ConversationalSession(cfg)
 
     class DuplicatePilot:
+        def __init__(self):
+            self.n = 0
+
         def complete(self, prompt, system=None):
             from pmharness.drivers.openai_compat import DriverResponse
-            return DriverResponse(
-                text=json.dumps({
+            self.n += 1
+            # One step with twin reads, then stop — TurnGuardState now persists
+            # across model steps, so re-emitting the same twins would eventually
+            # hard-suppress after LOOP_REPEAT_CAP (that is intentional).
+            if self.n == 1:
+                text = json.dumps({
                     "say": "reading twice",
                     "actions": [
                         {"kind": "read_file", "path": "dup.txt"},
                         {"kind": "read_file", "path": "dup.txt"},
                     ],
-                }),
-                tokens_out=10,
-                latency_ms=1.0,
-            )
+                })
+            else:
+                text = json.dumps({"say": "done", "actions": []})
+            return DriverResponse(text=text, tokens_out=10, latency_ms=1.0)
 
     session.pilot = DuplicatePilot()
     events = list(session.send("go"))

@@ -101,7 +101,9 @@ describe("CostBreakdown", () => {
       cache_savings_usd: 0.1,
       cache_savings_gross_usd: 1.14,
       cache_saved_usd_swarm: 0.22,
-      routing_saved_usd: 2.46,
+      delegation_saved_usd: 2.46,
+      delegation_savings_basis: "actual_usage",
+      routing_saved_usd: 0.02,
       tool_output_savings_usd: 0.76,
     };
     expect(listPriceValueTotal(data)).toBeCloseTo(4.58, 8);
@@ -112,6 +114,23 @@ describe("CostBreakdown", () => {
       "title",
       expect.stringMatching(/not a cash refund/i),
     );
+  });
+
+  it("does not replace measured zero delegation value with a routing estimate", () => {
+    const data: CostBreakdownData = {
+      ...baseData,
+      cache_savings_usd: 0,
+      tool_output_savings_usd: 0,
+      delegation_saved_usd: 0,
+      delegation_savings_basis: "actual_usage",
+      routing_saved_usd: 1.25,
+      routing_savings_basis: "estimated",
+    };
+
+    expect(listPriceValueTotal(data)).toBe(0);
+    render(<CostBreakdown data={data} />);
+    expect(screen.queryByText("Model selection value")).not.toBeInTheDocument();
+    expect(screen.getByText("Routing decision value")).toBeInTheDocument();
   });
 
   it("shows soon calm copy and keeps machine reason in the title", () => {
@@ -262,7 +281,7 @@ describe("CostBreakdown", () => {
     );
   });
 
-  it("renders routing and combined prompt-cache value when positive", () => {
+  it("renders model selection and routing decision rows when both differ", () => {
     render(
       <CostBreakdown
         data={{
@@ -271,24 +290,28 @@ describe("CostBreakdown", () => {
           tokens_cached: 50_000,
           cache_savings_usd: 0.02,
           cache_savings_gross_usd: 0.02,
-          routing_saved_usd: 0.40,
+          delegation_saved_usd: 0.40,
+          delegation_savings_basis: "actual_usage",
+          routing_saved_usd: 0.02,
           routing_savings_basis: "actual_usage",
           cache_saved_usd_swarm: 0.05,
         }}
       />,
     );
 
-    expect(screen.getByText("Routing value")).toBeInTheDocument();
-    const routingRow = screen.getByText("Routing value").closest("div");
-    expect(within(routingRow!).getByText("~$0.40")).toBeInTheDocument();
+    expect(screen.getByText("Model selection value")).toBeInTheDocument();
+    const modelRow = screen.getByText("Model selection value").closest("div");
+    expect(within(modelRow!).getByText("~$0.40")).toBeInTheDocument();
+    expect(screen.getByText("Routing decision value")).toBeInTheDocument();
     expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
+    expect(screen.queryByText("Routing value")).not.toBeInTheDocument();
     expect(screen.queryByText("Swarm cache saved")).not.toBeInTheDocument();
     expect(screen.queryByText(/\(capped\)/)).not.toBeInTheDocument();
     const cacheRow = screen.getByText("Prompt-cache value").closest("div");
     // 0.02 pilot gross + 0.05 swarm = ~$0.07
     expect(within(cacheRow!).getByText("~$0.07")).toBeInTheDocument();
     expect(screen.getByText("Tokens from cache")).toBeInTheDocument();
-    expect(screen.getByText(/vs frontier-equivalent list price/)).toBeInTheDocument();
+    expect(screen.getByText(/model selection value vs frontier-equivalent list price/)).toBeInTheDocument();
   });
 
   it("omits zero or absent savings rows", () => {
@@ -305,6 +328,7 @@ describe("CostBreakdown", () => {
 
     expect(screen.getByText("Estimated spend")).toBeInTheDocument();
     expect(screen.queryByText("Prompt-cache value")).not.toBeInTheDocument();
+    expect(screen.queryByText("Model selection value")).not.toBeInTheDocument();
     expect(screen.queryByText("Routing value")).not.toBeInTheDocument();
     expect(screen.queryByText("Swarm cache saved")).not.toBeInTheDocument();
     expect(screen.queryByText("Compact tool outputs saved")).not.toBeInTheDocument();

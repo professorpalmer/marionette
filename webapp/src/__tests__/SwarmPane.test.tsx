@@ -175,7 +175,7 @@ describe("SwarmPane mid-run job-row meters", () => {
       expect(screen.getByText("$0.0553 saved")).toBeInTheDocument();
     });
     expect(screen.queryByText("8,000 cached")).not.toBeInTheDocument();
-    expect(screen.getByTitle(/routing value vs frontier-equivalent list price/)).toBeInTheDocument();
+    expect(screen.getByTitle(/model selection value vs frontier-equivalent list price/)).toBeInTheDocument();
     expect(screen.getByTitle(/prompt-cache value/)).toBeInTheDocument();
     expect(screen.getByTitle(/tool-output compaction/)).toBeInTheDocument();
   });

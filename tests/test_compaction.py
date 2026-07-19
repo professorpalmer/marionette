@@ -466,7 +466,7 @@ def test_advisory_compact_once_per_user_turn_not_per_tool_step(monkeypatch, tmp_
     # overflow path stays inside the loop.
     src = inspect.getsource(ConversationalSession._send_locked_inner)
     advisory_idx = src.find("yield from self._maybe_compact_history()")
-    force_idx = src.find("yield from self._maybe_compact_history(force=True)")
+    force_idx = src.find("emergency=True")
     step_loop_idx = src.find("for step in _step_iter:")
     assert advisory_idx != -1, "advisory _maybe_compact_history() must remain"
     assert force_idx != -1, "CONTEXT_OVERFLOW force=True compact must remain"
@@ -479,9 +479,7 @@ def test_advisory_compact_once_per_user_turn_not_per_tool_step(monkeypatch, tmp_
     )
     # No per-step advisory call after the loop starts (only force=True).
     after_loop = src[step_loop_idx:]
-    assert "yield from self._maybe_compact_history()" not in after_loop.replace(
-        "yield from self._maybe_compact_history(force=True)", ""
-    )
+    assert "yield from self._maybe_compact_history()" not in after_loop
 
     class _TwoStepPilot:
         name = "two-step-compact-spy"

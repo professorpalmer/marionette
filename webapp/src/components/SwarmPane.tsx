@@ -342,18 +342,38 @@ function positiveUsd(n?: number): number {
   return typeof n === "number" && isFinite(n) && n > 0 ? n : 0;
 }
 
-type SavingsParts = { routing: number; cache: number; compact: number; total: number };
+type SavingsParts = {
+  routing: number;
+  delegation: number;
+  modelSelection: number;
+  cache: number;
+  compact: number;
+  total: number;
+};
 
 function jobSavings(j: Job): SavingsParts {
   const routing = positiveUsd(j.routing_saved_usd);
+  const delegation = positiveUsd(j.delegation_saved_usd);
+  const delegationMeasured = j.delegation_savings_basis === "actual_usage";
+  const modelSelection =
+    delegationMeasured || delegation > 0 ? delegation : routing;
   const cache = positiveUsd(j.cache_saved_usd);
   const compact = positiveUsd(j.tool_output_savings_usd);
-  return { routing, cache, compact, total: routing + cache + compact };
+  return {
+    routing,
+    delegation,
+    modelSelection,
+    cache,
+    compact,
+    total: modelSelection + cache + compact,
+  };
 }
 
 function savingsDetail(parts: SavingsParts): string {
   return [
-    parts.routing > 0 ? `routing value vs frontier-equivalent list price (~${formatCost(parts.routing)})` : "",
+    parts.modelSelection > 0
+      ? `model selection value vs frontier-equivalent list price (~${formatCost(parts.modelSelection)})`
+      : "",
     parts.cache > 0 ? `prompt-cache value (~${formatCost(parts.cache)})` : "",
     parts.compact > 0 ? `tool-output compaction (~${formatCost(parts.compact)})` : "",
   ].filter(Boolean).join("  ·  ");
@@ -364,7 +384,7 @@ function SavingsChip({ parts, className }: { parts: SavingsParts; className?: st
   return (
     <span
       className={`inline-flex items-center gap-0.5 px-1 py-px rounded-full bg-good/10 border border-good/20 text-good/80 tabular-nums ${className ?? ""}`}
-      title={`List-price value from routing, prompt-cache, and compaction (additive): ${savingsDetail(parts)}`}
+      title={`List-price value from model selection, prompt-cache, and compaction (additive): ${savingsDetail(parts)}`}
     >
       <span className="text-good/60" aria-hidden="true">{"\u2193"}</span>
       {formatCost(parts.total)} saved

@@ -118,12 +118,34 @@ def test_min_compactable_floor_skips_llm(monkeypatch):
     session._last_prompt_tokens = 900
     original = list(session._history)
 
-    events = list(session._maybe_compact_history())
+    events = list(session._maybe_compact_history(force=True))
 
     assert events == []
     assert pilot.chat_calls == []
     assert session._history == original
     assert MIN_COMPACTABLE_TOKENS == 5000
+
+
+def test_emergency_compaction_bypasses_min_floor(monkeypatch):
+    monkeypatch.setattr(
+        "harness.compaction_mixin.MIN_COMPACTABLE_TOKENS",
+        MIN_COMPACTABLE_TOKENS,
+    )
+    session = _session(budget=1000)
+    pilot = _RecordingPilot(return_text=_GOOD_SUMMARY)
+    session.pilot = pilot  # type: ignore[assignment]
+    session._history[0]["content"] = "sys"
+    for i in range(4):
+        session._history.append({"role": "user", "content": f"u{i}"})
+        session._history.append({"role": "assistant", "content": f"a{i}"})
+    session._last_prompt_tokens = 900
+
+    events = list(
+        session._maybe_compact_history(force=True, emergency=True)
+    )
+
+    assert any(event.kind == "compacting" for event in events)
+    assert pilot.chat_calls
 
 
 def test_control_tokens_neutralized(monkeypatch):

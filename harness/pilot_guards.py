@@ -14,10 +14,17 @@ Per-turn guards wired before native tool dispatch:
    redirect the pilot to search_codegraph or Puppetmaster dispatch verbs.
 4. ITERATION BUDGET — hard cap on total tool calls per pilot turn.
 
+``TurnGuardState`` persists across model steps and keep-alive resume for the
+same originating user turn (cleared on a fresh user message). Companion helpers
+here also power the send-loop stagnation governor, failed-objective resume
+caps, read-only audit goal detection for bare ``run_implement``, and the
+substantive-analysis gate that keeps plumbing-only jobs from rendering green.
+
 Disable via HARNESS_LOOP_GUARD=0 / HARNESS_SWARM_GATE=0 / HARNESS_DELEGATE_GATE=0 /
 HARNESS_PILOT_TOOL_BUDGET=0 / HARNESS_CLI_REDIRECT=0 /
 HARNESS_ALLOW_MID_TURN_RESTART=1 (opt-in; mid-turn /api/restart is blocked by
 default) (or numeric HARNESS_TURN_BUDGET >= 2 for cap override).
+Tune HARNESS_STAGNATION_STREAK_CAP / HARNESS_FAILED_OBJECTIVE_RESUME_CAP as needed.
 """
 
 import json
@@ -35,6 +42,12 @@ SWARM_GATE_READ_ALLOWANCE = int(os.environ.get("HARNESS_SWARM_GATE_READ_ALLOWANC
 # payloads on list_dir/search_files/grep before the model finally calls run_swarm).
 SWARM_GATE_FULL_REDIRECT_CAP = int(os.environ.get("HARNESS_SWARM_GATE_FULL_REDIRECT_CAP", "1"))
 TURN_TOOL_BUDGET_DEFAULT = int(os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "25"))
+# How many consecutive identical (normalized prose + action fingerprint) steps
+# may run before the send-loop stagnation governor ends the turn calmly.
+STAGNATION_STREAK_CAP = int(os.environ.get("HARNESS_STAGNATION_STREAK_CAP", "3"))
+# How many keep-alive resume chains are allowed for the same normalized
+# failed/degraded objective before further pilot_resume events are suppressed.
+FAILED_OBJECTIVE_RESUME_CAP = int(os.environ.get("HARNESS_FAILED_OBJECTIVE_RESUME_CAP", "2"))
 
 # Puppetmaster / structural tools — never blocked by the delegate gate.
 DELEGATION_EXEMPT_KINDS = frozenset({
@@ -223,7 +236,12 @@ class IterationBudget:
 
 @dataclass
 class TurnGuardState:
-    """Mutable per-turn state; reset at the start of each pilot action batch."""
+    """Mutable per-originating-user-turn state.
+
+    Persists across model steps and keep-alive resume calls for the same
+    originating user turn. Fresh user messages clear ``session._turn_guard_state``
+    so the next action batch allocates a new instance.
+    """
 
     execution_counts: dict[tuple[str, str], int] = field(default_factory=dict)
     # Prior successful tool-result content keyed by (kind, normalized_args).
@@ -816,3 +834,128 @@ def new_turn_guard_state(user_message: str = "") -> TurnGuardState:
         broad_intent=is_broad_intent_user_message(user_message or ""),
         iteration_budget=IterationBudget(cap) if cap > 0 else None,
     )
+
+
+def reuse_or_new_turn_guard_state(
+    prior: TurnGuardState | None, user_message: str = "",
+) -> TurnGuardState:
+    """Reuse prior guard state across model steps / keep-alive resume.
+
+    Fresh user turns clear ``session._turn_guard_state`` before the first action
+    batch, so ``prior is None`` means a brand-new originating turn. Carries
+    execution counts, successful-result cache, broad-intent, delegation, and
+    swarm-gate progress safely without preview/unrelated state leaks.
+    """
+    if prior is not None:
+        return prior
+    return new_turn_guard_state(user_message)
+
+
+_READ_ONLY_ANALYSIS_GOAL_RE = re.compile(
+    r"\b(?:"
+    r"audit|review|analy[sz]e|investigat(?:e|ion)|assess(?:ment)?|"
+    r"map(?:ping)?|find(?:\s+all)?|look\s+through|dead[- ]?code|"
+    r"read[- ]only|code\s*review|security\s+review|quality\s+review"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_EDIT_CAPABLE_GOAL_RE = re.compile(
+    r"\b(?:"
+    r"implement|fix|patch|edit|write|add|create|refactor|migrate|"
+    r"delete|remove|rename|update|apply|land|ship"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_read_only_analysis_goal(goal: str) -> bool:
+    """True when a bare run_implement goal is a read-only audit/review ask.
+
+    Broad audit/review goals must not silently default to edit-capable
+    implement mode. Edit verbs in the goal win (force implement stays allowed).
+    """
+    text = _norm_whitespace(goal or "")
+    if not text:
+        return False
+    if _EDIT_CAPABLE_GOAL_RE.search(text):
+        return False
+    if _READ_ONLY_ANALYSIS_GOAL_RE.search(text):
+        return True
+    return is_broad_intent_user_message(text)
+
+
+def normalize_assistant_prose(text: str) -> str:
+    """Canonical fingerprint for repeated assistant prose detection."""
+    return _norm_whitespace(text or "").lower()
+
+
+def fingerprint_turn_actions(actions: list | None) -> str:
+    """Stable fingerprint of a turn's action list (kind + normalized args)."""
+    parts: list[str] = []
+    for act in actions or []:
+        kind = getattr(act, "kind", "") or ""
+        if not kind:
+            continue
+        try:
+            parts.append(f"{kind}:{normalize_action_args(kind, act)}")
+        except Exception:
+            parts.append(kind)
+    return "|".join(parts)
+
+
+def stagnation_streak_cap() -> int:
+    try:
+        return max(1, int(os.environ.get("HARNESS_STAGNATION_STREAK_CAP", str(STAGNATION_STREAK_CAP))))
+    except (TypeError, ValueError):
+        return 3
+
+
+def failed_objective_resume_cap() -> int:
+    try:
+        return max(1, int(os.environ.get(
+            "HARNESS_FAILED_OBJECTIVE_RESUME_CAP", str(FAILED_OBJECTIVE_RESUME_CAP),
+        )))
+    except (TypeError, ValueError):
+        return 2
+
+
+def analysis_summary_is_substantive(summary: str) -> bool:
+    """True when an analysis-job summary carries real findings, not plumbing.
+
+    Generic completion blurbs and verification-only notes must not turn the
+    badge green.
+    """
+    text = _norm_whitespace(summary or "")
+    if not text:
+        return False
+    low = text.lower()
+    plumbing_markers = (
+        "successfully completed analysis task",
+        "verification/plumbing only",
+        "verification only",
+        "only routing/verification plumbing",
+        "plumbing artifacts",
+        "no structured findings",
+        "no_tool_calls",
+        "without structured findings",
+        "no findings",
+        "audit findings: none",
+        "findings: none",
+        "no issues found",
+        "nothing to report",
+    )
+    if any(m in low for m in plumbing_markers):
+        return False
+    # Generic completion blurbs with no cite / no body.
+    if low in ("ok", "done", "complete", "completed", "success", "passed"):
+        return False
+    # Require either a long body or a path/line cite — same bar as swarm substance.
+    if len(text) >= 200:
+        return True
+    path_cite = re.search(
+        r"[\w./\\-]+\.(py|ts|tsx|js|jsx|md|json|toml|yml|yaml)\b|line\s+\d+|:\d+\b",
+        text,
+        re.IGNORECASE,
+    )
+    return bool(path_cite) and len(text) >= 40

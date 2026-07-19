@@ -22,8 +22,8 @@ from .pilot_guards import (
     cli_redirect_enabled,
     dedupe_dispatch_actions,
     guards_active,
-    new_turn_guard_state,
     record_action_execution,
+    reuse_or_new_turn_guard_state,
 )
 from .send_loop_dispatch import (
     DISPATCH_ACTION_KINDS,
@@ -71,15 +71,11 @@ def execute_turn_actions(
     demo_swarms = counters["demo_swarms"]
 
     # 4. Execute each action as a collapsible tool-call.
+    # Persist TurnGuardState across model steps and keep-alive resume for the
+    # same originating user turn (execution counts, result cache, broad-intent,
+    # delegation/swarm progress). Fresh user messages clear the session attr.
     prior_guard = getattr(session, "_turn_guard_state", None)
-    guard_state = new_turn_guard_state(user_message)
-    # Carry swarm-gate redirect progress across model steps in this send()
-    # so broad-intent turns cannot re-burn a full SUPPRESSED payload every
-    # step before the model finally dispatches run_swarm.
-    if prior_guard is not None:
-        guard_state.swarm_gate_suppress_count = getattr(
-            prior_guard, "swarm_gate_suppress_count", 0
-        )
+    guard_state = reuse_or_new_turn_guard_state(prior_guard, user_message)
     session._turn_guard_state = guard_state
     guard_suppressed: dict[int, Any] = {}
     guard_recorded_indices: set[int] = set()

@@ -153,6 +153,20 @@ def _counterfactual_list_cost(
     )
 
 
+def _list_cost_full_list_price(
+    tokens_in: int,
+    tokens_out: int,
+    price_in: float,
+    price_out: float,
+) -> float:
+    """Full list-price cost ignoring prompt-cache discounts (delegation counterfactual)."""
+    tin = max(0, int(tokens_in or 0))
+    tout = max(0, int(tokens_out or 0))
+    return (tin / 1.0e6) * float(price_in or 0.0) + (tout / 1.0e6) * float(
+        price_out or 0.0
+    )
+
+
 def _final_routing_by_task(raw_arts) -> dict:
     """task_id -> final ROUTING payload (escalation > fallback > router)."""
     try:
@@ -344,6 +358,138 @@ def _routing_saved_usd(
         return 0.0
 
 
+def _delegation_saved_usd_detail(
+    raw_arts,
+    registry: list | None = None,
+    *,
+    active_price_in: float | None = None,
+    active_price_out: float | None = None,
+) -> dict:
+    """Model-selection value: worker usage at frontier baseline vs chosen model.
+
+    Prices all input tokens at full list rates (no prompt-cache discount) so
+    heavy cache hits do not collapse the counterfactual. Includes every
+    delegated task with measured usage when both baseline and chosen rates
+    resolve — even when no ROUTING artifact exists.
+    """
+    empty = {
+        "delegation_saved_usd": 0.0,
+        "delegation_savings_basis": ROUTING_SAVINGS_UNKNOWN,
+        "delegation_tokens_compared": 0,
+        "delegation_savings_counted": False,
+    }
+    try:
+        from puppetmaster.usage import select_usage_records
+    except Exception:
+        select_usage_records = None  # type: ignore[assignment]
+
+    registry = list(registry or [])
+    active_fallback = None
+    if active_price_in is not None and float(active_price_in or 0.0) > 0:
+        active_fallback = (
+            float(active_price_in or 0.0),
+            float(active_price_out or 0.0),
+        )
+
+    usage_by_task: dict = {}
+    if select_usage_records is not None:
+        try:
+            usage_by_task = select_usage_records(list(raw_arts or [])) or {}
+        except Exception:
+            usage_by_task = {}
+
+    routing_by_task = _final_routing_by_task(raw_arts)
+    total = 0.0
+    tokens_compared = 0
+    saw_actual = False
+    saw_unknown = False
+    counted = False
+
+    try:
+        for task_id, usage in usage_by_task.items():
+            try:
+                tin = int(usage.get("tokens_in") or 0)
+                tout = int(usage.get("tokens_out") or 0)
+            except (TypeError, ValueError):
+                tin = tout = 0
+            if tin <= 0 and tout <= 0:
+                continue
+
+            chosen_id = str(usage.get("model") or "")
+            chosen_rates = _resolve_positive_rates(chosen_id, registry)
+            if chosen_rates is None:
+                saw_unknown = True
+                counted = True
+                continue
+
+            routing_payload = routing_by_task.get(task_id) or {}
+            baseline_id = str(routing_payload.get("baseline_model_id") or "")
+            if baseline_id:
+                baseline_rates = _resolve_positive_rates(
+                    baseline_id,
+                    registry,
+                    active_fallback=active_fallback,
+                )
+            elif active_fallback is not None:
+                baseline_rates = active_fallback
+            else:
+                saw_unknown = True
+                counted = True
+                continue
+
+            if baseline_rates is None:
+                saw_unknown = True
+                counted = True
+                continue
+
+            baseline_cost = _list_cost_full_list_price(
+                tin,
+                tout,
+                baseline_rates[0],
+                baseline_rates[1],
+            )
+            chosen_cost = _list_cost_full_list_price(
+                tin,
+                tout,
+                chosen_rates[0],
+                chosen_rates[1],
+            )
+            total += max(0.0, baseline_cost - chosen_cost)
+            tokens_compared += max(0, tin) + max(0, tout)
+            saw_actual = True
+            counted = True
+    except Exception:
+        return empty
+
+    basis = ROUTING_SAVINGS_ACTUAL if saw_actual else ROUTING_SAVINGS_UNKNOWN
+    return {
+        "delegation_saved_usd": total,
+        "delegation_savings_basis": basis,
+        "delegation_tokens_compared": int(tokens_compared),
+        "delegation_savings_counted": bool(counted),
+    }
+
+
+def _delegation_saved_usd(
+    raw_arts,
+    registry: list | None = None,
+    *,
+    active_price_in: float | None = None,
+    active_price_out: float | None = None,
+) -> float:
+    """Model-selection list-price value from measured worker usage."""
+    try:
+        detail = _delegation_saved_usd_detail(
+            raw_arts,
+            registry,
+            active_price_in=active_price_in,
+            active_price_out=active_price_out,
+        )
+        return float(detail.get("delegation_saved_usd") or 0.0)
+    except Exception:
+        return 0.0
+
+
 def _sum_job_set_savings_detail(
     job_ids,
     arts_getter,
@@ -354,17 +500,24 @@ def _sum_job_set_savings_detail(
     cache_saved_usd_swarm=None,
     routing_saved_usd=None,
 ) -> dict:
-    """Sum routing + swarm-cache savings with aggregate basis / token counts."""
+    """Sum routing + delegation + swarm-cache savings with aggregate basis."""
     from .swarm_cost import _cache_saved_usd_swarm as _default_cache_fn
 
     routing = 0.0
+    delegation = 0.0
     cache = 0.0
     tokens_compared = 0
+    delegation_tokens_compared = 0
     saw_actual = False
     saw_estimated = False
     saw_unknown = False
+    saw_delegation_actual = False
+    saw_delegation_unknown = False
     routing_detail_fn = _server_attr(
         "_routing_saved_usd_detail", _routing_saved_usd_detail
+    )
+    delegation_detail_fn = _server_attr(
+        "_delegation_saved_usd_detail", _delegation_saved_usd_detail
     )
     routing_fn = _server_attr(
         "_routing_saved_usd", routing_saved_usd or _routing_saved_usd
@@ -403,6 +556,25 @@ def _sum_job_set_savings_detail(
         except Exception as e:
             _diag("server.usage_routing_saved", e, msg=f"job={jid}")
         try:
+            ddetail = delegation_detail_fn(
+                arts,
+                registry,
+                active_price_in=active_price_in,
+                active_price_out=active_price_out,
+            )
+            delegation += float(ddetail.get("delegation_saved_usd") or 0.0)
+            delegation_tokens_compared += int(
+                ddetail.get("delegation_tokens_compared") or 0
+            )
+            if ddetail.get("delegation_savings_counted"):
+                dbasis = str(ddetail.get("delegation_savings_basis") or "")
+                if dbasis == ROUTING_SAVINGS_ACTUAL:
+                    saw_delegation_actual = True
+                else:
+                    saw_delegation_unknown = True
+        except Exception as e:
+            _diag("server.usage_delegation_saved", e, msg=f"job={jid}")
+        try:
             cache += cache_fn(arts, registry)
         except Exception as e:
             _diag("server.usage_cache_saved_swarm", e, msg=f"job={jid}")
@@ -414,8 +586,15 @@ def _sum_job_set_savings_detail(
         basis = ROUTING_SAVINGS_ESTIMATED
     else:
         basis = ROUTING_SAVINGS_UNKNOWN
+    if saw_delegation_actual:
+        delegation_basis = ROUTING_SAVINGS_ACTUAL
+    else:
+        delegation_basis = ROUTING_SAVINGS_UNKNOWN
     return {
         "routing_saved_usd": routing,
+        "delegation_saved_usd": delegation,
+        "delegation_savings_basis": delegation_basis,
+        "delegation_tokens_compared": int(delegation_tokens_compared),
         "cache_saved_usd_swarm": cache,
         "routing_savings_basis": basis,
         "routing_tokens_compared": int(tokens_compared),

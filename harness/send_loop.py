@@ -410,9 +410,14 @@ class SendLoopMixin:
 
             self._turn_output_tokens = 0
             self._turn_budget = None
-            # Fresh user message: clear prior-step guard state so swarm-gate
-            # redirect caps do not leak across unrelated turns.
+            # Fresh user message: clear prior-step guard / stagnation / failed-
+            # objective resume state so caps do not leak across unrelated turns.
+            # Keep-alive resume leaves these intact for the originating turn.
             self._turn_guard_state = None
+            self._stagnation_last_prose = None
+            self._stagnation_last_actions = None
+            self._stagnation_streak = 0
+            self._failed_objective_resume_counts = {}
             try:
                 from .turn_budget import turn_budget_enabled
 
@@ -669,7 +674,9 @@ class SendLoopMixin:
                     if err_cls == error_classifier.ErrorClass.CONTEXT_OVERFLOW:
                         if attempt == 0:
                             # Force history compaction and try again
-                            yield from self._maybe_compact_history(force=True)
+                            yield from self._maybe_compact_history(
+                                force=True, emergency=True,
+                            )
                             continue
                         else:
                             # Context overflow persists after compaction
@@ -796,6 +803,72 @@ class SendLoopMixin:
 
             if consecutive_non_productive >= 3:
                 break
+
+            # Stagnation governor: repeated normalized assistant prose plus the
+            # same action fingerprint with no new progress ends the turn calmly
+            # (including when HARNESS_MAX_PILOT_STEPS=0). Distinct actions or
+            # real progress reset the streak.
+            try:
+                from .pilot_guards import (
+                    fingerprint_turn_actions,
+                    normalize_assistant_prose,
+                    stagnation_streak_cap,
+                )
+                prose_key = normalize_assistant_prose(cleaned_say_text)
+                action_key = fingerprint_turn_actions(turn.actions)
+                # Empty turns (no prose, no actions) are handled by the
+                # consecutive_non_productive break above — skip fingerprinting.
+                if prose_key or action_key:
+                    prev_prose = getattr(self, "_stagnation_last_prose", None)
+                    prev_actions = getattr(self, "_stagnation_last_actions", None)
+                    if (
+                        prev_prose is not None
+                        and prev_actions is not None
+                        and prose_key == prev_prose
+                        and action_key == prev_actions
+                    ):
+                        self._stagnation_streak = int(
+                            getattr(self, "_stagnation_streak", 0) or 0
+                        ) + 1
+                    else:
+                        # First sighting of this fingerprint starts the streak.
+                        self._stagnation_streak = 1
+                    self._stagnation_last_prose = prose_key
+                    self._stagnation_last_actions = action_key
+                    if self._stagnation_streak >= stagnation_streak_cap():
+                        halt_msg = (
+                            "Stopped: repeated the same response and actions "
+                            "with no new progress (auto-halt). Tell me how to "
+                            "continue, or try a narrower ask."
+                        )
+                        # Heal any tool_call pairing from this assistant turn
+                        # before exiting so history stays valid for the next send.
+                        self._sanitize_tool_pairs()
+                        yield ConvEvent("notice", {
+                            "message": halt_msg,
+                            "kind": "stagnation",
+                        })
+                        yield ConvEvent("message", {
+                            "role": "assistant",
+                            "text": halt_msg,
+                        })
+                        self._display_transcript.append({
+                            "type": "message",
+                            "role": "assistant",
+                            "text": halt_msg,
+                        })
+                        yield ConvEvent("assistant_done", {
+                            "turns": step + 1,
+                            "swarms": swarms,
+                            "stagnation_halt": True,
+                        })
+                        self._submit_housekeeping(
+                            self._maybe_ingest,
+                            user_message, list(turn_prose), list(turn_findings),
+                        )
+                        return
+            except Exception:
+                pass
 
             # 3. No actions => the pilot is done talking. Before yielding back to
             # the user, drain any pending steer. A steer that arrives while the

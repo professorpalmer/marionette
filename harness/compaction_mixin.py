@@ -426,7 +426,9 @@ class CompactionContextMixin:
                 summary = self._clip_text(summary, char_budget)
         return summary
 
-    def _maybe_compact_history(self, force: bool = False) -> Iterator["ConvEvent"]:
+    def _maybe_compact_history(
+        self, force: bool = False, emergency: bool = False,
+    ) -> Iterator["ConvEvent"]:
         from .conversation import ConvEvent
 
         self._set_compaction_attempt(REASON_BELOW_TRIGGER)
@@ -497,10 +499,11 @@ class CompactionContextMixin:
             )
             return
 
-        # Minimum-compactable floor: scraps are not worth an LLM call.
-        # Forced compaction (mid-turn context-overflow recovery) must proceed
-        # regardless -- skipping there would leave the turn unrecoverable.
-        if not force:
+        # Minimum-compactable floor: scraps are not worth an LLM call. Manual
+        # ``force=True`` bypasses the trigger but still honors this floor, so
+        # Compact Now cannot stall on a tiny transcript. Only the explicit
+        # mid-turn context-overflow emergency bypasses it.
+        if not emergency:
             try:
                 compactable_tokens = self._estimate_context_tokens_for_list(middle_block)
                 if compactable_tokens < _min_compactable_tokens():

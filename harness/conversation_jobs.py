@@ -285,9 +285,9 @@ class ConversationJobsMixin:
                     "ar_list": []
                 }
             elif not (res.patch or "").strip():
-                # Analysis/review success with no patch: report applied=True so
-                # the badge is green, but do NOT synthesize a patch artifact or
-                # call _apply_worker_patch. Cost attribution still runs.
+                # Analysis/review with no patch: only green when the summary
+                # carries substantive findings. Verification/plumbing-only
+                # outputs must surface degraded/failed, never a clean done.
                 tokens_in = int(getattr(res, "tokens_in", 0) or 0)
                 tokens_out = int(getattr(res, "tokens_out", 0) or 0)
                 tokens_cached = int(getattr(res, "tokens_cached", 0) or 0)
@@ -299,22 +299,53 @@ class ConversationJobsMixin:
                     self._attribute_worker_cost(
                         tokens_in, tokens_out,
                         real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0))
-                res_dict = {
-                    "job_id": job_id,
-                    "applied": True,
-                    "files": [],
-                    "tokens_in": tokens_in,
-                    "tokens_out": tokens_out,
-                    "tokens_cached": tokens_cached,
-                    "summary": res.summary or "Successfully completed analysis task",
-                    "error": None,
-                    "artifacts": [],
-                    "has_patch_art": False,
-                    "apply_msg": "",
-                    "num_artifacts": 0,
-                    "artifact_types": [],
-                    "ar_list": [],
-                }
+                summary = res.summary or "Successfully completed analysis task"
+                substantive = True
+                if not expects_diff:
+                    try:
+                        from harness.pilot_guards import analysis_summary_is_substantive
+                        substantive = analysis_summary_is_substantive(summary)
+                    except Exception:
+                        substantive = bool((summary or "").strip())
+                if not expects_diff and not substantive:
+                    degrade_err = (
+                        "analysis produced no substantive findings "
+                        "(verification/plumbing only)"
+                    )
+                    res_dict = {
+                        "job_id": job_id,
+                        "applied": False,
+                        "files": [],
+                        "tokens_in": tokens_in,
+                        "tokens_out": tokens_out,
+                        "tokens_cached": tokens_cached,
+                        "summary": summary,
+                        "error": degrade_err,
+                        "artifacts": [],
+                        "has_patch_art": False,
+                        "apply_msg": degrade_err,
+                        "num_artifacts": 0,
+                        "artifact_types": [],
+                        "ar_list": [],
+                        "degraded": True,
+                    }
+                else:
+                    res_dict = {
+                        "job_id": job_id,
+                        "applied": True,
+                        "files": [],
+                        "tokens_in": tokens_in,
+                        "tokens_out": tokens_out,
+                        "tokens_cached": tokens_cached,
+                        "summary": summary,
+                        "error": None,
+                        "artifacts": [],
+                        "has_patch_art": False,
+                        "apply_msg": "",
+                        "num_artifacts": 0,
+                        "artifact_types": [],
+                        "ar_list": [],
+                    }
             else:
                 artifacts = []
                 artifacts.append({
@@ -505,7 +536,8 @@ class ConversationJobsMixin:
             return
         try:
             import queue
-            finished_jobs: list[tuple[str, str, bool, str]] = []  # (job_id, objective, failed, error)
+            # (job_id, objective, failed, error, degraded)
+            finished_jobs: list[tuple[str, str, bool, str, bool]] = []
             while True:
                 try:
                     item = self._swarm_results.get_nowait()
@@ -593,11 +625,23 @@ class ConversationJobsMixin:
                             "label": f"Before swarm patch {job_id[:8]}"
                         })
 
+                    # Track failed/degraded outcomes for keep-alive resume capping.
+                    degraded = bool(res_job.get("degraded"))
+                    if not degraded and not failed and not (applied_files or []):
+                        # Empty-diff "success" with no substantive summary is
+                        # treated as degraded for resume-cap purposes.
+                        try:
+                            from harness.pilot_guards import analysis_summary_is_substantive
+                            if not analysis_summary_is_substantive(summary or ""):
+                                degraded = True
+                        except Exception:
+                            pass
                     finished_jobs.append((
                         job_id,
                         objective,
                         failed,
                         (res_job.get("error") or err_bit or "") if failed else "",
+                        degraded,
                     ))
                 except Exception:
                     # Best-effort: never raise on the chat hot path; degrade to
@@ -619,6 +663,61 @@ class ConversationJobsMixin:
                 or getattr(self, "_stop_holds_idle", False)
                 or self._cancel.is_set()
             )
+            # Bound post-swarm keep-alive redispatch for the same normalized
+            # failed/degraded objective so provider outages cannot create
+            # endless resume chains. Successful substantive work resets the key;
+            # fresh user turns clear the whole map in send().
+            if finished_jobs and not suppress_resume:
+                try:
+                    from harness.pilot_guards import (
+                        failed_objective_resume_cap,
+                        normalize_objective_key,
+                    )
+                    counts = getattr(self, "_failed_objective_resume_counts", None)
+                    if counts is None:
+                        counts = {}
+                        self._failed_objective_resume_counts = counts
+                    cap = failed_objective_resume_cap()
+                    capped_jobs: list[tuple] = []
+                    resume_jobs: list[tuple] = []
+                    for item in finished_jobs:
+                        job_id, objective, failed, err, degraded = item
+                        key = normalize_objective_key(objective)
+                        if failed or degraded:
+                            n = int(counts.get(key, 0) or 0) + 1
+                            counts[key] = n
+                            if n > cap:
+                                capped_jobs.append(item)
+                                continue
+                        else:
+                            counts.pop(key, None)
+                        resume_jobs.append(item)
+                    if not resume_jobs and capped_jobs:
+                        # Still surface a user-visible notice, but do not fire
+                        # pilot_resume (stops the endless keep-alive chain).
+                        ids = ", ".join(jid for jid, *_rest in capped_jobs)
+                        notice = (
+                            f"Keep-alive resume capped for failed/degraded "
+                            f"objective(s) after {cap} attempt(s) "
+                            f"(jobs: {ids}). Report the failure and wait for "
+                            f"the user — do not re-dispatch the same objective."
+                        )
+                        if self._history and self._history[-1].get("role") == "user":
+                            self._history[-1]["content"] = (
+                                self._history[-1]["content"].rstrip()
+                                + "\n\n" + notice
+                            )
+                        else:
+                            self._history.append({"role": "user", "content": notice})
+                        yield ConvEvent("notice", {
+                            "message": notice,
+                            "kind": "resume_cap",
+                        })
+                        finished_jobs = []
+                    else:
+                        finished_jobs = resume_jobs
+                except Exception:
+                    pass
             if finished_jobs and not suppress_resume:
                 try:
                     from harness.implement_guards import is_preflight_worker_error
@@ -641,7 +740,7 @@ class ConversationJobsMixin:
                             "context, or stop -- without waiting for the user to ask."
                         )
 
-                    any_failed = any(failed for _jid, _obj, failed, _err in finished_jobs)
+                    any_failed = any(failed for _jid, _obj, failed, _err, _deg in finished_jobs)
                     thin_analysis_nudge = (
                         " If this was a read-only analysis swarm and findings are "
                         "empty, vague, verification-only, or insufficient for the "
@@ -651,7 +750,7 @@ class ConversationJobsMixin:
                         "(list_dir/search_files/grep/read sweeps) as a substitute."
                     )
                     if len(finished_jobs) == 1:
-                        job_id, _obj, failed, err = finished_jobs[0]
+                        job_id, _obj, failed, err, _deg = finished_jobs[0]
                         if failed:
                             resume_text = _fail_resume(job_id, err)
                         else:
@@ -663,10 +762,10 @@ class ConversationJobsMixin:
                                 + thin_analysis_nudge
                             )
                     else:
-                        ids = ", ".join(jid for jid, _obj, _f, _e in finished_jobs)
+                        ids = ", ".join(jid for jid, _obj, _f, _e, _d in finished_jobs)
                         if any_failed:
                             fail_bits = []
-                            for jid, _obj, failed, err in finished_jobs:
+                            for jid, _obj, failed, err, _deg in finished_jobs:
                                 if not failed:
                                     continue
                                 if is_preflight_worker_error(err):
@@ -705,13 +804,13 @@ class ConversationJobsMixin:
 
                     yield ConvEvent("pilot_resume", {
                         "job_id": finished_jobs[0][0],
-                        "job_ids": [jid for jid, _obj, _f, _e in finished_jobs],
+                        "job_ids": [jid for jid, _obj, _f, _e, _d in finished_jobs],
                         "objective": finished_jobs[0][1],
                     })
                 except Exception:
                     # Degrade: emit one resume per job (previous behavior) so the
                     # keep-alive contract is preserved even if merge fails.
-                    for job_id, objective, failed, err in finished_jobs:
+                    for job_id, objective, failed, err, *_rest in finished_jobs:
                         try:
                             if failed:
                                 try:

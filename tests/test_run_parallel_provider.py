@@ -134,8 +134,7 @@ def test_run_parallel_provider_default(monkeypatch):
 
 
 def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
-    """mode=analysis with empty-diff worker -> swarm_result applied=True and
-    local job completed (not the red 'swarm failed' badge)."""
+    """mode=analysis with substantive empty-diff findings -> green applied."""
     import time
 
     repo_dir = create_temp_git_repo()
@@ -146,6 +145,10 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
 
         expects_seen = []
+        substantive = (
+            "Last assistant message: FINDING: token refresh never validates "
+            "expiry in harness/auth.py:42 — sessions persist indefinitely after logout."
+        )
 
         def mock_worker_run(self):
             expects_seen.append(getattr(self, "expects_diff", True))
@@ -153,7 +156,7 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
                 ok=True,
                 patch="",
                 files_changed=[],
-                summary="Last assistant message: Audit findings: none.",
+                summary=substantive,
             )
 
         monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
@@ -194,7 +197,7 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
         assert res["applied"] is True
         assert res.get("error") in (None, "")
         assert res.get("has_patch_art") is False
-        assert "Audit findings" in (res.get("summary") or "")
+        assert "harness/auth.py" in (res.get("summary") or "")
 
         with session._local_jobs_lock:
             job = session._local_jobs.get(job_id)
@@ -203,6 +206,70 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
             assert job["role"] == "analysis"
 
         assert expects_seen == [False]
+    finally:
+        shutil.rmtree(repo_dir)
+
+
+def test_run_parallel_analysis_verification_only_degraded(monkeypatch):
+    """Plumbing-only analysis summaries must not surface as green done."""
+    import time
+
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = HarnessConfig()
+        cfg.repo = repo_dir
+        session = ConversationalSession(cfg)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+
+        def mock_worker_run(self):
+            return WorkerResult(
+                ok=True,
+                patch="",
+                files_changed=[],
+                summary="Last assistant message: Audit findings: none.",
+            )
+
+        monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
+
+        mock_pilot = MagicMock()
+        first_resp = MagicMock()
+        first_resp.text = json.dumps({
+            "say": "Running analysis",
+            "actions": [{
+                "kind": "run_parallel",
+                "goals": ["Audit auth"],
+                "mode": "analysis",
+            }],
+        })
+        first_resp.meta = {}
+        first_resp.error = None
+        mock_pilot.chat.return_value = first_resp
+        session.pilot = mock_pilot
+
+        events = list(session.send("audit please"))
+        job_id = [e for e in events if e.kind == "swarm_pending"][0].data["job_ids"][0]
+
+        start_time = time.time()
+        while time.time() - start_time < 5:
+            with session._swarm_futures_lock:
+                if not session._swarm_futures:
+                    break
+            time.sleep(0.1)
+
+        drain_events = list(session.drain_swarm_results())
+        swarm_results = [e for e in drain_events if e.kind == "swarm_result"]
+        assert len(swarm_results) == 1
+        res = swarm_results[0].data["result"]
+        assert res["applied"] is False
+        assert res.get("error")
+        assert "substantive" in (res.get("error") or "").lower() or "plumbing" in (
+            res.get("error") or ""
+        ).lower()
+
+        with session._local_jobs_lock:
+            job = session._local_jobs.get(job_id)
+            assert job is not None
+            assert job["status"] == "failed"
     finally:
         shutil.rmtree(repo_dir)
 

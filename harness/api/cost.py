@@ -135,6 +135,8 @@ from .swarm_cost import (  # noqa: E402
     _registry_input_per_mtok,
     _routing_estimate_by_task,
     _routing_estimate_cost,
+    _delegation_saved_usd,
+    _delegation_saved_usd_detail,
     _routing_saved_usd,
     _routing_saved_usd_detail,
     _sum_job_set_savings,

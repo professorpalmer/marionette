@@ -272,6 +272,12 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                 + (usage.cache_saved_usd_swarm || 0);
               const savedUsd = listPriceValueTotal(usage);
               if (cached <= 0 && compacted <= 0 && savedUsd <= 0) return null;
+              const delegationMeasured =
+                usage.delegation_savings_basis === "actual_usage";
+              const modelSelectionUsd =
+                delegationMeasured || (usage.delegation_saved_usd || 0) > 0
+                  ? usage.delegation_saved_usd || 0
+                  : usage.routing_saved_usd || 0;
               const detail = [
                 cached > 0
                   ? `${formatTokens(cached)} prompt tokens served from cache${
@@ -283,16 +289,18 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                       usage.tool_output_savings_usd ? ` (~${formatCost(usage.tool_output_savings_usd)})` : ""
                     }`
                   : "",
-                usage.routing_saved_usd
-                  ? `routing value vs frontier-equivalent list price (~${formatCost(usage.routing_saved_usd)}${
-                      usage.routing_savings_basis === "estimated" ? ", estimate" : ""
+                modelSelectionUsd
+                  ? `model selection value vs frontier-equivalent list price (~${formatCost(modelSelectionUsd)}${
+                      usage.routing_savings_basis === "estimated" && !delegationMeasured
+                        ? ", estimate"
+                        : ""
                     })`
                   : "",
               ].filter(Boolean).join("  ·  ");
               return (
                 <span
                   className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-good/10 border border-good/20 text-good/90"
-                  title={`List-price value from routing, prompt-cache, and compaction (additive, not overlapping cash refunds): ${detail}`}
+                  title={`List-price value from model selection, prompt-cache, and compaction (additive, not overlapping cash refunds): ${detail}`}
                 >
                   <span className="text-good/60" aria-hidden="true">&#8595;</span>
                   {savedUsd > 0 ? `${formatCost(savedUsd)} saved` : `${formatTokens(cached + compacted)} saved`}
@@ -337,6 +345,9 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                       routing_saved_usd: usage.routing_saved_usd,
                       routing_savings_basis: usage.routing_savings_basis,
                       routing_tokens_compared: usage.routing_tokens_compared,
+                      delegation_saved_usd: usage.delegation_saved_usd,
+                      delegation_savings_basis: usage.delegation_savings_basis,
+                      delegation_tokens_compared: usage.delegation_tokens_compared,
                       cache_saved_usd_swarm: usage.cache_saved_usd_swarm,
                       tool_output_tokens_saved: usage.tool_output_tokens_saved,
                       tool_output_savings_usd: usage.tool_output_savings_usd,

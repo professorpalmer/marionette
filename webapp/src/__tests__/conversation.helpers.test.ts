@@ -79,6 +79,7 @@ import {
   finalizeStreamingBubbleOnActionResult,
   formatDistilledNotice,
   formatWikiAutoIngestNotice,
+  noticeShowsWaitHint,
   patchCardInItems,
   shouldPaintThinking,
   truncateWaitHint,
@@ -961,6 +962,11 @@ describe("streamApply module", () => {
     expect(formatWikiAutoIngestNotice(2)).toMatch(/2 pages/);
     expect(truncateWaitHint("")).toBeNull();
     expect(truncateWaitHint("x".repeat(80))?.endsWith("…")).toBe(true);
+    expect(noticeShowsWaitHint(undefined)).toBe(true);
+    expect(noticeShowsWaitHint("wait")).toBe(true);
+    expect(noticeShowsWaitHint("stagnation")).toBe(true);
+    expect(noticeShowsWaitHint("resume_cap")).toBe(true);
+    expect(noticeShowsWaitHint("memory")).toBe(false);
     expect(shouldPaintThinking({ text: "  ", delta: false }).painting).toBe(false);
     expect(shouldPaintThinking({ text: "a", delta: true }).painting).toBe(true);
     expect(workspaceRootFromActionResult({ path: "/repo" }, "(workspace root)")).toBe("/repo");

@@ -185,6 +185,11 @@ export function truncateWaitHint(message: string): string | null {
   return msg.length > 72 ? `${msg.slice(0, 70)}…` : msg;
 }
 
+/** User-visible notice kinds that paint in the composer wait-hint chrome. */
+export function noticeShowsWaitHint(kind?: string | null): boolean {
+  return !kind || kind === "wait" || kind === "stagnation" || kind === "resume_cap";
+}
+
 /** Whether a thinking SSE frame should paint (live delta vs post-answer dump). */
 export function shouldPaintThinking(d: {
   text?: unknown;

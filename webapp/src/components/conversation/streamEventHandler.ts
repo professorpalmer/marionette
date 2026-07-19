@@ -31,6 +31,7 @@ import {
   finalizeStreamingBubbleOnActionResult,
   formatDistilledNotice,
   formatWikiAutoIngestNotice,
+  noticeShowsWaitHint,
   sealOpenStreamSurfaces,
   shouldPaintThinking,
   truncateWaitHint,
@@ -152,7 +153,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setCompactingStatus(null);
       setItems((p) => appendCompaction(p, d.before_tokens, d.after_tokens));
       window.dispatchEvent(new Event("harness-context-changed"));
-    } else if (ev.kind === "notice" && (d.kind === "wait" || !d.kind)) {
+    } else if (ev.kind === "notice" && noticeShowsWaitHint(d.kind)) {
+      // wait / stagnation / resume_cap notices are user-visible chrome; other
+      // notice kinds stay silent unless they omit kind (legacy wait path).
       const hint = truncateWaitHint(d.message || "");
       if (hint) setWaitHint(hint);
     } else if (ev.kind === "thinking") {

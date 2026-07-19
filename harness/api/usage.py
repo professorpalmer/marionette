@@ -96,9 +96,12 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     jobs_list = []
     session_total = None
     routing_saved_usd = 0.0
+    delegation_saved_usd = 0.0
     cache_saved_usd_swarm = 0.0
     routing_savings_basis = "unknown"
+    delegation_savings_basis = "unknown"
     routing_tokens_compared = 0
+    delegation_tokens_compared = 0
     swarm_cached = 0
     try:
         # Same merged, workspace-scoped job set the tracker uses
@@ -257,14 +260,23 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
                 active_price_out=price_out,
             )
             routing_saved_usd = float(savings_detail.get("routing_saved_usd") or 0.0)
+            delegation_saved_usd = float(
+                savings_detail.get("delegation_saved_usd") or 0.0
+            )
             cache_saved_usd_swarm = float(
                 savings_detail.get("cache_saved_usd_swarm") or 0.0
             )
             routing_savings_basis = str(
                 savings_detail.get("routing_savings_basis") or "unknown"
             )
+            delegation_savings_basis = str(
+                savings_detail.get("delegation_savings_basis") or "unknown"
+            )
             routing_tokens_compared = int(
                 savings_detail.get("routing_tokens_compared") or 0
+            )
+            delegation_tokens_compared = int(
+                savings_detail.get("delegation_tokens_compared") or 0
             )
         except Exception:
             # Compatible with monkeypatched 3-arg sum_job_set_savings stubs.
@@ -353,11 +365,14 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             # catalog = uncapped estimate; capped = limited to provider
             # spend; unknown = provider path present but net spend ≤ 0.
             "cache_savings_basis": cache_savings_basis,
-            # Routing + swarm-cache savings over the boot-repo epoch job
-            # set (additive to the pilot cache/compaction figures).
+            # Routing + delegation + swarm-cache savings over the boot-repo
+            # epoch job set (additive to the pilot cache/compaction figures).
             "routing_saved_usd": round(routing_saved_usd, 6),
             "routing_savings_basis": routing_savings_basis,
             "routing_tokens_compared": int(routing_tokens_compared),
+            "delegation_saved_usd": round(delegation_saved_usd, 6),
+            "delegation_savings_basis": delegation_savings_basis,
+            "delegation_tokens_compared": int(delegation_tokens_compared),
             "cache_saved_usd_swarm": round(cache_saved_usd_swarm, 6),
             **svc.tool_output_savings_fields(price_in, process_wide=True),
         },

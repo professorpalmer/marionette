@@ -357,6 +357,8 @@ from .routing_savings import (  # noqa: E402
     ROUTING_SAVINGS_UNKNOWN,
     _COST_OPTIMIZING_POLICIES,
     _registry_rates,
+    _delegation_saved_usd,
+    _delegation_saved_usd_detail,
     _routing_saved_usd,
     _routing_saved_usd_detail,
     _sum_job_set_savings,
