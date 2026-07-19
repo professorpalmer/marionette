@@ -2110,6 +2110,52 @@ except OSError:
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
+# --- TEMPORARY update-skew compat: legacy Electron streaming GET auth --------
+# Pre-v0.9.95 installed Electron main processes authenticate their SSE GETs
+# with `?token=` (the header-only policy shipped in the backend before the
+# packaged app shell could follow, since app.asar only refreshes with a new
+# installer). Without this shim, an in-app update leaves the installed shell
+# 403ing on every /api/chat stream ("[aborted] Connection closed before the
+# turn finished"). Scope is deliberately minimal: query-token auth is accepted
+# ONLY for the exact legacy streaming routes the old bridge drives, ONLY on a
+# GET from a confirmed loopback peer, and never anywhere else -- POSTs,
+# DELETEs, and every other GET API keep rejecting query tokens. The supplied
+# token is compared in constant time and never logged or echoed.
+#
+# REMOVAL CRITERION: delete this shim (and its tests) once installed app
+# shells that predate header-only streaming auth (< v0.9.95) are out of
+# support -- i.e. after a release whose installer floor guarantees the Electron
+# main process sends X-Harness-Token on stream GETs.
+_LEGACY_STREAM_QUERY_TOKEN_PATHS = frozenset({"/api/chat", "/api/auto", "/api/run"})
+_LOOPBACK_PEER_ADDRESSES = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+
+
+def legacy_stream_query_token_ok(
+    *,
+    method: str,
+    path: str,
+    query: str,
+    peer_address: str,
+    expected_token: str,
+) -> bool:
+    """Narrow compat gate for legacy Electron streaming GETs (see block comment).
+
+    True only when ALL hold: the verb is GET, the path is one of the exact
+    legacy streaming routes, the TCP peer is loopback, and the query token
+    matches the process token (constant-time). Callers must keep the supplied
+    token out of logs and error bodies.
+    """
+    if method != "GET":
+        return False
+    if path not in _LEGACY_STREAM_QUERY_TOKEN_PATHS:
+        return False
+    if peer_address not in _LOOPBACK_PEER_ADDRESSES:
+        return False
+    supplied = (parse_qs(query or "").get("token") or [""])[0]
+    if not supplied or not expected_token:
+        return False
+    return _secrets.compare_digest(supplied, expected_token)
+
 
 def _host_ok(host_header: str) -> bool:
     """Defeat DNS-rebinding: the Host must be a literal loopback name. A rebound
@@ -2305,7 +2351,19 @@ class Handler(BaseHTTPRequestHandler):
     def _token_ok(self) -> bool:
         # Only accept the auth token in the header. Any query-string token is
         # treated as untrusted data (prevents token leakage into logs/errors).
+        # Sole exception: legacy Electron streaming GETs from a loopback peer
+        # (see legacy_stream_query_token_ok, applied in do_GET only).
         return self.headers.get("X-Harness-Token", "") == _TOKEN
+
+    def _legacy_stream_token_ok(self, u) -> bool:
+        """TEMPORARY update-skew compat -- see legacy_stream_query_token_ok."""
+        return legacy_stream_query_token_ok(
+            method=self.command or "",
+            path=u.path,
+            query=u.query,
+            peer_address=(self.client_address[0] if self.client_address else ""),
+            expected_token=_TOKEN,
+        )
 
     def _send(self, code, body, ctype="application/json"):
         data = body.encode() if isinstance(body, str) else body
@@ -2443,10 +2501,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_wiki_connect(u)
         # CENTRALIZED AUTH GATE: every non-public path requires the token.
         # Route bodies assume auth already happened (no per-GET token copies).
+        # The legacy-stream check is the ONLY query-token acceptance, scoped to
+        # loopback GETs on the old Electron bridge's streaming routes.
         if u.path not in self._PUBLIC_GET_PATHS:
             if self._guard():
                 return
-            if not self._token_ok():
+            if not self._token_ok() and not self._legacy_stream_token_ok(u):
                 return self._send(403, json.dumps({"error": "missing or bad token"}))
         from .api import static as _static_api
         shell = _static_api.try_static_shell(u.path, web_root=_WEB, token=_TOKEN)

@@ -180,6 +180,7 @@ export {
 } from "./feedScroll";
 export {
   STREAM_ABORT_MESSAGE,
+  streamErrorText,
   streamOnDoneDecision,
   streamOnErrorDecision,
 } from "./streamTerminal";

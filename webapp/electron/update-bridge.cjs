@@ -117,6 +117,50 @@ function mergeFailureLooksLikeStaleIndex(text) {
   return /could not write index|needs merge|unmerged files|you have not concluded your merge|merge_head/i.test(text || "");
 }
 
+// ---- Electron main-process update-skew detection ---------------------------
+// The in-place update refreshes the CHECKOUT (Python backend + webapp/dist),
+// but the Electron main process the user is running came from the installed
+// app bundle (app.asar on packaged installs), frozen at install time. When an
+// update changes webapp/electron/**, a relaunch of the packaged shell still
+// runs the OLD main-process code against the NEW backend -- exactly the
+// v0.9.95 skew where a pre-header-auth main kept sending `?token=` at a
+// header-only backend. Detect that case so the result never claims an
+// in-place renderer/backend refresh was enough.
+
+/** True for files that ship inside the packaged Electron shell. */
+function isElectronMainProcessFile(file) {
+  return typeof file === "string" && file.replace(/\\/g, "/").startsWith("webapp/electron/");
+}
+
+/** True when the pulled range touched Electron main-process code. */
+function updateChangesElectronMain(changedFiles) {
+  return (changedFiles || []).some(isElectronMainProcessFile);
+}
+
+/**
+ * Decide what a main-process change means for THIS install.
+ * Packaged: main.cjs lives in app.asar -- a relaunch cannot load the new shell
+ * code, so the user needs the latest installer. Source-run: a full app
+ * relaunch re-reads webapp/electron from disk, so relaunch is sufficient
+ * (but an in-place backend/renderer refresh alone is not).
+ */
+function describeMainProcessUpdate({ mainProcessChanged, isPackaged }) {
+  if (!mainProcessChanged) return { installerUpdateRequired: false };
+  if (isPackaged) {
+    return {
+      installerUpdateRequired: true,
+      note:
+        "This update also changes the Marionette app shell, which the installed " +
+        "app cannot refresh in place. Install the latest Marionette release to " +
+        "finish updating; until then a compatibility layer keeps the current app working.",
+    };
+  }
+  return {
+    installerUpdateRequired: false,
+    note: "This update changes the app shell; the full app relaunch will load it.",
+  };
+}
+
 async function recoverInterruptedMerge(repoRoot) {
   const status = await gitCapture(repoRoot, ["status", "--porcelain"]);
   const hasUnmerged = status.ok && status.out.split("\n").some(isUnmergedStatusLine);
@@ -375,6 +419,7 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
       : [];
     const pyChanged = changed.some((f) => /(^|\/)(pyproject\.toml|setup\.cfg|setup\.py|requirements[^/]*\.txt)$/.test(f));
     const nodeChanged = changed.some((f) => f === "webapp/package-lock.json" || f === "webapp/package.json");
+    const mainProcessChanged = updateChangesElectronMain(changed);
 
     const py = process.env.PMHARNESS_PYTHON || (process.platform === "win32"
       ? path.join(repoRoot, ".venv", "Scripts", "python.exe")
@@ -441,8 +486,14 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     const built = await runRebuildWithRetry(rebuild);
     if (built.code !== 0) return { ok: false, error: built.tail || "renderer build failed" };
 
-    progress("done", "Update ready -- relaunching", 1);
-    return { ok: true };
+    progress(
+      "done",
+      mainProcessChanged
+        ? "Update ready -- relaunching (app shell changed; full restart required)"
+        : "Update ready -- relaunching",
+      1
+    );
+    return { ok: true, mainProcessChanged };
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   } finally {
@@ -521,6 +572,19 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
     try {
       const result = await applyUpdate({ repoRoot: getRepoRoot(), strategy, env: getEnv() }, emit);
       if (result.ok) {
+        // A pulled range that touched webapp/electron/** cannot be applied by
+        // an in-place refresh: the relaunch below is a TRUE app process restart
+        // (source-run loads the new shell), and packaged installs additionally
+        // need the latest installer -- say so instead of claiming done.
+        const shellVerdict = describeMainProcessUpdate({
+          mainProcessChanged: !!result.mainProcessChanged,
+          isPackaged: !!(app && app.isPackaged),
+        });
+        Object.assign(result, shellVerdict);
+        if (shellVerdict.installerUpdateRequired) {
+          appendUpdateLog(`[apply] ${shellVerdict.note}`);
+          emit({ stage: "done", message: shellVerdict.note, percent: 100 });
+        }
         // Give the renderer a beat to paint the final "relaunching" state.
         setTimeout(() => { try { relaunch(); } catch { void 0; } }, 400);
       }
@@ -545,4 +609,7 @@ module.exports = {
   statusPath,
   isUnmergedStatusLine,
   mergeFailureLooksLikeStaleIndex,
+  isElectronMainProcessFile,
+  updateChangesElectronMain,
+  describeMainProcessUpdate,
 };

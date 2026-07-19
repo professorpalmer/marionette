@@ -60,6 +60,7 @@ import {
 } from "./conversation/feedScroll";
 import {
   STREAM_ABORT_MESSAGE,
+  streamErrorText,
   streamOnDoneDecision,
   streamOnErrorDecision,
 } from "./conversation/streamTerminal";
@@ -1584,7 +1585,7 @@ export default function Conversation({
          maybeRunQueuedResume();
          maybeDrainQueue();
        },
-       () => {
+       (streamErr: any) => {
          if (!streamLive()) return;
          flushTypewriter();
          const errDec = streamOnErrorDecision({
@@ -1598,7 +1599,9 @@ export default function Conversation({
              kind: "msg",
              msg: {
                role: "assistant",
-               text: STREAM_ABORT_MESSAGE,
+               // A real error (403 auth skew, backend down) renders its own
+               // meaningful text instead of the generic abort chrome.
+               text: streamErrorText(streamErr),
              },
            }]);
            setStatus("error");

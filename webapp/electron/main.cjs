@@ -23,6 +23,8 @@ const {
   isExactOriginAuthenticatedApiRequest,
   probeActiveLoopbackAliasesForPort,
 } = require("./resource-auth.cjs");
+const { wireStreamResponse, sanitizedStreamConnError } = require("./stream-bridge.cjs");
+const { waitForAuthenticatedBackend } = require("./backend-probe.cjs");
 
 // Must run before any git/npm/uv child spawns: on Windows the portable tools
 // installed by first-run bootstrap are only on PATH in-memory, per process.
@@ -643,25 +645,32 @@ function startBackend() {
 }
 
 async function _startBackendOnce() {
-  // 1. Try to reuse an existing healthy backend.
+  // 1. Try to reuse an existing healthy backend -- but only one the candidate
+  // token from disk actually AUTHENTICATES against. An unauthenticated
+  // liveness probe used to adopt any answering process, so a stale backend
+  // holding an old token (update relaunch / crash survivor) was "reused" and
+  // every renderer request 403'd. A token mismatch now falls through to a
+  // fresh spawn instead.
   try {
     const raw = readPmHarnessStateFile("backend.json");
     const m = raw ? JSON.parse(raw) : null;
     if (m && m.port) {
-      await waitForBackend(m.port, 2000);
+      const candidateToken = (readPmHarnessStateFile("token") || "").trim();
+      await waitForAuthenticatedBackend({ port: m.port, token: candidateToken, timeoutMs: 2000 });
       backendPort = m.port;
       backend = null; // not ours to kill
       backendOwned = false;
-      // Adopt the running backend's token (minted by whichever main spawned it)
-      // so our renderer/IPC authenticate against IT rather than our own unused
-      // freshly-minted token.
-      const t = readPmHarnessStateFile("token");
-      if (t && t.trim()) harnessToken = t.trim();
+      // Adopt the running backend's token (minted by whichever main spawned it,
+      // and just proven valid by the probe) so our renderer/IPC authenticate
+      // against IT rather than our own unused freshly-minted token.
+      if (candidateToken) harnessToken = candidateToken;
       console.log(`[backend] reusing existing backend on ${backendPort}`);
       void refreshAllowedLoopbackAliases();
       return;
     }
-  } catch {}
+  } catch (probeErr) {
+    logMain(`[backend] marker reuse rejected: ${probeErr && probeErr.message ? probeErr.message : probeErr}`);
+  }
 
   // 1b. If a self-update is applying (git pull + rebuild), do NOT spawn a fresh
   // backend against the same state -- park until the update finishes or its
@@ -975,6 +984,10 @@ ipcMain.handle("harness:pickFolder", async () => {
 // the whole app (backend orphaned -> respawn on a new port -> ECONNREFUSED ->
 // everything dead). We also always abort the upstream backend request and remove
 // the one-shot cancel listener so connections + listeners never leak.
+//
+// Terminal contract (see stream-bridge.cjs): a non-2xx backend response (e.g. a
+// 403 from the auth gate) is `:error` with a sanitized status/code payload --
+// never `:done`, and never the response body or any token.
 ipcMain.on("harness:stream", (event, channelId, apiPath) => {
   const tok = authToken();
   const streamPath = apiPath;
@@ -1007,27 +1020,17 @@ ipcMain.on("harness:stream", (event, channelId, apiPath) => {
     path: streamPath,
     headers: tok ? { "X-Harness-Token": tok } : {},
   }, (res) => {
-    res.setEncoding("utf8");
-    let buf = "";
-    res.on("data", (chunk) => {
-      buf += chunk;
-      let idx;
-      while ((idx = buf.indexOf("\n\n")) >= 0) {
-        const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
-        const line = frame.split("\n").find((l) => l.startsWith("data: "));
-        if (!line) continue;
-        const payload = line.slice(6);
-        try {
-          const ev = JSON.parse(payload);
-          if (ev.kind === "done") { safeSend(`${channelId}:done`); res.destroy(); cleanup(); return; }
-          safeSend(`${channelId}:event`, ev);
-        } catch {}
-      }
+    wireStreamResponse(res, {
+      onEvent: (ev) => safeSend(`${channelId}:event`, ev),
+      onDone: () => { safeSend(`${channelId}:done`); cleanup(); },
+      onError: (payload) => {
+        logMain(`[stream] ${channelId} errored: ${payload && payload.message}`);
+        safeSend(`${channelId}:error`, payload);
+        cleanup();
+      },
     });
-    res.on("end", () => { safeSend(`${channelId}:done`); cleanup(); });
-    res.on("error", (e) => { safeSend(`${channelId}:error`, String(e)); cleanup(); });
   });
-  req.on("error", (e) => { safeSend(`${channelId}:error`, String(e)); cleanup(); });
+  req.on("error", (e) => { safeSend(`${channelId}:error`, sanitizedStreamConnError(e)); cleanup(); });
   ipcMain.once(`${channelId}:cancel`, onCancel);
 });
 

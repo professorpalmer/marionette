@@ -254,3 +254,42 @@ test("readLiveUpdateMarker: a marker past the age ceiling self-heals", () => {
   });
   assert.equal(live, null);
 });
+
+test("isElectronMainProcessFile: only webapp/electron/** counts as app-shell code", () => {
+  assert.equal(bridge.isElectronMainProcessFile("webapp/electron/main.cjs"), true);
+  assert.equal(bridge.isElectronMainProcessFile("webapp\\electron\\preload.cjs"), true);
+  assert.equal(bridge.isElectronMainProcessFile("webapp/src/App.tsx"), false);
+  assert.equal(bridge.isElectronMainProcessFile("harness/server.py"), false);
+  assert.equal(bridge.isElectronMainProcessFile(""), false);
+});
+
+test("updateChangesElectronMain: flags a pulled range touching the app shell", () => {
+  assert.equal(
+    bridge.updateChangesElectronMain(["harness/server.py", "webapp/electron/main.cjs"]),
+    true
+  );
+  assert.equal(
+    bridge.updateChangesElectronMain(["harness/server.py", "webapp/src/App.tsx"]),
+    false
+  );
+  assert.equal(bridge.updateChangesElectronMain([]), false);
+  assert.equal(bridge.updateChangesElectronMain(null), false);
+});
+
+test("describeMainProcessUpdate: packaged installs need the latest installer", () => {
+  const verdict = bridge.describeMainProcessUpdate({ mainProcessChanged: true, isPackaged: true });
+  assert.equal(verdict.installerUpdateRequired, true);
+  assert.match(verdict.note, /installer|latest Marionette release/i);
+});
+
+test("describeMainProcessUpdate: source-run relaunch loads the new shell (no installer)", () => {
+  const verdict = bridge.describeMainProcessUpdate({ mainProcessChanged: true, isPackaged: false });
+  assert.equal(verdict.installerUpdateRequired, false);
+  assert.match(verdict.note, /relaunch/i);
+});
+
+test("describeMainProcessUpdate: no shell change means nothing extra to require", () => {
+  const verdict = bridge.describeMainProcessUpdate({ mainProcessChanged: false, isPackaged: true });
+  assert.equal(verdict.installerUpdateRequired, false);
+  assert.equal(verdict.note, undefined);
+});
