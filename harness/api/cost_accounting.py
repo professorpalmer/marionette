@@ -8,7 +8,7 @@ the historical surface.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional, Tuple
 
 # Prompt-cache FALLBACK multipliers (used only when the provider did not return
 # usage.cost). OpenRouter billed USD is preferred whenever present.
@@ -19,6 +19,49 @@ CACHE_WRITE_5M_MULTIPLIER = 1.25
 CACHE_WRITE_1H_MULTIPLIER = 2.0
 # Undifferentiated cache_write_tokens (no TTL split) billed at the 5m write rate.
 CACHE_WRITE_MULTIPLIER = CACHE_WRITE_5M_MULTIPLIER
+
+# Wire values for price/cost provenance (backward-compatible additions).
+# live = OpenRouter /models rates; static = eval catalog; default = hardcoded
+# 0.5/2.0 fallback; provider = billed usage.cost (cost_source, not price ladder).
+PRICE_SOURCE_LIVE = "live"
+PRICE_SOURCE_STATIC = "static"
+PRICE_SOURCE_DEFAULT = "default"
+CACHE_SAVINGS_CATALOG = "catalog"
+CACHE_SAVINGS_CAPPED = "capped"
+CACHE_SAVINGS_UNKNOWN = "unknown"
+
+
+def _normalize_price_source(src: Optional[str]) -> str:
+    """Map registry source labels onto the public wire vocabulary.
+
+    ``live_alias`` collapses to ``live``; ``catalog`` becomes ``static``.
+    Unresolved / missing → ``default``.
+    """
+    if not src:
+        return PRICE_SOURCE_DEFAULT
+    key = str(src).strip().lower()
+    if key in ("live", "live_alias"):
+        return PRICE_SOURCE_LIVE
+    if key in ("catalog", "static"):
+        return PRICE_SOURCE_STATIC
+    if key == "default":
+        return PRICE_SOURCE_DEFAULT
+    return PRICE_SOURCE_DEFAULT
+
+
+def _spend_is_estimated(cost_source: str, price_source: str = "") -> bool:
+    """True when the dollar figure is not a full provider receipt.
+
+    Provider-billed spend stays non-estimated even if display rates fell back
+    to defaults (those rates are unused for the billed total). Default rates
+    with a catalog/estimate path always mark the amount estimated.
+    """
+    src = (cost_source or "").strip().lower()
+    if src == "provider":
+        return False
+    if (price_source or "").strip().lower() == PRICE_SOURCE_DEFAULT:
+        return True
+    return src != "provider"
 
 
 def _session_cost(
@@ -148,12 +191,51 @@ def _session_cost_split(pilot: Any, price_in: float, price_out: float) -> float:
     )
 
 
-def _cache_savings(cached: float, price_in: float) -> float:
+def _cache_savings(
+    cached: float,
+    price_in: float,
+    provider_cost_usd: Optional[float] = None,
+) -> float:
     """USD saved by billing ``cached`` prompt tokens at the cache-read discount
     instead of the full input price (catalog-rate fallback estimate).
 
-    Cache-write premiums are a cost, not a saving -- they are excluded here."""
-    return (float(cached) / 1.0e6) * price_in * (1.0 - CACHE_READ_MULTIPLIER)
+    When ``provider_cost_usd`` is supplied the claim is capped at that
+    provider-grounded spend (OpenRouter ``usage.cost`` is already net of
+    cache). Pass ``None`` when spend is only estimated — callers must not
+    substitute estimated session totals as a cap. A present-but-non-positive
+    provider receipt means savings are unknown — return 0 rather than
+    inventing catalog dollars on top of a net bill. Cache-write premiums
+    are a cost, not a saving."""
+    usd, _basis = _cache_savings_with_basis(
+        cached, price_in, provider_cost_usd=provider_cost_usd
+    )
+    return usd
+
+
+def _cache_savings_with_basis(
+    cached: float,
+    price_in: float,
+    provider_cost_usd: Optional[float] = None,
+) -> Tuple[float, str]:
+    """Return ``(savings_usd, basis)`` where basis is catalog | capped | unknown."""
+    raw = (float(cached or 0.0) / 1.0e6) * float(price_in or 0.0) * (
+        1.0 - CACHE_READ_MULTIPLIER
+    )
+    if raw <= 0:
+        return 0.0, CACHE_SAVINGS_CATALOG
+    if provider_cost_usd is None:
+        return raw, CACHE_SAVINGS_CATALOG
+    try:
+        prov = float(provider_cost_usd)
+    except (TypeError, ValueError):
+        return 0.0, CACHE_SAVINGS_UNKNOWN
+    if prov <= 0:
+        # Provider path is authoritative but net spend is unknown / zero —
+        # do not claim independent catalog savings above it.
+        return 0.0, CACHE_SAVINGS_UNKNOWN
+    if raw > prov:
+        return prov, CACHE_SAVINGS_CAPPED
+    return raw, CACHE_SAVINGS_CATALOG
 
 
 def _cost_source_label(pilot_like: Any) -> str:
@@ -180,23 +262,76 @@ def _job_cost(tokens_in: float, tokens_out: float, tokens_total: float,
     """Deterministic per-job cost. Uses the real in/out split when the job
     carries it; otherwise prices the single ``tokens`` total at ``price_out``
     (completion tokens dominate cost, matching the session fallback) rather than
-    a naive 50/50 blend that mis-prices output-heavy jobs."""
+    a naive 50/50 blend that mis-prices output-heavy jobs.
+
+    Unsplit totals are estimates — callers should surface ``estimated`` via
+    :func:`_job_cost_is_unsplit` rather than inventing a fixed in/out ratio."""
     if tokens_in or tokens_out:
         return ((float(tokens_in) / 1.0e6) * price_in
                 + (float(tokens_out) / 1.0e6) * price_out)
     return (float(tokens_total) / 1.0e6) * price_out
 
 
-def _resolve_active_prices() -> tuple:
-    """Per-Mtok (price_in, price_out) for the active driver; safe defaults on failure."""
+def _job_cost_is_unsplit(
+    tokens_in: float, tokens_out: float, tokens_total: float
+) -> bool:
+    """True when cost came from a combined token total (no in/out split)."""
+    if tokens_in or tokens_out:
+        return False
+    return float(tokens_total or 0.0) > 0.0
+
+
+def _resolve_active_prices_with_source() -> tuple:
+    """Per-Mtok (price_in, price_out, price_source) for the active driver."""
     from .cost import _cfg
 
     try:
-        from pmharness.registry import resolve_price
+        from pmharness.registry import resolve_price, price_with_source
+
         price_in, price_out = resolve_price(_cfg().driver)
-        return float(price_in), float(price_out)
+        raw_in, raw_out, src = price_with_source(_cfg().driver)
+        return (
+            float(price_in),
+            float(price_out),
+            _normalize_price_source(
+                None if raw_in is None or raw_out is None else src
+            ),
+        )
     except Exception:
-        return 0.5, 2.0
+        return 0.5, 2.0, PRICE_SOURCE_DEFAULT
+
+
+def _resolve_active_prices() -> tuple:
+    """Per-Mtok (price_in, price_out) for the active driver; safe defaults on failure."""
+    pin, pout, _src = _resolve_active_prices_with_source()
+    return pin, pout
+
+
+def _resolve_prices_for_runner_with_source(runner: Any) -> tuple:
+    """Per-Mtok (price_in, price_out, price_source) for a runner's bound driver."""
+    from .cost import _server_attr
+
+    try:
+        cfg = getattr(runner, "config", None)
+        driver = getattr(cfg, "driver", None) if cfg is not None else None
+        if driver:
+            from pmharness.registry import resolve_price, price_with_source
+
+            price_in, price_out = resolve_price(driver)
+            raw_in, raw_out, src = price_with_source(driver)
+            return (
+                float(price_in),
+                float(price_out),
+                _normalize_price_source(
+                    None if raw_in is None or raw_out is None else src
+                ),
+            )
+    except Exception:
+        pass
+    resolve_active = _server_attr(
+        "_resolve_active_prices_with_source", _resolve_active_prices_with_source
+    )
+    return resolve_active()
 
 
 def _resolve_prices_for_runner(runner: Any) -> tuple:
@@ -205,16 +340,5 @@ def _resolve_prices_for_runner(runner: Any) -> tuple:
     Idle swap may have already retargeted ``_cfg().driver`` before rebuild; price
     historical meters from the runner's frozen ``config.driver`` when present.
     """
-    from .cost import _server_attr
-
-    try:
-        cfg = getattr(runner, "config", None)
-        driver = getattr(cfg, "driver", None) if cfg is not None else None
-        if driver:
-            from pmharness.registry import resolve_price
-            price_in, price_out = resolve_price(driver)
-            return float(price_in), float(price_out)
-    except Exception:
-        pass
-    resolve_active = _server_attr("_resolve_active_prices", _resolve_active_prices)
-    return resolve_active()
+    pin, pout, _src = _resolve_prices_for_runner_with_source(runner)
+    return pin, pout

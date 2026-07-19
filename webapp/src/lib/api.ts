@@ -142,6 +142,10 @@ export type Task = {
   tokens?: number;
   /** Usage-priced cost, or routing estimate while usage is absent. */
   est_cost_usd?: number;
+  /** provider | live | static | default — how this task's dollars were derived. */
+  cost_provenance?: "provider" | "live" | "static" | "default";
+  /** True when the dollar figure is not a full provider receipt. */
+  estimated?: boolean;
 };
 export type Job = {
   id: string;
@@ -155,6 +159,10 @@ export type Job = {
   updated_at?: number | string | null;
   tokens?: number;
   est_cost_usd?: number;
+  /** provider | live | static | default — how this job's dollars were derived. */
+  cost_provenance?: "provider" | "live" | "static" | "default";
+  /** True when the dollar figure is not a full provider receipt. */
+  estimated?: boolean;
   model?: string;
   /** Prompt-cache hits on this job's usage-bearing artifacts. */
   tokens_cached?: number;
@@ -209,9 +217,16 @@ export type SwarmLive = {
   session: {
     tokens_used: number;
     est_cost_usd: number;
+    cost_source?: "provider" | "estimated" | "mixed" | "plan_estimated";
+    /** live | static | default — how display rates were resolved. */
+    price_source?: "live" | "static" | "default";
+    /** True when spend is not a full provider receipt. */
+    estimated?: boolean;
     driver?: string;
     tokens_cached?: number;
     cache_savings_usd?: number;
+    /** catalog | capped | unknown — how cache savings were attributed. */
+    cache_savings_basis?: "catalog" | "capped" | "unknown";
     routing_saved_usd?: number;
     cache_saved_usd_swarm?: number;
     tool_output_tokens_saved?: number;
@@ -376,11 +391,17 @@ export type UsageData = {
     est_cost_usd: number;
     /** provider = billed usage.cost; estimated = token*catalog; mixed = both; plan_estimated = subscription credits (no API receipt). */
     cost_source?: "provider" | "estimated" | "mixed" | "plan_estimated";
+    /** live = OpenRouter rates; static = eval catalog; default = hardcoded 0.5/2.0. */
+    price_source?: "live" | "static" | "default";
+    /** True when spend is not a full provider receipt (or rates defaulted). */
+    estimated?: boolean;
     driver: string;
     price_in: number;
     price_out: number;
     tokens_cached?: number;
     cache_savings_usd?: number;
+    /** catalog = uncapped estimate; capped = limited to provider spend; unknown = provider net ≤ 0. */
+    cache_savings_basis?: "catalog" | "capped" | "unknown";
     /** Router baseline-vs-chosen savings (balanced/cheap policies only). */
     routing_saved_usd?: number;
     /** Swarm prompt-cache savings priced from usage artifacts x registry. */
@@ -418,6 +439,8 @@ export type UsageData = {
     job_id: string;
     tokens: number;
     est_cost_usd: number;
+    cost_provenance?: "provider" | "live" | "static" | "default";
+    estimated?: boolean;
   }[];
 };
 

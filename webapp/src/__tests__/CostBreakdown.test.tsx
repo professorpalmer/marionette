@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within, waitFor } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CostBreakdown, {
   compactionAdvicePresentation,
+  spendIsEstimated,
   type CostBreakdownData,
 } from "../components/CostBreakdown";
 import { api } from "../lib/api";
@@ -268,5 +269,59 @@ describe("CostBreakdown", () => {
     expect(
       screen.getByText(/Each task step is routed to the cheapest capable model/),
     ).toBeInTheDocument();
+  });
+
+  it("marks default-rate spend as estimated and labels it", () => {
+    expect(spendIsEstimated({ cost_source: "estimated", price_source: "default" })).toBe(true);
+    expect(spendIsEstimated({ cost_source: "provider", estimated: false })).toBe(false);
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.05,
+          cost_source: "estimated",
+          price_source: "default",
+          estimated: true,
+        }}
+      />,
+    );
+    expect(screen.getByText("Estimated spend (default rates)")).toBeInTheDocument();
+    expect(screen.getByText("~$0.05")).toBeInTheDocument();
+  });
+
+  it("shows unknown cache savings when basis is unknown", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.10,
+          cost_source: "provider",
+          estimated: false,
+          tokens_cached: 50_000,
+          cache_savings_usd: 0,
+          cache_savings_basis: "unknown",
+        }}
+      />,
+    );
+    expect(screen.getByText("Billed spend")).toBeInTheDocument();
+    expect(screen.getByText("$0.10")).toBeInTheDocument();
+    expect(screen.getByText("unknown (net provider)")).toBeInTheDocument();
+  });
+
+  it("labels capped cache savings", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.10,
+          cost_source: "provider",
+          estimated: false,
+          tokens_cached: 50_000,
+          cache_savings_usd: 0.05,
+          cache_savings_basis: "capped",
+        }}
+      />,
+    );
+    expect(screen.getByText("Prompt-cache saved (capped)")).toBeInTheDocument();
   });
 });

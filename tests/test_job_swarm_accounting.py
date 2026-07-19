@@ -3,7 +3,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from harness.server import _job_swarm_accounting, _routing_estimate_cost, _task_swarm_accounting
+from harness.server import (
+    _job_swarm_accounting,
+    _job_swarm_accounting_detail,
+    _routing_estimate_cost,
+    _task_swarm_accounting,
+)
 from puppetmaster.models import Artifact, ArtifactType
 
 
@@ -344,3 +349,75 @@ def test_task_swarm_accounting_keeps_estimate_when_usage_unpriceable():
     by_task = _task_swarm_accounting(arts, registry=[])
     assert by_task["t1"]["tokens"] == 360_000
     assert abs(by_task["t1"]["est_cost_usd"] - 0.0067) < 1e-9
+
+
+def test_zero_work_job_does_not_inherit_routing_estimate():
+    """Completed job with zero-token usage stays $0, not the routing estimate."""
+    arts = [
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.062, "model_id": "worker-model"},
+        ),
+        _artifact(
+            task_id="t1",
+            payload={
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "model": "worker-model",
+                "result": "passed",
+            },
+        ),
+    ]
+    tokens, cost = _job_swarm_accounting(arts, registry=[_registry_spec("worker-model")])
+    assert tokens == 0
+    assert cost == 0.0
+    detail = _job_swarm_accounting_detail(arts, registry=[_registry_spec("worker-model")])
+    assert detail["est_cost_usd"] == 0.0
+    assert detail["estimated"] is False
+    assert detail["cost_provenance"] == "provider"
+
+
+def test_job_detail_marks_provider_override():
+    registry = [_registry_spec("worker-model", input_per_mtok_usd=1.0, output_per_mtok_usd=2.0)]
+    arts = [
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.99, "model_id": "worker-model"},
+        ),
+        _artifact(
+            task_id="t1",
+            payload={
+                "tokens_in": 100_000,
+                "tokens_out": 20_000,
+                "model": "worker-model",
+                "real_cost_usd": 0.048,
+            },
+        ),
+    ]
+    detail = _job_swarm_accounting_detail(arts, registry)
+    assert abs(detail["est_cost_usd"] - 0.048) < 1e-6
+    assert detail["cost_provenance"] == "provider"
+    assert detail["estimated"] is False
+
+
+def test_task_zero_work_does_not_keep_routing_estimate():
+    arts = [
+        _artifact(
+            task_id="t1",
+            art_type=ArtifactType.ROUTING,
+            created_by="router",
+            payload={"estimated_cost_usd": 0.062, "model_id": "worker-model"},
+        ),
+        _artifact(
+            task_id="t1",
+            payload={"tokens_in": 0, "tokens_out": 0, "model": "worker-model"},
+        ),
+    ]
+    by_task = _task_swarm_accounting(arts, registry=[_registry_spec("worker-model")])
+    assert by_task["t1"]["tokens"] == 0
+    assert by_task["t1"]["est_cost_usd"] == 0.0
+    assert by_task["t1"]["estimated"] is False

@@ -332,8 +332,10 @@ function jobCompactTokens(j: Job): number {
   return Number(j.tool_output_tokens_saved || 0);
 }
 
-function formatCost(cost: number): string {
-  return cost > 0 ? `$${cost.toFixed(4)}` : "$0";
+function formatCost(cost: number, estimated?: boolean): string {
+  if (!(cost > 0)) return "$0";
+  const body = `$${cost.toFixed(4)}`;
+  return estimated ? `~${body}` : body;
 }
 
 function positiveUsd(n?: number): number {
@@ -766,7 +768,12 @@ export default function SwarmPane() {
                   {jobCompactTokens(j) > 0 && (
                     <span className="text-accent/90">{jobCompactTokens(j).toLocaleString()} compact</span>
                   )}
-                  <span className="text-good/90">{formatCost(jobCost(j))}</span>
+                  <span className="text-good/90">
+                    {formatCost(
+                      jobCost(j),
+                      j.estimated !== false && j.cost_provenance !== "provider",
+                    )}
+                  </span>
                   <SavingsChip parts={savings} className="text-[9px] font-sans" />
                 </span>
               )}
@@ -949,7 +956,10 @@ export default function SwarmPane() {
                 <span className="flex items-center gap-2 shrink-0 font-mono">
                   {(j.tokens ?? 0) > 0 && <span className="text-faint">{j.tokens!.toLocaleString()}t</span>}
                   <span className="text-good font-semibold">
-                    {(j.est_cost_usd ?? 0) > 0 ? `$${Number(j.est_cost_usd).toFixed(4)}` : "$0"}
+                    {formatCost(
+                      Number(j.est_cost_usd || 0),
+                      j.estimated !== false && j.cost_provenance !== "provider",
+                    )}
                   </span>
                 </span>
               </div>
@@ -1000,7 +1010,12 @@ export default function SwarmPane() {
                                   {(task.tokens ?? 0) > 0 && (
                                     <span>{Number(task.tokens).toLocaleString()}t</span>
                                   )}
-                                  <span className="text-good/90">{formatCost(Number(task.est_cost_usd || 0))}</span>
+                                  <span className="text-good/90">
+                                    {formatCost(
+                                      Number(task.est_cost_usd || 0),
+                                      task.estimated !== false && task.cost_provenance !== "provider",
+                                    )}
+                                  </span>
                                 </span>
                               )}
                               <span className={`text-[8px] uppercase font-bold px-1 rounded ${

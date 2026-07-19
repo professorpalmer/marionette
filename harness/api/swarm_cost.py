@@ -103,7 +103,7 @@ def _live_price_unpriced_tasks(job_cost) -> float:
     return total
 
 
-def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
+def _job_swarm_accounting(raw_arts, registry: list) -> tuple:
     """Return (tokens, cost_usd) for a swarm job.
 
     Prefers measured/estimated usage priced against the registry
@@ -112,11 +112,31 @@ def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
     pre-flight estimate only while nothing could be priced from usage.
     When no ROUTING artifact exists (provider-native workers), usage is read
     from VERIFICATION payloads instead.
+
+    Completed zero-token usage stays $0 — it must not inherit a routing
+    estimate. See :func:`_job_swarm_accounting_detail` for provenance.
     """
-    from puppetmaster.usage import aggregate_token_usage
+    detail = _job_swarm_accounting_detail(raw_arts, registry)
+    return int(detail["tokens"]), float(detail["est_cost_usd"])
+
+
+def _job_swarm_accounting_detail(raw_arts, registry: list) -> dict:
+    """Rich job accounting: tokens, cost, provenance, estimated flag.
+
+    ``cost_provenance`` is one of ``provider`` | ``live`` | ``static`` |
+    ``default`` (routing / hardcoded fallback). ``estimated`` is True whenever
+    the dollar figure is not a full provider receipt.
+    """
+    from puppetmaster.usage import aggregate_token_usage, select_usage_records
     from puppetmaster.cost import price_job
 
     arts_for_usage = _arts_for_swarm_usage(raw_arts)
+
+    usage_records: dict = {}
+    try:
+        usage_records = select_usage_records(arts_for_usage) or {}
+    except Exception:
+        usage_records = {}
 
     tokens = 0
     try:
@@ -125,21 +145,91 @@ def _job_swarm_accounting(raw_arts, registry: list) -> tuple[int, float]:
     except Exception:
         pass
 
+    # Zero-work: usage evidence with zero tokens must stay $0 (unless a
+    # provider receipt reports a positive real_cost_usd, which is rare).
+    if usage_records and tokens == 0:
+        real_total = 0.0
+        for rec in usage_records.values():
+            rc = rec.get("real_cost_usd")
+            if rc is None:
+                continue
+            try:
+                real_total += float(rc or 0.0)
+            except (TypeError, ValueError):
+                pass
+        if real_total <= 0:
+            return {
+                "tokens": 0,
+                "est_cost_usd": 0.0,
+                "cost_provenance": "provider",
+                "estimated": False,
+            }
+        return {
+            "tokens": 0,
+            "est_cost_usd": round(real_total, 6),
+            "cost_provenance": "provider",
+            "estimated": False,
+        }
+
     est_cost_usd = 0.0
+    provenance = "default"
+    estimated = True
     try:
         job_cost = price_job(arts_for_usage, registry)
-        usage_cost = job_cost.total_marginal_cost_usd + _live_price_unpriced_tasks(job_cost)
-        # Only trust the usage-priced total when something actually priced.
-        # Usage can land with models neither source can price (cost 0.0);
-        # treating that as authoritative made finished jobs snap from the
-        # routing estimate back to $0. Keep the estimate instead.
+        registry_cost = float(getattr(job_cost, "total_marginal_cost_usd", 0.0) or 0.0)
+        live_topup = float(_live_price_unpriced_tasks(job_cost) or 0.0)
+        usage_cost = registry_cost + live_topup
+
+        provider_sum = 0.0
+        has_provider = False
+        for rec in usage_records.values():
+            rc = rec.get("real_cost_usd")
+            if rc is None:
+                continue
+            try:
+                val = float(rc or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0:
+                has_provider = True
+                provider_sum += val
+
         if usage_cost > 0:
             est_cost_usd = usage_cost
+            if has_provider and live_topup <= 0 and registry_cost <= provider_sum + 1e-9:
+                # Fully (or almost) covered by provider receipts.
+                provenance = "provider"
+                estimated = False
+            elif has_provider and live_topup > 0:
+                provenance = "live"
+                estimated = True
+            elif has_provider:
+                provenance = "provider"
+                estimated = abs(usage_cost - provider_sum) > 1e-9
+            elif live_topup > 0 and registry_cost <= 0:
+                provenance = "live"
+                estimated = True
+            elif live_topup > 0:
+                provenance = "live"
+                estimated = True
+            else:
+                provenance = "static"
+                estimated = True
         else:
             est_cost_usd = _routing_estimate_cost(raw_arts)
+            provenance = "default"
+            estimated = True
     except Exception:
         est_cost_usd = _routing_estimate_cost(raw_arts)
-    return tokens, round(est_cost_usd, 6)
+        provenance = "default"
+        estimated = True
+
+    return {
+        "tokens": tokens,
+        "est_cost_usd": round(float(est_cost_usd or 0.0), 6),
+        "cost_provenance": provenance,
+        "estimated": bool(estimated),
+    }
 
 
 def _arts_for_swarm_usage(raw_arts):
@@ -202,21 +292,62 @@ def _task_swarm_accounting(raw_arts, registry: list) -> dict:
                 continue
             tokens = int(record.get("tokens_in") or 0) + int(record.get("tokens_out") or 0)
             cost = 0.0
+            provenance = "default"
+            estimated = True
+            real_cost = record.get("real_cost_usd")
+            try:
+                real_cost_f = float(real_cost) if real_cost is not None else 0.0
+            except (TypeError, ValueError):
+                real_cost_f = 0.0
             tc = priced.get(task_id)
             if tc is not None:
                 if tc.priced and tc.marginal_cost_usd > 0:
                     cost = float(tc.marginal_cost_usd)
+                    if real_cost_f > 0:
+                        provenance = "provider"
+                        estimated = abs(cost - real_cost_f) > 1e-9
+                    else:
+                        provenance = "static"
+                        estimated = True
                 else:
                     cost = _live_price_task(tc)
+                    if cost > 0:
+                        provenance = "live"
+                        estimated = True
+            # Zero-token usage evidence: stay at $0 (do not inherit routing).
+            if tokens == 0 and real_cost_f <= 0:
+                by_task[task_id] = {
+                    "tokens": 0,
+                    "est_cost_usd": 0.0,
+                    "cost_provenance": "provider",
+                    "estimated": False,
+                }
+                continue
             prev = by_task.get(task_id) or {"tokens": 0, "est_cost_usd": 0.0}
-            by_task[task_id] = {
-                "tokens": tokens,
-                "est_cost_usd": (
-                    round(cost, 6) if cost > 0 else float(prev.get("est_cost_usd") or 0.0)
-                ),
-            }
+            if cost > 0:
+                by_task[task_id] = {
+                    "tokens": tokens,
+                    "est_cost_usd": round(cost, 6),
+                    "cost_provenance": provenance,
+                    "estimated": estimated,
+                }
+            else:
+                # Unpriceable usage with tokens: keep routing estimate.
+                by_task[task_id] = {
+                    "tokens": tokens,
+                    "est_cost_usd": float(prev.get("est_cost_usd") or 0.0),
+                    "cost_provenance": "default",
+                    "estimated": True,
+                }
     except Exception:
         pass
+    # Stamp provenance on routing-only rows still lacking usage.
+    for task_id, entry in list(by_task.items()):
+        if "cost_provenance" not in entry:
+            entry = dict(entry)
+            entry["cost_provenance"] = "default"
+            entry["estimated"] = True
+            by_task[task_id] = entry
     return by_task
 
 

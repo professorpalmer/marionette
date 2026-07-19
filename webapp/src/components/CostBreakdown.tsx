@@ -13,8 +13,14 @@ export type CostBreakdownData = {
   tokens_used: number;
   est_cost_usd: number;
   cost_source?: "provider" | "estimated" | "mixed" | "plan_estimated";
+  /** live | static | default — how display rates were resolved. */
+  price_source?: "live" | "static" | "default";
+  /** True when spend is not a full provider receipt. */
+  estimated?: boolean;
   tokens_cached?: number;
   cache_savings_usd?: number;
+  /** catalog | capped | unknown — how cache savings were attributed. */
+  cache_savings_basis?: "catalog" | "capped" | "unknown";
   routing_saved_usd?: number;
   cache_saved_usd_swarm?: number;
   tool_output_tokens_saved?: number;
@@ -39,6 +45,14 @@ export type CostBreakdownData = {
   price_in?: number;
   price_out?: number;
 };
+
+/** Compact spend is estimated unless a full provider receipt backs it. */
+export function spendIsEstimated(data: Pick<CostBreakdownData, "cost_source" | "estimated" | "price_source">): boolean {
+  if (typeof data.estimated === "boolean") return data.estimated;
+  if (data.cost_source === "provider") return false;
+  if (data.price_source === "default") return true;
+  return data.cost_source !== "provider";
+}
 
 /** Calm user-facing copy for compaction advice. Machine reasons stay in title. */
 export function compactionAdvicePresentation(
@@ -87,17 +101,24 @@ function fmtBytes(num: number): string {
 export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
   const [compactState, setCompactState] = useState<"idle" | "working" | "done" | "error">("idle");
   const est = isFinite(data.est_cost_usd) ? data.est_cost_usd : 0;
-  const billed = data.cost_source === "provider";
+  const estimated = spendIsEstimated(data);
+  const billed = data.cost_source === "provider" && !estimated;
   const spendLabel = billed
     ? "Billed spend"
     : data.cost_source === "mixed"
       ? "Spend (mixed)"
       : data.cost_source === "plan_estimated"
         ? "Plan spend (est.)"
-        : "Estimated spend";
-  const spendPrefix = billed ? "" : "~";
+        : data.price_source === "default"
+          ? "Estimated spend (default rates)"
+          : "Estimated spend";
+  const spendPrefix = estimated ? "~" : "";
+  const cacheUnknown = data.cache_savings_basis === "unknown";
   const cacheSavings =
-    typeof data.cache_savings_usd === "number" && isFinite(data.cache_savings_usd) && data.cache_savings_usd > 0
+    !cacheUnknown
+    && typeof data.cache_savings_usd === "number"
+    && isFinite(data.cache_savings_usd)
+    && data.cache_savings_usd > 0
       ? data.cache_savings_usd
       : 0;
   const routingSaved =
@@ -213,8 +234,17 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {/* (b) Cache savings -- pilot + swarm store, one row. */}
       {promptCacheSaved > 0 ? (
         <div className="flex items-center justify-between mb-1">
-          <span className="text-muted">Prompt-cache saved</span>
+          <span className="text-muted">
+            Prompt-cache saved
+            {data.cache_savings_basis === "capped" ? " (capped)" : ""}
+          </span>
           <span className="text-accent font-medium tabular-nums">~{fmtCost(promptCacheSaved)}</span>
+        </div>
+      ) : null}
+      {cacheUnknown ? (
+        <div className="flex items-center justify-between mb-1 text-faint">
+          <span>Prompt-cache saved</span>
+          <span className="tabular-nums">unknown (net provider)</span>
         </div>
       ) : null}
 

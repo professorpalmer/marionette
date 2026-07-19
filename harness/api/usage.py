@@ -52,15 +52,20 @@ def get_context_usage(svc: UsageServices) -> tuple[int, JsonPayload]:
 
 def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]:
     """GET /api/usage — process-lifetime StatusBar cost pill."""
-    # Resolve real per-Mtok pricing for the active driver: eval-catalog
-    # native rates first, then the live OpenRouter price map (so picker
-    # specs like 'anthropic:claude-opus-4-8' show the true $5/$25 instead
-    # of a 0.5/2.0 placeholder).
+    # Resolve real per-Mtok pricing for the active driver via resolve_price
+    # (historical seam: live → catalog → defaults). Surface price_source so
+    # the UI can mark silent default fallbacks without bypassing that seam.
     try:
-        from pmharness.registry import resolve_price
+        from pmharness.registry import resolve_price, price_with_source
+        from .cost_accounting import _normalize_price_source
+
         price_in, price_out = resolve_price(svc.cfg.driver)
+        raw_in, raw_out, _price_src = price_with_source(svc.cfg.driver)
+        price_source = _normalize_price_source(
+            None if raw_in is None or raw_out is None else _price_src
+        )
     except Exception:
-        price_in, price_out = 0.5, 2.0
+        price_in, price_out, price_source = 0.5, 2.0, "default"
     # Boot pill: process-lifetime meters (carry + ALL live runners), not
     # just the active view -- so attaching another session never drops
     # spend that already happened on a background runner.
@@ -194,7 +199,33 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
         for jid in jids:
             try:
                 raw_arts = _job_arts(jid)
+                # Spend always goes through the injected 2-tuple helper so
+                # hermetic tests can monkeypatch harness.server._job_swarm_accounting.
                 tokens, est_cost_usd = svc.job_swarm_accounting(raw_arts, registry)
+                provenance = "default"
+                job_estimated = True
+                try:
+                    from .cost import _server_attr
+                    from .swarm_cost import _job_swarm_accounting_detail
+
+                    detail_fn = _server_attr(
+                        "_job_swarm_accounting_detail", _job_swarm_accounting_detail
+                    )
+                    detail = detail_fn(raw_arts, registry)
+                    # Only trust provenance when it agrees with the spend helper
+                    # (detects monkeypatched stubs that return fixed dollars).
+                    if (
+                        int(detail.get("tokens") or 0) == int(tokens or 0)
+                        and abs(
+                            float(detail.get("est_cost_usd") or 0.0)
+                            - float(est_cost_usd or 0.0)
+                        )
+                        < 1e-9
+                    ):
+                        provenance = detail.get("cost_provenance") or "default"
+                        job_estimated = bool(detail.get("estimated", True))
+                except Exception:
+                    pass
                 try:
                     swarm_cached += int(svc.tokens_cached_swarm(raw_arts) or 0)
                 except Exception:
@@ -203,6 +234,8 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
                     "job_id": jid,
                     "tokens": tokens,
                     "est_cost_usd": est_cost_usd,
+                    "cost_provenance": provenance,
+                    "estimated": bool(job_estimated),
                     **svc.job_savings_fields(jid),
                 })
             except Exception as e:
@@ -230,12 +263,32 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     # count when harness workers were folded into _tokens_cached).
     pilot_only_cached = max(0, t_cached - min(t_cached, swarm_cached))
     tokens_cached = pilot_only_cached + swarm_cached
-    cache_savings_usd = svc.cache_savings(pilot_only_cached, price_in)
     usage_cost_source = svc.boot_cost_source()
     # Swarm store dollars are still catalog/usage-priced; do not claim
     # the whole pill is provider-billed when those are folded in.
     if swarm_cost > 0 and usage_cost_source == "provider":
         usage_cost_source = "mixed"
+    # Cap catalog cache-savings only by known provider-billed spend.
+    # Estimated / plan_estimated paths keep uncapped catalog savings
+    # (still labeled estimated) — never clamp against estimated totals.
+    provider_cost = float(boot_meters.get("_provider_cost_usd", 0) or 0.0)
+    cache_provider_cap = (
+        provider_cost if usage_cost_source in ("provider", "mixed") else None
+    )
+    try:
+        from .cost_accounting import (
+            _cache_savings_with_basis,
+            _spend_is_estimated,
+        )
+
+        cache_savings_usd, cache_savings_basis = _cache_savings_with_basis(
+            pilot_only_cached, price_in, provider_cost_usd=cache_provider_cap
+        )
+        spend_estimated = _spend_is_estimated(usage_cost_source, price_source)
+    except Exception:
+        cache_savings_usd = svc.cache_savings(pilot_only_cached, price_in)
+        cache_savings_basis = "catalog"
+        spend_estimated = usage_cost_source != "provider"
     response_data = {
         "session": {
             "tokens_used": tokens_used,
@@ -243,6 +296,10 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             # provider = OpenRouter usage.cost (etc.); estimated =
             # token*catalog fallback; mixed = both slices present.
             "cost_source": usage_cost_source,
+            # live | static | default — how display rates were resolved.
+            "price_source": price_source,
+            # True when spend is not a full provider receipt (or rates defaulted).
+            "estimated": bool(spend_estimated),
             "driver": svc.cfg.driver,
             "price_in": price_in,
             "price_out": price_out,
@@ -251,6 +308,9 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             # only; store-job cache USD is cache_saved_usd_swarm).
             "tokens_cached": tokens_cached,
             "cache_savings_usd": round(cache_savings_usd, 6),
+            # catalog = uncapped estimate; capped = limited to provider
+            # spend; unknown = provider path present but net spend ≤ 0.
+            "cache_savings_basis": cache_savings_basis,
             # Routing + swarm-cache savings over the boot-repo epoch job
             # set (additive to the pilot cache/compaction figures).
             "routing_saved_usd": round(routing_saved_usd, 6),

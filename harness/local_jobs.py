@@ -150,14 +150,17 @@ class LocalJobsMixin:
             if tokens:
                 job["tokens"] = tokens
             real_cost = float(est_cost_usd or 0.0)
+            cost_unsplit = False
+            price_source = "default"
             if not real_cost and tokens:
                 # Provider-worker jobs only carry a combined token total (no
                 # in/out split). Price at the output rate so output-heavy runs
-                # are not systematically under-priced. Prefer the worker's own
-                # model when stamped; else fall back to the pilot driver.
+                # are not systematically under-priced — and mark estimated so
+                # we never imply a fabricated in/out split. Prefer the
+                # worker's own model when stamped; else fall back to pilot.
                 try:
-                    from pmharness.registry import resolve_price
-                    from harness.server import _job_cost
+                    from pmharness.registry import resolve_price_with_source
+                    from harness.server import _job_cost, _normalize_price_source
                     price_spec = model_id or (job.get("model") or "")
                     # Strip engine/ prefix if present (e.g. agentic/z-ai/...).
                     if "/" in price_spec and price_spec.split("/", 1)[0] in (
@@ -165,12 +168,24 @@ class LocalJobsMixin:
                     ):
                         price_spec = price_spec.split("/", 1)[1]
                     price_spec = price_spec or self.config.driver
-                    price_in, price_out = resolve_price(price_spec)
+                    price_in, price_out, _src = resolve_price_with_source(price_spec)
+                    price_source = _normalize_price_source(_src)
                     real_cost = _job_cost(0, 0, tokens, price_in, price_out)
+                    cost_unsplit = True
                 except Exception:
                     real_cost = 0.0
             if real_cost:
                 job["est_cost_usd"] = round(real_cost, 6)
+            if cost_unsplit or (tokens and not est_cost_usd):
+                # Unsplit catalog/default totals are estimates, never receipts.
+                job["estimated"] = True
+                job["cost_provenance"] = (
+                    "static" if price_source == "static"
+                    else ("live" if price_source == "live" else "default")
+                )
+            elif real_cost and est_cost_usd:
+                job["estimated"] = False
+                job["cost_provenance"] = "provider"
             if job.get("tasks"):
                 job["tasks"][0]["status"] = terminal
             if cancelled and not summary:

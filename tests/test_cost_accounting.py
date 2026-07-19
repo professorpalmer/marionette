@@ -15,8 +15,13 @@ from harness.server import (
     _session_cost,
     _session_cost_split,
     _cache_savings,
+    _cache_savings_with_basis,
     _cost_source_label,
     _job_cost,
+    _job_cost_is_unsplit,
+    _normalize_price_source,
+    _resolve_active_prices_with_source,
+    _spend_is_estimated,
 )
 
 
@@ -227,3 +232,120 @@ def test_session_cost_split_includes_write_premium():
         cache_write=20_000, cache_write_5m=20_000,
     )
     assert _session_cost_split(pilot, PRICE_IN, PRICE_OUT) == pytest.approx(expected)
+
+
+def test_normalize_price_source_maps_registry_labels():
+    assert _normalize_price_source("live") == "live"
+    assert _normalize_price_source("live_alias") == "live"
+    assert _normalize_price_source("catalog") == "static"
+    assert _normalize_price_source("static") == "static"
+    assert _normalize_price_source(None) == "default"
+    assert _normalize_price_source("") == "default"
+
+
+def test_resolve_active_prices_with_source_surfaces_default(monkeypatch):
+    """Silent $0.50/$2.00 fallback must advertise price_source=default."""
+    import harness.api.cost as cost_mod
+    import pmharness.registry as reg
+
+    class _Cfg:
+        driver = "totally-unknown-model-xyz"
+
+    monkeypatch.setattr(cost_mod, "_cfg", lambda: _Cfg())
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    monkeypatch.setattr(reg, "resolve_price", lambda name: (0.5, 2.0))
+    monkeypatch.setattr(reg, "price_with_source", lambda name: (None, None, None))
+    pin, pout, src = _resolve_active_prices_with_source()
+    assert pin == 0.5 and pout == 2.0
+    assert src == "default"
+    assert _spend_is_estimated("estimated", src) is True
+
+
+def test_provider_override_keeps_spend_non_estimated():
+    assert _spend_is_estimated("provider", "default") is False
+    assert _spend_is_estimated("estimated", "live") is True
+    assert _spend_is_estimated("mixed", "static") is True
+
+
+def test_unsplit_job_cost_is_labeled_estimate():
+    """No in/out split → price_out total, flagged estimated (no fabricated ratio)."""
+    tokens = 500_000
+    cost = _job_cost(0, 0, tokens, PRICE_IN, PRICE_OUT)
+    assert cost == (tokens / 1.0e6) * PRICE_OUT
+    assert _job_cost_is_unsplit(0, 0, tokens) is True
+    assert _job_cost_is_unsplit(100, 0, tokens) is False
+
+
+def test_cache_savings_capped_to_provider_spend():
+    cached = 1_000_000  # catalog savings = 0.9 * price_in = $2.70
+    raw = _cache_savings(cached, PRICE_IN)
+    assert raw == pytest.approx(2.7)
+    capped, basis = _cache_savings_with_basis(cached, PRICE_IN, provider_cost_usd=1.10)
+    assert capped == pytest.approx(1.10)
+    assert basis == "capped"
+    assert _cache_savings(cached, PRICE_IN, provider_cost_usd=1.10) == pytest.approx(1.10)
+
+
+def test_cache_savings_unknown_when_provider_net_nonpositive():
+    cached = 100_000
+    usd, basis = _cache_savings_with_basis(cached, PRICE_IN, provider_cost_usd=0.0)
+    assert usd == 0.0
+    assert basis == "unknown"
+
+
+def test_cache_savings_uncapped_when_provider_cost_unknown():
+    """Estimated spend: keep full catalog savings; do not clamp to estimated total."""
+    cached = 30_000  # catalog savings = 30k/1e6 * 3.0 * 0.9 = 0.081
+    estimated_session_total = 0.0135  # must NOT be used as a cap
+    usd, basis = _cache_savings_with_basis(
+        cached, PRICE_IN, provider_cost_usd=None
+    )
+    assert usd == pytest.approx(0.081)
+    assert basis == "catalog"
+    assert usd > estimated_session_total
+    # Contrast: a real provider receipt still caps.
+    capped, capped_basis = _cache_savings_with_basis(
+        cached, PRICE_IN, provider_cost_usd=0.01
+    )
+    assert capped == pytest.approx(0.01)
+    assert capped_basis == "capped"
+
+
+def test_multi_session_catalog_costs_sum_invariant():
+    """Σ per-session catalog costs == cost of merged meters (multi-session sum)."""
+    sessions = [
+        SimpleNamespace(
+            _tokens_in=100_000, _tokens_out=20_000, _tokens_cached=10_000,
+            _worker_tokens_in=0, _worker_tokens_out=0, _worker_cost_usd=0.0,
+            _provider_billed_tokens_in=0, _provider_billed_tokens_out=0,
+            _provider_cost_usd=0.0,
+        ),
+        SimpleNamespace(
+            _tokens_in=250_000, _tokens_out=40_000, _tokens_cached=50_000,
+            _worker_tokens_in=0, _worker_tokens_out=0, _worker_cost_usd=0.0,
+            _provider_billed_tokens_in=0, _provider_billed_tokens_out=0,
+            _provider_cost_usd=0.0,
+        ),
+        SimpleNamespace(
+            _tokens_in=80_000, _tokens_out=5_000, _tokens_cached=0,
+            _worker_tokens_in=0, _worker_tokens_out=0, _worker_cost_usd=0.0,
+            _provider_billed_tokens_in=0, _provider_billed_tokens_out=0,
+            _provider_cost_usd=0.0,
+        ),
+    ]
+    individual = sum(
+        _session_cost_split(s, PRICE_IN, PRICE_OUT) for s in sessions
+    )
+    merged = SimpleNamespace(
+        _tokens_in=sum(s._tokens_in for s in sessions),
+        _tokens_out=sum(s._tokens_out for s in sessions),
+        _tokens_cached=sum(s._tokens_cached for s in sessions),
+        _worker_tokens_in=0,
+        _worker_tokens_out=0,
+        _worker_cost_usd=0.0,
+        _provider_billed_tokens_in=0,
+        _provider_billed_tokens_out=0,
+        _provider_cost_usd=0.0,
+    )
+    assert _session_cost_split(merged, PRICE_IN, PRICE_OUT) == pytest.approx(individual)

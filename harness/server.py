@@ -100,24 +100,31 @@ from .api.cost import (  # noqa: E402
     _boot_usage_path,
     _cache_saved_usd_swarm,
     _cache_savings,
+    _cache_savings_with_basis,
     _cost_source_label,
     _fold_all_live_runners_into_boot_carry,
     _fold_runner_meters_into_boot_carry,
     _freeze_pilot_meters_into_boot_carry,
     _job_cost,
+    _job_cost_is_unsplit,
     _job_in_cost_window,
     _job_savings_fields,
     _job_swarm_accounting,
+    _job_swarm_accounting_detail,
     _live_price_task,
     _live_price_unpriced_tasks,
+    _normalize_price_source,
     _note_boot_repo,
     _persist_boot_usage,
     _pilot_write_buckets,
     _registry_input_per_mtok,
     _repo_session_stamped_meters,
     _resolve_active_prices,
+    _resolve_active_prices_with_source,
     _resolve_prices_for_runner,
+    _resolve_prices_for_runner_with_source,
     _restore_boot_usage,
+    _spend_is_estimated,
     _routing_estimate_by_task,
     _routing_estimate_cost,
     _routing_saved_usd,
@@ -2353,7 +2360,7 @@ class Handler(BaseHTTPRequestHandler):
         # treated as untrusted data (prevents token leakage into logs/errors).
         # Sole exception: legacy Electron streaming GETs from a loopback peer
         # (see legacy_stream_query_token_ok, applied in do_GET only).
-        return self.headers.get("X-Harness-Token", "") == _TOKEN
+        return _secrets.compare_digest(self.headers.get("X-Harness-Token", ""), _TOKEN)
 
     def _legacy_stream_token_ok(self, u) -> bool:
         """TEMPORARY update-skew compat -- see legacy_stream_query_token_ok."""

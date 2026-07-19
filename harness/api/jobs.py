@@ -140,10 +140,16 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     scoped_repo = (repo_override or "").strip() or (svc.cfg.repo or "")
     res_jobs: list = []
     try:
-        from pmharness.registry import resolve_price
+        from pmharness.registry import resolve_price, price_with_source
+        from .cost_accounting import _normalize_price_source
+
         price_in, price_out = resolve_price(svc.cfg.driver)
+        raw_in, raw_out, _price_src = price_with_source(svc.cfg.driver)
+        price_source = _normalize_price_source(
+            None if raw_in is None or raw_out is None else _price_src
+        )
     except Exception:
-        price_in, price_out = 0.5, 2.0
+        price_in, price_out, price_source = 0.5, 2.0, "default"
     try:
         state_obj = svc.get_session().state()
         registry = svc.swarm_registry()
@@ -190,6 +196,33 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 artifacts_complete = False
 
             tokens, est_cost_usd = svc.job_swarm_accounting(raw_arts, registry)
+            job_detail = {
+                "tokens": tokens,
+                "est_cost_usd": est_cost_usd,
+                "cost_provenance": "default",
+                "estimated": True,
+            }
+            try:
+                from .cost import _server_attr
+                from .swarm_cost import _job_swarm_accounting_detail
+
+                detail_fn = _server_attr(
+                    "_job_swarm_accounting_detail", _job_swarm_accounting_detail
+                )
+                detail = detail_fn(raw_arts, registry)
+                if (
+                    int(detail.get("tokens") or 0) == int(tokens or 0)
+                    and abs(
+                        float(detail.get("est_cost_usd") or 0.0)
+                        - float(est_cost_usd or 0.0)
+                    )
+                    < 1e-9
+                ):
+                    job_detail = detail
+            except Exception:
+                pass
+            tokens = int(job_detail.get("tokens") or 0)
+            est_cost_usd = float(job_detail.get("est_cost_usd") or 0.0)
             # Per-task meters from raw artifacts (before slim) so worker
             # rows keep tokens/cost even when the artifact list is slimmed.
             try:
@@ -243,8 +276,14 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                         t_cost = float(acct.get("est_cost_usd") or 0.0)
                         if t_tokens > 0:
                             entry["tokens"] = t_tokens
-                        if t_cost > 0:
+                        if t_cost > 0 or (
+                            t_tokens == 0 and acct.get("cost_provenance") == "provider"
+                        ):
                             entry["est_cost_usd"] = round(t_cost, 6)
+                        if acct.get("cost_provenance"):
+                            entry["cost_provenance"] = acct.get("cost_provenance")
+                        if "estimated" in acct:
+                            entry["estimated"] = bool(acct.get("estimated"))
                     tasks_list.append(entry)
             except Exception:
                 pass
@@ -260,6 +299,8 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "task_count": j.get("task_count", 0),
                 "tokens": tokens,
                 "est_cost_usd": est_cost_usd,
+                "cost_provenance": job_detail.get("cost_provenance") or "default",
+                "estimated": bool(job_detail.get("estimated", True)),
                 "tokens_cached": job_tokens_cached,
                 "routing_saved_usd": job_routing_saved,
                 "cache_saved_usd": job_cache_saved,
@@ -360,27 +401,59 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         tokens_used = max(0, tokens_used - _w_in - _w_out) + job_tokens_sum
         pilot_only_cached = max(0, _t_cached - min(_t_cached, swarm_cached))
         tokens_cached = pilot_only_cached + swarm_cached
-        _cache_savings_usd = svc.cache_savings(pilot_only_cached, price_in)
+        _provider_cost = float(getattr(pilot, "_provider_cost_usd", 0) or 0.0)
         tool_savings = svc.tool_output_savings_fields(price_in)
+        try:
+            from .cost_accounting import _cache_savings_with_basis
+
+            try:
+                _src_for_cap = (
+                    svc.cost_source_label(pilot) if pilot is not None else "estimated"
+                )
+            except Exception:
+                _src_for_cap = "estimated"
+            # Cap only on provider/mixed receipts — never against estimated spend.
+            _cache_savings_usd, _cache_savings_basis = _cache_savings_with_basis(
+                pilot_only_cached,
+                price_in,
+                provider_cost_usd=(
+                    _provider_cost
+                    if _src_for_cap in ("provider", "mixed")
+                    else None
+                ),
+            )
+        except Exception:
+            _cache_savings_usd = svc.cache_savings(pilot_only_cached, price_in)
+            _cache_savings_basis = "catalog"
 
     if repo_scoped:
         _live_cost_source = "estimated"
+        _cache_savings_basis = "catalog"
     else:
         try:
             _live_cost_source = svc.cost_source_label(pilot) if pilot is not None else "estimated"
         except Exception:
             _live_cost_source = "estimated"
+    try:
+        from .cost_accounting import _spend_is_estimated
+
+        _live_estimated = _spend_is_estimated(_live_cost_source, price_source)
+    except Exception:
+        _live_estimated = _live_cost_source != "provider"
     return 200, {
         "session": {
             "tokens_used": tokens_used,
             "est_cost_usd": round(est_session_cost, 6),
             "cost_source": _live_cost_source,
+            "price_source": price_source,
+            "estimated": bool(_live_estimated),
             "driver": svc.cfg.driver,
             # Prompt-cache hits (billed at the cache-read discount) so the
             # UI can show how much input was served near-free -- proof the
             # harness is not token-hungry -- plus the USD it saved.
             "tokens_cached": tokens_cached,
             "cache_savings_usd": round(_cache_savings_usd, 6),
+            "cache_savings_basis": _cache_savings_basis,
             "routing_saved_usd": round(live_routing_saved, 6),
             "cache_saved_usd_swarm": round(live_cache_saved, 6),
             **tool_savings,

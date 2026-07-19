@@ -36,6 +36,16 @@ def test_resolve_price_falls_back_to_default(monkeypatch):
     assert (pin, pout) == (0.5, 2.0)
 
 
+def test_resolve_price_with_source_uses_resolve_price_seam(monkeypatch):
+    """Provenance wrapper must not bypass the resolve_price monkeypatch seam."""
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    monkeypatch.setattr(reg, "resolve_price", lambda name, default_in=0.5, default_out=2.0: (1.0, 2.0))
+    pin, pout, src = reg.resolve_price_with_source("m1")
+    assert (pin, pout) == (1.0, 2.0)
+    assert src == "default"
+
+
 def test_resolve_price_live_for_picker_spec(monkeypatch):
     monkeypatch.setattr(reg, "_PRICE_MEM", {"openai/gpt-5.5": (5.0, 30.0)})
     monkeypatch.setattr(reg, "_live_windows", lambda: {})

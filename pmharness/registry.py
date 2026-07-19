@@ -99,10 +99,23 @@ def resolve_price(name: str, default_in: float = 0.5, default_out: float = 2.0) 
 def resolve_price_with_source(
     name: str, default_in: float = 0.5, default_out: float = 2.0
 ) -> tuple:
-    """resolve_price plus source label (``live`` / ``live_alias`` / ``catalog`` / ``default``)."""
-    pin, pout, src = price_with_source(name)
-    if pin is None or pout is None:
-        return (default_in, default_out, "default")
+    """resolve_price plus source label (``live`` / ``live_alias`` / ``catalog`` / ``default``).
+
+    Numeric rates always flow through :func:`resolve_price` so the historical
+    cost-estimator seam (and one-arg test monkeypatches of it) stay
+    authoritative. Provenance is layered on from :func:`price_with_source`
+    without choosing an independent price ladder.
+    """
+    # Call the single-arg form when using stock defaults so monkeypatches of
+    # ``resolve_price(name) -> (pin, pout)`` keep working; only pass custom
+    # defaults through when the caller overrides them.
+    if default_in == 0.5 and default_out == 2.0:
+        pin, pout = resolve_price(name)
+    else:
+        pin, pout = resolve_price(name, default_in, default_out)
+    raw_in, raw_out, src = price_with_source(name)
+    if raw_in is None or raw_out is None:
+        return (pin, pout, "default")
     return (pin, pout, src or "live")
 
 
