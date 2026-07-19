@@ -191,6 +191,20 @@ def _session_cost_split(pilot: Any, price_in: float, price_out: float) -> float:
     )
 
 
+def _cache_savings_gross(cached: float, price_in: float) -> float:
+    """Uncapped catalog/list-price value of prompt-cache hits.
+
+    Always ``tokens_cached/1e6 * price_in * (1 - CACHE_READ_MULTIPLIER)``.
+    Unlike :func:`_cache_savings_with_basis`, this never clamps to provider
+    spend — the UI uses it so displayed cache value keeps growing with
+    cached tokens while the reconciled field stays provider-safe.
+    """
+    raw = (float(cached or 0.0) / 1.0e6) * float(price_in or 0.0) * (
+        1.0 - CACHE_READ_MULTIPLIER
+    )
+    return raw if raw > 0 else 0.0
+
+
 def _cache_savings(
     cached: float,
     price_in: float,
@@ -218,9 +232,7 @@ def _cache_savings_with_basis(
     provider_cost_usd: Optional[float] = None,
 ) -> Tuple[float, str]:
     """Return ``(savings_usd, basis)`` where basis is catalog | capped | unknown."""
-    raw = (float(cached or 0.0) / 1.0e6) * float(price_in or 0.0) * (
-        1.0 - CACHE_READ_MULTIPLIER
-    )
+    raw = _cache_savings_gross(cached, price_in)
     if raw <= 0:
         return 0.0, CACHE_SAVINGS_CATALOG
     if provider_cost_usd is None:

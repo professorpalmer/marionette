@@ -106,6 +106,7 @@ from .cost_accounting import (  # noqa: E402
     PRICE_SOURCE_LIVE,
     PRICE_SOURCE_STATIC,
     _cache_savings,
+    _cache_savings_gross,
     _cache_savings_with_basis,
     _cost_source_label,
     _job_cost,
@@ -121,6 +122,9 @@ from .cost_accounting import (  # noqa: E402
     _spend_is_estimated,
 )
 from .swarm_cost import (  # noqa: E402
+    ROUTING_SAVINGS_ACTUAL,
+    ROUTING_SAVINGS_ESTIMATED,
+    ROUTING_SAVINGS_UNKNOWN,
     _COST_OPTIMIZING_POLICIES,
     _arts_for_swarm_usage,
     _cache_saved_usd_swarm,
@@ -132,7 +136,9 @@ from .swarm_cost import (  # noqa: E402
     _routing_estimate_by_task,
     _routing_estimate_cost,
     _routing_saved_usd,
+    _routing_saved_usd_detail,
     _sum_job_set_savings,
+    _sum_job_set_savings_detail,
     _swarm_registry,
     _task_swarm_accounting,
     _tokens_cached_swarm,

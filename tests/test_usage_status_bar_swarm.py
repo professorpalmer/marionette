@@ -109,19 +109,23 @@ def _routing(
     baseline: float,
     estimated: float,
     model_id: str = "cheap-model",
+    baseline_model_id: str = "",
 ):
+    payload = {
+        "model_id": model_id,
+        "adapter": "agentic",
+        "policy": policy,
+        "baseline_cost_usd": baseline,
+        "estimated_cost_usd": estimated,
+    }
+    if baseline_model_id:
+        payload["baseline_model_id"] = baseline_model_id
     return Artifact(
         job_id=job_id,
         task_id=task_id,
         type=ArtifactType.ROUTING,
         created_by="router",
-        payload={
-            "model_id": model_id,
-            "adapter": "agentic",
-            "policy": policy,
-            "baseline_cost_usd": baseline,
-            "estimated_cost_usd": estimated,
-        },
+        payload=payload,
         confidence=1.0,
         evidence=["route"],
     )
@@ -436,9 +440,10 @@ def test_api_usage_routing_saved_usd_in_response(tmp_path, monkeypatch):
     harness_store.save_artifact(
         _routing(job.id, "t2", policy="quality", baseline=0.50, estimated=0.10)
     )
-    # Usage so the job prices > 0 (otherwise boot pill may stay at pilot-only).
+    # Usage on the quality task so the job prices > 0 without forcing the
+    # balanced route onto the actual-usage path (needs baseline_model_id).
     harness_store.save_artifact(
-        _verification(job.id, "t1", "cheap-model", 1_000, 500)
+        _verification(job.id, "t2", "cheap-model", 1_000, 500)
     )
 
     httpd, port = _api_server(str(harness_dir))
@@ -510,7 +515,15 @@ def test_api_swarm_live_job_rows_carry_routing_and_cache_savings(tmp_path, monke
     job = harness_store.create_job("live savings", label=job_label_for_session(sid))
     _save_task(harness_store, job.id, str(repo), session_id=sid, model="worker-model")
     harness_store.save_artifact(
-        _routing(job.id, "t1", policy="balanced", baseline=0.50, estimated=0.10)
+        _routing(
+            job.id,
+            "t1",
+            policy="balanced",
+            baseline=0.50,
+            estimated=0.10,
+            model_id="worker-model",
+            baseline_model_id="expensive-model",
+        )
     )
     harness_store.save_artifact(
         _verification(
@@ -546,7 +559,14 @@ def test_api_swarm_live_job_rows_carry_routing_and_cache_savings(tmp_path, monke
         monkeypatch.setattr(
             server,
             "_swarm_registry",
-            lambda: [_registry_spec("worker-model", input_per_mtok_usd=3.0)],
+            lambda: [
+                _registry_spec("worker-model", input_per_mtok_usd=3.0),
+                _registry_spec(
+                    "expensive-model",
+                    input_per_mtok_usd=10.0,
+                    output_per_mtok_usd=30.0,
+                ),
+            ],
         )
         monkeypatch.setattr(
             server,
@@ -566,13 +586,19 @@ def test_api_swarm_live_job_rows_carry_routing_and_cache_savings(tmp_path, monke
         )
         assert len(live["jobs"]) == 1
         row = live["jobs"][0]
-        assert abs(row["routing_saved_usd"] - 0.40) < 1e-9
+        # Actual-usage counterfactual: 200k/10k with 100k cached @
+        # expensive 10/30 vs worker 3/2 → $1.05 list-price value.
+        assert abs(row["routing_saved_usd"] - 1.05) < 1e-9
+        assert row["routing_savings_basis"] == "actual_usage"
+        assert row["routing_tokens_compared"] == 210_000
         # 100k cached @ $3/MTok * 0.9 = 0.27
         assert abs(row["cache_saved_usd"] - 0.27) < 1e-9
         assert row["tokens_cached"] == 100_000
         assert row["tool_output_tokens_saved"] == 1200
         assert abs(row["tool_output_savings_usd"] - 0.0036) < 1e-9
-        assert abs(live["session"]["routing_saved_usd"] - 0.40) < 1e-9
+        assert abs(live["session"]["routing_saved_usd"] - 1.05) < 1e-9
+        assert live["session"]["routing_savings_basis"] == "actual_usage"
+        assert live["session"]["routing_tokens_compared"] == 210_000
         assert abs(live["session"]["cache_saved_usd_swarm"] - 0.27) < 1e-9
     finally:
         httpd.shutdown()

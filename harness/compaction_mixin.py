@@ -27,7 +27,23 @@ from typing import Iterator
 MIN_SUMMARY_SEED_CHARS = 200
 MIN_COMPACTABLE_TOKENS = 5000
 MAX_REDUCTION_RATIO = 0.8
+PREFERRED_RECENT_MESSAGES = 6
 _ZERO_WIDTH_SPACE = "\u200b"
+_PRIOR_SUMMARY_WRAPPER = "PREVIOUS HISTORICAL CONVERSATION SUMMARY:\n"
+_INJECTED_SUMMARY_PREFIX = "[Earlier conversation summarized to fit context]\n"
+_REQUIRED_SUMMARY_HEADINGS = (
+    "## Historical Task Snapshot",
+    "## Resolved",
+    "## Pending / Open Questions",
+    "## Key Facts / Decisions / Files",
+)
+
+# Structured attempt reasons for POST /api/session/compact (optional field).
+REASON_OK = "ok"
+REASON_BELOW_TRIGGER = "below_trigger"
+REASON_NO_COMPACTABLE = "no_compactable_history"
+REASON_BELOW_MIN_FLOOR = "below_min_compactable"
+REASON_SUMMARY_REJECTED = "summary_rejected"
 
 
 def neutralize_compaction_control_tokens(text: str) -> str:
@@ -172,6 +188,102 @@ class CompactionContextMixin:
 
         return split_idx
 
+    def _set_compaction_attempt(self, reason: str, **extra) -> None:
+        """Record the latest compaction attempt outcome (diagnostic; never raises)."""
+        try:
+            payload = {"reason": reason}
+            payload.update(extra)
+            self._last_compaction_attempt = payload
+        except Exception:
+            pass
+
+    def _unwrap_prior_summary_content(self, content: str) -> str:
+        """Peel nested prior-summary wrappers so re-compaction stays bounded."""
+        text = content or ""
+        while True:
+            stripped = text.lstrip()
+            progressed = False
+            for prefix in (_PRIOR_SUMMARY_WRAPPER, _INJECTED_SUMMARY_PREFIX):
+                if stripped.startswith(prefix):
+                    text = stripped[len(prefix):]
+                    progressed = True
+                    break
+            if not progressed:
+                return stripped if stripped != text else text
+
+    def _minimum_recent_start(self) -> int:
+        """Earliest split index that still keeps one complete trailing turn.
+
+        Returns ``len(history)`` when the entire post-system block may be
+        compacted (e.g. only a prior summary remains). Never returns < 1 and
+        never points at the system message.
+        """
+        history = self._history
+        n = len(history)
+        if n <= 2:
+            return n
+        idx = n - 1
+        while idx > 1 and history[idx].get("role") == "tool":
+            idx -= 1
+        if idx > 1 and history[idx].get("role") == "assistant":
+            prev = idx - 1
+            if prev >= 1:
+                prev_msg = history[prev]
+                if (
+                    prev_msg.get("role") == "user"
+                    and not prev_msg.get("_compressed_summary")
+                ):
+                    idx = prev
+        return max(1, idx)
+
+    def _choose_compaction_split(self, *, tail_budget: int) -> int | None:
+        """Pick a tool-safe split driven by token budget, not a fixed six-tail.
+
+        Starts from a preferred six-message recent window, then moves the split
+        forward (fewer recent messages) until the kept tail fits ``tail_budget``,
+        stopping at one complete trailing user/assistant/tool group. When the
+        preferred window already fits, expands the tail while budget remains.
+        Returns None when nothing after the system message is compactable.
+        """
+        history = self._history
+        n = len(history)
+        if n < 2:
+            return None
+
+        preferred_split = max(2, n - PREFERRED_RECENT_MESSAGES)
+        min_recent_start = self._minimum_recent_start()
+        # min_recent_start == n → keep no recent messages (re-compact prior only).
+        if min_recent_start >= n:
+            split_idx = n
+        else:
+            if min_recent_start < 2:
+                min_recent_start = 2
+            split_idx = preferred_split
+            # Shrink oversized preferred tails toward the minimum recent group.
+            while split_idx < min_recent_start:
+                if self._estimate_context_tokens_for_list(history[split_idx:]) <= tail_budget:
+                    break
+                split_idx += 1
+            # Expand when there is spare budget (legacy direction).
+            while split_idx > 2:
+                proposed = history[split_idx - 1:]
+                if self._estimate_context_tokens_for_list(proposed) <= tail_budget:
+                    split_idx -= 1
+                else:
+                    break
+
+        if split_idx < 2:
+            split_idx = 2
+        if split_idx > n:
+            split_idx = n
+
+        split_idx = self._find_safe_split(split_idx)
+        if split_idx <= 1 or split_idx > n:
+            return None
+        if not history[1:split_idx]:
+            return None
+        return split_idx
+
     def _history_compaction_fields(self) -> dict:
         try:
             from harness.history_compaction_journal import history_compaction_payload
@@ -190,7 +302,8 @@ class CompactionContextMixin:
         lines = []
         for m in messages:
             if m.get("_compressed_summary"):
-                lines.append(f"PREVIOUS HISTORICAL CONVERSATION SUMMARY:\n{m.get('content')}")
+                body = self._unwrap_prior_summary_content(m.get("content") or "")
+                lines.append(f"{_PRIOR_SUMMARY_WRAPPER}{body}")
                 continue
             role = m.get("role", "user").upper()
             content = m.get("content") or ""
@@ -208,18 +321,103 @@ class CompactionContextMixin:
             lines.append(f"{role}: {content}")
         return "\n\n".join(lines)
 
-    def _make_fallback_summary(self, middle_block: list[dict]) -> str:
+    def _clip_text(self, text: str, limit: int) -> str:
+        if limit <= 0:
+            return ""
+        if len(text) <= limit:
+            return text
+        if limit <= 40:
+            return text[:limit]
+        return text[: max(0, limit - 40)].rstrip() + "\n... [truncated to fit budget]"
+
+    def _make_fallback_summary(
+        self,
+        middle_block: list[dict],
+        *,
+        char_budget: int | None = None,
+    ) -> str:
+        """Deterministic extractive fallback bounded by ``char_budget``.
+
+        Never returns 1–4 huge messages verbatim — always keeps structured
+        first/last excerpts plus an explicit elision marker, and preserves the
+        required historical headings when practical.
+        """
         n = len(middle_block)
-        if n <= 4:
-            return self._format_block_for_summary(middle_block)
-        first_part = self._format_block_for_summary(middle_block[:2])
-        last_part = self._format_block_for_summary(middle_block[-2:])
-        elided_count = n - 4
-        note = f"[... {elided_count} messages were elided here to fit context window ...]"
-        return f"{first_part}\n\n{note}\n\n{last_part}"
+        if char_budget is None:
+            middle_tokens = self._estimate_context_tokens_for_list(middle_block)
+            char_budget = max(500 * 4, int(middle_tokens * 0.20) * 4)
+        # Floor so degenerate-summary guard still passes when material exists.
+        char_budget = max(int(char_budget), MIN_SUMMARY_SEED_CHARS + 160)
+
+        head_n = min(2, n)
+        tail_n = min(2, n)
+        # Avoid double-including the same messages when the block is tiny.
+        if n <= 2:
+            first_part = self._format_block_for_summary(middle_block)
+            last_part = ""
+            elided_count = 0
+            content_elided = True  # still may truncate body below
+        elif n <= 4:
+            first_part = self._format_block_for_summary(middle_block[:head_n])
+            last_part = self._format_block_for_summary(middle_block[-tail_n:])
+            elided_count = 0
+            content_elided = True
+        else:
+            first_part = self._format_block_for_summary(middle_block[:head_n])
+            last_part = self._format_block_for_summary(middle_block[-tail_n:])
+            elided_count = n - head_n - tail_n
+            content_elided = elided_count > 0
+
+        # Reserve room for headings + elision note; split remainder head/tail.
+        overhead = 220
+        body_budget = max(MIN_SUMMARY_SEED_CHARS, char_budget - overhead)
+        head_budget = body_budget // 2 if last_part else body_budget
+        tail_budget = body_budget - head_budget if last_part else 0
+        first_part = self._clip_text(first_part, head_budget)
+        last_part = self._clip_text(last_part, tail_budget) if last_part else ""
+
+        if elided_count > 0:
+            note = (
+                f"[... {elided_count} messages were elided here to fit context window ...]"
+            )
+        elif content_elided:
+            note = "[... oversized turn content was elided here to fit context window ...]"
+        else:
+            note = "[... content elided to fit context window ...]"
+
+        if last_part and first_part:
+            excerpts = f"{first_part}\n\n{note}\n\n{last_part}"
+        else:
+            excerpts = f"{first_part}\n\n{note}" if first_part else note
+
+        summary = (
+            f"{_REQUIRED_SUMMARY_HEADINGS[0]}\n"
+            f"{excerpts}\n"
+            f"{_REQUIRED_SUMMARY_HEADINGS[1]}\n"
+            "Earlier turns were extractively compressed; see excerpts above.\n"
+            f"{_REQUIRED_SUMMARY_HEADINGS[2]}\n"
+            "See the latest excerpt for any still-open user ask.\n"
+            f"{_REQUIRED_SUMMARY_HEADINGS[3]}\n"
+            "Preserved high-value paths and decisions appear in the excerpts.\n"
+        )
+        if len(summary) > char_budget:
+            summary = self._clip_text(summary, char_budget)
+        # Final safety: never ship a seed shorter than the quality floor when we
+        # still have source material — pad from the head excerpt if needed.
+        if len(summary.strip()) < MIN_SUMMARY_SEED_CHARS and first_part:
+            pad = self._clip_text(
+                first_part,
+                MIN_SUMMARY_SEED_CHARS - len(summary.strip()) + 32,
+            )
+            summary = summary.rstrip() + "\n" + pad
+            if len(summary) > char_budget:
+                summary = self._clip_text(summary, char_budget)
+        return summary
 
     def _maybe_compact_history(self, force: bool = False) -> Iterator["ConvEvent"]:
         from .conversation import ConvEvent
+
+        self._set_compaction_attempt(REASON_BELOW_TRIGGER)
 
         budget = getattr(self.config, "max_context_tokens", 96000)
         trigger = int(budget * 0.75)
@@ -249,27 +447,30 @@ class CompactionContextMixin:
 
         before_tokens = self._estimate_context_tokens()
         if not force and not advised_now and before_tokens < trigger:
+            self._set_compaction_attempt(
+                REASON_BELOW_TRIGGER,
+                before_tokens=before_tokens,
+                trigger=trigger,
+            )
             return
 
         tail_budget = int(budget * 0.25)
-        split_idx = len(self._history) - 6
-        if split_idx < 2:
+        split_idx = self._choose_compaction_split(tail_budget=tail_budget)
+        if split_idx is None:
+            self._set_compaction_attempt(
+                REASON_NO_COMPACTABLE,
+                before_tokens=before_tokens,
+            )
             return
-
-        # Try to expand the tail to include more messages as long as it fits in tail_budget
-        while split_idx > 2:
-            proposed_tail = self._history[split_idx - 1:]
-            tokens = self._estimate_context_tokens_for_list(proposed_tail)
-            if tokens <= tail_budget:
-                split_idx -= 1
-            else:
-                break
-
-        # Now extend the kept tail to a clean boundary so no orphaned tool message heads the tail
-        split_idx = self._find_safe_split(split_idx)
 
         middle_block = self._history[1:split_idx]
         recent_block = self._history[split_idx:]
+        if not middle_block:
+            self._set_compaction_attempt(
+                REASON_NO_COMPACTABLE,
+                before_tokens=before_tokens,
+            )
+            return
 
         # Minimum-compactable floor: scraps are not worth an LLM call.
         # Forced compaction (mid-turn context-overflow recovery) must proceed
@@ -278,6 +479,11 @@ class CompactionContextMixin:
             try:
                 compactable_tokens = self._estimate_context_tokens_for_list(middle_block)
                 if compactable_tokens < _min_compactable_tokens():
+                    self._set_compaction_attempt(
+                        REASON_BELOW_MIN_FLOOR,
+                        before_tokens=before_tokens,
+                        compactable_tokens=compactable_tokens,
+                    )
                     return
             except Exception:
                 pass
@@ -341,10 +547,15 @@ class CompactionContextMixin:
         # (openai-compat seam). Empty default leaves the session pilot alone.
         _compaction_model = compaction_model_override()
 
+        def _fallback() -> str:
+            return self._make_fallback_summary(
+                middle_block, char_budget=summary_char_budget
+            )
+
         summary = ""
         now = time.time()
         if now < float(getattr(self, "_compaction_fail_until", 0.0) or 0.0):
-            summary = self._make_fallback_summary(middle_block)
+            summary = _fallback()
         else:
             try:
                 box: dict = {}
@@ -391,18 +602,23 @@ class CompactionContextMixin:
                     if len(summary) > summary_char_budget:
                         summary = summary[:summary_char_budget] + "\n... [summary truncated to fit budget]"
                 else:
-                    summary = self._make_fallback_summary(middle_block)
+                    summary = _fallback()
                     self._compaction_fail_until = time.time() + _compact_cooldown
             except TimeoutError:
-                summary = self._make_fallback_summary(middle_block)
+                summary = _fallback()
                 self._compaction_fail_until = time.time() + _compact_cooldown
             except Exception:
-                summary = self._make_fallback_summary(middle_block)
+                summary = _fallback()
                 self._compaction_fail_until = time.time() + _compact_cooldown
 
         # Degenerate-summary guard: one attempt, fail soft, keep history.
         try:
             if is_degenerate_summary(summary):
+                self._set_compaction_attempt(
+                    REASON_SUMMARY_REJECTED,
+                    before_tokens=before_tokens,
+                    detail="degenerate_summary",
+                )
                 return
         except Exception:
             pass
@@ -415,7 +631,7 @@ class CompactionContextMixin:
 
         summary_msg = {
             "role": "user",
-            "content": f"[Earlier conversation summarized to fit context]\n{summary}",
+            "content": f"{_INJECTED_SUMMARY_PREFIX}{summary}",
             "_compressed_summary": True
         }
 
@@ -423,6 +639,13 @@ class CompactionContextMixin:
         try:
             summary_tokens = self._estimate_context_tokens_for_list([summary_msg])
             if summary_tokens > int(middle_tokens * MAX_REDUCTION_RATIO):
+                self._set_compaction_attempt(
+                    REASON_SUMMARY_REJECTED,
+                    before_tokens=before_tokens,
+                    detail="insufficient_reduction",
+                    summary_tokens=summary_tokens,
+                    middle_tokens=middle_tokens,
+                )
                 return
         except Exception:
             pass
@@ -461,6 +684,13 @@ class CompactionContextMixin:
             pass
 
         after_tokens = self._estimate_context_tokens()
+        self._set_compaction_attempt(
+            REASON_OK,
+            before_tokens=before_tokens,
+            after_tokens=after_tokens,
+            summarized_messages=len(middle_block),
+            split_idx=split_idx,
+        )
         yield ConvEvent("compaction", {
             "before_tokens": before_tokens,
             "after_tokens": after_tokens,

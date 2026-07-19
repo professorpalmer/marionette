@@ -14,6 +14,8 @@ MOVED_METHODS = (
     "_invalidate_ctx_cache",
     "_estimate_context_tokens",
     "_find_safe_split",
+    "_choose_compaction_split",
+    "_minimum_recent_start",
     "_history_compaction_fields",
     "_format_block_for_summary",
     "_make_fallback_summary",

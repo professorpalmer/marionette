@@ -30,7 +30,9 @@ class UsageServices:
     job_savings_fields: Callable[[str], dict]
     active_session_total: Callable[..., Any]
     sum_job_set_savings: Callable[..., tuple]
+    sum_job_set_savings_detail: Callable[..., dict]
     cache_savings: Callable[..., float]
+    cache_savings_gross: Callable[..., float]
     boot_cost_source: Callable[[], str]
     tool_output_savings_fields: Callable[..., dict]
     persist_boot_usage: Callable[..., None]
@@ -95,6 +97,8 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     session_total = None
     routing_saved_usd = 0.0
     cache_saved_usd_swarm = 0.0
+    routing_savings_basis = "unknown"
+    routing_tokens_compared = 0
     swarm_cached = 0
     try:
         # Same merged, workspace-scoped job set the tracker uses
@@ -244,9 +248,38 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
         # Boot-pill savings: epoch job set across boot repos (jids), not
         # active-workspace-only session_jids -- so dir/session swaps keep
         # routing/cache saved meters process-lifetime.
-        routing_saved_usd, cache_saved_usd_swarm = svc.sum_job_set_savings(
-            jids, _job_arts, registry
-        )
+        try:
+            savings_detail = svc.sum_job_set_savings_detail(
+                jids,
+                _job_arts,
+                registry,
+                active_price_in=price_in,
+                active_price_out=price_out,
+            )
+            routing_saved_usd = float(savings_detail.get("routing_saved_usd") or 0.0)
+            cache_saved_usd_swarm = float(
+                savings_detail.get("cache_saved_usd_swarm") or 0.0
+            )
+            routing_savings_basis = str(
+                savings_detail.get("routing_savings_basis") or "unknown"
+            )
+            routing_tokens_compared = int(
+                savings_detail.get("routing_tokens_compared") or 0
+            )
+        except Exception:
+            # Compatible with monkeypatched 3-arg sum_job_set_savings stubs.
+            try:
+                routing_saved_usd, cache_saved_usd_swarm = svc.sum_job_set_savings(
+                    jids,
+                    _job_arts,
+                    registry,
+                    active_price_in=price_in,
+                    active_price_out=price_out,
+                )
+            except TypeError:
+                routing_saved_usd, cache_saved_usd_swarm = svc.sum_job_set_savings(
+                    jids, _job_arts, registry
+                )
     except Exception as e:
         svc.diag("server.usage_jobs_aggregate", e)
     # Swarm store jobs: dollars come ONLY from here (usage artifacts x
@@ -277,6 +310,7 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     )
     try:
         from .cost_accounting import (
+            _cache_savings_gross,
             _cache_savings_with_basis,
             _spend_is_estimated,
         )
@@ -284,10 +318,17 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
         cache_savings_usd, cache_savings_basis = _cache_savings_with_basis(
             pilot_only_cached, price_in, provider_cost_usd=cache_provider_cap
         )
+        cache_savings_gross_usd = _cache_savings_gross(pilot_only_cached, price_in)
         spend_estimated = _spend_is_estimated(usage_cost_source, price_source)
     except Exception:
         cache_savings_usd = svc.cache_savings(pilot_only_cached, price_in)
         cache_savings_basis = "catalog"
+        try:
+            cache_savings_gross_usd = float(
+                svc.cache_savings_gross(pilot_only_cached, price_in) or 0.0
+            )
+        except Exception:
+            cache_savings_gross_usd = float(cache_savings_usd or 0.0)
         spend_estimated = usage_cost_source != "provider"
     response_data = {
         "session": {
@@ -308,12 +349,15 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             # only; store-job cache USD is cache_saved_usd_swarm).
             "tokens_cached": tokens_cached,
             "cache_savings_usd": round(cache_savings_usd, 6),
+            "cache_savings_gross_usd": round(cache_savings_gross_usd, 6),
             # catalog = uncapped estimate; capped = limited to provider
             # spend; unknown = provider path present but net spend ≤ 0.
             "cache_savings_basis": cache_savings_basis,
             # Routing + swarm-cache savings over the boot-repo epoch job
             # set (additive to the pilot cache/compaction figures).
             "routing_saved_usd": round(routing_saved_usd, 6),
+            "routing_savings_basis": routing_savings_basis,
+            "routing_tokens_compared": int(routing_tokens_compared),
             "cache_saved_usd_swarm": round(cache_saved_usd_swarm, 6),
             **svc.tool_output_savings_fields(price_in, process_wide=True),
         },

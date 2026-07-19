@@ -60,6 +60,16 @@ export function formatCompactCompleteMessage(
 }
 
 export function formatCompactErrorMessage(err: unknown): string {
+  const reason =
+    err && typeof err === "object" && "reason" in err
+      ? String((err as { reason?: unknown }).reason || "")
+      : "";
+  if (reason === "no_compactable_history") {
+    return "System Note: Recent turn is already compact — nothing further to summarize.";
+  }
+  if (reason === "summary_rejected") {
+    return "System Note: Compaction summary was rejected; history left unchanged. You can try again or continue.";
+  }
   const message =
     err && typeof err === "object" && "message" in err
       ? String((err as { message?: unknown }).message || err)

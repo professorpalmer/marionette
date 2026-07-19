@@ -265,16 +265,20 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
             {(() => {
               const cached = usage.tokens_cached || 0;
               const compacted = usage.tool_output_tokens_saved || 0;
-              const savedUsd =
-                (usage.cache_savings_usd || 0)
-                + (usage.tool_output_savings_usd || 0)
-                + (usage.routing_saved_usd || 0)
+              const cacheValue =
+                (typeof usage.cache_savings_gross_usd === "number"
+                  ? usage.cache_savings_gross_usd
+                  : usage.cache_savings_usd || 0)
                 + (usage.cache_saved_usd_swarm || 0);
+              const savedUsd =
+                cacheValue
+                + (usage.tool_output_savings_usd || 0)
+                + (usage.routing_saved_usd || 0);
               if (cached <= 0 && compacted <= 0 && savedUsd <= 0) return null;
               const detail = [
                 cached > 0
                   ? `${formatTokens(cached)} prompt tokens served from cache${
-                      usage.cache_savings_usd ? ` (~${formatCost(usage.cache_savings_usd)})` : ""
+                      cacheValue > 0 ? ` (~${formatCost(cacheValue)} prompt-cache value)` : ""
                     }`
                   : "",
                 compacted > 0
@@ -283,16 +287,15 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                     }`
                   : "",
                 usage.routing_saved_usd
-                  ? `routing vs frontier baseline (~${formatCost(usage.routing_saved_usd)})`
-                  : "",
-                usage.cache_saved_usd_swarm
-                  ? `swarm prompt-cache (~${formatCost(usage.cache_saved_usd_swarm)})`
+                  ? `routing value vs frontier-equivalent list price (~${formatCost(usage.routing_saved_usd)}${
+                      usage.routing_savings_basis === "estimated" ? ", estimate" : ""
+                    })`
                   : "",
               ].filter(Boolean).join("  ·  ");
               return (
                 <span
                   className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-good/10 border border-good/20 text-good/90"
-                  title={`Saved vs no caching or compaction: ${detail}`}
+                  title={`List-price value from routing, prompt-cache, and compaction (additive, not overlapping cash refunds): ${detail}`}
                 >
                   <span className="text-good/60" aria-hidden="true">&#8595;</span>
                   {savedUsd > 0 ? `${formatCost(savedUsd)} saved` : `${formatTokens(cached + compacted)} saved`}

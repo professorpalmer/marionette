@@ -72,8 +72,8 @@ describe("CostBreakdown", () => {
     expect(screen.getByText("Session cost")).toBeInTheDocument();
     expect(screen.getByText("Estimated spend")).toBeInTheDocument();
     expect(screen.getByText("~$0.04")).toBeInTheDocument();
-    expect(screen.getByText("Prompt-cache saved")).toBeInTheDocument();
-    const cacheRow = screen.getByText("Prompt-cache saved").closest("div");
+    expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
+    const cacheRow = screen.getByText("Prompt-cache value").closest("div");
     expect(within(cacheRow!).getByText("~$0.02")).toBeInTheDocument();
     expect(screen.getByText("Tokens from cache")).toBeInTheDocument();
     expect(screen.getByText("4k")).toBeInTheDocument();
@@ -206,6 +206,24 @@ describe("CostBreakdown", () => {
     }
   });
 
+  it("shows calm Already compact copy for no_compactable_history", async () => {
+    mockCompactSession.mockRejectedValue(
+      Object.assign(new Error("Recent turn is already compact"), {
+        ok: false,
+        compacted: false,
+        reason: "no_compactable_history",
+        status: 409,
+      }),
+    );
+    render(<CostBreakdown data={nowAdviceData} />);
+    fireEvent.click(screen.getByRole("button", { name: "Compact now" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Already compact" })).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Recent turn is already compact.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry compact" })).not.toBeInTheDocument();
+  });
+
   it("shows Retry compact when the request itself fails", async () => {
     mockCompactSession.mockRejectedValue(new Error("/api/session/compact -> 409"));
     render(<CostBreakdown data={nowAdviceData} />);
@@ -224,7 +242,7 @@ describe("CostBreakdown", () => {
     );
   });
 
-  it("renders routing and combined prompt-cache savings when positive", () => {
+  it("renders routing and combined prompt-cache value when positive", () => {
     render(
       <CostBreakdown
         data={{
@@ -232,21 +250,25 @@ describe("CostBreakdown", () => {
           est_cost_usd: 0.70,
           tokens_cached: 50_000,
           cache_savings_usd: 0.02,
+          cache_savings_gross_usd: 0.02,
           routing_saved_usd: 0.40,
+          routing_savings_basis: "actual_usage",
           cache_saved_usd_swarm: 0.05,
         }}
       />,
     );
 
-    expect(screen.getByText("Routing saved")).toBeInTheDocument();
-    const routingRow = screen.getByText("Routing saved").closest("div");
+    expect(screen.getByText("Routing value")).toBeInTheDocument();
+    const routingRow = screen.getByText("Routing value").closest("div");
     expect(within(routingRow!).getByText("~$0.40")).toBeInTheDocument();
-    expect(screen.getByText("Prompt-cache saved")).toBeInTheDocument();
+    expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
     expect(screen.queryByText("Swarm cache saved")).not.toBeInTheDocument();
-    const cacheRow = screen.getByText("Prompt-cache saved").closest("div");
-    // 0.02 pilot + 0.05 swarm = ~$0.07
+    expect(screen.queryByText(/\(capped\)/)).not.toBeInTheDocument();
+    const cacheRow = screen.getByText("Prompt-cache value").closest("div");
+    // 0.02 pilot gross + 0.05 swarm = ~$0.07
     expect(within(cacheRow!).getByText("~$0.07")).toBeInTheDocument();
     expect(screen.getByText("Tokens from cache")).toBeInTheDocument();
+    expect(screen.getByText(/vs frontier-equivalent list price/)).toBeInTheDocument();
   });
 
   it("omits zero or absent savings rows", () => {
@@ -262,8 +284,8 @@ describe("CostBreakdown", () => {
     );
 
     expect(screen.getByText("Estimated spend")).toBeInTheDocument();
-    expect(screen.queryByText("Prompt-cache saved")).not.toBeInTheDocument();
-    expect(screen.queryByText("Routing saved")).not.toBeInTheDocument();
+    expect(screen.queryByText("Prompt-cache value")).not.toBeInTheDocument();
+    expect(screen.queryByText("Routing value")).not.toBeInTheDocument();
     expect(screen.queryByText("Swarm cache saved")).not.toBeInTheDocument();
     expect(screen.queryByText("Compact tool outputs saved")).not.toBeInTheDocument();
     expect(
@@ -289,7 +311,7 @@ describe("CostBreakdown", () => {
     expect(screen.getByText("~$0.05")).toBeInTheDocument();
   });
 
-  it("shows unknown cache savings when basis is unknown", () => {
+  it("prefers uncapped gross cache value over reconciled/capped", () => {
     render(
       <CostBreakdown
         data={{
@@ -298,17 +320,20 @@ describe("CostBreakdown", () => {
           cost_source: "provider",
           estimated: false,
           tokens_cached: 50_000,
-          cache_savings_usd: 0,
-          cache_savings_basis: "unknown",
+          cache_savings_usd: 0.05,
+          cache_savings_gross_usd: 0.90,
+          cache_savings_basis: "capped",
         }}
       />,
     );
     expect(screen.getByText("Billed spend")).toBeInTheDocument();
-    expect(screen.getByText("$0.10")).toBeInTheDocument();
-    expect(screen.getByText("unknown (net provider)")).toBeInTheDocument();
+    expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
+    expect(screen.queryByText(/\(capped\)/)).not.toBeInTheDocument();
+    const cacheRow = screen.getByText("Prompt-cache value").closest("div");
+    expect(within(cacheRow!).getByText("~$0.90")).toBeInTheDocument();
   });
 
-  it("labels capped cache savings", () => {
+  it("never renders capped label for prompt-cache value", () => {
     render(
       <CostBreakdown
         data={{
@@ -322,6 +347,7 @@ describe("CostBreakdown", () => {
         }}
       />,
     );
-    expect(screen.getByText("Prompt-cache saved (capped)")).toBeInTheDocument();
+    expect(screen.queryByText(/\(capped\)/)).not.toBeInTheDocument();
+    expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
   });
 });

@@ -98,6 +98,7 @@ import {
   editNoticeAfterSend,
   executeSendGate,
   formatCompactCompleteMessage,
+  formatCompactErrorMessage,
   formatHelpSlashReply,
   shouldBlockEmptySend,
 } from "../components/conversation/composerSend";
@@ -1101,6 +1102,18 @@ describe("composerSend module", () => {
     expect(shouldBlockEmptySend({ transcriptStale: false, text: "", imageCount: 1 })).toBe(false);
     expect(formatHelpSlashReply([{ cmd: "/help", desc: "Help" }])).toMatch(/\/help/);
     expect(formatCompactCompleteMessage(10, 4)).toMatch(/10 -> 4/);
+    expect(
+      formatCompactErrorMessage(
+        Object.assign(new Error("Recent turn is already compact"), {
+          reason: "no_compactable_history",
+        }),
+      ),
+    ).toMatch(/already compact/i);
+    expect(
+      formatCompactErrorMessage(
+        Object.assign(new Error("rejected"), { reason: "summary_rejected" }),
+      ),
+    ).toMatch(/rejected/i);
     expect(editNoticeAfterSend(true)).toMatch(/Revert/);
     expect(editNoticeAfterSend(false)).toBeNull();
   });

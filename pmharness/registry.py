@@ -233,6 +233,17 @@ _PLAN_MODEL_OR_ALIASES = {
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-sonnet-4",
     ),
+    # Cursor's Fable family is plan-billed and has no public cash receipt.
+    # Use the nearest public frontier-equivalent Sonnet list price only for
+    # counterfactual/value estimates (never as a claim about subscription spend).
+    "claude-fable-5": (
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-sonnet-4",
+    ),
+    "claude-fable-5-thinking-low": (
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-sonnet-4",
+    ),
     "sonnet-4": ("anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4.5"),
     "sonnet-4-thinking": ("anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4.5"),
     "gpt-5.5-high": ("openai/gpt-5.5", "openai/gpt-5"),

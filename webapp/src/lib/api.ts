@@ -225,9 +225,14 @@ export type SwarmLive = {
     driver?: string;
     tokens_cached?: number;
     cache_savings_usd?: number;
-    /** catalog | capped | unknown — how cache savings were attributed. */
+    /** Uncapped catalog/list-price cache value (grows with cached tokens). */
+    cache_savings_gross_usd?: number;
+    /** catalog | capped | unknown — how reconciled cache savings were attributed. */
     cache_savings_basis?: "catalog" | "capped" | "unknown";
     routing_saved_usd?: number;
+    /** actual_usage | estimated | unknown — how routing value was measured. */
+    routing_savings_basis?: "actual_usage" | "estimated" | "unknown";
+    routing_tokens_compared?: number;
     cache_saved_usd_swarm?: number;
     tool_output_tokens_saved?: number;
     tool_output_savings_usd?: number;
@@ -400,10 +405,16 @@ export type UsageData = {
     price_out: number;
     tokens_cached?: number;
     cache_savings_usd?: number;
+    /** Uncapped catalog/list-price cache value (grows with cached tokens). */
+    cache_savings_gross_usd?: number;
     /** catalog = uncapped estimate; capped = limited to provider spend; unknown = provider net ≤ 0. */
     cache_savings_basis?: "catalog" | "capped" | "unknown";
-    /** Router baseline-vs-chosen savings (balanced/cheap policies only). */
+    /** Router baseline-vs-chosen list-price value (balanced/cheap policies only). */
     routing_saved_usd?: number;
+    /** actual_usage | estimated | unknown — how routing value was measured. */
+    routing_savings_basis?: "actual_usage" | "estimated" | "unknown";
+    /** Tokens used in actual-usage routing counterfactuals. */
+    routing_tokens_compared?: number;
     /** Swarm prompt-cache savings priced from usage artifacts x registry. */
     cache_saved_usd_swarm?: number;
     tool_output_tokens_saved?: number;
@@ -1014,7 +1025,14 @@ export const api = {
     postJSON<{ ok: boolean; path?: string; error?: string }>("/api/file/mkdir", { path }),
   inlineEdit: (path: string, selection: string, instruction: string, prefix: string, suffix: string, language: string) => postJSON<{ ok: boolean; edit?: string; error?: string }>("/api/inline-edit", { path, selection, instruction, prefix, suffix, language }),
   compactSession: () =>
-    postJSON<{ ok: boolean; compacted?: boolean; before_tokens: number; after_tokens: number; error?: string }>("/api/session/compact", {}),
+    postJSON<{
+      ok: boolean;
+      compacted?: boolean;
+      before_tokens: number;
+      after_tokens: number;
+      error?: string;
+      reason?: string;
+    }>("/api/session/compact", {}),
   steerSession: (text: string, images?: string[]) =>
     postJSON<{ ok: boolean }>("/api/session/steer", { text, images: images && images.length ? images : undefined }),
   // PROMPT QUEUE: a "playlist" of full user prompts that each run as their own

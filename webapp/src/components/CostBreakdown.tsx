@@ -19,9 +19,14 @@ export type CostBreakdownData = {
   estimated?: boolean;
   tokens_cached?: number;
   cache_savings_usd?: number;
-  /** catalog | capped | unknown — how cache savings were attributed. */
+  /** Uncapped catalog/list-price cache value (grows with cached tokens). */
+  cache_savings_gross_usd?: number;
+  /** catalog | capped | unknown — how reconciled cache savings were attributed. */
   cache_savings_basis?: "catalog" | "capped" | "unknown";
   routing_saved_usd?: number;
+  /** actual_usage | estimated | unknown — how routing value was measured. */
+  routing_savings_basis?: "actual_usage" | "estimated" | "unknown";
+  routing_tokens_compared?: number;
   cache_saved_usd_swarm?: number;
   tool_output_tokens_saved?: number;
   tool_output_savings_usd?: number;
@@ -98,8 +103,17 @@ function fmtBytes(num: number): string {
   return `${num} B`;
 }
 
+function compactFailureReason(err: unknown): string {
+  if (err && typeof err === "object" && "reason" in err) {
+    return String((err as { reason?: unknown }).reason || "");
+  }
+  return "";
+}
+
 export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
-  const [compactState, setCompactState] = useState<"idle" | "working" | "done" | "error">("idle");
+  const [compactState, setCompactState] = useState<
+    "idle" | "working" | "done" | "error" | "noop"
+  >("idle");
   const est = isFinite(data.est_cost_usd) ? data.est_cost_usd : 0;
   const estimated = spendIsEstimated(data);
   const billed = data.cost_source === "provider" && !estimated;
@@ -113,24 +127,24 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
           ? "Estimated spend (default rates)"
           : "Estimated spend";
   const spendPrefix = estimated ? "~" : "";
-  const cacheUnknown = data.cache_savings_basis === "unknown";
-  const cacheSavings =
-    !cacheUnknown
-    && typeof data.cache_savings_usd === "number"
-    && isFinite(data.cache_savings_usd)
-    && data.cache_savings_usd > 0
-      ? data.cache_savings_usd
-      : 0;
+  const pilotCacheGross =
+    typeof data.cache_savings_gross_usd === "number" && isFinite(data.cache_savings_gross_usd)
+      ? data.cache_savings_gross_usd
+      : typeof data.cache_savings_usd === "number" && isFinite(data.cache_savings_usd)
+        ? data.cache_savings_usd
+        : 0;
   const routingSaved =
     typeof data.routing_saved_usd === "number" && isFinite(data.routing_saved_usd) && data.routing_saved_usd > 0
       ? data.routing_saved_usd
       : 0;
+  const routingEstimated = data.routing_savings_basis === "estimated";
   const swarmCacheSaved =
     typeof data.cache_saved_usd_swarm === "number" && isFinite(data.cache_saved_usd_swarm) && data.cache_saved_usd_swarm > 0
       ? data.cache_saved_usd_swarm
       : 0;
-  // One Prompt-cache saved row: pilot-priced cache + authoritative swarm store.
-  const promptCacheSaved = cacheSavings + swarmCacheSaved;
+  // One Prompt-cache value row: uncapped pilot gross + store-job cache.
+  const promptCacheSaved =
+    (pilotCacheGross > 0 ? pilotCacheGross : 0) + swarmCacheSaved;
   const compactSavings =
     typeof data.tool_output_savings_usd === "number" && isFinite(data.tool_output_savings_usd) && data.tool_output_savings_usd > 0
       ? data.tool_output_savings_usd
@@ -201,7 +215,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       .then((res) => {
         // Only celebrate a REAL reduction: the backend sets compacted=true
         // when a compaction event fired; older backends are checked by token
-        // delta. Anything else is a no-op the user should be able to retry.
+        // delta. Structured no-ops get calm copy; other failures stay retryable.
         const trulyReduced =
           res?.ok === true &&
           (res.compacted === true ||
@@ -210,13 +224,23 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
               isFinite(res.after_tokens) &&
               res.after_tokens < res.before_tokens));
         if (!trulyReduced) {
+          if (res?.reason === "no_compactable_history") {
+            setCompactState("noop");
+            return;
+          }
           setCompactState("error");
           return;
         }
         setCompactState("done");
         window.dispatchEvent(new Event("harness-usage-refresh"));
       })
-      .catch(() => setCompactState("error"));
+      .catch((err) => {
+        if (compactFailureReason(err) === "no_compactable_history") {
+          setCompactState("noop");
+          return;
+        }
+        setCompactState("error");
+      });
   };
 
   return (
@@ -231,26 +255,29 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         </div>
       ) : null}
 
-      {/* (b) Cache savings -- pilot + swarm store, one row. */}
+      {/* (b) Prompt-cache value -- uncapped pilot gross + swarm store. */}
       {promptCacheSaved > 0 ? (
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-muted">
-            Prompt-cache saved
-            {data.cache_savings_basis === "capped" ? " (capped)" : ""}
-          </span>
+        <div
+          className="flex items-center justify-between mb-1"
+          title="Gross avoided full-price input value from prompt-cache hits (catalog/list rate). Continues growing with cached tokens; not a cash refund and not capped to provider spend."
+        >
+          <span className="text-muted">Prompt-cache value</span>
           <span className="text-accent font-medium tabular-nums">~{fmtCost(promptCacheSaved)}</span>
-        </div>
-      ) : null}
-      {cacheUnknown ? (
-        <div className="flex items-center justify-between mb-1 text-faint">
-          <span>Prompt-cache saved</span>
-          <span className="tabular-nums">unknown (net provider)</span>
         </div>
       ) : null}
 
       {routingSaved > 0 ? (
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-muted">Routing saved</span>
+        <div
+          className="flex items-center justify-between mb-1"
+          title={
+            routingEstimated
+              ? "Running estimate vs frontier-equivalent list price (preflight). Not a cash refund."
+              : "List-price value vs a frontier-equivalent baseline on the same actual tokens. Not a cash refund."
+          }
+        >
+          <span className="text-muted">
+            Routing value{routingEstimated ? " (est.)" : ""}
+          </span>
           <span className="text-accent font-medium tabular-nums">~{fmtCost(routingSaved)}</span>
         </div>
       ) : null}
@@ -318,44 +345,62 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
               <button
                 type="button"
                 onClick={onCompactNow}
-                disabled={compactState === "working"}
+                disabled={compactState === "working" || compactState === "noop"}
                 className="shrink-0 rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
               >
                 {compactState === "working"
                   ? "Compacting..."
                   : compactState === "done"
                     ? "Compacted"
-                    : compactState === "error"
-                      ? "Retry compact"
-                      : "Compact now"}
+                    : compactState === "noop"
+                      ? "Already compact"
+                      : compactState === "error"
+                        ? "Retry compact"
+                        : "Compact now"}
               </button>
             ) : null}
           </div>
-          <p className="leading-snug text-amber-100/80 m-0">{adviceCopy.message}</p>
+          <p className="leading-snug text-amber-100/80 m-0">
+            {compactState === "noop"
+              ? "Recent turn is already compact."
+              : adviceCopy.message}
+          </p>
         </div>
       ) : null}
 
-      {/* (c) The routing value proposition. Cache savings are concrete dollars
-          the router-plus-cache path already banked; the framing line explains
-          the mechanism that keeps spend low even absent a flat-frontier
-          baseline. Kept to one short line. */}
+      {/* (c) Additive value framing — routing list-price + cache + compact
+          are separate mechanisms (not overlapping cash refunds). */}
       <div className="mt-2 pt-2 border-t border-edge/60 text-[10px] leading-snug text-muted/90">
         {promptCacheSaved > 0 || compactSavings > 0 || routingSaved > 0 ? (
           <span>
             Routed per-step to the cheapest capable model
             {routingSaved > 0 ? (
-              <>, saving <span className="text-accent">~{fmtCost(routingSaved)}</span> vs a flat-frontier baseline</>
+              <>
+                , with{" "}
+                <span className="text-accent">~{fmtCost(routingSaved)}</span> routing
+                value vs frontier-equivalent list price
+                {routingEstimated ? " (estimate)" : ""}
+              </>
             ) : null}
             {promptCacheSaved > 0 ? (
-              <>, with <span className="text-accent">~{fmtCost(promptCacheSaved)}</span> saved via prompt caching</>
+              <>
+                , plus <span className="text-accent">~{fmtCost(promptCacheSaved)}</span>{" "}
+                prompt-cache value
+              </>
             ) : null}
             {compactSavings > 0 ? (
-              <>, and <span className="text-accent">~{fmtCost(compactSavings)}</span> avoided by compact tool outputs</>
+              <>
+                , and <span className="text-accent">~{fmtCost(compactSavings)}</span>{" "}
+                avoided by compact tool outputs
+              </>
             ) : null}
             .
           </span>
         ) : (
-          <span>Each task step is routed to the cheapest capable model instead of a single flat-frontier model.</span>
+          <span>
+            Each task step is routed to the cheapest capable model instead of a
+            single frontier-equivalent list-price baseline.
+          </span>
         )}
       </div>
     </div>

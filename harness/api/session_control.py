@@ -136,14 +136,36 @@ def _record_post_compaction_snapshot(pilot: Any, svc: SessionControlServices) ->
         pass
 
 
+def _compaction_attempt_reason(pilot: Any) -> str:
+    """Best-effort structured reason from the last compaction attempt."""
+    try:
+        attempt = getattr(pilot, "_last_compaction_attempt", None) or {}
+        reason = str(attempt.get("reason") or "").strip()
+        if reason:
+            return reason
+    except Exception:
+        pass
+    return "no_compactable_history"
+
+
+def _compaction_error_message(reason: str) -> str:
+    if reason == "no_compactable_history":
+        return "Recent turn is already compact"
+    if reason == "summary_rejected":
+        return "Compaction summary was rejected; history left unchanged"
+    if reason == "below_min_compactable":
+        return "Not enough history to compact yet"
+    return "no compaction occurred (history too small or summary rejected)"
+
+
 def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """POST /api/session/compact.
 
     Manual "Compact now": force a compaction attempt and report success ONLY
     when a real ``compaction`` event was emitted (history actually shrank).
     No-ops -- history too small to split, degenerate summary, insufficient
-    reduction -- return 409 with ``ok: false`` so the UI can offer a retry
-    instead of flashing a false "Compacted".
+    reduction -- return 409 with ``ok: false`` and a structured ``reason`` so
+    the UI can show calm specific copy instead of a false "Compacted".
     """
     not_ready = svc.gate_active_pilot_ready()
     if not_ready is not None:
@@ -154,12 +176,17 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
     compacted = any(_event_kind(ev) == "compaction" for ev in events)
     after = pilot._estimate_context_tokens()
     if not compacted:
+        reason = _compaction_attempt_reason(pilot)
+        # Map soft floors / below-trigger under force to the user-facing bucket.
+        if reason in ("below_trigger", "below_min_compactable"):
+            reason = "no_compactable_history"
         return 409, {
             "ok": False,
             "compacted": False,
             "before_tokens": before,
             "after_tokens": after,
-            "error": "no compaction occurred (history too small or summary rejected)",
+            "reason": reason,
+            "error": _compaction_error_message(reason),
         }
     sessions = svc.get_sessions() if svc.get_sessions is not None else None
     if sessions is not None and sessions.active and svc.save_transcript is not None:
@@ -174,6 +201,7 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
         "compacted": True,
         "before_tokens": before,
         "after_tokens": after,
+        "reason": "ok",
     }
 
 

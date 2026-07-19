@@ -755,6 +755,8 @@ class ConversationalSession(
         # Compaction summarizer: after timeout/fail, skip LLM and use extractive
         # fallback until this monotonic deadline (Hermes-style cooldown).
         self._compaction_fail_until: float = 0.0
+        # Latest compaction attempt diagnostic (reason code for manual compact API).
+        self._last_compaction_attempt: dict = {"reason": "below_trigger"}
         # Reload any persisted provider-worker history from a prior process so the
         # swarm panel keeps its history across a backend restart. Stale 'running'
         # jobs (whose thread died with the old process) are marked interrupted.

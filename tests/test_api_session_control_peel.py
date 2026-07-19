@@ -187,8 +187,9 @@ class _NoopPilot:
     state_dir = ""
     harness_session_id = "s1"
 
-    def __init__(self):
+    def __init__(self, reason="no_compactable_history"):
         self.exports = 0
+        self._last_compaction_attempt = {"reason": reason}
 
     def _estimate_context_tokens(self):
         return 50
@@ -214,6 +215,7 @@ def test_compact_and_state():
     assert code == 200
     assert payload["ok"] is True and payload["compacted"] is True
     assert payload["before_tokens"] == 50 and payload["after_tokens"] == 20
+    assert payload.get("reason") == "ok"
     # Manual compaction must bypass the 75% trigger.
     assert pilot.force_calls == [True]
 
@@ -232,9 +234,19 @@ def test_compact_noop_is_not_success():
     assert code == 409
     assert payload["ok"] is False and payload["compacted"] is False
     assert payload["before_tokens"] == 50 and payload["after_tokens"] == 50
-    assert "error" in payload
+    assert payload["reason"] == "no_compactable_history"
+    assert "already compact" in payload["error"].lower()
     # A no-op must not persist the transcript.
     assert saved["n"] == 0 and pilot.exports == 0
+
+
+def test_compact_summary_rejected_reason():
+    pilot = _NoopPilot(reason="summary_rejected")
+    svc = _svc(pilot=pilot, sessions=SimpleNamespace(active=None))
+    code, payload = post_session_compact(svc)
+    assert code == 409
+    assert payload["reason"] == "summary_rejected"
+    assert "rejected" in payload["error"].lower()
 
 
 def test_compact_success_persists_and_refreshes_snapshot(tmp_path):

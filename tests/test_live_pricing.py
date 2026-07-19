@@ -61,6 +61,18 @@ def test_resolve_price_cursor_cli_via_plan_alias(monkeypatch):
     assert src == "live_alias"
 
 
+def test_resolve_price_cursor_fable_via_frontier_equivalent_alias(monkeypatch):
+    monkeypatch.setattr(
+        reg,
+        "_PRICE_MEM",
+        {"anthropic/claude-sonnet-4.5": (3.0, 15.0)},
+    )
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    pin, pout, src = reg.resolve_price_with_source("cursor-cli:claude-fable-5")
+    assert (pin, pout) == (3.0, 15.0)
+    assert src == "live_alias"
+
+
 def test_resolve_price_openai_codex_prefixes_openai_slug(monkeypatch):
     monkeypatch.setattr(reg, "_PRICE_MEM", {"openai/gpt-5.6-sol": (1.25, 10.0)})
     monkeypatch.setattr(reg, "_live_windows", lambda: {})

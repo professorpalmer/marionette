@@ -353,8 +353,8 @@ function jobSavings(j: Job): SavingsParts {
 
 function savingsDetail(parts: SavingsParts): string {
   return [
-    parts.routing > 0 ? `routing vs frontier baseline (~${formatCost(parts.routing)})` : "",
-    parts.cache > 0 ? `prompt-cache (~${formatCost(parts.cache)})` : "",
+    parts.routing > 0 ? `routing value vs frontier-equivalent list price (~${formatCost(parts.routing)})` : "",
+    parts.cache > 0 ? `prompt-cache value (~${formatCost(parts.cache)})` : "",
     parts.compact > 0 ? `tool-output compaction (~${formatCost(parts.compact)})` : "",
   ].filter(Boolean).join("  ·  ");
 }
@@ -364,7 +364,7 @@ function SavingsChip({ parts, className }: { parts: SavingsParts; className?: st
   return (
     <span
       className={`inline-flex items-center gap-0.5 px-1 py-px rounded-full bg-good/10 border border-good/20 text-good/80 tabular-nums ${className ?? ""}`}
-      title={`Saved vs no caching, routing, or compaction: ${savingsDetail(parts)}`}
+      title={`List-price value from routing, prompt-cache, and compaction (additive): ${savingsDetail(parts)}`}
     >
       <span className="text-good/60" aria-hidden="true">{"\u2193"}</span>
       {formatCost(parts.total)} saved

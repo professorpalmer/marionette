@@ -184,9 +184,182 @@ def test_fallback_truncation_on_pilot_failure():
     assert "Msg 0:" in s._history[1]["content"]
     assert "Msg 1:" in s._history[1]["content"]
     assert "were elided here" in s._history[1]["content"]
+    assert "## Historical Task Snapshot" in s._history[1]["content"]
     
     after_tokens = s._estimate_context_tokens()
     assert after_tokens <= 750
+
+
+def test_short_history_huge_prior_summary_compacts(monkeypatch):
+    """sys + huge prior summary + few recent turns must re-compact (not early-return)."""
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    cfg = HarnessConfig(max_context_tokens=4000)
+    s = ConversationalSession(cfg)
+    s.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "user",
+            "content": "[Earlier conversation summarized to fit context]\n" + ("OLD " * 4000),
+            "_compressed_summary": True,
+        },
+        {"role": "user", "content": "latest ask " + ("x" * 200)},
+        {"role": "assistant", "content": "latest answer " + ("y" * 200)},
+    ]
+    before = s._estimate_context_tokens()
+    assert before > int(4000 * 0.75)
+
+    events = list(s._maybe_compact_history(force=True))
+    assert [e.kind for e in events] == ["compacting", "compaction"]
+    assert s._history[0]["role"] == "system"
+    assert s._history[1].get("_compressed_summary") is True
+    assert "Compaction fixture summary" in s._history[1]["content"]
+    # Nested prior-summary wrappers must not grow unbounded.
+    assert s._history[1]["content"].count("PREVIOUS HISTORICAL CONVERSATION SUMMARY:") <= 1
+    after = s._estimate_context_tokens()
+    assert after < before
+    assert s._last_compaction_attempt.get("reason") == "ok"
+
+
+def test_adaptive_tail_shrinks_when_six_recent_exceed_budget(monkeypatch):
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    cfg = HarnessConfig(max_context_tokens=2000)
+    s = ConversationalSession(cfg)
+    s.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+    # sys + prior summary + six huge recent messages (preferred fixed-6 would noop).
+    s._history = [{"role": "system", "content": "sys"}]
+    s._history.append({
+        "role": "user",
+        "content": "[Earlier conversation summarized to fit context]\n" + ("SUM " * 500),
+        "_compressed_summary": True,
+    })
+    for i in range(6):
+        role = "user" if i % 2 == 0 else "assistant"
+        s._history.append({"role": role, "content": f"turn-{i} " + ("Z" * 2500)})
+
+    before = s._estimate_context_tokens()
+    events = list(s._maybe_compact_history(force=True))
+    assert [e.kind for e in events] == ["compacting", "compaction"]
+    after = s._estimate_context_tokens()
+    assert after < before
+    # Kept recent window must be smaller than the preferred six when they blow the budget.
+    assert len(s._history) < 8
+    assert s._history[-1]["content"].startswith("turn-5")
+
+
+def test_adaptive_tail_keeps_tool_pairs_intact(monkeypatch):
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    cfg = HarnessConfig(max_context_tokens=2000)
+    s = ConversationalSession(cfg)
+    s.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "user",
+            "content": "[Earlier conversation summarized to fit context]\n" + ("P" * 4000),
+            "_compressed_summary": True,
+        },
+        {"role": "user", "content": "old " + ("A" * 2000)},
+        {"role": "assistant", "content": "old-a " + ("B" * 2000)},
+        {"role": "user", "content": "please read"},
+        {
+            "role": "assistant",
+            "content": "calling",
+            "tool_calls": [{
+                "id": "call_keep",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_keep", "content": "tool body " + ("T" * 500)},
+        {"role": "assistant", "content": "done with tool"},
+    ]
+    events = list(s._maybe_compact_history(force=True))
+    assert any(e.kind == "compaction" for e in events)
+    kept = s._history[2:]
+    tool_ids_in_kept = {
+        m.get("tool_call_id") for m in kept if m.get("role") == "tool"
+    }
+    assistant_call_ids = set()
+    for m in kept:
+        for tc in m.get("tool_calls") or []:
+            if tc.get("id"):
+                assistant_call_ids.add(tc["id"])
+    # No orphaned tool results in the kept window.
+    assert tool_ids_in_kept <= assistant_call_ids
+
+
+def test_fallback_bounds_few_huge_messages(monkeypatch):
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    cfg = HarnessConfig(max_context_tokens=3000)
+    s = ConversationalSession(cfg)
+
+    class ErrorPilot:
+        name = "mock"
+        def chat(self, messages, tools=None, system=None):
+            return MockDriverResponse(error="boom")
+
+    s.pilot = ErrorPilot()  # type: ignore
+    huge = "H" * 20000
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "one " + huge},
+        {"role": "assistant", "content": "two " + huge},
+        {"role": "user", "content": "three " + huge},
+        {"role": "assistant", "content": "four " + huge},
+        {"role": "user", "content": "keep me recent"},
+        {"role": "assistant", "content": "keep me too"},
+    ]
+    before = s._estimate_context_tokens()
+    events = list(s._maybe_compact_history(force=True))
+    assert [e.kind for e in events] == ["compacting", "compaction"]
+    injected = s._history[1]["content"]
+    assert "elided" in injected.lower()
+    assert "## Historical Task Snapshot" in injected
+    assert len(injected) < 20000
+    assert s._estimate_context_tokens() < before
+
+
+def test_repeated_compaction_can_reduce_again(monkeypatch):
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    cfg = HarnessConfig(max_context_tokens=4000)
+    s = ConversationalSession(cfg)
+    s.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "user",
+            "content": "[Earlier conversation summarized to fit context]\n" + ("PRIOR " * 3000),
+            "_compressed_summary": True,
+        },
+    ]
+    for i in range(8):
+        s._history.append({"role": "user", "content": f"u{i} " + ("A" * 800)})
+        s._history.append({"role": "assistant", "content": f"a{i} " + ("B" * 800)})
+
+    first = list(s._maybe_compact_history(force=True))
+    assert any(e.kind == "compaction" for e in first)
+    # Grow again after first compaction so a second pass has work to do.
+    for i in range(6):
+        s._history.append({"role": "user", "content": f"more-u{i} " + ("C" * 1200)})
+        s._history.append({"role": "assistant", "content": f"more-a{i} " + ("D" * 1200)})
+    before_second = s._estimate_context_tokens()
+    second = list(s._maybe_compact_history(force=True))
+    assert any(e.kind == "compaction" for e in second)
+    assert s._estimate_context_tokens() < before_second
+    assert s._last_compaction_attempt.get("reason") == "ok"
+
+
+def test_true_no_compactable_sets_reason(monkeypatch):
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    cfg = HarnessConfig(max_context_tokens=10000)
+    s = ConversationalSession(cfg)
+    s.pilot = MockPilot(_GOOD_SUMMARY)  # type: ignore
+    # Only system — nothing to compact.
+    s._history = [{"role": "system", "content": "sys"}]
+    events = list(s._maybe_compact_history(force=True))
+    assert events == []
+    assert s._last_compaction_attempt.get("reason") == "no_compactable_history"
 
 
 def test_no_orphaned_tool_messages_in_kept_window():

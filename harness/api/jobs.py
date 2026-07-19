@@ -39,6 +39,8 @@ class JobServices:
     cache_savings: Callable[..., float]
     tool_output_savings_fields: Callable[..., dict]
     cost_source_label: Callable[..., str]
+    # Optional: rich routing detail (basis + tokens). Older test stubs omit it.
+    routing_saved_usd_detail: Callable[..., dict] | None = None
 
 
 def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
@@ -232,10 +234,63 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             # Per-job savings from raw artifacts (before slim). Terminal
             # rows still get these meters even when the artifact list is
             # slimmed -- expand must not be required to see savings.
+            job_routing_basis = "unknown"
+            job_routing_tokens = 0
+            job_routing_counted = False
             try:
-                job_routing_saved = round(svc.routing_saved_usd(raw_arts), 6)
+                detail_fn = svc.routing_saved_usd_detail
+                if detail_fn is not None:
+                    try:
+                        rdetail = detail_fn(
+                            raw_arts,
+                            registry,
+                            active_price_in=price_in,
+                            active_price_out=price_out,
+                        )
+                    except TypeError:
+                        rdetail = detail_fn(raw_arts, registry)
+                    job_routing_saved = round(
+                        float(rdetail.get("routing_saved_usd") or 0.0), 6
+                    )
+                    job_routing_basis = str(
+                        rdetail.get("routing_savings_basis") or "unknown"
+                    )
+                    job_routing_tokens = int(
+                        rdetail.get("routing_tokens_compared") or 0
+                    )
+                    job_routing_counted = bool(
+                        rdetail.get("routing_savings_counted")
+                    )
+                else:
+                    raise TypeError("no routing detail helper")
             except Exception:
-                job_routing_saved = 0.0
+                try:
+                    job_routing_saved = round(
+                        svc.routing_saved_usd(
+                            raw_arts,
+                            registry,
+                            active_price_in=price_in,
+                            active_price_out=price_out,
+                        ),
+                        6,
+                    )
+                    # Float-only path (legacy / monkeypatch): treat positive
+                    # savings as estimated so session copy stays honest.
+                    job_routing_counted = job_routing_saved > 0
+                    job_routing_basis = (
+                        "estimated" if job_routing_counted else "unknown"
+                    )
+                except TypeError:
+                    try:
+                        job_routing_saved = round(svc.routing_saved_usd(raw_arts), 6)
+                        job_routing_counted = job_routing_saved > 0
+                        job_routing_basis = (
+                            "estimated" if job_routing_counted else "unknown"
+                        )
+                    except Exception:
+                        job_routing_saved = 0.0
+                except Exception:
+                    job_routing_saved = 0.0
             try:
                 job_cache_saved = round(
                     svc.cache_saved_usd_swarm(raw_arts, registry), 6
@@ -303,6 +358,9 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "estimated": bool(job_detail.get("estimated", True)),
                 "tokens_cached": job_tokens_cached,
                 "routing_saved_usd": job_routing_saved,
+                "routing_savings_basis": job_routing_basis,
+                "routing_tokens_compared": job_routing_tokens,
+                "routing_savings_counted": job_routing_counted,
                 "cache_saved_usd": job_cache_saved,
                 "artifacts": artifacts_list,
                 "artifacts_complete": artifacts_complete,
@@ -348,6 +406,10 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     # session block matches /api/usage (pilot cache stays separate).
     live_routing_saved = 0.0
     live_cache_saved = 0.0
+    live_routing_tokens = 0
+    saw_routing_actual = False
+    saw_routing_estimated = False
+    saw_routing_unknown = False
     swarm_cached = 0
     job_tokens_sum = 0
     store_job_cost = 0.0
@@ -358,10 +420,25 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             store_job_cost += float(j.get("est_cost_usd") or 0.0)
             live_routing_saved += float(j.get("routing_saved_usd") or 0.0)
             live_cache_saved += float(j.get("cache_saved_usd") or 0.0)
+            live_routing_tokens += int(j.get("routing_tokens_compared") or 0)
+            if j.get("routing_savings_counted"):
+                basis = str(j.get("routing_savings_basis") or "")
+                if basis == "actual_usage":
+                    saw_routing_actual = True
+                elif basis == "estimated":
+                    saw_routing_estimated = True
+                else:
+                    saw_routing_unknown = True
             swarm_cached += int(j.get("tokens_cached") or 0)
             job_tokens_sum += int(j.get("tokens") or 0)
     except Exception:
         pass
+    if saw_routing_actual:
+        live_routing_basis = "actual_usage"
+    elif saw_routing_estimated and not saw_routing_unknown:
+        live_routing_basis = "estimated"
+    else:
+        live_routing_basis = "unknown"
 
     pilot = svc.get_pilot()
     if repo_scoped:
@@ -384,6 +461,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             pass
         tokens_cached = swarm_cached
         _cache_savings_usd = 0.0
+        _cache_savings_gross_usd = 0.0
         tool_savings = {}
     else:
         tokens_used = int(getattr(pilot, "_tokens_used", 0) or 0)
@@ -404,7 +482,10 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         _provider_cost = float(getattr(pilot, "_provider_cost_usd", 0) or 0.0)
         tool_savings = svc.tool_output_savings_fields(price_in)
         try:
-            from .cost_accounting import _cache_savings_with_basis
+            from .cost_accounting import (
+                _cache_savings_gross,
+                _cache_savings_with_basis,
+            )
 
             try:
                 _src_for_cap = (
@@ -422,9 +503,11 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                     else None
                 ),
             )
+            _cache_savings_gross_usd = _cache_savings_gross(pilot_only_cached, price_in)
         except Exception:
             _cache_savings_usd = svc.cache_savings(pilot_only_cached, price_in)
             _cache_savings_basis = "catalog"
+            _cache_savings_gross_usd = float(_cache_savings_usd or 0.0)
 
     if repo_scoped:
         _live_cost_source = "estimated"
@@ -453,8 +536,11 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             # harness is not token-hungry -- plus the USD it saved.
             "tokens_cached": tokens_cached,
             "cache_savings_usd": round(_cache_savings_usd, 6),
+            "cache_savings_gross_usd": round(_cache_savings_gross_usd, 6),
             "cache_savings_basis": _cache_savings_basis,
             "routing_saved_usd": round(live_routing_saved, 6),
+            "routing_savings_basis": live_routing_basis,
+            "routing_tokens_compared": int(live_routing_tokens),
             "cache_saved_usd_swarm": round(live_cache_saved, 6),
             **tool_savings,
         },

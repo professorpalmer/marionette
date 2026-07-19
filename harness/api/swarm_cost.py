@@ -351,67 +351,23 @@ def _task_swarm_accounting(raw_arts, registry: list) -> dict:
     return by_task
 
 
-_COST_OPTIMIZING_POLICIES = frozenset({"balanced", "cheap"})
-
-
-def _routing_saved_usd(raw_arts) -> float:
-    """Dollars saved by cost-optimizing router picks vs the snapshotted baseline.
-
-    Only ``balanced`` / ``cheap`` policies count; ``quality`` / ``escalating`` are
-    deliberate spend and contribute 0. Best-effort -- never raises.
-    """
-    try:
-        from puppetmaster.models import ArtifactType
-    except Exception:
-        return 0.0
-    seen_tasks: set = set()
-    total = 0.0
-    try:
-        for artifact in raw_arts or []:
-            if getattr(artifact, "type", None) != ArtifactType.ROUTING:
-                continue
-            if getattr(artifact, "created_by", "") != "router":
-                continue
-            task_id = getattr(artifact, "task_id", None)
-            if task_id:
-                if task_id in seen_tasks:
-                    continue
-                seen_tasks.add(task_id)
-            payload = getattr(artifact, "payload", None) or {}
-            if not isinstance(payload, dict):
-                continue
-            policy = str(payload.get("policy") or "")
-            if policy not in _COST_OPTIMIZING_POLICIES:
-                continue
-            try:
-                baseline = float(payload.get("baseline_cost_usd") or 0.0)
-                estimated = float(payload.get("estimated_cost_usd") or 0.0)
-            except (TypeError, ValueError):
-                continue
-            if baseline <= 0:
-                continue
-            total += max(0.0, baseline - estimated)
-    except Exception:
-        return 0.0
-    return total
+from .routing_savings import (  # noqa: E402
+    ROUTING_SAVINGS_ACTUAL,
+    ROUTING_SAVINGS_ESTIMATED,
+    ROUTING_SAVINGS_UNKNOWN,
+    _COST_OPTIMIZING_POLICIES,
+    _registry_rates,
+    _routing_saved_usd,
+    _routing_saved_usd_detail,
+    _sum_job_set_savings,
+    _sum_job_set_savings_detail,
+)
 
 
 def _registry_input_per_mtok(model_id: str, registry: list) -> float:
     """Resolve a model's input $/MTok from the registry; 0 when unknown."""
-    if not model_id:
-        return 0.0
-    for spec in registry or []:
-        if getattr(spec, "id", None) == model_id:
-            try:
-                return float(getattr(spec, "input_per_mtok_usd", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                return 0.0
-        if getattr(spec, "adapter_model_name", None) == model_id:
-            try:
-                return float(getattr(spec, "input_per_mtok_usd", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                return 0.0
-    return 0.0
+    pin, _pout = _registry_rates(model_id, registry)
+    return pin
 
 
 def _tokens_cached_swarm(raw_arts) -> int:
@@ -494,24 +450,4 @@ def _cache_saved_usd_swarm(raw_arts, registry: list) -> float:
     return total
 
 
-def _sum_job_set_savings(job_ids, arts_getter, registry: list) -> tuple[float, float]:
-    """Sum routing + swarm-cache savings over a job id set. Never raises."""
-    routing = 0.0
-    cache = 0.0
-    routing_fn = _server_attr("_routing_saved_usd", _routing_saved_usd)
-    cache_fn = _server_attr("_cache_saved_usd_swarm", _cache_saved_usd_swarm)
-    for jid in job_ids or []:
-        try:
-            arts = arts_getter(jid)
-        except Exception as e:
-            _diag("server.usage_savings_arts", e, msg=f"job={jid}")
-            continue
-        try:
-            routing += routing_fn(arts)
-        except Exception as e:
-            _diag("server.usage_routing_saved", e, msg=f"job={jid}")
-        try:
-            cache += cache_fn(arts, registry)
-        except Exception as e:
-            _diag("server.usage_cache_saved_swarm", e, msg=f"job={jid}")
-    return routing, cache
+# _sum_job_set_savings / _sum_job_set_savings_detail imported from routing_savings.

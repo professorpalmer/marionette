@@ -171,12 +171,12 @@ describe("SwarmPane mid-run job-row meters", () => {
     await waitFor(() => {
       expect(screen.getAllByText("12,000t").length).toBeGreaterThan(0);
       expect(screen.getByText("1,500 compact")).toBeInTheDocument();
-      expect(screen.getAllByText("$0.0500").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("~$0.0500").length).toBeGreaterThan(0);
       expect(screen.getByText("$0.0553 saved")).toBeInTheDocument();
     });
     expect(screen.queryByText("8,000 cached")).not.toBeInTheDocument();
-    expect(screen.getByTitle(/routing vs frontier baseline/)).toBeInTheDocument();
-    expect(screen.getByTitle(/prompt-cache/)).toBeInTheDocument();
+    expect(screen.getByTitle(/routing value vs frontier-equivalent list price/)).toBeInTheDocument();
+    expect(screen.getByTitle(/prompt-cache value/)).toBeInTheDocument();
     expect(screen.getByTitle(/tool-output compaction/)).toBeInTheDocument();
   });
 
@@ -426,9 +426,9 @@ describe("SwarmPane worker tokens and cost", () => {
       expect(screen.getByText("Workers (2)")).toBeInTheDocument();
     });
     expect(screen.getByText("120,000t")).toBeInTheDocument();
-    expect(screen.getByText("$0.1400")).toBeInTheDocument();
+    expect(screen.getByText("~$0.1400")).toBeInTheDocument();
     expect(screen.getByText("60,000t")).toBeInTheDocument();
-    expect(screen.getByText("$0.0700")).toBeInTheDocument();
+    expect(screen.getByText("~$0.0700")).toBeInTheDocument();
   });
 });
 
