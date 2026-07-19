@@ -88,3 +88,45 @@ def test_flush_writes_pending_dirty_state(tmp_path, monkeypatch):
         assert wrapped.call_count == 1
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["sessions"][0]["title"] == "Pending"
+
+
+def test_list_snapshots_metadata_under_lock_before_preview_io(tmp_path, monkeypatch):
+    path = tmp_path / "harness_sessions.json"
+    store = SessionStore(str(path))
+    row = store.create(title="Snapshot", repo=str(tmp_path / "repo"))
+
+    class TrackingLock:
+        held = False
+        entered = 0
+
+        def __enter__(self):
+            self.held = True
+            self.entered += 1
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.held = False
+
+    lock = TrackingLock()
+    store._lock = lock
+
+    def attach_outside_lock(rows, state_dir):
+        assert lock.held is False
+        rows[0]["preview"] = "loaded"
+
+    monkeypatch.setattr(sessions, "attach_session_previews", attach_outside_lock)
+
+    listed = store.list(state_dir=str(tmp_path), include_preview=True)
+
+    assert lock.entered == 1
+    assert listed == [{
+        **row,
+        "active": True,
+        "archived": False,
+        "workspace_root": str(tmp_path / "repo"),
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "preview": "loaded",
+    }]

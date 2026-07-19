@@ -235,9 +235,14 @@ class SessionStore:
         *,
         include_preview: bool = True,
     ) -> list[dict]:
+        # Snapshot mutable metadata and the active id together. Filtering and
+        # transcript preview I/O intentionally stay outside the lock.
+        with self._lock:
+            sessions = [dict(s) for s in self._sessions]
+            active = self._active
         rows = [{
             **s,
-            "active": s["id"] == self._active,
+            "active": s["id"] == active,
             "archived": s.get("archived", False),
             "repo": s.get("repo", ""),
             "branch": s.get("branch", ""),
@@ -246,7 +251,7 @@ class SessionStore:
             "output_tokens": int(s.get("output_tokens", 0) or 0),
             "cache_read_tokens": int(s.get("cache_read_tokens", 0) or 0),
             "estimated_cost_usd": float(s.get("estimated_cost_usd", 0.0) or 0.0),
-        } for s in self._sessions]
+        } for s in sessions]
         if workspace_root:
             rows = [
                 row for row in rows
