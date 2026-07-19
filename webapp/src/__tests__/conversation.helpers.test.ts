@@ -71,6 +71,7 @@ import {
   appendCommandApproval,
   appendCommandBlocked,
   appendSwarmPending,
+  applyActionResultCard,
   applySwarmResultToItems,
   ensureAssistantStreamingBubble,
   failSwarmPendingForActionError,
@@ -79,6 +80,8 @@ import {
   finalizeStreamingBubbleOnActionResult,
   formatDistilledNotice,
   formatWikiAutoIngestNotice,
+  mergeJobActionsIntoItems,
+  shouldApplySwarmLiveMerge,
   noticeShowsWaitHint,
   patchCardInItems,
   shouldPaintThinking,
@@ -1380,5 +1383,165 @@ describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
       },
     );
     expect(scheduled).toBe(1);
+  });
+});
+
+describe("pilot tool-action visibility (prep promotion + result upsert)", () => {
+  it("keeps Read→Write→Read as distinct ordered rows (no prep slot theft)", () => {
+    let items: Item[] = [{ kind: "msg", msg: { role: "user", text: "edit" } }];
+    items = upsertToolPrep(items, "read_file", { id: "call-r1", goal: "a.py" });
+    items = upsertToolPrep(items, "write_file", { id: "call-w1", goal: "a.py" });
+    items = appendActionStartCard(items, {
+      id: "call-r1",
+      kind: "read_file",
+      goal: "a.py",
+      call_id: "call-r1",
+    });
+    items = appendActionStartCard(items, {
+      id: "call-w1",
+      kind: "write_file",
+      goal: "a.py",
+      call_id: "call-w1",
+    });
+    items = appendActionStartCard(items, {
+      id: "call-r2",
+      kind: "read_file",
+      goal: "a.py",
+      call_id: "call-r2",
+    });
+    const cards = items.filter((i) => i.kind === "card") as Extract<Item, { kind: "card" }>[];
+    expect(cards.map((c) => `${c.card.kind}:${c.card.id}`)).toEqual([
+      "read_file:call-r1",
+      "write_file:call-w1",
+      "read_file:call-r2",
+    ]);
+    expect(cards[0].card.kind).toBe("read_file");
+    expect(cards[1].card.kind).toBe("write_file");
+  });
+
+  it("does not promote by kind-only or oldest prep fallback", () => {
+    let items: Item[] = [{ kind: "msg", msg: { role: "user", text: "go" } }];
+    items = upsertToolPrep(items, "read_file", { id: "prep-read", goal: "a.py" });
+    items = appendActionStartCard(items, {
+      id: "a9",
+      kind: "write_file",
+      goal: "b.py",
+    });
+    const cards = items.filter((i) => i.kind === "card") as Extract<Item, { kind: "card" }>[];
+    expect(cards).toHaveLength(2);
+    expect(cards[0].card.id).toBe("tool-prep:prep-read");
+    expect(cards[0].card.kind).toBe("read_file");
+    expect(cards[1].card.id).toBe("a9");
+    expect(cards[1].card.kind).toBe("write_file");
+  });
+
+  it("action_result inserts a missing-start card with kind/goal/status", () => {
+    const items = applyActionResultCard([], {
+      id: "miss-1",
+      kind: "run_command",
+      goal: "pytest -q",
+      error: "boom",
+      duration_ms: 42,
+    });
+    expect(items).toHaveLength(1);
+    const card = (items[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.id).toBe("miss-1");
+    expect(card.kind).toBe("run_command");
+    expect(card.goal).toBe("pytest -q");
+    expect(card.running).toBe(false);
+    expect(card.result?.error).toBe("boom");
+    expect(card.result?.duration_ms).toBe(42);
+  });
+
+  it("hydrates run_parallel goals and nested actions across reload", () => {
+    const loaded = transcriptResponseToItems({
+      display: [
+        {
+          type: "card",
+          id: "a1",
+          kind: "run_parallel",
+          goal: "",
+          goals: ["fix auth", "add tests"],
+          result: { job_id: "local-aa,local-bb", status: "pending" },
+          actions: [
+            {
+              action_id: "local-aa:t1",
+              kind: "read_file",
+              goal: "auth.py",
+              status: "complete",
+              duration_ms: 11,
+              worker_id: "local-aa",
+            },
+            {
+              action_id: "local-bb:t2",
+              kind: "write_file",
+              goal: "test_auth.py",
+              status: "running",
+              worker_id: "local-bb",
+            },
+          ],
+        },
+      ],
+    });
+    const card = (loaded[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.goals).toEqual(["fix auth", "add tests"]);
+    expect(card.actions).toHaveLength(2);
+    expect(card.actions?.[0].kind).toBe("read_file");
+    expect(card.actions?.[1].status).toBe("running");
+  });
+
+  it("mergeJobActionsIntoItems attaches live nested rows by job_id", () => {
+    const items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "a1",
+        goal: "implement",
+        kind: "run_implement",
+        running: true,
+        open: false,
+        result: { job_id: "local-xyz", status: "pending" },
+      },
+    }];
+    const next = mergeJobActionsIntoItems(items, [{
+      id: "local-xyz",
+      actions: [
+        { action_id: "n1", kind: "read_file", goal: "x.py", status: "complete", duration_ms: 3 },
+        { action_id: "n2", kind: "edit_file", goal: "x.py", status: "running" },
+      ],
+    }]);
+    const card = (next[0] as Extract<Item, { kind: "card" }>).card;
+    expect(card.actions?.map((a) => a.action_id)).toEqual(["n1", "n2"]);
+    expect(card.worker_id).toBe("local-xyz");
+  });
+
+  it("shouldApplySwarmLiveMerge fences stale generation and session", () => {
+    expect(shouldApplySwarmLiveMerge({
+      pollGen: 2,
+      currentGen: 2,
+      pollSessionId: "s1",
+      cachedSessionId: "s1",
+      activeSessionId: "s1",
+    })).toBe(true);
+    expect(shouldApplySwarmLiveMerge({
+      pollGen: 1,
+      currentGen: 2,
+      pollSessionId: "s1",
+      cachedSessionId: "s1",
+      activeSessionId: "s1",
+    })).toBe(false);
+    expect(shouldApplySwarmLiveMerge({
+      pollGen: 2,
+      currentGen: 2,
+      pollSessionId: "s1",
+      cachedSessionId: "s2",
+      activeSessionId: "s1",
+    })).toBe(false);
+    expect(shouldApplySwarmLiveMerge({
+      pollGen: 2,
+      currentGen: 2,
+      pollSessionId: "s1",
+      cachedSessionId: "s1",
+      activeSessionId: "s2",
+    })).toBe(false);
   });
 });

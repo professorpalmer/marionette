@@ -226,9 +226,16 @@ class ConversationJobsMixin:
             # target_repo (optional): abs path to a DIFFERENT git repo than the
             # open workspace; swaps self.config for a shallow-copied per-dispatch
             # HarnessConfig so the engines transparently target that repo.
+            def _on_worker_event(ev):
+                try:
+                    self._upsert_local_job_action(job_id, ev)
+                except Exception:
+                    pass
+
             res = self._run_edit_worker_bounded(
                 objective, requested_adapter, job_id=job_id,
                 target_repo=target_repo, expects_diff=expects_diff,
+                on_event=_on_worker_event,
             )
             if self._local_job_cancelled(job_id):
                 # A cancel landed while the worker was running. The job was already
@@ -469,6 +476,13 @@ class ConversationJobsMixin:
                     "pending_review": pending_review_info
                 }
 
+            # Always fold completed WorkerResult.events into job['actions']
+            # (progressive callback may have already recorded most of them).
+            try:
+                self._ingest_local_job_events(job_id, getattr(res, "events", None))
+            except Exception:
+                pass
+
             wr_engine = (getattr(res, "engine", None) or "").strip()
             wr_model = (getattr(res, "model", None) or "").strip()
             self._finish_local_job(
@@ -601,6 +615,12 @@ class ConversationJobsMixin:
                         "error": display_error,
                         "objective": objective,
                     })
+                    # Nested actions are progressive via /api/swarm/live; mirror
+                    # onto display cards only here under _busy for reload durability.
+                    try:
+                        self._mirror_local_job_actions_to_display(job_id)
+                    except Exception:
+                        pass
 
                     # Yield ConvEvent kind="swarm_result" (per-job; badges depend on it)
                     yield ConvEvent("swarm_result", {

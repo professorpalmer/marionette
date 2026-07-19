@@ -207,13 +207,37 @@ export function transcriptResponseToItems(res: {
       if (m.type === "card") {
         // result == null means still in flight (persisted at action_start).
         const pending = m.result == null;
+        const goals = Array.isArray(m.goals)
+          ? m.goals.map((g: unknown) => String(g || "")).filter(Boolean)
+          : undefined;
+        const actions = Array.isArray(m.actions)
+          ? m.actions
+            .filter((a: any) => a && typeof a === "object" && a.action_id)
+            .map((a: any) => ({
+              action_id: String(a.action_id),
+              kind: String(a.kind || "tool_call"),
+              goal: String(a.goal || ""),
+              status: (
+                a.status === "complete" || a.status === "failed" || a.status === "running"
+                  ? a.status
+                  : (a.error ? "failed" : "complete")
+              ) as "running" | "complete" | "failed",
+              duration_ms: typeof a.duration_ms === "number" ? a.duration_ms : null,
+              error: a.error ? String(a.error) : "",
+              worker_id: a.worker_id ? String(a.worker_id) : undefined,
+            }))
+          : undefined;
         return [{
           kind: "card" as const,
           card: {
             id: m.id,
-            goal: m.goal,
+            goal: m.goal || (goals ? goals.join(", ") : ""),
             cwd: m.cwd || null,
             kind: m.kind,
+            call_id: m.call_id ? String(m.call_id) : undefined,
+            goals,
+            actions,
+            worker_id: m.worker_id ? String(m.worker_id) : undefined,
             running: pending,
             open: false,
             result: pending ? undefined : (m.result || undefined)

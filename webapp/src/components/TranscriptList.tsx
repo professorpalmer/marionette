@@ -47,10 +47,29 @@ export type Msg = {
   // multi-worker swarm can't concatenate into one unbounded permanent bubble.
   workerStream?: boolean;
 };
+/** Bounded nested worker tool row (from local job actions[] / display hydrate). */
+export type NestedAction = {
+  action_id: string;
+  kind: string;
+  goal?: string;
+  status: "running" | "complete" | "failed";
+  duration_ms?: number | null;
+  error?: string;
+  worker_id?: string;
+};
+
 export type Card = {
   id: string; goal: string; cwd?: string | null;
   running: boolean; open: boolean;
   kind?: string;
+  /** Stable provider tool call id (tool_prep promotion / reload). */
+  call_id?: string;
+  /** run_parallel parent goals (hydrated from display / action_start). */
+  goals?: string[];
+  /** Nested sanitized worker actions (never stdout/args). */
+  actions?: NestedAction[];
+  /** Owning local job id when actions were mirrored from a worker. */
+  worker_id?: string;
   // Fields are optional because a card's result can be a full tool outcome
   // (num/types/artifacts) OR a lightweight dispatch ack (status/message) for a
   // backgrounded run_implement/run_parallel job. Rendering must not assume the
@@ -1552,11 +1571,19 @@ function Bubble({
 
 function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   const toolName = toolRowLabel(card.kind || "");
+  const goalsPreview = Array.isArray(card.goals) && card.goals.length > 0
+    ? card.goals.map((g) => shortenGoal(g, 40)).join(" · ")
+    : "";
   const rawGoal = isRedundantToolGoal(card.kind || "", card.goal || "")
     ? ""
-    : (card.goal || "");
+    : (card.goal || goalsPreview || "");
   const goalPreview = shortenGoal(rawGoal, 56);
   const meta = getCardMeta(card);
+  const nested = Array.isArray(card.actions) ? card.actions : [];
+  const nestedRunning = nested.some((a) => a.status === "running");
+  // Nested worker tools stay visible while running (open fold); terminal stays
+  // collapsible with the parent card chrome.
+  const showNested = nested.length > 0 && (card.open || nestedRunning || card.running);
 
   // Hermes tool-row spec: monochrome. Success is SILENT (no glyph -- the row
   // reads as done without a checkmark); only running (spinner) and hard error
@@ -1651,9 +1678,58 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
         </div>
       </button>
 
+      {showNested && (
+        <div className="mt-0.5 ml-5 pl-2 border-l border-edge/70 space-y-0.5">
+          {nested.map((action) => {
+            const nestedLabel = toolRowLabel(action.kind || "");
+            const nestedGoal = shortenGoal(action.goal || "", 52);
+            const nestedErr = Boolean(action.error) || action.status === "failed";
+            return (
+              <div
+                key={action.action_id}
+                className="flex items-center gap-2 py-0.5 px-1.5 text-[10px] font-mono text-faint/90"
+                data-testid="nested-worker-action"
+                data-action-id={action.action_id}
+                data-status={action.status}
+              >
+                <div className="flex items-center justify-center w-3 h-3 shrink-0">
+                  {action.status === "running" ? (
+                    <Loader2 size={10} className="animate-spin text-faint/70" />
+                  ) : nestedErr ? (
+                    <span className="w-1 h-1 rounded-full bg-risk/70" />
+                  ) : null}
+                </div>
+                <span className={`shrink-0 ${nestedErr ? "text-risk/80" : "text-txt/65"}`}>
+                  {nestedLabel}
+                </span>
+                {nestedGoal ? (
+                  <span className="truncate text-faint/85" title={action.goal}>
+                    {nestedGoal}
+                  </span>
+                ) : null}
+                {typeof action.duration_ms === "number" && action.status !== "running" ? (
+                  <span className="ml-auto tabular-nums text-faint/50 shrink-0">
+                    {action.duration_ms < 1000
+                      ? `${action.duration_ms}ms`
+                      : `${(action.duration_ms / 1000).toFixed(1)}s`}
+                  </span>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {card.open && (
         <div className="mt-1 ml-5 pl-3 border-l border-edge py-1.5 pr-3 bg-panel2/40 rounded-r-md text-[11px] max-w-full text-txt/90 space-y-1">
-          <KV k="goal" v={card.goal} linkKind={linkKind} />
+          <KV k="goal" v={card.goal || goalsPreview} linkKind={linkKind} />
+          {Array.isArray(card.goals) && card.goals.length > 1 && (
+            <div className="space-y-0.5">
+              {card.goals.map((g, i) => (
+                <KV key={`goal-${i}`} k={`g${i + 1}`} v={g} />
+              ))}
+            </div>
+          )}
           {card.cwd && <KV k="cwd" v={card.cwd} linkKind="file" />}
           {card.result?.error && (
             <div className={`mt-1 font-sans ${suppressed ? "text-faint/80" : "text-risk"}`}>

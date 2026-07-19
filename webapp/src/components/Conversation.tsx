@@ -36,7 +36,9 @@ import { derivePillStatus } from "./conversation/pillStatus";
 import {
   applySwarmResultToItems,
   finalizeOrphanSwarmPills,
+  mergeJobActionsIntoItems,
   patchCardInItems,
+  shouldApplySwarmLiveMerge,
   updateCommandApproval,
 } from "./conversation/streamApply";
 import {
@@ -1431,7 +1433,29 @@ export default function Conversation({
               }
             });
           }
-          return api.getSessionState();
+          // Progressive nested worker actions land on local jobs via
+          // /api/swarm/live; fold them under run_implement / run_parallel cards.
+          // Fence with the same generation + active-session guards as
+          // useSessionSwitch so a late poll from a prior session cannot mutate
+          // the current transcript.
+          const pollSid = activeSessionId;
+          const pollGen = transcriptLoadGenRef.current;
+          return api.swarmLive().then((live) => {
+            if (!shouldApplySwarmLiveMerge({
+              pollGen,
+              currentGen: transcriptLoadGenRef.current,
+              pollSessionId: pollSid,
+              cachedSessionId: cachedSessionIdRef.current,
+              activeSessionId,
+            })) {
+              return api.getSessionState();
+            }
+            const jobs = Array.isArray(live?.jobs) ? live.jobs : [];
+            if (jobs.some((j) => Array.isArray(j.actions) && j.actions.length > 0)) {
+              setItems((prev) => mergeJobActionsIntoItems(prev, jobs));
+            }
+            return api.getSessionState();
+          });
         })
         .then((stateRes) => {
           if (stateRes) {

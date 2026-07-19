@@ -8,7 +8,6 @@ import type {
 } from "../TranscriptList";
 import type { AutoBudgetSnapshot } from "../../lib/autoReceipts";
 import {
-  clearToolPrepPlaceholders,
   finalizeStreamingThinking,
   newThinkingId,
 } from "./thinkingToolPrep";
@@ -70,6 +69,177 @@ export function patchCardInItems(
     }
     return it;
   });
+}
+
+/**
+ * Update-or-insert a durable investigation card from action_result.
+ * Ring-miss / reload can deliver a result without a prior action_start; still
+ * paint a card when kind/goal/status/duration/error are present.
+ */
+export function applyActionResultCard(
+  items: Item[],
+  d: {
+    id?: string;
+    kind?: string;
+    goal?: string;
+    goals?: string[];
+    cwd?: string | null;
+    call_id?: string;
+    error?: string;
+    duration_ms?: number;
+    status?: string;
+    message?: string;
+    job_id?: string;
+    num?: number;
+    types?: string[];
+    adapter?: string;
+    artifacts?: { type: string; headline: string }[];
+    chars?: number;
+    auth_failure?: string;
+    [key: string]: unknown;
+  },
+): Item[] {
+  const id = String(d.id || "").trim();
+  if (!id) return items;
+  const sealed = finalizeStreamingBubbleOnActionResult(items);
+  const existing = sealed.some((it) => it.kind === "card" && it.card.id === id);
+  if (existing) {
+    return patchCardInItems(sealed, id, {
+      running: false,
+      open: false,
+      result: d as Card["result"],
+      ...(d.kind ? { kind: String(d.kind) } : {}),
+      ...(d.goal != null && String(d.goal).trim() ? { goal: String(d.goal) } : {}),
+      ...(Array.isArray(d.goals) ? { goals: d.goals.map(String) } : {}),
+      ...(d.call_id ? { call_id: String(d.call_id) } : {}),
+    });
+  }
+  const kind = String(d.kind || "").trim();
+  const goal = String(d.goal || "").trim();
+  const hasBody =
+    Boolean(kind || goal || d.error || d.duration_ms != null || d.status || d.message || d.job_id);
+  if (!hasBody) return sealed;
+  return [
+    ...sealed,
+    {
+      kind: "card" as const,
+      card: {
+        id,
+        goal: goal || (Array.isArray(d.goals) ? d.goals.map(String).join(", ") : ""),
+        cwd: d.cwd ?? null,
+        kind: kind || undefined,
+        call_id: d.call_id ? String(d.call_id) : undefined,
+        goals: Array.isArray(d.goals) ? d.goals.map(String) : undefined,
+        running: false,
+        open: false,
+        result: d as Card["result"],
+      },
+    },
+  ];
+}
+
+/** True when a late swarmLive poll still belongs to the active session load. */
+export function shouldApplySwarmLiveMerge(opts: {
+  pollGen: number;
+  currentGen: number;
+  pollSessionId: string | null;
+  cachedSessionId: string | null;
+  activeSessionId: string | null;
+}): boolean {
+  const sid = opts.pollSessionId;
+  if (!sid) return false;
+  if (opts.pollGen !== opts.currentGen) return false;
+  if (opts.cachedSessionId !== sid) return false;
+  if (opts.activeSessionId !== sid) return false;
+  return true;
+}
+
+/** Merge sanitized local-job actions[] onto investigation cards by job_id. */
+export function mergeJobActionsIntoItems(
+  items: Item[],
+  jobs: Array<{ id?: string; actions?: unknown; status?: string }>,
+): Item[] {
+  if (!jobs.length) return items;
+  const byJob = new Map<string, Card["actions"]>();
+  for (const job of jobs) {
+    const jid = String(job.id || "").trim();
+    if (!jid || !Array.isArray(job.actions)) continue;
+    const rows: NonNullable<Card["actions"]> = [];
+    for (const raw of job.actions) {
+      if (!raw || typeof raw !== "object") continue;
+      const r = raw as Record<string, unknown>;
+      const actionId = String(r.action_id || "").trim();
+      if (!actionId) continue;
+      const statusRaw = String(r.status || "running").toLowerCase();
+      const status =
+        statusRaw === "complete" || statusRaw === "failed" || statusRaw === "running"
+          ? statusRaw
+          : (r.error ? "failed" : "running");
+      rows.push({
+        action_id: actionId,
+        kind: String(r.kind || "tool_call"),
+        goal: String(r.goal || ""),
+        status,
+        duration_ms: typeof r.duration_ms === "number" ? r.duration_ms : null,
+        error: r.error ? String(r.error) : "",
+        worker_id: jid,
+      });
+    }
+    byJob.set(jid, rows);
+  }
+  if (byJob.size === 0) return items;
+  let changed = false;
+  const next = items.map((it) => {
+    if (it.kind !== "card") return it;
+    const jobId = String(it.card.result?.job_id || "").trim();
+    if (!jobId) return it;
+    const parts = jobId.split(",").map((p) => p.trim()).filter(Boolean);
+    let merged: NonNullable<Card["actions"]> = [];
+    if (parts.length <= 1) {
+      const rows = byJob.get(jobId);
+      if (!rows) return it;
+      merged = rows;
+    } else {
+      for (const part of parts) {
+        const rows = byJob.get(part);
+        if (!rows) continue;
+        for (const row of rows) {
+          merged.push({
+            ...row,
+            action_id: row.action_id.startsWith(`${part}:`)
+              ? row.action_id
+              : `${part}:${row.action_id}`,
+            worker_id: part,
+          });
+        }
+      }
+      if (merged.length === 0) return it;
+    }
+    const prev = it.card.actions || [];
+    if (
+      prev.length === merged.length
+      && prev.every((p, i) =>
+        p.action_id === merged[i].action_id
+        && p.status === merged[i].status
+        && p.kind === merged[i].kind
+        && (p.goal || "") === (merged[i].goal || "")
+        && (p.error || "") === (merged[i].error || "")
+        && (p.duration_ms ?? null) === (merged[i].duration_ms ?? null)
+      )
+    ) {
+      return it;
+    }
+    changed = true;
+    return {
+      kind: "card" as const,
+      card: {
+        ...it.card,
+        actions: merged,
+        worker_id: parts.length === 1 ? parts[0] : it.card.worker_id,
+      },
+    };
+  });
+  return changed ? next : items;
 }
 
 /** Deduped auth_failure banner (swarm_auth_failure or action_result fallback). */
@@ -337,7 +507,14 @@ export function finalizePilotMessage(
 /** Idempotent action_start card append (session-switch SSE race safe). */
 export function appendActionStartCard(
   items: Item[],
-  d: { id: string; goal?: string; cwd?: string | null; kind?: string },
+  d: {
+    id: string;
+    goal?: string;
+    goals?: string[];
+    cwd?: string | null;
+    kind?: string;
+    call_id?: string;
+  },
 ): Item[] {
   // Seal thinking + pilot bubbles first so tool cards never absorb prior text.
   const sealed = sealOpenStreamSurfaces(items);
@@ -345,10 +522,9 @@ export function appendActionStartCard(
     return sealed.filter((it) => it.kind !== "tool_prep");
   }
 
-  // Promote the eager provider tool hint into the real action row IN PLACE.
-  // Clearing and re-appending the provisional card briefly removed the only
-  // visible execution surface between React updates ("Still working…" with no
-  // terminal row). Prefer exact goal+kind, then kind, then the oldest prep.
+  // Promote a provisional tool-prep hint IN PLACE when correlation is safe.
+  // Never steal by kind-only or oldest-prep fallback — that mutated Read rows
+  // into Write and collapsed Read→Write→Read into fewer cards.
   const prepIndexes: number[] = [];
   for (let i = 0; i < sealed.length; i++) {
     const it = sealed[i];
@@ -362,16 +538,25 @@ export function appendActionStartCard(
   }
   const goal = String(d.goal || "").trim();
   const kind = String(d.kind || "").trim();
+  const callId = String(d.call_id || "").trim() || (
+    // Provider-stable action ids are themselves call ids (not a{n} fallbacks).
+    /^a\d+$/.test(String(d.id || "")) ? "" : String(d.id || "").trim()
+  );
   const prepIdx =
-    prepIndexes.find((i) => {
-      const card = (sealed[i] as Extract<Item, { kind: "card" }>).card;
-      return goal && card.goal === goal && (!kind || card.kind === kind);
-    })
+    (callId
+      ? prepIndexes.find((i) => {
+          const card = (sealed[i] as Extract<Item, { kind: "card" }>).card;
+          return card.id === `tool-prep:${callId}`;
+        })
+      : undefined)
     ?? prepIndexes.find((i) => {
       const card = (sealed[i] as Extract<Item, { kind: "card" }>).card;
-      return kind && card.kind === kind;
-    })
-    ?? prepIndexes[0];
+      const cardGoal = String(card.goal || "").trim();
+      const cardKind = String(card.kind || "").trim();
+      return Boolean(goal) && Boolean(kind)
+        && cardGoal === goal
+        && cardKind === kind;
+    });
   if (prepIdx != null) {
     return sealed
       .map((it, i) => (
@@ -380,11 +565,13 @@ export function appendActionStartCard(
               kind: "card" as const,
               card: {
                 id: d.id,
-                goal: d.goal as string,
+                goal: (d.goal as string) || goal,
+                goals: Array.isArray(d.goals) ? d.goals.map(String) : undefined,
                 cwd: d.cwd,
                 running: true,
                 open: false,
                 kind: d.kind,
+                call_id: callId || undefined,
               },
             }
           : it
@@ -392,19 +579,22 @@ export function appendActionStartCard(
       .filter((it) => it.kind !== "tool_prep");
   }
 
-  const base = clearToolPrepPlaceholders(sealed);
+  // No safe prep match: append a distinct durable card. Leave unrelated
+  // provisional hints alone (clearToolPrepPlaceholders would wipe them).
   return [
-    ...base,
+    ...sealed.filter((it) => it.kind !== "tool_prep"),
     {
       kind: "card",
       card: {
         id: d.id,
         // Match prior Conversation wiring: goal may be undefined on the wire.
         goal: d.goal as string,
+        goals: Array.isArray(d.goals) ? d.goals.map(String) : undefined,
         cwd: d.cwd,
         running: true,
         open: false,
         kind: d.kind,
+        call_id: callId || undefined,
       },
     },
   ];

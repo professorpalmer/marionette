@@ -2545,7 +2545,7 @@ class ConversationalSession(
 
     def _run_edit_worker_bounded(self, objective: str, requested_adapter: str,
                                  job_id: str = "", target_repo: str = "",
-                                 expects_diff: bool = True):
+                                 expects_diff: bool = True, on_event=None):
         """Run the edit worker under a hard wall-clock deadline. The work runs in
         a daemon thread; if it blows the deadline we return None so the caller can
         free its _swarm_pool slot immediately. The orphaned worker thread is a
@@ -2596,6 +2596,7 @@ class ConversationalSession(
                         session_id=self.harness_session_id or "",
                         cwd=effective_cwd,
                         expects_diff=expects_diff,
+                        on_event=on_event,
                     )
             except Exception as exc:  # surfaced to the caller after join
                 box["exc"] = exc

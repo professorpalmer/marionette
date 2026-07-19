@@ -358,12 +358,15 @@ describe("upsertToolPrep promotes into ActivityGroup cards", () => {
     expect(turnHasLiveInvestigation(out)).toBe(true);
   });
 
-  it("replaces a prior prep card when the next tool_prep arrives", () => {
+  it("keeps unrelated legacy prep cards instead of stealing their slot", () => {
     const once = upsertToolPrep([msg("user", "go")], "read_file");
     const twice = upsertToolPrep(once, "grep");
     const cards = twice.filter((i) => i.kind === "card") as Extract<Item, { kind: "card" }>[];
-    expect(cards).toHaveLength(1);
-    expect(cards[0].card.id).toBe("tool-prep:grep");
+    expect(cards).toHaveLength(2);
+    expect(cards.map((c) => c.card.id)).toEqual([
+      "tool-prep:read_file",
+      "tool-prep:grep",
+    ]);
   });
 
   it("accumulates Cursor tools by call id instead of wiping the fold", () => {

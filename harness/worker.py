@@ -427,6 +427,7 @@ class ProviderWorker:
         require_codegraph: bool = False,
         job_id: str = "",
         expects_diff: bool = True,
+        on_event=None,
     ):
         self.repo = os.path.abspath(repo) if repo else ""
         self.goal = goal
@@ -437,6 +438,9 @@ class ProviderWorker:
         # Analysis/review workers report findings without editing; empty worktree
         # diffs are success for them. Implement mode still requires a patch.
         self.expects_diff = bool(expects_diff)
+        # Optional progressive sink for action_start/action_result (parent local
+        # job actions[]). Best-effort; never raises into the worker loop.
+        self.on_event = on_event
         # Shared-budget threading: if a supervising fully-auto run installed a
         # governing budget for this thread, adopt a child() of it so this
         # worker's spend rolls up into the ONE tree-wide ceiling that never
@@ -623,6 +627,12 @@ class ProviderWorker:
                     require_codegraph=self.require_codegraph
                 ):
                     events.append(ev)
+                    cb = self.on_event
+                    if cb is not None:
+                        try:
+                            cb(ev)
+                        except Exception:
+                            pass
 
             post_failed = False
             if declarative_checks_enabled(self.repo, base_cfg.state_dir):

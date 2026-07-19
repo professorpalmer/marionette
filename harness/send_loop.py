@@ -186,6 +186,9 @@ class SendLoopMixin:
                     aid = ev.data.get("id")
                     if aid:
                         action_starts[aid] = time.time()
+                        goals = ev.data.get("goals")
+                        if not isinstance(goals, list):
+                            goals = None
                         card = {
                             "type": "card",
                             "id": aid,
@@ -197,6 +200,14 @@ class SendLoopMixin:
                             # of wiping the live Investigating UI mid-command.
                             "result": None,
                         }
+                        if goals is not None:
+                            card["goals"] = [str(g) for g in goals if str(g or "").strip()]
+                        call_id = str(ev.data.get("call_id") or "").strip()
+                        if call_id:
+                            card["call_id"] = call_id
+                        elif not str(aid).startswith("a") or (len(str(aid)) > 1 and not str(aid)[1:].isdigit()):
+                            # Stable provider ids double as call_id for prep promotion.
+                            card["call_id"] = str(aid)
                         pending_cards[aid] = card
                         self._display_transcript.append(card)
                 elif ev.kind == "action_result":
@@ -204,6 +215,20 @@ class SendLoopMixin:
                     if aid and aid in action_starts:
                         duration_ms = int((time.time() - action_starts[aid]) * 1000)
                         ev.data["duration_ms"] = duration_ms
+                    # Enrich sparse results so ring-miss / missing-start clients
+                    # can still create a durable card with kind/goal/status.
+                    if aid and aid in pending_cards:
+                        prior = pending_cards[aid]
+                        if not ev.data.get("kind") and prior.get("kind"):
+                            ev.data["kind"] = prior.get("kind")
+                        if not ev.data.get("goal") and prior.get("goal"):
+                            ev.data["goal"] = prior.get("goal")
+                        if prior.get("goals") and not ev.data.get("goals"):
+                            ev.data["goals"] = list(prior.get("goals") or [])
+                        if prior.get("call_id") and not ev.data.get("call_id"):
+                            ev.data["call_id"] = prior.get("call_id")
+                        if prior.get("cwd") and not ev.data.get("cwd"):
+                            ev.data["cwd"] = prior.get("cwd")
                     # Advisor warnings (round 6): surface once, on the first
                     # action_result after the advisor ran. Advisory only.
                     pending_warnings = getattr(self, "_pending_advisor_warnings", None)
@@ -219,7 +244,10 @@ class SendLoopMixin:
                     if aid and aid in pending_cards:
                         card = pending_cards[aid]
                         res_data = {}
-                        for key in ["job_id", "num", "types", "adapter", "artifacts", "error", "duration_ms", "chars"]:
+                        for key in [
+                            "job_id", "num", "types", "adapter", "artifacts",
+                            "error", "duration_ms", "chars", "status", "message",
+                        ]:
                             if key in ev.data:
                                 res_data[key] = ev.data[key]
                         # In-place update of the action_start row (already in display).
@@ -228,17 +256,27 @@ class SendLoopMixin:
                     elif aid:
                         # Result without a tracked start -- still persist a card.
                         res_data = {}
-                        for key in ["job_id", "num", "types", "adapter", "artifacts", "error", "duration_ms", "chars"]:
+                        for key in [
+                            "job_id", "num", "types", "adapter", "artifacts",
+                            "error", "duration_ms", "chars", "status", "message",
+                        ]:
                             if key in ev.data:
                                 res_data[key] = ev.data[key]
-                        self._display_transcript.append({
+                        card = {
                             "type": "card",
                             "id": aid,
                             "kind": ev.data.get("kind"),
                             "goal": ev.data.get("goal"),
                             "cwd": ev.data.get("cwd"),
                             "result": res_data,
-                        })
+                        }
+                        goals = ev.data.get("goals")
+                        if isinstance(goals, list):
+                            card["goals"] = [str(g) for g in goals if str(g or "").strip()]
+                        call_id = str(ev.data.get("call_id") or "").strip()
+                        if call_id:
+                            card["call_id"] = call_id
+                        self._display_transcript.append(card)
 
                 if ev.kind == "assistant_done":
                     self._turn_count += 1

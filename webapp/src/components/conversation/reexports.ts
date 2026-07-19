@@ -85,6 +85,8 @@ export {
   ensureWorkerStreamingBubble,
   finalizePilotMessage,
   appendActionStartCard,
+  applyActionResultCard,
+  mergeJobActionsIntoItems,
   finalizeStreamingBubbleOnActionResult,
   workspaceRootFromActionResult,
   appendSwarmPending,

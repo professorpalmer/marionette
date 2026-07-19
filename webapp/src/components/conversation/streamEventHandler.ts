@@ -11,6 +11,7 @@ import {
 } from "./thinkingToolPrep";
 import {
   appendActionStartCard,
+  applyActionResultCard,
   appendAuthFailure,
   appendAutoHalt,
   appendAutoStatus,
@@ -28,7 +29,6 @@ import {
   failSwarmPendingForActionError,
   finalizeOrphanSwarmPills,
   finalizePilotMessage,
-  finalizeStreamingBubbleOnActionResult,
   formatDistilledNotice,
   formatWikiAutoIngestNotice,
   noticeShowsWaitHint,
@@ -101,7 +101,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     flushTypewriter,
     startTypewriter,
     appendStreamingText,
-    setCard,
+    setCard: _setCard,
     onArtifacts,
     onJobChange,
     handleSwarmResult,
@@ -279,7 +279,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // narration) is still finalized in place.
       flushTypewriter();
       setItems((p) => {
-        let next = finalizeStreamingBubbleOnActionResult(p);
+        let next = applyActionResultCard(p, d);
         // Sync run_swarm early failures emit action_result(error) without a
         // swarm_result — flip the matching local-swarm pill off the spinner.
         if (d.error) next = failSwarmPendingForActionError(next, d.id);
@@ -295,7 +295,6 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       if (d.auth_failure) {
         setItems((p) => appendAuthFailure(p, d.auth_failure, d.id));
       }
-      setCard(d.id, { running: false, open: false, result: d });
       if (d.artifacts && !d.error) onArtifacts(d.artifacts);
       onJobChange();
       setItems((prev) => {

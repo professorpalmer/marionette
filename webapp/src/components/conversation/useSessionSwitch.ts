@@ -23,6 +23,7 @@ import { createChatEventsReattach } from "./chatEventsReattach";
 import { cancelTypewriterWithoutFlush } from "./streamTypewriter";
 import { gatherSessionArtifacts } from "./sessionArtifacts";
 import { releaseAllTranscriptPreviewBlobs } from "./transcriptImageBlobs";
+import { mergeJobActionsIntoItems } from "./streamApply";
 
 export type SessionStatus =
   | "idle"
@@ -238,6 +239,22 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         transcriptFpRef.current = transcriptFingerprint(loadedItems);
         writeTranscriptCache(activeSessionId, loadedItems);
         setTranscriptStale(false);
+
+        // Nested worker actions survive restart on local jobs; fold onto cards
+        // after display hydrate so investigation rows stay complete on reload.
+        void api.swarmLive().then((live) => {
+          if (loadGen !== transcriptLoadGenRef.current) return;
+          if (cachedSessionIdRef.current !== activeSessionId) return;
+          const jobs = Array.isArray(live?.jobs) ? live.jobs : [];
+          if (!jobs.some((j) => Array.isArray(j.actions) && j.actions.length > 0)) return;
+          setItems((prev) => {
+            const next = mergeJobActionsIntoItems(prev, jobs);
+            itemsRef.current = next;
+            transcriptFpRef.current = transcriptFingerprint(next);
+            writeTranscriptCache(activeSessionId, next);
+            return next;
+          });
+        }).catch(() => {});
 
         // Gather all artifacts from (a) card entries in res.display + job fetches.
         const artsOrPromise = gatherSessionArtifacts({

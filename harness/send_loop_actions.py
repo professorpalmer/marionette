@@ -167,7 +167,10 @@ def execute_turn_actions(
             counters["demo_swarms"] = demo_swarms
             return ("return", turn_changed_files)
         action_seq += 1
-        aid = f"a{action_seq}"
+        # Prefer the provider's stable tool_call_id so tool_prep:{callId}
+        # can promote in place; fall back to a{n} for JSON / synthetic turns.
+        _tcid = str(getattr(act, "tool_call_id", None) or "").strip()
+        aid = _tcid or f"a{action_seq}"
         # Malformed/truncated tool call: do NOT silently drop it. Surface the error
         # back to the model so it re-issues the call with all required arguments, and
         # count it as activity so the autonomous loop does not mistake it for "done".
@@ -187,6 +190,7 @@ def execute_turn_actions(
                 "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
                 "cwd": session.config.repo or None,
                 "adapter": session.config.swarm_adapter,
+                "call_id": _tcid or None,
             })
 
         if plan and act.kind in ("run_implement", "run_parallel", "write_file", "edit_file", "hash_edit", "run_command"):
@@ -194,9 +198,12 @@ def execute_turn_actions(
                 yield ConvEvent("action_start", {
                     "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
                     "cwd": session.config.repo or None,
+                    "call_id": _tcid or None,
                 })
             yield ConvEvent("action_result", {
                 "id": aid,
+                "kind": act.kind,
+                "goal": act_goal or act.tool,
                 "error": f"(plan mode: skipped {act.kind})"
             })
             session._append_action_result(act, aid, f"(plan mode: skipped {act.kind})", is_native)
@@ -207,10 +214,13 @@ def execute_turn_actions(
                 yield ConvEvent("action_start", {
                     "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
                     "cwd": session.config.repo or None,
+                    "call_id": _tcid or None,
                 })
             err_msg = "delegation is disabled for workers; edit the files directly with write_file, edit_file, or hash_edit"
             yield ConvEvent("action_result", {
                 "id": aid,
+                "kind": act.kind,
+                "goal": act_goal or act.tool,
                 "error": err_msg
             })
             session._append_action_result(act, aid, err_msg, is_native)

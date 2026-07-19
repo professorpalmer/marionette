@@ -179,6 +179,15 @@ export type Job = {
   tool_output_compactions?: number;
   task_count?: number;
   tasks?: Task[];
+  /** Bounded nested worker tool rows (kind/goal/status only). */
+  actions?: Array<{
+    action_id: string;
+    kind?: string;
+    goal?: string;
+    status?: string;
+    duration_ms?: number | null;
+    error?: string;
+  }>;
   // /api/jobs sends an artifact COUNT; embedded views may send the full list.
   // Use the /api/artifacts endpoint to fetch details for a job.
   artifacts?: Artifact[] | number;

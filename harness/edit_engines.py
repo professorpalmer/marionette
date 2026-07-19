@@ -28,7 +28,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from typing import TYPE_CHECKING, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from harness.diag import note as _diag
 
@@ -192,6 +192,7 @@ def run_edit_worker(
     config: "HarnessConfig", goal: str, requested_adapter: str = "",
     job_id: str = "", session_id: str = "", cwd: str = "",
     expects_diff: bool = True,
+    on_event=None,
 ) -> "WorkerResult":
     """Run the selected in-process edit engine and return a normalized result.
 
@@ -209,12 +210,12 @@ def run_edit_worker(
                   msg=f"agentic engine unavailable ({result.error}); falling back to native")
             return run_native_edit(
                 config, goal, job_id=job_id, session_id=session_id, cwd=target_cwd,
-                expects_diff=expects_diff,
+                expects_diff=expects_diff, on_event=on_event,
             )
         return result
     return run_native_edit(
         config, goal, job_id=job_id, session_id=session_id, cwd=target_cwd,
-        expects_diff=expects_diff,
+        expects_diff=expects_diff, on_event=on_event,
     )
 
 
@@ -253,6 +254,7 @@ def run_native_edit(
     config: "HarnessConfig", goal: str, job_id: str = "",
     session_id: str = "", cwd: str = "",
     expects_diff: bool = True,
+    on_event=None,
 ) -> "WorkerResult":
     """Marionette's own pilot loop driven in a worktree (the rich engine)."""
     from harness.autobudget import AutoBudget
@@ -264,6 +266,7 @@ def run_native_edit(
         budget=AutoBudget.from_env(), require_codegraph=False,
         job_id=job_id,
         expects_diff=expects_diff,
+        on_event=on_event,
     )
     # ProviderWorker.run() stamps tokens_out from the budget on every return path.
     result = worker.run()
@@ -350,11 +353,12 @@ def run_agentic_edit(
                 adapter="agentic",
                 payload=payload,
             )
-            # The PM sqlite store is scratch state for this single inline run; we
-            # read everything we need from the returned `result`, not the store,
-            # so it is removed as soon as the run returns. Without this every
-            # agentic implement worker leaked a pmh-edit-* dir (audit finding #3).
+            # The PM sqlite store is scratch state for this single inline run.
+            # Map any structured tool/action events BEFORE deleting the store;
+            # never parse prose/stdout. Without the rmtree every agentic
+            # implement worker leaked a pmh-edit-* dir (audit finding #3).
             tmp = tempfile.mkdtemp(prefix="pmh-edit-")
+            mapped_events: list = []
             try:
                 store = create_store("sqlite", tmp)
                 result = Orchestrator(store).run(
@@ -363,6 +367,8 @@ def run_agentic_edit(
                     worker_mode="inline",
                     label=job_label_for_session(session_id),
                 )
+                pm_job_id = str(getattr(getattr(result, "job", None), "id", "") or "")
+                mapped_events = agentic_events_from_store(store, pm_job_id)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
 
@@ -378,17 +384,20 @@ def run_agentic_edit(
                         ok=False, error=AGENTIC_ROUTE_FAILED,
                         summary=final_text or "Agentic engine could not select a model/provider.",
                         model=routed_model,
+                        events=list(mapped_events),
                     ), result)
                 if not expects_diff:
                     return _stamp_agentic(WorkerResult(
                         ok=True, tokens_out=tokens_out, tokens_in=tokens_in,
                         summary=final_text or "No summary available.",
                         model=routed_model,
+                        events=list(mapped_events),
                     ), result)
                 return _stamp_agentic(WorkerResult(
                     ok=False, tokens_out=tokens_out, tokens_in=tokens_in,
                     summary=final_text or "no changes produced",
                     model=routed_model,
+                    events=list(mapped_events),
                 ), result)
 
             return _stamp_agentic(WorkerResult(
@@ -396,12 +405,107 @@ def run_agentic_edit(
                 tokens_out=tokens_out, tokens_in=tokens_in,
                 summary=final_text or (f"Files changed: {', '.join(files_changed)}" if files_changed else "Patch generated"),
                 model=routed_model,
+                events=list(mapped_events),
             ), result)
     except Exception as exc:
         _diag("edit_engines.run_agentic_edit", exc)
         return _stamp_agentic(WorkerResult(
             ok=False, error=AGENTIC_ERROR, summary=f"Agentic engine error: {exc}",
         ))
+
+
+# Store event names that already mean a tool/action boundary (not lifecycle).
+_AGENTIC_TOOL_EVENT_NAMES = frozenset({
+    "tool.started",
+    "tool.finished",
+    "tool.failed",
+    "tool_call_progress",
+    "action_start",
+    "action_result",
+})
+
+
+def agentic_events_from_store(store: Any, job_id: str) -> list:
+    """Map structured PM store tool/action events into ConvEvent rows.
+
+    Only payloads that already carry a stable id plus kind/tool (or an explicit
+    tool event name) are mapped. Lifecycle events and raw artifact/stdout
+    payloads are ignored — never fabricate tool rows from prose.
+    """
+    from harness.conversation import ConvEvent
+
+    if not store or not job_id:
+        return []
+    try:
+        records = store.read_events(job_id) if hasattr(store, "read_events") else []
+    except Exception:
+        return []
+    out: list = []
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        name = str(rec.get("event") or "").strip()
+        payload = rec.get("payload")
+        if isinstance(payload, str):
+            try:
+                import json
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        action_id = (
+            payload.get("id")
+            or payload.get("action_id")
+            or payload.get("tool_call_id")
+            or ""
+        )
+        action_kind = (
+            payload.get("kind")
+            or payload.get("tool")
+            or payload.get("tool_name")
+            or ""
+        )
+        explicit_tool = name in _AGENTIC_TOOL_EVENT_NAMES
+        if not explicit_tool and not (action_id and action_kind):
+            continue
+        if not action_id:
+            # Explicit tool event without id — skip rather than invent one.
+            continue
+        goal = payload.get("goal") or payload.get("path") or payload.get("target") or ""
+        # Never pull command/stdout/env into the mapped event.
+        is_start = name in ("tool.started", "action_start", "tool_call_progress")
+        if not is_start and name not in (
+            "tool.finished", "tool.failed", "action_result",
+        ):
+            # Tool-shaped payload on an unknown event name: treat as start when
+            # status is still running; otherwise a result.
+            status_hint = str(payload.get("status") or "").lower()
+            is_start = status_hint in ("", "running", "started", "in_progress")
+        if is_start:
+            out.append(ConvEvent("action_start", {
+                "id": str(action_id),
+                "kind": str(action_kind or "tool_call"),
+                "goal": str(goal or ""),
+            }))
+            continue
+        err = payload.get("error")
+        if name == "tool.failed" and not err:
+            err = "failed"
+        status = payload.get("status")
+        if name == "tool.failed":
+            status = "failed"
+        elif name == "tool.finished" and not status and not err:
+            status = "complete"
+        out.append(ConvEvent("action_result", {
+            "id": str(action_id),
+            "kind": str(action_kind or "tool_call"),
+            "goal": str(goal or ""),
+            "status": str(status or ("failed" if err else "complete")),
+            "duration_ms": payload.get("duration_ms"),
+            "error": err,
+        }))
+    return out
 
 
 def _summarize_agentic_result(result) -> tuple[int, int, str, str]:

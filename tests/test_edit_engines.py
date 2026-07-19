@@ -18,6 +18,7 @@ from harness.edit_engines import (
     AGENTIC_ROUTE_FAILED,
     AGENTIC_UNAVAILABLE,
     agentic_available,
+    agentic_events_from_store,
     finalize_worktree_patch,
     managed_worktree,
     run_agentic_edit,
@@ -541,6 +542,97 @@ def test_agentic_edit_runtime_exception_returns_agentic_error(monkeypatch):
         assert result.ok is False
         assert result.error == AGENTIC_ERROR
         assert "worktree blew up" in result.summary
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_events_from_store_maps_tool_shaped_only():
+    class _Store:
+        def read_events(self, job_id):
+            assert job_id == "job-1"
+            return [
+                {"event": "task.saved", "payload": {"task_id": "t1", "role": "implement"}},
+                {"event": "artifact.saved", "payload": {
+                    "stdout": "SECRET_LOG", "files": ["a.py"],
+                }},
+                {"event": "tool.started", "payload": {
+                    "id": "tc1", "tool_name": "read_file", "path": "a.py",
+                    "command": "should-not-leak",
+                }},
+                {"event": "tool.finished", "payload": {
+                    "id": "tc1", "tool_name": "read_file", "path": "a.py",
+                    "duration_ms": 12, "stdout": "FILE_BODY",
+                }},
+            ]
+
+    events = agentic_events_from_store(_Store(), "job-1")
+    assert [e.kind for e in events] == ["action_start", "action_result"]
+    assert events[0].data["id"] == "tc1"
+    assert events[0].data["kind"] == "read_file"
+    assert events[0].data["goal"] == "a.py"
+    assert "command" not in events[0].data
+    assert events[1].data["status"] == "complete"
+    assert "stdout" not in events[1].data
+    assert "SECRET_LOG" not in str(events)
+    assert "FILE_BODY" not in str(events)
+
+
+def test_agentic_events_from_store_empty_without_tool_shape():
+    class _Store:
+        def read_events(self, _job_id):
+            return [
+                {"event": "worker.completed_task", "payload": {"task_id": "t1"}},
+                {"event": "job.status", "payload": {"status": "complete"}},
+            ]
+
+    assert agentic_events_from_store(_Store(), "job-1") == []
+    assert agentic_events_from_store(None, "job-1") == []
+    assert agentic_events_from_store(_Store(), "") == []
+
+
+def test_agentic_edit_maps_store_tool_events_onto_worker_result(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+
+        class _ToolStore:
+            def read_events(self, job_id):
+                return [{
+                    "event": "tool.started",
+                    "payload": {"id": "e1", "kind": "edit_file", "goal": "x.py"},
+                }, {
+                    "event": "tool.finished",
+                    "payload": {"id": "e1", "kind": "edit_file", "goal": "x.py"},
+                }]
+
+        job = MagicMock()
+        job.id = "pm-job"
+        pm_result = _fake_pm_result([
+            _fake_artifact(tokens_out=10, tokens_in=5, stdout="ok"),
+        ])
+        pm_result.job = job
+
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
+        monkeypatch.setattr("harness.edit_engines.managed_worktree", _fake_managed_worktree)
+        monkeypatch.setattr("harness.edit_engines.managed_worktree_for_goal", _fake_managed_worktree)
+        monkeypatch.setattr("puppetmaster.workers.WorkerSpec", MagicMock)
+        monkeypatch.setattr(
+            "puppetmaster.orchestrator.Orchestrator",
+            lambda store: MagicMock(run=MagicMock(return_value=pm_result)),
+        )
+        monkeypatch.setattr(
+            "puppetmaster.store_factory.create_store",
+            lambda *a, **k: _ToolStore(),
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("diff --git a/x b/x\n+line", ["x.py"]),
+        )
+
+        result = run_agentic_edit(cfg, "goal")
+        assert result.ok is True
+        assert [e.kind for e in result.events] == ["action_start", "action_result"]
+        assert result.events[0].data["id"] == "e1"
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 

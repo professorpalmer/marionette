@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.101, deliberately pre-1.0. Provider outages now terminate repeated no-progress and keep-alive loops calmly, model-selection value is measured separately from narrow router savings, session listings snapshot mutable state safely, and manual compaction avoids tiny-history stalls.
+> Status: v0.9.102, deliberately pre-1.0. Every pilot and nested worker action now remains a distinct ordered row in the collapsible investigation timeline, with live progress, durable reload, stable identity, and bounded secret-safe metadata.
 
 ## Documentation
 

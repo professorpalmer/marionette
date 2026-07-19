@@ -19,9 +19,19 @@ Method Resolution Order keeps behavior identical: ``_register_local_job``,
 ``live_local_jobs``, ``cancel_local_job``, etc. still resolve via inheritance.
 """
 
+import copy
 import os
 import threading
-from typing import Optional
+from typing import Any, Iterable, Optional
+
+from .job_actions import (
+    ingest_worker_events,
+    sanitize_actions_list,
+    sanitize_worker_event,
+    settle_running_actions,
+    snapshot_actions,
+    upsert_action_row,
+)
 
 
 class LocalJobsMixin:
@@ -103,6 +113,9 @@ class LocalJobsMixin:
                     "status": "running",
                     "adapter": engine_label,
                 }],
+                # Bounded nested tool rows (kind/goal/status only). Filled from
+                # ProviderWorker action events; never carries stdout/args/env.
+                "actions": [],
             }
             self._persist_local_jobs_locked()
 
@@ -214,6 +227,14 @@ class LocalJobsMixin:
                 "type": "patch" if (ok and not cancelled) else "error",
                 "headline": headline[:240],
             }]
+            # Nested UI must not spin forever after the parent job settles.
+            settle_reason = (
+                "cancelled" if cancelled
+                else ("job failed" if not ok else "job finished")
+            )
+            job["actions"] = settle_running_actions(
+                job.get("actions"), reason=settle_reason,
+            )
             self._persist_local_jobs_locked()
 
     # Cap persisted history so the on-disk file cannot grow without bound.
@@ -283,6 +304,12 @@ class LocalJobsMixin:
                         "type": "error",
                         "headline": "Interrupted by backend restart",
                     }]
+                # Re-sanitize persisted actions (drop tampered keys) and settle
+                # any nested rows left running when the prior process died.
+                job["actions"] = settle_running_actions(
+                    sanitize_actions_list(job.get("actions")),
+                    reason="interrupted by restart",
+                )
                 self._local_jobs[jid] = job
             # Rewrite so the healed statuses are the new on-disk baseline.
             self._persist_local_jobs_locked()
@@ -315,9 +342,115 @@ class LocalJobsMixin:
         ev = self._local_job_cancels.get(job_id)
         return bool(ev is not None and ev.is_set())
 
+    def _upsert_local_job_action(self, job_id: str, ev: Any) -> None:
+        """Progressively record one sanitized action event on a local job.
+
+        Progressive UI reads ``/api/swarm/live`` — this path must NOT mutate
+        ``_display_transcript`` (worker-thread race with send/export).
+        """
+        row = sanitize_worker_event(ev)
+        if row is None:
+            return
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if not job:
+                return
+            job["actions"] = upsert_action_row(list(job.get("actions") or []), row)
+            import time
+            job["updated_at"] = time.time()
+            self._persist_local_jobs_locked()
+
+    def _ingest_local_job_events(self, job_id: str, events: Optional[Iterable[Any]]) -> list:
+        """Ingest a completed WorkerResult.events list into job['actions'].
+
+        Returns a deep-copied snapshot of the resulting actions list.
+        Does not touch ``_display_transcript``; drain under ``_busy`` mirrors.
+        """
+        incoming = ingest_worker_events(events)
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if not job:
+                return snapshot_actions(incoming)
+            actions = list(job.get("actions") or [])
+            for row in incoming:
+                actions = upsert_action_row(actions, row)
+            job["actions"] = actions
+            import time
+            job["updated_at"] = time.time()
+            self._persist_local_jobs_locked()
+            return snapshot_actions(actions)
+
+    def _mirror_local_job_actions_to_display(self, job_id: str) -> None:
+        """Mirror sanitized actions onto display cards (safe drain / main path).
+
+        Acquires ``_local_jobs_lock``. Callers that already hold the session
+        single-writer ``_busy`` lock (e.g. ``drain_swarm_results``) may use this
+        for reload durability without racing progressive worker threads.
+        """
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if not job:
+                return
+            self._mirror_job_actions_to_display_locked(
+                job_id, job.get("actions") or [],
+            )
+
+    def _mirror_job_actions_to_display_locked(self, job_id: str, actions: list) -> None:
+        """Best-effort: attach nested actions onto matching display cards by job_id.
+
+        Must be called while holding ``_local_jobs_lock``. Display transcript is
+        session-owned; failures must never break worker bookkeeping. Progressive
+        worker callbacks must not call this — only locked/main drain paths.
+        """
+        display = getattr(self, "_display_transcript", None)
+        if not isinstance(display, list) or not job_id:
+            return
+        try:
+            snap = snapshot_actions(actions)
+            for entry in display:
+                if not isinstance(entry, dict) or entry.get("type") != "card":
+                    continue
+                result = entry.get("result")
+                if not isinstance(result, dict):
+                    continue
+                card_job = str(result.get("job_id") or "")
+                if not card_job:
+                    continue
+                # run_parallel may join several ids with commas.
+                job_ids = {p.strip() for p in card_job.split(",") if p.strip()}
+                if job_id not in job_ids and card_job != job_id:
+                    continue
+                if len(job_ids) > 1:
+                    # Parent parallel card: merge this worker's rows under a
+                    # stable per-job namespace so siblings do not collide.
+                    existing = list(entry.get("actions") or [])
+                    prefixed = []
+                    for row in snap:
+                        if not isinstance(row, dict):
+                            continue
+                        cloned = dict(row)
+                        aid = str(cloned.get("action_id") or "")
+                        if aid and not aid.startswith(f"{job_id}:"):
+                            cloned["action_id"] = f"{job_id}:{aid}"
+                        cloned["worker_id"] = job_id
+                        prefixed.append(cloned)
+                    for row in prefixed:
+                        existing = upsert_action_row(existing, row)
+                    entry["actions"] = existing
+                else:
+                    entry["actions"] = snap
+                    entry["worker_id"] = job_id
+        except Exception:
+            pass
+
     def live_local_jobs(self) -> list:
         """Snapshot of in-process provider-native worker jobs for /api/swarm/live.
-        Returns copies so the server can merge without holding the session lock."""
+        Returns deep copies so the server can merge without holding the session lock."""
         with self._local_jobs_lock:
-            return [dict(job) for job in self._local_jobs.values()]
+            out = []
+            for job in self._local_jobs.values():
+                snap = copy.deepcopy(job)
+                snap["actions"] = snapshot_actions(snap.get("actions"))
+                out.append(snap)
+            return out
 

@@ -159,20 +159,40 @@ export function upsertToolPrep(
     ];
   }
 
-  // Legacy string-only hint: replace anonymous prep cards in this turn.
-  const next = items.filter((it, i) => {
-    if (i < turnStart) return true;
-    if (it.kind === "tool_prep") return false;
-    if (
-      it.kind === "card"
-      && typeof it.card.id === "string"
-      && it.card.id.startsWith("tool-prep:")
-    ) {
-      return false;
+  // Legacy string-only hint: only replace the matching prep id (kind[+goal]).
+  // Never wipe unrelated provisional rows — that stole Read slots for Write.
+  const goalKey = goalRaw ? `:${goalRaw}` : "";
+  const legacyId = `tool-prep:${kind}${goalKey}`;
+  const legacyCard = { ...card, id: goalRaw ? legacyId : prepId };
+  let replaced = false;
+  const next = items.map((it, i) => {
+    if (i < turnStart) return it;
+    if (it.kind === "tool_prep") return it;
+    if (it.kind === "card" && typeof it.card.id === "string") {
+      if (it.card.id === legacyCard.id || (!goalRaw && it.card.id === prepId)) {
+        replaced = true;
+        return {
+          kind: "card" as const,
+          card: {
+            ...it.card,
+            ...legacyCard,
+            goal: goalRaw || it.card.goal || "",
+            kind: kind !== "tool_call" ? kind : (it.card.kind || kind),
+            running: legacyCard.running,
+          },
+        };
+      }
     }
-    return true;
-  });
-  return [...next, { kind: "card" as const, card }, { kind: "tool_prep" as const, name: kind }];
+    return it;
+  }).filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
+  if (replaced) {
+    return [...next, { kind: "tool_prep" as const, name: kind }];
+  }
+  return [
+    ...next,
+    { kind: "card" as const, card: legacyCard },
+    { kind: "tool_prep" as const, name: kind },
+  ];
 }
 
 /** Strip provisional tool-prep cards (and footer hints) before a real action_start. */

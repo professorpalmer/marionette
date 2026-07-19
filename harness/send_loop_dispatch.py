@@ -480,11 +480,19 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     if use_external:
         adapter = requested_adapter
         mode = act.mode or 'implement'
+        # Parent card first so reload/hydrate never sees orphan child results.
+        yield ConvEvent('action_start', {
+            'id': aid, 'kind': 'run_parallel', 'goals': goals,
+            'cwd': effective_repo, 'mode': adapter,
+        })
         sub_aids = []
         for idx, sub_goal in enumerate(goals):
             sub_aid = f'{aid}_sub_{idx}'
             sub_aids.append(sub_aid)
-            yield ConvEvent('action_start', {'id': sub_aid, 'kind': f'run_{mode}', 'goal': sub_goal, 'cwd': effective_repo})
+            yield ConvEvent('action_start', {
+                'id': sub_aid, 'kind': f'run_{mode}', 'goal': sub_goal,
+                'cwd': effective_repo, 'parent_id': aid,
+            })
         import json
         import threading
         import tempfile
