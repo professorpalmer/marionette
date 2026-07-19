@@ -51,7 +51,7 @@ export function spendIsEstimated(data: Pick<CostBreakdownData, "cost_source" | "
   if (typeof data.estimated === "boolean") return data.estimated;
   if (data.cost_source === "provider") return false;
   if (data.price_source === "default") return true;
-  return data.cost_source !== "provider";
+  return true;
 }
 
 /** Calm user-facing copy for compaction advice. Machine reasons stay in title. */
