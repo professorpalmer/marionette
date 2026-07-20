@@ -4,13 +4,31 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { shell } = require("electron");
+const {
+  denyOutsideAllowedRoots,
+  loadWorkspaceAllowedRoots,
+} = require("./path-confine.cjs");
 
 const IGNORE = new Set([".git", "node_modules", ".venv", "venv", "__pycache__",
   ".codegraph", "dist", ".vite", ".DS_Store", ".pytest_cache", ".ruff_cache"]);
 
-function registerFsBridge(ipcMain) {
+/**
+ * @param {import("electron").IpcMain} ipcMain
+ * @param {{ getAllowedRoots?: () => string[] }} [opts]
+ */
+function registerFsBridge(ipcMain, opts = {}) {
+  const getAllowedRoots =
+    typeof opts.getAllowedRoots === "function"
+      ? opts.getAllowedRoots
+      : () => loadWorkspaceAllowedRoots();
+
+  const guard = (targetPath) =>
+    denyOutsideAllowedRoots(targetPath, getAllowedRoots());
+
   ipcMain.handle("fs:readDir", (_e, dir) => {
     try {
+      const denied = guard(dir);
+      if (denied) return { ok: false, error: denied };
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       const nodes = entries
         .filter((d) => !IGNORE.has(d.name))
@@ -28,6 +46,8 @@ function registerFsBridge(ipcMain) {
 
   ipcMain.handle("fs:readFile", (_e, file) => {
     try {
+      const denied = guard(file);
+      if (denied) return { ok: false, error: denied };
       const stat = fs.statSync(file);
       if (stat.size > 2_000_000) return { ok: false, error: "file too large" };
       return { ok: true, content: fs.readFileSync(file, "utf8") };
@@ -44,6 +64,8 @@ function registerFsBridge(ipcMain) {
       if (!absPath || typeof absPath !== "string") {
         return { ok: false, error: "missing path" };
       }
+      const denied = guard(absPath);
+      if (denied) return { ok: false, error: denied };
       shell.showItemInFolder(absPath);
       return { ok: true };
     } catch (e) {

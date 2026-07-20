@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   aggregateExplorationSummary,
+  cardEffectivelyRunning,
   deriveBusyProgress,
   formatBusyElapsed,
   investigatingHeadline,
   itemsInCurrentTurn,
+  resolveCardCliInput,
   shortenGoal,
   shouldShowBusyFooter,
   toolFocusPhrase,
+  toolInputFieldKey,
   toolRowLabel,
   isRedundantToolGoal,
   quietWorkingCueVisible,
@@ -697,5 +700,77 @@ describe("deduplicateAssistantNarration", () => {
     ];
     const out = deduplicateAssistantNarration(items);
     expect(out.filter((i) => i.kind === "msg" && i.msg.role === "assistant")).toHaveLength(2);
+  });
+});
+
+describe("tool card CLI input + stale running", () => {
+  it("maps kinds to CLI field keys", () => {
+    expect(toolInputFieldKey("read_file")).toBe("path");
+    expect(toolInputFieldKey("run_command")).toBe("command");
+    expect(toolInputFieldKey("search_codegraph")).toBe("query");
+    expect(toolInputFieldKey("web_fetch")).toBe("url");
+  });
+
+  it("resolves empty goal from artifact headline", () => {
+    expect(
+      resolveCardCliInput({
+        kind: "search_codegraph",
+        goal: "",
+        result: {
+          artifacts: [
+            {
+              type: "SEARCH_CODEGRAPH",
+              headline: "CodeGraph search: _token_ok CORS",
+            },
+          ],
+        },
+      }),
+    ).toBe("_token_ok CORS");
+  });
+
+  it("treats running+result as settled for non-dispatch tools", () => {
+    expect(
+      cardEffectivelyRunning({
+        running: true,
+        result: { num: 1 } as { job_id?: string; status?: string },
+      }),
+    ).toBe(false);
+    expect(
+      cardEffectivelyRunning({
+        running: true,
+        result: { job_id: "j1", status: "pending" },
+      }),
+    ).toBe(true);
+    expect(
+      cardEffectivelyRunning({
+        running: true,
+        result: { job_id: "j1", status: "complete" },
+      }),
+    ).toBe(false);
+  });
+
+  it("deriveBusyProgress ignores stale running after result", () => {
+    const items: Item[] = [
+      msg("user", "audit"),
+      {
+        kind: "card",
+        card: {
+          id: "r1",
+          goal: "a.py",
+          cwd: null,
+          kind: "read_file",
+          running: true,
+          open: false,
+          result: {
+            num: 1,
+            types: ["READ"],
+            artifacts: [{ type: "READ", headline: "Read 10 chars" }],
+          },
+        },
+      },
+    ];
+    const p = deriveBusyProgress(items, "executing", 5_000);
+    // Answer not complete, but no effectively-running card — not "running read file".
+    expect(p.label.toLowerCase()).not.toContain("read file");
   });
 });

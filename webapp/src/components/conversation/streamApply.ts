@@ -298,6 +298,10 @@ export function terminalOutcomeFromJobStatus(
  * At assistant_done / turn boundary: settle orphan result:null and tool-prep
  * cards only when they are not owned by a still-live job id. Never globally
  * clear real background workers.
+ *
+ * Also clears stale ``running`` when a result body already landed (the common
+ * "spinner forever on Read/Search" case) and settles nested rows once the
+ * parent is no longer live.
  */
 export function reconcileOrphanInvestigationCards(
   items: Item[],
@@ -309,20 +313,62 @@ export function reconcileOrphanInvestigationCards(
     if (it.kind !== "card") return it;
     const card = it.card;
     const jobId = String(card.result?.job_id || "").trim();
-    if (jobId) {
-      const parts = jobId.split(",").map((p) => p.trim()).filter(Boolean);
-      if (parts.some((p) => live.has(p))) return it;
-      // Card already has a job ack but no live tracker entry — leave nested
-      // settle to swarm_result / mergeJobActions; only clear orphan running
-      // when the parent has no result body at all.
-    }
+    const parts = jobId
+      ? jobId.split(",").map((p) => p.trim()).filter(Boolean)
+      : [];
+    if (parts.some((p) => live.has(p))) return it;
+
+    const nestedRunning = (card.actions || []).some((a) => a.status === "running");
+    const hasResult = Boolean(card.result);
     const isPrep =
       typeof card.id === "string" && card.id.startsWith("tool-prep:");
-    const orphanPending = card.running && !card.result && !jobId;
-    if (!isPrep && !orphanPending) return it;
-    if (!card.running && !(card.actions || []).some((a) => a.status === "running")) {
+    const orphanPending = card.running && !hasResult && !jobId;
+    const resultStatus = String(card.result?.status || "").trim().toLowerCase();
+    const resultTerminal =
+      !jobId
+      || resultStatus === "complete"
+      || resultStatus === "completed"
+      || resultStatus === "done"
+      || resultStatus === "failed"
+      || resultStatus === "error"
+      || resultStatus === "cancelled"
+      || resultStatus === "canceled"
+      || resultStatus === "interrupted"
+      || resultStatus === "stalled"
+      || isTerminalJobStatus(card.result?.status);
+
+    // Result already present (read/search/… or terminal job ack) but parent
+    // still flagged running — clear the stale spinner without inventing errors.
+    // Leave non-terminal job acks alone when the tracker momentarily omits them.
+    if (card.running && hasResult && resultTerminal) {
+      changed = true;
+      return {
+        kind: "card" as const,
+        card: {
+          ...card,
+          running: false,
+          actions: nestedRunning
+            ? settleNestedRunning(card.actions, "complete")
+            : card.actions,
+        },
+      };
+    }
+
+    // Nested-only stale after parent settled / never had a live job.
+    if (!isPrep && !orphanPending) {
+      if (nestedRunning && !jobId) {
+        changed = true;
+        return {
+          kind: "card" as const,
+          card: {
+            ...card,
+            actions: settleNestedRunning(card.actions, "complete"),
+          },
+        };
+      }
       return it;
     }
+    if (!card.running && !nestedRunning) return it;
     changed = true;
     return {
       kind: "card" as const,

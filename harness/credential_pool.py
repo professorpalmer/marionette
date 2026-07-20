@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .diag import note as _diag
+from .secure_files import restrict_to_owner
 
 AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
@@ -209,24 +210,27 @@ class CredentialPool:
         return False
 
     def select(self) -> Optional[PooledCredential]:
-        now = time.time()
-        healthy = [e for e in self._entries if e.runtime_token and self._healthy(e, now)]
-        if not healthy:
-            return None
-        strategy = _strategies.get(self.provider, STRATEGY_FILL_FIRST)
-        if strategy == STRATEGY_ROUND_ROBIN:
-            idx = _rr_index.get(self.provider, 0) % len(healthy)
-            _rr_index[self.provider] = idx + 1
-            chosen = healthy[idx]
-        elif strategy == STRATEGY_LEAST_USED:
-            chosen = min(healthy, key=lambda e: e.request_count)
-        elif strategy == STRATEGY_RANDOM:
-            chosen = random.choice(healthy)
-        else:
-            # fill_first: lowest priority number first (insertion order via priority)
-            chosen = sorted(healthy, key=lambda e: e.priority)[0]
-        chosen.request_count += 1
-        return chosen
+        with _lock:
+            now = time.time()
+            healthy = [
+                e for e in self._entries if e.runtime_token and self._healthy(e, now)
+            ]
+            if not healthy:
+                return None
+            strategy = _strategies.get(self.provider, STRATEGY_FILL_FIRST)
+            if strategy == STRATEGY_ROUND_ROBIN:
+                idx = _rr_index.get(self.provider, 0) % len(healthy)
+                _rr_index[self.provider] = idx + 1
+                chosen = healthy[idx]
+            elif strategy == STRATEGY_LEAST_USED:
+                chosen = min(healthy, key=lambda e: e.request_count)
+            elif strategy == STRATEGY_RANDOM:
+                chosen = random.choice(healthy)
+            else:
+                # fill_first: lowest priority number first (insertion order via priority)
+                chosen = sorted(healthy, key=lambda e: e.priority)[0]
+            chosen.request_count += 1
+            return chosen
 
     def mark_exhausted_and_rotate(
         self,
@@ -237,25 +241,27 @@ class CredentialPool:
         immediate: bool = False,
     ) -> Optional[PooledCredential]:
         """Mark ``entry_id`` exhausted and return the next healthy credential."""
-        now = time.time()
-        for e in self._entries:
-            if e.id == entry_id:
-                e.last_status = STATUS_EXHAUSTED
-                e.last_status_at = now
-                e.last_error_code = error_code
-                e.last_error_message = (message or "")[:500]
-                break
-        _persist_all()
-        return self.select()
+        with _lock:
+            now = time.time()
+            for e in self._entries:
+                if e.id == entry_id:
+                    e.last_status = STATUS_EXHAUSTED
+                    e.last_status_at = now
+                    e.last_error_code = error_code
+                    e.last_error_message = (message or "")[:500]
+                    break
+            _persist_all()
+            return self.select()
 
     def reset_cooldowns(self) -> None:
-        for e in self._entries:
-            if e.last_status == STATUS_EXHAUSTED:
-                e.last_status = STATUS_OK
-                e.last_error_code = None
-                e.last_error_message = None
-                e.last_status_at = None
-        _persist_all()
+        with _lock:
+            for e in self._entries:
+                if e.last_status == STATUS_EXHAUSTED:
+                    e.last_status = STATUS_OK
+                    e.last_error_code = None
+                    e.last_error_message = None
+                    e.last_status_at = None
+            _persist_all()
 
 
 def _load_store() -> Dict[str, Any]:
@@ -288,6 +294,9 @@ def _persist_all() -> None:
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             json.dump(payload, f, indent=2)
         os.replace(tmp, path)
+        # Same hardening as keys.json: pool file holds raw access/refresh tokens.
+        if not restrict_to_owner(path):
+            _diag("secure_files.restrict_failed", msg=path)
     except Exception as e:
         _diag("credential_pool.persist", e)
 

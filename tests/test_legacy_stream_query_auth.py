@@ -65,11 +65,16 @@ def _gate(srv, **overrides):
     return srv.legacy_stream_query_token_ok(**params)
 
 
-def test_gate_accepts_loopback_get_with_correct_token_on_legacy_routes():
+def test_gate_accepts_loopback_get_with_correct_token_on_legacy_routes(capsys):
     import harness.server as srv
     for path in ("/api/chat", "/api/auto", "/api/run"):
         assert _gate(srv, path=path) is True
     assert _gate(srv, peer_address="::1") is True
+    err = capsys.readouterr().err
+    assert "[auth deprecation] legacy stream query-token" in err
+    assert "/api/chat" in err or "/api/auto" in err or "/api/run" in err
+    assert "tok-secret" not in err
+    assert "prefer X-Harness-Token" in err
 
 
 def test_gate_rejects_wrong_or_missing_token():

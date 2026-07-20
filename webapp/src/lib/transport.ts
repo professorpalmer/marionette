@@ -54,8 +54,10 @@ export function getHarnessIpc(): any {
   return (window as any).harnessIPC || null;
 }
 
-// Per-process auth token (defense-in-depth against unauthenticated localhost
-// access). Electron injects window.__HARNESS_TOKEN__ via the preload bridge.
+// Web/vite builds may set window.__HARNESS_TOKEN__ for headered fetch.
+// Desktop Electron does not inject the token into the renderer — API calls
+// go through harnessIPC (main attaches X-Harness-Token) or webRequest
+// interception for loopback /api/ fetches.
 function authToken(): string {
   if (typeof window === "undefined") return "";
   const w = window as any;

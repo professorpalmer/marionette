@@ -88,8 +88,10 @@ const {
 function reinjectBackendIntoRenderer() {
   try {
     if (win && win.webContents && !win.webContents.isDestroyed()) {
+      // Port only — auth stays in main (IPC + onBeforeSendHeaders). Do not
+      // expose the loopback token to renderer page scripts (XSS blast radius).
       win.webContents.executeJavaScript(
-        `window.__HARNESS_PORT__=${backendPort};window.__HARNESS_TOKEN__=${JSON.stringify(harnessToken)};`
+        `window.__HARNESS_PORT__=${backendPort};`
       ).catch(() => {});
       win.webContents.send("backend:respawned", backendPort);
     }
@@ -1271,10 +1273,11 @@ function createWindow() {
       `partition=${webPreferences.partition || "(none)"}`
     );
   });
-  // expose the backend port to the renderer for any direct needs
+  // Expose the backend port for absolute URL builders. Auth token stays in
+  // main (harnessIPC + webRequest header injection) — never a renderer global.
   win.webContents.on("did-finish-load", () => {
     win.webContents.executeJavaScript(
-      `window.__HARNESS_PORT__=${backendPort};window.__HARNESS_TOKEN__=${JSON.stringify(harnessToken)};`
+      `window.__HARNESS_PORT__=${backendPort};`
     ).catch(() => {});
   });
   if (saved && saved.maximized) {

@@ -1933,6 +1933,43 @@ describe("investigation terminal reconciliation + live ordering", () => {
     expect(bg.running).toBe(true);
   });
 
+  it("reconcileOrphanInvestigationCards clears stale running when result already landed", () => {
+    const items: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "read-1",
+          goal: "harness/server.py",
+          kind: "read_file",
+          running: true,
+          open: false,
+          result: {
+            num: 1,
+            types: ["READ"],
+            artifacts: [{ type: "READ", headline: "Read 120 chars" }],
+          },
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "bg-live",
+          goal: "ship",
+          kind: "run_implement",
+          running: true,
+          open: false,
+          result: { job_id: "job-live", status: "pending" },
+        },
+      },
+    ];
+    const next = reconcileOrphanInvestigationCards(items, ["job-live"]);
+    const read = (next[0] as Extract<Item, { kind: "card" }>).card;
+    const bg = (next[1] as Extract<Item, { kind: "card" }>).card;
+    expect(read.running).toBe(false);
+    expect(read.result?.error).toBeUndefined();
+    expect(bg.running).toBe(true);
+  });
+
   it("live row ordering: reasoning → prep → later reasoning keeps prep slot", () => {
     let items: Item[] = [{ kind: "msg", msg: { role: "user", text: "audit" } }];
     items = upsertStreamingThinking(items, "analysis-1");

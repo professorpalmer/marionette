@@ -3,9 +3,8 @@
 The harness had three near-identical containment primitives that quietly
 disagreed on the boundary case (is the parent directory itself "inside" itself?):
 
-  - conversation.is_safe_path / web_tools.is_safe_path treated ``path == parent``
-    as safe -- correct for file tools, where operating on the workspace ROOT
-    itself (e.g. list_dir on the repo) is legitimate.
+  - ``is_safe_path`` (file tools) treats ``path == parent`` as safe -- operating
+    on the workspace ROOT itself (e.g. list_dir on the repo) is legitimate.
   - worktrees._is_confined treated ``path == parent`` as a violation -- correct
     for worktree confinement, where a managed worktree must live strictly INSIDE
     the managed directory and may never be the managed directory itself.
@@ -13,6 +12,8 @@ disagreed on the boundary case (is the parent directory itself "inside" itself?)
 Two copies of the same security check that differ on a boundary is a latent
 confinement bug. Collapse the logic here; the boundary semantics stay explicit
 via ``allow_equal`` so each call site keeps its correct, intended behavior.
+``is_safe_path`` is the allow_equal=True wrapper -- import it from here, do not
+redefine it in tool_dispatch / web_tools / conversation.
 """
 from __future__ import annotations
 
@@ -124,6 +125,16 @@ def path_within(path: str, parent: str, *, allow_equal: bool) -> bool:
         return True
     except ValueError:
         return False
+
+
+def is_safe_path(path: str, parent: str) -> bool:
+    """True if ``path`` is inside ``parent`` (the workspace root itself counts).
+
+    File-tool / PDF / web-download confinement wrapper around
+    ``path_within(..., allow_equal=True)``. Single definition -- re-export from
+    call sites; do not copy this function into other modules.
+    """
+    return path_within(path, parent, allow_equal=True)
 
 
 def _strip_file_uri(raw: str) -> str:

@@ -6,6 +6,10 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const {
+  denyOutsideAllowedRoots,
+  loadWorkspaceAllowedRoots,
+} = require("./path-confine.cjs");
 
 function git(repo, args) {
   return new Promise((resolve) => {
@@ -16,8 +20,22 @@ function git(repo, args) {
   });
 }
 
-function registerGitBridge(ipcMain) {
+/**
+ * @param {import("electron").IpcMain} ipcMain
+ * @param {{ getAllowedRoots?: () => string[] }} [opts]
+ */
+function registerGitBridge(ipcMain, opts = {}) {
+  const getAllowedRoots =
+    typeof opts.getAllowedRoots === "function"
+      ? opts.getAllowedRoots
+      : () => loadWorkspaceAllowedRoots();
+
+  const guardRepo = (repo) =>
+    denyOutsideAllowedRoots(repo, getAllowedRoots());
+
   ipcMain.handle("git:status", async (_e, repo) => {
+    const denied = guardRepo(repo);
+    if (denied) return { ok: false, error: denied };
     const r = await git(repo, ["status", "--porcelain=v1", "-b"]);
     if (!r.ok) return r;
     const lines = r.out.split("\n").filter(Boolean);
@@ -31,12 +49,16 @@ function registerGitBridge(ipcMain) {
   });
 
   ipcMain.handle("git:diff", async (_e, repo, file) => {
+    const denied = guardRepo(repo);
+    if (denied) return { ok: false, error: denied };
     const args = ["diff", "--no-color"];
     if (file) args.push("--", file);
     return git(repo, args);
   });
 
   ipcMain.handle("git:branches", async (_e, repo) => {
+    const denied = guardRepo(repo);
+    if (denied) return { ok: false, error: denied };
     const r = await git(repo, ["branch", "--format=%(refname:short)\t%(HEAD)"]);
     if (!r.ok) return r;
     const branches = r.out.split("\n").filter(Boolean).map((l) => {
@@ -47,22 +69,32 @@ function registerGitBridge(ipcMain) {
   });
 
   ipcMain.handle("git:stageFile", async (_e, repo, file) => {
+    const denied = guardRepo(repo);
+    if (denied) return { ok: false, error: denied };
     return git(repo, ["add", "--", file]);
   });
 
   ipcMain.handle("git:unstageFile", async (_e, repo, file) => {
+    const denied = guardRepo(repo);
+    if (denied) return { ok: false, error: denied };
     return git(repo, ["restore", "--staged", "--", file]);
   });
 
   ipcMain.handle("git:stageAll", async (_e, repo) => {
+    const denied = guardRepo(repo);
+    if (denied) return { ok: false, error: denied };
     return git(repo, ["add", "-A"]);
   });
 
   ipcMain.handle("git:unstageAll", async (_e, repo) => {
+    const denied = guardRepo(repo);
+    if (denied) return { ok: false, error: denied };
     return git(repo, ["reset", "HEAD"]);
   });
 
   ipcMain.handle("git:commit", async (_e, repo, message) => {
+    const denied = guardRepo(repo);
+    if (denied) return { ok: false, error: denied };
     if (!message || typeof message !== "string" || message.trim() === "") {
       return { ok: false, error: "empty commit message" };
     }
@@ -70,16 +102,22 @@ function registerGitBridge(ipcMain) {
   });
 
   ipcMain.handle("git:diffStaged", async (_e, repo, file) => {
+    const denied = guardRepo(repo);
+    if (denied) return { ok: false, error: denied };
     const args = ["diff", "--cached", "--no-color"];
     if (file) args.push("--", file);
     return git(repo, args);
   });
 
   ipcMain.handle("git:applyHunk", async (_e, repo, patchText, reverse) => {
+    const denied = guardRepo(repo);
+    if (denied) return { ok: false, error: denied };
     const filename = `git-hunk-${crypto.randomBytes(16).toString("hex")}.patch`;
     const tmpfile = path.join(os.tmpdir(), filename);
     try {
-      await fs.writeFile(tmpfile, patchText, "utf8");
+      // Binary write so Windows does not translate LF → CRLF and corrupt
+      // unified diffs before ``git apply``.
+      await fs.writeFile(tmpfile, Buffer.from(String(patchText || ""), "utf8"));
       const args = ["apply", "--cached"];
       if (reverse) {
         args.push("--reverse");

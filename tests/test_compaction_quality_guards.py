@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from harness.compaction_mixin import (
+    DEFAULT_MAX_RETAINED_TAIL_TOKENS,
+    DEFAULT_MAX_SUMMARY_TOKENS,
     MAX_REDUCTION_RATIO,
     MIN_COMPACTABLE_TOKENS,
     MIN_SUMMARY_SEED_CHARS,
@@ -9,6 +11,9 @@ from harness.compaction_mixin import (
     compaction_model_override,
     is_degenerate_summary,
     neutralize_compaction_control_tokens,
+    summary_ratio_for_middle,
+    summary_token_budget_for_middle,
+    tail_budget_for_trigger,
 )
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
@@ -202,3 +207,40 @@ def test_compaction_model_env_knob(monkeypatch):
 
     monkeypatch.delenv("HARNESS_COMPACTION_MODEL", raising=False)
     assert compaction_model_override() == ""
+
+
+def test_tail_and_summary_budgets_match_lifted_defaults():
+    # OMP keepRecentTokens=20000; Hermes threshold*0.20 with absolute cap.
+    assert DEFAULT_MAX_RETAINED_TAIL_TOKENS == 20000
+    assert DEFAULT_MAX_SUMMARY_TOKENS == 8000
+    assert tail_budget_for_trigger(150_000) == 20_000  # capped
+    assert tail_budget_for_trigger(40_000) == 8_000  # 0.20 * trigger
+    assert summary_ratio_for_middle(5_000) == 0.20
+    assert summary_ratio_for_middle(20_000) == 0.15
+    assert summary_ratio_for_middle(50_000) == 0.10
+    assert summary_ratio_for_middle(120_000) == 0.06
+    # Large middle: ratio * tokens, then absolute ceiling.
+    assert summary_token_budget_for_middle(90_000) == 8_000
+    assert summary_token_budget_for_middle(10_000) == 2_000
+
+
+def test_compaction_residual_is_dense(monkeypatch):
+    """Regression: fat sessions must not keep ~60% residual after compact.
+
+    Pre-fix math kept min(budget*0.25, 64k) verbatim + 20% of middle, so
+    ~154k sessions landed around ~89k. Target: lean tail + capped summary.
+    """
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 1)
+    session = _session(budget=200_000)
+    session.pilot = _RecordingPilot(return_text=_GOOD_SUMMARY)  # type: ignore[assignment]
+    _fat_history(session, pairs=120, pad=2400)
+    before = session._estimate_context_tokens()
+    assert before > 100_000
+
+    events = list(session._maybe_compact_history(force=True))
+    done = [e for e in events if e.kind == "compaction" and not e.data.get("aborted")]
+    assert done, "expected a successful compaction event"
+    after = done[0].data["after_tokens"]
+    # Residual should be well under half; typically ~tail(<=20k)+summary(<=8k).
+    assert after < before * 0.45
+    assert after < 40_000

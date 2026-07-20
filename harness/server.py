@@ -10,6 +10,7 @@ dependency-light and launchable anywhere.
 
 import json
 import os
+import sys
 import time
 import threading
 import queue
@@ -2179,7 +2180,16 @@ def legacy_stream_query_token_ok(
     supplied = (parse_qs(query or "").get("token") or [""])[0]
     if not supplied or not expected_token:
         return False
-    return _secrets.compare_digest(supplied, expected_token)
+    if not _secrets.compare_digest(supplied, expected_token):
+        return False
+    # Deprecation breadcrumb (path only — never the token). Remove with this
+    # shim once pre-v0.9.95 Electron shells are out of support.
+    print(
+        f"[auth deprecation] legacy stream query-token used for {path} "
+        f"(prefer X-Harness-Token header)",
+        file=sys.stderr,
+    )
+    return True
 
 
 def _host_ok(host_header: str) -> bool:

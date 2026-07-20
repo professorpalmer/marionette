@@ -15,7 +15,7 @@ from harness.url_safety import (
     is_safe_url_pinned,
     normalize_url_for_request,
 )
-from harness.paths import path_within
+from harness.paths import is_safe_path
 
 WEB_FETCH_LIMIT = 16000
 WEB_FETCH_MAX_BYTES = 8 * 1024 * 1024  # 8 MiB
@@ -202,12 +202,6 @@ def github_fetch_candidates(url: str) -> list[str]:
     ]
     candidates.append(url)
     return candidates
-
-
-def is_safe_path(path: str, parent: str) -> bool:
-    """True if ``path`` is inside ``parent`` (the root itself counts as safe).
-    Shared confinement primitive; see harness.paths."""
-    return path_within(path, parent, allow_equal=True)
 
 
 class DDGParser(html.parser.HTMLParser):

@@ -11,9 +11,9 @@ Method Resolution Order keeps behavior identical: the pilot's dispatch
 still calls `self._do_read_file(act)` etc., which now resolves to these
 methods via inheritance.
 
-`_strip_ansi` and `is_safe_path` also live here (they are only used by these
-handlers); harness.conversation re-imports them so external callers keep
-working.
+`_strip_ansi` lives here; ``is_safe_path`` is re-exported from harness.paths
+(single source of truth). harness.conversation re-imports both so external
+callers keep working.
 """
 
 import hashlib
@@ -25,8 +25,12 @@ from typing import Any
 
 from ._exec import _puppetmaster_cmd
 from .internal_uri import InternalUriContext, InternalUriError, is_internal_uri, resolve_internal_uri
-from .paths import path_within
+from .paths import is_safe_path
 from .pilot import PilotAction
+
+# Re-export for callers that historically imported from tool_dispatch /
+# conversation (tests, send_loop). Definition lives in harness.paths.
+__all__ = ["ToolDispatchMixin", "_ANSI_ESCAPE", "_strip_ansi", "is_safe_path"]
 
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
@@ -35,13 +39,6 @@ _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 def _strip_ansi(text: str) -> str:
     """Remove ANSI SGR color codes so CLI output reads cleanly as tool results."""
     return _ANSI_ESCAPE.sub("", text)
-
-
-def is_safe_path(path: str, parent: str) -> bool:
-    """True if ``path`` is inside ``parent`` (the workspace root itself counts as
-    safe -- file tools legitimately operate on the root, e.g. list_dir). Shares
-    the confinement primitive with worktrees._is_confined; see harness.paths."""
-    return path_within(path, parent, allow_equal=True)
 
 
 class ToolDispatchMixin:

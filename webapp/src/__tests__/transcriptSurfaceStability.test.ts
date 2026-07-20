@@ -270,6 +270,51 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(whenDone.has(postTool)).toBe(false);
   });
 
+  it("open loop does not re-fold prior-turn finales into Explored (no disappear)", () => {
+    // Historical sealed turn: tools + trailing PILOT answer.
+    const priorFinale: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "We've completed five surfaces." },
+    };
+    const priorCard: Item = {
+      kind: "card",
+      card: {
+        id: "prior-1",
+        goal: "scheduler.py",
+        cwd: null,
+        kind: "read_file",
+        running: false,
+        open: false,
+        result: { status: "ok" },
+      },
+    };
+    // New live turn still waiting on the provider (no tools yet).
+    const liveStream: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "Starting Electron peel…", streaming: true },
+    };
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "next surface?" } },
+      { kind: "thinking", text: "plan prior", id: "th-prior" },
+      priorCard,
+      priorFinale,
+      { kind: "msg", msg: { role: "user", text: "yeah, do it." } },
+      liveStream,
+    ];
+
+    const whileOpen = collectIntermediateAssistantItems(items, true);
+    // Prior finale must stay OUTSIDE the fold while a later turn is live —
+    // absorbing it shrinks the render window and makes Explored/swarm-done
+    // rows vanish when the loop seals and finales peel back out.
+    expect(whileOpen.has(priorFinale)).toBe(false);
+    // Current-turn streaming narration still folds (blink-free).
+    expect(whileOpen.has(liveStream)).toBe(true);
+
+    const whenDone = collectIntermediateAssistantItems(items, false);
+    expect(whenDone.has(priorFinale)).toBe(false);
+    expect(whenDone.has(liveStream)).toBe(false);
+  });
+
   it("short shared prefix / substring must not cover distinct post-tool narration", () => {
     const sealed = "I will inspect the handler carefully before editing.";
     expect(assistantProseCovers(sealed, "I will")).toBe(false);

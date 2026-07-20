@@ -16,14 +16,16 @@ import {
 } from "../lib/agentLinks";
 import {
   aggregateExplorationSummary,
+  cardEffectivelyRunning,
   deriveBusyProgress,
   investigatingHeadline,
+  resolveCardCliInput,
   shortenGoal,
   quietWorkingCueVisible,
   shouldShowBusyFooter,
   toolFocusPhrase,
+  toolInputFieldKey,
   toolRowLabel,
-  isRedundantToolGoal,
   turnHasLiveInvestigation,
 } from "../lib/turnProgress";
 import {
@@ -151,19 +153,30 @@ type ActivityItem =
 /**
  * Assistants that belong inside the investigation fold for this turn.
  *
- * While the agent loop is open: fold mid-turn narration (streaming or sealed)
- * once the turn has any investigation activity (thinking / tool card), so prose
- * never paints outside then snaps into the collapse. Sticky standalone pre-tool
- * bubbles only remain outside when there is still no fold activity.
+ * Open-loop absorption (fold mid-turn narration once the turn has tools /
+ * thinking) applies ONLY to the current turn — the span after the last user
+ * message. Prior turns always use the sealed rule: fold only assistants that
+ * still have a later tool card. Without that scope, a live turn would re-fold
+ * every historical finale into its Explored group, shrink the render-window
+ * group count, then peel those finales back out on seal and shove older
+ * Explored / swarm-done rows behind "Show earlier messages" (the disappear).
  *
- * When the loop closes: fold only assistants that still have a later tool card
- * (true intermediate). The trailing final answer stands alone outside.
+ * Current turn while open: fold streaming + sealed narration once there is
+ * investigation activity (or while streaming before the first tool).
+ * Current turn when closed / any prior turn: trailing final stands alone.
  */
 export function collectIntermediateAssistantItems(
   items: Item[],
   agentLoopOpen: boolean,
 ): Set<Item> {
   const intermediateItems = new Set<Item>();
+  let lastUserIdx = -1;
+  for (let i = 0; i < items.length; i++) {
+    const row = items[i];
+    if (row.kind === "msg" && row.msg.role === "user") lastUserIdx = i;
+  }
+  const currentTurnStart = lastUserIdx >= 0 ? lastUserIdx + 1 : 0;
+
   let turnStart = 0;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
@@ -180,7 +193,9 @@ export function collectIntermediateAssistantItems(
       .slice(turnStart)
       .some((row) => row.kind === "card" || row.kind === "thinking");
 
-    if (agentLoopOpen) {
+    // Open-loop absorption is current-turn only (see docstring).
+    const openAbsorb = agentLoopOpen && i >= currentTurnStart;
+    if (openAbsorb) {
       // Mid-turn: keep streaming + sealed narration inside the fold from the
       // first token once the turn is investigative, and while streaming even
       // before the first tool (avoids outside→absorb blink). Pure chat still
@@ -192,7 +207,7 @@ export function collectIntermediateAssistantItems(
     }
 
     if (!seenCardBefore) continue; // sealed pre-tool sticky outside when done
-    // Loop closed: fold only if another tool card still follows this bubble.
+    // Sealed / prior turns: fold only if another tool card still follows.
     let cardAfter = false;
     for (let j = i + 1; j < items.length; j++) {
       const later = items[j];
@@ -922,16 +937,18 @@ function ActivityGroup({
   // so Explored / Investigating tracks the investigation timeline the user sees.
   const nestedRows = cards.flatMap((c) => c.card.actions || []);
   const actionCount = cards.length + nestedRows.length;
-  const anyRunning = cards.some(
-    (c) => c.card.running || (c.card.actions || []).some((a) => a.status === "running"),
-  );
-  const runningCard = [...cards].reverse().find((c) => c.card.running)?.card;
-  const runningNested = [...nestedRows].reverse().find((a) => a.status === "running");
+  // Ignore stale ``running`` when a terminal result body is already present —
+  // otherwise every Explored group force-opens on seal and spinners never die.
+  const anyRunning = cards.some((c) => cardEffectivelyRunning(c.card));
+  const runningCard = [...cards].reverse().find((c) => cardEffectivelyRunning(c.card))?.card;
+  const runningNested = runningCard
+    ? undefined
+    : [...nestedRows].reverse().find((a) => a.status === "running");
   const runningKind = toolFocusPhrase(
     runningCard?.kind || runningNested?.kind || "",
   );
   const runningGoal = shortenGoal(
-    runningCard?.goal || runningNested?.goal || "",
+    resolveCardCliInput(runningCard || {}) || runningNested?.goal || "",
   );
   const narrationMsgs = items.filter(
     (it) => it.kind === "msg" && (it as { kind: "msg"; msg: Msg }).msg.text.trim()
@@ -1608,19 +1625,23 @@ function Bubble({
 
 function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   const toolName = toolRowLabel(card.kind || "");
-  const goalsPreview = Array.isArray(card.goals) && card.goals.length > 0
+  // Prefer the real CLI input (path/command/query), recovering from nested
+  // goals / artifact headlines when the stream left ``goal`` empty.
+  const cliInput = resolveCardCliInput(card);
+  const multiGoals = Array.isArray(card.goals) && card.goals.length > 1
     ? card.goals.map((g) => shortenGoal(g, 40)).join(" · ")
     : "";
-  const rawGoal = isRedundantToolGoal(card.kind || "", card.goal || "")
-    ? ""
-    : (card.goal || goalsPreview || "");
+  const rawGoal = multiGoals || cliInput;
   const goalPreview = shortenGoal(rawGoal, 56);
+  const inputKey = toolInputFieldKey(card.kind || "");
   const meta = getCardMeta(card);
   const nested = Array.isArray(card.actions) ? card.actions : [];
-  const nestedRunning = nested.some((a) => a.status === "running");
+  const effectivelyRunning = cardEffectivelyRunning(card);
+  const nestedRunning =
+    effectivelyRunning && nested.some((a) => a.status === "running");
   // Nested worker tools stay visible while running (open fold); terminal stays
   // collapsible with the parent card chrome.
-  const showNested = nested.length > 0 && (card.open || nestedRunning || card.running);
+  const showNested = nested.length > 0 && (card.open || nestedRunning || effectivelyRunning);
 
   // Hermes tool-row spec: monochrome. Success is SILENT (no glyph -- the row
   // reads as done without a checkmark); only running (spinner) and hard error
@@ -1652,7 +1673,7 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
       >
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <div className="flex items-center justify-center w-3.5 h-3.5 shrink-0">
-            {card.running ? (
+            {effectivelyRunning ? (
               <Loader2 size={11} className="animate-spin text-faint/70" />
             ) : isErr ? (
               <span className="w-1.5 h-1.5 rounded-full bg-risk/70" />
@@ -1663,30 +1684,32 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
           <span className={`font-medium shrink-0 ${isErr ? "text-risk/85" : suppressed ? "text-faint/80" : "text-txt/70"}`}>
             {toolName}
           </span>
-          {linkKind !== "none" && goalValue ? (
-            <span
-              role="link"
-              tabIndex={0}
-              onClick={onGoalClick}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") onGoalClick(e as any);
-              }}
-              className="text-accent/80 hover:underline underline-offset-2 truncate max-w-[70%] font-normal cursor-pointer"
-              title={
-                linkKind === "file"
-                  ? `Open ${goalValue}`
-                  : linkKind === "url"
-                  ? "Open in browser"
-                  : "Focus terminal"
-              }
-            >
-              {goalPreview || card.goal}
-            </span>
-          ) : (
-            <span className="text-faint/85 truncate max-w-[70%] font-normal" title={card.goal}>
-              {goalPreview || card.goal}
-            </span>
-          )}
+          {goalPreview ? (
+            linkKind !== "none" && goalValue ? (
+              <span
+                role="link"
+                tabIndex={0}
+                onClick={onGoalClick}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") onGoalClick(e as any);
+                }}
+                className="text-accent/80 hover:underline underline-offset-2 truncate max-w-[70%] font-normal cursor-pointer"
+                title={
+                  linkKind === "file"
+                    ? `Open ${goalValue}`
+                    : linkKind === "url"
+                    ? "Open in browser"
+                    : "Focus terminal"
+                }
+              >
+                {goalPreview}
+              </span>
+            ) : (
+              <span className="text-faint/85 truncate max-w-[70%] font-normal" title={rawGoal}>
+                {goalPreview}
+              </span>
+            )
+          ) : null}
         </div>
 
         <div className="flex items-center gap-2 shrink-0 text-[10px] text-faint/60 select-none tabular-nums">
@@ -1730,7 +1753,7 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
                 data-status={action.status}
               >
                 <div className="flex items-center justify-center w-3 h-3 shrink-0">
-                  {action.status === "running" ? (
+                  {action.status === "running" && effectivelyRunning ? (
                     <Loader2 size={10} className="animate-spin text-faint/70" />
                   ) : nestedErr ? (
                     <span className="w-1 h-1 rounded-full bg-risk/70" />
@@ -1759,7 +1782,14 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
 
       {card.open && (
         <div className="mt-1 ml-5 pl-3 border-l border-edge py-1.5 pr-3 bg-panel2/40 rounded-r-md text-[11px] max-w-full text-txt/90 space-y-1">
-          <KV k="goal" v={card.goal || goalsPreview} linkKind={linkKind} />
+          {/* Never render an empty key row — that was the "goal" with no value. */}
+          {cliInput ? (
+            <KV
+              k={inputKey}
+              v={cliInput}
+              linkKind={classifyActionGoal(card.kind || "", cliInput).linkKind}
+            />
+          ) : null}
           {Array.isArray(card.goals) && card.goals.length > 1 && (
             <div className="space-y-0.5">
               {card.goals.map((g, i) => (
@@ -1801,7 +1831,7 @@ const KV = ({ k, v, linkKind }: { k: string; v: string; linkKind?: "file" | "url
   const clickable = linkKind === "file" || linkKind === "url" || linkKind === "command";
   return (
     <div className="flex gap-2 mb-0.5">
-      <span className="text-muted w-11 shrink-0">{k}</span>
+      <span className="text-muted w-14 shrink-0">{k}</span>
       {clickable && v ? (
         <button
           type="button"

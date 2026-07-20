@@ -28,7 +28,18 @@ MIN_SUMMARY_SEED_CHARS = 200
 MIN_COMPACTABLE_TOKENS = 5000
 MAX_REDUCTION_RATIO = 0.8
 PREFERRED_RECENT_MESSAGES = 6
-DEFAULT_MAX_RETAINED_TAIL_TOKENS = 64000
+# Verbatim recent-tail cap. Lifted from oh-my-pi keepRecentTokens=20000 and
+# Hermes ``tail_token_budget = threshold * summary_target_ratio`` (~20k on a
+# 200k/50% window). The old 64k floor left ~42% residual after "compaction"
+# (e.g. 154k -> 89k) because the expand-to-budget loop kept a fat live tail.
+DEFAULT_MAX_RETAINED_TAIL_TOKENS = 20000
+# Hermes ContextCompressor: tail budget is ``threshold_tokens * 0.20``.
+# Marionette's compaction trigger is ``budget * 0.75``, so the same ratio is
+# applied to ``trigger`` (not raw window) then capped by the absolute above.
+DEFAULT_TAIL_OF_TRIGGER_RATIO = 0.20
+# Absolute ceiling on the injected summary. Large middles used to keep 20% of
+# themselves (~18k tokens on a 90k middle); cap + tiered ratio densifies.
+DEFAULT_MAX_SUMMARY_TOKENS = 8000
 _ZERO_WIDTH_SPACE = "\u200b"
 _PRIOR_SUMMARY_WRAPPER = "PREVIOUS HISTORICAL CONVERSATION SUMMARY:\n"
 _INJECTED_SUMMARY_PREFIX = "[Earlier conversation summarized to fit context]\n"
@@ -92,6 +103,56 @@ def _max_retained_tail_tokens() -> int:
         return max(1, int(raw))
     except Exception:
         return DEFAULT_MAX_RETAINED_TAIL_TOKENS
+
+
+def _max_summary_tokens() -> int:
+    """Absolute cap for the injected compaction summary."""
+    try:
+        raw = os.environ.get("HARNESS_COMPACTION_MAX_SUMMARY_TOKENS")
+        if raw is None or str(raw).strip() == "":
+            return DEFAULT_MAX_SUMMARY_TOKENS
+        return max(500, int(raw))
+    except Exception:
+        return DEFAULT_MAX_SUMMARY_TOKENS
+
+
+def summary_ratio_for_middle(middle_tokens: int) -> float:
+    """Tiered summary density: larger middles get a tighter relative budget.
+
+    Small middles keep the legacy 20% ratio. Large coding sessions need denser
+    digests or the residual stays inefficient even with a lean recent tail.
+    """
+    try:
+        n = int(middle_tokens)
+    except Exception:
+        return 0.20
+    if n >= 100_000:
+        return 0.06
+    if n >= 40_000:
+        return 0.10
+    if n >= 15_000:
+        return 0.15
+    return 0.20
+
+
+def summary_token_budget_for_middle(middle_tokens: int) -> int:
+    """Token budget for the injected summary (floor 500, absolute ceiling)."""
+    try:
+        n = max(0, int(middle_tokens))
+    except Exception:
+        n = 0
+    ratio = summary_ratio_for_middle(n)
+    return max(500, min(_max_summary_tokens(), int(n * ratio)))
+
+
+def tail_budget_for_trigger(trigger_tokens: int) -> int:
+    """Hermes-style recent-tail budget: ``trigger * 0.20``, absolute-capped."""
+    try:
+        trigger = max(0, int(trigger_tokens))
+    except Exception:
+        trigger = 0
+    proportional = int(trigger * DEFAULT_TAIL_OF_TRIGGER_RATIO)
+    return max(1, min(proportional, _max_retained_tail_tokens()))
 
 
 class CompactionContextMixin:
@@ -357,7 +418,7 @@ class CompactionContextMixin:
         n = len(middle_block)
         if char_budget is None:
             middle_tokens = self._estimate_context_tokens_for_list(middle_block)
-            char_budget = max(500 * 4, int(middle_tokens * 0.20) * 4)
+            char_budget = summary_token_budget_for_middle(middle_tokens) * 4
         # Floor so degenerate-summary guard still passes when material exists.
         char_budget = max(int(char_budget), MIN_SUMMARY_SEED_CHARS + 160)
 
@@ -469,12 +530,12 @@ class CompactionContextMixin:
             )
             return
 
-        # A pure percentage is pathological for million-token models: 25% of a
-        # 1M window retains 262k tokens, so a 215k-token session selects only a
-        # tiny prefix and "compacts" nothing. Keep a bounded recent tail, then
-        # calibrate downward when the provider's real prompt count shows that
-        # the local chars/4 estimate under-counts this transcript.
-        tail_budget = min(int(budget * 0.25), _max_retained_tail_tokens())
+        # Keep a bounded recent tail (OMP keepRecentTokens / Hermes
+        # threshold*0.20), then calibrate downward when the provider's real
+        # prompt count shows that the local chars/4 estimate under-counts.
+        # A pure window percentage is pathological for million-token models —
+        # the absolute cap is what keeps residual context efficient.
+        tail_budget = tail_budget_for_trigger(trigger)
         try:
             local_history_tokens = self._estimate_context_tokens_for_list(self._history)
             if local_history_tokens > 0 and before_tokens > local_history_tokens:
@@ -518,7 +579,11 @@ class CompactionContextMixin:
 
         yield ConvEvent("compacting", {"message": "Summarizing chat context"})
 
-        # Pre-prune the middle block (cheap, pre-LLM)
+        # Pre-prune the middle block (cheap, pre-LLM). Large middles get a
+        # tighter prune so the summarizer call itself is faster and denser.
+        middle_tokens_raw = self._estimate_context_tokens_for_list(middle_block)
+        tool_keep = 400 if middle_tokens_raw >= 40_000 else 1000
+        args_keep = 240 if middle_tokens_raw >= 40_000 else 500
         pruned_middle = []
         import copy
         for m in middle_block:
@@ -526,15 +591,21 @@ class CompactionContextMixin:
             role = m_copy.get("role")
             content = m_copy.get("content") or ""
             if role == "tool":
-                if len(content) > 1000:
-                    m_copy["content"] = content[:1000] + "\n... [tool output truncated for summary]"
+                if len(content) > tool_keep:
+                    m_copy["content"] = (
+                        content[:tool_keep] + "\n... [tool output truncated for summary]"
+                    )
             if m_copy.get("tool_calls"):
                 for tc in m_copy["tool_calls"]:
                     func = tc.get("function") or {}
                     args = func.get("arguments") or ""
-                    if len(args) > 500:
-                        func["arguments"] = "[truncated arguments] " + args[-500:]
+                    if len(args) > args_keep:
+                        func["arguments"] = "[truncated arguments] " + args[-args_keep:]
             pruned_middle.append(m_copy)
+
+        middle_tokens = self._estimate_context_tokens_for_list(pruned_middle)
+        summary_token_budget = summary_token_budget_for_middle(middle_tokens)
+        summary_char_budget = summary_token_budget * 4
 
         sys_msg = (
             "You are a helpful assistant specialized in conversation summary.\n"
@@ -548,16 +619,11 @@ class CompactionContextMixin:
             "## Resolved\n"
             "## Pending / Open Questions\n"
             "## Key Facts / Decisions / Files\n"
-            "Be extremely concise, clear, and preserve key details such as file paths and major decisions."
+            f"Be extremely concise (hard budget ~{summary_token_budget} tokens). "
+            "Preserve key file paths, decisions, and unresolved asks; drop boilerplate and repeated tool chatter."
         )
 
         content_to_summarize = self._format_block_for_summary(pruned_middle)
-
-        # budgeting the summary to ~_SUMMARY_RATIO of the middle's token size
-        middle_tokens = self._estimate_context_tokens_for_list(pruned_middle)
-        summary_ratio = 0.20
-        summary_token_budget = max(500, int(middle_tokens * summary_ratio))
-        summary_char_budget = summary_token_budget * 4
 
         # Hermes-style: bound the summarizer call and cool down after hangs so a
         # stuck pilot cannot stall the turn forever on every compaction.

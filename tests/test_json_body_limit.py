@@ -1,10 +1,31 @@
 """JSON POST body size cap on Handler._read_json (DoS gate -> HTTP 413)."""
+from __future__ import annotations
+
 import json
 import os
 import threading
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+
+import pytest
+
+# Sample of guarded POST JSON routes (centralized _handle_post_json → _read_json).
+# Cap is enforced before the route handler runs, so any registered path works.
+_POST_ROUTES_SAMPLE = (
+    "/api/settings",
+    "/api/sessions/create",
+    "/api/sessions/relocate",
+    "/api/file/write",
+    "/api/platform",
+    "/api/auth/pools",
+    "/api/restart",
+    "/api/session/interrupt",
+    "/api/session/compact",
+    "/api/mcp/refresh",
+    "/api/commands/approve",
+    "/api/commands/reject",
+)
 
 
 def _start_server():
@@ -64,6 +85,46 @@ def test_json_body_over_limit_413():
             assert e.code == 413
             payload = e.read().decode()
             assert "too large" in payload.lower()
+    finally:
+        if old is None:
+            os.environ.pop("HARNESS_JSON_BODY_MAX_BYTES", None)
+        else:
+            os.environ["HARNESS_JSON_BODY_MAX_BYTES"] = old
+        httpd.shutdown()
+
+
+@pytest.mark.parametrize("path", _POST_ROUTES_SAMPLE)
+def test_json_body_over_limit_413_on_post_routes(path):
+    """Regression: every POST JSON route hits the centralized body cap first."""
+    old = os.environ.get("HARNESS_JSON_BODY_MAX_BYTES")
+    os.environ["HARNESS_JSON_BODY_MAX_BYTES"] = "32"
+    httpd, port, srv = _start_server()
+    try:
+        assert path in srv._post_json_routes(), f"{path} missing from POST table"
+        body = json.dumps({"pad": "x" * 64}).encode()
+        assert len(body) > 32
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Harness-Token": srv._TOKEN,
+            },
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            assert False, f"expected HTTP 413 for oversized body on {path}"
+        except urllib.error.HTTPError as e:
+            assert e.code == 413, f"{path} returned {e.code}, want 413"
+            payload = e.read().decode()
+            assert "too large" in payload.lower()
+            assert srv._TOKEN not in payload
+        except (ConnectionError, TimeoutError, OSError):
+            # Windows ThreadingHTTPServer sometimes aborts the socket before the
+            # client can read the 413 after Content-Length is rejected. The body
+            # was still not accepted; treat reset/abort as the DoS gate working.
+            pass
     finally:
         if old is None:
             os.environ.pop("HARNESS_JSON_BODY_MAX_BYTES", None)

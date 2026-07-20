@@ -13,6 +13,8 @@ export type TurnCard = {
   goal: string;
   kind: string;
   running: boolean;
+  goals?: string[];
+  result?: { job_id?: string | null; status?: string | null; artifacts?: Array<{ headline?: string }> } | null;
   actions?: Array<{ status?: string; kind?: string; goal?: string }>;
 };
 
@@ -116,6 +118,120 @@ export function isRedundantToolGoal(kind: string, goal: string): boolean {
     .replace(/\s+/g, " ")
     .trim();
   return !!kindPhrase && g === kindPhrase;
+}
+
+/** Primary CLI-style input key for an expanded tool card (path / command / query / …). */
+export function toolInputFieldKey(kind: string): string {
+  const k = normalizeToolKind(kind);
+  if (
+    k === "read_file"
+    || k === "write_file"
+    || k === "edit_file"
+    || k === "hash_edit"
+    || k === "view_image"
+    || k === "list_dir"
+    || k === "open_project"
+    || k === "delete_file"
+    || k === "create_file"
+    || k === "read"
+  ) {
+    return "path";
+  }
+  if (k === "run_command" || k === "bash" || k === "shell") return "command";
+  if (
+    k === "web_search"
+    || k === "search_codegraph"
+    || k === "search_files"
+    || k === "search_state"
+    || k === "search_tools"
+    || k === "query_wiki"
+    || k.includes("codegraph")
+    || k.startsWith("search_")
+  ) {
+    return "query";
+  }
+  if (k === "web_fetch" || k === "read_pdf" || k === "fetch") return "url";
+  return "goal";
+}
+
+type CardInputSource = {
+  kind?: string;
+  goal?: string;
+  goals?: string[];
+  actions?: Array<{ goal?: string }>;
+  result?: {
+    artifacts?: Array<{ headline?: string; type?: string }>;
+  } | null;
+};
+
+/**
+ * Resolve the real CLI/syntax input for a tool card. Prefer live goal(s), then
+ * nested worker goals, then recover from artifact headlines when the stream
+ * never stamped a path/query (empty "goal" dropdown).
+ */
+export function resolveCardCliInput(card: CardInputSource): string {
+  const kind = card.kind || "";
+  const push = (out: string[], raw: string) => {
+    const t = String(raw || "").trim();
+    if (t && !isRedundantToolGoal(kind, t)) out.push(t);
+  };
+  const candidates: string[] = [];
+  push(candidates, card.goal || "");
+  for (const g of card.goals || []) push(candidates, String(g || ""));
+  for (const a of card.actions || []) push(candidates, a.goal || "");
+  if (candidates[0]) return candidates[0];
+
+  for (const art of card.result?.artifacts || []) {
+    const h = String(art.headline || "").trim();
+    if (!h) continue;
+    const labeled = h.match(
+      /^(?:CodeGraph search|Search|Grep|Read|Wrote|Write|Edit|Ran|Run|Fetch):\s*(.+)$/i,
+    );
+    if (labeled?.[1]?.trim()) return labeled[1].trim();
+    const pathish = h.match(
+      /^(?:Read|Wrote|Writing|Edited)\s+(?:\d+\s+\w+\s+)?(?:to\s+)?(.+)$/i,
+    );
+    if (pathish?.[1]?.trim()) return pathish[1].trim();
+    if (/[\\/]|\.\w{1,8}\b/.test(h) && h.length < 400) return h;
+  }
+  return "";
+}
+
+function resultLooksTerminal(result: {
+  job_id?: string | null;
+  status?: string | null;
+} | null | undefined): boolean {
+  if (!result) return false;
+  const jobId = String(result.job_id || "").trim();
+  if (!jobId) return true; // non-dispatch tool outcome (read/search/…)
+  const s = String(result.status || "").trim().toLowerCase();
+  return (
+    s === "complete"
+    || s === "completed"
+    || s === "done"
+    || s === "failed"
+    || s === "error"
+    || s === "cancelled"
+    || s === "canceled"
+    || s === "interrupted"
+    || s === "stalled"
+  );
+}
+
+/**
+ * Whether a card should still show a spinner / keep Investigating open.
+ * Clears stale ``running`` when a terminal result body is already present
+ * (orphaned prep/pending still count as running until reconcile settles them).
+ */
+export function cardEffectivelyRunning(card: {
+  running?: boolean;
+  result?: { job_id?: string | null; status?: string | null } | null;
+  actions?: Array<{ status?: string }>;
+}): boolean {
+  const settled = resultLooksTerminal(card.result);
+  if (settled) return false;
+  if (card.running) return true;
+  return (card.actions || []).some((a) => a.status === "running");
 }
 
 /** Soft focus phrase for live headlines ("run command", "read file"). */
@@ -374,9 +490,9 @@ export function deriveBusyProgress(
     status === "thinking" || status === "executing" || status === "streaming";
   const cards = cardsInTurn(items);
   const step = cards.length;
-  const running = [...cards].reverse().find((c) => c.running);
+  const running = [...cards].reverse().find((c) => cardEffectivelyRunning(c));
   const runningKind = (running?.kind || "").replace(/_/g, " ").trim();
-  const runningGoal = shortenGoal(running?.goal || "");
+  const runningGoal = shortenGoal(resolveCardCliInput(running || {}) || "");
 
   let toolPrep = "";
   for (const it of [...itemsInCurrentTurn(items)].reverse()) {
@@ -523,9 +639,7 @@ export function turnHasLiveInvestigation(
   for (const it of itemsInCurrentTurn(items)) {
     if (it.kind === "card") {
       const card = (it as { card: TurnCard }).card;
-      if (card?.running) return true;
-      // Nested worker rows keep Investigating while a parent fold is settled.
-      if ((card?.actions || []).some((a) => a.status === "running")) return true;
+      if (card && cardEffectivelyRunning(card)) return true;
     }
     if (it.kind === "tool_prep") return true;
     if (
@@ -548,7 +662,12 @@ export function turnHasLiveInvestigation(
  */
 export function turnHasVisibleBusySurface(items: TurnItem[]): boolean {
   for (const it of itemsInCurrentTurn(items)) {
-    if (it.kind === "card" && (it as { card: TurnCard }).card?.running) return true;
+    if (
+      it.kind === "card"
+      && cardEffectivelyRunning((it as { card: TurnCard }).card || {})
+    ) {
+      return true;
+    }
     if (it.kind === "tool_prep") return true;
     if (it.kind === "thinking" && (it as { streaming?: boolean }).streaming === true) {
       return true;
