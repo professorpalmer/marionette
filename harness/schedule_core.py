@@ -24,10 +24,9 @@ minute matches if EITHER the DOM or the DOW matches -- the well-known Vixie
 cron OR-rule -- because that is what real crontabs expect.
 """
 
-import calendar
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 
 # Field bounds as (low, high) inclusive, in cron field order.
@@ -180,11 +179,139 @@ class CronExpr:
             f"for {self.raw!r}")
 
 
-# Ordered field names for row round-tripping and store schema.
+def floor_minute(dt: datetime) -> datetime:
+    """Truncate to minute resolution (seconds/microseconds cleared)."""
+    return dt.replace(second=0, microsecond=0)
+
+
+def fire_at_timestamp(dt: datetime) -> float:
+    """Stable float identity for a cron fire minute."""
+    return floor_minute(dt).timestamp()
+
+
+def _coalesce_latest_fire(cron: CronExpr, first: datetime, now_min: datetime) -> datetime:
+    """Walk from first missed fire to the latest fire at or before now_min."""
+    latest = first
+    cur = first
+    # Cap iterations to avoid pathological loops; now_min - first is enough.
+    for _ in range(_MAX_SEARCH_MINUTES):
+        try:
+            nxt = cron.next_after(cur)
+        except ValueError:
+            break
+        if nxt > now_min:
+            break
+        latest = nxt
+        cur = nxt
+    return latest
+
+
+def due_fire_at(schedule: "Schedule", now: datetime) -> Optional[datetime]:
+    """Return the minute-stable fire identity to dispatch, or None if not due.
+
+    Same-minute correctness: once ``last_fire_at`` records a fire minute, a
+    later tick in that same minute is not due (``next_after`` moves forward).
+
+    Catch-up: when one or more fire windows were missed, return a single
+    coalesced fire (the latest missed minute <= now), never one run per gap.
+
+    Never-run: anchor on ``enabled_at`` or ``created_at`` so a schedule that
+    missed its first window still catches up once.
+    """
+    if not schedule.enabled:
+        return None
+    try:
+        cron = CronExpr.parse(schedule.cron)
+    except ValueError:
+        return None
+
+    now_min = floor_minute(now)
+
+    if schedule.last_fire_at and schedule.last_fire_at > 0:
+        anchor = datetime.fromtimestamp(schedule.last_fire_at)
+        try:
+            first_missed = cron.next_after(anchor)
+        except ValueError:
+            return None
+        if first_missed > now_min:
+            return None
+        return _coalesce_latest_fire(cron, first_missed, now_min)
+
+    # Never-run: the current matching minute is always due.
+    if cron.matches(now_min):
+        return now_min
+
+    # Catch up a missed first window once, anchored on enable/create time.
+    # Ignore anchors in the future relative to ``now`` (clock skew / test inject).
+    anchor_ts = schedule.enabled_at or schedule.created_at
+    if anchor_ts and anchor_ts > 0:
+        anchor = datetime.fromtimestamp(anchor_ts)
+        if floor_minute(anchor) > now_min:
+            return None
+        search_from = floor_minute(anchor) - timedelta(minutes=1)
+        try:
+            first = cron.next_after(search_from)
+        except ValueError:
+            return None
+        if first > now_min:
+            return None
+        return _coalesce_latest_fire(cron, first, now_min)
+
+    return None
+
+
+# Production successful auto_halt reasons (exact prefix, case-insensitive).
+# Substring matching is intentionally rejected so negative phrases that merely
+# contain "objective met" cannot be recorded as ok.
+_OK_HALT_PREFIXES = (
+    "objective met and verified",
+    "pilot reports objective met",
+)
+
+
+def status_from_halt_reason(reason: str) -> str:
+    """Map an auto_halt reason to a truthful terminal schedule status.
+
+    ``ok`` is reserved for genuine successful objective completion via an
+    exact/prefix allowlist of production halt reasons. Ceilings, cancellation,
+    killswitch, refusal, and failures stay non-ok.
+    """
+    raw = (reason or "").strip()
+    low = raw.lower()
+    if not low:
+        return "failed"
+    if any(low.startswith(prefix) for prefix in _OK_HALT_PREFIXES):
+        return "ok"
+    if "cancel" in low:
+        return "cancelled"
+    if "killswitch" in low:
+        return "killswitch"
+    if "refused" in low:
+        return "refused"
+    if "token ceiling" in low or ("token" in low and "ceiling" in low):
+        return "token_ceiling"
+    if "time ceiling" in low or ("time ceiling" in low) or (
+        "seconds" in low and "ceiling" in low
+    ):
+        return "time_ceiling"
+    if "swarm ceiling" in low or ("swarm" in low and "ceiling" in low):
+        return "swarm_ceiling"
+    if "idle" in low or "stall" in low:
+        return "idle_ceiling"
+    if "turn" in low and "ceiling" in low:
+        return "turn_ceiling"
+    if "budget" in low:
+        return "budget"
+    if "error" in low or "exception" in low:
+        return "error"
+    return "failed"
+
+
+# Ordered field names for row round-tripping and store schema (persistent cols).
 SCHEDULE_FIELDS = [
     "id", "name", "objective", "cron", "repo", "swarm_adapter", "driver",
     "enabled", "max_tokens", "max_seconds", "max_swarms",
-    "created_at", "last_run_at", "last_status",
+    "created_at", "enabled_at", "last_run_at", "last_fire_at", "last_status",
 ]
 
 
@@ -205,13 +332,23 @@ class Schedule:
     max_seconds: int = 0
     max_swarms: int = 0
     created_at: float = 0.0
+    enabled_at: float = 0.0
     last_run_at: float = 0.0
+    last_fire_at: float = 0.0
     last_status: str = ""
+    # Claim / fencing fields (managed by ScheduleStore; shown by list).
+    claim_owner: str = ""
+    claim_at: float = 0.0
+    claim_lease_until: float = 0.0
+    claim_fire_at: float = 0.0
+    claim_run_id: str = ""
+    cancel_requested: bool = False
 
     def to_row(self) -> Dict[str, object]:
         """Flatten to a sqlite-friendly dict (bool -> int)."""
         d = asdict(self)
         d["enabled"] = 1 if self.enabled else 0
+        d["cancel_requested"] = 1 if self.cancel_requested else 0
         return d
 
     @classmethod
@@ -230,6 +367,28 @@ class Schedule:
             max_seconds=int(row.get("max_seconds") or 0),
             max_swarms=int(row.get("max_swarms") or 0),
             created_at=float(row.get("created_at") or 0.0),
+            enabled_at=float(row.get("enabled_at") or 0.0),
             last_run_at=float(row.get("last_run_at") or 0.0),
+            last_fire_at=float(row.get("last_fire_at") or 0.0),
             last_status=str(row.get("last_status") or ""),
+            claim_owner=str(row.get("claim_owner") or ""),
+            claim_at=float(row.get("claim_at") or 0.0),
+            claim_lease_until=float(row.get("claim_lease_until") or 0.0),
+            claim_fire_at=float(row.get("claim_fire_at") or 0.0),
+            claim_run_id=str(row.get("claim_run_id") or ""),
+            cancel_requested=bool(row.get("cancel_requested", 0)),
         )
+
+    def display_status(self, now: Optional[float] = None) -> str:
+        """Truthful list status: running / stale / invalid_cron / last_status."""
+        import time as _time
+        now_ts = _time.time() if now is None else float(now)
+        try:
+            CronExpr.parse(self.cron)
+        except ValueError:
+            return "invalid_cron"
+        if self.claim_owner:
+            if self.claim_lease_until and self.claim_lease_until > now_ts:
+                return "running"
+            return "stale"
+        return self.last_status or "never"

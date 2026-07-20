@@ -7,7 +7,13 @@ from datetime import datetime
 
 import pytest
 
-from harness.schedule_core import CronExpr, Schedule
+from harness.schedule_core import (
+    CronExpr,
+    Schedule,
+    due_fire_at,
+    fire_at_timestamp,
+    status_from_halt_reason,
+)
 
 
 def _dt(y, mo, d, h, mi):
@@ -143,7 +149,8 @@ def test_schedule_row_roundtrip():
         id="abc123", name="nightly", objective="audit repo",
         cron="0 2 * * *", repo="/tmp/x", swarm_adapter="openai",
         driver="qwen", enabled=False, max_tokens=5000, max_seconds=600,
-        max_swarms=3, created_at=1234.5, last_run_at=99.0, last_status="ok")
+        max_swarms=3, created_at=1234.5, enabled_at=1234.5,
+        last_run_at=99.0, last_fire_at=99.0, last_status="ok")
     row = s.to_row()
     assert row["enabled"] == 0  # bool flattened to int for sqlite
     back = Schedule.from_row(row)
@@ -156,3 +163,75 @@ def test_schedule_from_row_defaults():
     assert s.enabled is True
     assert s.swarm_adapter == "demo"
     assert s.max_tokens == 0
+    assert s.last_fire_at == 0.0
+
+
+def test_due_fire_same_minute_once():
+    s = Schedule(id="a", name="n", objective="o", cron="* * * * *")
+    now = _dt(2024, 1, 1, 12, 0)
+    fire = due_fire_at(s, now)
+    assert fire == now
+    s.last_fire_at = fire_at_timestamp(fire)
+    # Second tick in the same minute must not be due.
+    assert due_fire_at(s, now.replace(second=30)) is None
+
+
+def test_due_fire_catchup_first_missed_window():
+    # Created before a hourly fire; now is past that fire; never run.
+    created = _dt(2024, 1, 1, 9, 15).timestamp()
+    s = Schedule(
+        id="a", name="n", objective="o", cron="0 * * * *",
+        created_at=created, enabled_at=created,
+    )
+    now = _dt(2024, 1, 1, 10, 30)
+    fire = due_fire_at(s, now)
+    assert fire == _dt(2024, 1, 1, 10, 0)
+
+
+def test_due_fire_multi_gap_coalesces_to_one():
+    created = _dt(2024, 1, 1, 0, 0).timestamp()
+    s = Schedule(
+        id="a", name="n", objective="o", cron="0 * * * *",
+        created_at=created, enabled_at=created,
+        last_fire_at=_dt(2024, 1, 1, 1, 0).timestamp(),
+    )
+    # Missed 02:00, 03:00, 04:00 — one coalesced fire at latest.
+    now = _dt(2024, 1, 1, 4, 15)
+    fire = due_fire_at(s, now)
+    assert fire == _dt(2024, 1, 1, 4, 0)
+
+
+@pytest.mark.parametrize("reason,status", [
+    ("pilot reports objective met (no further investigation)", "ok"),
+    ("objective met and verified (verify_cmd passed)", "ok"),
+    ("cancelled", "cancelled"),
+    ("killswitch tripped (/tmp/stop)", "killswitch"),
+    ("REFUSED: no .codegraph index", "refused"),
+    ("token ceiling reached (100/100)", "token_ceiling"),
+    ("time ceiling reached (60s/60s)", "time_ceiling"),
+    ("swarm ceiling reached (5/5)", "swarm_ceiling"),
+    ("idle stall (3 idle steps)", "idle_ceiling"),
+    ("turn ceiling reached", "turn_ceiling"),
+    ("budget exhausted", "budget"),
+    ("something went wrong", "failed"),
+])
+def test_status_from_halt_reason(reason, status):
+    assert status_from_halt_reason(reason) == status
+
+
+@pytest.mark.parametrize("reason", [
+    "objective met",
+    " falsely claimed objective met and verified",
+    "objective NOT verified after 2 retries (verify_cmd still failing)",
+    "failed: objective met was a hallucination",
+    "did not find that the objective met",
+])
+def test_status_from_halt_reason_rejects_objective_met_substring(reason):
+    # Bare / negative phrases that merely contain "objective met" are never ok.
+    assert status_from_halt_reason(reason) != "ok"
+    assert status_from_halt_reason(reason) == "failed"
+
+
+def test_display_status_invalid_cron():
+    s = Schedule(id="a", name="n", objective="o", cron="not a cron")
+    assert s.display_status() == "invalid_cron"

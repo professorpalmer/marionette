@@ -158,7 +158,8 @@ Because state lives in Puppetmaster's store, job history persists across harness
 restarts for free. Alongside it, the harness persists sessions, transcripts, and
 the prompt queue under a stable `HARNESS_STATE_DIR` (default `~/.pmharness/state`):
 `prompt_queue.json` plus `transcripts/{id}.json`, so an in-flight playlist of
-prompts and prior conversation survive a backend restart.
+prompts and prior conversation survive a backend restart. Scheduled unattended
+objectives persist under the same state root as `schedules.sqlite` (see §9d).
 
 ## 7. Surfaces
 
@@ -317,6 +318,10 @@ harness/          the product (principal modules below; mixins compose the sessi
   state.py          DurableState (read layer over SwarmStore)
   config.py         HarnessConfig (swappable driver, budget, reach)
   autobudget.py     full-auto budget governor (caps spend per objective)
+  schedule_core.py  pure cron engine + Schedule record (stdlib-only)
+  schedule_store.py sqlite schedules + claim fencing (WAL)
+  scheduler.py      daemon / run_due driver over run_auto
+  schedule_cli.py   `harness schedule` CLI (daemon-only surface)
   checkpoints.py    run checkpoints for resume/rollback
   memory_store.py   durable user facts and preferences
   providers.py      model provider/reach resolution
@@ -339,7 +344,23 @@ Because full-auto can execute shell commands without a human in the loop,
 they run. It blocks destructive or unsafe operations rather than trusting the
 driver, turning autonomy into a bounded, auditable capability.
 
-### 9c. The portable Wiki orchestrator
+### 9c. Schedules (CLI + local daemon only)
+
+`harness schedule` manages cron-backed unattended objectives and a local
+`daemon` loop that claims due fires and drives `ConversationalSession.run_auto`.
+State lives in `schedules.sqlite` under `HARNESS_STATE_DIR` (default
+`~/.pmharness/state`). There is no HTTP, UI, or SSE schedule surface yet —
+operational control is explicitly CLI-daemon-only until that product path
+exists. Claims use SQLite WAL + transactional claim-before-run fencing
+(`claim_run_id` ownership on complete/renew, lease ≥ default with headroom,
+cooperative renew between `run_auto` events) so two daemons (or daemon +
+`run-now`) cannot overlap the same schedule. Active `remove` disables and
+requests cancel without deleting run history; a remove against an already-stale
+claim recovers the claim in-transaction (`stale_recovered`) so a later remove
+can purge; idle remove purges atomically. Lost claim ownership never reports a
+false `ok` (local outcome `superseded` / `ownership_lost`).
+
+### 9d. The portable Wiki orchestrator
 
 `harness/wiki.py` is a portable knowledge wiki -- a durable notes store the
 system can carry between sessions. `harness/wiki_orchestrator.py` drives
