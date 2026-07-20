@@ -1,7 +1,7 @@
 {
   "name": "pm-harness",
   "private": true,
-  "version": "0.9.104",
+  "version": "0.9.105",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -36,7 +36,6 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@electron/notarize": "^2.5.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
     "@types/node": "^24.13.2",
