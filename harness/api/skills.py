@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, List, Union
 
+from .redaction import redact_api_secrets
+
 
 @dataclass
 class SkillsServices:
@@ -200,7 +202,7 @@ def post_memory_propose_dismiss(body: dict, svc: SkillsServices) -> tuple[int, J
 
 def get_skills(svc: SkillsServices) -> tuple[int, JsonPayload]:
     """GET /api/skills."""
-    return 200, [
+    return 200, redact_api_secrets([
         {
             "slug": sk.slug,
             "name": sk.name,
@@ -212,12 +214,12 @@ def get_skills(svc: SkillsServices) -> tuple[int, JsonPayload]:
             "supersedes": getattr(sk, "supersedes", ""),
         }
         for sk in svc.skills.list()
-    ]
+    ])
 
 
 def get_rules(svc: SkillsServices) -> tuple[int, JsonPayload]:
     """GET /api/rules."""
-    return 200, [
+    return 200, redact_api_secrets([
         {
             "slug": r.slug,
             "text": r.text,
@@ -226,13 +228,13 @@ def get_rules(svc: SkillsServices) -> tuple[int, JsonPayload]:
             "source": r.source,
         }
         for r in svc.rules.list()
-    ]
+    ])
 
 
 def get_memory(svc: SkillsServices) -> tuple[int, JsonPayload]:
     """GET /api/memory."""
     entries = svc.memory.list()
-    return 200, {
+    return 200, redact_api_secrets({
         "memory": [
             {
                 "id": e.id,
@@ -245,4 +247,4 @@ def get_memory(svc: SkillsServices) -> tuple[int, JsonPayload]:
         ],
         "total_chars": svc.memory.total_chars(),
         "limit": svc.memory_char_limit,
-    }
+    })

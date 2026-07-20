@@ -1,12 +1,27 @@
 import json
 import tempfile
 import os
+import subprocess
 import pytest
+from dataclasses import dataclass
 from harness.pilot import build_tools_schema
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 from harness.vision import VisionResult, default_sidecar, GeminiVisionSidecar, OpenRouterVisionSidecar
 import harness.vision
+
+_MIN_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
+    b"\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01"
+    b"\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+@dataclass
+class _ViewAct:
+    path: str
+    kind: str = "view_image"
+
 
 def test_view_image_schema():
     schemas_normal = build_tools_schema(no_delegation=False)
@@ -200,6 +215,61 @@ def test_view_image_confinement(monkeypatch):
         tool_msgs = [m for m in s._history if m.get("role") == "tool"]
         assert len(tool_msgs) == 1
         assert "Path traversal attempt rejected" in tool_msgs[0]["content"]
+
+def test_view_image_rejects_path_outside_read_allowed_roots(monkeypatch):
+    def mock_transcribe_images(paths, sidecar=None):
+        return [VisionResult(text="should not run", model="mock-vlm")]
+    monkeypatch.setattr(harness.vision, "transcribe_images", mock_transcribe_images)
+
+    with tempfile.TemporaryDirectory() as repo:
+        cfg = HarnessConfig(
+            driver="stub-oracle-v2",
+            state_dir=tempfile.mkdtemp(),
+            repo=os.path.realpath(repo),
+        )
+        session = ConversationalSession(cfg)
+        bad = session._do_view_image(_ViewAct(path="/etc/passwd"))
+        assert bad[0] is False and bad[1] == "path_traversal"
+
+
+def test_nested_workspace_view_image_allows_git_toplevel_parent(monkeypatch):
+    """Nested workspace may view_image under git toplevel; escape paths stay blocked."""
+    canned = "parent readme screenshot"
+    monkeypatch.setattr(
+        harness.vision,
+        "transcribe_images",
+        lambda paths, sidecar=None: [VisionResult(text=canned, model="mock-vlm")],
+    )
+
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as state:
+        root = os.path.realpath(tmp)
+        subprocess.run(
+            ["git", "init"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        nested = os.path.join(root, "Ashita", "addons", "kotoba")
+        os.makedirs(nested)
+        parent_png = os.path.join(root, "screenshot.png")
+        with open(parent_png, "wb") as f:
+            f.write(_MIN_PNG)
+
+        cfg = HarnessConfig(
+            repo=os.path.realpath(nested),
+            swarm_adapter="demo",
+            state_dir=os.path.realpath(state),
+        )
+        session = ConversationalSession(cfg)
+
+        ok, status, val = session._do_view_image(_ViewAct(path=parent_png))
+        assert ok, f"parent image under git toplevel should be viewable, got {status}: {val}"
+        assert canned in val
+
+        outside = os.path.join(os.path.dirname(root), "escape-outside.png")
+        bad = session._do_view_image(_ViewAct(path=outside))
+        assert bad[0] is False and bad[1] == "path_traversal"
 
 def test_vision_default_sidecar_fallback(monkeypatch):
     from harness.vision import NullVisionSidecar

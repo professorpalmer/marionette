@@ -32,7 +32,7 @@ def _as_cost(val: Any) -> Optional[float]:
         return None
 
 
-def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float]]:
+def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float], int]:
     tin = _as_int(
         usage.get("input_tokens")
         or usage.get("prompt_tokens")
@@ -72,7 +72,55 @@ def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float]]:
         cost = _as_cost(usage.get(key))
         if cost is not None:
             break
-    return tin, tout, cost
+    cached = _as_int(
+        usage.get("cache_read_tokens")
+        or usage.get("cache_read_input_tokens")
+        or usage.get("cacheReadTokens")
+        or usage.get("cached_tokens")
+        or usage.get("cachedTokens")
+        or usage.get("tokens_cached")
+    )
+    if cached <= 0:
+        # OpenAI-style: prompt_tokens_details.cached_tokens
+        details = (
+            usage.get("prompt_tokens_details")
+            or usage.get("input_tokens_details")
+            or usage.get("promptTokensDetails")
+        )
+        if isinstance(details, dict):
+            cached = _as_int(
+                details.get("cached_tokens")
+                or details.get("cache_read_tokens")
+                or details.get("cachedTokens")
+            )
+    if cached <= 0:
+        inp = usage.get("input") or usage.get("prompt")
+        if isinstance(inp, dict):
+            cached = _as_int(
+                inp.get("cached_tokens")
+                or inp.get("cache_read_tokens")
+                or inp.get("cacheReadTokens")
+            )
+    return tin, tout, cost, cached
+
+
+def _iter_usage_candidates(blob: Any) -> list:
+    if not isinstance(blob, dict):
+        return []
+    candidates = [blob]
+    for key in ("usage", "tokenUsage", "token_usage", "tokens", "result"):
+        nested = blob.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    # ACP session/update nest
+    inner = blob.get("update")
+    if isinstance(inner, dict):
+        candidates.append(inner)
+        for key in ("usage", "tokenUsage", "token_usage"):
+            nested = inner.get(key)
+            if isinstance(nested, dict):
+                candidates.append(nested)
+    return candidates
 
 
 def coerce_token_usage(*blobs: Any) -> Tuple[int, int, Optional[float]]:
@@ -81,31 +129,31 @@ def coerce_token_usage(*blobs: Any) -> Tuple[int, int, Optional[float]]:
     Later blobs win for non-zero fields (ACP result often has the final usage
     after streaming updates with partial counts).
     """
-    best_in, best_out, best_cost = 0, 0, None
+    tin, tout, cost, _cached = coerce_token_usage_detail(*blobs)
+    return tin, tout, cost
+
+
+def coerce_token_usage_detail(
+    *blobs: Any,
+) -> Tuple[int, int, Optional[float], int]:
+    """Return (tokens_in, tokens_out, provider_cost_usd|None, cache_read_tokens).
+
+    Cursor CLI/ACP often report cache hits under ``cached_tokens`` /
+    ``cache_read_input_tokens``; without this the StatusBar cache meter
+    stays at zero for plan-billed CLI pilots while API pilots populate it.
+    """
+    best_in, best_out, best_cost, best_cached = 0, 0, None, 0
     for blob in blobs:
         if blob is None:
             continue
-        candidates = []
-        if isinstance(blob, dict):
-            candidates.append(blob)
-            for key in ("usage", "tokenUsage", "token_usage", "tokens", "result"):
-                nested = blob.get(key)
-                if isinstance(nested, dict):
-                    candidates.append(nested)
-            # ACP session/update nest
-            inner = blob.get("update")
-            if isinstance(inner, dict):
-                candidates.append(inner)
-                for key in ("usage", "tokenUsage", "token_usage"):
-                    nested = inner.get(key)
-                    if isinstance(nested, dict):
-                        candidates.append(nested)
-        for cand in candidates:
-            tin, tout, cost = _from_usage_dict(cand)
+        for cand in _iter_usage_candidates(blob):
+            tin, tout, cost, cached = _from_usage_dict(cand)
             if tin > 0:
                 best_in = tin
             if tout > 0:
                 best_out = tout
             if cost is not None:
                 best_cost = cost
-    return best_in, best_out, best_cost
+            if cached > 0:
+                best_cached = cached
+    return best_in, best_out, best_cost, best_cached

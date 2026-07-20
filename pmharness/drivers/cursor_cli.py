@@ -852,8 +852,8 @@ class CursorCliDriver:
                     stderr = ""
 
             latency = (time.time() - t0) * 1000.0
-            from .token_usage import coerce_token_usage
-            tokens_in, tokens_out, provider_cost = coerce_token_usage(
+            from .token_usage import coerce_token_usage_detail
+            tokens_in, tokens_out, provider_cost, cache_read = coerce_token_usage_detail(
                 parsed.get("usage"), parsed
             )
 
@@ -882,6 +882,8 @@ class CursorCliDriver:
             }
             if provider_cost is not None:
                 meta["provider_cost_usd"] = provider_cost
+            if cache_read > 0:
+                meta["cache_read_tokens"] = cache_read
 
             return DriverResponse(
                 text=parsed.get("text") or "",

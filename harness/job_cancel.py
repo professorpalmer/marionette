@@ -93,7 +93,7 @@ def cancel_job_dual_store(
             "marked": mark_store_job_cancelled(harness_store, job_id),
         }
 
-    # CLI durable store second.
+    # CLI durable store second (workspace-scoped).
     for store in iter_dual_stores(None, repo_root=repo_root):
         if store is harness_store:
             continue
@@ -105,6 +105,30 @@ def cancel_job_dual_store(
             "durable": True,
             "marked": mark_store_job_cancelled(store, job_id),
         }
+
+    # Cross-project live jobs (Cursor MCP under a sibling cwd) land in another
+    # PM project store; resolve by job id so Cancel still works from the tracker.
+    try:
+        from puppetmaster.state import find_state_dir_for_job
+
+        foreign = find_state_dir_for_job(job_id)
+    except Exception:
+        foreign = None
+    if foreign is not None:
+        try:
+            from .cli_job_merge import open_cli_durable_at
+
+            durable = open_cli_durable_at(str(foreign))
+            store = getattr(durable, "store", None) if durable is not None else None
+            if store is not None and store_knows_job(store, job_id):
+                return {
+                    "ok": True,
+                    "job_id": job_id,
+                    "durable": True,
+                    "marked": mark_store_job_cancelled(store, job_id),
+                }
+        except Exception:
+            pass
     return None
 
 

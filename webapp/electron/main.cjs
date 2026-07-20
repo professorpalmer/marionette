@@ -706,6 +706,14 @@ async function _startBackendOnce() {
   // is the user's open project: when unset, the backend restores the last
   // project from workspace.json, or opens nothing on first launch. Forcing the
   // checkout here made every launch look like "Marionette" was the project.
+  // Marionette-only model registry — never rewrite ~/.puppetmaster/models.json
+  // while Cursor MCP also uses that shared file.
+  const path = require("node:path");
+  const marionetteModels = path.join(
+    process.env.USERPROFILE || process.env.HOME || "",
+    ".pmharness",
+    "marionette-models.json",
+  );
   const customEnv = {
     ..._shellEnv,
     ...process.env,
@@ -715,6 +723,9 @@ async function _startBackendOnce() {
     // App source root (not the user's project). Backend excludes this path
     // from boot restore + PROJECTS recents so Marionette never auto-opens itself.
     MARIONETTE_APP_ROOT: repoRoot,
+    // Prefer an explicit shell override; otherwise pin the isolated catalog.
+    PUPPETMASTER_MODELS_PATH:
+      process.env.PUPPETMASTER_MODELS_PATH || marionetteModels,
   };
   // Packaged: never pass HARNESS_REPO — a process-level value (often the app
   // checkout on Windows) would skip workspace.json restore in the backend.

@@ -484,6 +484,8 @@ class PtySession:
 
         pi = PROCESS_INFORMATION()
         cwd_buf = self._cwd if os.path.isdir(self._cwd) else None
+        # Do not OR CREATE_NO_WINDOW: ConPTY shells need a console-compatible
+        # process; hiding the window breaks stdin/stdout (hello never appears).
         try:
             _win_check(
                 kernel32.CreateProcessW(

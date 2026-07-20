@@ -20,10 +20,16 @@ def get_routing_file_path() -> str:
     return os.path.join(os.path.expanduser("~/.pmharness"), "routing.json")
 
 def get_models_file_path() -> str:
-    env_path = os.environ.get("PUPPETMASTER_MODELS_PATH")
-    if env_path:
-        return env_path
-    return os.path.expanduser("~/.puppetmaster/models.json")
+    """Marionette router catalog (isolated from Cursor's shared PM registry)."""
+    try:
+        from .marionette_registry import ensure_marionette_models_env
+
+        return ensure_marionette_models_env()
+    except Exception:
+        env_path = os.environ.get("PUPPETMASTER_MODELS_PATH")
+        if env_path:
+            return env_path
+        return os.path.expanduser("~/.pmharness/marionette-models.json")
 
 # Helpers for provider keys
 def get_provider_key(p: Provider) -> Optional[str]:

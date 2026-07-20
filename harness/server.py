@@ -853,6 +853,15 @@ _bind_cost_deps(_CostDeps(
     jobs_snapshot=lambda: _jobs_snapshot(),
 ))
 
+# Isolate Marionette's router catalog from Cursor's shared PM models.json,
+# then apply the Kimi > Grok > DeepSeek > Composer ladder (best-effort).
+try:
+    from .marionette_registry import boot_marionette_registry
+
+    boot_marionette_registry()
+except Exception as e:
+    _diag("server.marionette_registry_boot", e)
+
 # Same Electron app-run: restore boot spend/savings after a backend respawn.
 try:
     _restore_boot_usage()

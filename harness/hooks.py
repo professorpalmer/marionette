@@ -66,9 +66,10 @@ def run_hooks(event: str, context: dict) -> None:
             ["/bin/sh", "-c", cmd] if os.name == "posix" else ["cmd", "/c", cmd]
         )
         try:
-            # Capture output, 15s timeout, never crash the run
+            # shell=False with an explicit wrapper argv; never shell=True + user cmd.
             subprocess.run(
                 shell_wrapper,
+                shell=False,
                 input=context_json,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",

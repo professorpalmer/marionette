@@ -93,11 +93,14 @@ export function formatRenderCommandErrorMessage(err: unknown): string {
   return "[error] Render failed: " + message;
 }
 
-/** Edit-notice chrome after rewind-edit send (Hermes/Cursor pattern). */
-export function editNoticeAfterSend(canRevertEdit: boolean): string | null {
-  return canRevertEdit
-    ? "Edited — Revert restores the previous turns."
-    : null;
+/** Edit-notice chrome after rewind-edit send.
+
+  Resubmit starts the new turn; the Revert/restore affordance is only offered
+  while the composer is still in edit mode (Cancel). Lingering "Revert?" after
+  send left a dead chrome that restored the old branch without starting a loop.
+*/
+export function editNoticeAfterSend(_canRevertEdit: boolean): string | null {
+  return null;
 }
 
 export type LocalSlashAction =

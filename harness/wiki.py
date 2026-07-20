@@ -147,6 +147,31 @@ class WikiClient:
             return out
         return out
 
+    def _tier_caveat(self) -> str:
+        """One-line warning when manifest reports public-tier visibility."""
+        try:
+            meta = self.manifest_meta()
+            tier = (meta.get("viewer_tier") or "").strip().lower()
+            if tier != "public":
+                return ""
+            if self.token:
+                return (
+                    "WARNING: wiki is answering at public tier only (token present but not elevating). "
+                    "Treat results as public; reconnect/paste a personal LLM URL or owner token for private pages."
+                )
+            return (
+                "WARNING: wiki is answering at public tier only. "
+                "Treat results as public; connect with a personal LLM URL or owner token for private pages."
+            )
+        except Exception:
+            return ""
+
+    def _prepend_tier_caveat(self, answer: str) -> str:
+        caveat = self._tier_caveat()
+        if not caveat:
+            return answer
+        return f"{caveat}\n\n{answer}"
+
     def ingest(self, slug: str, content: str, *, note: str = "",
                run_orchestrator: bool = False) -> WikiResult:
         """Ingest a markdown source into the wiki (POST /owner/ingest)."""
@@ -249,11 +274,11 @@ class WikiClient:
                                 answer = (data.get("answer") or data.get("response") or 
                                           data.get("result") or data.get("content"))
                                 if answer:
-                                    return str(answer)[:4000]
+                                    return self._prepend_tier_caveat(str(answer)[:4000])
                         except Exception:
                             pass
                         # If raw string returned, return it
-                        return res[:4000]
+                        return self._prepend_tier_caveat(res[:4000])
             except Exception:
                 continue
 
@@ -275,7 +300,7 @@ class WikiClient:
                                 slug = hit.get("slug", "")
                                 snip = hit.get("snippet") or hit.get("description") or ""
                                 lines.append(f"- {title} ({slug}): {snip}")
-                        return "\n".join(lines)[:4000]
+                        return self._prepend_tier_caveat("\n".join(lines)[:4000])
         except Exception:
             pass
 
@@ -295,7 +320,7 @@ class WikiClient:
                             title = p.get("title", slug)
                             desc = p.get("description") or p.get("note") or ""
                             summary_lines.append(f"- {title} ({slug}): {desc}")
-                    return "\n".join(summary_lines)[:4000]
+                    return self._prepend_tier_caveat("\n".join(summary_lines)[:4000])
         except Exception as e:
             return f"wiki query failed and fallback failed: {repr(e)}"
 

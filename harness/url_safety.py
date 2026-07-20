@@ -296,3 +296,37 @@ def redact_sensitive_query_params(url: str) -> str:
     return urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment)
     )
+
+
+def _strip_zone_id(ip: str) -> str:
+    """Strip an IPv6 zone-id suffix (e.g. ``fe80::1%eth0`` -> ``fe80::1``)."""
+    if not ip:
+        return ip
+    return ip.split("%")[0]
+
+
+def sanitize_url_for_display(url: str) -> str:
+    """Return a URL safe to echo in transcripts and action results.
+
+    Redacts URL userinfo passwords and sensitive query parameter values.
+    Does not alter the URL used for fetching — display only.
+    """
+    if not url or not isinstance(url, str):
+        return url
+    try:
+        parsed = urllib.parse.urlsplit(url.strip())
+    except ValueError:
+        return url
+
+    netloc = parsed.netloc
+    if "@" in netloc:
+        userinfo, hostport = netloc.rsplit("@", 1)
+        if ":" in userinfo:
+            user, _password = userinfo.split(":", 1)
+            userinfo = f"{user}:{_REDACTED}"
+        netloc = f"{userinfo}@{hostport}"
+
+    without_secrets = urllib.parse.urlunsplit(
+        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+    return redact_sensitive_query_params(without_secrets)

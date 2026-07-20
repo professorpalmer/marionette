@@ -235,6 +235,36 @@ class SendLoopMixin:
             # errored 'session busy'.
             if not stale and self._interrupt_requested and self._busy_since and held_for > 0.5:
                 stale = True
+            # Hard deadline reaper (also used by swarm drain) — Cursor CLI/ACP
+            # hangs leave state=thinking, so the idle 1.5s path never fires and
+            # follow-up prompts looked permanently ignored.
+            if not stale:
+                try:
+                    if self._reap_stuck_turn():
+                        stale = True
+                except Exception:
+                    pass
+            # Shorter send-path recovery for wedged thinking/executing turns
+            # (default 180s). Without this, users wait the full 600s reap.
+            if not stale and self._busy_since and self._state in (
+                "thinking", "executing", "streaming",
+            ):
+                try:
+                    send_stale_s = float(
+                        os.environ.get("HARNESS_SEND_STALE_SECONDS", "180").strip()
+                        or 180
+                    )
+                except ValueError:
+                    send_stale_s = 180.0
+                if send_stale_s > 0 and held_for > send_stale_s:
+                    try:
+                        pilot = getattr(self, "pilot", None)
+                        on_int = getattr(pilot, "on_interrupt", None)
+                        if callable(on_int):
+                            on_int()
+                    except Exception:
+                        pass
+                    stale = True
             if stale:
                 self._interrupt_requested = False
                 # Advance the generation as we force-release so the leaked holder's

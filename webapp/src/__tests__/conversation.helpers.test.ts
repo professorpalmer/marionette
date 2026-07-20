@@ -1191,7 +1191,9 @@ describe("composerSend module", () => {
         Object.assign(new Error("rejected"), { reason: "summary_rejected" }),
       ),
     ).toMatch(/rejected/i);
-    expect(editNoticeAfterSend(true)).toMatch(/Revert/);
+    // Post-send edit chrome is cleared so Resubmit starts a live turn without
+    // a leftover Revert? banner sitting on an idle composer.
+    expect(editNoticeAfterSend(true)).toBeNull();
     expect(editNoticeAfterSend(false)).toBeNull();
   });
 

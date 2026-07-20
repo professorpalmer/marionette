@@ -8,6 +8,7 @@ export {
   getSimilarity,
   deduplicateAssistantNarration,
   dedupeDisplayItems,
+  stripUserVisibleText,
   transcriptResponseToItems,
   shouldPreferLocalTranscript,
   mergeTranscriptItems,

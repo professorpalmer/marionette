@@ -92,6 +92,40 @@ def test_child_exhaustion_visible_to_parent():
     assert parent.check() is not None
 
 
+def test_child_shares_ceilings_and_tokens_roll_up():
+    parent = AutoBudget(max_tokens=500, max_swarms=8, max_seconds=120).start()
+    child = parent.child()
+    assert child.max_tokens == parent.max_tokens
+    assert child.max_swarms == parent.max_swarms
+    assert child.max_seconds == parent.max_seconds
+    child.add_tokens(75)
+    assert child.tokens_used == 75
+    assert parent.tokens_used == 75
+
+
+def test_child_check_returns_parent_halt_reason():
+    parent = AutoBudget(max_tokens=50).start()
+    parent.add_tokens(60)
+    parent_reason = parent.check()
+    assert parent_reason is not None
+    assert "token ceiling" in parent_reason
+    child = parent.child()
+    child_reason = child.check()
+    assert child_reason is not None
+    assert "token ceiling" in child_reason
+
+
+def test_child_inherits_swarms_used_and_rolls_up():
+    parent = AutoBudget(max_swarms=5).start()
+    parent.add_swarm()
+    parent.add_swarm()
+    child = parent.child()
+    assert child.swarms_used == 2
+    child.add_swarm()
+    assert child.swarms_used == 3
+    assert parent.swarms_used == 3
+
+
 def test_ambient_budget_child_sees_parent_spend():
     from harness.worker import ambient_budget, get_ambient_budget
 

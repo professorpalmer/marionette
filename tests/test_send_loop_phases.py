@@ -400,6 +400,9 @@ def test_action_display_goal_by_kind():
         PilotAction(kind="web_search", query="foo")
     ) == "foo"
     assert action_display_goal(
+        PilotAction(kind="web_fetch", url="https://x/?token=secret")
+    ) == "https://x/?token=REDACTED"
+    assert action_display_goal(
         PilotAction(kind="manage_mcp", arguments={"action": "list", "name": "x"})
     ) == "list x"
     assert action_display_goal(

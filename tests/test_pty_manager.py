@@ -136,6 +136,7 @@ def _bootstrap_conpty_test_symbols(monkeypatch):
     monkeypatch.setattr(pty_manager, "PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE", 0x00020016, raising=False)
     monkeypatch.setattr(pty_manager, "EXTENDED_STARTUPINFO_PRESENT", 0x00080000, raising=False)
     monkeypatch.setattr(pty_manager, "CREATE_UNICODE_ENVIRONMENT", 0x00000400, raising=False)
+    monkeypatch.setattr(pty_manager, "CREATE_NO_WINDOW", 0x08000000, raising=False)
     monkeypatch.setattr(pty_manager, "STILL_ACTIVE", 259, raising=False)
     monkeypatch.setattr(pty_manager, "ERROR_BROKEN_PIPE", 109, raising=False)
     monkeypatch.setattr(pty_manager, "HANDLE_FLAG_INHERIT", 0x00000001, raising=False)
@@ -248,7 +249,10 @@ def test_conpty_init_calls_kernel32_plumbing(monkeypatch):
     fake_k32.TerminateProcess.return_value = True
     fake_k32.ResizePseudoConsole.return_value = 0
 
-    def capture_create_process(*args, **_kw):
+    captured = {}
+
+    def capture_create_process_with_flags(*args, **_kw):
+        captured["creation_flags"] = args[5]
         pi_ref = args[-1]
         pi = getattr(pi_ref, "contents", None) or getattr(pi_ref, "_obj", pi_ref)
         pi.hProcess = 111
@@ -256,7 +260,7 @@ def test_conpty_init_calls_kernel32_plumbing(monkeypatch):
         pi.dwProcessId = 4242
         return True
 
-    fake_k32.CreateProcessW.side_effect = capture_create_process
+    fake_k32.CreateProcessW.side_effect = capture_create_process_with_flags
     monkeypatch.setattr(pty_manager, "kernel32", fake_k32)
     monkeypatch.setattr(pty_manager, "_windows_shell", lambda: r"C:\Windows\System32\cmd.exe")
 
@@ -265,6 +269,7 @@ def test_conpty_init_calls_kernel32_plumbing(monkeypatch):
     assert fake_k32.CreatePipe.call_count == 2
     fake_k32.CreatePseudoConsole.assert_called_once()
     fake_k32.CreateProcessW.assert_called_once()
+    assert captured["creation_flags"] & pty_manager.CREATE_NO_WINDOW
     fake_k32.UpdateProcThreadAttribute.assert_called_once()
 
     time.sleep(0.2)

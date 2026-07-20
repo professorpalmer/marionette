@@ -145,7 +145,7 @@ uv pip install --python .venv -e .
 # Puppetmaster is the one real runtime dependency; it ships on PyPI as
 # puppetmaster-ai. MARIONETTE_PUPPETMASTER_SPEC lets a contributor point at a
 # local editable checkout instead (e.g. an absolute path).
-uv pip install --python .venv "${MARIONETTE_PUPPETMASTER_SPEC:-puppetmaster-ai==1.20.5}"
+uv pip install --python .venv "${MARIONETTE_PUPPETMASTER_SPEC:-puppetmaster-ai==1.20.6}"
 
 # --- 6. renderer -------------------------------------------------------------
 say "Installing node deps + building the renderer"

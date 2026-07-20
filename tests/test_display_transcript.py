@@ -4,8 +4,14 @@ import tempfile
 import pytest
 
 from harness.config import HarnessConfig
-from harness.conversation import ConversationalSession, ConvEvent
+from harness.conversation import ConversationalSession, ConvEvent, strip_turn_context_trailer
 from harness.sessions import save_transcript, load_transcript
+
+_TRAILER_SAMPLE = (
+    "\n\n[context for this turn]\n"
+    "CODEGRAPH HAS ALREADY BEEN QUERIED FOR THIS TASK. The relevant "
+    "symbols are below.\n\n## CodeGraph\n- **Foo**\n"
+)
 
 class MockDriverResponse:
     def __init__(self, text="", error=None, tokens_out=10):
@@ -119,3 +125,60 @@ def test_load_history_handles_both_formats():
     assert session_legacy.export_history() == history_data
     assert session_legacy.export_display_transcript() == []
     assert session_legacy._session_job_ids == []
+
+
+def test_strip_turn_context_trailer_cuts_at_marker():
+    user = "how do I fix the leak?"
+    dirty = user + _TRAILER_SAMPLE
+    assert strip_turn_context_trailer(dirty) == user
+    assert strip_turn_context_trailer(user) == user
+
+
+def test_strip_turn_context_trailer_idempotent():
+    dirty = "ship it" + _TRAILER_SAMPLE
+    once = strip_turn_context_trailer(dirty)
+    assert once == "ship it"
+    assert strip_turn_context_trailer(once) == once
+    assert strip_turn_context_trailer(strip_turn_context_trailer(dirty)) == once
+
+
+def test_strip_turn_context_trailer_standalone_codegraph():
+    injection = (
+        "CODEGRAPH HAS ALREADY BEEN QUERIED FOR THIS TASK. The relevant "
+        "symbols, definitions, and code are provided below."
+    )
+    assert strip_turn_context_trailer(injection) == ""
+    assert strip_turn_context_trailer("  " + injection) == ""
+    # User prose before CODEGRAPH is preserved (marker path only).
+    kept = "please use this\n\n" + injection
+    assert strip_turn_context_trailer(kept) == kept
+
+
+def test_export_display_strips_trailer_history_keeps_it():
+    """Display/UI scrub; pilot history must retain the append-only trailer."""
+    cfg = HarnessConfig()
+    session = ConversationalSession(cfg)
+    dirty = "hello" + _TRAILER_SAMPLE
+    session.load_history({
+        "history": [
+            {"role": "user", "content": dirty},
+            {"role": "assistant", "content": "ok"},
+        ],
+        "display": [
+            {"type": "message", "role": "user", "text": dirty},
+            {"type": "message", "role": "assistant", "text": "ok"},
+        ],
+        "job_ids": [],
+    })
+
+    history = session.export_history()
+    assert history[0]["content"] == dirty
+    assert "[context for this turn]" in history[0]["content"]
+    assert "CODEGRAPH HAS ALREADY BEEN QUERIED" in history[0]["content"]
+
+    display = session.export_display_transcript()
+    assert display[0]["text"] == "hello"
+    assert "[context for this turn]" not in display[0]["text"]
+    assert "CODEGRAPH" not in display[0]["text"]
+    # Stored display row is not mutated — only the export copy is scrubbed.
+    assert session._display_transcript[0]["text"] == dirty

@@ -1290,6 +1290,8 @@ export default function Conversation({
   };
 
   const handleCancelEdit = () => {
+    // Cancel always restores the stashed pre-edit branch when one exists.
+    // Resubmit (Send / Resubmit button) is what restarts the agent loop.
     if (canRevertEdit) {
       handleRevertEdit();
       return;
@@ -1900,12 +1902,14 @@ export default function Conversation({
       return;
     }
 
-    // After a rewind-edit, clear the editing chrome but keep Revert available
-    // so the user can restore the prior branch (Hermes/Cursor pattern).
+    // After a rewind-edit, clear ALL edit chrome and start a fresh turn.
+    // Lingering Revert? after send looked like a stuck dead turn.
+    const resubmitEdit = editingIndex !== null || canRevertEdit;
     setEditingIndex(null);
-    setEditNotice(editNoticeAfterSend(canRevertEdit));
+    setCanRevertEdit(false);
+    setEditNotice(editNoticeAfterSend(false));
 
-    if (composerBusy) {
+    if (composerBusy && !resubmitEdit) {
       // Snapshot the attached image paths BEFORE clearing input/attachments or
       // making the async call, so we never read a stale/cleared closure value
       // and images are never silently dropped from the steer request. The
@@ -1933,8 +1937,20 @@ export default function Conversation({
       return;
     }
 
-    setInput("");
-    executeSend(msg, auto, plan);
+    const kickSend = () => {
+      setInput("");
+      executeSend(msg, auto, plan);
+    };
+
+    // Edit-resubmit must start a new loop, not silently steer into a dead turn.
+    if (composerBusy && resubmitEdit) {
+      stop()
+        .then(() => kickSend())
+        .catch(() => kickSend());
+      return;
+    }
+
+    kickSend();
   };
 
   const stop = () => {

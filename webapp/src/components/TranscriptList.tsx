@@ -325,7 +325,10 @@ export function activityGroupStableId(items: ActivityItem[], fallbackIndex: numb
         : `grp-${fallbackIndex}`;
   }
   for (const m of members) __activityGroupCanon.set(m, canon);
-  return `${canon}-${fallbackIndex}`;
+  // Canon alone is the open-state id. Do NOT suffix fallbackIndex here —
+  // when a turn finishes (hoist/regroup) group indices shift, and an
+  // index-suffixed id remounted every prior fold as "new" → default-open.
+  return canon;
 }
 
 function stableItemKey(it: GroupedItem, i: number): string {
@@ -333,7 +336,9 @@ function stableItemKey(it: GroupedItem, i: number): string {
     case "msg":
       return `msg-${objKey(it.msg)}`;
     case "activity_group":
-      return activityGroupStableId(it.items, i);
+      // React key keeps the index so duplicate-card corruption cannot collide;
+      // ActivityGroup's groupId (open map) stays on the canon alone.
+      return `${activityGroupStableId(it.items, i)}#${i}`;
     case "swarm_result":
       return `swres-${it.job_id}`;
     case "swarm_pending":
@@ -725,10 +730,11 @@ export const TranscriptList = memo(function TranscriptList({
         />
       );
     } else if (it.kind === "activity_group") {
+      const openId = activityGroupStableId(it.items, i);
       return (
         <ActivityGroup
           key={key}
-          groupId={key}
+          groupId={openId}
           items={it.items}
           loopOpen={agentLoopOpen && i === lastActivityGroupIdx}
           onToggleCard={(card) => onSetCard(card.id, { open: !card.open })}
@@ -895,6 +901,9 @@ function ActivityGroup({
   // module map so a remount does not yank an explicit toggle mid-stream.
   const [open, setOpen] = useState(() => {
     if (__activityOpen.has(groupId)) return Boolean(__activityOpen.get(groupId));
+    // Live tool-bearing folds start open; sealed history stays collapsed so a
+    // remount / regroup at turn-end cannot re-expand every prior Investigating.
+    if (!loopOpen) return false;
     return items.some((it) => it.kind === "card");
   });
   const toggleOpen = () => {

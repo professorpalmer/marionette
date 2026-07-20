@@ -128,3 +128,19 @@ def test_no_interrupt_executing_lock_still_rejected():
     events = list(s.send("hello"))
     busy = [e for e in events if e.kind == "error" and "busy" in str(e.data.get("error", ""))]
     assert busy, "a genuinely in-flight (non-interrupted) turn must reject re-entry"
+
+
+def test_send_recovers_wedged_thinking_via_send_stale(monkeypatch):
+    """Cursor CLI/ACP hangs leave state=thinking; send() must recover after
+    HARNESS_SEND_STALE_SECONDS so follow-up prompts are not ignored forever."""
+    monkeypatch.setenv("HARNESS_SEND_STALE_SECONDS", "2")
+    monkeypatch.setenv("HARNESS_TURN_DEADLINE_SECONDS", "600")
+    s = _session()
+    s._busy.acquire(blocking=False)
+    s._mark_busy_acquired()
+    s._busy_since = time.monotonic() - 5.0
+    s._state = "thinking"
+
+    events = list(s.send("hello after wedge"))
+    busy = [e for e in events if e.kind == "error" and "busy" in str(e.data.get("error", ""))]
+    assert not busy, f"send-path stale recovery failed: {busy}"

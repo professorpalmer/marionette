@@ -16,6 +16,36 @@ import {
 /** Same SHA-256 hex gate as SSE ``appendCommandApproval`` (streamApply). */
 const COMMAND_HASH_HEX = /^[0-9a-f]{64}$/;
 
+const TURN_CONTEXT_MARKER = "[context for this turn]";
+const CODEGRAPH_INJECTION_PREFIX = "CODEGRAPH HAS ALREADY BEEN QUERIED";
+
+/**
+ * Strip append-only turn-context trailers from user-visible message text.
+ * Mirrors harness.conversation.strip_turn_context_trailer — history may keep
+ * the injection for the pilot; display/UI must never show it.
+ */
+export function stripUserVisibleText(text: string): string {
+  if (!text) return text;
+  const markers = [
+    `\n\n${TURN_CONTEXT_MARKER}\n`,
+    `\n\n${TURN_CONTEXT_MARKER}`,
+    `${TURN_CONTEXT_MARKER}\n`,
+    TURN_CONTEXT_MARKER,
+  ];
+  let cut: number | null = null;
+  for (const marker of markers) {
+    const idx = text.indexOf(marker);
+    if (idx !== -1 && (cut === null || idx < cut)) {
+      cut = idx;
+    }
+  }
+  let out = cut !== null ? text.slice(0, cut).replace(/\s+$/, "") : text;
+  if (out.trimStart().startsWith(CODEGRAPH_INJECTION_PREFIX)) {
+    return "";
+  }
+  return out;
+}
+
 export function getSimilarity(s1: string, s2: string): number {
   const norm1 = s1.toLowerCase().replace(/[^a-z0-9]/g, "");
   const norm2 = s2.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -312,11 +342,13 @@ export function transcriptResponseToItems(res: {
           ...(typeof m.error === "string" && m.error ? { error: m.error } : {}),
         }];
       } else {
+        const rawText = m.text || "";
+        const role = m.role as "user" | "assistant";
         return [{
           kind: "msg" as const,
           msg: {
-            role: m.role as "user" | "assistant",
-            text: m.text || ""
+            role,
+            text: role === "user" ? stripUserVisibleText(rawText) : rawText,
           }
         }];
       }
@@ -324,13 +356,17 @@ export function transcriptResponseToItems(res: {
   } else {
     loadedItems = (res.history || [])
       .filter((m: any) => m.role === "assistant" || (m.role === "user" && m.content && !m.content.startsWith("(")))
-      .map((m: any) => ({
-        kind: "msg" as const,
-        msg: {
-          role: m.role as "user" | "assistant",
-          text: m.content || ""
-        }
-      }));
+      .map((m: any) => {
+        const role = m.role as "user" | "assistant";
+        const rawText = m.content || "";
+        return {
+          kind: "msg" as const,
+          msg: {
+            role,
+            text: role === "user" ? stripUserVisibleText(rawText) : rawText,
+          }
+        };
+      });
   }
   return deduplicateConsecutiveAssistantMessages(dedupeDisplayItems(loadedItems));
 }

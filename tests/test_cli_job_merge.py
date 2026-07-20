@@ -9,6 +9,7 @@ from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
 from harness.cli_job_merge import (
+    merge_running_cli_jobs_all_projects,
     merge_scoped_cli_jobs,
     open_cli_durable_state,
     reset_merge_diag_for_tests,
@@ -92,6 +93,11 @@ def test_merge_dedupes_ids_and_sets_source(tmp_path, monkeypatch):
         "harness.job_scoping.filter_store_jobs",
         lambda rows, store, **kwargs: rows,
     )
+    # Do not scan the developer's live PM project stores (SQLite locks hang).
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [],
+    )
 
     harness_rows = [
         {"id": harness_job.id, "goal": "harness goal", "status": "complete", "adapter": "agentic"},
@@ -119,6 +125,10 @@ def test_unreadable_cli_store_contributes_nothing(tmp_path, monkeypatch):
     reset_merge_diag_for_tests()
 
     monkeypatch.setattr("harness.cli_job_merge.open_cli_durable_state", lambda workspace_root="": None)
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [],
+    )
 
     harness_rows = [
         {"id": harness_job.id, "goal": "harness goal", "status": "complete", "adapter": "agentic"},
@@ -141,6 +151,53 @@ def test_missing_cli_store_is_silent(monkeypatch):
         lambda workspace_root="": None,
     )
     assert open_cli_durable_state("/no/such/workspace") is None
+
+
+def test_merge_running_cli_jobs_all_projects_surfaces_foreign_live(tmp_path, monkeypatch):
+    """A running job in another PM project store must appear in the tracker."""
+    foreign = tmp_path / "foreign-state"
+    store = create_store("sqlite", str(foreign))
+    job = store.create_job("foreign swarm")
+    try:
+        store.update_job_status(job.id, "running")
+    except Exception:
+        store.set_job_status(job.id, "running")
+
+    monkeypatch.setattr(
+        "puppetmaster.state.list_project_state_dirs",
+        lambda: [foreign],
+    )
+    seen: set = set()
+    rows = merge_running_cli_jobs_all_projects(seen_ids=seen, primary_state_dir="")
+    assert len(rows) == 1
+    assert rows[0]["id"] == job.id
+    assert rows[0]["source"] == "cli"
+    assert rows[0]["cli_state_dir"]
+    assert job.id in seen
+
+
+def test_foreign_state_dir_candidates_skips_stale_and_caps(tmp_path, monkeypatch):
+    """Bloated projects/ trees must not all enter the open path."""
+    from harness.cli_job_merge import _foreign_state_dir_candidates
+    import os
+    import time as _time
+
+    fresh = tmp_path / "fresh"
+    stale = tmp_path / "stale"
+    fresh.mkdir()
+    stale.mkdir()
+    (fresh / "state.sqlite3").write_bytes(b"")
+    (stale / "state.sqlite3").write_bytes(b"")
+    old = _time.time() - (60 * 3600)
+    os.utime(stale / "state.sqlite3", (old, old))
+
+    monkeypatch.setattr(
+        "puppetmaster.state.list_project_state_dirs",
+        lambda: [fresh, stale],
+    )
+    got = _foreign_state_dir_candidates("", max_opens=8, max_age_s=48 * 3600)
+    assert any(str(fresh.resolve()) == p or str(fresh) in p for p in got)
+    assert not any("stale" in p for p in got)
 
 
 def test_accounting_fields_from_cli_fixture_store(tmp_path):
@@ -204,6 +261,10 @@ def test_api_swarm_live_includes_cli_jobs_with_accounting(tmp_path, monkeypatch)
             "harness.cli_job_merge.resolve_cli_state_dir",
             lambda workspace_root="": str(cli_dir),
         )
+        monkeypatch.setattr(
+            "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+            lambda **kwargs: [],
+        )
         monkeypatch.setattr(srv, "_swarm_registry", lambda: [
             SimpleNamespace(
                 id="worker-model",
@@ -248,6 +309,10 @@ def test_scoped_jobs_snapshot_merges_cli_source(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "harness.cli_job_merge.resolve_cli_state_dir",
         lambda workspace_root="": str(cli_dir),
+    )
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [],
     )
     srv._cfg.repo = str(repo)
     monkeypatch.setattr(srv._sessions, "_active", "")

@@ -109,6 +109,7 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
         # MCP/CLI-dispatched swarm spend reaches the status bar.
         from ..cli_job_merge import (
             bulk_load_store_artifacts,
+            cli_stores_by_job,
             partition_jobs_by_store,
         )
 
@@ -162,12 +163,16 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             if jid and jid not in all_jobs_by_id:
                 arts_source_jobs.append(j)
         harness_jids, cli_jids = partition_jobs_by_store(arts_source_jobs)
+        foreign_cli = cli_stores_by_job(arts_source_jobs)
 
         arts_by_job: dict = {}
         try:
             harness_arts = bulk_load_store_artifacts(store, harness_jids)
-            cli_arts = bulk_load_store_artifacts(cli_store, cli_jids)
+            primary_cli_jids = [j for j in cli_jids if j not in foreign_cli]
+            cli_arts = bulk_load_store_artifacts(cli_store, primary_cli_jids)
             arts_by_job = {**harness_arts, **cli_arts}
+            for jid, fstore in foreign_cli.items():
+                arts_by_job.update(bulk_load_store_artifacts(fstore, [jid]))
         except Exception:
             arts_by_job = None  # fall back to per-job reads
 
@@ -176,8 +181,8 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
 
         def _owning_store(jid):
             job = job_by_id.get(jid) or {}
-            if job.get("source") == "cli" and cli_store is not None:
-                return cli_store
+            if job.get("source") == "cli":
+                return foreign_cli.get(jid) or cli_store
             return store
 
         def _job_arts(jid):

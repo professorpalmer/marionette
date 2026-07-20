@@ -69,6 +69,7 @@ def test_wiki_query_not_configured(monkeypatch):
     assert client.query("test question") == "wiki not configured"
 
 def test_wiki_query_success(monkeypatch):
+    calls = []
     captured = {}
     class FakeResp:
         status = 200
@@ -78,9 +79,10 @@ def test_wiki_query_success(monkeypatch):
             return json.dumps({"answer": "Auth uses JWT in middleware.py"}).encode()
             
     def fake_urlopen(req, timeout=0):
-        captured["url"] = req.full_url
-        captured["body"] = json.loads(req.data.decode())
-        captured["auth"] = req.headers.get("Authorization")
+        calls.append(req.full_url)
+        if req.method == "POST":
+            captured["body"] = json.loads(req.data.decode())
+            captured["auth"] = req.headers.get("Authorization")
         return FakeResp()
         
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
@@ -88,7 +90,7 @@ def test_wiki_query_success(monkeypatch):
     client = WikiClient(base_url="https://wiki.example.com", token="secret")
     res = client.query("How does Auth work?")
     assert res == "Auth uses JWT in middleware.py"
-    assert captured["url"] == "https://wiki.example.com/wiki/query"
+    assert "https://wiki.example.com/wiki/query" in calls
     assert captured["body"] == {"question": "How does Auth work?"}
     assert captured["auth"] == "Bearer secret"
 
@@ -120,3 +122,43 @@ def test_wiki_query_fallback(monkeypatch):
     assert "Fallback wiki index summary:" in res
     assert "- Authentication (auth): Auth uses JWT" in res
     assert "https://wiki.example.com/wiki/manifest.json" in calls
+
+
+def _fake_wiki_query_urlopen(answer: str = "Wiki answer text"):
+    class FakeResp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return json.dumps({"answer": answer}).encode()
+    return lambda req, timeout=0: FakeResp()
+
+
+def test_wiki_query_public_tier_with_token_warns(monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", _fake_wiki_query_urlopen("Public page content"))
+    client = WikiClient(base_url="https://wiki.example.com", token="secret")
+    monkeypatch.setattr(client, "manifest_meta", lambda: {"viewer_tier": "public", "page_count": 1})
+    res = client.query("test question")
+    assert res.startswith("WARNING:")
+    assert "public tier" in res.lower()
+    assert "token present but not elevating" in res
+    assert "Public page content" in res
+
+
+def test_wiki_tier_caveat_public_without_token(monkeypatch):
+    client = WikiClient(base_url="https://wiki.example.com", token="")
+    monkeypatch.setattr(client, "manifest_meta", lambda: {"viewer_tier": "public"})
+    caveat = client._tier_caveat()
+    assert caveat.startswith("WARNING:")
+    assert "public tier" in caveat.lower()
+    assert "token present" not in caveat
+
+
+@pytest.mark.parametrize("tier", ["private", "friend", "owner"])
+def test_wiki_query_elevated_tier_no_warning(monkeypatch, tier):
+    monkeypatch.setattr("urllib.request.urlopen", _fake_wiki_query_urlopen("Elevated content"))
+    client = WikiClient(base_url="https://wiki.example.com", token="secret")
+    monkeypatch.setattr(client, "manifest_meta", lambda: {"viewer_tier": tier, "page_count": 10})
+    res = client.query("test question")
+    assert not res.startswith("WARNING:")
+    assert res == "Elevated content"

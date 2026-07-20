@@ -77,6 +77,59 @@ def test_rejection_does_not_return_retry_command():
     assert runner.decisions[0]["approve"] is False
 
 
+def test_approval_rejects_unknown_pending_hash():
+    """Valid hash shape with no pending row must 404 (not silently succeed)."""
+    runner = _Runner()
+
+    def decide(**decision):
+        return None
+
+    runner.decide_command_approval = decide
+    status, payload = post_command_approval(
+        {
+            "session_id": "session-a",
+            "workspace_root": "/workspace/a",
+            "command_hash": COMMAND_HASH,
+        },
+        _services({"session-a": runner}),
+    )
+    assert status == 404
+    assert "not found" in payload["error"]
+
+
+def test_approval_is_single_use_via_pending_consume():
+    """Second approve on the same hash fails once pending was consumed."""
+    runner = _Runner()
+    services = _services({"session-a": runner})
+
+    def decide(**decision):
+        runner.decisions.append(decision)
+        if len(runner.decisions) == 1:
+            return {"workspace_root": "/workspace/a", "command": "ssh prod reboot"}
+        return None
+
+    runner.decide_command_approval = decide
+
+    first = post_command_approval(
+        {
+            "session_id": "session-a",
+            "workspace_root": "/workspace/a",
+            "command_hash": COMMAND_HASH,
+        },
+        services,
+    )
+    second = post_command_approval(
+        {
+            "session_id": "session-a",
+            "workspace_root": "/workspace/a",
+            "command_hash": COMMAND_HASH,
+        },
+        services,
+    )
+    assert first[0] == 200
+    assert second[0] == 404
+
+
 def test_approval_rejects_wrong_workspace_and_unknown_hash_shape():
     runner = _Runner()
     services = _services({"session-a": runner})

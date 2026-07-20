@@ -10,7 +10,11 @@ import urllib.error
 import html.parser
 from typing import Optional
 
-from harness.url_safety import is_safe_url_pinned, normalize_url_for_request
+from harness.url_safety import (
+    _strip_zone_id,
+    is_safe_url_pinned,
+    normalize_url_for_request,
+)
 from harness.paths import path_within
 
 WEB_FETCH_LIMIT = 16000
@@ -53,7 +57,7 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
                 newurl, code, f"unsafe redirect target ({reason})", headers, fp
             )
         if self._pin is not None and pinned_ip:
-            self._pin.ip = pinned_ip
+            self._pin.ip = _strip_zone_id(pinned_ip)
         # Normalize the vetted target the same way direct fetches are normalized.
         newurl = normalize_url_for_request(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
@@ -150,7 +154,7 @@ def _make_pinned_opener(pinned_ip: str):
     verification. Redirect hops re-validate with is_safe_url_pinned and
     update the shared pin so validation and connection always match.
     """
-    pin = _PinnedIP(pinned_ip)
+    pin = _PinnedIP(_strip_zone_id(pinned_ip))
     return urllib.request.build_opener(
         _PinnedIPHTTPHandler(pin=pin),
         _PinnedIPHTTPSHandler(pin=pin),

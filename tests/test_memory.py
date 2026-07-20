@@ -321,6 +321,58 @@ def test_memory_propose_accept_dismiss_dedupe(tmp_path, monkeypatch):
     assert session._flush_turn_memory_proposals() == []
 
 
+def test_memory_add_refuses_secretish_content():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from harness.pilot import PilotAction
+    from harness.send_loop_dispatch import dispatch_memory_action
+
+    act = PilotAction(
+        kind="memory",
+        memory_action="add",
+        memory_content="api_key=sk-abc123def456ghi789",
+        memory_category="preference",
+    )
+    session = SimpleNamespace(
+        _auto_mode=False,
+        _turn_memory_queue=[],
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_memory_action(session, act, "a-secret", True))
+    assert events[0].kind == "action_result"
+    assert session._turn_memory_queue == []
+    appended = session._append_action_result.call_args[0][2]
+    assert "Refused" in appended
+    assert "secret" in appended.lower()
+
+
+def test_memory_add_queues_normal_preference():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from harness.pilot import PilotAction
+    from harness.send_loop_dispatch import dispatch_memory_action
+
+    act = PilotAction(
+        kind="memory",
+        memory_action="add",
+        memory_content="Prefer Python 3.12 for new scripts",
+        memory_category="preference",
+    )
+    session = SimpleNamespace(
+        _auto_mode=False,
+        _turn_memory_queue=[],
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_memory_action(session, act, "a-pref", True))
+    assert events[0].kind == "action_result"
+    assert len(session._turn_memory_queue) == 1
+    assert session._turn_memory_queue[0]["text"] == "Prefer Python 3.12 for new scripts"
+    appended = session._append_action_result.call_args[0][2]
+    assert "Queued for end-of-turn" in appended
+
+
 def test_memory_propose_accept_missing(tmp_path, monkeypatch):
     temp_mem_path = tmp_path / "missing_memory.json"
     monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)

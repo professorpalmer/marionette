@@ -179,7 +179,8 @@ class ToolDispatchMixin:
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
-        if not is_safe_path(target_path, self.config.repo):
+        # Same read roots as read_file (workspace + git toplevel + spill).
+        if not any(is_safe_path(target_path, root) for root in self._read_allowed_roots()):
             return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
         try:
             if not os.path.exists(target_path):
@@ -449,6 +450,7 @@ class ToolDispatchMixin:
             root_path = self.config.repo
         if not os.path.isabs(root_path):
             root_path = os.path.join(self.config.repo, root_path)
+        # LSP root stays repo-confined; do not climb to git toplevel like read_file.
         if not is_safe_path(root_path, self.config.repo):
             return False, "path_traversal", f"Path traversal attempt rejected: {root_arg}"
 
@@ -670,12 +672,19 @@ class ToolDispatchMixin:
         if getattr(self, "_auto_mode", False) and getattr(self, "_auto_command_guard", None):
             verdict = classify_command(act.command or "")
             cmd_hash = hashlib.sha256((act.command or "").encode()).hexdigest()
+            approved_set = getattr(self, "_approved_commands", set())
             consume_approval = getattr(self, "consume_command_approval", None)
-            approved_for_retry = (
-                bool(consume_approval(cmd_hash))
-                if verdict.danger and consume_approval is not None
-                else cmd_hash in getattr(self, "_approved_commands", set())
-            )
+            if verdict.danger:
+                if consume_approval is not None:
+                    approved_for_retry = bool(consume_approval(cmd_hash))
+                elif cmd_hash in approved_set:
+                    # Fallback one-shot when consume_command_approval is absent.
+                    approved_set.discard(cmd_hash)
+                    approved_for_retry = True
+                else:
+                    approved_for_retry = False
+            else:
+                approved_for_retry = True
             if verdict.danger and not approved_for_retry:
                 block_msg = (
                     f"BLOCKED in full-auto: command matches '{verdict.category}' "

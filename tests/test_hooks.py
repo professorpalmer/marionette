@@ -155,3 +155,33 @@ def test_hooks_module_and_endpoints():
         # Restore original hooks path
         _hk._HOOKS_JSON = original_hooks_json
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_run_hooks_uses_shell_false_argv_wrapper(monkeypatch, tmp_path):
+    """Hook scripts run via argv wrapper, never shell=True + concatenated input."""
+    import harness.hooks as hk
+
+    calls = []
+    original_json = hk._HOOKS_JSON
+    hk._HOOKS_JSON = str(tmp_path / "hooks.json")
+    hk.save_hooks([{
+        "id": "h-shell",
+        "event": "preRun",
+        "command": "echo ok",
+        "enabled": True,
+    }])
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs.get("shell")))
+        class _R:
+            returncode = 0
+        return _R()
+
+    monkeypatch.setattr(hk.subprocess, "run", fake_run)
+    try:
+        hk.run_hooks("preRun", {"x": "1"})
+    finally:
+        hk._HOOKS_JSON = original_json
+    assert calls
+    assert calls[0][1] is False
+    assert isinstance(calls[0][0], list)

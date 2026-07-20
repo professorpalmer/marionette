@@ -180,11 +180,11 @@ test("windowsProfilePathCandidates: includes npm, uv, and portable tool dirs", (
     USERPROFILE: home,
     LOCALAPPDATA: `${home}\\AppData\\Local`,
     APPDATA: `${home}\\AppData\\Roaming`,
-    NVM_SYMLINK: "C:\\Program Files\\nodejs",
   });
   assert.ok(candidates.includes(`${home}\\AppData\\Roaming\\npm`));
   assert.ok(candidates.includes(`${home}\\.local\\bin`));
   assert.ok(candidates.includes(`${home}\\AppData\\Local\\marionette\\tools\\node`));
+  // Default MSI install dir even when NVM_SYMLINK is unset (candidates, not exists filter).
   assert.ok(candidates.includes("C:\\Program Files\\nodejs"));
 });
 

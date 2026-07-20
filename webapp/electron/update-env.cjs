@@ -121,6 +121,12 @@ function windowsProfilePathCandidates(env = process.env) {
   push(path.join(home, "scoop", "shims"));
   push("C:\\ProgramData\\chocolatey\\bin");
 
+  // Stock Node/Git MSI installs (existingProfilePaths filters to dirs on disk).
+  push("C:\\Program Files\\nodejs");
+  push("C:\\Program Files (x86)\\nodejs");
+  push("C:\\Program Files\\Git\\cmd");
+  push("C:\\Program Files (x86)\\Git\\cmd");
+
   return candidates;
 }
 

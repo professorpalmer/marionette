@@ -25,6 +25,7 @@ from typing import Any, Iterator, Optional
 from pmharness.bridge import execute_intent
 
 from .pilot import PilotAction, StreamingSayExtractor
+from .url_safety import sanitize_url_for_display
 
 # job_XXXXXXXXXXXX — same pattern the parallel-dispatch stdout scanner used
 # when nested inside _send_locked_inner.
@@ -55,7 +56,7 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
 PLAN_SKIP_KINDS: frozenset[str] = frozenset({
     "run_implement", "run_parallel",
     "write_file", "edit_file", "hash_edit", "run_command",
-    "call_mcp", "manage_mcp",
+    "call_mcp", "manage_mcp", "memory",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_get_text", "browser_screenshot",
@@ -214,9 +215,13 @@ def action_display_goal(act: PilotAction) -> Any:
     elif act.kind == "web_search":
         act_goal = act.query
     elif act.kind == "web_fetch":
-        act_goal = act.url
+        act_goal = sanitize_url_for_display(act.url) if act.url else act.url
     elif act.kind == "read_pdf":
-        act_goal = act.path or act.url
+        target = act.path or act.url
+        if target and str(target).startswith(("http://", "https://")):
+            act_goal = sanitize_url_for_display(str(target))
+        else:
+            act_goal = target
     elif act.kind == "search_codegraph":
         act_goal = act.query
     elif act.kind == "search_files":
@@ -683,14 +688,16 @@ def dispatch_readonly_action(
 
         if ok:
             result_text = val
+            display_url = sanitize_url_for_display(act.url)
             yield ConvEvent("action_result", {
                 "id": aid, "num": 1, "types": ["web_fetch"], "adapter": "local", "mode": "tool",
-                "artifacts": [{"type": "web_fetch", "headline": f"Fetched {act.url}"}],
+                "artifacts": [{"type": "web_fetch", "headline": f"Fetched {display_url}"}],
             })
-            session._append_action_result(act, aid, f"(web_fetch '{act.url}' returned)\n{result_text}", is_native)
+            session._append_action_result(act, aid, f"(web_fetch '{display_url}' returned)\n{result_text}", is_native)
         else:
             yield ConvEvent("action_result", {"id": aid, "error": val})
-            session._append_action_result(act, aid, f"(web_fetch '{act.url}' failed: {val})", is_native)
+            display_url = sanitize_url_for_display(act.url)
+            session._append_action_result(act, aid, f"(web_fetch '{display_url}' failed: {val})", is_native)
         return
 
     if act.kind == "read_pdf":
@@ -701,11 +708,17 @@ def dispatch_readonly_action(
 
         if ok:
             result_text = val
+            pdf_target = act.path or act.url
+            display_pdf = (
+                sanitize_url_for_display(str(pdf_target))
+                if pdf_target and str(pdf_target).startswith(("http://", "https://"))
+                else pdf_target
+            )
             yield ConvEvent("action_result", {
                 "id": aid, "num": 1, "types": ["read_pdf"], "adapter": "local", "mode": "tool",
-                "artifacts": [{"type": "read_pdf", "headline": f"Read PDF from {act.path or act.url}"}],
+                "artifacts": [{"type": "read_pdf", "headline": f"Read PDF from {display_pdf}"}],
             })
-            session._append_action_result(act, aid, f"(read_pdf '{act.path or act.url}' returned)\n{result_text}", is_native)
+            session._append_action_result(act, aid, f"(read_pdf '{display_pdf}' returned)\n{result_text}", is_native)
         else:
             if status == "repo_not_open":
                 yield ConvEvent("action_result", {"id": aid, "error": val})
@@ -715,7 +728,13 @@ def dispatch_readonly_action(
                 session._append_action_result(act, aid, f"(read_pdf {aid} failed: {val})", is_native)
             else:  # status == "exception"
                 yield ConvEvent("action_result", {"id": aid, "error": val})
-                session._append_action_result(act, aid, f"(read_pdf '{act.path or act.url}' failed: {val})", is_native)
+                pdf_target = act.path or act.url
+                display_pdf = (
+                    sanitize_url_for_display(str(pdf_target))
+                    if pdf_target and str(pdf_target).startswith(("http://", "https://"))
+                    else pdf_target
+                )
+                session._append_action_result(act, aid, f"(read_pdf '{display_pdf}' failed: {val})", is_native)
         return
 
     if act.kind == "search_codegraph":

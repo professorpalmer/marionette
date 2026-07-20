@@ -507,15 +507,15 @@ export default function ComposerDock({
                 </span>
               </span>
               <span className="flex items-center gap-1 shrink-0">
-                {canRevertEdit && (
+                {editingIndex !== null && (
                   <button
                     type="button"
-                    disabled={editBusy}
-                    onClick={() => handleRevertEdit()}
+                    disabled={editBusy || !input.trim()}
+                    onClick={() => send()}
                     className="text-accent hover:text-txt transition font-semibold text-[10px] px-1.5 py-0.5 rounded border border-accent/40 bg-accent/10 hover:bg-accent/20 disabled:opacity-50"
-                    title="Restore the conversation from before this edit"
+                    title="Wipe back to this message and run the edited prompt"
                   >
-                    Revert?
+                    Resubmit
                   </button>
                 )}
                 {editingIndex !== null && (
@@ -524,8 +524,20 @@ export default function ComposerDock({
                     disabled={editBusy}
                     onClick={() => handleCancelEdit()}
                     className="text-faint hover:text-muted transition font-medium text-[10px] px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2 disabled:opacity-50"
+                    title="Restore the conversation from before this edit"
                   >
                     Cancel
+                  </button>
+                )}
+                {editingIndex === null && canRevertEdit && (
+                  <button
+                    type="button"
+                    disabled={editBusy}
+                    onClick={() => handleRevertEdit()}
+                    className="text-accent hover:text-txt transition font-semibold text-[10px] px-1.5 py-0.5 rounded border border-accent/40 bg-accent/10 hover:bg-accent/20 disabled:opacity-50"
+                    title="Restore the conversation from before this edit"
+                  >
+                    Revert?
                   </button>
                 )}
                 {editingIndex === null && canRevertEdit && (

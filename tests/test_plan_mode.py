@@ -92,6 +92,23 @@ def test_plan_mode_filters_edit_actions():
     assert "File not found" in action_results[4].data["error"]
 
 
+def test_plan_mode_cannot_bypass_preapproved_run_command(tmp_path):
+    """Plan mode skip must run before command_policy/consume even when pre-approved."""
+    import hashlib
+
+    cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
+    s = ConversationalSession(cfg)
+    command = "ssh prod systemctl stop nginx"
+    command_hash = hashlib.sha256(command.encode()).hexdigest()
+    s._approved_commands.add(command_hash)
+    s.pilot = _FakePilotWithActions([{"kind": "run_command", "command": command}])
+
+    events = list(s.send("plan only", plan=True))
+    results = [e for e in events if e.kind == "action_result"]
+    assert any("plan mode: skipped run_command" in (r.data.get("error") or "") for r in results)
+    assert command_hash in s._approved_commands
+
+
 def test_plan_mode_filters_mcp_mutate_actions():
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     cfg.repo = tempfile.mkdtemp()
@@ -112,6 +129,25 @@ def test_plan_mode_filters_mcp_mutate_actions():
     assert "skipped call_mcp" in action_results[0].data["error"]
     assert "skipped manage_mcp" in action_results[1].data["error"]
     assert "File not found" in action_results[2].data["error"]
+
+
+def test_plan_mode_filters_memory_actions():
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = tempfile.mkdtemp()
+    s = ConversationalSession(cfg)
+    actions = [
+        {"kind": "memory", "action": "add", "content": "Prefer pytest", "category": "preference"},
+        {"kind": "memory", "action": "remove", "entry_id": "m1"},
+        {"kind": "read_file", "path": "missing.txt"},
+    ]
+    s.pilot = _FakePilotWithActions(actions)
+    events = list(s.send("plan memory", plan=True))
+    action_results = [e for e in events if e.kind == "action_result"]
+    assert "skipped memory" in action_results[0].data["error"]
+    assert "plan mode" in action_results[0].data["error"]
+    assert "skipped memory" in action_results[1].data["error"]
+    assert "File not found" in action_results[2].data["error"]
+    assert s._turn_memory_queue == []
 
 
 def test_plan_mode_filters_browser_actions():

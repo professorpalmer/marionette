@@ -6,6 +6,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Union
 
+from .redaction import redact_api_secrets
+
 
 @dataclass
 class HooksServices:
@@ -20,10 +22,10 @@ JsonPayload = Union[dict, list]
 def get_hooks() -> tuple[int, JsonPayload]:
     """GET /api/hooks."""
     from .. import hooks as _hk
-    return 200, {
+    return 200, redact_api_secrets({
         "hooks": _hk.get_hooks(),
         "events": _hk.ALLOWED_EVENTS,
-    }
+    })
 
 
 def post_hooks_add(body: dict) -> tuple[int, JsonPayload]:

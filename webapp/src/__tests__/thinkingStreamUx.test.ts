@@ -98,4 +98,22 @@ describe("activityGroupStableId survives thinking → tool transition", () => {
     );
     expect(b).toBe(a);
   });
+
+  it("keeps the same open-state id when group index shifts after a turn ends", () => {
+    const card: Item = {
+      kind: "card",
+      card: {
+        id: "tool-index-shift",
+        goal: "read",
+        cwd: null,
+        kind: "read_file",
+        running: false,
+        open: false,
+      },
+    };
+    const atThree = activityGroupStableId([card], 3);
+    const atFive = activityGroupStableId([card], 5);
+    expect(atFive).toBe(atThree);
+    expect(atThree).not.toContain("#");
+  });
 });

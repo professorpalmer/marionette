@@ -394,6 +394,38 @@ def append_failed_declarative_checks_summary(summary: str, declarative_checks) -
     return f"{summary}\n{check_line}" if summary else check_line
 
 
+_TURN_CONTEXT_MARKER = "[context for this turn]"
+_CODEGRAPH_INJECTION_PREFIX = "CODEGRAPH HAS ALREADY BEEN QUERIED"
+
+
+def strip_turn_context_trailer(text: str) -> str:
+    """Remove append-only turn-context injection from user-visible text.
+
+    Pilots keep the trailer in history (prefix-cache / append-only). Display and
+    UI paths must never surface the marker or following CODEGRAPH/WIKI/budget
+    blocks. Pure string helper — no session or Puppetmaster dependency.
+    """
+    if not text:
+        return text
+    markers = (
+        f"\n\n{_TURN_CONTEXT_MARKER}\n",
+        f"\n\n{_TURN_CONTEXT_MARKER}",
+        f"{_TURN_CONTEXT_MARKER}\n",
+        _TURN_CONTEXT_MARKER,
+    )
+    cut: int | None = None
+    for marker in markers:
+        idx = text.find(marker)
+        if idx != -1 and (cut is None or idx < cut):
+            cut = idx
+    if cut is not None:
+        text = text[:cut].rstrip()
+    stripped = text.lstrip()
+    if stripped.startswith(_CODEGRAPH_INJECTION_PREFIX):
+        return ""
+    return text
+
+
 # Emitted conversational SSE kinds (chat/auto paths). Intentionally excludes
 # SessionEvent kinds and the framing-only "done" sentinel written by sse_pump.
 # Keep in sync with yield sites in send_loop / conversation mixins — typing only;
@@ -1081,8 +1113,23 @@ class ConversationalSession(
         Pending DANGER approvals live in session state; if a prior save omitted
         the card (or a sibling poll raced ahead of the upsert), fold them back
         in so hydrate/reattach never drops a waiting operator decision.
+
+        User-message text is scrubbed of append-only turn-context trailers on
+        a row copy — history keeps the trailer for the pilot.
         """
-        display = list(self._display_transcript)
+        display: list = []
+        for row in self._display_transcript:
+            if (
+                isinstance(row, dict)
+                and (row.get("type") or "message") == "message"
+                and row.get("role") == "user"
+            ):
+                text = row.get("text")
+                if isinstance(text, str) and text:
+                    cleaned = strip_turn_context_trailer(text)
+                    if cleaned != text:
+                        row = {**row, "text": cleaned}
+            display.append(row)
         with self._command_approval_lock_guard():
             pending_rows = [
                 self._display_command_approval_row(pending, status="pending")
@@ -1211,7 +1258,7 @@ class ConversationalSession(
         removed = len(display) - display_index
         notice = (
             f"Editing from that message ({removed} turn item(s) set aside). "
-            "Resubmit the edited text, or Revert to restore."
+            "Resubmit the edited text to start a new turn, or Cancel to restore."
         )
         return {
             "ok": True,

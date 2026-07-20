@@ -137,6 +137,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     from ..cli_job_merge import (
         bulk_load_store_artifacts,
         bulk_load_store_tasks,
+        cli_stores_by_job,
         partition_jobs_by_store,
     )
 
@@ -159,21 +160,29 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         jobs, store, cli_store = svc.scoped_jobs_with_stores(repo_root=repo_override or None)
 
         harness_jids, cli_jids = partition_jobs_by_store(jobs)
+        foreign_cli = cli_stores_by_job(jobs)
         # Batch all three per-job reads (the old N+1 read artifacts TWICE
         # plus tasks, per job): one bulk artifacts read + one bulk tasks
-        # read, regrouped by job_id.
+        # read, regrouped by job_id. Foreign CLI stores (sibling MCP cwd)
+        # are loaded per job so tracker cost/savings are not blank.
         arts_by_job: dict = {}
         tasks_by_job: dict = {}
         try:
             harness_arts = bulk_load_store_artifacts(store, harness_jids)
-            cli_arts = bulk_load_store_artifacts(cli_store, cli_jids)
+            primary_cli_jids = [j for j in cli_jids if j not in foreign_cli]
+            cli_arts = bulk_load_store_artifacts(cli_store, primary_cli_jids)
             arts_by_job = {**harness_arts, **cli_arts}
+            for jid, fstore in foreign_cli.items():
+                arts_by_job.update(bulk_load_store_artifacts(fstore, [jid]))
         except Exception:
             arts_by_job = None
         try:
             harness_tasks = bulk_load_store_tasks(store, harness_jids)
-            cli_tasks = bulk_load_store_tasks(cli_store, cli_jids)
+            primary_cli_jids = [j for j in cli_jids if j not in foreign_cli]
+            cli_tasks = bulk_load_store_tasks(cli_store, primary_cli_jids)
             tasks_by_job = {**harness_tasks, **cli_tasks}
+            for jid, fstore in foreign_cli.items():
+                tasks_by_job.update(bulk_load_store_tasks(fstore, [jid]))
         except Exception:
             tasks_by_job = None
 
@@ -182,7 +191,10 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             if not jid:
                 continue
 
-            job_store = cli_store if j.get("source") == "cli" and cli_store else store
+            if j.get("source") == "cli":
+                job_store = foreign_cli.get(jid) or cli_store or store
+            else:
+                job_store = store
             raw_arts = (arts_by_job.get(jid, []) if arts_by_job is not None
                         else svc.retry_on_locked(lambda: job_store.list_artifacts(jid)))
             # Live poll always ships slim artifacts (routing + verdicts).

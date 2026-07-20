@@ -31,9 +31,6 @@ from .cursor_cli import (
     resolve_agent_exec,
     resolve_cursor_execution_mode,
 )
-from .token_usage import coerce_token_usage
-
-
 def cursor_acp_enabled() -> bool:
     """Warm ACP path (default ON). Set ``HARNESS_CURSOR_ACP=0`` to force --print.
 
@@ -877,8 +874,10 @@ class WarmAcpSession:
                     break
         usage_blobs.append(result)
         usage_blobs.append(resp)
-        tin, tout, cost = coerce_token_usage(*usage_blobs)
-        return {
+        from .token_usage import coerce_token_usage_detail
+
+        tin, tout, cost, cache_read = coerce_token_usage_detail(*usage_blobs)
+        out = {
             "text": final_text,
             # Thought-channel accumulation: Grok/ACP often puts the final
             # readout only here. Send-loop may promote it to assistant prose.
@@ -890,6 +889,9 @@ class WarmAcpSession:
             "tokens_out": tout,
             "provider_cost_usd": cost,
         }
+        if cache_read > 0:
+            out["cache_read_tokens"] = cache_read
+        return out
 
 
 class CursorAcpDriver:
@@ -937,6 +939,7 @@ class CursorAcpDriver:
         )
         self._acp_disabled = False
         self._acp_fail_reason = ""
+        self._interrupted = False
         # Hide first-turn handshake behind session open when possible.
         if session is None:
             threading.Thread(
@@ -990,6 +993,7 @@ class CursorAcpDriver:
 
     def on_interrupt(self) -> None:
         """Owner path: cooperative Stop — unblock stuck ACP I/O by reaping."""
+        self._interrupted = True
         self.close()
 
     def on_shutdown(self) -> None:
@@ -1023,11 +1027,15 @@ class CursorAcpDriver:
             if tr is None or not tr.alive():
                 self._session.close()
             raise
-        if out.get("error") and not (out.get("text") or "").strip():
+        # Any ACP error ends the warm turn — even with partial streamed text.
+        # Treating error+text as success made mid-turn agent death look like a
+        # finished native step (empty tool_calls), so the loop never restarted.
+        if out.get("error"):
             self._acp_fail_reason = str(out.get("error"))
-            tr = self._session.transport
-            if tr is None or not tr.alive():
+            try:
                 self._session.close()
+            except Exception:
+                pass
             raise RuntimeError(self._acp_fail_reason)
         tin = int(out.get("tokens_in") or 0)
         tout = int(out.get("tokens_out") or 0)
@@ -1049,6 +1057,9 @@ class CursorAcpDriver:
                 meta["provider_cost_usd"] = float(cost)
             except (TypeError, ValueError):
                 pass
+        cache_read = int(out.get("cache_read_tokens") or 0)
+        if cache_read > 0:
+            meta["cache_read_tokens"] = cache_read
         return DriverResponse(
             text=str(out.get("text") or ""),
             tokens_in=tin,
@@ -1078,8 +1089,17 @@ class CursorAcpDriver:
                     on_reasoning_delta=on_reasoning_delta,
                     on_tool_hint=on_tool_hint,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    self._session.close()
+                except Exception:
+                    pass
+                # Stop already reaped warm ACP — do not spawn a silent --print
+                # agent that ignores cancel and keeps holding the turn.
+                if getattr(self, "_interrupted", False):
+                    self._interrupted = False
+                    raise
+                self._acp_fail_reason = str(exc)
         return self._fallback._run_stream(
             messages,
             tools=None,

@@ -25,6 +25,17 @@ DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
     "run_swarm", "run_implement", "run_parallel", "route_task", "memory",
 })
 
+# Best-effort guard: refuse memory adds that look like pasted credentials.
+_MEMORY_SECRET_RE = re.compile(
+    r"(?:"
+    r"(?:api[_-]?key|secret|password|token)\s*=\s*\S+"
+    r"|sk-[A-Za-z0-9_-]{8,}"
+    r"|ghp_[A-Za-z0-9]{20,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r")",
+    re.IGNORECASE,
+)
+
 _PATH_REF_RE = re.compile(
     r"[\w./\\-]+\.(py|ts|tsx|js|jsx|cjs|mjs|json|md|toml|yml|yaml|css|html|rs|go|java|c|h|cpp|sh|ps1|bat)\b"
     r"|line\s+\d+|:\d+\b",
@@ -705,7 +716,13 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 if not text:
                     raise ValueError('memory add requires content')
                 already = any(((q.get('text') or '').strip().lower() == text.lower() for q in session._turn_memory_queue))
-                if already:
+                if _MEMORY_SECRET_RE.search(text):
+                    res_str = (
+                        "Refused: memory add looks like it contains secrets "
+                        "(API keys, tokens, or passwords). Do not save credentials "
+                        "to durable memory."
+                    )
+                elif already:
                     res_str = f"Already queued for end-of-turn Save/Skip: '{text}' (category: {cat}). Not persisted yet."
                 else:
                     session._turn_memory_queue.append({'text': text, 'category': cat})

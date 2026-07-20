@@ -4,10 +4,12 @@ import socket
 import pytest
 
 from harness.url_safety import (
+    _strip_zone_id,
     is_safe_url,
     is_safe_url_pinned,
     normalize_url_for_request,
     redact_sensitive_query_params,
+    sanitize_url_for_display,
 )
 
 
@@ -108,6 +110,26 @@ def test_redact_sensitive_query_params():
     assert "zzz" not in out
     assert "q=hello" in out
     assert "REDACTED" in out
+
+
+def test_sanitize_url_for_display_redacts_query_params():
+    out = sanitize_url_for_display("https://x.example/?token=secret&q=ok")
+    assert "secret" not in out
+    assert "token=REDACTED" in out
+    assert "q=ok" in out
+
+
+def test_sanitize_url_for_display_redacts_userinfo():
+    out = sanitize_url_for_display("https://alice:supersecret@example.com/doc.pdf")
+    assert "supersecret" not in out
+    assert "alice:REDACTED@" in out
+    assert "example.com/doc.pdf" in out
+
+
+def test_strip_zone_id():
+    assert _strip_zone_id("fe80::1%eth0") == "fe80::1"
+    assert _strip_zone_id("1.1.1.1") == "1.1.1.1"
+    assert _strip_zone_id("") == ""
 
 
 # -- is_safe_url_pinned tests (TOCTOU DNS-rebinding fix) ---------------------
