@@ -64,12 +64,57 @@ export type ToolPrepOpts = {
 };
 
 /**
+ * True when sealed assistant prose looks like a finished answer rather than
+ * a short pre-tool preamble ("I'll validate…").
+ *
+ * Cursor CLI/ACP often flushes the final readout before buffered tool_call
+ * events arrive; without this, the first tool card appends *after* that
+ * answer and the Explored fold renders under the summary.
+ */
+export function looksLikeFinalAnswer(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return false;
+  if (t.length >= 240) return true;
+  if ((t.match(/\n/g) || []).length >= 3) return true;
+  // Markdown table (audit validation summaries).
+  if (/^\|.+\|$/m.test(t) && t.includes("|---")) return true;
+  return false;
+}
+
+/**
  * Insert index for a new tool/prep card inside the current turn.
  * Pre-tool narration (assistant/thinking with no prior card) stays above;
  * once a card exists, later assistant/thinking rows stay below new tools.
+ *
+ * First card in a turn also leapfrogs trailing sealed *final-looking*
+ * assistants so late Cursor tool events cannot leave Explored under the answer.
  */
 function toolPrepInsertIndex(items: Item[], turnStart: number): number {
   let insertAt = items.length;
+  const turnHasCard = items
+    .slice(turnStart)
+    .some((row) => row.kind === "card");
+
+  if (!turnHasCard) {
+    // Leapfrog only consecutive trailing finals — never short sticky preambles.
+    for (let i = items.length - 1; i >= turnStart; i--) {
+      const it = items[i];
+      if (it.kind === "tool_prep") continue;
+      if (
+        it.kind === "msg"
+        && it.msg.role === "assistant"
+        && !it.msg.streaming
+        && !it.msg.workerStream
+        && looksLikeFinalAnswer(it.msg.text || "")
+      ) {
+        insertAt = i;
+        continue;
+      }
+      break;
+    }
+    return insertAt;
+  }
+
   for (let i = items.length - 1; i >= turnStart; i--) {
     const it = items[i];
     if (it.kind === "tool_prep") continue;

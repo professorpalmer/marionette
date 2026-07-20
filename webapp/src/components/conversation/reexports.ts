@@ -20,6 +20,7 @@ export {
   upsertToolPrep,
   clearToolPrepPlaceholders,
   newThinkingId,
+  looksLikeFinalAnswer,
 } from "./thinkingToolPrep";
 export {
   nextAppliedCursor,

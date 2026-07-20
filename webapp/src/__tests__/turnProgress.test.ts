@@ -19,6 +19,7 @@ import {
   clearToolPrepPlaceholders,
   deduplicateAssistantNarration,
   upsertToolPrep,
+  looksLikeFinalAnswer,
 } from "../components/Conversation";
 import type { Item } from "../components/TranscriptList";
 
@@ -362,6 +363,66 @@ describe("turnLooksAnswerComplete / shouldShowBusyFooter (T5)", () => {
   it("returns false for shouldShowBusyFooter when status is idle", () => {
     const items: Item[] = [msg("user", "go"), msg("assistant", "done")];
     expect(shouldShowBusyFooter(items, "idle")).toBe(false);
+  });
+});
+
+describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
+  it("treats short preambles as non-final and long/table answers as final", () => {
+    expect(looksLikeFinalAnswer("I'll validate the schedule fixes.")).toBe(false);
+    expect(looksLikeFinalAnswer("x".repeat(240))).toBe(true);
+    expect(
+      looksLikeFinalAnswer(
+        "Validated.\n\n| Fix | Impl |\n|---|---|\n| Lease | heartbeat |\n\nDone.",
+      ),
+    ).toBe(true);
+  });
+
+  it("inserts first late tool card before a sealed final answer", () => {
+    const finalText =
+      "Validated — schedule audit close on v0.9.106 looks correct.\n\n"
+      + "| Fix | Implementation |\n|---|---|\n"
+      + "| Lease heartbeat | renews while blocked |\n\n"
+      + "Tests: 113 passed across the schedule suite.";
+    const items: Item[] = [
+      msg("user", "validate"),
+      { kind: "thinking", text: "Checking commits.", id: "th-1" },
+      { kind: "msg", msg: { role: "assistant", text: finalText } },
+    ];
+    const next = upsertToolPrep(items, "read_file", {
+      id: "c-late",
+      goal: "schedule_core.py",
+      status: "in_progress",
+    });
+    const kinds = next.map((it) => {
+      if (it.kind === "card") return `card:${it.card.id}`;
+      if (it.kind === "msg") return `msg:${it.msg.role}`;
+      return it.kind;
+    });
+    expect(kinds).toEqual([
+      "msg:user",
+      "thinking",
+      "card:tool-prep:c-late",
+      "tool_prep",
+      "msg:assistant",
+    ]);
+  });
+
+  it("keeps short sticky preamble above the first tool card", () => {
+    const items: Item[] = [
+      msg("user", "validate"),
+      { kind: "msg", msg: { role: "assistant", text: "I'll validate the fixes." } },
+    ];
+    const next = upsertToolPrep(items, "read_file", {
+      id: "c1",
+      goal: "a.py",
+      status: "in_progress",
+    });
+    const kinds = next.map((it) => it.kind);
+    expect(kinds.indexOf("msg")).toBeLessThan(
+      kinds.findIndex((k, i) => k === "card" && i > 0),
+    );
+    expect(next[1].kind).toBe("msg");
+    expect(next[2].kind).toBe("card");
   });
 });
 

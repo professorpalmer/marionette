@@ -905,8 +905,6 @@ function ActivityGroup({
   const anyRunning = cards.some(
     (c) => c.card.running || (c.card.actions || []).some((a) => a.status === "running"),
   );
-  // Keep Investigating across gaps between tool steps (loop still open).
-  const investigating = anyRunning || (loopOpen && actionCount > 0);
   const runningCard = [...cards].reverse().find((c) => c.card.running)?.card;
   const runningNested = [...nestedRows].reverse().find((a) => a.status === "running");
   const runningKind = toolFocusPhrase(
@@ -922,6 +920,14 @@ function ActivityGroup({
     (it) => it.kind === "thinking" && (it as { kind: "thinking"; text: string }).text.trim()
   ) as { kind: "thinking"; text: string; streaming?: boolean; id?: string }[];
   const liveThinking = thinkingItems.some((t) => t.streaming);
+  // Keep Investigating across gaps between tool steps (loop still open).
+  // Cursor CLI often streams reasoning before any tool_call event — treat
+  // live thinking + open loop as Investigating so the fold is not blank until
+  // tools flush at the end of the agent subprocess.
+  const investigating =
+    anyRunning
+    || liveThinking
+    || (loopOpen && (actionCount > 0 || thinkingItems.length > 0));
 
   // Auto-open while tools/reasoning are live ONLY when the user has never
   // toggled this group. A prior remount reset autoOpenedRef and re-forced open

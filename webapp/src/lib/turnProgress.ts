@@ -486,7 +486,8 @@ export function investigatingHeadline(
   runningGoal: string,
   kindSummary: string,
 ): string {
-  if (actionCount <= 0) return "";
+  // Reasoning-only Investigating (Cursor thought stream before tool_call).
+  if (actionCount <= 0) return anyRunning ? "Investigating…" : "";
   if (anyRunning) {
     // Avoid "tool tool" / "read read" when kind and goal are the same string
     // (Cursor CLI tool_prep used to set both from the hint name).
