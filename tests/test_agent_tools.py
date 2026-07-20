@@ -178,8 +178,12 @@ def test_run_command_survives_cancel_poisoned_after_action_start():
                 cmd_result = ev.data
 
         assert cmd_result is not None, "run_command produced no result -- it was killed before launch"
+        assert cmd_result.get("exit_code") == 0, f"command was wrongly cancelled: {cmd_result!r}"
+        assert "alive_marker_42" in (cmd_result.get("output") or "")
         headline = cmd_result["artifacts"][0]["headline"]
-        assert headline == "Command exited with 0", f"command was wrongly cancelled: {headline!r}"
+        assert "0" in headline and (
+            headline.startswith("exit 0") or headline == "Command exited with 0"
+        ), f"unexpected headline: {headline!r}"
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

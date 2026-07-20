@@ -62,6 +62,42 @@ PLAN_SKIP_KINDS: frozenset[str] = frozenset({
     "browser_get_text", "browser_screenshot",
 })
 
+# Cap for run_command SSE ``output`` so the UI card can show an excerpt without
+# dumping unbounded shell stdout into the event stream.
+_RUN_COMMAND_UI_OUTPUT_CAP = 4 * 1024
+
+
+def _truncate_run_command_ui_output(
+    output: str, cap: int = _RUN_COMMAND_UI_OUTPUT_CAP,
+) -> str:
+    """Head+tail excerpt for the investigation Run card (not model history)."""
+    text = output if isinstance(output, str) else str(output or "")
+    if len(text) <= cap:
+        return text
+    head_len = cap // 2
+    tail_len = cap - head_len
+    omitted = len(text) - cap
+    marker = (
+        f"\n... [truncated {omitted} chars of {len(text)}-char output "
+        f"-- middle elided for UI] ...\n"
+    )
+    return text[:head_len] + marker + text[-tail_len:]
+
+
+def _run_command_artifact_headline(exit_code: int, output: str) -> str:
+    """Compact card headline: prefer ``exit N · <first line>`` when output exists."""
+    first_line = ""
+    for line in (output or "").splitlines():
+        stripped = line.strip()
+        if stripped:
+            first_line = stripped
+            break
+    if first_line:
+        if len(first_line) > 80:
+            first_line = first_line[:77] + "..."
+        return f"exit {exit_code} · {first_line}"
+    return f"Command exited with {exit_code}"
+
 
 def run_stream(
     session: Any,
@@ -1283,9 +1319,12 @@ def dispatch_local_action(
         return
     # ---- run_command branch ---------------------------------------
     if act.kind == "run_command":
+        command = act.command or ""
         if not session.config.repo:
             error_msg = "No workspace directory (config.repo) is open."
-            yield ConvEvent("action_result", {"id": aid, "error": error_msg})
+            yield ConvEvent("action_result", {
+                "id": aid, "error": error_msg, "kind": "run_command", "command": command,
+            })
             session._append_action_result(act, aid, f"(run_command {aid} failed: {error_msg})", is_native)
             return
         # FULL-AUTO safety + cancellable execution live in
@@ -1297,7 +1336,7 @@ def dispatch_local_action(
                 block_msg = block.get("message") or str(val)
                 command_hash = block.get("command_hash") or ""
                 pending = session.register_pending_command_approval(
-                    command=act.command or "",
+                    command=command,
                     command_hash=command_hash,
                     action_id=aid,
                     category=block.get("category") or "",
@@ -1306,7 +1345,7 @@ def dispatch_local_action(
                 )
                 yield ConvEvent("command_approval_pending", {
                     "id": aid,
-                    "command": act.command,
+                    "command": command,
                     "command_hash": command_hash,
                     "session_id": pending.get("session_id"),
                     "workspace_root": pending.get("workspace_root"),
@@ -1316,16 +1355,29 @@ def dispatch_local_action(
                 })
                 session._append_action_result(act, aid, f"(run_command {aid} {block_msg})", is_native)
             else:
-                yield ConvEvent("action_result", {"id": aid, "error": val})
+                yield ConvEvent("action_result", {
+                    "id": aid, "error": val, "kind": "run_command", "command": command,
+                })
                 session._append_action_result(act, aid, f"(run_command {aid} failed: {val})", is_native)
             return
         output = val["output"]
         exit_code = val["exit_code"]
+        ui_output = _truncate_run_command_ui_output(output)
+        headline = _run_command_artifact_headline(exit_code, ui_output)
         yield ConvEvent("action_result", {
-            "id": aid, "num": 1, "types": ["command"], "adapter": "local", "mode": "tool",
-            "artifacts": [{"type": "command", "headline": f"Command exited with {exit_code}"}],
+            "id": aid,
+            "kind": "run_command",
+            "goal": command,
+            "command": command,
+            "exit_code": exit_code,
+            "output": ui_output,
+            "num": 1,
+            "types": ["command"],
+            "adapter": "local",
+            "mode": "tool",
+            "artifacts": [{"type": "command", "headline": headline}],
         })
-        session._append_action_result(act, aid, f"(run_command '{act.command}' completed with exit code {exit_code})\n{output}", is_native)
+        session._append_action_result(act, aid, f"(run_command '{command}' completed with exit code {exit_code})\n{output}", is_native)
         return
     # ---- search_tools branch ---------------------------------------
     if act.kind == "search_tools":

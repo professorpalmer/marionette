@@ -120,6 +120,28 @@ export function patchCardInItems(
  * Ring-miss / reload can deliver a result without a prior action_start; still
  * paint a card when kind/goal/status/duration/error are present.
  */
+/** Keep failed / noisy run_command results expanded so exit + output stay visible. */
+function shouldOpenActionResultCard(
+  d: {
+    kind?: string;
+    error?: string;
+    exit_code?: unknown;
+    output?: unknown;
+    [key: string]: unknown;
+  },
+  existingKind?: string,
+): boolean {
+  if (d.error) return true;
+  const exitCode = d.exit_code;
+  if (typeof exitCode === "number" && exitCode !== 0) return true;
+  const kind = String(d.kind || existingKind || "").trim().toLowerCase();
+  const isRun =
+    kind === "run_command" || kind === "bash" || kind === "shell" || kind === "execute";
+  const output = typeof d.output === "string" ? d.output.trim() : "";
+  if (isRun && output && typeof exitCode === "number" && exitCode !== 0) return true;
+  return false;
+}
+
 export function applyActionResultCard(
   items: Item[],
   d: {
@@ -140,6 +162,9 @@ export function applyActionResultCard(
     artifacts?: { type: string; headline: string }[];
     chars?: number;
     auth_failure?: string;
+    exit_code?: number;
+    output?: string;
+    command?: string;
     [key: string]: unknown;
   },
 ): Item[] {
@@ -167,6 +192,7 @@ export function applyActionResultCard(
     const prev = sealed[matchIdx];
     if (prev.kind !== "card") return sealed;
     const settledActions = settleNestedRunning(prev.card.actions, outcome);
+    const keepOpen = shouldOpenActionResultCard(d, prev.card.kind);
     return sealed.map((it, i) => {
       if (i !== matchIdx || it.kind !== "card") return it;
       return {
@@ -174,7 +200,7 @@ export function applyActionResultCard(
         card: {
           ...it.card,
           running: false,
-          open: false,
+          open: keepOpen,
           result: d as Card["result"],
           ...(d.kind ? { kind: String(d.kind) } : {}),
           ...(d.goal != null && String(d.goal).trim() ? { goal: String(d.goal) } : {}),
@@ -204,7 +230,7 @@ export function applyActionResultCard(
         call_id: callId || undefined,
         goals: Array.isArray(d.goals) ? d.goals.map(String) : undefined,
         running: false,
-        open: false,
+        open: shouldOpenActionResultCard(d, kind),
         result: d as Card["result"],
       },
     },

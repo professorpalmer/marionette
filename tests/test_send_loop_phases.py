@@ -873,6 +873,58 @@ def test_dispatch_local_action_run_command_blocked():
     session._append_action_result.assert_called_once()
 
 
+def test_dispatch_local_action_run_command_action_result_includes_ui_output():
+    """Run cards need command/exit_code/output on action_result for the UI."""
+    from harness.send_loop_phases import (
+        _RUN_COMMAND_UI_OUTPUT_CAP,
+        _truncate_run_command_ui_output,
+    )
+
+    long_output = ("line-head\n" + ("x" * 5000) + "\nline-tail\n")
+    assert len(long_output) > _RUN_COMMAND_UI_OUTPUT_CAP
+    act = PilotAction(kind="run_command", command="pytest -q")
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        _do_run_command=MagicMock(
+            return_value=(True, "success", {"output": long_output, "exit_code": 1}),
+        ),
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "a-run", True, []))
+    assert len(events) == 1
+    data = events[0].data
+    assert data["kind"] == "run_command"
+    assert data["command"] == "pytest -q"
+    assert data["goal"] == "pytest -q"
+    assert data["exit_code"] == 1
+    assert data["output"] == _truncate_run_command_ui_output(long_output)
+    assert len(data["output"]) <= _RUN_COMMAND_UI_OUTPUT_CAP + 120  # marker room
+    assert "line-head" in data["output"]
+    assert "line-tail" in data["output"]
+    assert "middle elided" in data["output"]
+    headline = data["artifacts"][0]["headline"]
+    assert headline.startswith("exit 1 ·")
+    assert "line-head" in headline
+    # Model history still gets the full (pre-UI-cap) tool output wrapper.
+    session._append_action_result.assert_called_once()
+    hist = session._append_action_result.call_args[0][2]
+    assert "completed with exit code 1" in hist
+    assert long_output in hist
+
+
+def test_dispatch_local_action_run_command_failure_includes_command():
+    act = PilotAction(kind="run_command", command="echo boom")
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        _do_run_command=MagicMock(return_value=(False, "error", "spawn failed")),
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "a-fail", True, []))
+    assert events[0].data["error"] == "spawn failed"
+    assert events[0].data["command"] == "echo boom"
+    assert events[0].data["kind"] == "run_command"
+
+
 def test_dispatch_local_action_call_mcp_unavailable():
     act = PilotAction(kind="call_mcp", tool="x.y", arguments={})
     session = SimpleNamespace(

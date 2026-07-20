@@ -78,7 +78,11 @@ export type Card = {
   // rich shape -- expanding a dispatch-only card used to crash on types.join.
   result?: { job_id?: string; num?: number; types?: string[]; adapter?: string;
              artifacts?: { type: string; headline: string }[]; error?: string;
-             status?: string; message?: string; duration_ms?: number };
+             status?: string; message?: string; duration_ms?: number;
+             /** Truncated shell stdout/stderr excerpt for run_command cards. */
+             output?: string;
+             exit_code?: number;
+             command?: string };
 };
 /** Inline swarm status pill lifecycle (running spinner vs terminal chips). */
 export type SwarmPendingStatus = "running" | "done" | "failed" | "ended";
@@ -877,6 +881,8 @@ function getCardMeta(card: Card): string | null {
     parts.push("blocked");
   } else if (card.result?.error) {
     parts.push("error");
+  } else if (typeof card.result?.exit_code === "number") {
+    parts.push(`exit ${card.result.exit_code}`);
   } else if (card.result?.artifacts && card.result.artifacts.length > 0) {
     const headline = card.result.artifacts[0].headline || "";
     
@@ -888,9 +894,11 @@ function getCardMeta(card: Card): string | null {
       if (writeMatch) {
         parts.push(`${writeMatch[1]} B`);
       } else {
-        const exitMatch = headline.match(/Command exited with (-?\d+)/i);
+        const exitMatch = headline.match(
+          /(?:^exit\s+(-?\d+)\b|Command exited with (-?\d+))/i,
+        );
         if (exitMatch) {
-          parts.push(`exit ${exitMatch[1]}`);
+          parts.push(`exit ${exitMatch[1] || exitMatch[2]}`);
         }
       }
     }
@@ -1628,12 +1636,15 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   // Prefer the real CLI input (path/command/query), recovering from nested
   // goals / artifact headlines when the stream left ``goal`` empty.
   const cliInput = resolveCardCliInput(card);
+  const inputKey = toolInputFieldKey(card.kind || "");
+  const resultCommand = String(card.result?.command || "").trim();
+  const commandKv =
+    inputKey === "command" && resultCommand ? resultCommand : cliInput;
   const multiGoals = Array.isArray(card.goals) && card.goals.length > 1
     ? card.goals.map((g) => shortenGoal(g, 40)).join(" · ")
     : "";
-  const rawGoal = multiGoals || cliInput;
+  const rawGoal = multiGoals || commandKv || cliInput;
   const goalPreview = shortenGoal(rawGoal, 56);
-  const inputKey = toolInputFieldKey(card.kind || "");
   const meta = getCardMeta(card);
   const nested = Array.isArray(card.actions) ? card.actions : [];
   const effectivelyRunning = cardEffectivelyRunning(card);
@@ -1642,13 +1653,16 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   // Nested worker tools stay visible while running (open fold); terminal stays
   // collapsible with the parent card chrome.
   const showNested = nested.length > 0 && (card.open || nestedRunning || effectivelyRunning);
+  const resultOutput = String(card.result?.output || "");
+  const hasExitCode = typeof card.result?.exit_code === "number";
+  const nonZeroExit = hasExitCode && card.result!.exit_code !== 0;
 
   // Hermes tool-row spec: monochrome. Success is SILENT (no glyph -- the row
   // reads as done without a checkmark); only running (spinner) and hard error
   // (destructive) carry a leading glyph. Gate suppressions are muted "blocked",
   // not red -- they are intentional harness redirects, not tool failures.
   const suppressed = isGateSuppressed(card);
-  const isErr = !!card.result?.error && !suppressed;
+  const isErr = (!!card.result?.error || nonZeroExit) && !suppressed;
   const { linkKind, value: goalValue } = classifyActionGoal(card.kind || "", rawGoal);
 
   const onGoalClick = (e: React.MouseEvent) => {
@@ -1783,11 +1797,11 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
       {card.open && (
         <div className="mt-1 ml-5 pl-3 border-l border-edge py-1.5 pr-3 bg-panel2/40 rounded-r-md text-[11px] max-w-full text-txt/90 space-y-1">
           {/* Never render an empty key row — that was the "goal" with no value. */}
-          {cliInput ? (
+          {commandKv ? (
             <KV
               k={inputKey}
-              v={cliInput}
-              linkKind={classifyActionGoal(card.kind || "", cliInput).linkKind}
+              v={commandKv}
+              linkKind={classifyActionGoal(card.kind || "", commandKv).linkKind}
             />
           ) : null}
           {Array.isArray(card.goals) && card.goals.length > 1 && (
@@ -1798,11 +1812,22 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
             </div>
           )}
           {card.cwd && <KV k="cwd" v={card.cwd} linkKind="file" />}
+          {hasExitCode ? (
+            <KV k="exit" v={String(card.result!.exit_code)} />
+          ) : null}
           {card.result?.error && (
             <div className={`mt-1 font-sans ${suppressed ? "text-faint/80" : "text-risk"}`}>
               {suppressed ? card.result.error : `error: ${card.result.error}`}
             </div>
           )}
+          {resultOutput.trim() ? (
+            <pre
+              className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] leading-snug text-txt/85 bg-panel/60 border border-edge/40 rounded px-2 py-1.5"
+              data-testid="run-command-output"
+            >
+              {resultOutput}
+            </pre>
+          ) : null}
           {card.result && !card.result.error && (
             <>
               {card.result.job_id && <KV k="job" v={card.result.job_id || ""} />}

@@ -107,7 +107,12 @@ export function toolRowLabel(kind: string): string {
 /** True when goal is just a restatement of the kind label ("read file", "tool"). */
 export function isRedundantToolGoal(kind: string, goal: string): boolean {
   const g = (goal || "").trim().toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ");
-  if (!g || g === "tool" || g === "function" || g === "unknown") return true;
+  // Model-junk placeholders sometimes land as the Run goal ("null | tail -40").
+  const firstTok = g.split(/[\s|]+/, 1)[0] || "";
+  if (!g || g === "tool" || g === "function" || g === "unknown"
+    || firstTok === "null" || firstTok === "none" || firstTok === "undefined") {
+    return true;
+  }
   const focus = toolFocusPhrase(kind).toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ");
   const label = toolRowLabel(kind).toLowerCase();
   if (g === focus || g === label) return true;
@@ -173,6 +178,7 @@ export function resolveCardCliInput(card: CardInputSource): string {
   const kind = card.kind || "";
   const push = (out: string[], raw: string) => {
     const t = String(raw || "").trim();
+    // isRedundantToolGoal also drops literal null/none/undefined placeholders.
     if (t && !isRedundantToolGoal(kind, t)) out.push(t);
   };
   const candidates: string[] = [];

@@ -1519,8 +1519,46 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
     expect(card.kind).toBe("run_command");
     expect(card.goal).toBe("pytest -q");
     expect(card.running).toBe(false);
+    expect(card.open).toBe(true); // error keeps the card expanded
     expect(card.result?.error).toBe("boom");
     expect(card.result?.duration_ms).toBe(42);
+  });
+
+  it("applyActionResultCard opens on non-zero exit and keeps quiet success collapsed", () => {
+    const running: Item[] = [{
+      kind: "card",
+      card: {
+        id: "run-1",
+        goal: "pytest -q",
+        kind: "run_command",
+        running: true,
+        open: true,
+      },
+    }];
+    const failed = applyActionResultCard(running, {
+      id: "run-1",
+      kind: "run_command",
+      command: "pytest -q",
+      exit_code: 1,
+      output: "FAILED tests/test_x.py::test_y",
+      artifacts: [{ type: "command", headline: "exit 1 · FAILED tests/test_x.py::test_y" }],
+    });
+    const failedCard = (failed[0] as Extract<Item, { kind: "card" }>).card;
+    expect(failedCard.open).toBe(true);
+    expect(failedCard.running).toBe(false);
+    expect(failedCard.result?.exit_code).toBe(1);
+    expect(failedCard.result?.output).toContain("FAILED");
+    expect(failedCard.result?.command).toBe("pytest -q");
+
+    const quietOk = applyActionResultCard(running, {
+      id: "run-1",
+      kind: "run_command",
+      command: "true",
+      exit_code: 0,
+      output: "",
+      artifacts: [{ type: "command", headline: "Command exited with 0" }],
+    });
+    expect((quietOk[0] as Extract<Item, { kind: "card" }>).card.open).toBe(false);
   });
 
   it("hydrates run_parallel goals and nested actions across reload", () => {

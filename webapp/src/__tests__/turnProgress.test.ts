@@ -206,6 +206,14 @@ describe("investigatingHeadline / exploration summary", () => {
     expect(isRedundantToolGoal("read_file", "harness/server.py")).toBe(false);
   });
 
+  it("treats literal null/none/undefined goals as junk", () => {
+    expect(isRedundantToolGoal("run_command", "null")).toBe(true);
+    expect(isRedundantToolGoal("run_command", "None")).toBe(true);
+    expect(isRedundantToolGoal("run_command", "UNDEFINED")).toBe(true);
+    expect(isRedundantToolGoal("run_command", "null | tail -40")).toBe(true);
+    expect(isRedundantToolGoal("run_command", "pytest -q")).toBe(false);
+  });
+
   it("shortens path tails", () => {
     expect(shortenGoal("a/b/c/very-long-name-that-exceeds-limit.lua", 20).endsWith("…")).toBe(true);
   });
@@ -726,6 +734,23 @@ describe("tool card CLI input + stale running", () => {
         },
       }),
     ).toBe("_token_ok CORS");
+  });
+
+  it("skips null/None placeholder goals when resolving CLI input", () => {
+    expect(
+      resolveCardCliInput({
+        kind: "run_command",
+        goal: "null",
+        goals: ["None"],
+      }),
+    ).toBe("");
+    expect(
+      resolveCardCliInput({
+        kind: "run_command",
+        goal: "null",
+        goals: ["rg TODO"],
+      }),
+    ).toBe("rg TODO");
   });
 
   it("treats running+result as settled for non-dispatch tools", () => {
