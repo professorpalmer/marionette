@@ -133,29 +133,68 @@ describe("LeftRail session list contracts", () => {
     expect(openCalls).toBe(1);
   });
 
-  it("project expand state is user-driven; currentRepo must not imply expand/collapse", () => {
-    // Mirrors LeftRail: isExpanded = !!expandedProjects[path] — missing key
-    // is collapsed. Changing the active workspace must not auto-expand the
-    // new root or collapse a previously user-expanded one.
-    const expandedProjects: Record<string, boolean> = {
-      "C:\\Projects\\alpha": true,
-    };
+  it("one-shot boot expand opens the active project so session titles are visible", () => {
+    // Mirrors LeftRail bootExpandedRef effect: first truthy currentRepo
+    // expands once. Sessions under a project render only when isExpanded.
+    let bootExpanded = false;
+    let expandedProjects: Record<string, boolean> = {};
     const isExpanded = (projectPath: string) => !!expandedProjects[projectPath];
+    const visibleSessionTitles = (projectPath: string, titles: string[]) =>
+      isExpanded(projectPath) ? titles : [];
+
+    const onCurrentRepo = (currentRepo: string) => {
+      if (bootExpanded || !currentRepo) return;
+      bootExpanded = true;
+      expandedProjects = { ...expandedProjects, [currentRepo]: true };
+    };
+
+    const active = "C:\\Projects\\marionette";
+    const sessionTitles = ["Last chat", "Older chat"];
+
+    // Before boot: collapsed — session titles hidden under the project row.
+    expect(isExpanded(active)).toBe(false);
+    expect(visibleSessionTitles(active, sessionTitles)).toEqual([]);
+
+    // Boot: currentRepo first becomes set → one-shot expand.
+    onCurrentRepo(active);
+    expect(isExpanded(active)).toBe(true);
+    expect(visibleSessionTitles(active, sessionTitles)).toEqual(sessionTitles);
+
+    // Ref already set: re-running for the same repo after a user collapse
+    // must not force-expand again.
+    expandedProjects = {};
+    onCurrentRepo(active);
+    expect(isExpanded(active)).toBe(false);
+  });
+
+  it("project expand state is user-driven after boot; subsequent currentRepo flips must not auto-expand/collapse", () => {
+    // Mirrors LeftRail: boot expands the first truthy currentRepo once.
+    // After that, changing the active workspace must not auto-expand the
+    // new root or collapse a previously expanded one.
+    let bootExpanded = false;
+    const expandedProjects: Record<string, boolean> = {};
+    const isExpanded = (projectPath: string) => !!expandedProjects[projectPath];
+
+    const onCurrentRepo = (currentRepo: string) => {
+      if (bootExpanded || !currentRepo) return;
+      bootExpanded = true;
+      expandedProjects[currentRepo] = true;
+    };
 
     const alpha = "C:\\Projects\\alpha";
     const beta = "C:\\Projects\\beta";
 
-    // User expanded alpha; it stays open even if beta becomes currentRepo.
+    // Boot with alpha as currentRepo.
+    onCurrentRepo(alpha);
     expect(isExpanded(alpha)).toBe(true);
-    // Beta is current but never clicked — stays collapsed.
     expect(isExpanded(beta)).toBe(false);
 
     // Simulate currentRepo flipping alpha → beta: expand map unchanged.
-    const currentRepo = beta;
+    onCurrentRepo(beta);
     expect(isExpanded(alpha)).toBe(true);
-    expect(isExpanded(currentRepo)).toBe(false);
+    expect(isExpanded(beta)).toBe(false);
 
-    // Only an explicit toggle writes expand state.
+    // Only an explicit toggle writes expand state for beta.
     expandedProjects[beta] = true;
     expect(isExpanded(beta)).toBe(true);
   });

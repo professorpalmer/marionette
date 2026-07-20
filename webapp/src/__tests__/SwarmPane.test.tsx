@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import SwarmPane from "../components/SwarmPane";
 import { api, type SwarmLive } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
-import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
+import { clearSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
@@ -46,6 +46,44 @@ function finishedJob(
 ): SwarmLive {
   return liveJob({ id, goal, status: "complete", adapter: "agentic", ...overrides });
 }
+
+describe("SwarmPane SWR cache first-open", () => {
+  const REPO = "C:\\Users\\pwall\\Projects\\warm-swarm";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+    dispatchProjectSelected(REPO);
+  });
+
+  it("renders seeded jobs immediately without Loading swarm jobs...", async () => {
+    const payload = liveJob({
+      id: "job-warm",
+      goal: "Pre-warmed swarm job",
+      status: "running",
+    });
+    writeSWRCache(`swarm:${REPO}`, payload);
+    // Hang the network fetch so we only see the cache seed (activity-poll warm path).
+    mockSwarmLive.mockImplementation(() => new Promise(() => {}));
+
+    render(<SwarmPane />);
+
+    expect(screen.queryByText("Loading swarm jobs...")).not.toBeInTheDocument();
+    expect(screen.getByText("Pre-warmed swarm job")).toBeInTheDocument();
+  });
+
+  it("shows Loading swarm jobs... on cold mount with empty cache", async () => {
+    mockSwarmLive.mockImplementation(() => new Promise(() => {}));
+
+    render(<SwarmPane />);
+
+    expect(screen.getByText("Loading swarm jobs...")).toBeInTheDocument();
+    expect(screen.queryByText("Pre-warmed swarm job")).not.toBeInTheDocument();
+  });
+});
 
 describe("SwarmPane model badge", () => {
   beforeEach(() => {

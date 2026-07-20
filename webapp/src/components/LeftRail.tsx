@@ -384,6 +384,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const sessionSearchReqId = useRef(0);
 
   const currentRepoRef = useRef("");
+  // One-shot: expand the already-open workspace on first boot so sessions under
+  // the active project are visible without an extra click. Subsequent
+  // currentRepo flips stay user-driven (handleOpenProject / row click).
+  const bootExpandedRef = useRef(false);
   // Assigned after projects + SWR hooks exist; early handlers (rename) call through this.
   const refreshSessionsRef = useRef<() => Promise<void>>(async () => {});
   // Kept current each render so delete can optimistically purge every root's cache.
@@ -1038,6 +1042,14 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       setSelectedProjectPath(currentRepo);
       dispatchProjectSelected(currentRepo);
     }
+  }, [currentRepo]);
+
+  // Boot expand once when workspaceInfo.repo is already set (or first becomes
+  // truthy). Does not re-expand/collapse on later currentRepo changes.
+  useEffect(() => {
+    if (bootExpandedRef.current || !currentRepo) return;
+    bootExpandedRef.current = true;
+    setExpandedProjects((prev) => ({ ...prev, [currentRepo]: true }));
   }, [currentRepo]);
 
   const selectProject = (projectPath: string) => {

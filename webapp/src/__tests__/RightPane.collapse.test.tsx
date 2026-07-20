@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import RightPane from "../components/RightPane";
+import { api } from "../lib/api";
+import { dispatchProjectSelected } from "../lib/panelTransition";
+import { usePolling } from "../lib/usePolling";
+import { clearSWRCache, readSWRCache } from "../lib/useStaleWhileRevalidate";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -94,5 +98,48 @@ describe("RightPane collapse placement", () => {
 
     fireEvent.click(collapseBtns[1]);
     expect(baseProps.onCollapse).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RightPane swarm activity poll seeds SWR cache", () => {
+  const REPO = "C:\\Users\\pwall\\Projects\\warm-swarm";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    Element.prototype.scrollIntoView = vi.fn();
+    localStorage.setItem(
+      "pmharness.tabOrder",
+      JSON.stringify([
+        "state", "swarm", "files", "git", "worktrees", "terminal",
+        "review", "checkpoints", "browser", "settings",
+      ]),
+    );
+    localStorage.setItem("pmharness.tabOrder.swarm2nd", "1");
+    localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
+    dispatchProjectSelected(REPO);
+    vi.mocked(api.getReviews).mockResolvedValue([]);
+  });
+
+  it("writes swarmLive payload to the SwarmPane cache key", async () => {
+    const payload = {
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [{ id: "job-1", goal: "Warm me", status: "running" }],
+    };
+    vi.mocked(api.swarmLive).mockResolvedValue(payload as never);
+
+    render(<RightPane {...baseProps} />);
+
+    // usePolling(fetchReviews) then usePolling(fetchSwarmActivity) each render —
+    // the last registration is the swarm activity poller.
+    const pollCalls = vi.mocked(usePolling).mock.calls;
+    expect(pollCalls.length).toBeGreaterThanOrEqual(2);
+    const fetchSwarmActivity = pollCalls[pollCalls.length - 1][0];
+    await fetchSwarmActivity();
+
+    expect(api.swarmLive).toHaveBeenCalledWith(REPO);
+    expect(readSWRCache(`swarm:${REPO}`)).toEqual(payload);
   });
 });

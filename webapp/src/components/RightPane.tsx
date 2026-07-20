@@ -14,6 +14,7 @@ import ErrorBoundary from "./ErrorBoundary";
 import { api, type PendingReview } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { usePolling } from "../lib/usePolling";
+import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
 
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm";
 
@@ -199,6 +200,9 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
   const fetchSwarmActivity = () => {
     return api.swarmLive(swarmRepo)
       .then((data) => {
+        // Warm SwarmPane's SWR key so first open of the tracker is not a cold
+        // "Loading swarm jobs..." flash — the tab light already polls this payload.
+        writeSWRCache(`swarm:${swarmRepo || "__default__"}`, data);
         const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
         const n = jobs.filter((j) => {
           const s = (j.status || "").toLowerCase();

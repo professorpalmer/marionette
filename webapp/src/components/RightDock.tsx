@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
+import { writeSWRCache } from "../lib/useStaleWhileRevalidate";
 
 /** Curated destinations when the right pane is collapsed — Cursor-style icon strip.
  *  Settings is pinned to the foot of the floating pill. */
@@ -77,6 +78,9 @@ export default function RightDock({
         .catch(() => {});
       api.swarmLive(swarmRepo)
         .then((data) => {
+          // Parity with RightPane: seed SwarmPane's SWR cache from the dock poll
+          // so expanding into the tracker after a collapsed session is warm too.
+          writeSWRCache(`swarm:${swarmRepo || "__default__"}`, data);
           const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
           const n = jobs.filter((j) => {
             const s = (j.status || "").toLowerCase();
