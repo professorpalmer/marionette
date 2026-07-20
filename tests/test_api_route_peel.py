@@ -334,6 +334,23 @@ def test_terminal_create_write_resize_kill():
     assert pty.killed == ["t1"]
 
 
+def test_terminal_create_clamps_zero_dims():
+    pty = _FakePty()
+    created = []
+    orig_create = pty.create
+
+    def _create(**kw):
+        created.append(kw)
+        return orig_create(**kw)
+
+    pty.create = _create  # type: ignore[method-assign]
+    svc = TerminalServices(cfg=SimpleNamespace(repo="/repo"), pty=pty)
+    code, payload = post_terminal_create({"cols": 0, "rows": 0}, svc)
+    assert code == 200
+    assert payload["id"] == "t1"
+    assert created and created[0]["cols"] == 80 and created[0]["rows"] == 24
+
+
 def test_terminal_write_missing():
     pty = _FakePty()
     svc = TerminalServices(cfg=SimpleNamespace(repo=None), pty=pty)

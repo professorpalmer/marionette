@@ -15,6 +15,7 @@ from harness.pty_manager import (
     _unix_shell,
     _windows_shell,
     _windows_shell_command,
+    clamp_pty_dims,
 )
 
 pytestmark_unix = pytest.mark.skipif(os.name == "nt", reason="Unix PTY integration test")
@@ -25,6 +26,14 @@ pytestmark_pty = pytest.mark.skipif(not PTY_AVAILABLE, reason="PTY not available
 # ---------------------------------------------------------------------------
 # Cross-platform unit tests (no real PTY required)
 # ---------------------------------------------------------------------------
+
+
+def test_clamp_pty_dims_rejects_zero_and_junk():
+    assert clamp_pty_dims(0, 0) == (80, 24)
+    assert clamp_pty_dims(-3, 12) == (80, 12)
+    assert clamp_pty_dims(100, 0) == (100, 24)
+    assert clamp_pty_dims(40, 12) == (40, 12)
+    assert clamp_pty_dims("nope", None) == (80, 24)  # type: ignore[arg-type]
 
 
 def test_append_to_buffer_caps_at_256kb():
@@ -358,6 +367,23 @@ def test_pty_write_after_kill_is_safe():
 # ---------------------------------------------------------------------------
 # Windows ConPTY end-to-end
 # ---------------------------------------------------------------------------
+
+
+@pytestmark_win_e2e
+@pytestmark_pty
+def test_conpty_zero_dims_clamped_and_alive():
+    """FitAddon 0x0 must not fail CreatePseudoConsole on Windows."""
+    m = PtyManager()
+    s = m.create(cwd=os.getcwd(), cols=0, rows=0)
+    try:
+        assert s.cols == 80 and s.rows == 24
+        time.sleep(0.3)
+        assert s.alive()
+        s.resize(0, 0)
+        assert s.cols == 80 and s.rows == 24
+        assert s.alive()
+    finally:
+        m.kill(s.id)
 
 
 @pytestmark_win_e2e

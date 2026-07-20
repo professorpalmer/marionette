@@ -29,8 +29,9 @@ def post_terminal_create(body: dict, svc: TerminalServices) -> tuple[int, dict]:
         # session each time; the old dead ones should be cleaned up).
         svc.pty.reap()
         cwd = svc.cfg.repo or os.path.expanduser("~")
-        cols = int(body.get("cols", 80))
-        rows = int(body.get("rows", 24))
+        from harness.pty_manager import clamp_pty_dims
+
+        cols, rows = clamp_pty_dims(body.get("cols", 80), body.get("rows", 24))
         sess = svc.pty.create(cwd=cwd, cols=cols, rows=rows)
         return 200, {"id": sess.id, "cwd": sess._cwd}
     except Exception as e:

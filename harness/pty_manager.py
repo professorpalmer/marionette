@@ -207,6 +207,35 @@ def _append_to_buffer(buffer: bytearray, lock: threading.Lock, data: bytes) -> N
             del buffer[: len(buffer) - _BUFFER_CAP]
 
 
+def clamp_pty_dims(
+    cols: int,
+    rows: int,
+    *,
+    default_cols: int = 80,
+    default_rows: int = 24,
+) -> tuple:
+    """Return ConPTY-safe (cols, rows).
+
+    Windows ``CreatePseudoConsole`` / ``ResizePseudoConsole`` reject a zero
+    dimension (HRESULT ``E_INVALIDARG``). The xterm FitAddon can report 0x0
+    before the terminal host has layout (collapsed dock, first paint), so
+    callers must clamp before spawn/resize.
+    """
+    try:
+        c = int(cols)
+    except (TypeError, ValueError):
+        c = default_cols
+    try:
+        r = int(rows)
+    except (TypeError, ValueError):
+        r = default_rows
+    if c < 1:
+        c = default_cols
+    if r < 1:
+        r = default_rows
+    return c, r
+
+
 def _default_shell() -> str:
     if os.name == "nt":
         return r"C:\Windows\System32\cmd.exe"
@@ -298,6 +327,7 @@ class PtySession:
                 "on this platform."
             )
         self.id = uuid.uuid4().hex[:12]
+        cols, rows = clamp_pty_dims(cols, rows)
         self.cols = cols
         self.rows = rows
         self._buffer = bytearray()
@@ -592,6 +622,7 @@ class PtySession:
             self._alive = False
 
     def resize(self, rows: int, cols: int) -> None:
+        cols, rows = clamp_pty_dims(cols, rows)
         self.rows, self.cols = rows, cols
         if os.name == "nt":
             if getattr(self, "_hpc", None) and not getattr(self, "_hpc_closed", False):

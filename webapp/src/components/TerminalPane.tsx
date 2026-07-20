@@ -4,8 +4,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { RotateCw } from "lucide-react";
-import { postJSON, stream, withToken } from "../lib/transport";
+import { postJSON, stream } from "../lib/transport";
 import { isExternalUrl, looksLikeFilePath, openAgentFile, openAgentUrl } from "../lib/agentLinks";
+import { hostHasLayout, safePtyDims } from "./terminalDims";
 
 // Built-in terminal: xterm.js front-end over the harness PTY backend.
 // create -> SSE stream output (base64 frames) -> POST keystrokes -> resize -> kill.
@@ -50,6 +51,7 @@ export default function TerminalPane() {
   useEffect(() => {
     if (!hostRef.current) return;
     setExited(false);
+    const host = hostRef.current;
     const term = new Terminal({
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
       fontSize: 12,
@@ -61,6 +63,8 @@ export default function TerminalPane() {
       },
       cursorBlink: true,
       scrollback: 5000,
+      cols: 80,
+      rows: 24,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -71,17 +75,50 @@ export default function TerminalPane() {
         else if (looksLikeFilePath(uri)) openAgentFile(uri);
       })
     );
-    term.open(hostRef.current);
-    try { fit.fit(); } catch { /* ignore */ }
+    term.open(host);
     termRef.current = term;
 
     let disposed = false;
+    let layoutWaitRo: ResizeObserver | null = null;
+
+    const markExited = (msg?: string) => {
+      if (disposed) return;
+      if (msg) {
+        try { term.write(msg); } catch { /* ignore */ }
+      }
+      setExited(true);
+    };
+
+    const fitSafe = () => {
+      try { fit.fit(); } catch { /* ignore */ }
+      return safePtyDims(term.cols, term.rows);
+    };
 
     (async () => {
       try {
-        const res = await postJSON<{ id: string }>("/api/terminal/create", {
-          cols: term.cols, rows: term.rows,
-        });
+        // Wait for a real host box before create — FitAddon on a 0-size dock
+        // yields 0x0, which Windows ConPTY rejects (empty EXITED pane).
+        if (!hostHasLayout(host)) {
+          await new Promise<void>((resolve) => {
+            const timeout = window.setTimeout(() => {
+              layoutWaitRo?.disconnect();
+              layoutWaitRo = null;
+              resolve();
+            }, 2500);
+            layoutWaitRo = new ResizeObserver(() => {
+              if (!hostHasLayout(host)) return;
+              window.clearTimeout(timeout);
+              layoutWaitRo?.disconnect();
+              layoutWaitRo = null;
+              resolve();
+            });
+            layoutWaitRo.observe(host);
+          });
+        }
+        if (disposed) return;
+
+        const dims = fitSafe();
+        const res = await postJSON<{ id: string }>("/api/terminal/create", dims);
         if (disposed) { postJSON("/api/terminal/kill", { id: res.id }); return; }
         idRef.current = res.id;
 
@@ -89,9 +126,11 @@ export default function TerminalPane() {
         term.onData((data) => {
           if (idRef.current) postJSON("/api/terminal/write", { id: idRef.current, data });
         });
-        // resize -> backend
+        // resize -> backend (never send 0x0 — ConPTY rejects it)
         term.onResize(({ cols, rows }) => {
-          if (idRef.current) postJSON("/api/terminal/resize", { id: idRef.current, cols, rows });
+          if (!idRef.current) return;
+          const next = safePtyDims(cols, rows);
+          postJSON("/api/terminal/resize", { id: idRef.current, cols: next.cols, rows: next.rows });
         });
 
         // stream output
@@ -103,26 +142,45 @@ export default function TerminalPane() {
             } else if (ev.kind === "exit") {
               term.write("\r\n\x1b[90m[process exited -- press Restart]\x1b[0m\r\n");
               idRef.current = "";  // session is dead; stop sending keystrokes to it
-              if (!disposed) setExited(true);
+              markExited();
             }
           },
           // onDone: SSE closed (shell exited / backend closed the stream)
-          () => { if (!disposed) setExited(true); },
+          () => {
+            if (idRef.current) {
+              idRef.current = "";
+              markExited("\r\n\x1b[90m[stream closed -- press Restart]\x1b[0m\r\n");
+            } else {
+              markExited();
+            }
+          },
           // onError: backend gone / stream broke -- surface a restartable state
-          () => { if (!disposed) setExited(true); }
+          () => {
+            idRef.current = "";
+            markExited("\r\n\x1b[31m[terminal stream error -- press Restart]\x1b[0m\r\n");
+          }
         );
       } catch (e) {
-        term.write("\r\n\x1b[31mFailed to start terminal -- press Restart.\x1b[0m\r\n");
-        if (!disposed) setExited(true);
+        const detail = e instanceof Error && e.message ? ` (${e.message})` : "";
+        markExited(
+          `\r\n\x1b[31mFailed to start terminal${detail} -- press Restart.\x1b[0m\r\n`
+        );
       }
     })();
 
-    // fit on container resize
-    const ro = new ResizeObserver(() => { try { fit.fit(); } catch { /* ignore */ } });
-    ro.observe(hostRef.current);
+    // fit on container resize (clamp so a collapsed frame cannot push 0x0)
+    const ro = new ResizeObserver(() => {
+      if (disposed) return;
+      const next = fitSafe();
+      if (idRef.current) {
+        postJSON("/api/terminal/resize", { id: idRef.current, cols: next.cols, rows: next.rows });
+      }
+    });
+    ro.observe(host);
 
     return () => {
       disposed = true;
+      layoutWaitRo?.disconnect();
       ro.disconnect();
       if (cancelRef.current) cancelRef.current();
       if (idRef.current) postJSON("/api/terminal/kill", { id: idRef.current });
@@ -161,5 +219,3 @@ function _b64ToBytes(b64: string): Uint8Array {
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
   return arr;
 }
-
-void withToken;
