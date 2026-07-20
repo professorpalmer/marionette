@@ -328,7 +328,13 @@ def prewarm_agent() -> None:
 
 
 def start_login(workspace: Optional[str] = None) -> Dict[str, Any]:
-    """Launch or guide `agent login`. Does not store/rotate pool bearers."""
+    """Launch or guide `agent login`. Does not store/rotate pool bearers.
+
+    On Windows the login flow opens a browser; we must not also allocate a
+    visible console (CREATE_NEW_CONSOLE used to leave a blank cmd window).
+    Spawn via ``resolve_agent_exec`` + CREATE_NO_WINDOW so only the browser
+    surfaces.
+    """
     invalidate_status_cache()
     binary = resolve_agent_binary()
     if not binary:
@@ -341,7 +347,8 @@ def start_login(workspace: Optional[str] = None) -> Dict[str, Any]:
             "hint": INSTALL_HINT,
         }
 
-    cmd = [binary, "login"]
+    exec_prefix = resolve_agent_exec(binary) or [binary]
+    cmd = [*exec_prefix, "login"]
     launched = False
     launch_error = None
     try:
@@ -351,8 +358,9 @@ def start_login(workspace: Optional[str] = None) -> Dict[str, Any]:
             "stdin": subprocess.DEVNULL,
         }
         if sys.platform == "win32":
-            # Detach into a new console so the browser/device flow can proceed.
-            kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+            # Hide the agent console; browser OAuth still opens normally.
+            # CREATE_NEW_CONSOLE used to pop a blank terminal beside the browser.
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         else:
             kwargs["start_new_session"] = True
         subprocess.Popen(cmd, **kwargs)
@@ -369,7 +377,7 @@ def start_login(workspace: Optional[str] = None) -> Dict[str, Any]:
         "auth_kind": "cursor_account",
         "workspace": ws,
         "hint": (
-            "Complete Sign-in in the Cursor login window / terminal, then wait — "
+            "Complete Sign-in in the browser window that opens, then wait — "
             "Marionette polls `agent status`, then trusts the open project for "
             "headless Agent CLI (Cursor account, not an API key pool)."
         ),

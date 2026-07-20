@@ -97,10 +97,11 @@ def test_start_login_missing_binary(monkeypatch):
 
 def test_start_login_launches(monkeypatch):
     monkeypatch.setattr(auth, "resolve_agent_binary", lambda: "/fake/agent")
+    monkeypatch.setattr(auth, "resolve_agent_exec", lambda _b=None: ["/fake/node", "/fake/index.js"])
     calls = []
 
     def fake_popen(cmd, **kwargs):
-        calls.append(cmd)
+        calls.append({"cmd": cmd, "kwargs": kwargs})
         class P:
             pass
         return P()
@@ -110,8 +111,39 @@ def test_start_login_launches(monkeypatch):
     assert res["ok"] is True
     assert res["launched"] is True
     assert res["auth_kind"] == "cursor_account"
-    assert calls and calls[0][-1] == "login"
+    assert calls and calls[0]["cmd"] == ["/fake/node", "/fake/index.js", "login"]
     assert "trust" in (res.get("hint") or "").lower()
+    assert "browser" in (res.get("hint") or "").lower()
+
+
+def test_start_login_hides_console_on_windows(monkeypatch):
+    """Regression: CREATE_NEW_CONSOLE used to pop a blank terminal beside the browser."""
+    monkeypatch.setattr(auth, "resolve_agent_binary", lambda: r"C:\fake\agent.cmd")
+    monkeypatch.setattr(
+        auth,
+        "resolve_agent_exec",
+        lambda _b=None: [r"C:\fake\node.exe", r"C:\fake\index.js"],
+    )
+    captured: dict = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        class P:
+            pass
+        return P()
+
+    monkeypatch.setattr(auth.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(auth.sys, "platform", "win32")
+    monkeypatch.setattr(auth.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(auth.subprocess, "CREATE_NEW_CONSOLE", 0x00000010, raising=False)
+
+    res = auth.start_login()
+    assert res["launched"] is True
+    assert captured["cmd"] == [r"C:\fake\node.exe", r"C:\fake\index.js", "login"]
+    flags = captured["kwargs"].get("creationflags", 0)
+    assert flags == 0x08000000
+    assert flags & 0x00000010 == 0  # must not request CREATE_NEW_CONSOLE
 
 
 def test_ensure_workspace_trusted(monkeypatch, tmp_path):
