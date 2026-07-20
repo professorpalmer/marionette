@@ -269,7 +269,14 @@ def test_conpty_init_calls_kernel32_plumbing(monkeypatch):
     assert fake_k32.CreatePipe.call_count == 2
     fake_k32.CreatePseudoConsole.assert_called_once()
     fake_k32.CreateProcessW.assert_called_once()
-    assert captured["creation_flags"] & pty_manager.CREATE_NO_WINDOW
+    # ConPTY shells must stay console-compatible; CREATE_NO_WINDOW breaks I/O.
+    create_no_window = getattr(pty_manager, "CREATE_NO_WINDOW", 0x08000000)
+    assert not (captured["creation_flags"] & create_no_window)
+    expected = (
+        pty_manager.EXTENDED_STARTUPINFO_PRESENT
+        | pty_manager.CREATE_UNICODE_ENVIRONMENT
+    )
+    assert captured["creation_flags"] == expected
     fake_k32.UpdateProcThreadAttribute.assert_called_once()
 
     time.sleep(0.2)
