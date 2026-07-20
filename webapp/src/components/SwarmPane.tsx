@@ -705,6 +705,22 @@ export default function SwarmPane() {
   // jobs must stay visible even if their id was previously dismissed — otherwise
   // a CLI-started swarm looks "gone" while workers are still running, and pilots
   // burn tokens inventing recovery paths.
+  //
+  // If a dismissed id reappears as live, drop it from the dismiss set so its
+  // later terminal transition does not vanish again into "Show N hidden".
+  useEffect(() => {
+    const liveIds = allJobs.filter((j) => !isTerminal(j)).map((j) => j.id);
+    if (liveIds.length === 0) return;
+    setDismissed((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const id of liveIds) {
+        if (next.delete(id)) changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [allJobs]);
+
   const visibleJobs = allJobs.filter((j) => !isTerminal(j) || !dismissed.has(j.id));
   const running = visibleJobs.filter((j) => !isTerminal(j));
   const finished = visibleJobs.filter((j) => isTerminal(j));

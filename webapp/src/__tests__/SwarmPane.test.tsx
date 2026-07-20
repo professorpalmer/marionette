@@ -891,6 +891,52 @@ describe("SwarmPane repo-scoped dismiss", () => {
     expect(screen.queryByText("All swarm jobs cleared")).not.toBeInTheDocument();
   });
 
+  it("keeps a previously dismissed job visible after it completes if it was seen live", async () => {
+    localStorage.setItem(
+      "swarm.dismissed.v2",
+      JSON.stringify({ [REPO_A]: ["live-cli-job"] }),
+    );
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        {
+          id: "live-cli-job",
+          goal: "CLI swarm still running",
+          status: "running",
+          source: "cli",
+        },
+      ],
+    });
+    const { unmount } = render(<SwarmPane />);
+    await waitFor(() => {
+      expect(screen.getByText("CLI swarm still running")).toBeInTheDocument();
+    });
+    // Live sighting prunes the id from dismiss so completion cannot re-hide it.
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v2") || "{}");
+      expect(stored[REPO_A] || []).not.toContain("live-cli-job");
+    });
+    unmount();
+    clearSWRCache();
+
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        {
+          id: "live-cli-job",
+          goal: "CLI swarm completed",
+          status: "complete",
+          source: "cli",
+        },
+      ],
+    });
+    render(<SwarmPane />);
+    await openFinishedSection();
+    await waitFor(() => {
+      expect(screen.getByText("CLI swarm completed")).toBeInTheDocument();
+    });
+  });
+
   it("surfaces a newly completed job that was never dismissed after Clear", async () => {
     mockSwarmLive.mockResolvedValue(finishedJob("old-a", "Old finished A"));
     const { unmount } = render(<SwarmPane />);
