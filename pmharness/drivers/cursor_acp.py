@@ -29,6 +29,7 @@ from .cursor_cli import (
     goal_from_tool_args,
     humanize_cursor_tool_name,
     resolve_agent_exec,
+    resolve_cursor_execution_mode,
 )
 from .token_usage import coerce_token_usage
 
@@ -556,11 +557,15 @@ class WarmAcpSession:
         cwd: Optional[str],
         timeout: int = 600,
         transport_factory: Optional[Callable[[], AcpTransport]] = None,
+        mode: Optional[str] = None,
     ) -> None:
         self.model = model
         self.cwd = cwd
         self.timeout = timeout
         self._transport_factory = transport_factory
+        # Raw constructor override (sticky across apply_host_mode). Env wins.
+        self._mode_override = mode
+        self.mode = resolve_cursor_execution_mode(explicit=mode)
         self.transport: Optional[AcpTransport] = None
         self.session_id: Optional[str] = None
         self._lock = threading.Lock()
@@ -750,15 +755,54 @@ class WarmAcpSession:
         if not sid:
             raise RuntimeError("acp session/new returned no sessionId")
         session_id = str(sid)
-        # Prefer ask/plan when Marionette asked for a read-only CLI mode.
-        mode = (os.environ.get("HARNESS_CURSOR_CLI_MODE") or "").strip() or "ask"
-        if mode in ("ask", "plan"):
-            transport.request(
-                "session/set_mode",
-                {"sessionId": session_id, "modeId": mode},
-                timeout=5.0,
+        # Align Cursor session mode with Marionette host authority (Autopilot
+        # → agent; Plan / env override → ask|plan|…). Always set_mode so a
+        # stale agent session cannot stay in ask while Autopilot is on.
+        # Use the current desired mode (apply_host_mode keeps this sticky);
+        # fall back to resolve from constructor override when unset.
+        mode = (self.mode or "").strip() or resolve_cursor_execution_mode(
+            explicit=self._mode_override,
+        )
+        self.mode = mode
+        resp = transport.request(
+            "session/set_mode",
+            {"sessionId": session_id, "modeId": mode},
+            timeout=5.0,
+        )
+        if resp.get("error"):
+            raise RuntimeError(
+                f"acp session/set_mode failed: {resp.get('error')}"
             )
         return session_id
+
+    def apply_host_mode(self, *, plan: bool = False) -> str:
+        """Update desired mode and push ``session/set_mode`` when a session is live.
+
+        On set_mode failure (exception or ACP error payload), invalidate this
+        warm session so the next chat cannot run under a stale agent/ask mode.
+        """
+        mode = resolve_cursor_execution_mode(
+            plan=plan, explicit=self._mode_override,
+        )
+        self.mode = mode
+        transport = self.transport
+        sid = self.session_id
+        if transport is not None and sid:
+            try:
+                resp = transport.request(
+                    "session/set_mode",
+                    {"sessionId": sid, "modeId": mode},
+                    timeout=5.0,
+                )
+                if resp.get("error"):
+                    raise RuntimeError(
+                        f"acp session/set_mode failed: {resp.get('error')}"
+                    )
+            except Exception:
+                # Drop the stale-mode session; caller/CLI fallback retain mode.
+                self.close()
+                raise
+        return mode
 
     def prompt(
         self,
@@ -864,14 +908,17 @@ class CursorAcpDriver:
         self.model = model
         self.max_tokens = max_tokens
         self.timeout = timeout
-        self.mode = mode
+        # Raw constructor override — do not pass resolved mode into children
+        # or apply_host_mode would treat the default as a sticky "agent" lock.
+        self._mode_override = mode
+        self.mode = resolve_cursor_execution_mode(explicit=mode)
         self.agent_binary = agent_binary
         self.cwd = cwd
         raw = (cwd or os.environ.get("HARNESS_REPO") or "").strip()
         workspace = _normalize_workspace(raw)
         self._workspace = workspace
         self._session = session or WarmAcpSession(
-            model=model, cwd=workspace, timeout=timeout
+            model=model, cwd=workspace, timeout=timeout, mode=mode,
         )
         self._fallback = fallback or CursorCliDriver(
             name=name,
@@ -896,6 +943,27 @@ class CursorAcpDriver:
             self._session.ensure()
         except Exception as exc:
             self._acp_fail_reason = str(exc)
+
+    def apply_host_mode(self, *, plan: bool = False) -> str:
+        """Align warm ACP + --print fallback with Marionette Plan/Autopilot.
+
+        Best-effort: ACP set_mode failures are swallowed here so the host loop
+        can continue, but WarmAcpSession invalidates itself on failure so the
+        stale agent/ask session is never reused. CLI fallback keeps the mode.
+        """
+        mode = resolve_cursor_execution_mode(
+            plan=plan, explicit=self._mode_override,
+        )
+        self.mode = mode
+        try:
+            self._session.apply_host_mode(plan=plan)
+        except Exception:
+            pass
+        try:
+            self._fallback.apply_host_mode(plan=plan)
+        except Exception:
+            pass
+        return mode
 
     def close(self) -> None:
         """Idempotent owner close — reaps the warm ACP child tree when present."""

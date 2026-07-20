@@ -368,6 +368,98 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     ]);
   });
 
+  it("prose → tool_prep(call_id) → later prose never resumes the pre-card bubble", () => {
+    let items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "investigate" } },
+    ];
+    items = ensureAssistantStreamingBubble(items);
+    items = appendStreamingTextToItems(items, "I will inspect the handler.");
+    // Simulate a missed seal: bubble still streaming when the card lands.
+    items = upsertToolPrep(items, "Read", { id: "call-live", goal: "handler.ts" });
+    expect(surfaceKinds(items)).toEqual([
+      "msg:user",
+      "msg:assistant*",
+      "card:read_file",
+    ]);
+    // Later deltas must open a post-card bubble (call_id fence).
+    items = appendStreamingTextToItems(items, "Root cause is a race.");
+    expect(assistantTexts(items)).toEqual([
+      "I will inspect the handler.",
+      "Root cause is a race.",
+    ]);
+    expect(surfaceKinds(items)).toEqual([
+      "msg:user",
+      "msg:assistant*",
+      "card:read_file",
+      "msg:assistant*",
+    ]);
+    const card = items.find((it) => it.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(card.card.call_id).toBe("call-live");
+    expect(card.card.id).toBe("tool-prep:call-live");
+  });
+
+  it("reload hydrate keeps call_id tool slot before final prose", () => {
+    const remote: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "Checking first." },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "call-hyd",
+          goal: "a.ts",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+          call_id: "call-hyd",
+          result: { status: "complete" },
+        },
+      },
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "Done." },
+      },
+    ];
+    // Local painted the same turn without durable cards yet.
+    const local: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "Checking first." },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "tool-prep:call-hyd",
+          goal: "a.ts",
+          cwd: null,
+          kind: "read_file",
+          running: true,
+          open: false,
+          call_id: "call-hyd",
+        },
+      },
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "Done." },
+      },
+    ];
+    const merged = mergeTranscriptItems(local, remote);
+    expect(surfaceKinds(merged)).toEqual([
+      "msg:user",
+      "msg:assistant",
+      "card:read_file",
+      "msg:assistant",
+    ]);
+    const card = merged.find((it) => it.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(card.card.call_id).toBe("call-hyd");
+    expect(card.card.running).toBe(false);
+    expect(assistantTexts(merged)).toEqual(["Checking first.", "Done."]);
+  });
+
   it("streamed final after a tool merges into sealed narration (no duplicate)", () => {
     let items: Item[] = [
       { kind: "msg", msg: { role: "user", text: "go" } },

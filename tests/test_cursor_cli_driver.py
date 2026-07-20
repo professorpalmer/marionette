@@ -183,6 +183,7 @@ def test_consume_result_error():
 
 
 def test_driver_chat_stream_mocked_subprocess(monkeypatch, tmp_path):
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
     fake_bin = tmp_path / "agent"
     fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
 
@@ -249,13 +250,16 @@ def test_driver_chat_stream_mocked_subprocess(monkeypatch, tmp_path):
     assert "--model" in captured["cmd"]
     assert "auto" in captured["cmd"]
     assert "--mode" in captured["cmd"]
-    assert "ask" in captured["cmd"]
+    # Autopilot default is agent (Marionette owns host chrome).
+    mode_idx = captured["cmd"].index("--mode")
+    assert captured["cmd"][mode_idx + 1] == "agent"
     # Short prompts stay on argv (node+index.js spawn; no PowerShell 8k trap).
     joined = " ".join(str(x) for x in captured["cmd"])
     assert "hi" in joined
     assert resp.meta.get("prompt_via_file") is not True
     # Kernel system — not Marionette's skills dump.
     assert "CodeGraph" in joined or "puppetmaster codegraph" in joined
+    assert "HOST MODE CONTRACT" in joined
 
 
 def test_long_prompt_never_in_argv(monkeypatch, tmp_path):
@@ -444,3 +448,111 @@ def test_no_pool_rotate_helpers():
     assert "_pool_rotate_on_http_error" not in src
     assert "report_failure" not in src
     assert "resolve_entry" not in src
+
+
+def test_host_mode_contract_survives_system_for_cursor_agent():
+    from pmharness.drivers.cursor_cli import (
+        _CURSOR_CLI_KERNEL_SYSTEM,
+        _system_for_cursor_agent,
+    )
+
+    assert "HOST MODE CONTRACT" in _CURSOR_CLI_KERNEL_SYSTEM
+    assert "switch to Agent mode" in _CURSOR_CLI_KERNEL_SYSTEM
+    # Marionette skills/mode chrome must be stripped; kernel contract stays.
+    fat = (
+        "You are in Marionette Plan mode. Click Autopilot to execute.\n\n"
+        "CODEGRAPH HAS ALREADY BEEN QUERIED FOR THIS TASK.\nsymbols: Foo\n"
+    )
+    out = _system_for_cursor_agent(fat)
+    assert "HOST MODE CONTRACT" in out
+    assert "CODEGRAPH HAS ALREADY BEEN QUERIED" in out
+    assert "Click Autopilot" not in out
+    # No generated guidance path that tells users to flip IDE modes.
+    assert "switch to Agent mode" in out  # negation clause in the contract
+    lower = out.lower()
+    assert "never tell the user" in lower or "never ask the user" in lower
+
+
+def test_resolve_cursor_execution_mode_defaults_and_overrides(monkeypatch):
+    from pmharness.drivers.cursor_cli import (
+        CursorCliDriver,
+        resolve_cursor_execution_mode,
+    )
+
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
+    assert resolve_cursor_execution_mode(plan=False) == "agent"
+    assert resolve_cursor_execution_mode(plan=True) == "ask"
+    monkeypatch.setenv("HARNESS_CURSOR_CLI_MODE", "plan")
+    assert resolve_cursor_execution_mode(plan=False) == "plan"
+    assert resolve_cursor_execution_mode(plan=True) == "plan"
+    # Env beats constructor explicit.
+    assert resolve_cursor_execution_mode(plan=False, explicit="ask") == "plan"
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
+    assert resolve_cursor_execution_mode(plan=False, explicit="ask") == "ask"
+
+    d = CursorCliDriver(name="cursor-cli:m", model="composer-2.5")
+    assert d.mode == "agent"
+    assert d.apply_host_mode(plan=True) == "ask"
+    assert d.mode == "ask"
+    assert d.apply_host_mode(plan=False) == "agent"
+    assert d.mode == "agent"
+
+
+def test_cursor_cli_constructor_mode_sticky_and_env_wins(monkeypatch):
+    from pmharness.drivers.cursor_cli import CursorCliDriver
+
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
+    sticky = CursorCliDriver(name="cursor-cli:m", model="m", mode="ask")
+    assert sticky.mode == "ask"
+    assert sticky._mode_override == "ask"
+    # apply_host_mode must not erase the constructor override.
+    assert sticky.apply_host_mode(plan=False) == "ask"
+    assert sticky.mode == "ask"
+    assert sticky.apply_host_mode(plan=True) == "ask"
+    assert sticky._mode_override == "ask"
+
+    monkeypatch.setenv("HARNESS_CURSOR_CLI_MODE", "plan")
+    env_wins = CursorCliDriver(name="cursor-cli:m", model="m", mode="ask")
+    assert env_wins.mode == "plan"
+    assert env_wins.apply_host_mode(plan=False) == "plan"
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
+
+
+def test_consume_stream_json_tool_event_order_preserves_call_id():
+    """Cursor stream: prose → tool_call(call_id) → prose keeps structured hints."""
+    lines = [
+        json.dumps({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "Looking"}]},
+            "timestamp_ms": 1,
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "subtype": "started",
+            "call_id": "c-order",
+            "tool_call": {"readToolCall": {"args": {"path": "a.py"}}},
+        }),
+        json.dumps({
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "c-order",
+            "tool_call": {"readToolCall": {"args": {"path": "a.py"}}},
+        }),
+        json.dumps({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": " done"}]},
+            "timestamp_ms": 2,
+        }),
+        json.dumps({"type": "result", "is_error": False, "result": "Looking done"}),
+        "",
+    ]
+    deltas: list[str] = []
+    hints: list = []
+    out = consume_stream_json(lines, on_delta=deltas.append, on_tool_hint=hints.append)
+    assert "".join(deltas) == "Looking done"
+    assert len(hints) >= 2
+    assert hints[0]["id"] == "c-order"
+    assert hints[0]["status"] == "in_progress"
+    assert hints[1]["id"] == "c-order"
+    assert hints[1]["status"] == "completed"
+    assert out.get("error") is None

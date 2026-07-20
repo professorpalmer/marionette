@@ -395,6 +395,113 @@ export function shouldPreferLocalTranscript(local: Item[], remote: Item[]): bool
   return false;
 }
 
+function isAssistantSurface(it: Item): boolean {
+  return (it.kind === "msg" && it.msg.role === "assistant") || it.kind === "thinking";
+}
+
+/**
+ * 0-based ordinal of the user-turn that owns `index` — the last user message
+ * strictly before that index (not the count of users before it).
+ */
+function owningUserTurnOrdinal(items: Item[], index: number): number {
+  let ordinal = -1;
+  let n = 0;
+  for (let i = 0; i < index && i < items.length; i++) {
+    const row = items[i];
+    if (row.kind === "msg" && row.msg.role === "user") {
+      ordinal = n;
+      n += 1;
+    }
+  }
+  return ordinal;
+}
+
+/** Bounds of the local turn for the Nth user message (0-based ordinal). */
+function localTurnBounds(items: Item[], turnOrdinal: number): { start: number; end: number } {
+  let seen = 0;
+  let start = 0;
+  let found = false;
+  for (let i = 0; i < items.length; i++) {
+    const row = items[i];
+    if (row.kind !== "msg" || row.msg.role !== "user") continue;
+    if (seen === turnOrdinal) {
+      start = i + 1;
+      found = true;
+      break;
+    }
+    seen += 1;
+  }
+  if (!found) {
+    return { start: items.length, end: items.length };
+  }
+  let end = items.length;
+  for (let i = start; i < items.length; i++) {
+    const row = items[i];
+    if (row.kind === "msg" && row.msg.role === "user") {
+      end = i;
+      break;
+    }
+  }
+  return { start, end };
+}
+
+/** Assistant/thinking surfaces before `cardIndex` inside its remote user-turn. */
+function assistantSurfacesBeforeInTurn(items: Item[], cardIndex: number): number {
+  let turnStart = 0;
+  for (let i = cardIndex - 1; i >= 0; i--) {
+    const row = items[i];
+    if (row.kind === "msg" && row.msg.role === "user") {
+      turnStart = i + 1;
+      break;
+    }
+  }
+  let count = 0;
+  for (let i = turnStart; i < cardIndex; i++) {
+    if (isAssistantSurface(items[i])) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Splice index for a missing remote call_id card: same user-turn ordinal and
+ * assistant-surface offset as remote, before trailing final assistant prose.
+ * Uses call_id chronology — never kind-only matching.
+ */
+function insertIndexForRemoteCard(
+  local: Item[],
+  remote: Item[],
+  remoteCardIndex: number,
+): number {
+  const turnOrdinal = owningUserTurnOrdinal(remote, remoteCardIndex);
+  if (turnOrdinal < 0) return local.length;
+  const surfacesBefore = assistantSurfacesBeforeInTurn(remote, remoteCardIndex);
+  const { start: turnStart, end: turnEnd } = localTurnBounds(local, turnOrdinal);
+  let cursor = turnStart;
+  let seen = 0;
+  while (cursor < turnEnd && seen < surfacesBefore) {
+    if (isAssistantSurface(local[cursor])) seen += 1;
+    cursor += 1;
+  }
+  // Advance past cards/preps already placed at this slot (remote order).
+  while (cursor < turnEnd) {
+    const row = local[cursor];
+    if (row.kind === "card" || row.kind === "tool_prep") {
+      cursor += 1;
+      continue;
+    }
+    break;
+  }
+  // Park before trailing post-tool assistant/thinking of this turn.
+  let insertAt = cursor;
+  for (let i = turnEnd - 1; i >= cursor; i--) {
+    const row = local[i];
+    if (row.kind === "tool_prep") continue;
+    if (!isAssistantSurface(row)) break;
+    insertAt = i;
+  }
+  return insertAt;
+}
+
 /**
  * Merge a disk/API transcript into the live feed without dropping in-flight
  * cards. Prefer remote message text when ids match; keep local-only cards
@@ -462,18 +569,30 @@ export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
     }
     return it;
   });
-  // Append remote cards the local feed never saw (reattach gap), skipping
-  // ones already consumed into a prep slot.
+  // Insert remote cards the local feed never saw (reattach gap) using remote
+  // turn chronology — never kind-only matching, never after final prose.
   const localIds = new Set(
     withSlots
       .filter((it) => it.kind === "card" && it.card.id)
       .map((it) => String((it as Extract<Item, { kind: "card" }>).card.id)),
   );
-  for (const it of remote) {
+  const localCallIds = new Set(
+    withSlots
+      .filter((it) => it.kind === "card")
+      .map((it) => String((it as Extract<Item, { kind: "card" }>).card.call_id || "").trim())
+      .filter(Boolean),
+  );
+  for (let remIdx = 0; remIdx < remote.length; remIdx++) {
+    const it = remote[remIdx];
     if (it.kind !== "card" || !it.card.id) continue;
     const remId = String(it.card.id);
+    const remCall = String(it.card.call_id || "").trim();
     if (consumedRemoteIds.has(remId) || localIds.has(remId)) continue;
-    withSlots.push(it);
+    if (remCall && localCallIds.has(remCall)) continue;
+    const insertAt = insertIndexForRemoteCard(withSlots, remote, remIdx);
+    withSlots.splice(insertAt, 0, it);
+    localIds.add(remId);
+    if (remCall) localCallIds.add(remCall);
   }
   // Harden against poll/SSE interleave leaving duplicate tool-call ids in local.
   return dedupeDisplayItems(appendMissingPendingApprovals(withSlots, local));

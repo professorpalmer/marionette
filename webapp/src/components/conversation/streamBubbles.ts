@@ -55,9 +55,12 @@ export function sealedAssistantCoversDelta(items: Item[], chunk: string): boolea
 }
 
 /**
- * Find the open streaming assistant bubble, scanning back past decoration
- * items (reasoning rows, tool cards, codegraph chips) that may land after it
- * while the typewriter is still draining.
+ * Find the open streaming assistant bubble.
+ *
+ * Skip ephemeral decoration that may land while the typewriter drains
+ * (thinking rows, codegraph chips). Do NOT scan past tool/prep cards: once a
+ * card exists after an assistant bubble, later deltas must open a post-card
+ * bubble rather than resume pre-tool narration (Cursor CLI/ACP investigation).
  *
  * When excludeWorkerStream is set, skip ephemeral swarm worker preview bubbles
  * so the pilot's open bubble is finalized instead.
@@ -68,12 +71,11 @@ export function findStreamingBubbleIdx(
 ): number {
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
-    if (
-      it.kind === "card"
-      || it.kind === "thinking"
-      || it.kind === "tool_prep"
-      || it.kind === "codegraph_context"
-    ) {
+    // Tool activity is a hard phase fence — never resume a bubble above it.
+    if (it.kind === "card" || it.kind === "tool_prep") {
+      return -1;
+    }
+    if (it.kind === "thinking" || it.kind === "codegraph_context") {
       continue;
     }
     if (it.kind === "msg") {

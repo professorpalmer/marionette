@@ -74,6 +74,9 @@ class _FakeProc:
         self._agent = threading.Thread(target=self._serve, daemon=True)
         self._session_id = "sess-warm-1"
         self._prompt_count = 0
+        self.set_mode_calls: list[str] = []
+        # When set, session/set_mode replies with this JSON-RPC error payload.
+        self.set_mode_error: Optional[dict] = None
         self._agent.start()
 
     def poll(self) -> Optional[int]:
@@ -111,6 +114,13 @@ class _FakeProc:
                 self._reply(mid, {"authenticated": True})
             elif method == "session/new":
                 self._reply(mid, {"sessionId": self._session_id})
+            elif method == "session/set_mode":
+                mode_id = str((msg.get("params") or {}).get("modeId") or "")
+                self.set_mode_calls.append(mode_id)
+                if self.set_mode_error is not None:
+                    self._reply_error(mid, self.set_mode_error)
+                else:
+                    self._reply(mid, {})
             elif method == "session/prompt":
                 self._prompt_count += 1
                 # Stream two chunks then finish.
@@ -148,6 +158,9 @@ class _FakeProc:
 
     def _reply(self, mid, result) -> None:
         self.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid, "result": result}) + "\n")
+
+    def _reply_error(self, mid, error) -> None:
+        self.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid, "error": error}) + "\n")
 
     def _notify(self, method: str, params: dict) -> None:
         self.stdout.write(
@@ -225,7 +238,8 @@ def test_extract_tool_event_skips_think_and_bare_tool_fallback():
     assert ev["status"] == "completed"
 
 
-def test_warm_session_reuses_process_across_prompts():
+def test_warm_session_reuses_process_across_prompts(monkeypatch):
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
     proc = _FakeProc()
     transport = AcpTransport(proc)
     session = WarmAcpSession(
@@ -236,6 +250,8 @@ def test_warm_session_reuses_process_across_prompts():
     # First ensure performs handshake
     session.ensure()
     assert session.session_id == "sess-warm-1"
+    # Autopilot default → agent (not ask).
+    assert "agent" in proc.set_mode_calls
     deltas1: List[str] = []
     out1 = session.prompt("Reply pong", on_delta=deltas1.append, timeout=5.0)
     assert out1["text"] == "pong-ok"
@@ -531,3 +547,117 @@ def test_no_action_after_clean_close_on_windows(monkeypatch):
     ).close()
     assert calls == []
     assert proc.terminate_calls == before_term
+
+
+def test_acp_apply_host_mode_plan_uses_ask(monkeypatch):
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
+
+    class _Fallback:
+        def __init__(self) -> None:
+            self.mode = "agent"
+            self._mode_override = None
+
+        def apply_host_mode(self, *, plan: bool = False) -> str:
+            from pmharness.drivers.cursor_cli import resolve_cursor_execution_mode
+            self.mode = resolve_cursor_execution_mode(
+                plan=plan, explicit=self._mode_override,
+            )
+            return self.mode
+
+        def _run_stream(self, *a, **k):
+            return None
+
+    proc = _FakeProc()
+    transport = AcpTransport(proc)
+    session = WarmAcpSession(
+        model="m", cwd="C:\\ws", transport_factory=lambda: transport,
+    )
+    session.ensure()
+    assert session.mode == "agent"
+    fallback = _Fallback()
+    drv = CursorAcpDriver(
+        name="cursor-cli:m",
+        model="m",
+        session=session,
+        fallback=fallback,  # type: ignore[arg-type]
+    )
+    assert drv.apply_host_mode(plan=True) == "ask"
+    assert session.mode == "ask"
+    assert "ask" in proc.set_mode_calls
+    assert drv.apply_host_mode(plan=False) == "agent"
+    assert session.mode == "agent"
+
+
+def test_acp_constructor_mode_sticky_and_env_wins(monkeypatch):
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
+    sticky = CursorAcpDriver(name="n", model="m", mode="ask")
+    assert sticky.mode == "ask"
+    assert sticky._mode_override == "ask"
+    assert sticky._session._mode_override == "ask"
+    assert sticky._fallback._mode_override == "ask"
+    assert sticky.apply_host_mode(plan=False) == "ask"
+    assert sticky._session.mode == "ask"
+    assert sticky._fallback.mode == "ask"
+
+    monkeypatch.setenv("HARNESS_CURSOR_CLI_MODE", "plan")
+    env_wins = CursorAcpDriver(name="n", model="m", mode="ask")
+    assert env_wins.mode == "plan"
+    assert env_wins.apply_host_mode(plan=False) == "plan"
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
+
+
+def test_acp_set_mode_error_fails_handshake(monkeypatch):
+    """Handshake must not claim success when session/set_mode returns error."""
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
+    proc = _FakeProc()
+    proc.set_mode_error = {"code": -32000, "message": "unknown mode"}
+    transport = AcpTransport(proc)
+    session = WarmAcpSession(
+        model="m", cwd="C:\\ws", transport_factory=lambda: transport,
+    )
+    with pytest.raises(RuntimeError, match="session/set_mode failed"):
+        session.ensure()
+    assert session.session_id is None
+    assert session.transport is None
+
+
+def test_acp_live_set_mode_failure_invalidates_session(monkeypatch):
+    """Live mode-switch failure must close the stale ACP session."""
+    monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
+
+    class _Fallback:
+        def __init__(self) -> None:
+            self.mode = "agent"
+            self._mode_override = None
+
+        def apply_host_mode(self, *, plan: bool = False) -> str:
+            from pmharness.drivers.cursor_cli import resolve_cursor_execution_mode
+            self.mode = resolve_cursor_execution_mode(
+                plan=plan, explicit=self._mode_override,
+            )
+            return self.mode
+
+        def _run_stream(self, *a, **k):
+            return None
+
+    proc = _FakeProc()
+    transport = AcpTransport(proc)
+    session = WarmAcpSession(
+        model="m", cwd="C:\\ws", transport_factory=lambda: transport,
+    )
+    session.ensure()
+    assert session.session_id == "sess-warm-1"
+    # Reject the next set_mode (Plan → ask).
+    proc.set_mode_error = {"code": -32000, "message": "mode rejected"}
+    fallback = _Fallback()
+    drv = CursorAcpDriver(
+        name="cursor-cli:m",
+        model="m",
+        session=session,
+        fallback=fallback,  # type: ignore[arg-type]
+    )
+    # Driver swallows; session must still be invalidated and CLI keep ask.
+    assert drv.apply_host_mode(plan=True) == "ask"
+    assert session.session_id is None
+    assert session.transport is None
+    assert fallback.mode == "ask"

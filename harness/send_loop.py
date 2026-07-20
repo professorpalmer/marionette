@@ -76,6 +76,126 @@ class SendLoopMixin:
                     return True
         return False
 
+    @staticmethod
+    def _settle_turn_native_tool_prep_cards(
+        cards: dict,
+        *,
+        complete: bool,
+        error: str = "cancelled",
+    ) -> None:
+        """Settle still-null Cursor-native prep cards owned by this send().
+
+        Only the exact card objects tracked for the current turn are touched —
+        older / background / unrelated ``call_id`` rows are left alone.
+        """
+        for card in list(cards.values()):
+            if not isinstance(card, dict) or card.get("result") is not None:
+                continue
+            if complete:
+                card["result"] = {"status": "complete"}
+            else:
+                card["result"] = {"status": "interrupted", "error": error}
+        cards.clear()
+
+    @staticmethod
+    def _current_turn_display_start(display: list) -> int:
+        """Index after the latest user message — current-turn card lookup bound."""
+        for i in range(len(display) - 1, -1, -1):
+            row = display[i]
+            if (
+                isinstance(row, dict)
+                and row.get("type") == "message"
+                and row.get("role") == "user"
+            ):
+                return i + 1
+        return 0
+
+    def _persist_cursor_tool_prep(self, data: dict) -> Optional[dict]:
+        """Persist Cursor-native tool_prep into ``_display_transcript``.
+
+        Cursor CLI/ACP tools never emit Marionette ``action_start`` /
+        ``action_result``. Without this, reload drops investigation rows and
+        the Explored group can reappear after final prose. Stable ``call_id``
+        is the only correlation key — anonymous kind-only hints are skipped.
+        Matching is confined to the current user turn so older / background
+        ``call_id`` rows are never rewritten.
+
+        Returns the card dict created or updated, or None when skipped.
+        """
+        if not isinstance(data, dict):
+            return None
+        call_id = str(data.get("id") or "").strip()
+        if not call_id:
+            return None
+        kind = str(data.get("name") or "tool_call").strip() or "tool_call"
+        goal = str(data.get("goal") or "").strip()
+        status = str(data.get("status") or "").strip().lower()
+        terminal = status in ("completed", "failed", "cancelled", "canceled", "error")
+        display = getattr(self, "_display_transcript", None)
+        if not isinstance(display, list):
+            return None
+
+        existing = None
+        turn_start = self._current_turn_display_start(display)
+        for row in display[turn_start:]:
+            if not isinstance(row, dict) or row.get("type") != "card":
+                continue
+            row_call = str(row.get("call_id") or "").strip()
+            row_id = str(row.get("id") or "").strip()
+            if row_call == call_id or row_id == call_id or row_id == f"tool-prep:{call_id}":
+                existing = row
+                break
+
+        if existing is not None:
+            if kind and kind != "tool_call":
+                existing["kind"] = kind
+            if goal:
+                existing["goal"] = goal
+            existing["call_id"] = call_id
+            if terminal:
+                if status in ("failed", "error", "cancelled", "canceled"):
+                    existing["result"] = {
+                        "status": "failed" if status in ("failed", "error") else "interrupted",
+                        "error": status if status in ("failed", "error") else "cancelled",
+                    }
+                else:
+                    prior = existing.get("result") if isinstance(existing.get("result"), dict) else {}
+                    existing["result"] = {**(prior or {}), "status": "complete"}
+            return existing
+
+        card = {
+            "type": "card",
+            "id": call_id,
+            "kind": kind,
+            "goal": goal,
+            "call_id": call_id,
+            "result": None,
+        }
+        if terminal:
+            if status in ("failed", "error", "cancelled", "canceled"):
+                card["result"] = {
+                    "status": "failed" if status in ("failed", "error") else "interrupted",
+                    "error": status if status in ("failed", "error") else "cancelled",
+                }
+            else:
+                card["result"] = {"status": "complete"}
+
+        # Late first card: slot immediately before the final trailing assistant
+        # of this turn so pre-tool narration stays above the card. Multiple
+        # late call_ids stack in arrival order before that final message.
+        insert_at = len(display)
+        if terminal:
+            for i in range(len(display) - 1, turn_start - 1, -1):
+                row = display[i]
+                if not isinstance(row, dict):
+                    break
+                if row.get("type") == "message" and row.get("role") == "assistant":
+                    insert_at = i
+                    break
+                break
+        display.insert(insert_at, card)
+        return card
+
     def send(self, user_message: str, images: Optional[list] = None, plan: bool = False, resume: bool = False) -> Iterator[ConvEvent]:
         """Process one user message: drive the pilot loop until it yields back.
 
@@ -177,11 +297,23 @@ class SendLoopMixin:
         # user turn in _send_locked_inner instead; action filtering still uses
         # the plan= flag.
         pending_cards: dict = {}
+        # Cursor-native tool_prep cards created/updated during THIS send() only.
+        # Settled on assistant_done (complete) or cancel/error finally (interrupted).
+        turn_native_prep_cards: dict = {}
+        native_prep_settled_at_done = False
         try:
             import time
             action_starts = {}
             for ev in self._send_locked(user_message, images=images, plan=plan, resume=resume):
-                if ev.kind == "action_start":
+                if ev.kind == "tool_prep":
+                    # Cursor-native tools (CLI/ACP) emit tool_prep only — persist
+                    # by stable call_id so reload keeps chronological slots.
+                    touched = self._persist_cursor_tool_prep(ev.data or {})
+                    if isinstance(touched, dict):
+                        cid = str(touched.get("call_id") or "").strip()
+                        if cid:
+                            turn_native_prep_cards[cid] = touched
+                elif ev.kind == "action_start":
                     self._total_tool_calls += 1
                     aid = ev.data.get("id")
                     if aid:
@@ -189,27 +321,72 @@ class SendLoopMixin:
                         goals = ev.data.get("goals")
                         if not isinstance(goals, list):
                             goals = None
-                        card = {
-                            "type": "card",
-                            "id": aid,
-                            "kind": ev.data.get("kind"),
-                            "goal": ev.data.get("goal"),
-                            "cwd": ev.data.get("cwd"),
-                            # None = still running. Append immediately so session
-                            # transcript polls / reattach see the tool row instead
-                            # of wiping the live Investigating UI mid-command.
-                            "result": None,
-                        }
-                        if goals is not None:
-                            card["goals"] = [str(g) for g in goals if str(g or "").strip()]
                         call_id = str(ev.data.get("call_id") or "").strip()
-                        if call_id:
-                            card["call_id"] = call_id
-                        elif not str(aid).startswith("a") or (len(str(aid)) > 1 and not str(aid)[1:].isdigit()):
+                        if not call_id and (
+                            not str(aid).startswith("a")
+                            or (len(str(aid)) > 1 and not str(aid)[1:].isdigit())
+                        ):
                             # Stable provider ids double as call_id for prep promotion.
-                            card["call_id"] = str(aid)
-                        pending_cards[aid] = card
-                        self._display_transcript.append(card)
+                            call_id = str(aid)
+                        # Promote a prior tool_prep row with the same call_id in
+                        # place — never append a duplicate after Cursor-native
+                        # persistence (or a streamed prep hint). Only the current
+                        # user turn is searched so older call_id rows stay put.
+                        existing = None
+                        if call_id:
+                            turn_start = self._current_turn_display_start(
+                                self._display_transcript,
+                            )
+                            for row in self._display_transcript[turn_start:]:
+                                if not isinstance(row, dict) or row.get("type") != "card":
+                                    continue
+                                row_call = str(row.get("call_id") or "").strip()
+                                row_id = str(row.get("id") or "").strip()
+                                if (
+                                    row_call == call_id
+                                    or row_id == call_id
+                                    or row_id == f"tool-prep:{call_id}"
+                                ):
+                                    existing = row
+                                    break
+                        if existing is not None:
+                            existing["id"] = aid
+                            existing["kind"] = ev.data.get("kind") or existing.get("kind")
+                            if ev.data.get("goal"):
+                                existing["goal"] = ev.data.get("goal")
+                            if ev.data.get("cwd") is not None:
+                                existing["cwd"] = ev.data.get("cwd")
+                            if goals is not None:
+                                existing["goals"] = [
+                                    str(g) for g in goals if str(g or "").strip()
+                                ]
+                            if call_id:
+                                existing["call_id"] = call_id
+                            existing["result"] = None
+                            pending_cards[aid] = existing
+                            # Marionette action lifecycle owns this card now.
+                            if call_id:
+                                turn_native_prep_cards.pop(call_id, None)
+                        else:
+                            card = {
+                                "type": "card",
+                                "id": aid,
+                                "kind": ev.data.get("kind"),
+                                "goal": ev.data.get("goal"),
+                                "cwd": ev.data.get("cwd"),
+                                # None = still running. Append immediately so session
+                                # transcript polls / reattach see the tool row instead
+                                # of wiping the live Investigating UI mid-command.
+                                "result": None,
+                            }
+                            if goals is not None:
+                                card["goals"] = [
+                                    str(g) for g in goals if str(g or "").strip()
+                                ]
+                            if call_id:
+                                card["call_id"] = call_id
+                            pending_cards[aid] = card
+                            self._display_transcript.append(card)
                 elif ev.kind == "action_result":
                     aid = ev.data.get("id")
                     if aid and aid in action_starts:
@@ -291,6 +468,12 @@ class SendLoopMixin:
                                 "error": "missing action_result",
                             }
                         pending_cards.pop(_aid, None)
+                    # Cursor-native prep cards from THIS turn only (no whole-
+                    # transcript sweep — leave older/background call_ids alone).
+                    self._settle_turn_native_tool_prep_cards(
+                        turn_native_prep_cards, complete=True,
+                    )
+                    native_prep_settled_at_done = True
                     # Emit assistant_done first so the UI paints the final answer
                     # before any non-blocking Save/Skip cards.
                     yield ev
@@ -340,6 +523,14 @@ class SendLoopMixin:
                         "error": "missing action_result",
                     }
                 pending_cards.pop(_aid, None)
+            # Cancel/error before assistant_done: interrupt still-null current-
+            # turn native prep only. Never re-settle after a successful done.
+            if not native_prep_settled_at_done:
+                self._settle_turn_native_tool_prep_cards(
+                    turn_native_prep_cards, complete=False, error="cancelled",
+                )
+            else:
+                turn_native_prep_cards.clear()
             # Append-only freezes an enriched system prompt (MCP catalog, pilot
             # identity, …). Restoring the pre-turn base would desync history
             # from the frozen prefix and break prompt.startswith stability.
@@ -684,6 +875,14 @@ class SendLoopMixin:
                     prompt = self._render_history()
 
                 try:
+                    # Cursor CLI/ACP: Autopilot → agent tools; Marionette Plan → ask.
+                    # Env HARNESS_CURSOR_CLI_MODE still wins inside apply_host_mode.
+                    _apply_mode = getattr(self.pilot, "apply_host_mode", None)
+                    if callable(_apply_mode):
+                        try:
+                            _apply_mode(plan=plan)
+                        except Exception:
+                            pass
                     if hasattr(self.pilot, "chat"):
                         tools_schema = self._build_visible_tools_schema()
 

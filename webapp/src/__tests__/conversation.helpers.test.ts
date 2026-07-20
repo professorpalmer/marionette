@@ -603,19 +603,29 @@ describe("tabPaths module", () => {
 });
 
 describe("streamBubbles module", () => {
-  it("finds streaming bubble past decoration and appends text", () => {
-    const items: Item[] = [
+  it("finds streaming bubble past thinking decoration but not past tool cards", () => {
+    const withThinking: Item[] = [
       msg("user", "go"),
       { kind: "msg", msg: { role: "assistant", text: "hi", streaming: true } },
       { kind: "thinking", text: "reason", streaming: true, id: "t1" },
+    ];
+    expect(findStreamingBubbleIdx(withThinking)).toBe(1);
+    const afterThink = appendStreamingTextToItems(withThinking, " there");
+    expect((afterThink[1] as Extract<Item, { kind: "msg" }>).msg.text).toBe("hi there");
+
+    // Tool/prep cards are a hard fence — never resume the pre-card bubble.
+    const withCard: Item[] = [
+      msg("user", "go"),
+      { kind: "msg", msg: { role: "assistant", text: "hi", streaming: true } },
       {
         kind: "card",
         card: { id: "c1", goal: "read", cwd: null, kind: "read_file", running: true, open: false },
       },
     ];
-    expect(findStreamingBubbleIdx(items)).toBe(1);
-    const next = appendStreamingTextToItems(items, " there");
-    expect((next[1] as Extract<Item, { kind: "msg" }>).msg.text).toBe("hi there");
+    expect(findStreamingBubbleIdx(withCard)).toBe(-1);
+    const afterCard = appendStreamingTextToItems(withCard, "verdict");
+    expect((afterCard[1] as Extract<Item, { kind: "msg" }>).msg.text).toBe("hi");
+    expect((afterCard[afterCard.length - 1] as Extract<Item, { kind: "msg" }>).msg.text).toBe("verdict");
   });
 
   it("skips workerStream bubbles when asked and scales typewriter drain", () => {
@@ -840,6 +850,57 @@ describe("streamApply module", () => {
     const next = finalizeOrphanSwarmPills(items, ["job_alive"]);
     expect(next[0]).toMatchObject({ status: "ended", resolved: true });
     expect(next[1]).toMatchObject({ status: "running" });
+  });
+
+  it("stop-path seal closes streaming surfaces then settles orphan cards", () => {
+    // Mirrors Conversation.stop / assistant_done: sealOpenStreamSurfaces before
+    // finalizeOrphanSwarmPills / reconcileOrphanInvestigationCards.
+    let items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+    ];
+    items = ensureAssistantStreamingBubble(items);
+    items = appendStreamingTextToItems(items, "Still drafting…");
+    items = upsertStreamingThinking(items, "reasoning in flight");
+    items = [
+      ...items,
+      {
+        kind: "swarm_pending",
+        job_ids: ["local-swarm-stop"],
+        objective: "orphan on stop",
+        status: "running",
+        terminal_job_ids: [],
+      },
+      {
+        kind: "card",
+        card: {
+          id: "orphan-stop-card",
+          kind: "run_command",
+          goal: "pytest",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+    const liveIds: string[] = [];
+    const next = reconcileOrphanInvestigationCards(
+      finalizeOrphanSwarmPills(sealOpenStreamSurfaces(items), liveIds),
+      liveIds,
+    );
+
+    const streamingMsgs = next.filter(
+      (it) => it.kind === "msg" && it.msg.role === "assistant" && it.msg.streaming,
+    );
+    expect(streamingMsgs).toHaveLength(0);
+    const openThinking = next.filter(
+      (it) => it.kind === "thinking" && (it as { streaming?: boolean }).streaming,
+    );
+    expect(openThinking).toHaveLength(0);
+    expect(next.find((it) => it.kind === "swarm_pending")).toMatchObject({
+      status: "ended",
+      resolved: true,
+    });
+    const card = next.find((it) => it.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(card.card.running).toBe(false);
   });
 
   it("failSwarmPendingForActionError marks local-swarm pill failed", () => {

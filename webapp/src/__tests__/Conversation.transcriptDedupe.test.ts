@@ -324,4 +324,113 @@ describe("shouldPreferLocalTranscript / mergeTranscriptItems", () => {
     const c = merged.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
     expect(c.card.result?.duration_ms).toBe(3);
   });
+
+  it("prefer-local splice keeps remote call_id cards before final when local missed every prep", () => {
+    // Earlier-turn extra local cards force shouldPreferLocalTranscript.
+    const local: Item[] = [
+      msg("user", "prior"),
+      card("prior-x", "old"),
+      card("prior-y", "old2"),
+      card("prior-z", "old3"),
+      msg("assistant", "prior done"),
+      msg("user", "now"),
+      msg("assistant", "final answer"),
+    ];
+    const remote: Item[] = [
+      msg("user", "prior"),
+      msg("assistant", "prior done"),
+      msg("user", "now"),
+      {
+        kind: "card",
+        card: {
+          id: "call-a",
+          goal: "a.ts",
+          cwd: null,
+          kind: "Read",
+          running: false,
+          open: false,
+          call_id: "call-a",
+          result: { status: "complete" },
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "call-b",
+          goal: "b.ts",
+          cwd: null,
+          kind: "Grep",
+          running: false,
+          open: false,
+          call_id: "call-b",
+          result: { status: "complete" },
+        },
+      },
+      msg("assistant", "final answer"),
+    ];
+    expect(shouldPreferLocalTranscript(local, remote)).toBe(true);
+    const merged = mergeTranscriptItems(local, remote);
+    const current = merged.slice(
+      merged.findIndex((i) => i.kind === "msg" && i.msg.role === "user" && i.msg.text === "now"),
+    );
+    const surface = current.map((i) => {
+      if (i.kind === "card") return `card:${i.card.call_id || i.card.id}`;
+      if (i.kind === "msg") return `msg:${i.msg.role}:${i.msg.text}`;
+      return i.kind;
+    });
+    expect(surface).toEqual([
+      "msg:user:now",
+      "card:call-a",
+      "card:call-b",
+      "msg:assistant:final answer",
+    ]);
+  });
+
+  it("prefer-local splice preserves pre-tool narration before missing call_id cards", () => {
+    const local: Item[] = [
+      msg("user", "prior"),
+      card("prior-extra", "x"),
+      card("prior-extra-2", "y"),
+      msg("assistant", "prior done"),
+      msg("user", "now"),
+      msg("assistant", "Checking next."),
+      msg("assistant", "Done."),
+    ];
+    const remote: Item[] = [
+      msg("user", "prior"),
+      msg("assistant", "prior done"),
+      msg("user", "now"),
+      msg("assistant", "Checking next."),
+      {
+        kind: "card",
+        card: {
+          id: "call-n",
+          goal: "n.ts",
+          cwd: null,
+          kind: "Read",
+          running: false,
+          open: false,
+          call_id: "call-n",
+          result: { status: "complete" },
+        },
+      },
+      msg("assistant", "Done."),
+    ];
+    expect(shouldPreferLocalTranscript(local, remote)).toBe(true);
+    const merged = mergeTranscriptItems(local, remote);
+    const current = merged.slice(
+      merged.findIndex((i) => i.kind === "msg" && i.msg.role === "user" && i.msg.text === "now"),
+    );
+    const surface = current.map((i) => {
+      if (i.kind === "card") return `card:${i.card.call_id || i.card.id}`;
+      if (i.kind === "msg") return `msg:${i.msg.role}:${i.msg.text}`;
+      return i.kind;
+    });
+    expect(surface).toEqual([
+      "msg:user:now",
+      "msg:assistant:Checking next.",
+      "card:call-n",
+      "msg:assistant:Done.",
+    ]);
+  });
 });

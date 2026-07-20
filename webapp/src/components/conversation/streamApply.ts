@@ -12,7 +12,6 @@ import {
   newThinkingId,
 } from "./thinkingToolPrep";
 import {
-  finalizeOpenPilotBubble,
   findStreamingBubbleIdx,
 } from "./streamBubbles";
 import { deduplicateConsecutiveAssistantMessages } from "./transcriptItems";
@@ -46,12 +45,33 @@ export {
 } from "./nestedActionBounds";
 
 /**
- * Seal every open stream surface (thinking row + pilot bubble) before a new
- * phase starts. Later events may only APPEND; they must not reopen, merge, or
- * re-parent content that already painted on a prior surface.
+ * Close every open pilot/reasoning surface before a new phase or turn terminal
+ * (assistant_done, Stop, action_start prep). Later events may only APPEND.
+ * Unlike finalizeOpenPilotBubble alone — which stops at tool-card fences so
+ * later deltas open a post-card bubble — this clears streaming chrome even when
+ * swarm pills or cards trail the bubble. Worker-stream previews are left alone
+ * (ephemeral; action_result drops them).
  */
 export function sealOpenStreamSurfaces(items: Item[]): Item[] {
-  return finalizeOpenPilotBubble(finalizeStreamingThinking(items));
+  const withThinking = finalizeStreamingThinking(items);
+  let changed = false;
+  const next: Item[] = [];
+  for (const it of withThinking) {
+    if (
+      it.kind === "msg"
+      && it.msg.role === "assistant"
+      && it.msg.streaming
+      && !it.msg.workerStream
+    ) {
+      changed = true;
+      const finalText = (it.msg.text || "").trim();
+      if (!finalText) continue;
+      next.push({ kind: "msg", msg: { ...it.msg, streaming: false } });
+      continue;
+    }
+    next.push(it);
+  }
+  return changed ? next : withThinking;
 }
 
 export function swarmPendingStatus(item: SwarmPendingItem): SwarmPendingStatus {

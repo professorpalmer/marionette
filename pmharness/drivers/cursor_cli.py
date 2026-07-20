@@ -66,6 +66,14 @@ _CURSOR_CLI_KERNEL_SYSTEM = """You are Marionette's pilot via the Cursor Agent C
 
 Identity / small talk: answer in one or two sentences. Do not open tools.
 
+HOST MODE CONTRACT (Marionette UI — not Cursor IDE chrome):
+- Marionette owns Autopilot and Plan controls in this product. Never tell the
+  user to "switch to Agent mode", click Plan/Agent, or change Cursor IDE modes.
+- Never ask the user to click disabled Marionette Plan/Autopilot chrome.
+- When execution is authorized and tools/MCP are available, use them directly.
+- For validation-only questions, answer or validate directly — do not offer a
+  fake mode transition or pretend a different host mode is required.
+
 Code / context (in this order — do not Grep/Glob-crawl the tree first):
 1. If this system prompt already contains "CODEGRAPH HAS ALREADY BEEN QUERIED"
    or "WIKI HAS ALREADY BEEN QUERIED", USE those blocks as primary evidence.
@@ -84,6 +92,24 @@ plumbing and no FINDING/RISK/DECISION content.
 Your user message is already in this prompt. Never treat OS temp files
 (pmh-cursor-cli-*.txt or similar) as codebase tasks — do not read/grep them.
 """
+
+
+def resolve_cursor_execution_mode(*, plan: bool = False, explicit: str | None = None) -> str:
+    """Map Marionette host authority onto Cursor CLI/ACP ``--mode`` / set_mode.
+
+    Priority (highest first):
+    1. ``HARNESS_CURSOR_CLI_MODE`` env override
+    2. Constructor ``explicit`` mode (sticky raw override)
+    3. Per-turn Marionette mapping — Plan → ``ask``, Autopilot → ``agent``
+    """
+    env = (os.environ.get("HARNESS_CURSOR_CLI_MODE") or "").strip()
+    if env:
+        return env
+    if explicit is not None:
+        override = str(explicit).strip()
+        if override:
+            return override
+    return "ask" if plan else "agent"
 
 
 def resolve_agent_binary() -> Optional[str]:
@@ -656,15 +682,20 @@ class CursorCliDriver:
         self.model = model
         self.max_tokens = max_tokens
         self.timeout = timeout
-        # ask mode avoids uncontrolled write/shell from Cursor's own tool loop
-        # while still burning plan credits for chat. Override via HARNESS_CURSOR_CLI_MODE.
-        self.mode = (
-            mode
-            or os.environ.get("HARNESS_CURSOR_CLI_MODE", "").strip()
-            or "ask"
-        )
+        # Raw constructor override (sticky). Env still wins at resolve time.
+        # Default Autopilot → agent so Cursor-native tools run under Marionette
+        # authority. Marionette Plan and HARNESS_CURSOR_CLI_MODE can override.
+        self._mode_override = mode
+        self.mode = resolve_cursor_execution_mode(explicit=mode)
         self.agent_binary = agent_binary
         self.cwd = cwd
+
+    def apply_host_mode(self, *, plan: bool = False) -> str:
+        """Align CLI ``--mode`` with the current Marionette Plan/Autopilot turn."""
+        self.mode = resolve_cursor_execution_mode(
+            plan=plan, explicit=self._mode_override,
+        )
+        return self.mode
 
     def _binary(self) -> str:
         binary = self.agent_binary or resolve_agent_binary()

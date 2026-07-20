@@ -63,10 +63,50 @@ export type ToolPrepOpts = {
   status?: string;
 };
 
+/**
+ * Insert index for a new tool/prep card inside the current turn.
+ * Pre-tool narration (assistant/thinking with no prior card) stays above;
+ * once a card exists, later assistant/thinking rows stay below new tools.
+ */
+function toolPrepInsertIndex(items: Item[], turnStart: number): number {
+  let insertAt = items.length;
+  for (let i = items.length - 1; i >= turnStart; i--) {
+    const it = items[i];
+    if (it.kind === "tool_prep") continue;
+    const postCardSurface =
+      (it.kind === "msg" && it.msg.role === "assistant")
+      || it.kind === "thinking";
+    if (!postCardSurface) break;
+    const hasCardBefore = items
+      .slice(turnStart, i)
+      .some((row) => row.kind === "card");
+    if (!hasCardBefore) break;
+    insertAt = i;
+  }
+  return insertAt;
+}
+
+function withToolPrepChrome(
+  items: Item[],
+  insertAt: number,
+  card: Extract<Item, { kind: "card" }>,
+  kind: string,
+): Item[] {
+  const head = items.slice(0, insertAt);
+  const tail = items.slice(insertAt);
+  return [
+    ...head,
+    card,
+    { kind: "tool_prep" as const, name: kind },
+    ...tail.filter((it) => it.kind !== "tool_prep"),
+  ];
+}
+
 /** Upsert a provisional running card for tool_prep so ActivityGroup appears
  * as soon as tools start. Cursor ACP/CLI pass call ids so each native tool
  * keeps its own row; legacy string-only hints still replace the anonymous
- * placeholder (pre-action_start). */
+ * placeholder (pre-action_start). Correlation is call_id-primary only —
+ * never kind-only / oldest-prep matching. */
 export function upsertToolPrep(
   items: Item[],
   name: string,
@@ -166,15 +206,17 @@ export function upsertToolPrep(
     if (replaced) {
       return [...next, { kind: "tool_prep" as const, name: kind }];
     }
-    return [
-      ...next,
+    return withToolPrepChrome(
+      next,
+      toolPrepInsertIndex(next, turnStart),
       { kind: "card" as const, card },
-      { kind: "tool_prep" as const, name: kind },
-    ];
+      kind,
+    );
   }
 
   // Legacy string-only hint: only replace the matching prep id (kind[+goal]).
   // Never wipe unrelated provisional rows — that stole Read slots for Write.
+  // Never fall back to kind-only / oldest-prep across unrelated rows.
   const goalKey = goalRaw ? `:${goalRaw}` : "";
   const legacyId = `tool-prep:${kind}${goalKey}`;
   const legacyCard = { ...card, id: goalRaw ? legacyId : prepId };
@@ -202,11 +244,12 @@ export function upsertToolPrep(
   if (replaced) {
     return [...next, { kind: "tool_prep" as const, name: kind }];
   }
-  return [
-    ...next,
+  return withToolPrepChrome(
+    next,
+    toolPrepInsertIndex(next, turnStart),
     { kind: "card" as const, card: legacyCard },
-    { kind: "tool_prep" as const, name: kind },
-  ];
+    kind,
+  );
 }
 
 /** Strip provisional tool-prep cards (and footer hints) before a real action_start. */

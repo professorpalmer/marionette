@@ -39,6 +39,7 @@ import {
   mergeJobActionsIntoItems,
   patchCardInItems,
   reconcileOrphanInvestigationCards,
+  sealOpenStreamSurfaces,
   shouldApplySwarmLiveMerge,
   updateCommandApproval,
 } from "./conversation/streamApply";
@@ -1497,8 +1498,9 @@ export default function Conversation({
   );
 
   // Append decoded text to the streaming assistant bubble (one state update).
-  // findStreamingBubbleIdx scans back past decoration items so mid-drain
-  // thinking/tool events do not split the stream into a second bubble.
+  // findStreamingBubbleIdx skips thinking/codegraph decoration for mid-drain
+  // typewriter, but tool/prep cards are a hard fence — post-tool deltas open
+  // a new bubble below the investigation group.
   const appendStreamingText = (chunk: string) => {
     if (!chunk) return;
     setItems((p) => {
@@ -1954,9 +1956,11 @@ export default function Conversation({
       (id) => !id.startsWith("local-swarm-"),
     );
     setPendingJobIds(liveIds);
+    // Same seal → orphan settle order as assistant_done: close any open
+    // pilot/reasoning surface before folding orphan swarm/investigation cards.
     setItems((p) =>
       reconcileOrphanInvestigationCards(
-        finalizeOrphanSwarmPills(p, liveIds),
+        finalizeOrphanSwarmPills(sealOpenStreamSurfaces(p), liveIds),
         liveIds,
       ),
     );
