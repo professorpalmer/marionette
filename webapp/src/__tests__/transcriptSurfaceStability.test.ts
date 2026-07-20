@@ -82,7 +82,7 @@ function makeApplyDeps(opts: {
     );
   };
   return {
-    setCompactingStatus: () => {},
+    setCompactingStatus: ((_v?: string | null) => {}) as (v: string | null) => void,
     setItems,
     setDistillNotice: () => {},
     setWikiPrepared: () => {},
