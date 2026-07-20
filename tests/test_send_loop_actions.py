@@ -130,6 +130,59 @@ def test_execute_turn_actions_plan_mode_skips_mutating_tools():
     session._append_action_result.assert_called_once()
 
 
+def test_execute_turn_actions_plan_mode_skips_mcp_mutate_paths():
+    """Plan mode must block call_mcp + manage_mcp (same as write/edit).
+
+    Intentional trust gap (documented only): call_mcp is NOT routed through
+    command_policy danger approval — plan-mode skip is the gate that stops
+    MCP side effects during plan turns. Do not "fix" that by adding
+    command_policy wrapping here.
+    """
+    actions = [
+        PilotAction(kind="call_mcp", tool="fake.echo", arguments={"text": "x"}),
+        PilotAction(
+            kind="manage_mcp",
+            arguments={"action": "add", "name": "x", "url": "http://127.0.0.1:9/mcp"},
+        ),
+    ]
+    turn = PilotTurn(say="", thinking="", actions=actions)
+    session = SimpleNamespace(
+        _turn_guard_state=None,
+        _cancel=threading.Event(),
+        _steer_pending=False,
+        _history=[],
+        _pending_advisor_warnings=[],
+        _append_action_result=MagicMock(),
+        _check_and_inject_steer=MagicMock(return_value=iter(())),
+        _turn_economy=SimpleNamespace(enforce_tool_batch=lambda msgs: None),
+        config=SimpleNamespace(repo="/tmp/r", swarm_adapter="local", no_delegation=False),
+        pilot=MagicMock(),
+        _mcp=MagicMock(),
+    )
+    events = []
+    gen = execute_turn_actions(
+        session,
+        turn=turn,
+        user_message="wire mcp",
+        is_native=True,
+        plan=True,
+        counters={"action_seq": 0, "swarms": 0, "demo_swarms": 0},
+        step=0,
+        turn_findings=[],
+    )
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration:
+        pass
+    results = [e for e in events if e.kind == "action_result"]
+    assert len(results) == 2
+    assert "plan mode: skipped call_mcp" in results[0].data.get("error", "")
+    assert "plan mode: skipped manage_mcp" in results[1].data.get("error", "")
+    session._mcp.call.assert_not_called()
+    session._mcp.manage.assert_not_called()
+
+
 def test_execute_turn_actions_no_delegation_blocks_swarm():
     act = PilotAction(kind="run_swarm", goal="explore the loop")
     turn = PilotTurn(say="", thinking="", actions=[act])

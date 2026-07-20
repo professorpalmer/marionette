@@ -149,38 +149,49 @@ type ActivityItem =
 
 
 /**
- * Assistants that painted AFTER a tool card in the same turn may fold into the
- * investigation box. Pre-tool assistant bubbles are sticky: once they rendered
- * as standalone chat, later cards must not re-parent them into the fold
- * (that was the mid-turn surface flicker).
+ * Assistants that belong inside the investigation fold for this turn.
  *
- * While the agent loop is open, every post-tool assistant stays folded (still
- * mid-turn). When the loop closes, only assistants that still have a later card
- * remain intermediate — the trailing final answer stands alone.
+ * While the agent loop is open: fold mid-turn narration (streaming or sealed)
+ * once the turn has any investigation activity (thinking / tool card), so prose
+ * never paints outside then snaps into the collapse. Sticky standalone pre-tool
+ * bubbles only remain outside when there is still no fold activity.
+ *
+ * When the loop closes: fold only assistants that still have a later tool card
+ * (true intermediate). The trailing final answer stands alone outside.
  */
 export function collectIntermediateAssistantItems(
   items: Item[],
   agentLoopOpen: boolean,
 ): Set<Item> {
   const intermediateItems = new Set<Item>();
-  let seenCardInTurn = false;
+  let turnStart = 0;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (item.kind === "msg" && item.msg.role === "user") {
-      seenCardInTurn = false;
-      continue;
-    }
-    if (item.kind === "card") {
-      seenCardInTurn = true;
+      turnStart = i + 1;
       continue;
     }
     if (item.kind !== "msg" || item.msg.role !== "assistant") continue;
-    if (!seenCardInTurn) continue; // pre-tool bubble — never reclassify
+
+    const seenCardBefore = items
+      .slice(turnStart, i)
+      .some((row) => row.kind === "card");
+    const turnHasFoldActivity = items
+      .slice(turnStart)
+      .some((row) => row.kind === "card" || row.kind === "thinking");
 
     if (agentLoopOpen) {
-      intermediateItems.add(item);
+      // Mid-turn: keep streaming + sealed narration inside the fold from the
+      // first token once the turn is investigative, and while streaming even
+      // before the first tool (avoids outside→absorb blink). Pure chat still
+      // peels to a standalone finale when the loop closes (no card after).
+      if (turnHasFoldActivity || item.msg.streaming === true) {
+        intermediateItems.add(item);
+      }
       continue;
     }
+
+    if (!seenCardBefore) continue; // sealed pre-tool sticky outside when done
     // Loop closed: fold only if another tool card still follows this bubble.
     let cardAfter = false;
     for (let j = i + 1; j < items.length; j++) {

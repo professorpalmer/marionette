@@ -981,7 +981,7 @@ class SendLoopMixin:
                             for act in inline_actions:
                                 name = act.kind
                                 if act.kind == "call_mcp" and act.tool:
-                                    name = f"mcp_{act.tool.replace('.', '_')}"
+                                    name = f"mcp_{act.tool.replace('.', '__')}"
                                 synthetic_tool_calls.append({
                                     "id": act.tool_call_id,
                                     "type": "function",

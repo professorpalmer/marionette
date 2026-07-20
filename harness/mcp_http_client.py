@@ -27,6 +27,9 @@ from .mcp_client import (
     CLIENT_INFO,
     MCP_MAX_RESPONSE_BYTES,
 )
+# Reuse web_tools' mutable pin holder so 3xx hops update the shared IP the
+# transport handlers read (same DNS-rebinding / cross-host redirect fix).
+from .web_tools import _PinnedIP
 
 
 def mcp_allow_private_urls() -> bool:
@@ -89,32 +92,32 @@ class _PinnedIPHTTPSConnection(http.client.HTTPSConnection):
 
 
 class _PinnedIPHTTPHandler(urllib.request.HTTPHandler):
-    """HTTPHandler that injects a pinned-IP transport."""
+    """HTTPHandler that injects a pinned-IP transport via shared ``_PinnedIP``."""
 
-    def __init__(self, pinned_ip=None, *args, **kwargs):
-        self._pinned_ip = pinned_ip
+    def __init__(self, pin: Optional[_PinnedIP] = None, *args, **kwargs):
+        self._pin = pin if pin is not None else _PinnedIP()
         super().__init__(*args, **kwargs)
 
     def http_open(self, req):
         return self.do_open(
             lambda *a, **kw: _PinnedIPHTTPConnection(
-                *a, pinned_ip=self._pinned_ip, **kw
+                *a, pinned_ip=self._pin.ip, **kw
             ),
             req,
         )
 
 
 class _PinnedIPHTTPSHandler(urllib.request.HTTPSHandler):
-    """HTTPSHandler that injects a pinned-IP transport."""
+    """HTTPSHandler that injects a pinned-IP transport via shared ``_PinnedIP``."""
 
-    def __init__(self, pinned_ip=None, *args, **kwargs):
-        self._pinned_ip = pinned_ip
+    def __init__(self, pin: Optional[_PinnedIP] = None, *args, **kwargs):
+        self._pin = pin if pin is not None else _PinnedIP()
         super().__init__(*args, **kwargs)
 
     def https_open(self, req):
         return self.do_open(
             lambda *a, **kw: _PinnedIPHTTPSConnection(
-                *a, pinned_ip=self._pinned_ip, **kw
+                *a, pinned_ip=self._pin.ip, **kw
             ),
             req,
         )
@@ -125,19 +128,29 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     urllib follows redirects by default without re-checking the target, so a
     malicious MCP server can 302 to metadata or an internal host after the
-    initial URL passed validation. Cap at urllib's default max_redirections.
+    initial URL passed validation. When a shared ``_PinnedIP`` is present the
+    pin is updated so the next hop connects to the newly validated address
+    (same pattern as ``web_tools._SafeRedirectHandler``).
     """
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        from .url_safety import is_safe_url_pinned
+    def __init__(self, pin: Optional[_PinnedIP] = None, *args, **kwargs):
+        self._pin = pin
+        super().__init__(*args, **kwargs)
 
-        ok, reason, _ = is_safe_url_pinned(
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        from .url_safety import is_safe_url_pinned, normalize_url_for_request
+
+        ok, reason, pinned_ip = is_safe_url_pinned(
             newurl, allow_private=mcp_allow_private_urls(),
         )
         if not ok:
             raise urllib.error.HTTPError(
                 newurl, code, f"redirect blocked: {reason}", headers, fp,
             )
+        if self._pin is not None and pinned_ip:
+            ip = pinned_ip.split("%")[0] if "%" in pinned_ip else pinned_ip
+            self._pin.ip = ip
+        newurl = normalize_url_for_request(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -155,12 +168,14 @@ class HttpMcpClient:
         self._session_id: Optional[str] = None
         self._initialized = False
         self._server_info: dict = {}
+        # Shared mutable pin so SafeRedirectHandler can update the IP on 3xx.
+        self._pin = _PinnedIP(self._pinned_ip)
         # Always install SafeRedirectHandler so 3xx targets are re-validated,
         # including the unresolvable-hostname path that has no pinned IP.
         self._opener = (
-            self._make_pinned_opener(self._pinned_ip)
+            self._make_pinned_opener(self._pin)
             if self._pinned_ip
-            else urllib.request.build_opener(SafeRedirectHandler)
+            else urllib.request.build_opener(SafeRedirectHandler(pin=self._pin))
         )
 
     def validate_url(self, url: str) -> Optional[str]:
@@ -198,15 +213,15 @@ class HttpMcpClient:
         raise McpError(f"Unsafe MCP URL: {reason}")
 
     @staticmethod
-    def _make_pinned_opener(pinned_ip: str):
-        """Build an opener that connects to *pinned_ip* while preserving the
+    def _make_pinned_opener(pin: _PinnedIP):
+        """Build an opener that connects to *pin.ip* while preserving the
         original hostname in HTTP Host headers and HTTPS SNI / certificate
-        verification. Includes SafeRedirectHandler so redirect targets are
-        re-validated through the SSRF gate."""
+        verification. Redirect hops re-validate and update the shared pin so
+        validation and connection always match (same as web_tools)."""
         return urllib.request.build_opener(
-            SafeRedirectHandler,
-            _PinnedIPHTTPHandler(pinned_ip=pinned_ip),
-            _PinnedIPHTTPSHandler(pinned_ip=pinned_ip),
+            _PinnedIPHTTPHandler(pin=pin),
+            _PinnedIPHTTPSHandler(pin=pin),
+            SafeRedirectHandler(pin=pin),
         )
 
     # ---- lifecycle ----------------------------------------------------------
@@ -230,6 +245,11 @@ class HttpMcpClient:
 
     @property
     def alive(self) -> bool:
+        """True only while the last transport attempt succeeded.
+
+        Cleared on stop() and on URL/HTTP transport failures so status /
+        discovered_tools() do not treat a sticky initialize flag as liveness.
+        """
         return self._initialized
 
     # ---- JSON-RPC over HTTP -------------------------------------------------
@@ -267,8 +287,15 @@ class HttpMcpClient:
         except McpError:
             raise
         except urllib.error.HTTPError as e:
+            # Application HTTP errors (4xx/5xx) do not clear liveness; the
+            # server answered. Redirect/SSRF blocks also arrive as HTTPError.
             raise McpError(f"MCP server '{self.name}' HTTP {e.code}: {e.read()[:200].decode(errors='replace')}")
         except urllib.error.URLError as e:
+            # Transport failure → not alive (do not keep sticky init).
+            self._initialized = False
+            raise McpError(f"MCP server '{self.name}' unreachable: {e}")
+        except (TimeoutError, OSError, socket.timeout) as e:
+            self._initialized = False
             raise McpError(f"MCP server '{self.name}' unreachable: {e}")
         if not raw.strip():
             return None  # notification -> empty 202

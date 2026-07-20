@@ -234,12 +234,40 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       })
       .catch(() => {});
 
-    api.sessionTranscript(activeSessionId)
-      .then((res) => {
+    // Long chats / deferred cold attach can return empty or flake once on boot.
+    // Retry a few times before accepting a blank feed (switching away and back
+    // was the user workaround — do that automatically).
+    const loadTranscriptWithRetry = async (sid: string, gen: number) => {
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (gen !== transcriptLoadGenRef.current) return null;
+        if (cachedSessionIdRef.current !== sid) return null;
+        try {
+          const res = await api.sessionTranscript(sid);
+          if (gen !== transcriptLoadGenRef.current) return null;
+          const loadedItems = transcriptResponseToItems(res);
+          // Empty on a cache-miss cold boot: brief wait + retry (disk/attach race).
+          if (loadedItems.length === 0 && attempt < 3 && !hadCache) {
+            await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+            continue;
+          }
+          return { res, loadedItems };
+        } catch (err) {
+          lastErr = err;
+          await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+        }
+      }
+      if (lastErr) throw lastErr;
+      return null;
+    };
+
+    loadTranscriptWithRetry(activeSessionId, loadGen)
+      .then((loaded) => {
+        if (!loaded) return;
         if (loadGen !== transcriptLoadGenRef.current) return;
         if (cachedSessionIdRef.current !== activeSessionId) return;
 
-        const loadedItems = transcriptResponseToItems(res);
+        const { res, loadedItems } = loaded;
         setItems(loadedItems);
         itemsRef.current = loadedItems;
         transcriptFpRef.current = transcriptFingerprint(loadedItems);

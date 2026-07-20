@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.108, deliberately pre-1.0. Desktop bootstrap/updater/install/doctor pins match CI at `puppetmaster-ai==1.20.5` (one-command `swarm` CLI on MCP drop). Cursor thought-channel finales, ConPTY 0x0 clamp, login CREATE_NO_WINDOW, StatusBar live tok/$, and Swarm Tracker Clear that never hides live/CLI jobs ship from v0.9.107. Schedules remain CLI-daemon host-local (IANA/UI deferred).
+> Status: v0.9.109, deliberately pre-1.0. Investigation folds stream mid-turn prose inside the collapse and keep tool/narration chronological (no functions-on-top / end-of-turn swap). Cold session load retries empty/flaky transcript hydrates. StatusBar clears stale tok/$ on session switch. Schedules: HTTP/UI + host-local DST tests (IANA/SSE deferred). MCP peel: plan-mode blocks call_mcp/manage_mcp; redirect pin parity; manager lock HOL; alive-only Settings tools; secondary alive/underscore/redaction. CREATE_NO_WINDOW defense-in-depth on stdio MCP + CodeGraph indexer. Cursor Agent Node MCP grandchildren remain upstream.
 
 ## Documentation
 
@@ -99,7 +99,7 @@ The cost thesis is measured, not asserted:
 | **Append-only context mode** | For local and cache-discounting providers, keeps the system prompt prefix byte-stable across turns and appends dynamic context in a trailer so provider KV caches reuse the heavy prefix -- real-dollar savings on long sessions. |
 | **Cost transparency** | The status bar shows **process-wide** spend (pilot plus every delegated swarm/worker job in this backend process), priced at each job's actual model rate when usage is known. Unknown models fall back to the live OpenRouter price map (public `/models` feed, disk-cached), then to the router's pre-flight estimate -- never silently $0. The Swarm pane shows **per-repo session** spend on each job card (scoped to the active workspace), not a second copy of the status-bar total. |
 | **Full-auto mode** | Unattended objective pursuit bounded by an AutoBudget governor (max swarms / tokens / seconds / idle), with a non-bypassable command safety guard. |
-| **Scheduled autonomy** | `harness schedule` provides cron-backed local unattended runs with transactional cross-process claims, restart recovery, cooperative cancellation, truthful run history, and workspace safety. This release is explicitly CLI + local-daemon only; no HTTP/UI/SSE control surface is claimed yet. |
+| **Scheduled autonomy** | `harness schedule` provides cron-backed local unattended runs with transactional cross-process claims, restart recovery, cooperative cancellation, truthful run history, and workspace safety. Fire times are host-local. HTTP + Settings UI can list/mutate/run-now/history (poll-first); the local daemon is still required for unattended cron fire. Per-schedule IANA timezone and schedule SSE remain deferred. |
 | **Command safety guard** | In full-auto, irreversible/remote/escalating shell commands (recursive deletes, ssh/scp, curl-pipe-to-shell, force-push, sudo, disk writes, key exfil) are screened and blocked; interactive co-working is untouched. Configurable per-command timeout (default 120s; 0/off = unbounded for long sessions). |
 
 ## Architecture

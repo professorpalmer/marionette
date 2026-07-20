@@ -880,6 +880,29 @@ def test_dispatch_local_action_call_mcp_unavailable():
     assert events[0].data.get("error") == "MCP not available"
 
 
+def test_dispatch_local_action_plan_mode_blocks_mcp_mutate_paths():
+    """Phases-layer plan gate: call_mcp / manage_mcp never reach the manager."""
+    from harness.send_loop_phases import PLAN_SKIP_KINDS
+
+    assert "call_mcp" in PLAN_SKIP_KINDS and "manage_mcp" in PLAN_SKIP_KINDS
+    mcp = MagicMock()
+    session = SimpleNamespace(
+        _mcp=mcp,
+        _append_action_result=MagicMock(),
+        _tool_catalog=SimpleNamespace(activate=MagicMock()),
+    )
+    for kind, act in (
+        ("call_mcp", PilotAction(kind="call_mcp", tool="fake.echo", arguments={})),
+        ("manage_mcp", PilotAction(kind="manage_mcp", arguments={"action": "list"})),
+    ):
+        events = list(
+            dispatch_local_action(session, act, f"p-{kind}", False, [], plan=True)
+        )
+        assert events[0].data.get("error") == f"(plan mode: skipped {kind})"
+    mcp.call.assert_not_called()
+    mcp.manage.assert_not_called()
+
+
 def test_dispatch_local_action_search_tools_success():
     act = PilotAction(kind="search_tools", query="browser")
     session = SimpleNamespace(

@@ -93,6 +93,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import providers as _prov_api
     from .api import registry as _reg_api
     from .api import reviews as _rev_api
+    from .api import schedules as _sched_api
     from .api import session_control as _sc_api
     from .api import sessions as _sessions_api
     from .api import settings as _settings_api
@@ -298,6 +299,12 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/hooks/update": post_json(
             _hooks_api.post_hooks_update, services=svc.hooks_services),
         "/api/hooks/remove": post_json(_hooks_api.post_hooks_remove),
+        "/api/schedules/add": post_json(_sched_api.post_schedules_add),
+        "/api/schedules/update": post_json(_sched_api.post_schedules_update),
+        "/api/schedules/enable": post_json(_sched_api.post_schedules_enable),
+        "/api/schedules/disable": post_json(_sched_api.post_schedules_disable),
+        "/api/schedules/remove": post_json(_sched_api.post_schedules_remove),
+        "/api/schedules/run-now": post_json(_sched_api.post_schedules_run_now),
     }
     # Attach relocate helper + host_ok/diag via closure attrs on module-level fns.
     _post_session_relocate._svc = svc  # type: ignore[attr-defined]
@@ -388,6 +395,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import providers as _prov_api
     from .api import registry as _reg_api
     from .api import reviews as _rev_api
+    from .api import schedules as _sched_api
     from .api import session_control as _sc_api
     from .api import sessions as _sessions_api
     from .api import settings as _settings_api
@@ -613,6 +621,9 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/worktrees": get_json(
             _wt_api.get_worktrees, services=svc.worktree_services),
         "/api/hooks": get_json(_hooks_api.get_hooks),
+        "/api/schedules": get_json(_sched_api.get_schedules),
+        "/api/schedules/history": get_json(
+            _sched_api.get_schedules_history, qs_args=("id", "limit")),
         "/api/sessions/transcript": get_json(
             _sessions_api.get_sessions_transcript, services=svc.session_services,
             pass_qs=True),

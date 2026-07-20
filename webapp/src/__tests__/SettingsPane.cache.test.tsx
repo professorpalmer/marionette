@@ -25,6 +25,7 @@ vi.mock("../lib/api", () => ({
 
 vi.mock("../components/SkillsPane", () => ({ default: () => <div /> }));
 vi.mock("../components/MemoryPane", () => ({ default: () => <div /> }));
+vi.mock("../components/SchedulesPane", () => ({ default: () => <div /> }));
 
 const mockSettings = vi.mocked(api.settings);
 

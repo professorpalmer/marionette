@@ -424,6 +424,42 @@ describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
     expect(next[1].kind).toBe("msg");
     expect(next[2].kind).toBe("card");
   });
+
+  it("appends later tools after mid-turn narration (chronological interleave)", () => {
+    let items: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "card",
+        card: {
+          id: "tool-prep:c1",
+          goal: "a.py",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+        },
+      },
+      { kind: "msg", msg: { role: "assistant", text: "Found the bug.", streaming: true } },
+    ];
+    items = upsertToolPrep(items, "run_command", {
+      id: "c2",
+      goal: "pytest",
+      status: "in_progress",
+    });
+    const kinds = items.map((it) => {
+      if (it.kind === "card") return `card:${it.card.id}`;
+      if (it.kind === "msg") return `msg:${it.msg.role}`;
+      return it.kind;
+    });
+    // Must NOT insert the new tool before the streaming narration.
+    expect(kinds).toEqual([
+      "msg:user",
+      "card:tool-prep:c1",
+      "msg:assistant",
+      "card:tool-prep:c2",
+      "tool_prep",
+    ]);
+  });
 });
 
 describe("upsertToolPrep promotes into ActivityGroup cards", () => {

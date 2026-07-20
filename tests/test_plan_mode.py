@@ -90,3 +90,25 @@ def test_plan_mode_filters_edit_actions():
     
     # 5th (read_file) is executed, fails because test.txt doesn't exist, but is NOT skipped as plan mode skipped
     assert "File not found" in action_results[4].data["error"]
+
+
+def test_plan_mode_filters_mcp_mutate_actions():
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = tempfile.mkdtemp()
+    s = ConversationalSession(cfg)
+    s._mcp = type("M", (), {
+        "call": staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("call"))),
+        "manage": staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("manage"))),
+        "discovered_tools": staticmethod(lambda: []),
+    })()
+    actions = [
+        {"kind": "call_mcp", "tool": "fake.echo", "arguments": {"text": "x"}},
+        {"kind": "manage_mcp", "action": "list"},
+        {"kind": "read_file", "path": "missing.txt"},
+    ]
+    s.pilot = _FakePilotWithActions(actions)
+    events = list(s.send("plan mcp", plan=True))
+    action_results = [e for e in events if e.kind == "action_result"]
+    assert "skipped call_mcp" in action_results[0].data["error"]
+    assert "skipped manage_mcp" in action_results[1].data["error"]
+    assert "File not found" in action_results[2].data["error"]

@@ -12,6 +12,7 @@ import {
 } from "../lib/api";
 import SkillsPane from "./SkillsPane";
 import MemoryPane from "./MemoryPane";
+import SchedulesPane from "./SchedulesPane";
 
 export type SettingsSection = "general" | "safety" | "providers" | "notifications" | "advanced";
 
@@ -274,6 +275,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   // Expand/collapse states
   const [hooksOpen, setHooksOpen] = useState(false);
+  const [schedulesOpen, setSchedulesOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
 
@@ -2176,6 +2178,27 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           >
             {restarting ? "Restarting backend..." : "Restart backend (apply self-edits)"}
           </button>
+        </div>
+        </>)}
+        {gate("advanced", "schedules cron timezone daemon autonomy") && (<>
+        {/* Schedules Section */}
+        <div className="border-t border-edge pt-3 space-y-2">
+          <button
+            onClick={() => setSchedulesOpen(!schedulesOpen)}
+            className="w-full flex items-center justify-between text-left focus:outline-none"
+          >
+            <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Schedules
+            </span>
+            <span className="text-muted">
+              {schedulesOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </span>
+          </button>
+          {schedulesOpen && (
+            <div className="space-y-3 bg-panel2/40 border border-edge/50 rounded p-2.5 mt-1">
+              <SchedulesPane />
+            </div>
+          )}
         </div>
         </>)}
         {gate("advanced", "lifecycle hooks events command") && (<>

@@ -17,23 +17,29 @@ ScheduleStore and scheduler daemon. It mirrors the manual-dispatch + ANSI _c
 style of cli.py. Cron expressions are validated at `add`/`edit` time (parsed
 and the next three fire times printed); an invalid expression exits 1.
 
-Cron times are host-local naive datetimes (no per-schedule IANA zone). Next-fire
-previews are labeled as local time. DST spring-forward skips non-existent local
-minutes; fall-back fires a repeated minute at most once; missed windows coalesce
-to a single catch-up run. Delivery is at-least-once: a superseded worker that
-already performed tool side effects cannot rewrite durable claim/run state, but
-those side effects are not rolled back.
+Cron times are host-local naive datetimes. Per-schedule IANA zones are
+deferred. Next-fire previews are labeled ``host-local``. A repeated local
+minute fires at most once (minute-stable ``last_fire_at``); missed windows
+coalesce to a single catch-up run. Delivery is at-least-once: a superseded
+worker that already performed tool side effects cannot rewrite durable
+claim/run state, but those side effects are not rolled back.
 
-CLI-daemon-only: there is no HTTP, UI, or SSE surface for schedules yet.
-Unattended dispatch is owned by this CLI and the local daemon process.
+HTTP/UI control exists for list/mutate/run-now/history (poll-first). Unattended
+cron fire still requires this CLI's local daemon process. SSE for schedules
+is deferred.
 """
 
 import argparse
 import sys
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
-from .schedule_core import CronExpr, Schedule
+from .schedule_core import (
+    CronExpr,
+    Schedule,
+    next_real_fire_after,
+    timezone_mode,
+)
 from .schedule_store import (
     REMOVE_CANCEL_REQUESTED,
     REMOVE_REMOVED,
@@ -46,13 +52,19 @@ def _c(code: str, s: str) -> str:
     return f"\033[{code}m{s}\033[0m" if sys.stdout.isatty() else s
 
 
-def _next_fires(cron: CronExpr, count: int = 3) -> list:
-    out = []
+def _next_fires(cron: CronExpr, count: int = 3) -> List[datetime]:
+    out: List[datetime] = []
     cur = datetime.now()
     for _ in range(count):
-        cur = cron.next_after(cur)
+        cur = next_real_fire_after(cron, cur)
         out.append(cur)
     return out
+
+
+def _print_next_fires(cron: CronExpr) -> None:
+    print("next fires (host-local):")
+    for dt in _next_fires(cron):
+        print(f"  {dt.isoformat(sep=' ', timespec='minutes')} host-local")
 
 
 def _reject_negative_ceilings(max_tokens, max_seconds, max_swarms) -> Optional[str]:
@@ -78,7 +90,7 @@ def _cmd_add(args) -> int:
     try:
         cron = CronExpr.parse(args.cron)
     except ValueError as exc:
-        print(_c("31", f"invalid cron expression: {exc}"))
+        print(_c("31", f"invalid schedule: {exc}"))
         return 1
     sched = Schedule(
         id="",
@@ -91,12 +103,15 @@ def _cmd_add(args) -> int:
         max_tokens=args.max_tokens,
         max_seconds=args.max_seconds,
         max_swarms=args.max_swarms,
+        timezone="",
     )
-    store.add(sched)
+    try:
+        store.add(sched)
+    except ValueError as exc:
+        print(_c("31", f"invalid schedule: {exc}"))
+        return 1
     print(_c("32", f"added schedule {sched.id} ({sched.name})"))
-    print("next fires (local time):")
-    for dt in _next_fires(cron):
-        print(f"  {dt.isoformat(sep=' ', timespec='minutes')} local")
+    _print_next_fires(cron)
     return 0
 
 
@@ -109,8 +124,12 @@ def _cmd_list(args) -> int:
     for s in scheds:
         state = "enabled" if s.enabled else "disabled"
         status = s.display_status()
+        mode = timezone_mode(s)
         print(_c("36", f"{s.id}") + f"  {s.name}  [{state}]")
-        print(f"    cron={s.cron!r} adapter={s.swarm_adapter} status={status}")
+        print(
+            f"    cron={s.cron!r} tz=host-local ({mode}) "
+            f"adapter={s.swarm_adapter} status={status}"
+        )
         print(f"    objective: {s.objective}")
         if s.repo:
             print(f"    repo: {s.repo}")
@@ -161,9 +180,7 @@ def _cmd_edit(args) -> int:
     print(_c("32", f"updated {updated.id} ({updated.name})"))
     if args.cron is not None:
         cron = CronExpr.parse(updated.cron)
-        print("next fires (local time):")
-        for dt in _next_fires(cron):
-            print(f"  {dt.isoformat(sep=' ', timespec='minutes')} local")
+        _print_next_fires(cron)
     return 0
 
 
@@ -260,9 +277,11 @@ def _run_schedule(argv) -> int:
     ap = argparse.ArgumentParser(
         prog="harness schedule",
         description=(
-            "Manage scheduled unattended objectives (CLI + local daemon only; "
-            "no HTTP/UI/SSE surface). Cron uses host-local time (no IANA zone); "
-            "missed fires coalesce; delivery is at-least-once under lease recovery."
+            "Manage scheduled unattended objectives. Cron uses host-local "
+            "time (per-schedule IANA timezone is deferred). HTTP/UI can list "
+            "and mutate schedules; the local daemon is still required for "
+            "unattended cron fire. Missed fires coalesce; delivery is "
+            "at-least-once under lease recovery. SSE is deferred."
         ),
     )
     ap.add_argument("--db", default=None, help="schedule store path (tests/override)")
@@ -274,8 +293,8 @@ def _run_schedule(argv) -> int:
         "--cron",
         required=True,
         help=(
-            "5-field cron in host-local time (minute hour dom month dow); "
-            "DST/catch-up use naive local minutes — see module docstring"
+            "5-field cron (minute hour dom month dow) in host-local time; "
+            "DST/catch-up use minute-stable fire identity — see module docstring"
         ),
     )
     p_add.add_argument("--objective", required=True)

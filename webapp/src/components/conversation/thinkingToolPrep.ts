@@ -115,20 +115,12 @@ function toolPrepInsertIndex(items: Item[], turnStart: number): number {
     return insertAt;
   }
 
-  for (let i = items.length - 1; i >= turnStart; i--) {
-    const it = items[i];
-    if (it.kind === "tool_prep") continue;
-    const postCardSurface =
-      (it.kind === "msg" && it.msg.role === "assistant")
-      || it.kind === "thinking";
-    if (!postCardSurface) break;
-    const hasCardBefore = items
-      .slice(turnStart, i)
-      .some((row) => row.kind === "card");
-    if (!hasCardBefore) break;
-    insertAt = i;
-  }
-  return insertAt;
+  // After the first tool card exists, APPEND new tools at the end of the turn.
+  // Inserting before trailing assistant/thinking surfaces used to batch every
+  // tool above all mid-turn narration ("functions on top, transcript on
+  // bottom") and then reshuffle on seal. Chronological interleave:
+  // think → tool → type → tool → type, matching event order inside the fold.
+  return items.length;
 }
 
 function withToolPrepChrome(

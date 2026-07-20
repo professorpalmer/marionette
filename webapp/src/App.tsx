@@ -38,6 +38,13 @@ export default function App() {
 
   useEffect(() => {
     setArtifacts([]);
+    // StatusBar tok/$ must not keep a prior session's spend painted under a
+    // new id (zeros-guard used to freeze stale 83.9k-style totals).
+    window.dispatchEvent(
+      new CustomEvent("harness-session-changed", {
+        detail: { sessionId: activeSessionId },
+      }),
+    );
   }, [activeSessionId]);
 
   const [leftW, setLeftW] = useState(() => num(LS.left, 248));

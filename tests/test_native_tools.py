@@ -47,8 +47,8 @@ def test_build_tools_schema():
     )
     schemas_mcp = build_tools_schema([fake_tool])
     mcp_names = [s["function"]["name"] for s in schemas_mcp]
-    assert "mcp_todo_add_item" in mcp_names
-    mcp_schema = [s for s in schemas_mcp if s["function"]["name"] == "mcp_todo_add_item"][0]
+    assert "mcp_todo__add_item" in mcp_names
+    mcp_schema = [s for s in schemas_mcp if s["function"]["name"] == "mcp_todo__add_item"][0]
     assert mcp_schema["function"]["description"] == "Add a todo item"
     assert mcp_schema["function"]["parameters"]["required"] == ["item"]
 
@@ -71,7 +71,7 @@ def test_parse_tool_calls():
     assert actions[0].path == "src/main.py"
     assert actions[0].tool_call_id == "tc1"
 
-    # MCP tool call
+    # MCP tool call (legacy single-underscore wire name still parses)
     tc_mcp = [
         {
             "id": "tc2",
@@ -88,6 +88,16 @@ def test_parse_tool_calls():
     assert actions_mcp[0].tool == "weather.get_forecast"
     assert actions_mcp[0].arguments == {"location": "New York"}
     assert actions_mcp[0].tool_call_id == "tc2"
+
+
+def test_parse_mcp_wire_name_handles_underscores():
+    from harness.pilot import _parse_mcp_wire_name
+
+    # New unambiguous encoding
+    assert _parse_mcp_wire_name("mcp_my_server__add_item") == "my_server.add_item"
+    assert _parse_mcp_wire_name("mcp_todo__add_item") == "todo.add_item"
+    # Legacy mcp_{server}_{tool} (server without underscores)
+    assert _parse_mcp_wire_name("mcp_weather_get_forecast") == "weather.get_forecast"
 
 
 def test_extract_reasoning():

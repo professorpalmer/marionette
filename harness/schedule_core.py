@@ -23,14 +23,16 @@ When BOTH day-of-month and day-of-week are restricted (neither is '*'), a
 minute matches if EITHER the DOM or the DOW matches -- the well-known Vixie
 cron OR-rule -- because that is what real crontabs expect.
 
-Timezone / DST (host-local, no IANA field):
-    All cron evaluation uses naive ``datetime`` values in the host's local
-    timezone (``datetime.now()`` / ``datetime.fromtimestamp``). There is no
-    per-schedule IANA zone. Across DST spring-forward, a fire minute that
-    does not exist is skipped (next_after lands on the next real local
-    minute that matches). Across fall-back, a repeated local minute fires
-    at most once per wall-clock tick because due_fire_at / last_fire_at use
-    a minute-stable identity. Missed windows coalesce to a single catch-up
+Timezone / DST:
+    Evaluation is always host-local naive (``timezone_mode`` =
+    ``"host_local"``): cron math uses naive ``datetime`` values from
+    ``datetime.now()`` / ``datetime.fromtimestamp``. Per-schedule IANA
+    zones (``zoneinfo.ZoneInfo``) are deferred — ``Schedule.timezone`` may
+    exist as an unused store column for forward compatibility but is ignored
+    for evaluation (always empty on write). Host-local DST: spring-forward
+    skips non-existent wall minutes (epoch round-trip differs); fall-back
+    fires a repeated local minute at most once via minute-stable
+    ``last_fire_at`` identity. Missed windows coalesce to a single catch-up
     fire (latest missed minute <= now), never one run per gap.
 """
 
@@ -262,19 +264,86 @@ def floor_minute(dt: datetime) -> datetime:
     return dt.replace(second=0, microsecond=0)
 
 
+def validate_timezone(name: str) -> str:
+    """Accept only empty timezone (host-local). Non-empty IANA is deferred.
+
+    Returns an empty string. Raises ValueError when a non-empty name is
+    supplied so writers (CLI/store/HTTP) cannot persist a per-schedule IANA
+    zone.
+    """
+    cleaned = (name or "").strip()
+    if cleaned:
+        raise ValueError(
+            "IANA timezone deferred; use host-local (empty timezone)"
+        )
+    return ""
+
+
+def timezone_mode(schedule: "Schedule") -> str:
+    """Always ``host_local``; per-schedule IANA zones are deferred."""
+    return "host_local"
+
+
+def _as_naive_wall(dt: datetime) -> datetime:
+    """Minute-floored host-local naive wall time."""
+    if dt.tzinfo is not None:
+        return floor_minute(dt.astimezone().replace(tzinfo=None))
+    return floor_minute(dt)
+
+
+def _wall_from_epoch(ts: float) -> datetime:
+    """Epoch seconds -> minute-floored host-local naive wall."""
+    return floor_minute(datetime.fromtimestamp(ts))
+
+
+def _host_wall_exists(dt: datetime) -> bool:
+    """True when *dt*'s minute exists in the host local timezone.
+
+    Spring-forward gaps: a naive wall that is not a real local minute
+    round-trips through ``.timestamp()`` / ``fromtimestamp`` to a different
+    minute (or raises). No IANA / ``ZoneInfo`` — host OS rules only.
+    """
+    floored = floor_minute(dt)
+    try:
+        return _wall_from_epoch(floored.timestamp()) == floored
+    except (OSError, OverflowError, ValueError):
+        return False
+
+
 def fire_at_timestamp(dt: datetime) -> float:
     """Stable float identity for a cron fire minute."""
     return floor_minute(dt).timestamp()
 
 
-def _coalesce_latest_fire(cron: CronExpr, first: datetime, now_min: datetime) -> datetime:
-    """Walk from first missed fire to the latest fire at or before now_min."""
+def next_real_fire_after(cron: CronExpr, wall: datetime) -> datetime:
+    """Next cron match after *wall* that exists as a host-local minute.
+
+    Spring-forward: candidates in a DST gap are skipped until the next real
+    local match. Per-schedule IANA zones remain deferred.
+    """
+    cur = _as_naive_wall(wall)
+    for _ in range(_MAX_SEARCH_STEPS):
+        candidate = floor_minute(cron.next_after(cur))
+        if _host_wall_exists(candidate):
+            return candidate
+        cur = candidate
+    raise ValueError(
+        f"no real host-local cron match within "
+        f"{_MAX_SEARCH_STEPS // (24 * 60)} days for {cron.raw!r}"
+    )
+
+
+def _coalesce_latest_fire(
+    cron: CronExpr,
+    first: datetime,
+    now_min: datetime,
+) -> datetime:
+    """Walk from first missed fire to the latest real fire at or before now_min."""
     latest = first
     cur = first
-    # Cap iterations to avoid pathological loops; now_min - first is enough.
     for _ in range(_MAX_SEARCH_STEPS):
         try:
-            nxt = cron.next_after(cur)
+            nxt = next_real_fire_after(cron, cur)
         except ValueError:
             break
         if nxt > now_min:
@@ -295,6 +364,8 @@ def due_fire_at(schedule: "Schedule", now: datetime) -> Optional[datetime]:
 
     Never-run: anchor on ``enabled_at`` or ``created_at`` so a schedule that
     missed its first window still catches up once.
+
+    Always host-local naive; ``schedule.timezone`` is ignored (IANA deferred).
     """
     if not schedule.enabled:
         return None
@@ -303,32 +374,32 @@ def due_fire_at(schedule: "Schedule", now: datetime) -> Optional[datetime]:
     except ValueError:
         return None
 
-    now_min = floor_minute(now)
+    now_min = _as_naive_wall(now)
 
     if schedule.last_fire_at and schedule.last_fire_at > 0:
-        anchor = datetime.fromtimestamp(schedule.last_fire_at)
+        anchor = _wall_from_epoch(schedule.last_fire_at)
         try:
-            first_missed = cron.next_after(anchor)
+            first_missed = next_real_fire_after(cron, anchor)
         except ValueError:
             return None
         if first_missed > now_min:
             return None
         return _coalesce_latest_fire(cron, first_missed, now_min)
 
-    # Never-run: the current matching minute is always due.
-    if cron.matches(now_min):
+    # Never-run: the current matching minute is due when it exists locally.
+    if cron.matches(now_min) and _host_wall_exists(now_min):
         return now_min
 
     # Catch up a missed first window once, anchored on enable/create time.
     # Ignore anchors in the future relative to ``now`` (clock skew / test inject).
     anchor_ts = schedule.enabled_at or schedule.created_at
     if anchor_ts and anchor_ts > 0:
-        anchor = datetime.fromtimestamp(anchor_ts)
+        anchor = _wall_from_epoch(anchor_ts)
         if floor_minute(anchor) > now_min:
             return None
         search_from = floor_minute(anchor) - timedelta(minutes=1)
         try:
-            first = cron.next_after(search_from)
+            first = next_real_fire_after(cron, search_from)
         except ValueError:
             return None
         if first > now_min:
@@ -390,6 +461,7 @@ SCHEDULE_FIELDS = [
     "id", "name", "objective", "cron", "repo", "swarm_adapter", "driver",
     "enabled", "max_tokens", "max_seconds", "max_swarms",
     "created_at", "enabled_at", "last_run_at", "last_fire_at", "last_status",
+    "timezone",
 ]
 
 
@@ -414,6 +486,8 @@ class Schedule:
     last_run_at: float = 0.0
     last_fire_at: float = 0.0
     last_status: str = ""
+    # Unused store column (IANA deferred); always empty on write, ignored for eval.
+    timezone: str = ""
     # Claim / fencing fields (managed by ScheduleStore; shown by list).
     claim_owner: str = ""
     claim_at: float = 0.0
@@ -427,6 +501,7 @@ class Schedule:
         d = asdict(self)
         d["enabled"] = 1 if self.enabled else 0
         d["cancel_requested"] = 1 if self.cancel_requested else 0
+        d["timezone"] = (self.timezone or "").strip()
         return d
 
     @classmethod
@@ -449,6 +524,7 @@ class Schedule:
             last_run_at=float(row.get("last_run_at") or 0.0),
             last_fire_at=float(row.get("last_fire_at") or 0.0),
             last_status=str(row.get("last_status") or ""),
+            timezone=str(row.get("timezone") or ""),
             claim_owner=str(row.get("claim_owner") or ""),
             claim_at=float(row.get("claim_at") or 0.0),
             claim_lease_until=float(row.get("claim_lease_until") or 0.0),

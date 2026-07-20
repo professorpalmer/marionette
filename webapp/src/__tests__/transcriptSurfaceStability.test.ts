@@ -259,7 +259,9 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     ];
 
     const whileOpen = collectIntermediateAssistantItems(items, true);
-    expect(whileOpen.has(preTool)).toBe(false);
+    // While open, fold mid-turn narration once investigation activity exists
+    // (avoids outside-stream → absorb blink). Pre-tool sealed text folds too.
+    expect(whileOpen.has(preTool)).toBe(true);
     expect(whileOpen.has(postTool)).toBe(true);
 
     const whenDone = collectIntermediateAssistantItems(items, false);

@@ -155,3 +155,86 @@ def test_post_mcp_refresh_handler(tmp_path):
     finally:
         m.stop_all()
 
+
+def test_get_mcp_uses_discovered_tools_alive_only():
+    """GET /api/mcp must mirror pilot: alive-only tools, not stale cache."""
+    from unittest.mock import MagicMock
+
+    from harness.api.mcp import McpServices, get_mcp
+    from harness.mcp_client import McpTool
+
+    alive = McpTool(server="a", name="echo", description="alive")
+    dead = McpTool(server="b", name="gone", description="stale")
+    mcp = MagicMock()
+    mcp.status.return_value = [{"name": "a", "running": True}]
+    mcp.discovered_tools.return_value = [alive]
+    mcp.tools.return_value = [alive, dead]
+    code, body = get_mcp(McpServices(mcp=mcp))
+    assert code == 200
+    assert [t["qualified"] for t in body["tools"]] == [alive.qualified]
+    mcp.discovered_tools.assert_called_once()
+    mcp.tools.assert_not_called()
+
+
+def test_start_server_does_not_hold_lock_across_handshake(tmp_path, monkeypatch):
+    """Manager lock HOL: stop/status must proceed while start() handshake runs."""
+    import threading
+
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("slow", {"command": "x", "args": []})
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowClient:
+        def __init__(self, *a, **k):
+            pass
+
+        @property
+        def alive(self):
+            return False
+
+        def start(self):
+            entered.set()
+            assert release.wait(5), "test timed out waiting for release"
+
+        def list_tools(self):
+            return []
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr("harness.mcp_manager.StdioMcpClient", SlowClient)
+
+    def run_start():
+        try:
+            m.start_server("slow")
+        except Exception:
+            pass
+
+    t = threading.Thread(target=run_start, daemon=True)
+    t.start()
+    assert entered.wait(2), "slow start never entered handshake"
+    # If start_server still held _lock across client.start(), this deadlocks.
+    acquired = m._lock.acquire(timeout=1.0)
+    assert acquired, "start_server held _lock across handshake (HOL)"
+    m._lock.release()
+    release.set()
+    t.join(3)
+
+
+def test_redact_mcp_secrets_masks_env_and_headers():
+    from harness.mcp_manager import redact_mcp_secrets
+
+    out = redact_mcp_secrets({
+        "ok": True,
+        "env": {"TOKEN": "secret"},
+        "headers": {"Authorization": "Bearer x"},
+        "nested": {"env": {"KEY": "v"}},
+    })
+    assert out["ok"] is True
+    assert out["env"]["TOKEN"] == "REDACTED"
+    assert out["headers"]["Authorization"] == "REDACTED"
+    assert out["nested"]["env"]["KEY"] == "REDACTED"
+

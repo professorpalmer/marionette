@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
-from .pilot import build_tools_schema
+from .pilot import _parse_mcp_wire_name, build_tools_schema
 
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
 _WIN_PATH_RE = re.compile(r"[A-Za-z]:\\(?:[^\\/\s\"']|\\/)+")
@@ -183,10 +183,7 @@ class ToolCatalog:
                 continue
             desc = _normalize_path_text(fn.get("description") or "")
             if name.startswith("mcp_"):
-                parts = name.split("_", 2)
-                server = parts[1] if len(parts) > 1 else ""
-                tool_name = parts[2] if len(parts) > 2 else name[4:]
-                qualified = f"{server}.{tool_name}"
+                qualified = _parse_mcp_wire_name(name)
                 tool_id = f"mcp:{qualified}"
                 source = "mcp"
             else:

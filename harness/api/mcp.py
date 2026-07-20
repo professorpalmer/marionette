@@ -23,7 +23,11 @@ class McpServices:
 
 
 def get_mcp(svc: McpServices) -> tuple[int, dict]:
-    """GET /api/mcp — configured servers + discovered tools."""
+    """GET /api/mcp — configured servers + alive-only discovered tools.
+
+    Uses ``discovered_tools()`` (same as the pilot prompt) so dead servers
+    do not keep stale tools visible in the UI.
+    """
     return 200, {
         "servers": svc.mcp.status(),
         "tools": [
@@ -33,7 +37,7 @@ def get_mcp(svc: McpServices) -> tuple[int, dict]:
                 "qualified": t.qualified,
                 "description": t.description,
             }
-            for t in svc.mcp.tools()
+            for t in svc.mcp.discovered_tools()
         ],
     }
 

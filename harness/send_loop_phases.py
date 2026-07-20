@@ -47,6 +47,15 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "query_wiki", "call_mcp", "manage_mcp",
 })
 
+# Mutating / side-effecting kinds blocked in plan mode (same gate as write/edit
+# and run_implement). Includes MCP call + manage so plan turns cannot mutate
+# external servers or invoke tools that may write.
+PLAN_SKIP_KINDS: frozenset[str] = frozenset({
+    "run_implement", "run_parallel",
+    "write_file", "edit_file", "hash_edit", "run_command",
+    "call_mcp", "manage_mcp",
+})
+
 
 def run_stream(
     session: Any,
@@ -859,6 +868,7 @@ def dispatch_local_action(
     is_native: bool,
     turn_changed_files: list,
     act_goal: Any = None,
+    plan: bool = False,
 ) -> Iterator[Any]:
     """Assemble tool-results for LOCAL_ACTION_KINDS (workspace / mutate / browse / mcp).
 
@@ -867,6 +877,10 @@ def dispatch_local_action(
     Caller must gate on ``act.kind in LOCAL_ACTION_KINDS``. Yields the same
     ConvEvent shapes and history appends; mutates ``turn_changed_files`` on
     successful writes/edits.
+
+    ``plan=True`` is a second gate for PLAN_SKIP_KINDS (call_mcp / manage_mcp /
+    write-edit / run_command) so a caller that forgets the actions-layer skip
+    still cannot mutate in plan mode.
     """
     import os
 
@@ -875,6 +889,18 @@ def dispatch_local_action(
 
     if act_goal is None:
         act_goal = action_display_goal(act)
+
+    if plan and act.kind in PLAN_SKIP_KINDS:
+        yield ConvEvent("action_result", {
+            "id": aid,
+            "kind": act.kind,
+            "goal": act_goal or act.tool,
+            "error": f"(plan mode: skipped {act.kind})",
+        })
+        session._append_action_result(
+            act, aid, f"(plan mode: skipped {act.kind})", is_native,
+        )
+        return
 
     # ---- open_project branch --------------------------------------
     if act.kind == "open_project":
@@ -1408,6 +1434,7 @@ def dispatch_local_action(
             session._append_action_result(act, aid, "(manage_mcp unavailable)", is_native)
             return
         import json as _json_mcp
+        from .mcp_manager import redact_mcp_secrets
         args = act.arguments if isinstance(act.arguments, dict) else {}
         try:
             out = session._mcp.manage(
@@ -1418,7 +1445,8 @@ def dispatch_local_action(
                 args=args.get("args") if isinstance(args.get("args"), list) else None,
                 env=args.get("env") if isinstance(args.get("env"), dict) else None,
             )
-            text = _json_mcp.dumps(out, indent=2)[:4000]
+            # Never echo mcp.json env/headers secrets into the transcript.
+            text = _json_mcp.dumps(redact_mcp_secrets(out), indent=2)[:4000]
         except Exception as e:
             yield ConvEvent("action_result", {"id": aid, "error": f"manage_mcp: {e}"})
             session._append_action_result(act, aid, f"(manage_mcp failed: {e})", is_native)

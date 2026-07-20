@@ -211,7 +211,8 @@ class ScheduleStore:
                 claim_lease_until REAL NOT NULL DEFAULT 0,
                 claim_fire_at REAL NOT NULL DEFAULT 0,
                 claim_run_id TEXT NOT NULL DEFAULT '',
-                cancel_requested INTEGER NOT NULL DEFAULT 0
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                timezone TEXT NOT NULL DEFAULT ''
             )
             """
         )
@@ -253,6 +254,7 @@ class ScheduleStore:
             ("claim_fire_at", "REAL NOT NULL DEFAULT 0"),
             ("claim_run_id", "TEXT NOT NULL DEFAULT ''"),
             ("cancel_requested", "INTEGER NOT NULL DEFAULT 0"),
+            ("timezone", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in sched_cols:
                 self._conn.execute(
@@ -283,7 +285,12 @@ class ScheduleStore:
 
     def add(self, schedule: Schedule) -> Schedule:
         """Insert a schedule. If id/created_at are unset, they are generated."""
+        from .schedule_core import CronExpr, validate_timezone
+
         _validate_ceilings(schedule.to_row())
+        CronExpr.parse(schedule.cron)  # validate; raises ValueError
+        # IANA deferred: persist empty timezone; evaluation is always host-local.
+        schedule.timezone = validate_timezone(schedule.timezone or "")
         now = time.time()
         if not schedule.id:
             schedule.id = uuid.uuid4().hex[:8]
@@ -429,17 +436,21 @@ class ScheduleStore:
 
     def update_fields(self, schedule_id: str, **fields) -> Optional[Schedule]:
         """Update editable schedule fields. Returns the row, or None if missing."""
+        from .schedule_core import CronExpr, validate_timezone
+
         allowed = {
             "name", "objective", "cron", "repo", "driver", "swarm_adapter",
-            "max_tokens", "max_seconds", "max_swarms",
+            "max_tokens", "max_seconds", "max_swarms", "timezone",
         }
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not updates:
             return self.get(schedule_id)
         _validate_ceilings(updates)
         if "cron" in updates:
-            from .schedule_core import CronExpr
             CronExpr.parse(str(updates["cron"]))  # validate; raises ValueError
+        if "timezone" in updates:
+            # IANA deferred: only empty (host-local) is accepted.
+            updates["timezone"] = validate_timezone(str(updates["timezone"]))
         cols = ", ".join(f"{k} = ?" for k in updates)
         vals = list(updates.values()) + [schedule_id]
         with self._lock:

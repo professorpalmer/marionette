@@ -4,6 +4,8 @@ from __future__ import annotations
 import http.server
 import json
 import threading
+import urllib.error
+import urllib.request
 from typing import Optional
 
 import pytest
@@ -128,3 +130,52 @@ def test_pinned_opener_includes_safe_redirect(monkeypatch):
     assert client._pinned_ip == "127.0.0.1"
     handler_types = [type(h) for h in client._opener.handlers]
     assert SafeRedirectHandler in handler_types
+
+
+def test_redirect_updates_shared_pinned_ip(monkeypatch):
+    """3xx hops must update the shared pin (same as web_tools), not keep the origin IP."""
+    from harness.web_tools import _PinnedIP
+
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
+    pin = _PinnedIP("10.0.0.1")
+
+    def fake_getaddrinfo(host, port, *a, **kw):
+        # Redirect target resolves to a different IP than the origin pin.
+        return [(2, 1, 6, "", ("10.0.0.99", port or 0))]
+
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
+    handler = SafeRedirectHandler(pin=pin)
+    # Avoid actually building a follow-up Request; we only care about pin update.
+    monkeypatch.setattr(
+        urllib.request.HTTPRedirectHandler,
+        "redirect_request",
+        lambda self, *a, **k: None,
+    )
+    handler.redirect_request(
+        req=None, fp=None, code=302, msg="Found",
+        headers={}, newurl="http://other.example.com/rpc",
+    )
+    assert pin.ip == "10.0.0.99"
+
+
+def test_http_mcp_alive_clears_on_unreachable(monkeypatch):
+    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
+
+    def fake_getaddrinfo(host, port, *a, **kw):
+        return [(2, 1, 6, "", ("127.0.0.1", port or 0))]
+
+    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", fake_getaddrinfo)
+    client = HttpMcpClient("t", "http://mcp.example.com/rpc")
+    client._initialized = True
+    assert client.alive is True
+
+    class BoomOpener:
+        def open(self, req, timeout=None):
+            raise urllib.error.URLError("connection refused")
+
+    client._opener = BoomOpener()
+    from harness.mcp_client import McpError
+
+    with pytest.raises(McpError):
+        client._post({"jsonrpc": "2.0", "id": 1, "method": "ping"}, timeout=1.0)
+    assert client.alive is False

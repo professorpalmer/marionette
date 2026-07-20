@@ -35,6 +35,7 @@ from .send_loop_dispatch import (
 )
 from .send_loop_phases import (
     LOCAL_ACTION_KINDS,
+    PLAN_SKIP_KINDS,
     READ_ONLY_KINDS,
     action_display_goal,
     dispatch_local_action,
@@ -193,7 +194,7 @@ def execute_turn_actions(
                 "call_id": _tcid or None,
             })
 
-        if plan and act.kind in ("run_implement", "run_parallel", "write_file", "edit_file", "hash_edit", "run_command"):
+        if plan and act.kind in PLAN_SKIP_KINDS:
             if act.kind in ("run_implement", "run_parallel"):
                 yield ConvEvent("action_start", {
                     "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
@@ -327,7 +328,8 @@ def execute_turn_actions(
         # ---- local tool-result assembly (workspace / mutate / browse / mcp) ----
         if act.kind in LOCAL_ACTION_KINDS:
             yield from dispatch_local_action(
-                session, act, aid, is_native, turn_changed_files, act_goal=act_goal,
+                session, act, aid, is_native, turn_changed_files,
+                act_goal=act_goal, plan=plan,
             )
             continue
 

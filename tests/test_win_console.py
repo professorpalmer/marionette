@@ -142,3 +142,104 @@ def test_cursor_acp_popen_sets_create_no_window(monkeypatch):
     assert transport is not None
     assert captured["kwargs"].get("creationflags") == 0x08000000
     assert "acp" in captured["cmd"]
+
+
+def test_stdio_mcp_popen_sets_create_no_window(monkeypatch):
+    """StdioMcpClient.start passes CREATE_NO_WINDOW on win32 explicitly.
+
+    This is defense-in-depth next to win_console's process-wide patch. It does
+    not cover Cursor Agent Node→MCP grandchildren (upstream).
+    """
+    import harness.mcp_client as mcp_mod
+    from harness.mcp_client import StdioMcpClient
+
+    captured = {}
+
+    class FakeProc:
+        returncode = None
+        stdin = io.StringIO()
+        stdout = io.StringIO()
+        stderr = io.StringIO("")
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+        def terminate(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr(mcp_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(mcp_mod.os, "name", "nt")
+    monkeypatch.setattr(mcp_mod.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+
+    client = StdioMcpClient(name="t", command="node", args=["x.js"])
+    monkeypatch.setattr(
+        client, "_request", lambda *a, **k: {"serverInfo": {}, "capabilities": {}},
+    )
+    monkeypatch.setattr(client, "_notify", lambda *a, **k: None)
+    client.start()
+    assert captured["kwargs"].get("creationflags") == 0x08000000
+
+
+def test_codegraph_index_popen_sets_create_no_window(monkeypatch, tmp_path):
+    """CodeGraph indexer Popen passes CREATE_NO_WINDOW on win32 explicitly."""
+    import harness.api.codegraph_index as cgi
+
+    repo = str(tmp_path / "proj")
+    os.makedirs(repo, exist_ok=True)
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+        stdout = None
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr(cgi.os, "name", "nt")
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(cgi, "prepare_codegraph_scope", lambda path: {"verdict": "ok"})
+    monkeypatch.setattr(cgi, "codegraph_index_proc", None)
+    cgi.codegraph_status = "none"
+    cgi.codegraph_status_reason = None
+
+    # Ensure deps are bound (server import normally does this).
+    if cgi._deps is None:
+        cgi.bind_deps(
+            cgi.CodegraphIndexDeps(
+                puppetmaster_available=lambda: True,
+                puppetmaster_cmd=lambda *a: ["puppetmaster", *a],
+                diag=lambda *a, **k: None,
+                get_state_dir=lambda: str(tmp_path),
+                get_repo=lambda: repo,
+            )
+        )
+    else:
+        monkeypatch.setattr(cgi._deps, "puppetmaster_available", lambda: True)
+        monkeypatch.setattr(
+            cgi._deps, "puppetmaster_cmd", lambda *a: ["puppetmaster", *a],
+        )
+        monkeypatch.setattr(cgi._deps, "get_state_dir", lambda: str(tmp_path))
+
+    cgi.index_codegraph_bg(repo)
+    assert captured["kwargs"].get("creationflags") == 0x08000000

@@ -1180,10 +1180,11 @@ def build_tools_schema(
             }
         })
 
-    # MCP tools
+    # MCP tools — use mcp_{server}__{tool} so underscores in either segment
+    # round-trip (legacy mcp_{server}_{tool} still parses via fallback).
     if mcp_tools:
         for tool in mcp_tools:
-            mcp_name = f"mcp_{tool.server}_{tool.name}"
+            mcp_name = f"mcp_{tool.server}__{tool.name}"
             schema.append({
                 "type": "function",
                 "function": {
@@ -1202,15 +1203,30 @@ def build_tools_schema(
     return schema
 
 
+def _parse_mcp_wire_name(name: str) -> str:
+    """Map ``mcp_…`` wire name → qualified ``server.tool``.
+
+    Prefer ``mcp_{server}__{tool}`` (unambiguous when either side has
+    underscores). Fall back to legacy ``mcp_{server}_{tool}`` split for
+    older schemas / model echoes.
+    """
+    rest = name[4:] if name.startswith("mcp_") else name
+    if "__" in rest:
+        server, tool = rest.split("__", 1)
+        return f"{server}.{tool}"
+    parts = name.split("_", 2) if name.startswith("mcp_") else rest.split("_", 1)
+    if name.startswith("mcp_") and len(parts) >= 3:
+        return f"{parts[1]}.{parts[2]}"
+    if not name.startswith("mcp_") and len(parts) == 2:
+        return f"{parts[0]}.{parts[1]}"
+    return rest
+
+
 def _tool_name_to_action(name: str, args: dict, tool_call_id: str = "") -> PilotAction:
     if not isinstance(args, dict):
         args = {}
     if name.startswith("mcp_"):
-        parts = name.split("_", 2)
-        if len(parts) >= 3:
-            tool = f"{parts[1]}.{parts[2]}"
-        else:
-            tool = name[4:]
+        tool = _parse_mcp_wire_name(name)
         return from_wire("call_mcp", args, tool_call_id=tool_call_id, tool=tool)
     if name in VALID_ACTION_KINDS:
         return from_wire(name, args, tool_call_id=tool_call_id)
@@ -1669,7 +1685,7 @@ Rules:
 """
 
 
-PLAN_SYSTEM_SUFFIX = """PLAN MODE: Do NOT call run_implement, run_parallel, write_file, edit_file, or run_command. Investigate read-only if needed (read_file, search_codegraph, query_wiki, list_dir, web_search), then output a clear, actionable, numbered implementation PLAN in markdown: goal restatement, the concrete steps (each with what/where/why), files likely touched, risks, and a suggested verification. End with a one-line summary. The user will review the plan before any execution."""
+PLAN_SYSTEM_SUFFIX = """PLAN MODE: Do NOT call run_implement, run_parallel, write_file, edit_file, run_command, call_mcp, or manage_mcp. Investigate read-only if needed (read_file, search_codegraph, query_wiki, list_dir, web_search), then output a clear, actionable, numbered implementation PLAN in markdown: goal restatement, the concrete steps (each with what/where/why), files likely touched, risks, and a suggested verification. End with a one-line summary. The user will review the plan before any execution."""
 
 
 WORKER_SYSTEM = """You are an implementation worker. Be FAST and DECISIVE. Your job is to EDIT FILES to complete the task, not to investigate. Read ONLY the specific file(s) you must change (read_file once per file), then make the edit immediately with edit_file, then FINISH. To change an existing file, ALWAYS use edit_file with a small old_str/new_str snippet -- do NOT use write_file to rewrite an existing file (that wastes tokens and can truncate). Use write_file ONLY to create a brand-new file. Do NOT explore the wider codebase. Do NOT call search_codegraph (this workspace has no code index; it returns nothing and wastes time). Do NOT re-read a file you already read. Ideal small change = read target file once, edit the change, done. As soon as all required edits are made, STOP. Do not do extra investigation rounds.

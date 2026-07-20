@@ -28,8 +28,8 @@ def test_cli_history_and_edit(tmp_path, capsys):
     ])
     assert rc == 0
     out_add = capsys.readouterr().out
-    assert "next fires (local time)" in out_add
-    assert " local" in out_add
+    assert "next fires (host-local)" in out_add
+    assert " host-local" in out_add
     store = ScheduleStore(db)
     sid = store.list()[0].id
 
@@ -41,7 +41,7 @@ def test_cli_history_and_edit(tmp_path, capsys):
     ])
     assert rc == 0
     out_edit = capsys.readouterr().out
-    assert "next fires (local time)" in out_edit
+    assert "next fires (host-local)" in out_edit
     got = store.get(sid)
     assert got.name == "nightly2"
     assert got.cron == "0 3 * * *"
@@ -66,6 +66,8 @@ def test_cli_help_documents_host_local_cron(capsys):
     out = capsys.readouterr().out.lower()
     assert "host-local" in out
     assert "at-least-once" in out
+    assert "iana" in out and "deferred" in out
+    assert "--timezone" not in out
 
 
 def test_cli_run_now_exit_nonzero_for_non_ok(tmp_path, monkeypatch):

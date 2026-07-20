@@ -346,6 +346,40 @@ export type Hook = {
   enabled: boolean;
 };
 
+export type ScheduleInfo = {
+  id: string;
+  name: string;
+  objective: string;
+  cron: string;
+  repo?: string;
+  swarm_adapter?: string;
+  driver?: string;
+  enabled: boolean;
+  timezone?: string;
+  /** Control plane is host-local; IANA per-schedule zones are deferred. */
+  timezone_mode?: "host_local" | string;
+  display_status?: string;
+  last_status?: string;
+  last_run_at?: number;
+  last_fire_at?: number;
+  next_fires?: string[];
+  max_tokens?: number;
+  max_seconds?: number;
+  max_swarms?: number;
+};
+
+export type ScheduleRun = {
+  id: string;
+  schedule_id?: string;
+  status: string;
+  halt_reason?: string;
+  started_at?: number;
+  ended_at?: number;
+  cycles?: number;
+  tokens_used?: number;
+  swarms_used?: number;
+};
+
 export type ProviderInfo = {
   name: string;
   display_name?: string;
@@ -1086,6 +1120,31 @@ export const api = {
   addHook: (event: string, command: string) => postJSON<Hook>("/api/hooks/add", { event, command }),
   updateHook: (id: string, patch: { enabled?: boolean; command?: string }) => postJSON<Hook>("/api/hooks/update", { id, ...patch }),
   removeHook: (id: string) => postJSON<{ ok: boolean }>("/api/hooks/remove", { id }),
+
+  getSchedules: () => getJSON<{ schedules: ScheduleInfo[] }>("/api/schedules"),
+  addSchedule: (body: {
+    name: string;
+    objective: string;
+    cron: string;
+    repo?: string;
+    swarm_adapter?: string;
+    driver?: string;
+    max_tokens?: number;
+    max_seconds?: number;
+    max_swarms?: number;
+  }) => postJSON<ScheduleInfo>("/api/schedules/add", body),
+  updateSchedule: (id: string, patch: Partial<ScheduleInfo>) =>
+    postJSON<ScheduleInfo>("/api/schedules/update", { id, ...patch }),
+  enableSchedule: (id: string) => postJSON<ScheduleInfo>("/api/schedules/enable", { id }),
+  disableSchedule: (id: string) => postJSON<ScheduleInfo>("/api/schedules/disable", { id }),
+  removeSchedule: (id: string) =>
+    postJSON<{ ok: boolean; outcome?: string }>("/api/schedules/remove", { id }),
+  runScheduleNow: (id: string) =>
+    postJSON<{ ok: boolean; run: ScheduleRun }>("/api/schedules/run-now", { id }),
+  getScheduleHistory: (id: string, limit = 50) =>
+    getJSON<{ id: string; runs: ScheduleRun[] }>(
+      `/api/schedules/history?id=${encodeURIComponent(id)}&limit=${limit}`,
+    ),
 
   getCodegraph: () => getJSON<CodegraphStatus>("/api/codegraph"),
   reindexCodegraph: () => postJSON<{ ok: boolean; status: string }>("/api/codegraph/reindex", {}),

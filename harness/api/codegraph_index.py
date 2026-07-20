@@ -271,11 +271,20 @@ def index_codegraph_bg(repo_path: str):
             log_f = open(log_path, "a", encoding="utf-8", errors="replace")
             log_f.write(f"\n--- codegraph init --index @ {repo_path} ---\n")
             log_f.flush()
+            popen_kwargs: dict = {
+                "cwd": repo_path,
+                "stdout": log_f,
+                "stderr": subprocess.STDOUT,
+            }
+            if os.name == "nt":
+                # Explicit CREATE_NO_WINDOW in addition to win_console's
+                # process-wide Popen default (defense-in-depth).
+                popen_kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NO_WINDOW", 0
+                )
             proc = subprocess.Popen(
                 deps.puppetmaster_cmd("codegraph", "init", "--index"),
-                cwd=repo_path,
-                stdout=log_f,
-                stderr=subprocess.STDOUT,
+                **popen_kwargs,
             )
             codegraph_index_proc = (repo_path, proc)
             try:

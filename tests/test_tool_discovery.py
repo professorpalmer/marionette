@@ -61,7 +61,7 @@ def test_core_tools_always_visible():
     names = {t["function"]["name"] for t in schema}
     for core in CORE_PILOT:
         assert core in names
-    assert "mcp_github_create_issue" not in names
+    assert "mcp_github__create_issue" not in names
 
 
 def test_hidden_mcp_visible_after_activation():
@@ -71,7 +71,7 @@ def test_hidden_mcp_visible_after_activation():
     catalog.activate(["github.create_issue"])
     schema = catalog.visible_schema(mcp_tools=mcp)
     names = {t["function"]["name"] for t in schema}
-    assert "mcp_github_create_issue" in names
+    assert "mcp_github__create_issue" in names
 
 
 def test_worker_core_excludes_delegation():
@@ -120,7 +120,7 @@ def test_discovery_disabled_exposes_all_tools(monkeypatch):
     catalog.refresh(mcp_tools=mcp)
     schema = catalog.visible_schema(mcp_tools=mcp)
     names = {t["function"]["name"] for t in schema}
-    assert "mcp_github_create_issue" in names
+    assert "mcp_github__create_issue" in names
     assert "run_swarm" in names
     assert "search_tools" not in names
 

@@ -142,6 +142,9 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
   // longer than the 10s cadence. Skipping an overlapping poll keeps the status
   // bar from adding to the request pileup that made panels load in chunks.
   const usageInFlight = useRef(false);
+  // After a session/project switch, accept the next meters even if zero so a
+  // prior chat's totals cannot stick via the zeros-guard.
+  const acceptZeroUsageRef = useRef(false);
   const fetchUsage = () => {
     if (usageInFlight.current) return;
     usageInFlight.current = true;
@@ -151,13 +154,18 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
           // Belt-and-suspenders: a workspace switch rebuilds the pilot and can
           // briefly report all-zero meters before the copy lands (or if an older
           // backend omits the carry). Keep last-good spend rather than blanking
-          // the status-bar cluster on a zeros response.
+          // the status-bar cluster on a zeros response — but never across
+          // session boundaries (see harness-session-changed).
           setUsage((prev) => {
             const next = data.session;
             const nextZero =
               (next.tokens_used ?? 0) === 0 && (next.est_cost_usd ?? 0) === 0;
             const prevHadSpend =
               !!prev && ((prev.tokens_used ?? 0) > 0 || (prev.est_cost_usd ?? 0) > 0);
+            if (acceptZeroUsageRef.current) {
+              acceptZeroUsageRef.current = false;
+              return next;
+            }
             if (nextZero && prevHadSpend) return prev;
             return next;
           });
@@ -191,16 +199,23 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     fetchUsage();
     const interval = setInterval(fetchUsage, usageBusy ? 2000 : 10000);
     const onRefresh = () => fetchUsage();
+    const onSessionChanged = () => {
+      acceptZeroUsageRef.current = true;
+      setUsage(null);
+      fetchUsage();
+    };
     window.addEventListener("harness-config-changed", onRefresh);
     window.addEventListener("harness-project-selected", onRefresh);
     window.addEventListener("harness-new-session", onRefresh);
     window.addEventListener("harness-usage-refresh", onRefresh);
+    window.addEventListener("harness-session-changed", onSessionChanged);
     return () => {
       clearInterval(interval);
       window.removeEventListener("harness-config-changed", onRefresh);
       window.removeEventListener("harness-project-selected", onRefresh);
       window.removeEventListener("harness-new-session", onRefresh);
       window.removeEventListener("harness-usage-refresh", onRefresh);
+      window.removeEventListener("harness-session-changed", onSessionChanged);
     };
   }, [usageBusy]);
 

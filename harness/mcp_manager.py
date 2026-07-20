@@ -51,6 +51,30 @@ def _expand(server: dict) -> dict:
     return out
 
 
+_REDACTED = "REDACTED"
+
+
+def redact_mcp_secrets(value):
+    """Return a deep copy of *value* with env/headers secret values redacted.
+
+    Used for manage_mcp transcripts and any config dump that must not echo
+    tokens from mcp.json into the chat history.
+    """
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key in ("env", "headers") and isinstance(item, dict):
+                out[key] = {k: _REDACTED for k in item}
+            elif key in ("env", "headers") and item:
+                out[key] = _REDACTED
+            else:
+                out[key] = redact_mcp_secrets(item)
+        return out
+    if isinstance(value, list):
+        return [redact_mcp_secrets(item) for item in value]
+    return value
+
+
 class McpManager:
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = Path(config_path) if config_path else CONFIG_PATH
@@ -102,6 +126,12 @@ class McpManager:
 
     # ---- lifecycle ----------------------------------------------------------
     def start_server(self, name: str, server: Optional[dict] = None) -> List[McpTool]:
+        """Start one MCP server.
+
+        The manager lock only covers map mutations (clients/tools/errors).
+        ``client.start()`` / ``list_tools()`` run outside the lock so stop /
+        call / status are not head-of-line blocked on a slow handshake.
+        """
         with self._lock:
             existing = self._clients.get(name)
             if existing is not None and existing.alive:
@@ -117,37 +147,41 @@ class McpManager:
                 for q in [q for q, t in self._tools.items() if t.server == name]:
                     del self._tools[q]
             cfg = _expand(server or self.load_config().get(name, {}))
-            if cfg.get("url"):
-                client = HttpMcpClient(name=name, url=cfg["url"], headers=cfg.get("headers"))
-            elif cfg.get("command"):
-                client = StdioMcpClient(
-                    name=name, command=cfg["command"], args=cfg.get("args"),
-                    env=cfg.get("env"), cwd=cfg.get("cwd"))
-            else:
-                raise McpError(f"MCP server '{name}' needs a 'command' (stdio) or 'url' (http)")
-            try:
-                client.start()
-                tools = client.list_tools()
-            except McpError as e:
+
+        if cfg.get("url"):
+            client = HttpMcpClient(name=name, url=cfg["url"], headers=cfg.get("headers"))
+        elif cfg.get("command"):
+            client = StdioMcpClient(
+                name=name, command=cfg["command"], args=cfg.get("args"),
+                env=cfg.get("env"), cwd=cfg.get("cwd"))
+        else:
+            raise McpError(f"MCP server '{name}' needs a 'command' (stdio) or 'url' (http)")
+        try:
+            client.start()
+            tools = client.list_tools()
+        except McpError as e:
+            with self._lock:
                 self._errors[name] = str(e)
-                try:
-                    client.stop()
-                except Exception:
-                    pass
-                raise
+            try:
+                client.stop()
+            except Exception:
+                pass
+            raise
+        with self._lock:
             self._clients[name] = client
             self._errors.pop(name, None)
             for t in tools:
                 self._tools[t.qualified] = t
-            return tools
+            return list(tools)
 
     def stop_server(self, name: str) -> None:
-        c = self._clients.pop(name, None)
+        with self._lock:
+            c = self._clients.pop(name, None)
+            for q in [q for q, t in self._tools.items() if t.server == name]:
+                del self._tools[q]
+            self._errors.pop(name, None)
         if c:
             c.stop()
-        for q in [q for q, t in self._tools.items() if t.server == name]:
-            del self._tools[q]
-        self._errors.pop(name, None)
 
     def refresh_server(self, name: str) -> List[McpTool]:
         """Force reconnect: stop (clear client/tools/error) then start again.

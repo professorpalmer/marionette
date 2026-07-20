@@ -13,7 +13,11 @@ from harness.schedule_core import (
     Schedule,
     due_fire_at,
     fire_at_timestamp,
+    floor_minute,
+    next_real_fire_after,
     status_from_halt_reason,
+    timezone_mode,
+    validate_timezone,
 )
 
 
@@ -254,3 +258,104 @@ def test_status_from_halt_reason_rejects_objective_met_substring(reason):
 def test_display_status_invalid_cron():
     s = Schedule(id="a", name="n", objective="o", cron="not a cron")
     assert s.display_status() == "invalid_cron"
+
+
+def test_validate_timezone_empty_only_iana_deferred():
+    assert validate_timezone("") == ""
+    assert validate_timezone("   ") == ""
+    with pytest.raises(ValueError, match="IANA"):
+        validate_timezone("America/New_York")
+    with pytest.raises(ValueError, match="IANA"):
+        validate_timezone("UTC")
+
+
+def test_timezone_mode_always_host_local():
+    s = Schedule(id="a", name="n", objective="o", cron="* * * * *")
+    assert timezone_mode(s) == "host_local"
+    # Stale non-empty column values are ignored for mode (IANA deferred).
+    s.timezone = "UTC"
+    assert timezone_mode(s) == "host_local"
+
+
+def test_fire_at_timestamp_round_trip():
+    """Host-local fire identity survives epoch round-trip (naive wall)."""
+    wall = _dt(2024, 6, 1, 9, 30)
+    ts = fire_at_timestamp(wall)
+    assert floor_minute(datetime.fromtimestamp(ts)) == wall
+    assert fire_at_timestamp(wall.replace(second=45)) == ts
+
+
+def test_host_local_round_trip_and_due_fire():
+    """Empty timezone keeps naive host-local due/fire identity semantics."""
+    s = Schedule(id="a", name="n", objective="o", cron="30 9 * * *", timezone="")
+    now = _dt(2024, 6, 1, 9, 30)
+    fire = due_fire_at(s, now)
+    assert fire == now
+    assert fire.tzinfo is None
+    s.last_fire_at = fire_at_timestamp(fire)
+    assert due_fire_at(s, now.replace(second=45)) is None
+
+
+def _host_spring_gap_skips_0230() -> bool:
+    """True when host local TZ treats 2024-03-10 02:30 as a DST gap."""
+    wall = _dt(2024, 3, 10, 2, 30)
+    try:
+        return floor_minute(datetime.fromtimestamp(wall.timestamp())) != wall
+    except (OSError, OverflowError, ValueError):
+        return True
+
+
+def test_host_local_spring_forward_skips_nonexistent_minute():
+    """Spring-forward: cron ``30 2 * * *`` skips a non-existent 02:30 wall.
+
+    Uses host OS epoch round-trip (no ZoneInfo / IANA). On TZ without a US
+    spring gap (e.g. UTC), 02:30 remains a real minute and is matched.
+    """
+    cron = CronExpr.parse("30 2 * * *")
+    before = _dt(2024, 3, 10, 1, 59)
+    nxt = next_real_fire_after(cron, before)
+    if _host_spring_gap_skips_0230():
+        assert nxt == _dt(2024, 3, 11, 2, 30)
+        s = Schedule(
+            id="a", name="n", objective="o", cron="30 2 * * *", timezone="",
+            last_fire_at=fire_at_timestamp(_dt(2024, 3, 9, 2, 30)),
+        )
+        # Gap minute is not due; next real fire is the following day.
+        assert due_fire_at(s, _dt(2024, 3, 10, 2, 30)) is None
+        assert due_fire_at(s, _dt(2024, 3, 11, 2, 30)) == _dt(2024, 3, 11, 2, 30)
+        s.last_fire_at = fire_at_timestamp(_dt(2024, 3, 11, 2, 30))
+        assert due_fire_at(s, _dt(2024, 3, 11, 2, 45)) is None
+    else:
+        assert nxt == _dt(2024, 3, 10, 2, 30)
+        s = Schedule(
+            id="a", name="n", objective="o", cron="30 2 * * *", timezone="",
+            last_fire_at=fire_at_timestamp(_dt(2024, 3, 9, 2, 30)),
+        )
+        assert due_fire_at(s, _dt(2024, 3, 10, 2, 30)) == _dt(2024, 3, 10, 2, 30)
+        s.last_fire_at = fire_at_timestamp(_dt(2024, 3, 10, 2, 30))
+        assert due_fire_at(s, _dt(2024, 3, 10, 2, 45)) is None
+
+
+def test_host_local_fall_back_fires_once_minute_identity():
+    """Fall-back: repeated local minute fires at most once (epoch identity)."""
+    s = Schedule(id="a", name="n", objective="o", cron="30 1 * * *", timezone="")
+    wall = _dt(2024, 11, 3, 1, 30)
+    fire = due_fire_at(s, wall)
+    assert fire == wall
+    s.last_fire_at = fire_at_timestamp(fire)
+    # Same wall minute again (second fall-back occurrence / later tick).
+    assert due_fire_at(s, wall.replace(second=59)) is None
+    assert next_real_fire_after(
+        CronExpr.parse(s.cron), wall,
+    ) == _dt(2024, 11, 4, 1, 30)
+
+
+def test_schedule_timezone_column_roundtrip_empty():
+    """Timezone column persists empty; mode stays host_local (IANA deferred)."""
+    s = Schedule(
+        id="abc", name="z", objective="o", cron="0 0 * * *",
+        timezone="",
+    )
+    back = Schedule.from_row(s.to_row())
+    assert back.timezone == ""
+    assert timezone_mode(back) == "host_local"

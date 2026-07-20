@@ -125,13 +125,24 @@ class StdioMcpClient:
             resolved = _shutil.which(command, path=full_env.get("PATH") or os.environ.get("PATH"))
             if resolved:
                 command = resolved
+        popen_kwargs: dict = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "env": full_env,
+            "cwd": self.cwd,
+            "text": True,
+            "bufsize": 1,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
+        if os.name == "nt":
+            # Defense-in-depth alongside harness.win_console's process-wide
+            # Popen patch. CREATE_NO_WINDOW does not reach Node→MCP grandchildren
+            # spawned by Cursor Agent — that remains an upstream fix.
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
-            self._proc = subprocess.Popen(
-                [command, *self.args],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, env=full_env, cwd=self.cwd,
-                text=True, bufsize=1,
-             encoding="utf-8", errors="replace")
+            self._proc = subprocess.Popen([command, *self.args], **popen_kwargs)
         except FileNotFoundError as e:
             raise McpError(f"MCP server '{self.name}': command not found: {self.command} ({e})")
         # Drain stderr on a background thread so a chatty server cannot fill the OS
