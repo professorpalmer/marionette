@@ -19,11 +19,23 @@ Two design rules make this safe and testable:
      ConversationalSession and AutoBudget -- no network or Puppetmaster is
      touched here beyond what run_auto itself does.
 
+Claim lease / at-least-once delivery:
+  Claims are fenced in ScheduleStore (try_claim / renew_claim / complete_claim).
+  A background lease heartbeat renews the claim while run_auto is blocked on a
+  provider or tool call, so a long stall does not hand the schedule to a
+  successor mid-flight. If ownership is still lost (process crash, expired
+  lease before heartbeat, forced recovery), the superseded worker detects
+  renew/complete failure and must not rewrite durable state — but side effects
+  already performed by that worker (tool calls, writes) are at-least-once.
+  Successor fencing remains intact: a late complete_claim from a superseded
+  owner is a no-op.
+
 This subsystem is CLI-daemon-only: there is no HTTP/UI/SSE schedule surface.
 """
 
 import os
 import tempfile
+import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -38,6 +50,83 @@ from .schedule_core import (
     status_from_halt_reason,
 )
 from .schedule_store import ScheduleStore, claim_lease_seconds
+
+# Heartbeat wakes often enough to renew before lease expiry, but is capped so
+# a multi-hour ceiling does not create a once-per-hour renew cadence that
+# leaves a long blocked tool call unprotected near the end of the lease.
+_HEARTBEAT_INTERVAL_MIN = 1.0
+_HEARTBEAT_INTERVAL_CAP = 60.0
+
+
+def _heartbeat_interval(lease_seconds: int) -> float:
+    """Bounded renew cadence: lease/3, clamped to [1s, 60s]."""
+    third = max(1, int(lease_seconds)) / 3.0
+    return max(_HEARTBEAT_INTERVAL_MIN, min(third, _HEARTBEAT_INTERVAL_CAP))
+
+
+class _ClaimLeaseHeartbeat:
+    """Independent renew loop so blocked provider/tool calls still extend lease.
+
+    Cooperative: when renew_claim returns False the loop stops and
+    ``ownership_lost`` becomes True. stop() joins the worker briefly.
+    """
+
+    def __init__(
+        self,
+        store: ScheduleStore,
+        schedule_id: str,
+        run_id: str,
+        lease_seconds: int,
+        interval: Optional[float] = None,
+    ) -> None:
+        self._store = store
+        self._schedule_id = schedule_id
+        self._run_id = run_id
+        self._lease_seconds = max(1, int(lease_seconds))
+        self._interval = (
+            float(interval) if interval is not None
+            else _heartbeat_interval(self._lease_seconds)
+        )
+        self._stop = threading.Event()
+        self._ownership_lost = False
+        self._thread: Optional[threading.Thread] = None
+
+    @property
+    def ownership_lost(self) -> bool:
+        return self._ownership_lost
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._loop,
+            name=f"schedule-lease-{self._schedule_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _loop(self) -> None:
+        # Wait first so a fast run does not pay an immediate renew round-trip.
+        while not self._stop.wait(self._interval):
+            try:
+                ok = self._store.renew_claim(
+                    self._schedule_id, self._run_id, self._lease_seconds,
+                )
+            except Exception:
+                # Transient store errors: retry on the next tick rather than
+                # declaring ownership lost (complete_claim is the hard fence).
+                continue
+            if not ok:
+                self._ownership_lost = True
+                return
+
+    def stop(self) -> bool:
+        """Stop the loop; return True when a renew observed ownership loss."""
+        self._stop.set()
+        t = self._thread
+        if t is not None and t.is_alive():
+            t.join(timeout=min(2.0, self._interval + 0.5))
+        return self._ownership_lost
 
 
 class Notifier(ABC):
@@ -314,6 +403,7 @@ def _run_one(
         active_schedule_holder["schedule_id"] = schedule.id
         active_schedule_holder["run_id"] = run_id
 
+    heartbeat: Optional[_ClaimLeaseHeartbeat] = None
     try:
         # Workspace safety before any session work.
         repo = resolve_schedule_repo(schedule)
@@ -354,15 +444,33 @@ def _run_one(
         cancel_invoked = False
         ownership_lost = False
 
+        # Renew while blocked inside next()/provider/tool — not only between
+        # streamed events. Interval is bounded; disable only in tests via
+        # heartbeat_interval=0 on the private helper (see tests).
+        heartbeat = _ClaimLeaseHeartbeat(
+            store, schedule.id, run_id, lease_seconds,
+        )
+        heartbeat.start()
+
         try:
             session = session_factory(schedule)
             budget = budget_factory(schedule)
             last_snapshot: dict = {}
             # Explicit iterator so cancel is observed before advancing for the
-            # first/next event. A provider call already blocked inside next()
-            # remains a cooperative checkpoint gap until that call returns.
+            # first/next event. Heartbeat covers the blocked-next() gap.
             events = iter(session.run_auto(schedule.objective, budget))
             while True:
+                if heartbeat.ownership_lost:
+                    ownership_lost = True
+                    if not cancel_invoked:
+                        cancel_invoked = True
+                        cancel = getattr(session, "cancel", None)
+                        if callable(cancel):
+                            try:
+                                cancel()
+                            except Exception:
+                                pass
+                    break
                 if store.cancel_requested(schedule.id) and not cancel_invoked:
                     cancel_invoked = True
                     cancel = getattr(session, "cancel", None)
@@ -389,8 +497,8 @@ def _run_one(
                     if snap:
                         last_snapshot = snap
 
-                # Cooperative lease renew between events (does not interrupt
-                # a blocked provider call inside the current event).
+                # Cooperative lease renew between events (defense in depth
+                # alongside the heartbeat thread).
                 if not store.renew_claim(schedule.id, run_id, lease_seconds):
                     ownership_lost = True
                     if not cancel_invoked:
@@ -405,6 +513,8 @@ def _run_one(
 
             tokens_used = int(last_snapshot.get("tokens_used", 0) or 0)
             swarms_used = int(last_snapshot.get("swarms_used", 0) or 0)
+            if heartbeat.ownership_lost:
+                ownership_lost = True
             if ownership_lost:
                 status = "superseded"
                 halt_reason = "ownership_lost"
@@ -460,6 +570,11 @@ def _run_one(
             pass
         return run
     finally:
+        if heartbeat is not None:
+            try:
+                heartbeat.stop()
+            except Exception:
+                pass
         # Always drop the daemon's in-memory active holder; never touch the
         # durable claim here (KeyboardInterrupt must leave it visible).
         if active_schedule_holder is not None:

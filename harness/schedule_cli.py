@@ -17,6 +17,13 @@ ScheduleStore and scheduler daemon. It mirrors the manual-dispatch + ANSI _c
 style of cli.py. Cron expressions are validated at `add`/`edit` time (parsed
 and the next three fire times printed); an invalid expression exits 1.
 
+Cron times are host-local naive datetimes (no per-schedule IANA zone). Next-fire
+previews are labeled as local time. DST spring-forward skips non-existent local
+minutes; fall-back fires a repeated minute at most once; missed windows coalesce
+to a single catch-up run. Delivery is at-least-once: a superseded worker that
+already performed tool side effects cannot rewrite durable claim/run state, but
+those side effects are not rolled back.
+
 CLI-daemon-only: there is no HTTP, UI, or SSE surface for schedules yet.
 Unattended dispatch is owned by this CLI and the local daemon process.
 """
@@ -87,9 +94,9 @@ def _cmd_add(args) -> int:
     )
     store.add(sched)
     print(_c("32", f"added schedule {sched.id} ({sched.name})"))
-    print("next fires:")
+    print("next fires (local time):")
     for dt in _next_fires(cron):
-        print(f"  {dt.isoformat(sep=' ', timespec='minutes')}")
+        print(f"  {dt.isoformat(sep=' ', timespec='minutes')} local")
     return 0
 
 
@@ -154,9 +161,9 @@ def _cmd_edit(args) -> int:
     print(_c("32", f"updated {updated.id} ({updated.name})"))
     if args.cron is not None:
         cron = CronExpr.parse(updated.cron)
-        print("next fires:")
+        print("next fires (local time):")
         for dt in _next_fires(cron):
-            print(f"  {dt.isoformat(sep=' ', timespec='minutes')}")
+            print(f"  {dt.isoformat(sep=' ', timespec='minutes')} local")
     return 0
 
 
@@ -254,7 +261,8 @@ def _run_schedule(argv) -> int:
         prog="harness schedule",
         description=(
             "Manage scheduled unattended objectives (CLI + local daemon only; "
-            "no HTTP/UI/SSE surface)."
+            "no HTTP/UI/SSE surface). Cron uses host-local time (no IANA zone); "
+            "missed fires coalesce; delivery is at-least-once under lease recovery."
         ),
     )
     ap.add_argument("--db", default=None, help="schedule store path (tests/override)")
@@ -262,7 +270,14 @@ def _run_schedule(argv) -> int:
 
     p_add = sub.add_parser("add", help="add a schedule")
     p_add.add_argument("--name", required=True)
-    p_add.add_argument("--cron", required=True, help="5-field cron expression")
+    p_add.add_argument(
+        "--cron",
+        required=True,
+        help=(
+            "5-field cron in host-local time (minute hour dom month dow); "
+            "DST/catch-up use naive local minutes — see module docstring"
+        ),
+    )
     p_add.add_argument("--objective", required=True)
     p_add.add_argument("--repo", default=None)
     p_add.add_argument("--driver", default=None)

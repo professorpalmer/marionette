@@ -584,6 +584,8 @@ def test_stale_owner_complete_through_run_one_is_superseded(tmp_path):
     assert live and live.claim_owner
     old_run = live.claim_run_id
     # Expire lease and let a successor claim while the original is still running.
+    # Heartbeat interval defaults to <=60s, so a sub-second expire+claim window
+    # still reproduces ownership loss before the next heartbeat tick.
     with store._lock:
         store._conn.execute(
             "UPDATE schedules SET claim_lease_until = ? WHERE id = ?",
@@ -615,6 +617,144 @@ def test_stale_owner_complete_through_run_one_is_superseded(tmp_path):
     assert after.last_status == "running"
     old_row = [r for r in store.list_runs(s.id) if r["id"] == old_run][0]
     assert old_row["status"] == "interrupted"
+
+
+def test_lease_heartbeat_renews_during_blocked_provider(tmp_path, monkeypatch):
+    """Heartbeat keeps the claim fenced while run_auto blocks inside next()."""
+    import threading
+
+    import harness.scheduler as sched_mod
+    from harness.schedule_store import claim_lease_seconds as real_claim_lease
+
+    store = _store(tmp_path)
+    s = _add_due(store, tmp_path, "hb")
+    # Short lease + fast heartbeat so a blocked provider would expire without
+    # independent renewals; successor must still lose while the worker is live.
+    monkeypatch.setattr(sched_mod, "claim_lease_seconds", lambda max_seconds=0: 2)
+    monkeypatch.setattr(sched_mod, "_heartbeat_interval", lambda lease_seconds: 0.2)
+
+    release = threading.Event()
+    claimed = threading.Event()
+    lease_samples = []
+
+    class _BlockedSession(_FakeSession):
+        def run_auto(self, objective, budget=None, *, require_codegraph=True):
+            claimed.set()
+            # Block inside next() longer than the short lease without yielding.
+            release.wait(timeout=3.0)
+            yield _Event("auto_halt", {"reason": _OK_REASON, "snapshot": {
+                "tokens_used": 1, "swarms_used": 0}})
+
+    result = {}
+
+    def runner():
+        result["runs"] = run_due(
+            store, _now(), notifier=_CountingNotifier(),
+            session_factory=lambda sched: _BlockedSession(_OK_REASON, 1, 1, 0),
+            budget_factory=_budget_factory,
+        )
+
+    t = threading.Thread(target=runner)
+    t.start()
+    assert claimed.wait(timeout=2.0)
+    live = store.get(s.id)
+    assert live and live.claim_owner
+    old_run = live.claim_run_id
+    # Observe lease extending past the bare 2s ceiling while blocked.
+    deadline = time.time() + 2.5
+    while time.time() < deadline:
+        got = store.get(s.id)
+        if got:
+            lease_samples.append(got.claim_lease_until)
+        time.sleep(0.15)
+    assert max(lease_samples) > min(lease_samples)
+    # Successor cannot steal while heartbeat keeps the fence fresh.
+    assert store.try_claim(
+        s.id,
+        fire_at=fire_at_timestamp(_now()) + 120,
+        owner="intruder",
+        lease_seconds=real_claim_lease(0),
+    ) is None
+    release.set()
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert result["runs"] and result["runs"][0]["status"] == "ok"
+    assert store.get(s.id).claim_owner == ""
+    assert store.list_runs(s.id)[0]["id"] == old_run
+
+
+def test_blocked_worker_after_successor_cannot_corrupt_state(tmp_path, monkeypatch):
+    """Ownership-loss regression: late resume after successor claim is no-op."""
+    import threading
+
+    import harness.scheduler as sched_mod
+
+    store = _store(tmp_path)
+    s = _add_due(store, tmp_path, "late")
+
+    class _NoHeartbeat:
+        ownership_lost = False
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return False
+
+    # Disable heartbeat so a blocked worker can lose the lease on purpose.
+    monkeypatch.setattr(
+        sched_mod, "_ClaimLeaseHeartbeat", lambda *a, **k: _NoHeartbeat(),
+    )
+    release = threading.Event()
+    claimed = threading.Event()
+    notifier = _CountingNotifier()
+
+    class _BlockedSession(_FakeSession):
+        def run_auto(self, objective, budget=None, *, require_codegraph=True):
+            claimed.set()
+            release.wait(timeout=3.0)
+            yield _Event("auto_halt", {"reason": _OK_REASON, "snapshot": {
+                "tokens_used": 99, "swarms_used": 9}})
+
+    result = {}
+
+    def runner():
+        result["runs"] = run_due(
+            store, _now(), notifier=notifier,
+            session_factory=lambda sched: _BlockedSession(_OK_REASON, 1, 99, 9),
+            budget_factory=_budget_factory,
+        )
+
+    t = threading.Thread(target=runner)
+    t.start()
+    assert claimed.wait(timeout=2.0)
+    old_run = store.get(s.id).claim_run_id
+    with store._lock:
+        store._conn.execute(
+            "UPDATE schedules SET claim_lease_until = ? WHERE id = ?",
+            (time.time() - 1, s.id),
+        )
+        store._conn.commit()
+    nxt = store.try_claim(
+        s.id,
+        fire_at=fire_at_timestamp(_now()) + 999,
+        owner="successor",
+        lease_seconds=600,
+    )
+    assert nxt is not None
+    release.set()
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert result["runs"][0]["status"] == "superseded"
+    assert result["runs"][0]["halt_reason"] == "ownership_lost"
+    assert notifier.calls == []
+    after = store.get(s.id)
+    assert after.claim_owner == "successor"
+    assert after.claim_run_id == nxt["run_id"]
+    assert after.last_fire_at == 0.0 or after.last_status == "running"
+    old_row = [r for r in store.list_runs(s.id) if r["id"] == old_run][0]
+    assert old_row["status"] == "interrupted"
+    assert old_row["tokens_used"] == 0
 
 
 def test_complete_claim_false_on_refusal_returns_superseded(tmp_path):

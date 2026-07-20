@@ -27,6 +27,9 @@ def test_cli_history_and_edit(tmp_path, capsys):
         "--repo", repo,
     ])
     assert rc == 0
+    out_add = capsys.readouterr().out
+    assert "next fires (local time)" in out_add
+    assert " local" in out_add
     store = ScheduleStore(db)
     sid = store.list()[0].id
 
@@ -37,6 +40,8 @@ def test_cli_history_and_edit(tmp_path, capsys):
         "--max-tokens", "1000",
     ])
     assert rc == 0
+    out_edit = capsys.readouterr().out
+    assert "next fires (local time)" in out_edit
     got = store.get(sid)
     assert got.name == "nightly2"
     assert got.cron == "0 3 * * *"
@@ -51,6 +56,16 @@ def test_cli_history_and_edit(tmp_path, capsys):
 
     rc = _run_schedule(["--db", db, "run-history", sid])
     assert rc == 0
+
+
+def test_cli_help_documents_host_local_cron(capsys):
+    try:
+        _run_schedule(["--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    out = capsys.readouterr().out.lower()
+    assert "host-local" in out
+    assert "at-least-once" in out
 
 
 def test_cli_run_now_exit_nonzero_for_non_ok(tmp_path, monkeypatch):

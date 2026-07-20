@@ -11,6 +11,7 @@ import pytest
 from harness.schedule_core import Schedule
 from harness.schedule_store import (
     DEFAULT_LEASE_SECONDS,
+    DEFAULT_RUN_HISTORY_KEEP,
     REMOVE_CANCEL_REQUESTED,
     REMOVE_REMOVED,
     REMOVE_STALE_RECOVERED,
@@ -18,6 +19,7 @@ from harness.schedule_store import (
     _pytest_test_db_path,
     claim_lease_seconds,
     default_db_path,
+    run_history_keep,
 )
 
 
@@ -319,6 +321,118 @@ def test_transactional_completion(tmp_path):
     run = store.list_runs(s.id)[0]
     assert run["status"] == "ok"
     assert run["cycles"] == 2
+
+
+def test_run_history_keep_default_and_env(monkeypatch):
+    assert run_history_keep() == DEFAULT_RUN_HISTORY_KEEP
+    assert run_history_keep(5) == 5
+    assert run_history_keep(0) == 1  # floor
+    monkeypatch.setenv("HARNESS_SCHEDULE_RUN_HISTORY_KEEP", "7")
+    assert run_history_keep() == 7
+    monkeypatch.setenv("HARNESS_SCHEDULE_RUN_HISTORY_KEEP", "nope")
+    assert run_history_keep() == DEFAULT_RUN_HISTORY_KEEP
+
+
+def test_complete_claim_prunes_old_runs_keeps_recent(tmp_path):
+    store = ScheduleStore(str(tmp_path / "s.sqlite"))
+    s = store.add(_mk())
+    # Seed many finished runs, then complete one more via claim API.
+    for i in range(12):
+        store.record_run(
+            s.id, started_at=float(i), ended_at=float(i) + 0.5,
+            status="ok", halt_reason=f"old-{i}",
+        )
+    claim = store.try_claim(s.id, fire_at=100.0, owner="trim", lease_seconds=60)
+    assert claim is not None
+    assert store.complete_claim(
+        s.id, claim["run_id"],
+        status="ok", halt_reason="newest",
+        ended_at=200.0, fire_at=100.0,
+        history_keep=5,
+    )
+    runs = store.list_runs(s.id, limit=100)
+    assert len(runs) == 5
+    assert runs[0]["halt_reason"] == "newest"
+    assert all(r["status"] != "running" for r in runs)
+
+
+def test_prune_never_deletes_active_running_row(tmp_path):
+    store = ScheduleStore(str(tmp_path / "s.sqlite"))
+    s = store.add(_mk())
+    for i in range(8):
+        store.record_run(
+            s.id, started_at=float(i), ended_at=float(i) + 0.1, status="ok",
+        )
+    live = store.try_claim(s.id, fire_at=50.0, owner="live", lease_seconds=600)
+    assert live is not None
+    deleted = store.prune_runs(s.id, keep=3)
+    assert deleted >= 1
+    runs = store.list_runs(s.id, limit=100)
+    running = [r for r in runs if r["id"] == live["run_id"]]
+    assert running and running[0]["status"] == "running"
+    # Terminal rows capped; running retained beyond the keep budget.
+    terminal = [r for r in runs if r["status"] != "running"]
+    assert len(terminal) == 3
+    assert store.get(s.id).claim_run_id == live["run_id"]
+
+
+def test_concurrent_complete_claim_retention(tmp_path):
+    """Two completions racing prune must not drop the active/newer rows wrongly."""
+    path = str(tmp_path / "s.sqlite")
+    store = ScheduleStore(path)
+    s = store.add(_mk())
+    for i in range(20):
+        store.record_run(
+            s.id, started_at=float(i), ended_at=float(i) + 0.1, status="ok",
+        )
+    store.close()
+
+    results = []
+    barrier = threading.Barrier(2)
+
+    def worker(owner, fire):
+        st = ScheduleStore(path)
+        barrier.wait()
+        # Force-claim path: expire any prior lease then claim.
+        now = time.time()
+        with st._lock:
+            st._conn.execute(
+                "UPDATE schedules SET claim_lease_until = 0 WHERE id = ?",
+                (s.id,),
+            )
+            st._conn.commit()
+        claim = st.try_claim(
+            s.id, fire_at=fire, owner=owner, lease_seconds=30, now=now,
+        )
+        if claim is None:
+            results.append((owner, None, 0))
+            st.close()
+            return
+        ok = st.complete_claim(
+            s.id, claim["run_id"],
+            status="ok", halt_reason=owner,
+            ended_at=now + 1, fire_at=fire,
+            history_keep=10,
+        )
+        n = len(st.list_runs(s.id, limit=200))
+        results.append((owner, ok, n))
+        st.close()
+
+    t1 = threading.Thread(target=worker, args=("a", 1000.0))
+    t2 = threading.Thread(target=worker, args=("b", 2000.0))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # At least one completion succeeded; history never exceeds keep by much
+    # (running rows may briefly exist, but both workers complete).
+    assert any(ok for _, ok, _ in results if ok)
+    final = ScheduleStore(path)
+    runs = final.list_runs(s.id, limit=200)
+    assert len(runs) <= 10
+    assert all(r["status"] != "running" for r in runs)
+    final.close()
 
 
 def test_request_cancel_on_disable(tmp_path):

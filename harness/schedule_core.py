@@ -22,11 +22,22 @@ Supported per field: '*', comma lists (0,30), ranges (9-17), step on wildcard
 When BOTH day-of-month and day-of-week are restricted (neither is '*'), a
 minute matches if EITHER the DOM or the DOW matches -- the well-known Vixie
 cron OR-rule -- because that is what real crontabs expect.
+
+Timezone / DST (host-local, no IANA field):
+    All cron evaluation uses naive ``datetime`` values in the host's local
+    timezone (``datetime.now()`` / ``datetime.fromtimestamp``). There is no
+    per-schedule IANA zone. Across DST spring-forward, a fire minute that
+    does not exist is skipped (next_after lands on the next real local
+    minute that matches). Across fall-back, a repeated local minute fires
+    at most once per wall-clock tick because due_fire_at / last_fire_at use
+    a minute-stable identity. Missed windows coalesce to a single catch-up
+    fire (latest missed minute <= now), never one run per gap.
 """
 
+import calendar
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 # Field bounds as (low, high) inclusive, in cron field order.
@@ -40,8 +51,9 @@ _FIELD_BOUNDS = [
 _FIELD_NAMES = ["minute", "hour", "day-of-month", "month", "day-of-week"]
 
 # Cap next_after search so a pathological expression cannot loop forever.
-# 4 years of minutes comfortably covers a Feb-29-only schedule.
-_MAX_SEARCH_MINUTES = 4 * 366 * 24 * 60
+# With field jumping this bounds *candidate advances*, not wall-clock minutes.
+# 4 years of day-steps still covers a Feb-29-only schedule safely.
+_MAX_SEARCH_STEPS = 4 * 366 * 24 * 60
 
 
 def _parse_field(spec: str, low: int, high: int, name: str) -> frozenset:
@@ -162,20 +174,86 @@ class CronExpr:
             and self._day_matches(dt)
         )
 
+    def _next_allowed(self, sorted_vals: List[int], current: int) -> Optional[int]:
+        """Smallest value in sorted_vals strictly greater than current, else None."""
+        for v in sorted_vals:
+            if v > current:
+                return v
+        return None
+
+    def _jump_month(self, cur: datetime, months: List[int]) -> datetime:
+        """Advance to 00:00 on day 1 of the next allowed month (may cross years)."""
+        nxt_m = self._next_allowed(months, cur.month)
+        if nxt_m is not None:
+            return datetime(cur.year, nxt_m, 1, 0, 0)
+        return datetime(cur.year + 1, months[0], 1, 0, 0)
+
     def next_after(self, dt: datetime) -> datetime:
         """Next fire time strictly after dt, at minute resolution.
 
-        Search is capped at ~4 years; raise ValueError if nothing matches (which
-        should only happen for an impossible date like Feb 30).
+        Jumps across disallowed months/days/hours/minutes so rare expressions
+        (e.g. Feb 29 annually) stay cheap on the daemon hot path. Search is
+        capped at ~4 years of candidate advances; raise ValueError if nothing
+        matches (which should only happen for an impossible date like Feb 30).
         """
         # Round up to the next whole minute strictly after dt.
         cur = dt.replace(second=0, microsecond=0) + timedelta(minutes=1)
-        for _ in range(_MAX_SEARCH_MINUTES):
+        months = sorted(self.months)
+        hours = sorted(self.hours)
+        minutes = sorted(self.minutes)
+        if not months or not hours or not minutes:
+            raise ValueError(f"empty cron field set for {self.raw!r}")
+
+        for _ in range(_MAX_SEARCH_STEPS):
+            if cur.month not in self.months:
+                cur = self._jump_month(cur, months)
+                continue
+
+            # Invalid calendar day for this month (e.g. Apr 31) — skip day.
+            last_dom = calendar.monthrange(cur.year, cur.month)[1]
+            if cur.day > last_dom:
+                cur = (cur.replace(day=1, hour=0, minute=0)
+                       + timedelta(days=last_dom))
+                continue
+
+            if not self._day_matches(cur):
+                cur = (cur + timedelta(days=1)).replace(hour=0, minute=0)
+                continue
+
+            if cur.hour not in self.hours:
+                nxt_h = self._next_allowed(hours, cur.hour)
+                if nxt_h is None:
+                    # Next day at first allowed hour/minute.
+                    cur = (cur + timedelta(days=1)).replace(
+                        hour=hours[0], minute=minutes[0],
+                    )
+                else:
+                    cur = cur.replace(hour=nxt_h, minute=minutes[0])
+                continue
+
+            if cur.minute not in self.minutes:
+                nxt_mi = self._next_allowed(minutes, cur.minute)
+                if nxt_mi is None:
+                    # Roll to next allowed hour (or next day).
+                    nxt_h = self._next_allowed(hours, cur.hour)
+                    if nxt_h is None:
+                        cur = (cur + timedelta(days=1)).replace(
+                            hour=hours[0], minute=minutes[0],
+                        )
+                    else:
+                        cur = cur.replace(hour=nxt_h, minute=minutes[0])
+                else:
+                    cur = cur.replace(minute=nxt_mi)
+                continue
+
+            # Month/day/hour/minute all allowed — matches() is definitive.
             if self.matches(cur):
                 return cur
+            # Defensive: day OR-rule edge; advance one minute.
             cur += timedelta(minutes=1)
+
         raise ValueError(
-            f"no cron match within {_MAX_SEARCH_MINUTES // (24 * 60)} days "
+            f"no cron match within {_MAX_SEARCH_STEPS // (24 * 60)} days "
             f"for {self.raw!r}")
 
 
@@ -194,7 +272,7 @@ def _coalesce_latest_fire(cron: CronExpr, first: datetime, now_min: datetime) ->
     latest = first
     cur = first
     # Cap iterations to avoid pathological loops; now_min - first is enough.
-    for _ in range(_MAX_SEARCH_MINUTES):
+    for _ in range(_MAX_SEARCH_STEPS):
         try:
             nxt = cron.next_after(cur)
         except ValueError:

@@ -16,6 +16,13 @@ deterministic per-test directory under the OS temp dir — never Home.
 A one-time SQLite backup migrates a legacy ~/.harness/schedules.sqlite when the
 new default is absent (WAL-aware, atomic replace). Explicit constructor paths
 are never rewritten.
+
+Run history: ``list_runs`` returns at most ``limit`` rows for display, but
+``complete_claim`` also prunes older terminal rows down to
+``DEFAULT_RUN_HISTORY_KEEP`` (override via HARNESS_SCHEDULE_RUN_HISTORY_KEEP
+or ``history_keep=``). Active ``status='running'`` rows are never pruned.
+Claim fencing is at-least-once under lease recovery: a superseded owner's
+late complete_claim is a no-op, but prior side effects are not undone.
 """
 
 import hashlib
@@ -34,6 +41,24 @@ DEFAULT_LEASE_SECONDS = 3600
 # Headroom beyond an explicit run ceiling so a short max_seconds cannot shrink
 # the claim fence to the ceiling alone (cooperative renewals need room).
 LEASE_HEADROOM_SECONDS = 300
+
+# After a terminal completion, retain at most this many recent runs per
+# schedule (oldest terminal rows are pruned). Active ``running`` rows are
+# never deleted. Override with HARNESS_SCHEDULE_RUN_HISTORY_KEEP.
+DEFAULT_RUN_HISTORY_KEEP = 100
+
+
+def run_history_keep(override: Optional[int] = None) -> int:
+    """Resolve how many recent runs to retain per schedule after completion."""
+    if override is not None:
+        return max(1, int(override))
+    raw = (os.environ.get("HARNESS_SCHEDULE_RUN_HISTORY_KEEP") or "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return DEFAULT_RUN_HISTORY_KEEP
 
 
 def claim_lease_seconds(max_seconds: int = 0) -> int:
@@ -590,8 +615,10 @@ class ScheduleStore:
     ) -> bool:
         """Extend the claim lease when this run_id still owns the schedule.
 
-        Cooperative only: cannot interrupt a blocked provider call. Returns
-        False without mutation when the claim fence does not match.
+        Used by the scheduler's between-event renew and by the independent
+        lease heartbeat thread (so a blocked provider/tool call still extends
+        the fence). Returns False without mutation when the claim fence does
+        not match.
         """
         now_ts = time.time() if now is None else float(now)
         lease_until = now_ts + max(1, int(lease_seconds))
@@ -624,6 +651,62 @@ class ScheduleStore:
                     pass
                 raise
 
+    def _prune_runs_locked(
+        self, schedule_id: str, keep: int = DEFAULT_RUN_HISTORY_KEEP,
+    ) -> int:
+        """Delete oldest terminal runs beyond ``keep``; never drop ``running``.
+
+        Caller must hold ``_lock`` and be inside an open transaction.
+        Returns the number of deleted rows.
+        """
+        keep_n = max(1, int(keep))
+        rows = self._conn.execute(
+            """
+            SELECT id, status FROM schedule_runs
+            WHERE schedule_id = ?
+            ORDER BY started_at DESC, id DESC
+            """,
+            (schedule_id,),
+        ).fetchall()
+        retained = 0
+        delete_ids = []
+        for row in rows:
+            rid, status = str(row[0]), str(row[1] or "")
+            if status == "running":
+                # Active running rows are never pruned, and do not consume a
+                # retention slot (a successor may still be mid-flight).
+                continue
+            retained += 1
+            if retained > keep_n:
+                delete_ids.append(rid)
+        if not delete_ids:
+            return 0
+        self._conn.executemany(
+            "DELETE FROM schedule_runs WHERE id = ?",
+            [(rid,) for rid in delete_ids],
+        )
+        return len(delete_ids)
+
+    def prune_runs(
+        self,
+        schedule_id: str,
+        keep: Optional[int] = None,
+    ) -> int:
+        """Prune old terminal run rows for one schedule. Returns deleted count."""
+        keep_n = run_history_keep(keep)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                deleted = self._prune_runs_locked(schedule_id, keep=keep_n)
+                self._conn.execute("COMMIT")
+                return deleted
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+
     def complete_claim(
         self,
         schedule_id: str,
@@ -637,6 +720,7 @@ class ScheduleStore:
         ended_at: Optional[float] = None,
         fire_at: Optional[float] = None,
         advance_last_fire: bool = True,
+        history_keep: Optional[int] = None,
     ) -> bool:
         """Atomically finish a run, release the claim, and update last_*.
 
@@ -644,8 +728,13 @@ class ScheduleStore:
         ``run_id``. The run row is updated only when still ``status='running'``
         (rowcount must be 1). A stale owner completing late cannot rewrite an
         interrupted row, clear a successor claim, or advance last_fire_at.
+
+        On success, prunes older terminal run history down to
+        ``run_history_keep(history_keep)`` while never deleting a ``running``
+        row.
         """
         end_ts = time.time() if ended_at is None else float(ended_at)
+        keep_n = run_history_keep(history_keep)
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -713,6 +802,7 @@ class ScheduleStore:
                 if cur.rowcount != 1:
                     self._conn.execute("ROLLBACK")
                     return False
+                self._prune_runs_locked(schedule_id, keep=keep_n)
                 self._conn.execute("COMMIT")
                 return True
             except Exception:

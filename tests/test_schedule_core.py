@@ -3,6 +3,7 @@
 These lock down the fiddly cron edge cases (steps, ranges, DOM/DOW OR-rule,
 Sunday-as-0-or-7, rollovers) so the daemon can trust the time math.
 """
+import time
 from datetime import datetime
 
 import pytest
@@ -136,6 +137,24 @@ def test_next_after_leap_day():
     # Feb 29 exists in 2024 (leap); next after 2023 lands on 2024-02-29.
     c = CronExpr.parse("0 0 29 2 *")
     assert c.next_after(_dt(2023, 3, 1, 0, 0)) == _dt(2024, 2, 29, 0, 0)
+
+
+def test_next_after_rare_cron_jumps_within_tight_bound():
+    """Annual/leap schedules must not minute-scan the hot path (~4y)."""
+    c = CronExpr.parse("0 0 29 2 *")
+    # Just after 2024 leap day -> next real fire is 2028-02-29.
+    t0 = time.perf_counter()
+    got = c.next_after(_dt(2024, 3, 1, 0, 0))
+    elapsed = time.perf_counter() - t0
+    assert got == _dt(2028, 2, 29, 0, 0)
+    # Jumping months/days should finish well under a tight wall-time cap
+    # (minute-walking ~2M steps would be orders of magnitude slower).
+    assert elapsed < 0.05
+
+
+def test_next_after_rare_dom_month_from_midyear():
+    c = CronExpr.parse("30 4 1 1 *")  # Jan 1 04:30 annually
+    assert c.next_after(_dt(2024, 6, 15, 12, 0)) == _dt(2025, 1, 1, 4, 30)
 
 
 def test_next_after_strictly_after():
