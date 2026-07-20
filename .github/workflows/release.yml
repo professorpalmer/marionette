@@ -34,7 +34,7 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" "puppetmaster-ai==1.20.3"
+          pip install -e ".[dev]" "puppetmaster-ai==1.20.4"
 
       - name: Run the offline test suite
         run: python -m pytest -q -p no:cacheprovider
@@ -85,7 +85,7 @@ jobs:
           npm run dist -- --${{ matrix.platform }}
 
       # Stage installers as Actions artifacts. Do NOT call the Releases API from
-      # the matrix — three parallel softprops uploads race and flake hard when
+      # the matrix â€” three parallel softprops uploads race and flake hard when
       # GitHub returns HTML 503/unicorn pages for /releases.
       - name: Stage installer artifacts
         uses: actions/upload-artifact@v4
@@ -125,7 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          # Keep the finder free of escaped parens — Actions wraps this into a
+          # Keep the finder free of escaped parens â€” Actions wraps this into a
           # temp .sh and `find \( ... \)` has failed with syntax errors.
           mapfile -t ALL < <(find dist -type f | sort)
           FILTERED=()

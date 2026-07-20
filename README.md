@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.106, deliberately pre-1.0. Active project expands on boot, Swarm Tracker warms from activity polls, aborted compaction no longer sticks on Waiting on provider, and scheduled autonomy adds lease heartbeats, rare-cron jumps, and run-history retention.
+> Status: v0.9.107, deliberately pre-1.0. Cursor CLI/ACP turns promote thought-channel finales into assistant prose, keep Investigating visible during reasoning-only streams, and leapfrog late tool flushes so Explored no longer lands under the summary. Windows Terminal ConPTY rejects 0x0 FitAddon sizes instead of EXITED-blank; Cursor login no longer pops a blank console beside the browser. StatusBar tok/$ refreshes while busy and at turn boundaries. Schedules remain CLI-daemon host-local (IANA/UI deferred).
 
 ## Documentation
 
@@ -28,6 +28,7 @@ Start here, then follow the map:
 | [FINDINGS.md](FINDINGS.md) | Research-rig findings: which models can drive the harness. |
 | [NOTICE.md](NOTICE.md) | Third-party attributions. |
 | [docs/discord-mcp.md](docs/discord-mcp.md) | Optional recipe: wire a MIT Discord MCP (Docker + `manage_mcp`), not a first-party Discord product. |
+| [docs/LEGACY_FRONTEND.md](docs/LEGACY_FRONTEND.md) | Historical frontend notes (not the shipping Electron UI). |
 
 ## What it is
 
@@ -91,7 +92,7 @@ The cost thesis is measured, not asserted:
 |---|---|
 | **Provider-native pilot** | One driver, every OpenAI-compatible endpoint (OpenRouter or native). Frontier control models (Claude, GPT) and open-weights (GLM, DeepSeek, Kimi, Qwen, MiniMax) drive the same loop. |
 | **CodeGraph-first retrieval** | Per-turn structural context is auto-injected (symbols, defs, call sites) before the model acts, so it leans on the graph instead of dumping whole files. Self-healing: the index detects edits, additions, and deletions and refreshes in the background. |
-| **Puppetmaster delegation** | run_swarm (read-only analysis), run_implement (edit-capable worktree worker), run_parallel (concurrent waves). Heavy/multi-file work runs as durable, auditable jobs. Requires `puppetmaster-ai==1.20.3` (includes explicit model allowlists, bounded reroute, and verified Bedrock invoke health). |
+| **Puppetmaster delegation** | run_swarm (read-only analysis), run_implement (edit-capable worktree worker), run_parallel (concurrent waves). Heavy/multi-file work runs as durable, auditable jobs. Requires `puppetmaster-ai==1.20.4` (includes explicit model allowlists, bounded reroute, and verified Bedrock invoke health). |
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
 | **Honest token economics** | Prompt caching across Anthropic/OpenAI/Gemini with a stable + moving cache breakpoint, cost billed at the real cache-read discount, and the context meter driven by the driver's actual token usage -- so cost and context reflect reality and the status bar shows the dollars caching saved you. Savings-gated tool-output offload, absolute-token compaction advice, and optional per-turn output budgets (`+Nk` / `+Nk!`) cut waste without hiding results. |
@@ -251,7 +252,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_COMPACTION_ADVISOR` | Surface layer-pressure compaction advice in `/api/usage` (default on). |
 | `HARNESS_ADVISOR_COMPACTION` | Proactively run history compaction before the next turn once advice reaches level `now` (default on; set `0` to rely on the hard 75% trigger only). |
 
-Swarm job costs in the UI come from measured usage priced against `~/.puppetmaster/models.json`, then the live OpenRouter `/models` map (cached under `~/.pmharness/or_models_cache.json`), then the router pre-flight estimate. Bedrock agentic workers use the same usage ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ `price_job` / tracker path (including cache-read discount). No manual registry entry is required for OpenRouter-hosted models like `z-ai/glm-5.2`.
+Swarm job costs in the UI come from measured usage priced against ~/.puppetmaster/models.json, then the live OpenRouter /models map (cached under ~/.pmharness/or_models_cache.json), then the router pre-flight estimate. Bedrock agentic workers use the same usage -> price_job / tracker path (including cache-read discount). No manual registry entry is required for OpenRouter-hosted models like z-ai/glm-5.2.
 
 ## Conventions
 

@@ -46,14 +46,14 @@ jobs:
           # Floor matches the accounting/routing fixes this release needs.
           # Unpinned `puppetmaster-ai` + pip cache can leave CI on an older
           # wheel (e.g. 1.14.0) and fail fallback-pricing regressions.
-          pip install -e ".[dev]" "puppetmaster-ai==1.20.3"
+          pip install -e ".[dev]" "puppetmaster-ai==1.20.4"
 
       - name: Run the offline test suite
         run: python -m pytest -q -p no:cacheprovider
 
   # Wave 6: named offline gate for full-auto safety invariants. Does not replace
   # the matrix above (3.9/3.11 x OS + frontend stay required). Live-key /
-  # provider evals stay out — this selection is hermetic and marker-driven.
+  # provider evals stay out â€” this selection is hermetic and marker-driven.
   full-auto-safety:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -75,7 +75,7 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" "puppetmaster-ai==1.20.3"
+          pip install -e ".[dev]" "puppetmaster-ai==1.20.4"
 
       - name: Full-auto safety invariants (offline)
         run: python -m pytest -q -p no:cacheprovider -m full_auto_safety
