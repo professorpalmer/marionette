@@ -176,6 +176,32 @@ def test_get_mcp_uses_discovered_tools_alive_only():
     mcp.tools.assert_not_called()
 
 
+def test_status_tools_count_zero_when_client_dead_but_cached(tmp_path):
+    """Dead-but-not-stopped clients must not report cached tool rows as live."""
+    from harness.mcp_client import McpTool
+
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("zombie", {"command": "x", "args": []})
+
+    class DeadClient:
+        alive = False
+
+        def stop(self):
+            pass
+
+    m._clients["zombie"] = DeadClient()
+    m._tools["zombie.echo"] = McpTool(server="zombie", name="echo", description="stale")
+    m._tools["zombie.add"] = McpTool(server="zombie", name="add", description="stale")
+
+    st = next(s for s in m.status() if s["name"] == "zombie")
+    assert st["running"] is False
+    assert st["tools"] == 0
+    # Cache may still hold rows until stop/start; discovered_tools stays empty.
+    assert m.tools()  # raw cache still has the stale rows
+    assert m.discovered_tools() == []
+
+
 def test_start_server_does_not_hold_lock_across_handshake(tmp_path, monkeypatch):
     """Manager lock HOL: stop/status must proceed while start() handshake runs."""
     import threading

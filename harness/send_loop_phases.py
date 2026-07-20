@@ -49,11 +49,16 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
 
 # Mutating / side-effecting kinds blocked in plan mode (same gate as write/edit
 # and run_implement). Includes MCP call + manage so plan turns cannot mutate
-# external servers or invoke tools that may write.
+# external servers or invoke tools that may write. Browser_* is the MCP-sibling
+# peel: navigate/click/type/etc. are external side effects even when some
+# variants are observational (snapshot/screenshot still drive a live page).
 PLAN_SKIP_KINDS: frozenset[str] = frozenset({
     "run_implement", "run_parallel",
     "write_file", "edit_file", "hash_edit", "run_command",
     "call_mcp", "manage_mcp",
+    "browser_navigate", "browser_snapshot", "browser_click",
+    "browser_type", "browser_scroll", "browser_back",
+    "browser_get_text", "browser_screenshot",
 })
 
 
@@ -879,8 +884,8 @@ def dispatch_local_action(
     successful writes/edits.
 
     ``plan=True`` is a second gate for PLAN_SKIP_KINDS (call_mcp / manage_mcp /
-    write-edit / run_command) so a caller that forgets the actions-layer skip
-    still cannot mutate in plan mode.
+    browser_* / write-edit / run_command) so a caller that forgets the
+    actions-layer skip still cannot mutate or drive a live browser in plan mode.
     """
     import os
 
@@ -890,7 +895,9 @@ def dispatch_local_action(
     if act_goal is None:
         act_goal = action_display_goal(act)
 
-    if plan and act.kind in PLAN_SKIP_KINDS:
+    if plan and (
+        act.kind in PLAN_SKIP_KINDS or act.kind.startswith("browser_")
+    ):
         yield ConvEvent("action_result", {
             "id": aid,
             "kind": act.kind,

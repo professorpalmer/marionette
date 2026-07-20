@@ -9,6 +9,7 @@ import type {
 import type { AutoBudgetSnapshot } from "../../lib/autoReceipts";
 import {
   finalizeStreamingThinking,
+  hoistCardsBeforeTrailingFinals,
   newThinkingId,
 } from "./thinkingToolPrep";
 import {
@@ -71,7 +72,9 @@ export function sealOpenStreamSurfaces(items: Item[]): Item[] {
     }
     next.push(it);
   }
-  return changed ? next : withThinking;
+  // Sealing can turn a short stream into a final-looking answer that already
+  // has late Cursor tool cards after it — hoist so Explored stays above.
+  return hoistCardsBeforeTrailingFinals(changed ? next : withThinking);
 }
 
 export function swarmPendingStatus(item: SwarmPendingItem): SwarmPendingStatus {
@@ -764,18 +767,23 @@ export function finalizePilotMessage(
     const lastMsg = p[streamIdx] as Extract<Item, { kind: "msg" }>;
     const finalText = text || lastMsg.msg.text || "";
     if (!finalText.trim()) {
-      return [...p.slice(0, streamIdx), ...p.slice(streamIdx + 1)];
+      return hoistCardsBeforeTrailingFinals([
+        ...p.slice(0, streamIdx),
+        ...p.slice(streamIdx + 1),
+      ]);
     }
     const updatedItems = [...p];
     updatedItems[streamIdx] = {
       kind: "msg",
       msg: { ...lastMsg.msg, text: finalText, streaming: false },
     };
-    return deduplicateConsecutiveAssistantMessages(updatedItems);
+    return hoistCardsBeforeTrailingFinals(
+      deduplicateConsecutiveAssistantMessages(updatedItems),
+    );
   }
-  if (!text) return p;
+  if (!text) return hoistCardsBeforeTrailingFinals(p);
   const incoming = text.trim();
-  if (!incoming) return p;
+  if (!incoming) return hoistCardsBeforeTrailingFinals(p);
 
   // Idempotent finals: exact identity always no-ops. Streamed finals may only
   // extend a sealed bubble when nothing (card/tool/thinking/msg) follows it —
@@ -787,7 +795,7 @@ export function finalizePilotMessage(
     if (it.msg.streaming || it.msg.workerStream) continue;
     const prior = (it.msg.text || "").trim();
     if (!prior) continue;
-    if (prior === incoming) return p;
+    if (prior === incoming) return hoistCardsBeforeTrailingFinals(p);
 
     if (!opts?.streamed) continue;
     if (!(incoming.startsWith(prior) && incoming.length > prior.length)) continue;
@@ -812,16 +820,20 @@ export function finalizePilotMessage(
         isPlan: opts?.isPlan ?? it.msg.isPlan,
       },
     };
-    return deduplicateConsecutiveAssistantMessages(updated);
+    return hoistCardsBeforeTrailingFinals(
+      deduplicateConsecutiveAssistantMessages(updated),
+    );
   }
 
-  return deduplicateConsecutiveAssistantMessages([
-    ...p,
-    {
-      kind: "msg",
-      msg: { role: "assistant", text: text || "", isPlan: opts?.isPlan },
-    },
-  ]);
+  return hoistCardsBeforeTrailingFinals(
+    deduplicateConsecutiveAssistantMessages([
+      ...p,
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: text || "", isPlan: opts?.isPlan },
+      },
+    ]),
+  );
 }
 
 /** Idempotent action_start card append (session-switch SSE race safe). */

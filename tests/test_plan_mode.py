@@ -112,3 +112,29 @@ def test_plan_mode_filters_mcp_mutate_actions():
     assert "skipped call_mcp" in action_results[0].data["error"]
     assert "skipped manage_mcp" in action_results[1].data["error"]
     assert "File not found" in action_results[2].data["error"]
+
+
+def test_plan_mode_filters_browser_actions():
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = tempfile.mkdtemp()
+    s = ConversationalSession(cfg)
+
+    class _BoomBrowser:
+        def browser_navigate(self, *a, **k):
+            raise AssertionError("browser must not run in plan mode")
+
+        def browser_click(self, *a, **k):
+            raise AssertionError("browser must not run in plan mode")
+
+    s._browser = _BoomBrowser()
+    actions = [
+        {"kind": "browser_navigate", "url": "https://example.com"},
+        {"kind": "browser_click", "arguments": {"ref": "e1"}},
+        {"kind": "read_file", "path": "missing.txt"},
+    ]
+    s.pilot = _FakePilotWithActions(actions)
+    events = list(s.send("plan browse", plan=True))
+    action_results = [e for e in events if e.kind == "action_result"]
+    assert "skipped browser_navigate" in action_results[0].data["error"]
+    assert "skipped browser_click" in action_results[1].data["error"]
+    assert "File not found" in action_results[2].data["error"]

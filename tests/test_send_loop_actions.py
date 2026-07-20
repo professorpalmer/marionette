@@ -183,6 +183,52 @@ def test_execute_turn_actions_plan_mode_skips_mcp_mutate_paths():
     session._mcp.manage.assert_not_called()
 
 
+def test_execute_turn_actions_plan_mode_skips_browser_tools():
+    """Plan mode must block browser_* (MCP-sibling external side-effect peel)."""
+    actions = [
+        PilotAction(kind="browser_navigate", url="https://example.com"),
+        PilotAction(kind="browser_click", arguments={"ref": "e1"}),
+        PilotAction(kind="browser_screenshot"),
+    ]
+    turn = PilotTurn(say="", thinking="", actions=actions)
+    browser = MagicMock()
+    session = SimpleNamespace(
+        _turn_guard_state=None,
+        _cancel=threading.Event(),
+        _steer_pending=False,
+        _history=[],
+        _pending_advisor_warnings=[],
+        _append_action_result=MagicMock(),
+        _check_and_inject_steer=MagicMock(return_value=iter(())),
+        _turn_economy=SimpleNamespace(enforce_tool_batch=lambda msgs: None),
+        config=SimpleNamespace(repo="/tmp/r", swarm_adapter="local", no_delegation=False),
+        pilot=MagicMock(),
+        _browser=browser,
+    )
+    events = []
+    gen = execute_turn_actions(
+        session,
+        turn=turn,
+        user_message="browse in plan",
+        is_native=True,
+        plan=True,
+        counters={"action_seq": 0, "swarms": 0, "demo_swarms": 0},
+        step=0,
+        turn_findings=[],
+    )
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration:
+        pass
+    results = [e for e in events if e.kind == "action_result"]
+    assert len(results) == 3
+    assert "plan mode: skipped browser_navigate" in results[0].data.get("error", "")
+    assert "plan mode: skipped browser_click" in results[1].data.get("error", "")
+    assert "plan mode: skipped browser_screenshot" in results[2].data.get("error", "")
+    assert browser.mock_calls == []
+
+
 def test_execute_turn_actions_no_delegation_blocks_swarm():
     act = PilotAction(kind="run_swarm", goal="explore the loop")
     turn = PilotTurn(say="", thinking="", actions=[act])

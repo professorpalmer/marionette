@@ -903,6 +903,38 @@ def test_dispatch_local_action_plan_mode_blocks_mcp_mutate_paths():
     mcp.manage.assert_not_called()
 
 
+def test_dispatch_local_action_plan_mode_blocks_browser_tools():
+    """Phases-layer plan gate: browser_* never reaches the browser driver."""
+    from harness.send_loop_phases import PLAN_SKIP_KINDS
+
+    browser_kinds = (
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_scroll",
+        "browser_back",
+        "browser_get_text",
+        "browser_screenshot",
+    )
+    for kind in browser_kinds:
+        assert kind in PLAN_SKIP_KINDS, kind
+
+    session = SimpleNamespace(_append_action_result=MagicMock())
+    for kind in browser_kinds:
+        act = PilotAction(
+            kind=kind,
+            url="https://example.com",
+            arguments={"url": "https://example.com", "ref": "e1", "text": "x"},
+        )
+        events = list(
+            dispatch_local_action(session, act, f"p-{kind}", False, [], plan=True)
+        )
+        assert events[0].data.get("error") == f"(plan mode: skipped {kind})"
+    # Skip runs before harness.browser import — no driver side effects.
+    session._append_action_result.assert_called()
+
+
 def test_dispatch_local_action_search_tools_success():
     act = PilotAction(kind="search_tools", query="browser")
     session = SimpleNamespace(

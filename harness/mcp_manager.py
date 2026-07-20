@@ -304,11 +304,22 @@ class McpManager:
         return list(self._tools.values())
 
     def status(self) -> List[dict]:
+        """Per-server running flag + tool count for Settings / manage_mcp list.
+
+        Tool count matches ``discovered_tools()``: only alive clients. A
+        dead-but-not-stopped client can still hold cached tool rows in
+        ``_tools``; reporting those as ``tools: N`` with ``running: false``
+        mismatched the alive-only tools list on GET /api/mcp.
+        """
         cfg = self.load_config()
         out = []
         for name, server in cfg.items():
             alive = name in self._clients and self._clients[name].alive
-            ntools = sum(1 for t in self._tools.values() if t.server == name)
+            ntools = (
+                sum(1 for t in self._tools.values() if t.server == name)
+                if alive
+                else 0
+            )
             out.append({
                 "name": name, "command": server.get("command", "") or server.get("url", ""),
                 "transport": "http" if server.get("url") else "stdio",

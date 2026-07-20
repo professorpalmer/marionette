@@ -21,6 +21,7 @@ export {
   clearToolPrepPlaceholders,
   newThinkingId,
   looksLikeFinalAnswer,
+  hoistCardsBeforeTrailingFinals,
 } from "./thinkingToolPrep";
 export {
   nextAppliedCursor,

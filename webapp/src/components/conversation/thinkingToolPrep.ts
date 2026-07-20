@@ -81,46 +81,106 @@ export function looksLikeFinalAnswer(text: string): boolean {
   return false;
 }
 
+/** True when `it` is a sealed assistant that looks like a finished answer. */
+function isSealedFinalAssistant(it: Item): boolean {
+  return (
+    it.kind === "msg"
+    && it.msg.role === "assistant"
+    && !it.msg.streaming
+    && !it.msg.workerStream
+    && looksLikeFinalAnswer(it.msg.text || "")
+  );
+}
+
+/**
+ * Move tool cards (and tool_prep chrome) that landed after a trailing sealed
+ * final-looking assistant to just before that assistant.
+ *
+ * Cursor CLI often flushes the answer before buffered tool_call events; the
+ * first-card leapfrog alone cannot fix cards that already sit under the
+ * summary. Without this, Explored renders beneath the PILOT finale.
+ */
+export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
+  let turnStart = 0;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "msg" && it.msg.role === "user") {
+      turnStart = i + 1;
+      break;
+    }
+  }
+
+  // Rightmost sealed final in the turn that still has a later tool card.
+  let finalIdx = -1;
+  for (let i = items.length - 1; i >= turnStart; i--) {
+    if (!isSealedFinalAssistant(items[i])) continue;
+    let cardAfter = false;
+    for (let j = i + 1; j < items.length; j++) {
+      const later = items[j];
+      if (later.kind === "msg" && later.msg.role === "user") break;
+      if (later.kind === "card") {
+        cardAfter = true;
+        break;
+      }
+    }
+    if (cardAfter) {
+      finalIdx = i;
+      break;
+    }
+  }
+  if (finalIdx < 0) return items;
+
+  const head = items.slice(0, finalIdx);
+  const finalItem = items[finalIdx];
+  const hoistCards: Extract<Item, { kind: "card" }>[] = [];
+  let hoistPrep: Extract<Item, { kind: "tool_prep" }> | null = null;
+  const tail: Item[] = [];
+  for (let j = finalIdx + 1; j < items.length; j++) {
+    const it = items[j];
+    if (it.kind === "msg" && it.msg.role === "user") {
+      tail.push(...items.slice(j));
+      break;
+    }
+    if (it.kind === "card") {
+      hoistCards.push(it);
+    } else if (it.kind === "tool_prep") {
+      hoistPrep = it;
+    } else {
+      tail.push(it);
+    }
+  }
+  if (hoistCards.length === 0) return items;
+  return [
+    ...head,
+    ...hoistCards,
+    ...(hoistPrep ? [hoistPrep] : []),
+    finalItem,
+    ...tail.filter((it) => it.kind !== "tool_prep"),
+  ];
+}
+
 /**
  * Insert index for a new tool/prep card inside the current turn.
  * Pre-tool narration (assistant/thinking with no prior card) stays above;
- * once a card exists, later assistant/thinking rows stay below new tools.
- *
- * First card in a turn also leapfrogs trailing sealed *final-looking*
- * assistants so late Cursor tool events cannot leave Explored under the answer.
+ * once a card exists, later mid-turn assistant/thinking stays below new tools
+ * unless a trailing sealed *final-looking* answer is at the end — leapfrog
+ * that so late Cursor tool events cannot leave Explored under the summary.
  */
 function toolPrepInsertIndex(items: Item[], turnStart: number): number {
   let insertAt = items.length;
-  const turnHasCard = items
-    .slice(turnStart)
-    .some((row) => row.kind === "card");
-
-  if (!turnHasCard) {
-    // Leapfrog only consecutive trailing finals — never short sticky preambles.
-    for (let i = items.length - 1; i >= turnStart; i--) {
-      const it = items[i];
-      if (it.kind === "tool_prep") continue;
-      if (
-        it.kind === "msg"
-        && it.msg.role === "assistant"
-        && !it.msg.streaming
-        && !it.msg.workerStream
-        && looksLikeFinalAnswer(it.msg.text || "")
-      ) {
-        insertAt = i;
-        continue;
-      }
-      break;
+  // Leapfrog consecutive trailing sealed finals (first card or late cards).
+  // Stop at mid-turn narration / thinking / existing cards so chronology
+  // inside the fold stays think → tool → type → tool.
+  for (let i = items.length - 1; i >= turnStart; i--) {
+    const it = items[i];
+    if (it.kind === "tool_prep") continue;
+    if (isSealedFinalAssistant(it)) {
+      insertAt = i;
+      continue;
     }
-    return insertAt;
+    break;
   }
-
-  // After the first tool card exists, APPEND new tools at the end of the turn.
-  // Inserting before trailing assistant/thinking surfaces used to batch every
-  // tool above all mid-turn narration ("functions on top, transcript on
-  // bottom") and then reshuffle on seal. Chronological interleave:
-  // think → tool → type → tool → type, matching event order inside the fold.
-  return items.length;
+  return insertAt;
 }
 
 function withToolPrepChrome(
@@ -202,7 +262,9 @@ export function upsertToolPrep(
       };
     });
     if (hit) {
-      return patched.filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
+      return hoistCardsBeforeTrailingFinals(
+        patched.filter((it, i) => !(i >= turnStart && it.kind === "tool_prep")),
+      );
     }
   }
 
@@ -241,13 +303,18 @@ export function upsertToolPrep(
       return it;
     }).filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
     if (replaced) {
-      return [...next, { kind: "tool_prep" as const, name: kind }];
+      return hoistCardsBeforeTrailingFinals([
+        ...next,
+        { kind: "tool_prep" as const, name: kind },
+      ]);
     }
-    return withToolPrepChrome(
-      next,
-      toolPrepInsertIndex(next, turnStart),
-      { kind: "card" as const, card },
-      kind,
+    return hoistCardsBeforeTrailingFinals(
+      withToolPrepChrome(
+        next,
+        toolPrepInsertIndex(next, turnStart),
+        { kind: "card" as const, card },
+        kind,
+      ),
     );
   }
 
@@ -279,13 +346,18 @@ export function upsertToolPrep(
     return it;
   }).filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
   if (replaced) {
-    return [...next, { kind: "tool_prep" as const, name: kind }];
+    return hoistCardsBeforeTrailingFinals([
+      ...next,
+      { kind: "tool_prep" as const, name: kind },
+    ]);
   }
-  return withToolPrepChrome(
-    next,
-    toolPrepInsertIndex(next, turnStart),
-    { kind: "card" as const, card: legacyCard },
-    kind,
+  return hoistCardsBeforeTrailingFinals(
+    withToolPrepChrome(
+      next,
+      toolPrepInsertIndex(next, turnStart),
+      { kind: "card" as const, card: legacyCard },
+      kind,
+    ),
   );
 }
 

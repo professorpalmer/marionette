@@ -20,6 +20,7 @@ import {
   deduplicateAssistantNarration,
   upsertToolPrep,
   looksLikeFinalAnswer,
+  hoistCardsBeforeTrailingFinals,
 } from "../components/Conversation";
 import type { Item } from "../components/TranscriptList";
 
@@ -423,6 +424,79 @@ describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
     );
     expect(next[1].kind).toBe("msg");
     expect(next[2].kind).toBe("card");
+  });
+
+  it("hoists cards that already sit under a sealed final answer", () => {
+    const finalText =
+      "Validated.\n\n| Gap | Evidence |\n|---|---|\n| Lease | heartbeat |\n\nShip-ready.";
+    const items: Item[] = [
+      msg("user", "validate"),
+      { kind: "thinking", text: "Checking.", id: "th-1" },
+      { kind: "msg", msg: { role: "assistant", text: finalText } },
+      {
+        kind: "card",
+        card: {
+          id: "tool-prep:c-late",
+          goal: "mcp_manager.py",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+        },
+      },
+    ];
+    const next = hoistCardsBeforeTrailingFinals(items);
+    const kinds = next.map((it) => {
+      if (it.kind === "card") return "card";
+      if (it.kind === "msg") return `msg:${it.msg.role}`;
+      return it.kind;
+    });
+    expect(kinds).toEqual([
+      "msg:user",
+      "thinking",
+      "card",
+      "msg:assistant",
+    ]);
+  });
+
+  it("late tool after first card still leapfrogs a trailing sealed finale", () => {
+    const finalText =
+      "Validated — MCP peel gaps closed.\n\n"
+      + "| Gap | Evidence |\n|---|---|\n"
+      + "| status tools | alive-only |\n\n"
+      + "Ship-ready on the peel findings.";
+    let items: Item[] = [
+      msg("user", "validate"),
+      {
+        kind: "card",
+        card: {
+          id: "tool-prep:c1",
+          goal: "a.py",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+        },
+      },
+      { kind: "msg", msg: { role: "assistant", text: finalText } },
+    ];
+    items = upsertToolPrep(items, "grep", {
+      id: "c-late",
+      goal: "status",
+      status: "in_progress",
+    });
+    const kinds = items.map((it) => {
+      if (it.kind === "card") return `card:${it.card.id}`;
+      if (it.kind === "msg") return `msg:${it.msg.role}`;
+      return it.kind;
+    });
+    // Both cards before the finale — Explored above summary.
+    expect(kinds.indexOf("msg:assistant")).toBeGreaterThan(
+      kinds.lastIndexOf("card:tool-prep:c-late"),
+    );
+    expect(kinds.indexOf("msg:assistant")).toBeGreaterThan(
+      kinds.indexOf("card:tool-prep:c1"),
+    );
   });
 
   it("appends later tools after mid-turn narration (chronological interleave)", () => {
