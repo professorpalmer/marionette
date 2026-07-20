@@ -1,9 +1,11 @@
 import os
 import tempfile
-import time
+import threading
 import pytest
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession, ConvEvent
+from harness.pilot import PilotAction
+from harness.send_loop_phases import run_parallel_prefetch
 
 class _FakePilotWithActions:
     name = "fake_actions"
@@ -146,7 +148,8 @@ def test_parallel_reads_mixed_with_write():
 
 
 def test_parallel_reads_timing_sanity(monkeypatch):
-    # (d) timing sanity: mock the read helper with a small sleep and assert 3 reads take ~1x not ~3x (use a helper that sleeps 0.2s and assert total < 0.45s)
+    # Prove concurrency at the executor seam. Timing the whole send loop made
+    # this test sensitive to unrelated git/config probes and runner load.
     temp_dir = tempfile.mkdtemp()
     
     file1_path = os.path.join(temp_dir, "file1.txt")
@@ -164,31 +167,21 @@ def test_parallel_reads_timing_sanity(monkeypatch):
     cfg.repo = temp_dir
     s = ConversationalSession(cfg)
     
-    # Monkeypatch ConversationalSession._do_read_file
     original_do_read_file = ConversationalSession._do_read_file
+    all_workers_started = threading.Barrier(3, timeout=5)
+
     def mocked_do_read_file(self, act):
-        time.sleep(0.5)
+        all_workers_started.wait()
         return original_do_read_file(self, act)
         
     monkeypatch.setattr(ConversationalSession, "_do_read_file", mocked_do_read_file)
     
     actions = [
-        {"kind": "read_file", "path": "file1.txt"},
-        {"kind": "read_file", "path": "file2.txt"},
-        {"kind": "read_file", "path": "file3.txt"},
+        PilotAction(kind="read_file", path="file1.txt"),
+        PilotAction(kind="read_file", path="file2.txt"),
+        PilotAction(kind="read_file", path="file3.txt"),
     ]
-    s.pilot = _FakePilotWithActions(actions)
-    
-    start_time = time.time()
-    list(s.send("run parallel timed reads"))
-    elapsed = time.time() - start_time
-    
-    # Serial would be 3 * 0.5s = 1.5s of sleeping alone; parallel is ~0.5s.
-    # Windows CI has flaked above 1.2s from git/config probe overhead even when
-    # the three sleeps overlap, so allow more headroom there while still
-    # failing a true serial regression (~1.5s sleep + overhead). macOS CI has
-    # also flaked at 1.2003s against a hard 1.2 bound — keep non-Windows under
-    # serial floor but with a little scheduler slack.
-    import sys
-    bound = 2.0 if sys.platform == "win32" else 1.35
-    assert elapsed < bound, f"Elapsed time {elapsed}s suggests reads ran serially!"
+    results = run_parallel_prefetch(s, list(enumerate(actions)))
+
+    assert sorted(results) == [0, 1, 2]
+    assert all(result[0] is True for result in results.values())
