@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.107, deliberately pre-1.0. Cursor CLI/ACP turns promote thought-channel finales into assistant prose, keep Investigating visible during reasoning-only streams, and leapfrog late tool flushes so Explored no longer lands under the summary. Windows Terminal ConPTY rejects 0x0 FitAddon sizes instead of EXITED-blank; Cursor login no longer pops a blank console beside the browser. StatusBar tok/$ refreshes while busy and at turn boundaries. Schedules remain CLI-daemon host-local (IANA/UI deferred). Swarm Tracker Clear never hides live/CLI jobs.
+> Status: v0.9.108, deliberately pre-1.0. Desktop bootstrap/updater/install/doctor pins match CI at `puppetmaster-ai==1.20.5` (one-command `swarm` CLI on MCP drop). Cursor thought-channel finales, ConPTY 0x0 clamp, login CREATE_NO_WINDOW, StatusBar live tok/$, and Swarm Tracker Clear that never hides live/CLI jobs ship from v0.9.107. Schedules remain CLI-daemon host-local (IANA/UI deferred).
 
 ## Documentation
 
