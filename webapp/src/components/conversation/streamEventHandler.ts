@@ -303,6 +303,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       }
       if (d.artifacts && !d.error) onArtifacts(d.artifacts);
       onJobChange();
+      // Host-tool turns meter per step — refresh StatusBar without waiting
+      // for the 10s idle poll (Cursor CLI still lands meters at stream end).
+      window.dispatchEvent(new Event("harness-usage-refresh"));
       setItems((prev) => {
         const cardItem = prev.find((it) => it.kind === "card" && it.card.id === d.id);
         if (
@@ -394,6 +397,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         ),
       );
       fetchContextUsage();
+      // StatusBar tok/$ polls /api/usage on a slow cadence — nudge it at turn
+      // end so Cursor CLI (single long stream, meters land at done) updates now.
+      window.dispatchEvent(new Event("harness-usage-refresh"));
       // Backend may also set_title_if_default; refresh meters/title if the
       // optimistic first-send rename missed or the server derived a different slug.
       window.dispatchEvent(new Event("harness-config-changed"));

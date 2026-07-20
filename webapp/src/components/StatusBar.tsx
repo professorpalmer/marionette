@@ -180,9 +180,16 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     .then((stateRes) => { if (stateRes) setSessionState(stateRes); })
     .catch(() => {}), 4000);
 
+  const runtimeStatus = deriveFooterRuntimeStatus(sessionState);
+  const runtimeReady = runtimeStatus === "ready";
+  // While a runner is busy, poll tok/$ every 2s so multi-step host-tool turns
+  // (and the jump when a long Cursor CLI stream finally meters) show up live.
+  // Idle stays on the 10s cadence to avoid request pileup.
+  const usageBusy = runtimeStatus === "busy" || runtimeStatus === "thinking";
+
   useEffect(() => {
     fetchUsage();
-    const interval = setInterval(fetchUsage, 10000);
+    const interval = setInterval(fetchUsage, usageBusy ? 2000 : 10000);
     const onRefresh = () => fetchUsage();
     window.addEventListener("harness-config-changed", onRefresh);
     window.addEventListener("harness-project-selected", onRefresh);
@@ -195,7 +202,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
       window.removeEventListener("harness-new-session", onRefresh);
       window.removeEventListener("harness-usage-refresh", onRefresh);
     };
-  }, []);
+  }, [usageBusy]);
 
   // Dismiss the cost breakdown popover on outside click or Escape, matching the
   // PilotPicker dropdown behavior so the status bar has one consistent pattern.
@@ -235,8 +242,6 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
   };
 
   const showUsage = usage && (usage.tokens_used > 0 || usage.est_cost_usd > 0);
-  const runtimeStatus = deriveFooterRuntimeStatus(sessionState);
-  const runtimeReady = runtimeStatus === "ready";
 
   return (
     <div className="flex items-center gap-3 px-3 h-6 border-t border-edge bg-panel text-[10px] text-muted select-none">
