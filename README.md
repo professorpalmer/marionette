@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.103, deliberately pre-1.0. Investigation timelines now finalize reliably across completion, cancellation, reload, and session switches while preserving ordered nested actions and truthful live progress.
+> Status: v0.9.104, deliberately pre-1.0. Cursor timelines stay chronological and mode-aligned, swarm failures remain distinct from cancellation, scheduled autonomy is claim-fenced and restart-safe, and Puppetmaster 1.20.3 prevents stale Bedrock credentials from capturing routed work.
 
 ## Documentation
 
