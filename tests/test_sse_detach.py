@@ -19,6 +19,10 @@ from harness.conversation import ConvEvent
 
 def _server():
     import harness.server as srv
+    # Avoid racing module-startup deferred attach with direct _pilot access in
+    # these server-global tests. Production turn paths use the same readiness
+    # gate before touching a placeholder.
+    srv._ensure_active_pilot_ready(timeout=30.0)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
     port = httpd.server_address[1]
     t = threading.Thread(target=httpd.serve_forever, daemon=True)

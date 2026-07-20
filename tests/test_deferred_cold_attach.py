@@ -578,8 +578,19 @@ def test_mutation_apis_gate_on_deferred_ready(tmp_path, monkeypatch):
             {"history": turns, "display": turns, "job_ids": []},
         )
 
-        # Real ConversationalSession so rewind/compact methods exist after ready.
-        real = srv._build_conversational_pilot()
+        # Real ConversationalSession so rewind/compact methods exist after
+        # ready, but isolate construction from whichever driver a prior
+        # server-global test selected.
+        fake_driver = SimpleNamespace(
+            name="deferred-test",
+            model="deferred-test",
+            supports_streaming=False,
+        )
+        with patch(
+            "harness.conversation.prov.build_pilot",
+            return_value=fake_driver,
+        ):
+            real = srv._build_conversational_pilot()
         real.load_history({"history": turns, "display": turns, "job_ids": []})
         real.harness_session_id = sid
         gate = threading.Event()

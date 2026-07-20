@@ -52,6 +52,10 @@ def _idle_runner() -> SimpleNamespace:
 def _spin_server():
     import harness.server as srv
 
+    # Module startup may still have a deferred cold-attach build in flight.
+    # Settle it before a test swaps module globals, or the late builder can
+    # overwrite the injected runner midway through an assertion.
+    srv._ensure_active_pilot_ready(timeout=30.0)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
     port = httpd.server_address[1]
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
