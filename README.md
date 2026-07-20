@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.105, deliberately pre-1.0. Cursor timelines stay chronological and mode-aligned, swarm failures remain distinct from cancellation, scheduled autonomy is claim-fenced and restart-safe, and Puppetmaster 1.20.3 prevents stale Bedrock credentials from capturing routed work.
+> Status: v0.9.106, deliberately pre-1.0. Active project expands on boot, Swarm Tracker warms from activity polls, aborted compaction no longer sticks on Waiting on provider, and scheduled autonomy adds lease heartbeats, rare-cron jumps, and run-history retention.
 
 ## Documentation
 
