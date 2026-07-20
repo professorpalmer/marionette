@@ -767,6 +767,34 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(assistantTexts(state.items)).toEqual(["almost done"]);
   });
 
+  it("aborted compaction clears summarizing chrome without a fake summary row", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    let compacting: string | null = "Summarizing chat context";
+    const deps = makeApplyDeps(state);
+    deps.setCompactingStatus = (v: string | null) => {
+      compacting = v;
+    };
+    const apply = createApplyStreamEvent(deps);
+
+    apply({
+      kind: "compaction",
+      data: {
+        before_tokens: 12000,
+        after_tokens: 12000,
+        summarized_messages: 0,
+        aborted: true,
+        reason: "insufficient_reduction",
+      },
+    });
+    expect(compacting).toBeNull();
+    expect(state.items.filter((it) => it.kind === "compaction")).toHaveLength(0);
+  });
+
   it("replayed swarm_pending stays one pill and set-unions pendingJobIds", () => {
     const state = {
       items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],

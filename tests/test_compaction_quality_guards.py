@@ -97,7 +97,13 @@ def test_insufficient_reduction_rejected(monkeypatch):
     events = list(session._maybe_compact_history(force=True))
 
     assert any(e.kind == "compacting" for e in events)
-    assert not any(e.kind == "compaction" for e in events)
+    # Rejected reductions must still emit a terminal compaction so the UI
+    # clears "Summarizing chat context" (otherwise Waiting on provider sticks).
+    aborted = [e for e in events if e.kind == "compaction"]
+    assert len(aborted) == 1
+    assert aborted[0].data.get("aborted") is True
+    assert aborted[0].data.get("reason") == "insufficient_reduction"
+    assert aborted[0].data.get("after_tokens") == aborted[0].data.get("before_tokens")
     assert session._history == original
     assert MAX_REDUCTION_RATIO == 0.8
 

@@ -651,6 +651,16 @@ class CompactionContextMixin:
                         before_tokens=before_tokens,
                         detail="degenerate_summary",
                     )
+                    # We already yielded ``compacting`` — must emit a terminal
+                    # ``compaction`` so the UI clears "Summarizing chat context"
+                    # and does not leave the turn stuck on Waiting on provider.
+                    yield ConvEvent("compaction", {
+                        "before_tokens": before_tokens,
+                        "after_tokens": before_tokens,
+                        "summarized_messages": 0,
+                        "aborted": True,
+                        "reason": "degenerate_summary",
+                    })
                     return
         except Exception:
             pass
@@ -691,6 +701,14 @@ class CompactionContextMixin:
                         summary_tokens=fallback_tokens,
                         middle_tokens=middle_tokens,
                     )
+                    # Paired with the earlier ``compacting`` yield — clear UI chrome.
+                    yield ConvEvent("compaction", {
+                        "before_tokens": before_tokens,
+                        "after_tokens": before_tokens,
+                        "summarized_messages": 0,
+                        "aborted": True,
+                        "reason": "insufficient_reduction",
+                    })
                     return
                 summary = fallback_summary
                 summary_msg = fallback_msg

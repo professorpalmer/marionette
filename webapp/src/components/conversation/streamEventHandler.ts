@@ -151,9 +151,14 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     } else if (ev.kind === "codegraph_context") {
       setItems((p) => appendCodegraphContext(p, d.symbols || 0, d.query || ""));
     } else if (ev.kind === "compaction") {
+      // Always clear "Summarizing chat context". Aborted compactions (rejected
+      // summary / insufficient reduction) still emit this event so the UI
+      // does not stick on compacting / Waiting on provider with no resume.
       setCompactingStatus(null);
-      setItems((p) => appendCompaction(p, d.before_tokens, d.after_tokens));
-      window.dispatchEvent(new Event("harness-context-changed"));
+      if (!d.aborted) {
+        setItems((p) => appendCompaction(p, d.before_tokens, d.after_tokens));
+        window.dispatchEvent(new Event("harness-context-changed"));
+      }
     } else if (ev.kind === "notice" && noticeShowsWaitHint(d.kind)) {
       // wait / stagnation / resume_cap notices are user-visible chrome; other
       // notice kinds stay silent unless they omit kind (legacy wait path).
