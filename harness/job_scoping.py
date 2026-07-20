@@ -106,9 +106,19 @@ def job_visible_for_view(
     cwd stays visible so true orphans remain cancellable.
     """
     stamped = parse_job_session_id(label, tasks) or (session_id or "").strip()
-    if stamped:
-        return stamped == (active_session_id or "")
     cwd = job_repo_cwd(tasks)
+    if stamped:
+        if stamped == (active_session_id or ""):
+            return True
+        # Match filter_local_jobs: a running job under the open workspace stays
+        # visible across session switches so the tracker cannot go blank while
+        # chat still says a swarm is running (CLI + harness).
+        return bool(
+            job_is_running(status)
+            and repo_root
+            and cwd
+            and cwd_under_repo(cwd, repo_root)
+        )
     if not cwd:
         # Unstamped + no cwd: only running orphans stay visible (cancellable).
         return job_is_running(status)

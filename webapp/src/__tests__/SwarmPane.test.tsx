@@ -858,4 +858,61 @@ describe("SwarmPane repo-scoped dismiss", () => {
     const stored = JSON.parse(localStorage.getItem("swarm.dismissed.v2") || "{}");
     expect(stored.__default__).toEqual(["legacy-job"]);
   });
+
+  it("keeps live jobs visible even when their id is in the dismiss store", async () => {
+    localStorage.setItem(
+      "swarm.dismissed.v2",
+      JSON.stringify({ [REPO_A]: ["live-cli-job", "old-finished"] }),
+    );
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        {
+          id: "live-cli-job",
+          goal: "CLI swarm still running",
+          status: "running",
+          source: "cli",
+        },
+        {
+          id: "old-finished",
+          goal: "Previously cleared finished job",
+          status: "complete",
+        },
+      ],
+    });
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByText("CLI swarm still running")).toBeInTheDocument();
+    });
+    // Finished accordion may list zero visible rows; dismissed finished stay hidden.
+    expect(screen.queryByText("Previously cleared finished job")).not.toBeInTheDocument();
+    expect(screen.queryByText("All swarm jobs cleared")).not.toBeInTheDocument();
+  });
+
+  it("surfaces a newly completed job that was never dismissed after Clear", async () => {
+    mockSwarmLive.mockResolvedValue(finishedJob("old-a", "Old finished A"));
+    const { unmount } = render(<SwarmPane />);
+    await openFinishedSection();
+    await screen.findByText("Old finished A");
+    fireEvent.click(screen.getByTitle("Hide all finished runs from the tracker (stays in Puppetmaster history)"));
+    await waitFor(() => expect(screen.getByText("All swarm jobs cleared")).toBeInTheDocument());
+    unmount();
+    clearSWRCache();
+
+    mockSwarmLive.mockResolvedValue({
+      session: { tokens_used: 0, est_cost_usd: 0 },
+      jobs: [
+        { id: "old-a", goal: "Old finished A", status: "complete" },
+        { id: "new-peel", goal: "MCP surface audit peel", status: "complete" },
+      ],
+    });
+    render(<SwarmPane />);
+    await openFinishedSection();
+    await waitFor(() => {
+      expect(screen.getByText("MCP surface audit peel")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Old finished A")).not.toBeInTheDocument();
+  });
 });

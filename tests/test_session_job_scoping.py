@@ -101,12 +101,28 @@ def test_stamped_job_visible_only_for_matching_session():
         active_session_id="sess-a",
         repo_root="/work/a",
     )
+    # Terminal + session mismatch stays hidden even under the open repo.
     assert not job_visible_for_view(
         session_id="sess-a",
         label=label,
         tasks=tasks,
         active_session_id="sess-b",
         repo_root="/work/a",
+        status="complete",
+    )
+
+
+def test_running_stamped_job_visible_under_repo_across_sessions():
+    """Live work under the open workspace must not vanish on session switch."""
+    label = job_label_for_session("sess-a")
+    tasks = [SimpleNamespace(payload={"cwd": "/work/a/project", "session_id": "sess-a"})]
+    assert job_visible_for_view(
+        session_id="sess-a",
+        label=label,
+        tasks=tasks,
+        active_session_id="sess-b",
+        repo_root="/work/a",
+        status="running",
     )
 
 

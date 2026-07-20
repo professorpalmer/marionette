@@ -701,7 +701,11 @@ export default function SwarmPane() {
   }, [scopedRepo, applyLive]);
 
   const allJobs = data?.jobs || [];
-  const visibleJobs = allJobs.filter((j) => !dismissed.has(j.id));
+  // Clear/dismiss is archive chrome for finished runs only. Live (and pending)
+  // jobs must stay visible even if their id was previously dismissed — otherwise
+  // a CLI-started swarm looks "gone" while workers are still running, and pilots
+  // burn tokens inventing recovery paths.
+  const visibleJobs = allJobs.filter((j) => !isTerminal(j) || !dismissed.has(j.id));
   const running = visibleJobs.filter((j) => !isTerminal(j));
   const finished = visibleJobs.filter((j) => isTerminal(j));
   // Ordinary failures + dead-run stamps count as failed; true user cancels do not.
@@ -716,7 +720,11 @@ export default function SwarmPane() {
   const anyRunning = runningCount > 0;
 
   const dismissJob = (id: string) =>
-    setDismissed((prev) => new Set(prev).add(id));
+    setDismissed((prev) => {
+      const target = allJobs.find((j) => j.id === id);
+      if (target && !isTerminal(target)) return prev;
+      return new Set(prev).add(id);
+    });
   const clearFinished = () =>
     setDismissed((prev) => {
       const next = new Set(prev);
@@ -724,7 +732,7 @@ export default function SwarmPane() {
       return next;
     });
   const restoreDismissed = () => setDismissed(new Set());
-  const hiddenCount = allJobs.length - visibleJobs.length;
+  const hiddenCount = allJobs.filter((j) => isTerminal(j) && dismissed.has(j.id)).length;
 
 
   // One card renderer, reused by both the running list and the Finished
