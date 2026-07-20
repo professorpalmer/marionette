@@ -27,9 +27,13 @@ def test_model_not_available_is_explained():
 
 def test_auth_error_is_explained():
     s = _s()
-    out = s._humanize_pilot_error("HTTP 401: invalid_api_key")
+    out = s._humanize_pilot_error(
+        "HTTP 401: invalid_api_key sk-or-v1-shouldneverappear0123456789"
+    )
     assert "authentication failed" in out.lower()
     assert "Settings" in out
+    assert "sk-or-v1-shouldneverappear0123456789" not in out
+    assert "provider said" not in out.lower()
 
 
 def test_rate_limit_is_explained():

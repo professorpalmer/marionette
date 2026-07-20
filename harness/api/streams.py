@@ -107,6 +107,7 @@ def stream_run(handler: Any, prompt: str, images, svc: StreamServices) -> Any:
     handler.send_header("Content-Type", "text/event-stream")
     handler.send_header("Cache-Control", "no-cache")
     handler.send_header("Connection", "keep-alive")
+    handler._cors()
     handler.end_headers()
 
     if svc.sessions.active and prompt:
@@ -224,6 +225,7 @@ def stream_chat(
     handler.send_header("Content-Type", "text/event-stream")
     handler.send_header("Cache-Control", "no-cache")
     handler.send_header("Connection", "keep-alive")
+    handler._cors()
     handler.end_headers()
 
     if svc.sessions.active and message:

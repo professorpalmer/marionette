@@ -70,9 +70,73 @@ def test_stdio_mcp_client_env_filtering(mock_popen):
         # Assert custom server env updates are applied (taking precedence over base env)
         assert passed_env.get("EXPLICIT_KEY") == "explicit_val"
         assert passed_env.get("PATH") == "/custom/path"
+
+        if os.name == "nt":
+            assert kwargs.get("creationflags") == getattr(
+                __import__("subprocess"), "CREATE_NO_WINDOW", 0
+            )
+            assert "start_new_session" not in kwargs
+        else:
+            assert kwargs.get("start_new_session") is True
     finally:
         os.environ.clear()
         os.environ.update(original_environ)
+
+
+@patch("subprocess.Popen")
+def test_stdio_posix_start_new_session_and_killpg(mock_popen, monkeypatch):
+    """POSIX spawn must start a new session; stop() must killpg that group."""
+    import signal
+    import harness.mcp_client as mcp_client
+
+    monkeypatch.setattr(mcp_client, "_is_windows", lambda: False)
+    client = StdioMcpClient(name="pg", command="node", args=["x.js"])
+
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = None
+    mock_proc.pid = 4242
+    mock_proc.stdin = MagicMock()
+    _handshake = (
+        '{"jsonrpc": "2.0", "id": 1, "result": '
+        '{"serverInfo": {"name": "pg"}, "capabilities": {}}}\n'
+    )
+    import threading as _threading
+    import time as _time
+
+    def _readline_once(*_a, **_k):
+        if not getattr(_readline_once, "sent", False):
+            for _ in range(200):
+                if client._pending:
+                    break
+                _time.sleep(0.01)
+            _readline_once.sent = True
+            return _handshake
+        _threading.Event().wait()
+
+    mock_proc.stdout.readline.side_effect = _readline_once
+    mock_proc.stderr = []
+    mock_popen.return_value = mock_proc
+
+    client.start()
+    kwargs = mock_popen.call_args[1]
+    assert kwargs.get("start_new_session") is True
+
+    killed = []
+
+    def fake_getpgid(pid):
+        assert pid == 4242
+        return 9001
+
+    def fake_killpg(pgid, sig):
+        killed.append((pgid, sig))
+        mock_proc.poll.return_value = 0
+
+    # Windows' os module has no getpgid/killpg; inject for the POSIX branch.
+    monkeypatch.setattr(os, "getpgid", fake_getpgid, raising=False)
+    monkeypatch.setattr(os, "killpg", fake_killpg, raising=False)
+    client.stop()
+    assert killed and killed[0] == (9001, signal.SIGTERM)
+    assert client._proc is None
 
 
 def test_prompt_catalog_builder_with_tools():

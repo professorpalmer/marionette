@@ -11,11 +11,13 @@ aws, vercel, puppeteer/browser, etc.). HTTP/SSE transport is a documented
 follow-up.
 
 Config shape is the standard Claude/Cursor mcp.json form so users can paste what
-they already have:
+they already have. Optional per-server ``allowed_tools`` (bare names) is enforced
+by ``McpManager``:
 
     {"mcpServers": {
         "github":  {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
-                    "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "..."}},
+                    "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "..."},
+                    "allowed_tools": ["search_repositories", "list_issues"]},
         "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"]}
     }}
 """
@@ -23,6 +25,7 @@ they already have:
 import json
 import os
 import queue
+import signal
 import subprocess
 import threading
 from dataclasses import dataclass, field
@@ -30,6 +33,11 @@ from typing import Dict, List, Optional, Union
 
 PROTOCOL_VERSION = "2024-11-05"
 CLIENT_INFO = {"name": "pm-harness", "version": "0.1"}
+
+
+def _is_windows() -> bool:
+    """Platform check (testable; do not monkeypatch ``os.name`` — breaks pathlib)."""
+    return os.name == "nt"
 
 # Cap MCP tool / JSON-RPC response bodies so a malicious or buggy server cannot
 # exhaust harness memory. Shared by stdio and HTTP transports.
@@ -116,7 +124,7 @@ class StdioMcpClient:
         }
         full_env.update({k: str(v) for k, v in self.env.items()})
         command = self.command
-        if os.name == "nt":
+        if _is_windows():
             # npx/uvx/node CLIs are .cmd/.exe shims on Windows; a bare name
             # fails Popen without shell=True. Resolve to the real path instead
             # of using a shell (avoids quoting bugs and CVE-2024-27980-style
@@ -136,11 +144,14 @@ class StdioMcpClient:
             "encoding": "utf-8",
             "errors": "replace",
         }
-        if os.name == "nt":
+        if _is_windows():
             # Defense-in-depth alongside harness.win_console's process-wide
             # Popen patch. CREATE_NO_WINDOW does not reach Node→MCP grandchildren
             # spawned by Cursor Agent — that remains an upstream fix.
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        else:
+            # Own process group so stop() can killpg the npx/uvx → node/python tree.
+            popen_kwargs["start_new_session"] = True
         try:
             self._proc = subprocess.Popen([command, *self.args], **popen_kwargs)
         except FileNotFoundError as e:
@@ -177,7 +188,7 @@ class StdioMcpClient:
                 self._proc.stdin.close()
             except Exception:
                 pass
-            if os.name == "nt":
+            if _is_windows():
                 # terminate() only hits the top-level shim; npx-spawned node
                 # children detach and linger. taskkill /T fells the whole tree.
                 try:
@@ -187,16 +198,56 @@ class StdioMcpClient:
                     )
                 except Exception:
                     pass
-            try:
-                self._proc.terminate()
-                self._proc.wait(timeout=3)
-            except Exception:
                 try:
-                    self._proc.kill()
+                    self._proc.terminate()
+                    self._proc.wait(timeout=3)
                 except Exception:
-                    pass
+                    try:
+                        self._proc.kill()
+                    except Exception:
+                        pass
+            else:
+                # Kill the whole session started with start_new_session=True.
+                try:
+                    pgid = os.getpgid(self._proc.pid)
+                    os.killpg(pgid, signal.SIGTERM)
+                    try:
+                        self._proc.wait(timeout=3)
+                    except Exception:
+                        os.killpg(pgid, signal.SIGKILL)
+                        try:
+                            self._proc.wait(timeout=2)
+                        except Exception:
+                            pass
+                except Exception:
+                    try:
+                        self._proc.terminate()
+                        self._proc.wait(timeout=3)
+                    except Exception:
+                        try:
+                            self._proc.kill()
+                        except Exception:
+                            pass
         self._proc = None
         self._fail_pending(McpError(f"MCP server '{self.name}' stopped"))
+
+    def cancel(self) -> int:
+        """Unblock in-flight JSON-RPC waiters without killing the server.
+
+        Unlike ``_fail_pending`` / ``stop``, this does not mark the reader dead,
+        so later calls can reuse the same process. Returns how many waiters
+        were cancelled.
+        """
+        exc = McpError(f"MCP server '{self.name}': request cancelled")
+        with self._lock:
+            waiters = list(self._pending.values())
+            self._pending.clear()
+        for q in waiters:
+            try:
+                q.put_nowait(exc)
+            except queue.Full:
+                pass
+        return len(waiters)
 
     @property
     def alive(self) -> bool:

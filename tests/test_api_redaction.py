@@ -33,6 +33,13 @@ def test_redact_api_secrets_masks_inline_tokens():
     assert "REDACTED" in out["nested"][0]["cmd"]
 
 
+def test_redact_api_secrets_masks_sk_and_bearer_shapes():
+    raw = "HTTP 401: Authorization Bearer sk-or-v1-deadbeefcafe0123456789 failed"
+    out = redact_api_secrets(raw)
+    assert "sk-or-v1-deadbeefcafe0123456789" not in out
+    assert "REDACTED" in out
+
+
 def test_get_skills_redacts_body_in_listing():
     svc = SkillsServices(
         skills=_FakeSkills(),

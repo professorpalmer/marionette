@@ -246,6 +246,9 @@ class SendLoopMixin:
                     pass
             # Shorter send-path recovery for wedged thinking/executing turns
             # (default 180s). Without this, users wait the full 600s reap.
+            # Intentional race window: the interrupted turn's generator/finally may
+            # still unwind on another thread after we release. Prefer recover-over-
+            # wedge; _busy_gen below makes the old finally's release a no-op.
             if not stale and self._busy_since and self._state in (
                 "thinking", "executing", "streaming",
             ):
@@ -948,7 +951,13 @@ class SendLoopMixin:
                     else:
                         resp = self.pilot.complete(prompt, system=sys_prompt)
                 except Exception as e:
-                    yield ConvEvent("error", {"error": f"pilot transport: {e}"})
+                    # Humanize + redact — never stream raw exception/provider
+                    # bodies (may contain URL tokens or key fragments).
+                    try:
+                        msg = self._humanize_pilot_error(str(e))
+                    except Exception:
+                        msg = "pilot: transport failed. Try again."
+                    yield ConvEvent("error", {"error": msg})
                     return
                 finally:
                     if not append_only:

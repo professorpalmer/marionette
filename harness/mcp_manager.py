@@ -51,6 +51,29 @@ def _expand(server: dict) -> dict:
     return out
 
 
+def _allowed_tool_names(server_cfg: dict) -> Optional[set]:
+    """Return the per-server tool allowlist, or None when unrestricted.
+
+    ``allowed_tools`` in mcp.json is an optional list of bare tool names
+    (e.g. ``["search", "read_file"]``). Absent / null → all tools allowed.
+    A non-list value fails closed (empty set).
+    """
+    if not isinstance(server_cfg, dict) or "allowed_tools" not in server_cfg:
+        return None
+    raw = server_cfg.get("allowed_tools")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return set()
+    return {str(x).strip() for x in raw if str(x).strip()}
+
+
+def _filter_tools_by_allowlist(tools: List[McpTool], allowed: Optional[set]) -> List[McpTool]:
+    if allowed is None:
+        return list(tools)
+    return [t for t in tools if t.name in allowed]
+
+
 _REDACTED = "REDACTED"
 
 
@@ -82,6 +105,10 @@ class McpManager:
         self._tools: Dict[str, McpTool] = {}   # qualified name -> tool
         self._lock = threading.Lock()
         self._errors: Dict[str, str] = {}
+        # Generation token per server: stop/refresh bumps it so an in-flight
+        # refresh that finishes after a concurrent stop does not resurrect
+        # a client the operator just halted.
+        self._lifecycle_gen: Dict[str, int] = {}
 
     # ---- config -------------------------------------------------------------
     def load_config(self) -> Dict[str, dict]:
@@ -125,14 +152,26 @@ class McpManager:
         self.stop_server(name)
 
     # ---- lifecycle ----------------------------------------------------------
-    def start_server(self, name: str, server: Optional[dict] = None) -> List[McpTool]:
+    def start_server(
+        self,
+        name: str,
+        server: Optional[dict] = None,
+        *,
+        expect_gen: Optional[int] = None,
+    ) -> List[McpTool]:
         """Start one MCP server.
 
         The manager lock only covers map mutations (clients/tools/errors).
         ``client.start()`` / ``list_tools()`` run outside the lock so stop /
         call / status are not head-of-line blocked on a slow handshake.
+
+        ``expect_gen`` (used by ``refresh_server``) rejects the install when a
+        concurrent ``stop_server`` bumped the lifecycle generation mid-handshake.
         """
         with self._lock:
+            gen_now = self._lifecycle_gen.get(name, 0)
+            if expect_gen is not None and gen_now != expect_gen:
+                raise McpError(f"MCP server '{name}' start superseded by stop/refresh")
             existing = self._clients.get(name)
             if existing is not None and existing.alive:
                 return [t for t in self._tools.values() if t.server == name]
@@ -147,6 +186,7 @@ class McpManager:
                 for q in [q for q, t in self._tools.items() if t.server == name]:
                     del self._tools[q]
             cfg = _expand(server or self.load_config().get(name, {}))
+            gen_at_start = self._lifecycle_gen.get(name, 0)
 
         if cfg.get("url"):
             client = HttpMcpClient(name=name, url=cfg["url"], headers=cfg.get("headers"))
@@ -158,7 +198,9 @@ class McpManager:
             raise McpError(f"MCP server '{name}' needs a 'command' (stdio) or 'url' (http)")
         try:
             client.start()
-            tools = client.list_tools()
+            tools = _filter_tools_by_allowlist(
+                client.list_tools(), _allowed_tool_names(cfg)
+            )
         except McpError as e:
             with self._lock:
                 self._errors[name] = str(e)
@@ -168,6 +210,14 @@ class McpManager:
                 pass
             raise
         with self._lock:
+            required = expect_gen if expect_gen is not None else gen_at_start
+            # Concurrent stop/refresh bumped the generation — do not resurrect.
+            if self._lifecycle_gen.get(name, 0) != required:
+                try:
+                    client.stop()
+                except Exception:
+                    pass
+                raise McpError(f"MCP server '{name}' start superseded by stop/refresh")
             self._clients[name] = client
             self._errors.pop(name, None)
             for t in tools:
@@ -176,6 +226,7 @@ class McpManager:
 
     def stop_server(self, name: str) -> None:
         with self._lock:
+            self._lifecycle_gen[name] = self._lifecycle_gen.get(name, 0) + 1
             c = self._clients.pop(name, None)
             for q in [q for q, t in self._tools.items() if t.server == name]:
                 del self._tools[q]
@@ -188,14 +239,29 @@ class McpManager:
 
         Used by the State MCP Refresh button so Docker/HTTP servers that were
         unreachable at first start can be re-probed without app restart.
+
+        Bumps a per-server generation under the lock so a concurrent
+        ``stop_server`` cannot leave a late ``start_server`` resurrecting the
+        client after the operator halted it.
         """
         name = (name or "").strip()
         if not name:
             raise McpError("refresh requires a server name")
         if name not in self.load_config():
             raise McpError(f"unknown MCP server '{name}'")
-        self.stop_server(name)
-        return self.start_server(name)
+        with self._lock:
+            self._lifecycle_gen[name] = self._lifecycle_gen.get(name, 0) + 1
+            refresh_gen = self._lifecycle_gen[name]
+            c = self._clients.pop(name, None)
+            for q in [q for q, t in self._tools.items() if t.server == name]:
+                del self._tools[q]
+            self._errors.pop(name, None)
+        if c:
+            try:
+                c.stop()
+            except Exception:
+                pass
+        return self.start_server(name, expect_gen=refresh_gen)
 
     def start_all(self) -> Dict[str, object]:
         """Start every configured server; return {name: tool_count | error_str}."""
@@ -320,13 +386,27 @@ class McpManager:
                 if alive
                 else 0
             )
-            out.append({
+            allowed = _allowed_tool_names(server)
+            row = {
                 "name": name, "command": server.get("command", "") or server.get("url", ""),
                 "transport": "http" if server.get("url") else "stdio",
                 "running": alive, "tools": ntools,
                 "error": self._errors.get(name, ""),
-            })
+            }
+            if allowed is not None:
+                row["allowed_tools"] = sorted(allowed)
+            out.append(row)
         return out
+
+    def _reject_if_disallowed(self, server: str, tool_name: str) -> None:
+        cfg = self.load_config().get(server) or {}
+        allowed = _allowed_tool_names(cfg)
+        if allowed is None:
+            return
+        if tool_name not in allowed:
+            raise McpError(
+                f"MCP tool '{server}.{tool_name}' is not on the server allowlist"
+            )
 
     def call(self, qualified: str, arguments: dict) -> dict:
         tool = self._tools.get(qualified)
@@ -334,10 +414,12 @@ class McpManager:
             # allow "server.tool" where server is running but tool not cached
             if "." in qualified:
                 sv, tn = qualified.split(".", 1)
+                self._reject_if_disallowed(sv, tn)
                 client = self._clients.get(sv)
                 if client and client.alive:
                     return client.call_tool(tn, arguments)
             raise McpError(f"unknown MCP tool '{qualified}'")
+        self._reject_if_disallowed(tool.server, tool.name)
         client = self._clients.get(tool.server)
         if not client or not client.alive:
             self.start_server(tool.server)

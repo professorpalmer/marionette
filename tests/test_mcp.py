@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from harness.mcp_client import StdioMcpClient, McpError
 from harness.mcp_manager import CATALOG, McpManager
 
@@ -263,4 +265,120 @@ def test_redact_mcp_secrets_masks_env_and_headers():
     assert out["env"]["TOKEN"] == "REDACTED"
     assert out["headers"]["Authorization"] == "REDACTED"
     assert out["nested"]["env"]["KEY"] == "REDACTED"
+
+
+def test_allowed_tools_filters_discovery_and_blocks_call(tmp_path):
+    """Optional allowed_tools: discovery hides others; call rejects off-list."""
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server(
+        "fake",
+        {
+            "command": sys.executable,
+            "args": [FAKE],
+            "allowed_tools": ["echo"],
+        },
+    )
+    try:
+        tools = m.start_server("fake")
+        assert {t.name for t in tools} == {"echo"}
+        st = next(s for s in m.status() if s["name"] == "fake")
+        assert st["allowed_tools"] == ["echo"]
+        assert st["tools"] == 1
+        out = m.call("fake.echo", {"text": "hi"})
+        assert "hi" in json.dumps(out)
+        with pytest.raises(McpError, match="allowlist"):
+            m.call("fake.add", {"a": 1, "b": 2})
+    finally:
+        m.stop_all()
+
+
+def test_allowed_tools_absent_means_all_tools(tmp_path):
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    try:
+        tools = m.start_server("fake")
+        assert {t.name for t in tools} == {"echo", "add"}
+        st = next(s for s in m.status() if s["name"] == "fake")
+        assert "allowed_tools" not in st
+    finally:
+        m.stop_all()
+
+
+def test_refresh_interrupted_by_concurrent_stop(tmp_path, monkeypatch):
+    """A stop mid-refresh must not leave the server running afterward."""
+    import threading
+    import time
+
+    cfgp = tmp_path / "mcp.json"
+    m = McpManager(config_path=str(cfgp))
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    m.start_server("fake")
+    assert m.status()[0]["running"]
+
+    started = threading.Event()
+    release = threading.Event()
+    real_start = StdioMcpClient.start
+
+    def slow_start(self):
+        started.set()
+        release.wait(timeout=5)
+        return real_start(self)
+
+    monkeypatch.setattr(StdioMcpClient, "start", slow_start)
+    err = []
+
+    def _refresh():
+        try:
+            m.refresh_server("fake")
+        except McpError as e:
+            err.append(str(e))
+
+    t = threading.Thread(target=_refresh, daemon=True)
+    t.start()
+    assert started.wait(timeout=3)
+    m.stop_server("fake")
+    release.set()
+    t.join(timeout=6)
+    assert err, "refresh should fail when stop supersedes it"
+    assert "superseded" in err[0] or "interrupted" in err[0]
+    # Give the superseded start a moment to tear down its client.
+    time.sleep(0.2)
+    assert not m.status()[0]["running"]
+    m.stop_all()
+
+
+def test_stdio_cancel_unblocks_without_killing_server():
+    """cancel() must wake waiters and leave the process alive for reuse."""
+    import threading
+    import time
+    from pathlib import Path
+
+    slow = str(Path(__file__).parent / "fixtures" / "fake_mcp_server_slow.py")
+    c = StdioMcpClient(name="slow", command=sys.executable, args=[slow])
+    c.start()
+    try:
+        errors = []
+
+        def _call():
+            try:
+                c.call_tool("slow", {"seconds": 30}, timeout=10.0)
+            except McpError as e:
+                errors.append(str(e))
+
+        t = threading.Thread(target=_call, daemon=True)
+        t.start()
+        time.sleep(0.3)
+        assert c.alive
+        n = c.cancel()
+        assert n >= 1
+        t.join(timeout=3)
+        assert errors and "cancelled" in errors[0]
+        assert c.alive
+        # Server still usable after cancel.
+        tools = c.list_tools()
+        assert any(t.name == "slow" for t in tools)
+    finally:
+        c.stop()
 

@@ -2032,9 +2032,16 @@ class ConversationalSession(
         s = str(raw or "").strip()
         if not s:
             return "pilot: the request failed with no detail. Try again."
+        try:
+            from harness.api.redaction import redact_api_secrets
+
+            s = str(redact_api_secrets(s) or s)
+        except Exception:
+            pass
         low = s.lower()
         model = getattr(self, "config", None) and getattr(self.config, "driver", "") or ""
-        tail = f" [provider said: {s[:200]}]"
+        # Bound + redacted: never echo raw provider JSON / token-ish fragments.
+        tail = f" [provider said: {s[:160]}]"
 
         # Pull an HTTP status out of the string when present ("HTTP 429: ...").
         import re as _re
@@ -2062,8 +2069,9 @@ class ConversationalSession(
         if cls is not None:
             EC = _ec.ErrorClass
             if cls == EC.AUTH:
+                # No provider tail — AUTH bodies often echo key material.
                 return ("pilot: your API key was rejected (authentication failed). "
-                        "Check the key for this provider in Settings > Providers." + tail)
+                        "Check the key for this provider in Settings > Providers.")
             if cls == EC.RATE_LIMIT:
                 return ("pilot: the provider is rate-limiting your key (too many "
                         "requests, or you hit a quota). Wait a moment and retry, or "
@@ -2835,6 +2843,9 @@ class ConversationalSession(
                 # trips inside a single send() call (not just between cycles).
                 # Without this, an unbounded pilot loop with HARNESS_MAX_PILOT_STEPS=0
                 # would burn through the entire swarm ceiling before tokens are checked.
+                # Best-effort: depends on the provider populating _tokens_used during
+                # the stream. If usage only arrives in the stream footer, _mid_delta
+                # stays 0 here and the between-cycle budget.check() remains the net.
                 _mid_delta = self._tokens_used - tokens_at_cycle_start
                 if _mid_delta > 0:
                     budget.add_tokens(_mid_delta)

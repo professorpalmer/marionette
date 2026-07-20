@@ -432,3 +432,25 @@ def test_usage_response_cache_ttl_hit(monkeypatch):
     with server._usage_response_lock:
         server._usage_response_cache["k1"] = (time.monotonic() - 1.0, payload)
     assert server._usage_cache_get("k1") is None
+
+
+def test_sse_ring_eviction_skips_pinned_live_rings(monkeypatch):
+    """Pinned (pump-live) rings must survive MAX_SESSIONS eviction."""
+    from harness.api import sse as sse_mod
+
+    server._sse_ring_clear_for_tests()
+    monkeypatch.setattr(sse_mod, "_SSE_RING_MAX_SESSIONS", 2)
+    # Also patch the re-exported name used by begin if server binds the constant.
+    monkeypatch.setattr(server, "_SSE_RING_MAX_SESSIONS", 2, raising=False)
+
+    live = sse_mod._sse_ring_begin("live-sess")
+    live.pinned = True
+    assert sse_mod._sse_ring_lookup("live-sess") is live
+
+    sse_mod._sse_ring_begin("other-1")
+    # Third begin would formerly drop the oldest map entry (live). With pin
+    # protection, live must remain lookupable.
+    sse_mod._sse_ring_begin("other-2")
+    assert sse_mod._sse_ring_lookup("live-sess") is live
+    assert live.pinned is True
+    server._sse_ring_clear_for_tests()

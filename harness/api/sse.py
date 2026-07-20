@@ -80,6 +80,9 @@ class SseEventRing:
         self.generation = int(generation)
         self.cap = max(1, int(cap))
         self.ttl = float(ttl)
+        # True while sse_pump is draining this generation — global eviction
+        # must not drop a live reattach buffer under multi-session churn.
+        self.pinned = False
         self._lock = threading.Lock()
         self._cursor = 0
         # (cursor, monotonic_ts, event_dict)
@@ -166,10 +169,18 @@ def _sse_ring_begin(session_id: str) -> SseEventRing:
                 _sse_rings.pop(key, None)
         ring = SseEventRing(sid, gen)
         _sse_rings[(sid, gen)] = ring
-        # Bound global ring count (oldest keys first).
+        # Bound global ring count (oldest unpinned first). Never evict a ring
+        # whose pump is still live — temporary overshoot beats mid-turn
+        # ring_miss for a detached-busy session.
         while len(_sse_rings) > _SSE_RING_MAX_SESSIONS:
-            oldest = next(iter(_sse_rings))
-            _sse_rings.pop(oldest, None)
+            victim = None
+            for key, existing in _sse_rings.items():
+                if not getattr(existing, "pinned", False):
+                    victim = key
+                    break
+            if victim is None:
+                break
+            _sse_rings.pop(victim, None)
         return ring
 
 
@@ -322,6 +333,8 @@ def sse_pump(
     Returns True if the client detached mid-stream.
     """
     detached = False
+    if ring is not None:
+        ring.pinned = True
     try:
         for ev in gen:
             if on_event is not None:
@@ -347,6 +360,8 @@ def sse_pump(
             except Exception:
                 pass
     finally:
+        if ring is not None:
+            ring.pinned = False
         # Exhausted generators are a no-op; if the turn raised, close still
         # runs the generator finally so the session lock cannot leak.
         try:

@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.110, deliberately pre-1.0. Wave haul: strip turn-context trailers from user bubbles; Edit→Resubmit; Marionette-isolated model registry; Swarm Tracker cross-project live merge (mtime-capped); Cursor swarm adapter pin via Puppetmaster 1.20.6; web/wiki/memory/approval/redaction harden; Electron updater PATH for MSI dirs. Cursor Agent Node MCP grandchildren remain upstream.
+> Status: v0.9.111, deliberately pre-1.0. Post-v0.9.110 peel haul: MCP (POSIX process group, allowed_tools, stdio cancel, refresh generation), send-loop design docs, SSE (error redaction, CORS parity on chat/run, busy-aware ring pin). Puppetmaster pin remains 1.20.6.
 
 ## Documentation
 

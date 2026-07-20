@@ -614,8 +614,14 @@ class CompactionContextMixin:
                             except Exception:
                                 pass
 
-                # Daemon thread + join timeout: never block shutdown on a hung
-                # summarizer (ThreadPoolExecutor.__exit__ would wait forever).
+                # Daemon thread + join timeout by design: never block shutdown on
+                # a hung summarizer (ThreadPoolExecutor.__exit__ would wait
+                # forever). On timeout we abandon the thread — it is not forcibly
+                # killed — then fall back + set _compaction_fail_until cooldown.
+                # daemon=True so abandoned threads die with the process; retries
+                # are bounded by that cooldown. A cancel Event inside the
+                # summarizer would be cleaner but is not worth the complexity
+                # for desktop-app risk.
                 t = threading.Thread(target=_run_summarizer, daemon=True)
                 t.start()
                 t.join(timeout=max(5.0, _compact_timeout))

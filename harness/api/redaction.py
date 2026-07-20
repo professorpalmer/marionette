@@ -9,12 +9,22 @@ _REDACTED = "REDACTED"
 _SECRET_KV_RE = re.compile(
     r"(?i)((?:api[_-]?key|secret|password|token|bearer|authorization)\s*[=:]\s*)(\S+)"
 )
+# Free-floating provider/API token shapes that show up in exception text.
+_TOKENISH_RE = re.compile(
+    r"(?i)\b("
+    r"sk-[A-Za-z0-9_-]{8,}"
+    r"|ghp_[A-Za-z0-9]{20,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|Bearer\s+[A-Za-z0-9._\-]{12,}"
+    r")\b"
+)
 
 
 def _redact_string(text: str) -> str:
     if not text:
         return text
-    return _SECRET_KV_RE.sub(rf"\1{_REDACTED}", text)
+    out = _SECRET_KV_RE.sub(rf"\1{_REDACTED}", text)
+    return _TOKENISH_RE.sub(_REDACTED, out)
 
 
 def redact_api_secrets(value: Any) -> Any:
