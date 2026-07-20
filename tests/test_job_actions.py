@@ -12,6 +12,7 @@ from harness.job_actions import (
     MAX_ACTION_GOAL_CHARS,
     MAX_ACTION_ID_CHARS,
     MAX_ACTION_KIND_CHARS,
+    _normalize_status,
     ingest_worker_events,
     sanitize_action_row,
     sanitize_actions_list,
@@ -156,6 +157,46 @@ def test_settle_running_actions_marks_failed():
     assert settled[0]["status"] == "failed"
     assert settled[0]["error"] == "job finished"
     assert settled[1]["status"] == "complete"
+
+
+def test_normalize_status_unknown_is_terminal_not_stuck_running():
+    """Dirty/unknown telemetry must not hydrate as forever-running.
+
+    Matches frontend normalizeNestedActionStatus: unknown → complete (or failed
+    when an error/failed bit is present). Progressive aliases stay running.
+    """
+    assert _normalize_status("weird_telemetry_v2") == "complete"
+    assert _normalize_status("???", failed=True) == "failed"
+    assert _normalize_status("unknown", failed=False) == "complete"
+    row = sanitize_action_row(
+        action_id="dirty-1",
+        kind="tool_call",
+        goal="x",
+        status="not_a_real_status",
+    )
+    assert row is not None
+    assert row["status"] == "complete"
+
+    # Progressive / queued aliases remain running.
+    for progressive in ("running", "in_progress", "pending", "started", "queued", "active"):
+        assert _normalize_status(progressive) == "running"
+
+    # Documented terminal aliases preserved.
+    assert _normalize_status("completed") == "complete"
+    assert _normalize_status("done") == "complete"
+    assert _normalize_status("error") == "failed"
+    assert _normalize_status("cancelled") == "failed"
+    assert _normalize_status("interrupted") == "failed"
+
+    # Hydrate path: unknown with error settles failed, not running.
+    dirty = sanitize_actions_list([{
+        "action_id": "dirty-2",
+        "kind": "read_file",
+        "goal": "a.py",
+        "status": "bogus_terminal",
+        "error": "provider vanished",
+    }])
+    assert dirty[0]["status"] == "failed"
 
 
 def test_local_job_actions_persist_and_deep_copy(tmp_path):

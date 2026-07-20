@@ -19,6 +19,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 const mockSwarmLive = vi.mocked(api.swarmLive);
+const mockSwarmCancel = vi.mocked(api.swarmCancel);
 const mockArtifacts = vi.mocked(api.artifacts);
 
 function liveJob(
@@ -217,6 +218,181 @@ describe("SwarmPane mid-run job-row meters", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("SwarmPane truthful failed vs cancelled chrome", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("paints ordinary worker failure as failed, not cancelled", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-fail",
+        goal: "Ordinary failure",
+        status: "failed",
+        adapter: "agentic",
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    expect(screen.getByText(/1 failed/)).toBeInTheDocument();
+    expect(screen.queryByText(/cancelled/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Finished"));
+    await waitFor(() => {
+      expect(screen.getByText("Ordinary failure")).toBeInTheDocument();
+      expect(screen.getByText("failed")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("cancelled")).not.toBeInTheDocument();
+  });
+
+  it("keeps dead_run_failure authoritative as failed chrome", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-dead",
+        goal: "Dead run",
+        status: "complete",
+        adapter: "agentic",
+        dead_run_failure: "no_model",
+        artifacts_complete: false,
+        artifacts: [],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    expect(screen.getByText(/1 failed/)).toBeInTheDocument();
+    expect(screen.queryByText(/cancelled/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Finished"));
+    await waitFor(() => {
+      expect(screen.getByText(/all workers failed: no model/)).toBeInTheDocument();
+      expect(screen.getByText("failed")).toBeInTheDocument();
+    });
+  });
+
+  it("paints true user cancel as cancelled and does not tally it as failed", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-cancel",
+        goal: "User aborted swarm",
+        status: "cancelled",
+        adapter: "agentic",
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    expect(screen.getByText(/1 cancelled/)).toBeInTheDocument();
+    expect(screen.queryByText(/failed/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Finished"));
+    await waitFor(() => {
+      expect(screen.getByText("User aborted swarm")).toBeInTheDocument();
+      expect(screen.getByText("cancelled")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("failed")).not.toBeInTheDocument();
+  });
+});
+
+describe("SwarmPane cancel Kill contract", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+    mockSwarmCancel.mockReset();
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "job-kill",
+        goal: "Killable running swarm",
+        status: "running",
+        adapter: "agentic",
+      }),
+    );
+  });
+
+  it("accepted Kill shows optimistic cancelling then refreshes live", async () => {
+    mockSwarmCancel.mockResolvedValue({ ok: true, job_id: "job-kill" });
+    let liveCalls = 0;
+    mockSwarmLive.mockImplementation(async () => {
+      liveCalls += 1;
+      if (liveCalls <= 1) {
+        return liveJob({
+          id: "job-kill",
+          goal: "Killable running swarm",
+          status: "running",
+        });
+      }
+      return liveJob({
+        id: "job-kill",
+        goal: "Killable running swarm",
+        status: "cancelled",
+      });
+    });
+
+    render(<SwarmPane />);
+    const kill = await screen.findByTitle("Cancel this job");
+    fireEvent.click(kill);
+
+    await waitFor(() => {
+      expect(mockSwarmCancel).toHaveBeenCalledWith("job-kill");
+      expect(screen.getByText("cancelling...")).toBeInTheDocument();
+    });
+    // Best-effort cooperative cancel only — no force-kill claim in the UI.
+    expect(screen.queryByText(/force/i)).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(liveCalls).toBeGreaterThan(1);
+    });
+  });
+
+  it("rejected Kill clears cancelling and leaves Kill retryable", async () => {
+    mockSwarmCancel.mockResolvedValue({ ok: false, error: "not running" });
+
+    render(<SwarmPane />);
+    const kill = await screen.findByTitle("Cancel this job");
+    fireEvent.click(kill);
+
+    await waitFor(() => {
+      expect(mockSwarmCancel).toHaveBeenCalledWith("job-kill");
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("cancelling...")).not.toBeInTheDocument();
+      expect(screen.getByTitle("Cancel this job")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTitle("Cancel this job"));
+    await waitFor(() => {
+      expect(mockSwarmCancel).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("stale/404 Kill clears cancelling, refreshes, and allows retry", async () => {
+    mockSwarmCancel
+      .mockRejectedValueOnce(Object.assign(new Error("Not Found"), { status: 404 }))
+      .mockResolvedValueOnce({ ok: true, job_id: "job-kill" });
+
+    render(<SwarmPane />);
+    const kill = await screen.findByTitle("Cancel this job");
+    fireEvent.click(kill);
+
+    await waitFor(() => {
+      expect(mockSwarmCancel).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText("cancelling...")).not.toBeInTheDocument();
+      expect(screen.getByTitle("Cancel this job")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTitle("Cancel this job"));
+    await waitFor(() => {
+      expect(mockSwarmCancel).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("cancelling...")).toBeInTheDocument();
+    });
   });
 });
 

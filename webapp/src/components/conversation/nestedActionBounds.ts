@@ -54,6 +54,15 @@ export function normalizeNestedActionStatus(
   ) {
     return "failed";
   }
+  if (
+    statusRaw === "in_progress"
+    || statusRaw === "pending"
+    || statusRaw === "started"
+    || statusRaw === "queued"
+    || statusRaw === "active"
+  ) {
+    return "running";
+  }
   // Unknown: match transcript hydrate — error → failed, else complete (not running).
   return error ? "failed" : "complete";
 }

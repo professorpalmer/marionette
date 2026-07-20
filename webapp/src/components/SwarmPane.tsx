@@ -38,7 +38,7 @@ function Tooltip({ label, children, className }: { label: string; children: Reac
   );
 }
 
-type Status = "pending" | "in_progress" | "completed" | "cancelled";
+type Status = "pending" | "in_progress" | "completed" | "failed" | "cancelled";
 
 // Compact "how long ago" label for a job's last activity. Accepts epoch seconds
 // or an ISO string (the backend sends created_at/updated_at as either). Returns
@@ -82,16 +82,32 @@ function summarizeRouting(art: Artifact): string {
 function jobStatus(j: Job): Status {
   const s = (j.status || "").toLowerCase();
   if (s.includes("complete") || s.includes("done")) return "completed";
-  if (s.includes("fail") || s.includes("cancel") || s.includes("error") || s.includes("stall")) return "cancelled";
+  // User cancel / abort — distinct from ordinary worker failure chrome.
+  if (
+    s.includes("cancel")
+    || s.includes("user-aborted")
+    || s.includes("user_aborted")
+  ) {
+    return "cancelled";
+  }
+  if (
+    s.includes("fail")
+    || s.includes("error")
+    || s.includes("stall")
+    || s.includes("dead")
+  ) {
+    return "failed";
+  }
   if (s.includes("run") || s.includes("progress") || s.includes("active")) return "in_progress";
   return "pending";
 }
 
-// A job is "finished" once it can no longer change -- completed or failed. These
-// are the runs we fold away so a long session doesn't stack into a wall.
+// A job is "finished" once it can no longer change -- completed, failed, or
+// cancelled. These are the runs we fold away so a long session doesn't stack
+// into a wall.
 function isTerminal(j: Job): boolean {
   const st = jobStatus(j);
-  return st === "completed" || st === "cancelled";
+  return st === "completed" || st === "failed" || st === "cancelled";
 }
 
 function taskState(t: Task): "running" | "done" | "fail" | "idle" {
@@ -405,9 +421,10 @@ function jobPhase(j: Job): { key: string; label: string; index: number; failed: 
   const doneCount = tasks.filter((t) => taskState(t) === "done").length;
   const hasRouting = jobArtifactList(j).some((a) => (a.type || "").toUpperCase() === "ROUTING");
 
-  if (st === "cancelled") {
+  if (st === "failed" || st === "cancelled") {
     const reached = total > 0 ? 2 : hasRouting ? 1 : 0;
-    return { key: "failed", label: "failed", index: reached, failed: true };
+    const label = st === "cancelled" ? "cancelled" : "failed";
+    return { key: label, label, index: reached, failed: true };
   }
   if (st === "completed") return { key: "done", label: "done", index: 3, failed: false };
   if (total > 0 && running > 0) return { key: "workers", label: `running ${doneCount}/${total}`, index: 2, failed: false };
@@ -425,7 +442,7 @@ function PhaseStrip({ job, phase }: { job: Job; phase?: ReturnType<typeof jobPha
         const reached = i <= index;
         const isActiveSeg = i === index && active;
         const color = failed && i === index
-          ? "bg-risk"
+          ? (key === "cancelled" ? "bg-muted" : "bg-risk")
           : reached
           ? (key === "done" ? "bg-good" : "bg-accent")
           : "bg-edge/60";
@@ -687,7 +704,14 @@ export default function SwarmPane() {
   const visibleJobs = allJobs.filter((j) => !dismissed.has(j.id));
   const running = visibleJobs.filter((j) => !isTerminal(j));
   const finished = visibleJobs.filter((j) => isTerminal(j));
-  const failedCount = finished.filter((j) => jobStatus(j) === "cancelled" || jobDeadRunFailure(j) !== null).length;
+  // Ordinary failures + dead-run stamps count as failed; true user cancels do not.
+  const failedCount = finished.filter((j) =>
+    jobDeadRunFailure(j) !== null || jobStatus(j) === "failed",
+  ).length;
+  const cancelledCount = finished.filter((j) =>
+    jobDeadRunFailure(j) === null && jobStatus(j) === "cancelled",
+  ).length;
+  const completedCount = finished.length - failedCount - cancelledCount;
   const runningCount = running.filter((j) => jobStatus(j) === "in_progress").length;
   const anyRunning = runningCount > 0;
 
@@ -708,7 +732,8 @@ export default function SwarmPane() {
   // instead of threading a dozen props.
   const renderJob = (j: Job) => {
     const deadRunFailure = jobDeadRunFailure(j);
-    const st: Status = deadRunFailure ? "cancelled" : jobStatus(j);
+    // dead_run_failure is authoritative: paint as failed, never as a user cancel.
+    const st: Status = deadRunFailure ? "failed" : jobStatus(j);
     const manualExpanded = expandedJobs[j.id];
     const isExpanded = manualExpanded !== undefined ? manualExpanded : (st === "in_progress");
     const phase = deadRunFailure
@@ -749,7 +774,15 @@ export default function SwarmPane() {
         // overflow. Pinning shrink-0 keeps the card at full content height so the
         // list actually scrolls.
         className={`shrink-0 rounded-md border bg-panel2/30 flex flex-col overflow-hidden transition-colors ${
-          st === "in_progress" ? "border-accent/30" : st === "completed" ? "border-good/25" : st === "cancelled" ? "border-risk/25" : "border-edge"
+          st === "in_progress"
+            ? "border-accent/30"
+            : st === "completed"
+            ? "border-good/25"
+            : st === "failed"
+            ? "border-risk/25"
+            : st === "cancelled"
+            ? "border-muted/40"
+            : "border-edge"
         }`}
       >
         {/* Header row. A div (not a button) so the dismiss control can be a real
@@ -771,8 +804,10 @@ export default function SwarmPane() {
                   <Loader2 size={12} className="animate-spin text-accent" />
                 ) : st === "completed" ? (
                   <CheckCircle2 size={12} className="text-good" />
-                ) : st === "cancelled" ? (
+                ) : st === "failed" ? (
                   <XCircle size={12} className="text-risk" />
+                ) : st === "cancelled" ? (
+                  <XCircle size={12} className="text-muted" />
                 ) : (
                   <Circle size={12} className="text-muted" />
                 )}
@@ -870,7 +905,13 @@ export default function SwarmPane() {
           <div className="flex items-center gap-2 pl-6 pr-1 mt-1">
             <div className="flex-1"><PhaseStrip job={j} phase={phase} /></div>
             <span className={`text-[9px] font-medium tabular-nums shrink-0 ${
-              phase.failed ? "text-risk/80" : phase.key === "done" ? "text-good/80" : "text-accent/80"
+              phase.key === "cancelled"
+                ? "text-muted"
+                : phase.failed
+                ? "text-risk/80"
+                : phase.key === "done"
+                ? "text-good/80"
+                : "text-accent/80"
             }`}>
               {phase.label}
             </span>
@@ -1181,9 +1222,9 @@ export default function SwarmPane() {
               <Loader2 size={10} className="animate-spin" /> {runningCount} running
             </span>
           )}
-          {finished.length > 0 && (
+          {completedCount > 0 && (
             <span className="flex items-center gap-1 text-good/80">
-              <CheckCircle2 size={10} /> {finished.length - failedCount}
+              <CheckCircle2 size={10} /> {completedCount}
             </span>
           )}
         </div>
@@ -1239,6 +1280,9 @@ export default function SwarmPane() {
                     <span className="text-faint/60 normal-case tracking-normal">({finished.length})</span>
                     {failedCount > 0 && (
                       <span className="text-risk/70 normal-case tracking-normal">{"\u00b7"} {failedCount} failed</span>
+                    )}
+                    {cancelledCount > 0 && (
+                      <span className="text-muted normal-case tracking-normal">{"\u00b7"} {cancelledCount} cancelled</span>
                     )}
                   </button>
                   <button

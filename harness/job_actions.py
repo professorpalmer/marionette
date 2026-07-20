@@ -48,14 +48,17 @@ def _normalize_status(raw: Any, *, failed: bool = False) -> str:
     status = str(raw or "").strip().lower()
     if status in ("completed", "done", "success", "ok"):
         status = "complete"
-    elif status in ("error", "cancelled", "canceled"):
+    elif status in ("error", "cancelled", "canceled", "interrupted"):
         status = "failed"
-    elif status in ("in_progress", "pending", "started"):
+    elif status in ("in_progress", "pending", "started", "queued", "active"):
         status = "running"
     if failed and status != "complete":
         status = "failed"
     if status not in _ALLOWED_STATUSES:
-        status = "failed" if failed else "running"
+        # Align with frontend normalizeNestedActionStatus: dirty/unknown
+        # telemetry is terminal (complete), never stuck running forever.
+        # failed=True (or an error bit upstream) still forces failed.
+        status = "failed" if failed else "complete"
     return status
 
 
