@@ -443,6 +443,7 @@ def consume_stream_json(
     Returns keys: text, tool_calls, usage, error, session_id, model, raw_result.
     """
     text_parts: list[str] = []
+    reasoning_parts: list[str] = []
     tool_calls: list[dict] = []
     seen_call_ids: set[str] = set()
     session_id = ""
@@ -495,8 +496,10 @@ def consume_stream_json(
         if etype == "thinking":
             # Docs say thinking is suppressed in print mode; still forward if present.
             think = event.get("text") or _assistant_text(event)
-            if think and on_reasoning_delta is not None:
-                on_reasoning_delta(str(think))
+            if think:
+                reasoning_parts.append(str(think))
+                if on_reasoning_delta is not None:
+                    on_reasoning_delta(str(think))
             continue
 
         if etype == "tool_call":
@@ -553,6 +556,7 @@ def consume_stream_json(
 
     return {
         "text": text,
+        "reasoning": "".join(reasoning_parts),
         "tool_calls": tool_calls,
         "usage": usage,
         "error": error,
@@ -874,6 +878,7 @@ class CursorCliDriver:
                 "prompt_via_file": bool(prompt_file),
                 "host_tools_ignored": True,
                 "billing": "plan",
+                "reasoning": str(parsed.get("reasoning") or ""),
             }
             if provider_cost is not None:
                 meta["provider_cost_usd"] = provider_cost

@@ -48,6 +48,7 @@ from .send_loop_actions import execute_turn_actions
 from .send_loop_phases import (
     drain_idle_turn,
     drain_stream_queue,
+    promote_trailing_reasoning_to_say,
     meter_pilot_step,
     run_auto_verify,
     run_stream,
@@ -1012,13 +1013,30 @@ class SendLoopMixin:
                     continue
 
             # 2. Emit the pilot's prose to the user.
-            # Do not emit a "thinking"/reasoning ConvEvent. Streaming already
-            # paints the answer first; a late reasoning block after the answer
-            # is redundant UI and (when enable_reasoning is on) wasted tokens.
-            # Pilot JSON "thinking" fields are still parsed into turn.thinking
-            # for internal use, but never shown.
+            # Do not emit a post-answer "thinking"/reasoning ConvEvent — live
+            # deltas already painted reasoning mid-turn. Pilot JSON "thinking"
+            # stays on turn.thinking for internals only.
+            #
+            # Exception: Cursor CLI/ACP (Grok) often ends the step with the
+            # real readout only on the thought channel. Promote that into a
+            # message so the turn gets a finished summary bubble.
 
             cleaned_say_text = clean_say(turn.say) if turn.say else ""
+            _resp_meta = getattr(resp, "meta", None) or {}
+            if not isinstance(_resp_meta, dict):
+                _resp_meta = {}
+            _promoted_say = promote_trailing_reasoning_to_say(
+                say_text=cleaned_say_text,
+                streamed_reasoning=str(_resp_meta.get("streamed_reasoning") or ""),
+                stream_ended_on_reasoning=bool(
+                    _resp_meta.get("stream_ended_on_reasoning")
+                ),
+                meta_reasoning=str(
+                    _resp_meta.get("reasoning") or turn.thinking or ""
+                ),
+            )
+            if _promoted_say:
+                _promoted_say = clean_say(_promoted_say) or _promoted_say
             if cleaned_say_text:
                 # If this prose was already streamed token-by-token, flag it so the
                 # frontend finalizes the existing streaming bubble in place instead
@@ -1027,18 +1045,37 @@ class SendLoopMixin:
                 yield ConvEvent("message", {"role": "assistant", "text": cleaned_say_text, "streamed": _already_streamed})
                 turn_prose.append(cleaned_say_text)
                 self._display_transcript.append({"type": "message", "role": "assistant", "text": cleaned_say_text})
+            if _promoted_say and _promoted_say.strip() != (cleaned_say_text or "").strip():
+                yield ConvEvent("message", {
+                    "role": "assistant",
+                    "text": _promoted_say,
+                    "streamed": False,
+                    "promoted_from_reasoning": True,
+                })
+                turn_prose.append(_promoted_say)
+                self._display_transcript.append({
+                    "type": "message",
+                    "role": "assistant",
+                    "text": _promoted_say,
+                })
+            _history_text = cleaned_say_text or ""
+            if _promoted_say:
+                if _history_text and _promoted_say.strip() != _history_text.strip():
+                    _history_text = f"{_history_text}\n\n{_promoted_say}"
+                else:
+                    _history_text = _promoted_say
             # record the pilot's turn in transcript (prose only -- the conversation)
             if is_native:
                 assistant_msg: dict[str, Any] = {"role": "assistant"}
-                if cleaned_say_text:
-                    assistant_msg["content"] = cleaned_say_text
+                if _history_text:
+                    assistant_msg["content"] = _history_text
                 else:
                     assistant_msg["content"] = ""
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
                 self._history.append(assistant_msg)
             else:
-                self._history.append({"role": "assistant", "content": cleaned_say_text or "(acting)"})
+                self._history.append({"role": "assistant", "content": _history_text or "(acting)"})
 
             if self._turn_budget_exhausted():
                 # Close the turn for the UI before wiki ingest (network I/O).
@@ -1053,7 +1090,11 @@ class SendLoopMixin:
                 )
                 return
 
-            if len(turn.actions) > 0 or (cleaned_say_text and len(cleaned_say_text.strip()) > 0):
+            if (
+                len(turn.actions) > 0
+                or (cleaned_say_text and len(cleaned_say_text.strip()) > 0)
+                or (_promoted_say and len(_promoted_say.strip()) > 0)
+            ):
                 consecutive_non_productive = 0
             else:
                 consecutive_non_productive += 1
@@ -1071,7 +1112,7 @@ class SendLoopMixin:
                     normalize_assistant_prose,
                     stagnation_streak_cap,
                 )
-                prose_key = normalize_assistant_prose(cleaned_say_text)
+                prose_key = normalize_assistant_prose(_history_text or cleaned_say_text)
                 action_key = fingerprint_turn_actions(turn.actions)
                 # Empty turns (no prose, no actions) are handled by the
                 # consecutive_non_productive break above — skip fingerprinting.

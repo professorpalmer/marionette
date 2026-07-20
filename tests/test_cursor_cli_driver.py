@@ -182,6 +182,38 @@ def test_consume_result_error():
     assert parsed["error"] == "not logged in"
 
 
+def test_consume_stream_json_accumulates_thinking_into_reasoning():
+    lines = [
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Looking up."}],
+            },
+            "timestamp_ms": 1,
+        }),
+        json.dumps({"type": "thinking", "text": "Schedules was last. "}),
+        json.dumps({
+            "type": "thinking",
+            "text": "No named section remains queued.",
+        }),
+        json.dumps({
+            "type": "result",
+            "is_error": False,
+            "result": "Looking up.",
+        }),
+    ]
+    thoughts: list[str] = []
+    parsed = consume_stream_json(lines, on_reasoning_delta=thoughts.append)
+    assert thoughts == [
+        "Schedules was last. ",
+        "No named section remains queued.",
+    ]
+    assert parsed["reasoning"] == (
+        "Schedules was last. No named section remains queued."
+    )
+
+
 def test_driver_chat_stream_mocked_subprocess(monkeypatch, tmp_path):
     monkeypatch.delenv("HARNESS_CURSOR_CLI_MODE", raising=False)
     fake_bin = tmp_path / "agent"

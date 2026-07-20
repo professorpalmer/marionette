@@ -816,15 +816,18 @@ class WarmAcpSession:
         transport = self.ensure()
         assert self.session_id
         chunks: List[str] = []
+        thought_chunks: List[str] = []
         usage_blobs: List[Any] = []
 
         def _on_update(params: dict) -> None:
             thought = _extract_thought_text(params)
-            if thought and on_reasoning_delta is not None:
-                try:
-                    on_reasoning_delta(thought)
-                except Exception:
-                    pass
+            if thought:
+                thought_chunks.append(thought)
+                if on_reasoning_delta is not None:
+                    try:
+                        on_reasoning_delta(thought)
+                    except Exception:
+                        pass
             tool_ev = _extract_tool_event(params)
             if tool_ev and on_tool_hint is not None:
                 # Surface Cursor-native tools as hints only (never host tool_calls).
@@ -877,6 +880,9 @@ class WarmAcpSession:
         tin, tout, cost = coerce_token_usage(*usage_blobs)
         return {
             "text": final_text,
+            # Thought-channel accumulation: Grok/ACP often puts the final
+            # readout only here. Send-loop may promote it to assistant prose.
+            "reasoning": "".join(thought_chunks),
             "stop_reason": stop,
             "session_id": self.session_id,
             "result": result,
@@ -1035,6 +1041,7 @@ class CursorAcpDriver:
             "stop_reason": out.get("stop_reason"),
             # Plan credits — $ meter is estimate-only unless agent returns cost.
             "billing": "plan",
+            "reasoning": str(out.get("reasoning") or ""),
         }
         cost = out.get("provider_cost_usd")
         if cost is not None:

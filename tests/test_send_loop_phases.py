@@ -28,6 +28,7 @@ from harness.send_loop_phases import (
     drain_idle_turn,
     drain_stream_queue,
     meter_pilot_step,
+    promote_trailing_reasoning_to_say,
     read_stdout_thread,
     run_auto_verify,
     run_parallel_prefetch,
@@ -477,6 +478,75 @@ def test_drain_stream_queue_usable_via_yield_from():
         prose, r = stop.value
     assert prose == ""
     assert r is resp
+
+
+def test_drain_stream_queue_stashes_trailing_reasoning_on_meta():
+    """Cursor Grok often ends on thought chunks; stash for send-loop promote."""
+    q: queue.Queue = queue.Queue()
+    resp = SimpleNamespace(text="", meta={})
+    q.put(("delta", '{"say": "Looking up next."}'))
+    q.put(("reasoning", "Schedules was last. "))
+    q.put(("reasoning", "No named section remains queued after Timeline, Swarms, Schedules."))
+    q.put(("done", resp))
+
+    gen = drain_stream_queue(q)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        prose, got = stop.value
+
+    assert "Looking up" in prose
+    assert got.meta["stream_ended_on_reasoning"] is True
+    assert "No named section remains queued" in got.meta["streamed_reasoning"]
+    assert got.meta["reasoning"] == got.meta["streamed_reasoning"]
+
+
+def test_promote_trailing_reasoning_empty_say():
+    body = "No named section remains queued. Schedules was the last wave."
+    assert (
+        promote_trailing_reasoning_to_say(
+            say_text="",
+            streamed_reasoning=body,
+            stream_ended_on_reasoning=False,
+        )
+        == body
+    )
+
+
+def test_promote_trailing_reasoning_short_preamble():
+    say = "Found the sequence. Looking up what comes next."
+    reasoning = (
+        "The audit flow began with v0.9.102 validation. "
+        "Schedules was the last completed wave. "
+        "No named section remains queued after Timeline, Swarms, then Schedules."
+    )
+    out = promote_trailing_reasoning_to_say(
+        say_text=say,
+        streamed_reasoning=reasoning,
+        stream_ended_on_reasoning=True,
+    )
+    assert out == reasoning
+
+
+def test_promote_trailing_reasoning_skips_when_prose_won():
+    say = "That's all of them for this peel. Schedules was last."
+    assert (
+        promote_trailing_reasoning_to_say(
+            say_text=say,
+            streamed_reasoning="short think",
+            stream_ended_on_reasoning=True,
+        )
+        == ""
+    )
+    assert (
+        promote_trailing_reasoning_to_say(
+            say_text=say,
+            streamed_reasoning="extra notes " * 40,
+            stream_ended_on_reasoning=False,
+        )
+        == ""
+    )
 
 
 def test_run_parallel_prefetch_skips_singleton():

@@ -221,6 +221,48 @@ def action_display_goal(act: PilotAction) -> Any:
     return act_goal
 
 
+def promote_trailing_reasoning_to_say(
+    *,
+    say_text: str,
+    streamed_reasoning: str = "",
+    stream_ended_on_reasoning: bool = False,
+    meta_reasoning: str = "",
+) -> str:
+    """Promote thought-channel readout into assistant prose when needed.
+
+    Cursor CLI/ACP (notably Grok) often leaves the final summary only in
+    ``agent_thought_chunk`` / thinking events after tools. Live UI paints
+    that as REASONING; without a follow-up ``message`` the turn feels
+    unfinished. Promote when:
+
+    - say is empty and we have accumulated reasoning, or
+    - the stream ended on reasoning and that text is substantially longer
+      than a short pre-tool say (typical "Found X. Looking up…" preamble).
+
+    Returns the text to emit as an extra/final assistant message, or "".
+    Never invents content — only reuses what the driver already streamed.
+    """
+    reasoning = (streamed_reasoning or meta_reasoning or "").strip()
+    if not reasoning:
+        return ""
+    say = (say_text or "").strip()
+    if not say:
+        return reasoning
+    if not stream_ended_on_reasoning:
+        return ""
+    if reasoning == say:
+        return ""
+    # Short pre-tool narration + long post-tool thought readout.
+    if len(reasoning) < max(120, len(say) * 2):
+        return ""
+    # Say already embeds most of the reasoning (driver duplicated channels).
+    if say in reasoning and len(say) >= int(len(reasoning) * 0.6):
+        return ""
+    if reasoning in say:
+        return ""
+    return reasoning
+
+
 def drain_stream_queue(q: Any) -> Iterator[Any]:
     """Consume a ``run_stream`` queue and yield ConvEvents until done/error.
 
@@ -228,6 +270,10 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
     transport failure the queued exception is re-raised (same as the former
     inline loop). Lazy-imports ConvEvent to avoid an import cycle with
     conversation → send_loop → send_loop_phases.
+
+    Accumulated reasoning is stashed on ``resp.meta`` (when present) as
+    ``streamed_reasoning`` / ``stream_ended_on_reasoning`` so the send loop
+    can promote a thought-only finale into an assistant message.
     """
     from .conversation import ConvEvent
 
@@ -239,15 +285,20 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
     # live so a long GLM/OR "thinking" wait is not a blank spinner.
     say_extractor = StreamingSayExtractor()
     streamed_prose: list[str] = []
+    streamed_reasoning: list[str] = []
+    last_content_kind = ""  # "prose" | "reasoning"
     while True:
         kind, val = q.get()
         if kind == "delta":
             clean = say_extractor.feed(val)
             if clean:
                 streamed_prose.append(clean)
+                last_content_kind = "prose"
                 yield ConvEvent("message_delta", {"text": clean})
         elif kind == "reasoning":
             if val:
+                streamed_reasoning.append(str(val))
+                last_content_kind = "reasoning"
                 yield ConvEvent("thinking", {"text": val, "delta": True})
         elif kind == "tool_hint":
             # Drivers may pass a plain name or a structured
@@ -280,6 +331,23 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
                     "kind": "wait",
                 })
         elif kind == "done":
+            reasoning = "".join(streamed_reasoning)
+            if reasoning:
+                meta = getattr(val, "meta", None)
+                if not isinstance(meta, dict):
+                    meta = {}
+                    try:
+                        val.meta = meta
+                    except Exception:
+                        meta = None
+                if isinstance(meta, dict):
+                    meta["streamed_reasoning"] = reasoning
+                    meta["stream_ended_on_reasoning"] = (
+                        last_content_kind == "reasoning"
+                    )
+                    # Fill meta.reasoning when the driver omitted it (Cursor ACP/CLI).
+                    if not str(meta.get("reasoning") or "").strip():
+                        meta["reasoning"] = reasoning
             return "".join(streamed_prose), val
         elif kind == "error":
             raise val
