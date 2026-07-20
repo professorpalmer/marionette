@@ -1944,9 +1944,8 @@ export default function Conversation({
 
     // Edit-resubmit must start a new loop, not silently steer into a dead turn.
     if (composerBusy && resubmitEdit) {
-      stop()
-        .then(() => kickSend())
-        .catch(() => kickSend());
+      stop();
+      kickSend();
       return;
     }
 
