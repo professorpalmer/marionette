@@ -1070,10 +1070,20 @@ function ActivityGroup({
     return null;
   };
 
-  // Tiny groups (1-2 actions, no codegraph noise, no narration) render inline --
-  // collapsing them would add a click for no benefit.
+  // Tiny tool-only groups (1-2 actions, no reasoning/narration) render inline --
+  // collapsing them would add a click for no benefit. Thinking-only groups must
+  // NOT take this path: uncapped REASONING rows under the finale is the bug
+  // Cursor CLI late-thinking used to paint; they use the Thought collapsible.
   const hasMsg = items.some((it) => it.kind === "msg" && (it as { kind: "msg"; msg: Msg }).msg.text.trim());
-  if (actionCount <= 2 && cgItems.length === 0 && !hasMsg && checkpointItems.length === 0 && swarmResults.length === 0) {
+  if (
+    actionCount > 0
+    && actionCount <= 2
+    && cgItems.length === 0
+    && !hasMsg
+    && thinkingItems.length === 0
+    && checkpointItems.length === 0
+    && swarmResults.length === 0
+  ) {
     return (
       <div className="flex flex-col gap-0.5 pl-3 border-l-2 border-edge/40 my-1 w-full">
         {items.map(renderInner)}

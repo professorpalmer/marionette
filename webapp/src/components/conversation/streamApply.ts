@@ -1170,7 +1170,12 @@ export function appendStreamError(items: Item[], error: string): Item[] {
 }
 
 export function appendNonStreamingThinking(items: Item[], text: string): Item[] {
-  return [...items, { kind: "thinking", text, id: newThinkingId() }];
+  // Cursor CLI sometimes dumps full thinking frames after the answer — hoist
+  // into the investigation fold above the trailing finale (same as cards).
+  return hoistCardsBeforeTrailingFinals([
+    ...items,
+    { kind: "thinking", text, id: newThinkingId() },
+  ]);
 }
 
 /**

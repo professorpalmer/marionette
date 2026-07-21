@@ -22,6 +22,7 @@ import {
   clearToolPrepPlaceholders,
   deduplicateAssistantNarration,
   upsertToolPrep,
+  upsertStreamingThinking,
   looksLikeFinalAnswer,
   hoistCardsBeforeTrailingFinals,
 } from "../components/Conversation";
@@ -468,6 +469,74 @@ describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
       "card",
       "msg:assistant",
     ]);
+  });
+
+  it("hoists late Cursor CLI reasoning under a sealed finale into the fold", () => {
+    const finalText =
+      "v0.9.112 is already tagged and released with installers.\n\n"
+      + "My vote: cut v0.9.113 now.\n\n"
+      + "Which do you want?";
+    const items: Item[] = [
+      msg("user", "release?"),
+      {
+        kind: "card",
+        card: {
+          id: "c1",
+          goal: "VERSION",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+        },
+      },
+      { kind: "msg", msg: { role: "assistant", text: finalText } },
+      { kind: "thinking", text: "v0.9.112 is already tagged.", id: "th-late-1" },
+      { kind: "thinking", text: "HEAD matches that release.", id: "th-late-2" },
+    ];
+    const next = hoistCardsBeforeTrailingFinals(items);
+    const kinds = next.map((it) => {
+      if (it.kind === "card") return "card";
+      if (it.kind === "msg") return `msg:${it.msg.role}`;
+      if (it.kind === "thinking") return `thinking:${it.id}`;
+      return it.kind;
+    });
+    expect(kinds).toEqual([
+      "msg:user",
+      "card",
+      "thinking:th-late-1",
+      "thinking:th-late-2",
+      "msg:assistant",
+    ]);
+  });
+
+  it("upsertStreamingThinking hoists deltas that arrive after the finale", () => {
+    const finalText =
+      "Ship it.\n\n"
+      + "| Step | Status |\n|---|---|\n"
+      + "| CI | green |\n\n"
+      + "Ready when you are.";
+    let items: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "card",
+        card: {
+          id: "c1",
+          goal: "a.py",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+        },
+      },
+      { kind: "msg", msg: { role: "assistant", text: finalText } },
+    ];
+    items = upsertStreamingThinking(items, "checking tag…");
+    const assistantAt = items.findIndex(
+      (it) => it.kind === "msg" && it.msg.role === "assistant",
+    );
+    const thinkAt = items.findIndex((it) => it.kind === "thinking");
+    expect(thinkAt).toBeGreaterThanOrEqual(0);
+    expect(thinkAt).toBeLessThan(assistantAt);
   });
 
   it("late tool after first card still leapfrogs a trailing sealed finale", () => {

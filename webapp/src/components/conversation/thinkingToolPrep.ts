@@ -25,6 +25,7 @@ export function finalizeStreamingThinking(items: Item[]): Item[] {
  * later assistant bubble or tool card after it — those surfaces are committed.
  * A new thinking_delta after a message/tool always APPENDs a fresh thinking row. */
 export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
+  let next: Item[];
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     if (it.kind === "msg" && it.msg.role === "user") break;
@@ -35,10 +36,11 @@ export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
       || (it.kind === "msg" && it.msg.role === "assistant")
     ) {
       const sealed = finalizeStreamingThinking(items);
-      return [
+      next = [
         ...sealed,
         { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() },
       ];
+      return hoistCardsBeforeTrailingFinals(next);
     }
     if (it.kind === "thinking" && it.streaming) {
       const copy = items.slice();
@@ -48,10 +50,11 @@ export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
         streaming: true,
         id: it.id || newThinkingId(),
       };
-      return copy;
+      return hoistCardsBeforeTrailingFinals(copy);
     }
   }
-  return [...items, { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() }];
+  next = [...items, { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() }];
+  return hoistCardsBeforeTrailingFinals(next);
 }
 
 export type ToolPrepOpts = {
@@ -93,12 +96,14 @@ function isSealedFinalAssistant(it: Item): boolean {
 }
 
 /**
- * Move tool cards (and tool_prep chrome) that landed after a trailing sealed
- * final-looking assistant to just before that assistant.
+ * Move investigation rows (tool cards, reasoning, tool_prep chrome) that
+ * landed after a trailing sealed final-looking assistant to just before that
+ * assistant — preserving their relative order.
  *
- * Cursor CLI often flushes the answer before buffered tool_call events; the
- * first-card leapfrog alone cannot fix cards that already sit under the
- * summary. Without this, Explored renders beneath the PILOT finale.
+ * Cursor CLI often flushes the answer before buffered tool_call / thinking
+ * events; the first-card leapfrog alone cannot fix rows that already sit
+ * under the summary. Without this, Explored (and uncapped REASONING rows)
+ * render beneath the PILOT finale.
  */
 export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
   let turnStart = 0;
@@ -110,20 +115,20 @@ export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
     }
   }
 
-  // Rightmost sealed final in the turn that still has a later tool card.
+  // Rightmost sealed final in the turn that still has later investigation.
   let finalIdx = -1;
   for (let i = items.length - 1; i >= turnStart; i--) {
     if (!isSealedFinalAssistant(items[i])) continue;
-    let cardAfter = false;
+    let investigationAfter = false;
     for (let j = i + 1; j < items.length; j++) {
       const later = items[j];
       if (later.kind === "msg" && later.msg.role === "user") break;
-      if (later.kind === "card") {
-        cardAfter = true;
+      if (later.kind === "card" || later.kind === "thinking") {
+        investigationAfter = true;
         break;
       }
     }
-    if (cardAfter) {
+    if (investigationAfter) {
       finalIdx = i;
       break;
     }
@@ -132,7 +137,7 @@ export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
 
   const head = items.slice(0, finalIdx);
   const finalItem = items[finalIdx];
-  const hoistCards: Extract<Item, { kind: "card" }>[] = [];
+  const hoist: Item[] = [];
   let hoistPrep: Extract<Item, { kind: "tool_prep" }> | null = null;
   const tail: Item[] = [];
   for (let j = finalIdx + 1; j < items.length; j++) {
@@ -141,18 +146,18 @@ export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
       tail.push(...items.slice(j));
       break;
     }
-    if (it.kind === "card") {
-      hoistCards.push(it);
+    if (it.kind === "card" || it.kind === "thinking") {
+      hoist.push(it);
     } else if (it.kind === "tool_prep") {
       hoistPrep = it;
     } else {
       tail.push(it);
     }
   }
-  if (hoistCards.length === 0) return items;
+  if (hoist.length === 0) return items;
   return [
     ...head,
-    ...hoistCards,
+    ...hoist,
     ...(hoistPrep ? [hoistPrep] : []),
     finalItem,
     ...tail.filter((it) => it.kind !== "tool_prep"),
