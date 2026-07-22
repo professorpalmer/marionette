@@ -1006,53 +1006,78 @@ def execute_intent(
             from puppetmaster.workers import WorkerSpec
             roles = intent.roles or infer_roles(intent.goal)
             _browser = _browser_swarm_enabled(intent.goal)
+            pinned_model = (getattr(intent, "model", None) or "").strip()
+            pin_fields: dict = {}
+            if pinned_model:
+                from puppetmaster.model_registry import (
+                    AmbiguousModelPinError,
+                    apply_agentic_model_pin,
+                )
+
+                try:
+                    pin_fields = apply_agentic_model_pin({}, pinned_model)
+                except AmbiguousModelPinError as exc:
+                    raise ValueError(f"run_swarm model pin ambiguous: {exc}") from exc
+                # Fail closed: unknown pin must not silently auto-route elsewhere.
+                if not pin_fields.get("pinned_model"):
+                    raise ValueError(
+                        f"run_swarm model pin {pinned_model!r} is not in the "
+                        "agentic registry. Add it via Models, or omit model "
+                        "for auto-route."
+                    )
+                pin_fields["auto_route"] = False
             specs = []
             for r in roles:
+                base_payload = {
+                    "read_only": True, "no_edit": True, "dry_run": True,
+                    "cwd": repo_cwd, "prompt": intent.goal,
+                    "auto_route": True,
+                    # Stay on the agentic adapter for BOTH the first pick
+                    # and router-fallback. Without this, prefer_plan_billed
+                    # first-picks Cursor GPT ($0 plan) then fallback lands
+                    # on openai/gpt-* even when the user's Models toggles
+                    # only enabled OpenRouter pilots -- the tracker then
+                    # shows a GPT model the picker never offered.
+                    "allowed_adapters": ["agentic"],
+                    # Agentic path is API-billed OpenRouter (or other keyed
+                    # providers); do not prefer plan-billed Cursor/Codex.
+                    "prefer_plan_billed": False,
+                    # Opt this worker into the CDP browser toolset. The
+                    # agentic adapter's _browser_enabled gate reads this flag
+                    # and registers/dispatches the browser_* tools; without
+                    # it the worker is code-inspection only (the reason a
+                    # browser goal previously came back with no browser
+                    # tools). Read-only stays true: browsing is not editing.
+                    "allow_browser": _browser,
+                    # Extra turn headroom so broad-audit workers submit
+                    # findings instead of starving out at max_turns.
+                    "max_turns": _analyze_max_turns(),
+                    "token_budget": worker_token_budget(),
+                    # Cost guardrail: several analysis roles (audit=85,
+                    # security-review=90, conflict-auditor=75) carry a high
+                    # role base score, which pushes the router to first-pick
+                    # the frontier model (opus, ~$15/$75 per Mtok) even for a
+                    # routine read-only audit -- ~$12/run. Cap the capability
+                    # need at a "balanced" ceiling and route with the cheapest
+                    # policy so a sufficient mid-tier model (sonnet / gemini-
+                    # pro) wins, and prefer the cheapest sufficient model.
+                    # Opus stays available via HARNESS_ANALYSIS_DEEP=1.
+                    # 'balanced' = cheapest model whose capability clears the
+                    # need (not the absolute-cheapest 'cheap' policy, which
+                    # would grab a too-weak model that starves out).
+                    "routing_policy": "balanced",
+                    **_analysis_capability_payload(),
+                }
+                if pin_fields:
+                    base_payload.update(pin_fields)
                 specs.append(WorkerSpec(
                     role=r,
                     instruction=_analysis_instruction(
                         intent.goal, repo_cwd, r, browser=_browser),
                     adapter="agentic",
-                    payload=stamp_task_payload({
-                        "read_only": True, "no_edit": True, "dry_run": True,
-                        "cwd": repo_cwd, "prompt": intent.goal,
-                        "auto_route": True,
-                        # Stay on the agentic adapter for BOTH the first pick
-                        # and router-fallback. Without this, prefer_plan_billed
-                        # first-picks Cursor GPT ($0 plan) then fallback lands
-                        # on openai/gpt-* even when the user's Models toggles
-                        # only enabled OpenRouter pilots -- the tracker then
-                        # shows a GPT model the picker never offered.
-                        "allowed_adapters": ["agentic"],
-                        # Agentic path is API-billed OpenRouter (or other keyed
-                        # providers); do not prefer plan-billed Cursor/Codex.
-                        "prefer_plan_billed": False,
-                        # Opt this worker into the CDP browser toolset. The
-                        # agentic adapter's _browser_enabled gate reads this flag
-                        # and registers/dispatches the browser_* tools; without
-                        # it the worker is code-inspection only (the reason a
-                        # browser goal previously came back with no browser
-                        # tools). Read-only stays true: browsing is not editing.
-                        "allow_browser": _browser,
-                        # Extra turn headroom so broad-audit workers submit
-                        # findings instead of starving out at max_turns.
-                        "max_turns": _analyze_max_turns(),
-                        "token_budget": worker_token_budget(),
-                        # Cost guardrail: several analysis roles (audit=85,
-                        # security-review=90, conflict-auditor=75) carry a high
-                        # role base score, which pushes the router to first-pick
-                        # the frontier model (opus, ~$15/$75 per Mtok) even for a
-                        # routine read-only audit -- ~$12/run. Cap the capability
-                        # need at a "balanced" ceiling and route with the cheapest
-                        # policy so a sufficient mid-tier model (sonnet / gemini-
-                        # pro) wins, and prefer the cheapest sufficient model.
-                        # Opus stays available via HARNESS_ANALYSIS_DEEP=1.
-                        # 'balanced' = cheapest model whose capability clears the
-                        # need (not the absolute-cheapest 'cheap' policy, which
-                        # would grab a too-weak model that starves out).
-                        "routing_policy": "balanced",
-                        **_analysis_capability_payload(),
-                    }, session_id=session_id or "", cwd=repo_cwd),
+                    payload=stamp_task_payload(
+                        base_payload, session_id=session_id or "", cwd=repo_cwd
+                    ),
                 ))
             result = Orchestrator(store).run(
                 intent.goal, specs=specs, worker_mode=worker_mode or "inline",

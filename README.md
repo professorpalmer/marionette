@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.114, deliberately pre-1.0. Post-v0.9.113: Sol/OR word-delta reasoning coalesces into one Thought row (no per-token REASONING spam); Windows terminal hardens ConPTY SSE exit + one-shot auto-recover. Puppetmaster pin remains 1.20.6.
+> Status: v0.9.115, deliberately pre-1.0. Post-v0.9.114: run_swarm accepts structured model pins (fail-closed via Puppetmaster registry); rides puppetmaster-ai==1.20.8 (agentic pin defaults + max-turns submit_findings).
 
 ## Documentation
 
@@ -41,7 +41,7 @@ SSE):
 - **Right -- tools on demand.** Default closed with a slim dock (Swarm, Changes,
   Browser, Terminal, State). State holds CodeGraph, Wiki, and MCP. Open restores
   last width on the chosen tab. Optional Firecrawl: set `FIRECRAWL_API_KEY`, then
-  add Firecrawl from State Ã¢â€ â€™ MCP (catalog entry; not baked into native `web_fetch`).
+  add Firecrawl from State ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ MCP (catalog entry; not baked into native `web_fetch`).
 - **Left -- workspace.** Projects, git branches/worktrees, sessions (auto-named
   from the first message), and the Puppetmaster job list.
 
@@ -92,7 +92,7 @@ The cost thesis is measured, not asserted:
 |---|---|
 | **Provider-native pilot** | One driver, every OpenAI-compatible endpoint (OpenRouter or native). Frontier control models (Claude, GPT) and open-weights (GLM, DeepSeek, Kimi, Qwen, MiniMax) drive the same loop. |
 | **CodeGraph-first retrieval** | Per-turn structural context is auto-injected (symbols, defs, call sites) before the model acts, so it leans on the graph instead of dumping whole files. Self-healing: the index detects edits, additions, and deletions and refreshes in the background. |
-| **Puppetmaster delegation** | run_swarm (read-only analysis), run_implement (edit-capable worktree worker), run_parallel (concurrent waves). Heavy/multi-file work runs as durable, auditable jobs. Requires `puppetmaster-ai==1.20.6` (includes explicit model allowlists, bounded reroute, and verified Bedrock invoke health). |
+| **Puppetmaster delegation** | run_swarm (read-only analysis), run_implement (edit-capable worktree worker), run_parallel (concurrent waves). Heavy/multi-file work runs as durable, auditable jobs. Requires `puppetmaster-ai==1.20.8` (includes explicit model allowlists, bounded reroute, and verified Bedrock invoke health). |
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
 | **Honest token economics** | Prompt caching across Anthropic/OpenAI/Gemini with a stable + moving cache breakpoint, cost billed at the real cache-read discount, and the context meter driven by the driver's actual token usage -- so cost and context reflect reality and the status bar shows the dollars caching saved you. Savings-gated tool-output offload, absolute-token compaction advice, and optional per-turn output budgets (`+Nk` / `+Nk!`) cut waste without hiding results. |
@@ -244,7 +244,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_STATE_DIR` | State home for sessions, transcripts, prompt queue, keys. Defaults to a stable `~/.pmharness/state` so history survives restarts. |
 | `HARNESS_COMMAND_TIMEOUT` | Per-command shell timeout in seconds; 0/off = unbounded. |
 | `HARNESS_WORKER_TOKEN_BUDGET` | Default token ceiling for a single unsupervised worker run (default 40000). |
-| `FIRECRAWL_API_KEY` | Optional. Enables the Firecrawl MCP catalog entry (State Ã¢â€ â€™ MCP); not used by native `web_fetch`. |
+| `FIRECRAWL_API_KEY` | Optional. Enables the Firecrawl MCP catalog entry (State ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ MCP); not used by native `web_fetch`. |
 | `HARNESS_AUTO_COMMAND_GUARD` | Full-auto danger guard; default on, off to disable. |
 | `HARNESS_WIKI_ORCHESTRATE` | Local wiki structuring: unset (off), 1/approve (prepare-and-approve), auto (silent ingest). |
 | `HARNESS_AUTO_MAX_SWARMS` / `_TOKENS` / `_SECONDS` / `_MAX_IDLE` | Full-auto budget governor ceilings. |

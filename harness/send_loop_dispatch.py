@@ -82,7 +82,13 @@ Yields the same ConvEvent stream. Generator return value is ``None``
 (continue the action loop) or ``"return"`` (close the turn / exit send).
 """
     from .conversation import ConvEvent
-    intent = DriverIntent(action='run_swarm', goal=act.goal, roles=act.roles or None, rationale='pilot')
+    intent = DriverIntent(
+        action='run_swarm',
+        goal=act.goal,
+        roles=act.roles or None,
+        rationale='pilot',
+        model=(act.model or '').strip() or None,
+    )
     _sync_local_id = f'local-swarm-{aid}'
     _swarm_repo = resolve_effective_repo(session.config.repo or '') if (session.config.repo or '').strip() else ''
     try:

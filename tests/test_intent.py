@@ -79,6 +79,16 @@ def test_role_lenses_cover_every_known_role():
 def test_valid_run_swarm():
     i = validate_intent({"action": "run_swarm", "goal": "audit repo"})
     assert i.action == "run_swarm" and i.goal == "audit repo"
+    assert i.model is None
+
+
+def test_run_swarm_accepts_model_pin():
+    i = validate_intent({
+        "action": "run_swarm",
+        "goal": "audit scoring finalize",
+        "model": "meta/muse-spark-1.1",
+    })
+    assert i.model == "meta/muse-spark-1.1"
     assert i.worker_mode == "subprocess"
 
 

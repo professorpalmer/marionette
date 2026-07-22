@@ -53,6 +53,19 @@ def test_coerce_relocate_promotes_workspace_root_to_path():
 def test_roles_string_coerced_to_list():
     acts = _coerce_actions([{"kind": "run_swarm", "goal": "g", "roles": "explore"}])
     assert acts[0].roles == ["explore"]
+    assert acts[0].model == ""
+
+
+def test_run_swarm_coerces_model_pin():
+    from harness.pilot import _coerce_actions, build_tools_schema
+
+    acts = _coerce_actions([
+        {"kind": "run_swarm", "goal": "audit finalize", "model": "meta/muse-spark-1.1"},
+    ])
+    assert acts[0].model == "meta/muse-spark-1.1"
+    schema = build_tools_schema(no_delegation=False)
+    swarm = next(t for t in schema if (t.get("function") or {}).get("name") == "run_swarm")
+    assert "model" in swarm["function"]["parameters"]["properties"]
 
 
 class _ScriptedPilot:

@@ -216,6 +216,9 @@ class DriverIntent:
     roles: Optional[list] = None
     worker_mode: str = "subprocess"
     rationale: str = ""
+    # Optional worker model pin (registry id or adapter model name). Never
+    # inferred from goal prose — only an explicit field. PM-free string only.
+    model: Optional[str] = None
     # Free-form, model-supplied; never trusted for control flow, kept for audit.
     raw: Optional[dict] = field(default=None, compare=False, repr=False)
 
@@ -269,12 +272,18 @@ def validate_intent(payload: Any) -> DriverIntent:
 
     rationale = str(payload.get("rationale", "") or "").strip()
 
+    model_raw = payload.get("model")
+    model = None
+    if model_raw is not None:
+        model = str(model_raw).strip() or None
+
     return DriverIntent(
         action=action,
         goal=goal,
         roles=roles,
         worker_mode=worker_mode,
         rationale=rationale,
+        model=model,
         raw=payload if isinstance(payload, dict) else None,
     )
 

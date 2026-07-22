@@ -89,3 +89,69 @@ def test_agentic_swarm_stamps_token_budget_from_env(monkeypatch, tmp_path):
     assert result is not None
     payload = _CapturingWorkerSpec._last_captured[0].payload
     assert payload.get("token_budget") == 12345
+
+
+def test_agentic_swarm_explicit_model_pin_disables_auto_route(monkeypatch, tmp_path):
+    _CapturingWorkerSpec._last_captured = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+
+    def _fake_pin(payload, model, *, registry=None):
+        return {
+            **(payload or {}),
+            "model": "meta/muse-spark-1.1",
+            "provider": "openrouter",
+            "pinned_model": "agentic/meta/muse-spark-1.1",
+            "pinned_adapter_model_name": "meta/muse-spark-1.1",
+            "router_model_id": "agentic/meta/muse-spark-1.1",
+        }
+
+    monkeypatch.setattr(
+        "puppetmaster.model_registry.apply_agentic_model_pin", _fake_pin
+    )
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Trace scoring finalize flicker",
+        roles=["explore"],
+        model="meta/muse-spark-1.1",
+    )
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+    assert result is not None
+    payload = _CapturingWorkerSpec._last_captured[0].payload
+    assert payload.get("auto_route") is False
+    assert payload.get("model") == "meta/muse-spark-1.1"
+    assert payload.get("provider") == "openrouter"
+    assert payload.get("pinned_model") == "agentic/meta/muse-spark-1.1"
+    assert payload.get("allowed_adapters") == ["agentic"]
+
+
+def test_agentic_swarm_unknown_model_pin_fails_closed(monkeypatch, tmp_path):
+    _CapturingWorkerSpec._last_captured = []
+    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
+    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
+    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "puppetmaster.model_registry.apply_agentic_model_pin",
+        lambda payload, model, *, registry=None: {**(payload or {}), "model": model},
+    )
+
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Trace scoring finalize flicker",
+        roles=["explore"],
+        model="not-a-real-model",
+    )
+    try:
+        bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
+        raised = False
+    except ValueError as exc:
+        raised = True
+        assert "not in the agentic registry" in str(exc)
+    assert raised
+    assert not _CapturingWorkerSpec._last_captured

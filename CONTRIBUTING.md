@@ -30,7 +30,7 @@ Or set up a checkout by hand. Backend (uv provides Python per `.python-version`)
 
 ```bash
 uv venv .venv
-uv pip install --python .venv -e . "puppetmaster-ai==1.20.6"
+uv pip install --python .venv -e . "puppetmaster-ai==1.20.8"
 .venv/bin/python -m pytest -q          # full offline suite -- must be green
 ```
 
@@ -54,7 +54,7 @@ runs from source.
    also run the Wave 6 offline safety gate:
    `.venv/bin/python -m pytest -q -m full_auto_safety`
    (AutoBudget, command policy/approvals, tool-pair sanitizer, SSE ring-miss,
-   stub deterministic eval — no live keys).
+   stub deterministic eval â€” no live keys).
 4. Open a PR against `main`. CI runs the same pytest matrix + frontend build +
    the `full-auto-safety` marker job and must pass before merge.
 5. Keep commits scoped: don't fold unrelated work into one commit. A release

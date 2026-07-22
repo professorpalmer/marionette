@@ -134,6 +134,9 @@ class PilotAction:
     # empty). Threaded to the worker via a per-dispatch HarnessConfig copy so
     # the existing edit engines transparently target it.
     repo: str = ""
+    # run_swarm: optional registry id or adapter model name pin (fail-closed).
+    # Empty means auto-route. Prompt text alone never pins a model.
+    model: str = ""
     start_line: Optional[int] = None
     limit: Optional[int] = None
 
@@ -365,6 +368,7 @@ def from_wire(
     goals = _as_str_list(raw.get("goals"))
     adapter = raw.get("adapter") or ""
     mode = raw.get("mode") or ""
+    model = (raw.get("model") or "").strip() if kind == "run_swarm" else ""
 
     memory_action = ""
     memory_content = ""
@@ -416,6 +420,7 @@ def from_wire(
         text=browser_text,
         direction=(raw.get("direction") or "").strip(),
         repo=str(repo_arg),
+        model=str(model),
         start_line=_optional_int(raw.get("start_line")),
         limit=_optional_int(raw.get("limit")),
     ).validate()
@@ -807,7 +812,16 @@ def build_tools_schema(
                             "type": "string",
                             "enum": ["subprocess", "inline", "daemon"],
                             "description": "Optional worker process mode"
-                        }
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Optional worker model pin (registry id or adapter model "
+                                "name, e.g. agentic/meta/muse-spark-1.1 or meta/muse-spark-1.1). "
+                                "Use when the user names a specific swarm model; omit for "
+                                "auto-route. Prompt text alone does not pin a model."
+                            ),
+                        },
                     },
                     "required": ["goal"]
                 }
@@ -1589,7 +1603,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
 - `run_command`: run a terminal shell command. Requires `command`.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
-- `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question.
+- `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. When the user names a specific swarm model, pass `model` (registry id or adapter name); omit `model` for auto-route. Prompt text alone does not pin a model.
 - `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Default engine is standalone `agentic` (routes directly through your provider keys, no external CLI); pass `adapter` only to force a specific engine. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports).
 - `run_parallel`: dispatch multiple Puppetmaster workers concurrently. Requires `goals` array, optional `adapter`, optional `mode`.
 - `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.
