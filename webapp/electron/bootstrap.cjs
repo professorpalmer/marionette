@@ -275,7 +275,7 @@ function provisionPython(dest, onProgress) {
   }
   onProgress("Installing Marionette + Puppetmaster...", 55);
   run("uv", ["pip", "install", "--python", ".venv", "-e", "."], { cwd: dest });
-  const spec = process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.20.9";
+  const spec = process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.20.10";
   run("uv", ["pip", "install", "--python", ".venv", spec], { cwd: dest });
 }
 

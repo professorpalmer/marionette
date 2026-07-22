@@ -24,7 +24,7 @@ PY=".venv/bin/python"
 if [ -x "$PY" ]; then
   ok "python venv present ($($PY --version 2>&1))"
   if $PY -c "import harness" 2>/dev/null; then ok "imports 'harness'"; else bad "cannot import 'harness' -- run: uv pip install --python .venv -e ."; fi
-  if $PY -c "import puppetmaster" 2>/dev/null; then ok "imports 'puppetmaster'"; else bad "cannot import 'puppetmaster' -- run: uv pip install --python .venv puppetmaster-ai==1.20.9"; fi
+  if $PY -c "import puppetmaster" 2>/dev/null; then ok "imports 'puppetmaster'"; else bad "cannot import 'puppetmaster' -- run: uv pip install --python .venv puppetmaster-ai==1.20.10"; fi
 else
   bad "no .venv/bin/python -- run: uv venv .venv && uv pip install --python .venv -e ."
 fi
