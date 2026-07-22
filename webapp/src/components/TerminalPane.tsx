@@ -7,6 +7,7 @@ import { RotateCw } from "lucide-react";
 import { postJSON, stream } from "../lib/transport";
 import { isExternalUrl, looksLikeFilePath, openAgentFile, openAgentUrl } from "../lib/agentLinks";
 import { hostHasLayout, safePtyDims } from "./terminalDims";
+import { terminalBareOnDoneAction } from "./terminalStreamPolicy";
 
 // Built-in terminal: xterm.js front-end over the harness PTY backend.
 // create -> SSE stream output (base64 frames) -> POST keystrokes -> resize -> kill.
@@ -98,6 +99,69 @@ export default function TerminalPane() {
       return safePtyDims(term.cols, term.rows);
     };
 
+    const attachStream = (sid: string) => {
+      let sawOutput = false;
+      let sawExit = false;
+      cancelRef.current = stream(
+        `/api/terminal/stream?id=${sid}`,
+        (ev: any) => {
+          if (ev.kind === "data" && ev.b64) {
+            sawOutput = true;
+            try { term.write(_b64ToBytes(ev.b64)); } catch { /* ignore */ }
+          } else if (ev.kind === "exit") {
+            sawExit = true;
+            term.write("\r\n\x1b[90m[process exited -- press Restart]\x1b[0m\r\n");
+            idRef.current = "";  // session is dead; stop sending keystrokes to it
+            markExited();
+          }
+        },
+        // onDone: SSE closed. kind:exit already settled the pane. A bare close
+        // with prior output means the transport dropped while ConPTY is still
+        // alive — reattach the same id. Do NOT kill. Empty first stream still
+        // gets one-shot auto-recover (kill+recreate).
+        () => {
+          const action = terminalBareOnDoneAction({
+            disposed,
+            sawExit,
+            hasSession: Boolean(idRef.current),
+            sawOutput,
+            autoRecovered: autoRecoveredRef.current,
+          });
+          if (action === "noop") return;
+          if (action === "reattach") {
+            const liveId = idRef.current;
+            if (liveId) attachStream(liveId);
+            return;
+          }
+          if (action === "auto_recover") {
+            autoRecoveredRef.current = true;
+            const deadId = idRef.current;
+            idRef.current = "";
+            if (deadId) postJSON("/api/terminal/kill", { id: deadId });
+            setRestartNonce((n) => n + 1);
+            return;
+          }
+          // mark_exited — confirmed dead or second empty-stream failure
+          if (idRef.current) {
+            const deadId = idRef.current;
+            idRef.current = "";
+            postJSON("/api/terminal/kill", { id: deadId });
+            if (!sawExit) {
+              markExited("\r\n\x1b[90m[stream closed -- press Restart]\x1b[0m\r\n");
+              return;
+            }
+          }
+          markExited();
+        },
+        // onError: backend gone / stream broke -- surface a restartable state
+        () => {
+          if (disposed) return;
+          idRef.current = "";
+          markExited("\r\n\x1b[31m[terminal stream error -- press Restart]\x1b[0m\r\n");
+        }
+      );
+    };
+
     (async () => {
       try {
         // Wait for a real host box before create — FitAddon on a 0-size dock
@@ -137,52 +201,7 @@ export default function TerminalPane() {
           postJSON("/api/terminal/resize", { id: idRef.current, cols: next.cols, rows: next.rows });
         });
 
-        // stream output
-        let sawOutput = false;
-        let sawExit = false;
-        cancelRef.current = stream(
-          `/api/terminal/stream?id=${res.id}`,
-          (ev: any) => {
-            if (ev.kind === "data" && ev.b64) {
-              sawOutput = true;
-              try { term.write(_b64ToBytes(ev.b64)); } catch { /* ignore */ }
-            } else if (ev.kind === "exit") {
-              sawExit = true;
-              term.write("\r\n\x1b[90m[process exited -- press Restart]\x1b[0m\r\n");
-              idRef.current = "";  // session is dead; stop sending keystrokes to it
-              markExited();
-            }
-          },
-          // onDone: SSE closed. Prefer the exit frame; a bare close with no
-          // bytes often means React remount / IPC cancel raced the first
-          // ConPTY prompt — auto-restart once instead of a dead pane.
-          () => {
-            if (disposed) return;
-            if (sawExit) {
-              markExited();
-              return;
-            }
-            if (idRef.current) {
-              const deadId = idRef.current;
-              idRef.current = "";
-              postJSON("/api/terminal/kill", { id: deadId });
-              if (!sawOutput && !autoRecoveredRef.current) {
-                autoRecoveredRef.current = true;
-                setRestartNonce((n) => n + 1);
-                return;
-              }
-              markExited("\r\n\x1b[90m[stream closed -- press Restart]\x1b[0m\r\n");
-            } else {
-              markExited();
-            }
-          },
-          // onError: backend gone / stream broke -- surface a restartable state
-          () => {
-            if (disposed) return;
-            idRef.current = "";
-            markExited("\r\n\x1b[31m[terminal stream error -- press Restart]\x1b[0m\r\n");
-          }
-        );
+        attachStream(res.id);
       } catch (e) {
         const detail = e instanceof Error && e.message ? ` (${e.message})` : "";
         markExited(

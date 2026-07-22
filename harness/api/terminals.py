@@ -82,6 +82,11 @@ def stream_terminal(handler: Any, sid: str, svc: TerminalServices) -> None:
             pass
         return
     offset = 0
+    # Emit kind:exit from finally when the client is still writable so the
+    # renderer can distinguish a real process death from a bare stream drop
+    # (reattach without killing ConPTY). Skip exit when the client already
+    # disconnected (BrokenPipe / ConnectionReset).
+    client_writable = True
     try:
         while sess.alive():
             data, offset = sess.read_since(offset)
@@ -104,14 +109,17 @@ def stream_terminal(handler: Any, sid: str, svc: TerminalServices) -> None:
                 "b64": _b64.b64encode(data).decode("ascii"),
             })
             handler.wfile.write(f"data: {payload}\n\n".encode())
+            handler.wfile.flush()
     except (BrokenPipeError, ConnectionResetError):
-        return
+        client_writable = False
     except Exception:
-        # Still try to emit exit below so the renderer does not see a bare
+        # Still emit exit in finally so the renderer does not see a bare
         # stream close (EXITED with no prior exit frame).
         pass
-    try:
-        handler.wfile.write(b"data: {\"kind\": \"exit\"}\n\n")
-        handler.wfile.flush()
-    except (BrokenPipeError, ConnectionResetError, OSError):
-        pass
+    finally:
+        if client_writable:
+            try:
+                handler.wfile.write(b"data: {\"kind\": \"exit\"}\n\n")
+                handler.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass

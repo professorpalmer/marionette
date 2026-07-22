@@ -23,7 +23,9 @@ vi.mock("../components/FileTree", () => ({ default: () => <div /> }));
 vi.mock("../components/SourceControl", () => ({ default: () => <div /> }));
 vi.mock("../components/WorktreesPane", () => ({ default: () => <div /> }));
 vi.mock("../components/SettingsShell", () => ({ default: () => <div /> }));
-vi.mock("../components/TerminalPane", () => ({ default: () => <div /> }));
+vi.mock("../components/TerminalPane", () => ({
+  default: () => <div data-testid="terminal-pane" />,
+}));
 vi.mock("../components/CheckpointsPane", () => ({ default: () => <div /> }));
 vi.mock("../components/DiffReviewPane", () => ({ default: () => <div /> }));
 vi.mock("../components/SwarmPane", () => ({ default: () => <div /> }));
@@ -98,6 +100,49 @@ describe("RightPane collapse placement", () => {
 
     fireEvent.click(collapseBtns[1]);
     expect(baseProps.onCollapse).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RightPane keeps TerminalPane mounted across tab switches", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    Element.prototype.scrollIntoView = vi.fn();
+    localStorage.setItem(
+      "pmharness.tabOrder",
+      JSON.stringify([
+        "state", "swarm", "files", "git", "worktrees", "terminal",
+        "review", "checkpoints", "browser", "settings",
+      ]),
+    );
+    localStorage.setItem("pmharness.tabOrder.swarm2nd", "1");
+    localStorage.setItem("pmharness.tabOrder.mcpMerged", "1");
+    localStorage.setItem(
+      "pmharness.splitState",
+      JSON.stringify({
+        isSplit: false,
+        primaryTab: "terminal",
+        secondaryTab: "files",
+        direction: "horizontal",
+        percent: 50,
+      }),
+    );
+  });
+
+  it("CSS-hides TerminalPane instead of unmounting when leaving the tab", () => {
+    render(<RightPane {...baseProps} />);
+
+    const slot = screen.getByTestId("terminal-pane-slot");
+    expect(within(slot).getByTestId("terminal-pane")).toBeTruthy();
+    expect(slot.className).toMatch(/\bh-full\b/);
+    expect(slot.className).not.toMatch(/\bhidden\b/);
+
+    fireEvent.click(screen.getByTitle("Files"));
+
+    const stillMounted = screen.getByTestId("terminal-pane-slot");
+    expect(within(stillMounted).getByTestId("terminal-pane")).toBeTruthy();
+    expect(stillMounted.className).toMatch(/\bhidden\b/);
+    expect(stillMounted).toHaveAttribute("aria-hidden", "true");
   });
 });
 

@@ -327,28 +327,47 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
   // Compute label visibility based on sub-pane widths
 
 
-  // StatePane stays mounted in the primary pane (CSS-hidden when inactive) so
-  // Codegraph/Wiki SWR caches stay warm across right-rail tab swaps. Secondary
-  // split still mounts on demand (rare). Other tabs still unmount.
+  // StatePane + TerminalPane stay mounted in the primary pane (CSS-hidden when
+  // inactive). State keeps Codegraph/Wiki SWR warm; Terminal keeps the ConPTY
+  // alive — unmount cleanup previously POSTed /api/terminal/kill on every
+  // right-rail tab swap. Secondary split still mounts on demand (rare).
   const renderPaneBody = (activeTab: Tab, keepStateWarm: boolean) => (
     <div className="relative h-full min-h-0">
       {keepStateWarm ? (
-        <div
-          className={activeTab === "state" ? "h-full" : "hidden"}
-          aria-hidden={activeTab !== "state"}
-        >
-          <ErrorBoundary label="State" inline>
-            <StatePane artifacts={artifacts} embedded />
-          </ErrorBoundary>
-        </div>
+        <>
+          <div
+            className={activeTab === "state" ? "h-full" : "hidden"}
+            aria-hidden={activeTab !== "state"}
+          >
+            <ErrorBoundary label="State" inline>
+              <StatePane artifacts={artifacts} embedded />
+            </ErrorBoundary>
+          </div>
+          <div
+            className={activeTab === "terminal" ? "h-full" : "hidden"}
+            aria-hidden={activeTab !== "terminal"}
+            data-testid="terminal-pane-slot"
+          >
+            <ErrorBoundary label="Terminal" inline>
+              <TerminalPane />
+            </ErrorBoundary>
+          </div>
+        </>
       ) : (
-        activeTab === "state" && (
-          <ErrorBoundary label="State" inline>
-            <StatePane artifacts={artifacts} embedded />
-          </ErrorBoundary>
-        )
+        <>
+          {activeTab === "state" && (
+            <ErrorBoundary label="State" inline>
+              <StatePane artifacts={artifacts} embedded />
+            </ErrorBoundary>
+          )}
+          {activeTab === "terminal" && (
+            <ErrorBoundary label="Terminal" inline>
+              <TerminalPane />
+            </ErrorBoundary>
+          )}
+        </>
       )}
-      {activeTab !== "state" && (
+      {activeTab !== "state" && activeTab !== "terminal" && (
         <ErrorBoundary key={activeTab} label={TAB_CONFIG[activeTab]?.label || activeTab} inline>
           {renderTabInner(activeTab)}
         </ErrorBoundary>

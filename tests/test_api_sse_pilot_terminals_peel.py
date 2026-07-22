@@ -271,6 +271,59 @@ def test_stream_terminal_broken_pipe_is_swallowed():
     stream_terminal(h, "t1", svc)  # must not raise
 
 
+def test_stream_terminal_exception_still_emits_exit_via_finally():
+    """Unexpected read errors must still deliver kind:exit while writable."""
+
+    class _Sess:
+        def alive(self):
+            return True
+
+        def read_since(self, offset):
+            raise RuntimeError("pty read failed")
+
+    h = _FakeHandler()
+    svc = TerminalServices(
+        cfg=SimpleNamespace(repo=None),
+        pty=SimpleNamespace(get=lambda sid: _Sess()),
+    )
+    stream_terminal(h, "t1", svc)
+    assert b'"kind": "exit"' in h.wfile.getvalue()
+
+
+def test_stream_terminal_broken_pipe_skips_exit_in_finally():
+    """Client disconnect must not attempt a post-detach exit frame."""
+
+    class _BoomWfile:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, data):
+            self.writes.append(data)
+            raise BrokenPipeError()
+
+        def flush(self):
+            pass
+
+    class _Sess:
+        def alive(self):
+            return True
+
+        def read_since(self, offset):
+            return b"x", offset + 1
+
+    boom = _BoomWfile()
+    h = _FakeHandler()
+    h.wfile = boom
+    svc = TerminalServices(
+        cfg=SimpleNamespace(repo=None),
+        pty=SimpleNamespace(get=lambda sid: _Sess()),
+    )
+    stream_terminal(h, "t1", svc)
+    # First write blows with BrokenPipe; finally must not retry exit.
+    assert len(boom.writes) == 1
+    assert b'"kind": "exit"' not in boom.writes[0]
+
+
 # ---------------------------------------------------------------------------
 # streams helpers (chat/run thinning)
 # ---------------------------------------------------------------------------
