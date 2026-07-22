@@ -2102,7 +2102,9 @@ function jobDetailBits(j: Job): string[] {
   const status = (j.status || "").split(".").pop();
   if (status) bits.push(status);
   if (j.role) bits.push(j.role);
-  if (j.adapter) bits.push(j.adapter);
+  // Full resolved model id when present (pinned Muse runs, etc.).
+  if (j.model) bits.push(j.model);
+  if (j.adapter && j.adapter !== j.model) bits.push(j.adapter);
   if (typeof j.task_count === "number" && j.task_count > 0) bits.push(`${j.task_count} task${j.task_count === 1 ? "" : "s"}`);
   if (typeof j.tokens === "number" && j.tokens > 0) bits.push(`${j.tokens.toLocaleString()} tok`);
   if (typeof j.est_cost_usd === "number" && j.est_cost_usd > 0) bits.push(`$${j.est_cost_usd.toFixed(3)}`);

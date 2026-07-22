@@ -20,7 +20,8 @@ def test_format_artifacts_forwards_policy_provider_adapter():
     ds = DurableState.__new__(DurableState)
     out = ds.format_artifacts([
         _routing_artifact(
-            model_id="meta/muse-spark-1.1",
+            model_id="agentic/meta/muse-spark-1.1",
+            adapter_model_name="meta/muse-spark-1.1",
             policy="explicit_pin",
             provider="openrouter",
             adapter="agentic",
@@ -30,7 +31,8 @@ def test_format_artifacts_forwards_policy_provider_adapter():
     ])
     assert len(out) == 1
     row = out[0]
-    assert row["model"] == "meta/muse-spark-1.1"
+    assert row["model"] == "agentic/meta/muse-spark-1.1"
+    assert row["adapter_model_name"] == "meta/muse-spark-1.1"
     assert row["policy"] == "explicit_pin"
     assert row["provider"] == "openrouter"
     assert row["adapter"] == "agentic"
@@ -46,3 +48,4 @@ def test_format_artifacts_omits_missing_pin_fields_as_none():
     assert row["policy"] is None
     assert row["provider"] is None
     assert row["adapter"] is None
+    assert row["adapter_model_name"] is None

@@ -216,6 +216,8 @@ export type Artifact = {
   policy?: string;
   provider?: string;
   adapter?: string;
+  /** Provider wire slug when distinct from registry `model` (ROUTING). */
+  adapter_model_name?: string;
   // Present only for patch artifacts: the list of touched files and a parsed
   // diffstat so job cards can show "3 files +40 -12" instead of truncated text.
   files?: string[] | null;

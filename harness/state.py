@@ -234,6 +234,10 @@ class DurableState:
                 "policy": payload.get("policy"),
                 "provider": payload.get("provider"),
                 "adapter": payload.get("adapter"),
+                # Wire/provider slug when distinct from registry model_id
+                # (e.g. model_id=agentic/meta/muse-spark-1.1,
+                # adapter_model_name=meta/muse-spark-1.1).
+                "adapter_model_name": payload.get("adapter_model_name"),
                 # Rejected alternatives arrive as {"id", "reason"}; normalize to the
                 # {"model", "reason"} shape the GUI renders so the model name shows
                 # instead of "undefined".

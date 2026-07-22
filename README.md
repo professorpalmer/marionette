@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.118, deliberately pre-1.0. Rides puppetmaster-ai==1.20.10 (CodeGraph Windows UTF-8). Sol/GPT reasoning no longer spams one REASONING header per word above a flushed finale; LeftRail Settle inbox; pin attribution retained.
+> Status: v0.9.119, deliberately pre-1.0. Rides puppetmaster-ai==1.20.10 (CodeGraph Windows UTF-8). Pinned swarm summaries show the full resolved model id (agentic/meta/...) plus explicit_pin on the collapsed row.
 
 ## Documentation
 
@@ -41,7 +41,7 @@ SSE):
 - **Right -- tools on demand.** Default closed with a slim dock (Swarm, Changes,
   Browser, Terminal, State). State holds CodeGraph, Wiki, and MCP. Open restores
   last width on the chosen tab. Optional Firecrawl: set `FIRECRAWL_API_KEY`, then
-  add Firecrawl from State ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ MCP (catalog entry; not baked into native `web_fetch`).
+  add Firecrawl from State ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ MCP (catalog entry; not baked into native `web_fetch`).
 - **Left -- workspace.** Projects, git branches/worktrees, sessions (auto-named
   from the first message), and the Puppetmaster job list.
 
@@ -244,7 +244,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_STATE_DIR` | State home for sessions, transcripts, prompt queue, keys. Defaults to a stable `~/.pmharness/state` so history survives restarts. |
 | `HARNESS_COMMAND_TIMEOUT` | Per-command shell timeout in seconds; 0/off = unbounded. |
 | `HARNESS_WORKER_TOKEN_BUDGET` | Default token ceiling for a single unsupervised worker run (default 40000). |
-| `FIRECRAWL_API_KEY` | Optional. Enables the Firecrawl MCP catalog entry (State ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ MCP); not used by native `web_fetch`. |
+| `FIRECRAWL_API_KEY` | Optional. Enables the Firecrawl MCP catalog entry (State ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ MCP); not used by native `web_fetch`. |
 | `HARNESS_AUTO_COMMAND_GUARD` | Full-auto danger guard; default on, off to disable. |
 | `HARNESS_WIKI_ORCHESTRATE` | Local wiki structuring: unset (off), 1/approve (prepare-and-approve), auto (silent ingest). |
 | `HARNESS_AUTO_MAX_SWARMS` / `_TOKENS` / `_SECONDS` / `_MAX_IDLE` | Full-auto budget governor ceilings. |

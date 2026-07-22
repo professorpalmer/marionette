@@ -792,12 +792,21 @@ export default function SwarmPane() {
     // job.model field so a stale initial router pick never badges the header.
     // Local agentic jobs stamp model as "agentic/<id>"; strip the engine prefix
     // so the badge shows the real model next to the separate adapter chip.
-    const routerModel = routingArts.find((a: Artifact) => a.model)?.model || j.model || "";
+    const primaryRouting =
+      routingArts.find((a: Artifact) => a.model) || routingArts[0];
+    const routerModel = primaryRouting?.model || j.model || "";
+    const attestedPolicy = primaryRouting ? routingPolicy(primaryRouting) : "";
     const workerCount = tasks.length;
     const adapter = j.adapter || tasks[0]?.adapter || "";
-    const displayModel = (routerModel || "")
-      .replace(/^(?:agentic|native)\//i, "")
-      .trim() || adapter;
+    // Explicit pins keep the full registry id (agentic/meta/...) on the
+    // collapsed summary so Sol-style attribution is visible without expanding.
+    // Auto-routed rows still strip the engine prefix for scannability.
+    const displayModel = (() => {
+      const raw = (routerModel || "").trim();
+      if (!raw) return adapter;
+      if (attestedPolicy === "explicit_pin") return raw;
+      return raw.replace(/^(?:agentic|native)\//i, "").trim() || adapter;
+    })();
     const terminal = isTerminal(j);
     const savings = jobSavings(j);
 
@@ -909,11 +918,19 @@ export default function SwarmPane() {
               jobs (Cursor MCP, terminal `puppetmaster`) share the workspace
               store and are merged in on purpose; label them so they don't look
               like Marionette-dispatched swarms. */}
-          {(displayModel || workerCount > 0 || adapter || j.source === "cli") && (
+          {(displayModel || workerCount > 0 || adapter || j.source === "cli" || attestedPolicy === "explicit_pin") && (
             <div className="flex items-center gap-1.5 pl-6 pr-1 mt-1 flex-wrap">
               {displayModel && (
                 <span className="flex items-center gap-1 text-[9px] font-mono text-accent/90 bg-accent/10 px-1.5 py-0.5 rounded" title={`Model: ${displayModel}`}>
                   <Cpu size={9} /> {displayModel}
+                </span>
+              )}
+              {attestedPolicy === "explicit_pin" && (
+                <span
+                  className="text-[9px] text-faint bg-edge/25 px-1.5 py-0.5 rounded font-mono"
+                  title="Routing policy: explicit_pin (not auto-routed)"
+                >
+                  explicit_pin
                 </span>
               )}
               {workerCount > 0 && (

@@ -144,7 +144,8 @@ describe("SwarmPane pin attribution", () => {
             type: "ROUTING",
             headline: "",
             task_id: "task-1",
-            model: "meta/muse-spark-1.1",
+            model: "agentic/meta/muse-spark-1.1",
+            adapter_model_name: "meta/muse-spark-1.1",
             policy: "explicit_pin",
             provider: "openrouter",
             adapter: "agentic",
@@ -169,7 +170,9 @@ describe("SwarmPane pin attribution", () => {
     await waitFor(() => {
       expect(screen.getByText("Explicit pin · not auto-routed")).toBeInTheDocument();
     });
-    expect(screen.getByText("explicit_pin")).toBeInTheDocument();
+    // Collapsed summary keeps the full registry id (not stripped agentic/).
+    expect(screen.getAllByText("agentic/meta/muse-spark-1.1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("explicit_pin").length).toBeGreaterThan(0);
     expect(screen.getByText("openrouter · agentic")).toBeInTheDocument();
     expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
   });
