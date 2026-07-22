@@ -984,7 +984,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
   };
 
-  const activeSessions = sessions.filter((s) => !s.archived);
   const settledSessions = sessions.filter((s) => s.archived);
 
   const settleSession = async (sid: string, settled: boolean) => {
