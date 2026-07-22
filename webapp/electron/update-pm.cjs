@@ -19,7 +19,7 @@
 //     project location"; that is a dev checkout managing its own source, so we
 //     never clobber it with a PyPI wheel.
 
-const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.20.8";
+const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.20.9";
 
 // True when `pip show` / `uv pip show` output describes an editable install
 // (a dev checkout linked with `-e`), which we must not overwrite from PyPI.
@@ -30,7 +30,7 @@ function isEditableInstall(pipShowOutput) {
 // Decide whether the updater should upgrade Puppetmaster, given the environment
 // and the current install's `pip show` text. Returns either
 //   { skip: true, reason }                       -- leave the install untouched
-//   { skip: false, spec: "puppetmaster-ai==1.20.8" }     -- install the pinned PyPI release
+//   { skip: false, spec: "puppetmaster-ai==1.20.9" }     -- install the pinned PyPI release
 function planPuppetmasterUpgrade({ specEnv, pipShowOutput } = {}) {
   const spec = String(specEnv || "").trim();
   if (spec) {

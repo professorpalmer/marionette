@@ -25,7 +25,7 @@ if (Test-Path $Py) {
     & $Py -c "import harness" 2>$null
     if ($LASTEXITCODE -eq 0) { Ok "imports 'harness'" } else { Bad "cannot import 'harness' -- run: uv pip install --python .venv -e ." }
     & $Py -c "import puppetmaster" 2>$null
-    if ($LASTEXITCODE -eq 0) { Ok "imports 'puppetmaster'" } else { Bad "cannot import 'puppetmaster' -- run: uv pip install --python .venv puppetmaster-ai==1.20.8" }
+    if ($LASTEXITCODE -eq 0) { Ok "imports 'puppetmaster'" } else { Bad "cannot import 'puppetmaster' -- run: uv pip install --python .venv puppetmaster-ai==1.20.9" }
 } else {
     Bad "no .venv\Scripts\python.exe -- run: uv venv .venv && uv pip install --python .venv -e ."
 }

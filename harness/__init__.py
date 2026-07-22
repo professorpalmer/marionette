@@ -7,7 +7,7 @@ DurableState read layer is what the GUI renders.
 
 Driver default: glm-5.2 (MIT, efficient, 100% on the discriminating eval).
 """
-__version__ = "0.9.115"
+__version__ = "0.9.116"
 
 # On Windows, default every subprocess to a hidden console. The backend runs
 # console-less under Electron; without this, each git/node/uv/puppetmaster

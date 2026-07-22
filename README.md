@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.115, deliberately pre-1.0. Post-v0.9.114: run_swarm accepts structured model pins (fail-closed via Puppetmaster registry); rides puppetmaster-ai==1.20.8 (agentic pin defaults + max-turns submit_findings).
+> Status: v0.9.116, deliberately pre-1.0. Rides puppetmaster-ai==1.20.9 (Muse Spark tool_choice auto-only + reasoning replay + explicit-pin ROUTING). run_swarm structured model pins remain fail-closed.
 
 ## Documentation
 
@@ -92,7 +92,7 @@ The cost thesis is measured, not asserted:
 |---|---|
 | **Provider-native pilot** | One driver, every OpenAI-compatible endpoint (OpenRouter or native). Frontier control models (Claude, GPT) and open-weights (GLM, DeepSeek, Kimi, Qwen, MiniMax) drive the same loop. |
 | **CodeGraph-first retrieval** | Per-turn structural context is auto-injected (symbols, defs, call sites) before the model acts, so it leans on the graph instead of dumping whole files. Self-healing: the index detects edits, additions, and deletions and refreshes in the background. |
-| **Puppetmaster delegation** | run_swarm (read-only analysis), run_implement (edit-capable worktree worker), run_parallel (concurrent waves). Heavy/multi-file work runs as durable, auditable jobs. Requires `puppetmaster-ai==1.20.8` (includes explicit model allowlists, bounded reroute, and verified Bedrock invoke health). |
+| **Puppetmaster delegation** | run_swarm (read-only analysis), run_implement (edit-capable worktree worker), run_parallel (concurrent waves). Heavy/multi-file work runs as durable, auditable jobs. Requires `puppetmaster-ai==1.20.9` (includes explicit model allowlists, bounded reroute, and verified Bedrock invoke health). |
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
 | **Honest token economics** | Prompt caching across Anthropic/OpenAI/Gemini with a stable + moving cache breakpoint, cost billed at the real cache-read discount, and the context meter driven by the driver's actual token usage -- so cost and context reflect reality and the status bar shows the dollars caching saved you. Savings-gated tool-output offload, absolute-token compaction advice, and optional per-turn output budgets (`+Nk` / `+Nk!`) cut waste without hiding results. |
