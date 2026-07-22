@@ -33,6 +33,38 @@ describe("upsertStreamingThinking preserves durable id", () => {
     expect(think.streaming).toBeFalsy();
     expect(think.id).toBe(id);
   });
+
+  it("reopens a trailing sealed thinking row instead of one REASONING header per token", () => {
+    // Sol/OR word deltas + any mid-stream finalize used to append a new
+    // thinking item per chunk (REASONING Muse / REASONING Spark / …).
+    let items = upsertStreamingThinking([], "Muse");
+    items = finalizeStreamingThinking(items);
+    for (const word of [" Spark", " 1", ".", "1"]) {
+      items = upsertStreamingThinking(items, word);
+      items = finalizeStreamingThinking(items);
+    }
+    const thinking = items.filter((i) => i.kind === "thinking") as Extract<
+      Item,
+      { kind: "thinking" }
+    >[];
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("Muse Spark 1.1");
+    expect(thinking[0].id).toBeTruthy();
+  });
+
+  it("still starts a new thinking row after a committed assistant bubble", () => {
+    let items: Item[] = upsertStreamingThinking([], "phase-one ");
+    items = finalizeStreamingThinking(items);
+    items = [
+      ...items,
+      { kind: "msg", msg: { role: "assistant", text: "narration" } },
+    ];
+    items = upsertStreamingThinking(items, "phase-two");
+    const texts = items
+      .filter((i): i is Extract<Item, { kind: "thinking" }> => i.kind === "thinking")
+      .map((t) => t.text);
+    expect(texts).toEqual(["phase-one ", "phase-two"]);
+  });
 });
 
 describe("activityGroupStableId survives thinking → tool transition", () => {

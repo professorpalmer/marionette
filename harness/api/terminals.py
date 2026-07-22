@@ -104,7 +104,14 @@ def stream_terminal(handler: Any, sid: str, svc: TerminalServices) -> None:
                 "b64": _b64.b64encode(data).decode("ascii"),
             })
             handler.wfile.write(f"data: {payload}\n\n".encode())
+    except (BrokenPipeError, ConnectionResetError):
+        return
+    except Exception:
+        # Still try to emit exit below so the renderer does not see a bare
+        # stream close (EXITED with no prior exit frame).
+        pass
+    try:
         handler.wfile.write(b"data: {\"kind\": \"exit\"}\n\n")
         handler.wfile.flush()
-    except (BrokenPipeError, ConnectionResetError):
+    except (BrokenPipeError, ConnectionResetError, OSError):
         pass

@@ -279,10 +279,14 @@ def _unix_shell() -> str:
 
 
 def _windows_shell_command(shell: str) -> str:
-    """Build a CreateProcessW command line for an interactive shell."""
+    """Build a CreateProcessW command line for an interactive shell.
+
+    PowerShell gets ``-NoProfile`` so a broken user profile cannot exit the
+    ConPTY session before the first prompt (empty pane + stream closed).
+    """
     base = ntpath.basename(shell).lower()
     if base in ("pwsh.exe", "powershell.exe"):
-        return f'"{shell}" -NoLogo'
+        return f'"{shell}" -NoLogo -NoProfile'
     return f'"{shell}"'
 
 

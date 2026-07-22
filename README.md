@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.113, deliberately pre-1.0. Post-v0.9.112: Run cards show command stdout/exit; late Cursor CLI reasoning hoists into Explored above the finale. Puppetmaster pin remains 1.20.6.
+> Status: v0.9.114, deliberately pre-1.0. Post-v0.9.113: Sol/OR word-delta reasoning coalesces into one Thought row (no per-token REASONING spam); Windows terminal hardens ConPTY SSE exit + one-shot auto-recover. Puppetmaster pin remains 1.20.6.
 
 ## Documentation
 

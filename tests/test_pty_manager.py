@@ -112,7 +112,10 @@ def test_unix_shell_uses_valid_absolute_shell(monkeypatch, tmp_path):
 
 def test_windows_shell_command_powershell():
     cmd = _windows_shell_command(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
-    assert cmd == r'"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo'
+    assert cmd == (
+        r'"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" '
+        r"-NoLogo -NoProfile"
+    )
 
 
 def test_pty_unavailable_raises_clear_error(monkeypatch):

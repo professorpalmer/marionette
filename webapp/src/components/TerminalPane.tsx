@@ -17,6 +17,9 @@ export default function TerminalPane() {
   const termRef = useRef<Terminal | null>(null);
   const idRef = useRef<string>("");
   const cancelRef = useRef<null | (() => void)>(null);
+  // One automatic recovery when the first SSE closes before any ConPTY bytes
+  // (common React-remount / IPC race on Windows). Manual Restart always works.
+  const autoRecoveredRef = useRef(false);
   // Bumping this re-runs the effect: cleanly tears down the old PTY + xterm and
   // spins up a fresh one. Drives the Restart button and exit auto-recovery.
   const [restartNonce, setRestartNonce] = useState(0);
@@ -24,6 +27,7 @@ export default function TerminalPane() {
 
   const restart = () => {
     setExited(false);
+    autoRecoveredRef.current = false;
     setRestartNonce((n) => n + 1);
   };
 
@@ -134,21 +138,39 @@ export default function TerminalPane() {
         });
 
         // stream output
+        let sawOutput = false;
+        let sawExit = false;
         cancelRef.current = stream(
           `/api/terminal/stream?id=${res.id}`,
           (ev: any) => {
             if (ev.kind === "data" && ev.b64) {
+              sawOutput = true;
               try { term.write(_b64ToBytes(ev.b64)); } catch { /* ignore */ }
             } else if (ev.kind === "exit") {
+              sawExit = true;
               term.write("\r\n\x1b[90m[process exited -- press Restart]\x1b[0m\r\n");
               idRef.current = "";  // session is dead; stop sending keystrokes to it
               markExited();
             }
           },
-          // onDone: SSE closed (shell exited / backend closed the stream)
+          // onDone: SSE closed. Prefer the exit frame; a bare close with no
+          // bytes often means React remount / IPC cancel raced the first
+          // ConPTY prompt — auto-restart once instead of a dead pane.
           () => {
+            if (disposed) return;
+            if (sawExit) {
+              markExited();
+              return;
+            }
             if (idRef.current) {
+              const deadId = idRef.current;
               idRef.current = "";
+              postJSON("/api/terminal/kill", { id: deadId });
+              if (!sawOutput && !autoRecoveredRef.current) {
+                autoRecoveredRef.current = true;
+                setRestartNonce((n) => n + 1);
+                return;
+              }
               markExited("\r\n\x1b[90m[stream closed -- press Restart]\x1b[0m\r\n");
             } else {
               markExited();
@@ -156,6 +178,7 @@ export default function TerminalPane() {
           },
           // onError: backend gone / stream broke -- surface a restartable state
           () => {
+            if (disposed) return;
             idRef.current = "";
             markExited("\r\n\x1b[31m[terminal stream error -- press Restart]\x1b[0m\r\n");
           }

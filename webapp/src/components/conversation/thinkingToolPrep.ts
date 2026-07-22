@@ -23,7 +23,11 @@ export function finalizeStreamingThinking(items: Item[]): Item[] {
  *
  * Phase barrier: never reopen or append into a thinking row that already has a
  * later assistant bubble or tool card after it — those surfaces are committed.
- * A new thinking_delta after a message/tool always APPENDs a fresh thinking row. */
+ * A new thinking_delta after a message/tool always APPENDs a fresh thinking row.
+ *
+ * Reopen trailing sealed thinking: Sol/OR often emit word-sized reasoning
+ * deltas; any mid-stream finalize that clears `streaming` must not spawn a new
+ * REASONING header per token. Only a card/assistant after the row is a barrier. */
 export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
   let next: Item[];
   for (let i = items.length - 1; i >= 0; i--) {
@@ -42,7 +46,7 @@ export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
       ];
       return hoistCardsBeforeTrailingFinals(next);
     }
-    if (it.kind === "thinking" && it.streaming) {
+    if (it.kind === "thinking") {
       const copy = items.slice();
       copy[i] = {
         kind: "thinking",
