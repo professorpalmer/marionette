@@ -710,7 +710,8 @@ async function _startBackendOnce() {
   // checkout here made every launch look like "Marionette" was the project.
   // Marionette-only model registry — never rewrite ~/.puppetmaster/models.json
   // while Cursor MCP also uses that shared file.
-  const path = require("node:path");
+  // Do not redeclare `const path` in this function: it TDZ-shadows the module
+  // import and crashes startBackend before spawn (blank UI / ECONNREFUSED :8799).
   const marionetteModels = path.join(
     process.env.USERPROFILE || process.env.HOME || "",
     ".pmharness",
