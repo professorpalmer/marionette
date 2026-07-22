@@ -229,6 +229,11 @@ class DurableState:
                           or payload.get("model_chosen") or payload.get("driver")),
                 "est_cost_usd": payload.get("estimated_cost_usd") or payload.get("nominal_cost_usd"),
                 "role": payload.get("role") or payload.get("worker_role"),
+                # Pin/route attribution for the swarm tracker. Without these the
+                # GUI cannot fail-closed-display explicit pins vs auto-routes.
+                "policy": payload.get("policy"),
+                "provider": payload.get("provider"),
+                "adapter": payload.get("adapter"),
                 # Rejected alternatives arrive as {"id", "reason"}; normalize to the
                 # {"model", "reason"} shape the GUI renders so the model name shows
                 # instead of "undefined".

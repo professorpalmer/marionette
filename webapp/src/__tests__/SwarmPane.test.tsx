@@ -125,6 +125,117 @@ describe("SwarmPane model badge", () => {
   });
 });
 
+describe("SwarmPane pin attribution", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    clearSWRCache();
+    mockArtifacts.mockResolvedValue([]);
+  });
+
+  it("labels explicit_pin routing as Explicit pin · not auto-routed", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "task-1",
+            model: "meta/muse-spark-1.1",
+            policy: "explicit_pin",
+            provider: "openrouter",
+            adapter: "agentic",
+            created_by: "router",
+            est_cost_usd: 0.01,
+          },
+        ],
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            role: "Worker",
+            instruction: "",
+            adapter: "agentic",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Explicit pin · not auto-routed")).toBeInTheDocument();
+    });
+    expect(screen.getByText("explicit_pin")).toBeInTheDocument();
+    expect(screen.getByText("openrouter · agentic")).toBeInTheDocument();
+    expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
+  });
+
+  it("fail-closes missing policy as Pin attribution unknown (not Router pick)", async () => {
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "",
+            task_id: "task-1",
+            model: "mystery-model",
+            created_by: "router",
+            est_cost_usd: 0.01,
+          },
+        ],
+        tasks: [
+          {
+            id: "task-1",
+            status: "running",
+            role: "Worker",
+            instruction: "",
+            adapter: "agentic",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Pin attribution unknown").length).toBeGreaterThanOrEqual(1);
+    });
+    expect(screen.queryByText("Router pick")).not.toBeInTheDocument();
+  });
+
+  it("warns FINDING headlines that look like prompt echoes without rewriting them", async () => {
+    const echoHeadline = "Role: auditor — find auth bypass paths";
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        status: "complete",
+        goal: "Echo finding warn",
+        adapter: "agentic",
+        artifacts_complete: true,
+        artifacts: [
+          { type: "FINDING", headline: echoHeadline, confidence: 0.5 },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => expect(screen.getByText("Finished")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Finished"));
+    fireEvent.click(await screen.findByText("Echo finding warn"));
+
+    await waitFor(() => {
+      expect(screen.getByText("looks like prompt echo")).toBeInTheDocument();
+    });
+    // Headline stays verbatim — chip is advisory only.
+    expect(screen.getByText(echoHeadline)).toBeInTheDocument();
+  });
+});
+
 describe("SwarmPane routing dedupe", () => {
   beforeEach(() => {
     vi.clearAllMocks();

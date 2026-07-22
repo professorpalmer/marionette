@@ -61,22 +61,40 @@ function relativeSince(ts: unknown, nowMs: number): string {
   return `${hrs}h ago`;
 }
 
-// Turn the router's raw policy string ("policy=balanced: cheapest sufficient
-// model whose capability_score (99) >= needed (50) (plan-billed...)") into one
-// plain-language sentence. The raw string + a per-model rejection wall reads
-// like an error dump; this reads like a decision.
+// Resolve attested routing policy from the structured field first, then the
+// legacy "policy=..." detail string. Empty means attribution is unknown.
+function routingPolicy(art: Artifact): string {
+  const fromField = typeof art.policy === "string" ? art.policy.trim() : "";
+  if (fromField) return fromField;
+  const detail = typeof art.detail === "string" ? art.detail : "";
+  return (detail.match(/policy=(\w+)/) || [])[1] || "";
+}
+
+// Turn the router's policy into one plain-language sentence. Fail closed when
+// policy is missing/unparsed: never claim "Router pick" without attestation.
 function summarizeRouting(art: Artifact): string {
   const detail = typeof art.detail === "string" ? art.detail : "";
-  const policy = (detail.match(/policy=(\w+)/) || [])[1] || "";
+  const policy = routingPolicy(art);
   const planBilled = /plan-billed|in-subscription/i.test(detail);
   const lead: Record<string, string> = {
     balanced: "Right-sized: cheapest model that clears the task's need",
     cheap: "Cheapest available model",
     quality: "Highest-capability model for the task",
     escalating: "Cheapest sufficient model, escalates if it stalls",
+    explicit_pin: "Explicit pin \u00b7 not auto-routed",
   };
-  const base = lead[policy] || "Router pick";
+  const base = lead[policy] || "Pin attribution unknown";
   return planBilled ? `${base} \u00b7 plan-billed, no marginal cost` : base;
+}
+
+// FINDING headlines that look like the worker echoed its prompt rather than
+// reporting a finding. Warn with a chip; never rewrite the headline itself.
+function looksLikePromptEcho(headline: string): boolean {
+  const text = (headline || "").trim();
+  if (!text) return false;
+  // format_artifacts truncates to 300; near-cap walls are almost always echoes.
+  if (text.length >= 200) return true;
+  return /^(Role\s*:|Goal\s*:|Return\s+only\b)/i.test(text);
 }
 
 function jobStatus(j: Job): Status {
@@ -973,14 +991,34 @@ export default function SwarmPane() {
                   const hasRejected = art.rejected && art.rejected.length > 0;
                   const key = `${art.id || idx}`;
                   const altsExpanded = !!expandedAlts[key];
+                  const policyLabel = routingPolicy(art) || "Pin attribution unknown";
+                  const providerLabel = [art.provider, art.adapter]
+                    .map((v) => (typeof v === "string" ? v.trim() : ""))
+                    .filter(Boolean)
+                    .filter((v, i, arr) => arr.indexOf(v) === i)
+                    .join(" · ");
                   return (
                     <div key={key} className="p-2 bg-panel rounded border border-edge/45 text-[10px] flex flex-col gap-1.5">
-                      <div className="flex items-center justify-between text-muted">
-                        <span className="flex items-center gap-1.5 truncate max-w-[72%]">
+                      <div className="flex items-center justify-between text-muted gap-2">
+                        <span className="flex items-center gap-1.5 min-w-0 flex-wrap">
                           <Cpu size={11} className="text-accent shrink-0" />
                           <span className="text-txt font-mono font-medium truncate" title={art.model}>
                             {art.model || "Unknown model"}
                           </span>
+                          <span
+                            className="text-[8px] text-faint bg-edge/20 px-1 py-0.5 rounded shrink-0 font-mono"
+                            title="Routing policy"
+                          >
+                            {policyLabel}
+                          </span>
+                          {providerLabel && (
+                            <span
+                              className="text-[8px] text-faint bg-edge/20 px-1 py-0.5 rounded shrink-0 font-mono truncate max-w-[140px]"
+                              title={providerLabel}
+                            >
+                              {providerLabel}
+                            </span>
+                          )}
                         </span>
                         <span className="font-mono text-good shrink-0 font-semibold">
                           {art.est_cost_usd !== undefined && art.est_cost_usd > 0
@@ -1150,6 +1188,8 @@ export default function SwarmPane() {
                   {findingRows.map(({ art, count }, idx: number) => {
                     const fid = art.id || `f${idx}`;
                     const fExpanded = !!expandedFindings[fid];
+                    const echoWarn = (art.type || "").toUpperCase() === "FINDING"
+                      && looksLikePromptEcho(art.headline || "");
                     const detailStr = art.detail == null
                       ? ""
                       : (typeof art.detail === "string"
@@ -1161,6 +1201,14 @@ export default function SwarmPane() {
                         <span className="font-bold text-accent uppercase tracking-wider text-[8px] flex items-center gap-1">
                           {art.type}
                           {count > 1 && <span className="text-faint bg-edge/20 px-1 rounded normal-case tracking-normal">x{count}</span>}
+                          {echoWarn && (
+                            <span
+                              className="text-faint bg-edge/15 px-1 rounded normal-case tracking-normal font-medium"
+                              title="Headline looks like the worker echoed its prompt"
+                            >
+                              looks like prompt echo
+                            </span>
+                          )}
                         </span>
                         {art.confidence !== undefined && art.confidence !== null && (
                           <span className="text-[8px] text-faint bg-edge/20 px-1 rounded shrink-0">

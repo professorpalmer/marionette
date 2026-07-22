@@ -211,6 +211,11 @@ export type Artifact = {
   role?: string;
   rejected?: { model: string; reason: string }[];
   detail?: any;
+  // ROUTING pin/route attribution. Fail closed in the tracker when missing:
+  // never claim "Router pick" without an attested policy.
+  policy?: string;
+  provider?: string;
+  adapter?: string;
   // Present only for patch artifacts: the list of touched files and a parsed
   // diffstat so job cards can show "3 files +40 -12" instead of truncated text.
   files?: string[] | null;
