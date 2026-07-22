@@ -27,7 +27,12 @@ export function finalizeStreamingThinking(items: Item[]): Item[] {
  *
  * Reopen trailing sealed thinking: Sol/OR often emit word-sized reasoning
  * deltas; any mid-stream finalize that clears `streaming` must not spawn a new
- * REASONING header per token. Only a card/assistant after the row is a barrier. */
+ * REASONING header per token. Only a card/assistant after the row is a barrier.
+ *
+ * Trailing sealed finale: late Cursor/Sol reasoning is hoisted above a
+ * looksLikeFinalAnswer assistant. Appending AFTER that finale then hoisting
+ * used to spawn one REASONING header per word. Insert/reopen immediately
+ * before the finale instead so word deltas coalesce into one row. */
 export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
   let next: Item[];
   for (let i = items.length - 1; i >= 0; i--) {
@@ -39,6 +44,35 @@ export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
       it.kind === "card"
       || (it.kind === "msg" && it.msg.role === "assistant")
     ) {
+      // Word-sized Sol deltas after a flushed finale: keep one Thought row
+      // immediately before the answer (hoist-stable), not N rows after it.
+      if (
+        it.kind === "msg"
+        && it.msg.role === "assistant"
+        && !it.msg.streaming
+        && !it.msg.workerStream
+        && looksLikeFinalAnswer(it.msg.text || "")
+      ) {
+        const copy = items.slice();
+        const prev = i > 0 ? copy[i - 1] : null;
+        if (prev && prev.kind === "thinking") {
+          copy[i - 1] = {
+            kind: "thinking",
+            text: prev.text + chunk,
+            streaming: true,
+            id: prev.id || newThinkingId(),
+          };
+          return hoistCardsBeforeTrailingFinals(copy);
+        }
+        copy.splice(i, 0, {
+          kind: "thinking",
+          text: chunk,
+          streaming: true,
+          id: newThinkingId(),
+        });
+        return hoistCardsBeforeTrailingFinals(copy);
+      }
+
       const sealed = finalizeStreamingThinking(items);
       next = [
         ...sealed,

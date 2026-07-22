@@ -876,7 +876,10 @@ export const api = {
     ),
   clearSessions: () =>
     postJSON<{ ok: boolean; deleted: number; active: string | null }>(withToken("/api/sessions/clear"), {}),
+  /** Persist settle state. Wire flag is still `archived` on the session row. */
   archiveSession: (id: string, archived: boolean) => postJSON<{ ok: boolean }>("/api/sessions/archive", { session: id, archived }),
+  /** UX alias for archiveSession — Settle / Unsettle in the LeftRail inbox. */
+  settleSession: (id: string, settled: boolean) => postJSON<{ ok: boolean }>("/api/sessions/archive", { session: id, archived: settled }),
   renameSession: (id: string, title: string) => postJSON<{ ok: boolean }>("/api/sessions/rename", { session: id, title }),
   swapPilot: (model: string) => getJSON(withToken(`/api/pilot?model=${encodeURIComponent(model)}`)),
   uploadImage: async (file: File | Blob): Promise<{ path: string; name: string }> => {

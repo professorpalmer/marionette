@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.117, deliberately pre-1.0. Rides puppetmaster-ai==1.20.10 (CodeGraph Windows UTF-8). Built-in terminal stays alive across right-rail tabs; swarm tracker shows explicit_pin attribution.
+> Status: v0.9.118, deliberately pre-1.0. Rides puppetmaster-ai==1.20.10 (CodeGraph Windows UTF-8). Sol/GPT reasoning no longer spams one REASONING header per word above a flushed finale; LeftRail Settle inbox; pin attribution retained.
 
 ## Documentation
 

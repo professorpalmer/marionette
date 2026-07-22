@@ -65,6 +65,47 @@ describe("upsertStreamingThinking preserves durable id", () => {
       .map((t) => t.text);
     expect(texts).toEqual(["phase-one ", "phase-two"]);
   });
+
+  it("coalesces Sol word deltas hoisted above a trailing finale", () => {
+    // Late reasoning after a flushed final-looking answer used to append
+    // after the finale, get hoisted, then repeat — one REASONING header
+    // per word ("The" / "source" / "confirms" / …).
+    const finalText =
+      "Ship it.\n\n"
+      + "| Step | Status |\n|---|---|\n"
+      + "| CI | green |\n\n"
+      + "Ready when you are.";
+    let items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      {
+        kind: "card",
+        card: {
+          id: "c1",
+          goal: "a.py",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+        },
+      },
+      { kind: "msg", msg: { role: "assistant", text: finalText } },
+    ];
+    for (const word of ["The", " source", " confirms", " both"]) {
+      items = upsertStreamingThinking(items, word);
+      items = finalizeStreamingThinking(items);
+    }
+    const thinking = items.filter((i) => i.kind === "thinking") as Extract<
+      Item,
+      { kind: "thinking" }
+    >[];
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("The source confirms both");
+    const assistantAt = items.findIndex(
+      (it) => it.kind === "msg" && it.msg.role === "assistant",
+    );
+    const thinkAt = items.findIndex((it) => it.kind === "thinking");
+    expect(thinkAt).toBeLessThan(assistantAt);
+  });
 });
 
 describe("activityGroupStableId survives thinking → tool transition", () => {
