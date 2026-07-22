@@ -54,7 +54,7 @@ runs from source.
    also run the Wave 6 offline safety gate:
    `.venv/bin/python -m pytest -q -m full_auto_safety`
    (AutoBudget, command policy/approvals, tool-pair sanitizer, SSE ring-miss,
-   stub deterministic eval â€” no live keys).
+   stub deterministic eval — no live keys).
 4. Open a PR against `main`. CI runs the same pytest matrix + frontend build +
    the `full-auto-safety` marker job and must pass before merge.
 5. Keep commits scoped: don't fold unrelated work into one commit. A release

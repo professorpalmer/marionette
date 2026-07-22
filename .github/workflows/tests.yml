@@ -53,7 +53,7 @@ jobs:
 
   # Wave 6: named offline gate for full-auto safety invariants. Does not replace
   # the matrix above (3.9/3.11 x OS + frontend stay required). Live-key /
-  # provider evals stay out Ã¢â‚¬â€ this selection is hermetic and marker-driven.
+  # provider evals stay out â€” this selection is hermetic and marker-driven.
   full-auto-safety:
     runs-on: ${{ matrix.os }}
     strategy:
