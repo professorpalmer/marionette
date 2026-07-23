@@ -296,7 +296,7 @@ def test_agentic_payload_capability_key_and_default_cap(monkeypatch):
         assert payload["mode"] == "implement"
         assert payload["routing_policy"] == "balanced"
         assert payload["auto_route"] is True
-        assert payload["token_budget"] == 40000
+        assert payload["token_budget"] == 250000
         assert EXPECTED_CAP_KEY in payload
         assert payload[EXPECTED_CAP_KEY] == 86
     finally:

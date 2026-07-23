@@ -101,7 +101,18 @@ export function classifyActionGoal(
   if (k === "web_fetch") {
     return { linkKind: "url", value: g };
   }
-  if (k === "run_command") {
+  // Worker / shell dispatches are processes, not files — even when the goal
+  // text embeds a path (looksLikeFilePath would otherwise open the editor).
+  if (
+    k === "run_command"
+    || k === "run_implement"
+    || k === "run_parallel"
+    || k === "run_swarm"
+    || k === "route_task"
+    || k === "shell"
+    || k === "bash"
+    || k === "execute"
+  ) {
     return { linkKind: "command", value: g };
   }
   if (isExternalUrl(g)) return { linkKind: "url", value: g };

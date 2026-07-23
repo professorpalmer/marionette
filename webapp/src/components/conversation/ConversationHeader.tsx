@@ -5,9 +5,11 @@ import StatusPill from "./StatusPill";
 export default function ConversationHeader({
   pillStatus,
   detail,
+  onBusyDetailClick,
 }: {
   pillStatus: string;
   detail?: string;
+  onBusyDetailClick?: () => void;
 }) {
   const dragRegion = { WebkitAppRegion: "drag" } as CSSProperties;
   const noDrag = { WebkitAppRegion: "no-drag" } as CSSProperties;
@@ -24,7 +26,11 @@ export default function ConversationHeader({
         </span>
       </span>
       <div className="shrink-0" style={noDrag}>
-        <StatusPill status={pillStatus} detail={detail} />
+        <StatusPill
+          status={pillStatus}
+          detail={detail}
+          onDetailClick={onBusyDetailClick}
+        />
       </div>
     </header>
   );

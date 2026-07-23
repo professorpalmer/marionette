@@ -1339,20 +1339,21 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             <label className="text-[11px] text-muted shrink-0">Worker run token ceiling</label>
             <input
               type="text"
-              defaultValue={settings.workerTokenBudget || "40000"}
+              defaultValue={settings.workerTokenBudget || "250000"}
               onBlur={(e) => {
                 const v = e.target.value.trim();
-                if (v !== (settings.workerTokenBudget || "40000")) update({ workerTokenBudget: v });
+                if (v !== (settings.workerTokenBudget || "250000")) update({ workerTokenBudget: v });
               }}
               disabled={saving}
               className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
-              placeholder="40000"
+              placeholder="250000"
             />
           </div>
           <p className="text-[10px] text-muted">
             Default token ceiling for a single native worker run when no ambient AutoBudget
-            is governing the tree. Swarm/implement payloads stamp the same value as
-            token_budget. Applies on the next worker spawn -- no restart needed.
+            is governing the tree (default 250k — 40–50k starves analysis workers).
+            Swarm/implement payloads stamp the same value as token_budget. Applies on
+            the next worker spawn -- no restart needed.
           </p>
         </div>
 

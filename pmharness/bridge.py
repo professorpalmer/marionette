@@ -58,15 +58,15 @@ def worker_token_budget() -> int:
     """Default token ceiling stamped on analysis/implement worker payloads.
 
     Mirrors the Settings "Worker run token ceiling" control
-    (HARNESS_WORKER_TOKEN_BUDGET, default 40000). Ambient AutoBudget still
+    (HARNESS_WORKER_TOKEN_BUDGET, default 250000). Ambient AutoBudget still
     governs native ProviderWorker spend when present; this value is the
     agentic payload hint + unsupervised native default.
     """
     import os as _os
     try:
-        return max(1, int(_os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "40000") or 40000))
+        return max(1, int(_os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "250000") or 250000))
     except (TypeError, ValueError):
-        return 40000
+        return 250000
 
 
 def _browser_swarm_enabled(goal: str) -> bool:

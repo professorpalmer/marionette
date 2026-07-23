@@ -1971,6 +1971,77 @@ describe("investigation terminal reconciliation + live ordering", () => {
     expect(bg.running).toBe(true);
   });
 
+  it("reconcileOrphanInvestigationCards drops anonymous tool-prep shells", () => {
+    const items: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "tool-prep:run_command",
+          goal: "",
+          kind: "run_command",
+          running: true,
+          open: false,
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "tool-prep:call-xyz",
+          goal: "ship",
+          kind: "run_implement",
+          call_id: "call-xyz",
+          running: true,
+          open: false,
+        },
+      },
+      {
+        kind: "card",
+        card: {
+          id: "real-1",
+          goal: "git status",
+          kind: "run_command",
+          running: false,
+          open: false,
+          result: { exit_code: 0 },
+        },
+      },
+    ];
+    const next = reconcileOrphanInvestigationCards(items, []);
+    expect(next).toHaveLength(2);
+    const prep = (next[0] as Extract<Item, { kind: "card" }>).card;
+    const real = (next[1] as Extract<Item, { kind: "card" }>).card;
+    expect(prep.id).toBe("tool-prep:call-xyz");
+    expect(prep.running).toBe(false);
+    expect(prep.result?.status).toBe("complete");
+    expect(prep.result?.error).toBeUndefined();
+    expect(real.id).toBe("real-1");
+  });
+
+  it("appendActionStartCard drops anonymous kind-keyed tool-prep shell", () => {
+    const items: Item[] = [
+      {
+        kind: "card",
+        card: {
+          id: "tool-prep:run_implement",
+          goal: "",
+          kind: "run_implement",
+          running: true,
+          open: false,
+        },
+      },
+    ];
+    const next = appendActionStartCard(items, {
+      id: "call-impl-1",
+      kind: "run_implement",
+      goal: "prefer marionette child",
+    });
+    const cards = next.filter((it) => it.kind === "card") as Extract<Item, { kind: "card" }>[];
+    expect(cards).toHaveLength(1);
+    expect(cards[0].card.id).toBe("call-impl-1");
+    expect(cards[0].card.running).toBe(true);
+    expect(cards[0].card.goal).toBe("prefer marionette child");
+  });
+
   it("reconcileOrphanInvestigationCards clears stale running when result already landed", () => {
     const items: Item[] = [
       {

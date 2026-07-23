@@ -455,15 +455,15 @@ class ProviderWorker:
         else:
             try:
                 _default_tokens = int(
-                    os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "40000") or 40000
+                    os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "250000") or 250000
                 )
             except (TypeError, ValueError):
-                _default_tokens = 40000
+                _default_tokens = 250000
             if _default_tokens < 1:
-                _default_tokens = 40000
+                _default_tokens = 250000
             self.budget = budget or AutoBudget(
                 max_tokens=_default_tokens,
-                max_seconds=300,
+                max_seconds=900,
                 max_swarms=2,
                 max_idle_steps=2
             )
@@ -531,10 +531,16 @@ class ProviderWorker:
             if not _is_confined(wt_path, managed_dir):
                 raise ValueError("Confinement violation: worktree path lies outside the managed directory")
 
-            # Seed live goal paths (untracked / dirty) so the worker sees them.
+            # Seed live goal paths (untracked / dirty) so the worker sees them,
+            # then commit that baseline so finalize does not mis-report the
+            # copies as worker edits (false "applied N files" on analysis).
             try:
-                from harness.worktree_seed import seed_worktree_from_goal
-                seed_worktree_from_goal(self.repo, wt_path, self.goal)
+                from harness.worktree_seed import (
+                    commit_seed_baseline,
+                    seed_worktree_from_goal,
+                )
+                seeded = seed_worktree_from_goal(self.repo, wt_path, self.goal)
+                commit_seed_baseline(wt_path, seeded)
             except Exception:
                 pass
 
@@ -694,6 +700,12 @@ class ProviderWorker:
                     worktree=wt_path,
                     declarative_checks=check_payload,
                 )
+
+            # Analysis/review is findings-only: never surface a patch (seed
+            # leftovers or accidental writes) as applied source edits.
+            if not self.expects_diff:
+                patch = ""
+                files_changed = []
 
             # Detect run_command writes that escaped the worktree BEFORE
             # deciding how to report an empty diff. The worktree `git diff`

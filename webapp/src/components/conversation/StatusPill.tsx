@@ -34,11 +34,40 @@ export function statusPillDotClass(status: string): string {
   return STATUS_DOT[status] || STATUS_DOT.idle;
 }
 
-export default function StatusPill({ status, detail }: { status: string; detail?: string }) {
+export default function StatusPill({
+  status,
+  detail,
+  onDetailClick,
+}: {
+  status: string;
+  detail?: string;
+  /** When set, the busy detail (e.g. "run implement") focuses the live surface. */
+  onDetailClick?: () => void;
+}) {
   const label = statusPillLabel(status, detail);
+  const clickable =
+    Boolean(onDetailClick)
+    && Boolean(detail)
+    && (status === "thinking" || status === "executing" || status === "streaming");
+  const className =
+    `text-[10.5px] flex items-center gap-1.5 min-w-0 max-w-[42ch] ${statusPillTextClass(status)}`
+    + (clickable ? " cursor-pointer hover:underline underline-offset-2" : "");
+  if (clickable) {
+    return (
+      <button
+        type="button"
+        onClick={onDetailClick}
+        className={className}
+        title="Open terminal for live worker output"
+      >
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusPillDotClass(status)}`} />
+        <span className="truncate">{label}</span>
+      </button>
+    );
+  }
   return (
     <span
-      className={`text-[10.5px] flex items-center gap-1.5 min-w-0 max-w-[42ch] ${statusPillTextClass(status)}`}
+      className={className}
       title={detail || status}
     >
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusPillDotClass(status)}`} />

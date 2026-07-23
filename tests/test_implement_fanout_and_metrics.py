@@ -3,6 +3,7 @@ from __future__ import annotations
 """Fan-out guard + worktree seed + local-job routing previews."""
 
 import tempfile
+from pathlib import Path
 
 from harness.implement_guards import (
     check_implement_workspace,
@@ -224,6 +225,54 @@ def test_seed_html_path_token(tmp_path):
     target.write_text("<p>hi</p>\n", encoding="utf-8")
     seeded = seed_worktree_from_goal(str(repo), str(wt), "edit page.html")
     assert "page.html" in seeded
+
+
+def test_seed_baseline_excludes_seeded_files_from_finalize(tmp_path):
+    """Seeded untracked diagnostics must not appear as worker files_changed."""
+    import subprocess
+    from harness.edit_engines import finalize_worktree_patch
+    from harness.worktree_seed import commit_seed_baseline, seed_worktree_from_goal
+    from harness.worktrees import add_worktree, remove_worktree
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@t"], cwd=repo, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"], cwd=repo, check=True, capture_output=True,
+    )
+    (repo / "tracked.py").write_text("print(0)\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True,
+    )
+    # Pre-existing untracked diagnostics (the false-apply case).
+    for name in ("cg1.txt", "cg2.txt", "diag_out.txt"):
+        (repo / name).write_text(f"noise {name}\n", encoding="utf-8")
+
+    wt_info = add_worktree(str(repo), branch="seed-base-test", base="HEAD")
+    wt_path = wt_info["path"]
+    try:
+        seeded = seed_worktree_from_goal(
+            str(repo), wt_path, f"analyze the repository at {repo}",
+        )
+        assert seeded, "expected dynamic/dir seed of untracked diagnostics"
+        n = commit_seed_baseline(wt_path, seeded)
+        assert n >= 1
+        patch, files = finalize_worktree_patch(wt_path)
+        assert patch.strip() == ""
+        assert files == []
+        # Real worker edit after baseline still shows up.
+        (Path(wt_path) / "tracked.py").write_text("print(1)\n", encoding="utf-8")
+        patch2, files2 = finalize_worktree_patch(wt_path)
+        assert "tracked.py" in files2
+        assert "tracked.py" in patch2
+        for name in ("cg1.txt", "cg2.txt", "diag_out.txt"):
+            assert name not in files2
+    finally:
+        remove_worktree(str(repo), wt_path, force=True)
 
 
 def test_filter_local_running_visible_on_session_drift(tmp_path):

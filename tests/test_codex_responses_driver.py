@@ -11,6 +11,7 @@ import pytest
 from harness import credential_pool as cp
 from pmharness.drivers.codex_responses import (
     CodexResponsesDriver,
+    _codex_tool_hint_goal,
     _consume_codex_sse,
     _extract_text_and_tools,
     _messages_to_responses_input,
@@ -47,6 +48,15 @@ def test_extract_text_and_tools():
     assert text == "hello"
     assert tools[0]["function"]["name"] == "read_file"
     assert finish == "completed"
+
+
+def test_codex_tool_hint_goal_from_arguments():
+    assert _codex_tool_hint_goal('{"command":"git status"}', "run_command") == "git status"
+    assert _codex_tool_hint_goal(
+        '{"goal":"prefer marionette child"}', "run_implement",
+    ) == "prefer marionette child"
+    assert _codex_tool_hint_goal('{"path":"harness/x.py"}', "read_file") == "harness/x.py"
+    assert _codex_tool_hint_goal("{}", "run_command") == ""
 
 
 def test_extract_excludes_commentary_from_final_text():

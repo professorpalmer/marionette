@@ -119,7 +119,7 @@ def test_worker_default_token_budget_fallback(monkeypatch):
     temp_dir = tempfile.mkdtemp()
     try:
         worker = ProviderWorker(repo=temp_dir, goal="x")
-        assert worker.budget.max_tokens == 40000
+        assert worker.budget.max_tokens == 250000
     finally:
         shutil.rmtree(temp_dir)
 

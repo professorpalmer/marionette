@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.124, deliberately pre-1.0. Home with marionette+wiki children resolves to the product checkout; native tool arguments.repo is preserved so workers never fall back to the non-git parent; non-git dispatch soft-refuses before red swarm cards. Rides puppetmaster-ai==1.20.10 (CodeGraph Windows UTF-8). Codex/Sol streaming now carries provider item identity end to end: commentary routes as visible progress, reasoning deltas no longer act as per-token phase barriers, the transcript applies strictly append-only in event order, and prior-turn investigation folds stay sealed when a new prompt starts.
+> Status: v0.9.125, deliberately pre-1.0. Analysis worktrees commit a seed baseline so pre-existing untracked files are never reported as applied edits; worker token ceilings rise to 250k (auto tree 500k); run_implement / run_parallel goals open the terminal instead of the file editor; Codex tool hints carry call_id so orphan tool-prep shells stop settling as red missing action_result. Rides puppetmaster-ai==1.20.10.
 
 ## Documentation
 

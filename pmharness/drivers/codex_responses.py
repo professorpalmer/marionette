@@ -210,6 +210,33 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
     return "".join(text_parts), tool_calls, finish
 
 
+def _codex_tool_hint_goal(arguments: Any, name: str) -> str:
+    """Best-effort display goal from a function_call arguments blob."""
+    args: Any = arguments
+    if isinstance(args, str):
+        raw = args.strip()
+        if not raw:
+            return ""
+        try:
+            args = json.loads(raw)
+        except Exception:
+            return raw[:200]
+    if not isinstance(args, dict):
+        return ""
+    for key in (
+        "goal", "command", "path", "query", "pattern", "url",
+        "instruction", "prompt", "file",
+    ):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()[:200]
+    # Nested arguments bag (native tool shape).
+    nested = args.get("arguments")
+    if isinstance(nested, dict):
+        return _codex_tool_hint_goal(nested, name)
+    return ""
+
+
 def _codex_continuation_kind(finish: str, text: str, tool_calls: list) -> Optional[str]:
     """Return ``nudge`` / ``length`` when the turn should continue, else None."""
     if finish == "content_filter":
@@ -980,7 +1007,7 @@ class CodexResponsesDriver:
         session_id: str | None = None,
         on_reasoning_delta: Callable[..., None] | None = None,
         on_stream_item_done: Callable[..., None] | None = None,
-        on_tool_hint: Callable[[str], None] | None = None,
+        on_tool_hint: Callable[[Any], None] | None = None,
         on_wait_notice: Callable[[str], None] | None = None,
     ) -> DriverResponse:
         body = self._build_body(
@@ -1000,10 +1027,25 @@ class CodexResponsesDriver:
         )
         if on_tool_hint is not None:
             for tc in (resp.meta or {}).get("tool_calls") or []:
-                name = ((tc.get("function") or {}).get("name") or "").strip()
-                if name:
-                    try:
+                fn = tc.get("function") or {}
+                name = (fn.get("name") or "").strip()
+                if not name:
+                    continue
+                # Prefer structured hints with call_id so tool_prep promotes
+                # into the matching action_start instead of leaving anonymous
+                # tool-prep:<kind> orphans that settle as "missing action_result".
+                call_id = str(tc.get("id") or tc.get("call_id") or "").strip()
+                goal = _codex_tool_hint_goal(fn.get("arguments"), name)
+                try:
+                    if call_id or goal:
+                        hint: dict = {"name": name}
+                        if call_id:
+                            hint["id"] = call_id
+                        if goal:
+                            hint["goal"] = goal
+                        on_tool_hint(hint)
+                    else:
                         on_tool_hint(name)
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
         return resp

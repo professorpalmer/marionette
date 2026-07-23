@@ -94,6 +94,65 @@ def seed_worktree_from_goal(repo: str, wt_path: str, goal: str) -> list[str]:
     return out
 
 
+def commit_seed_baseline(wt_path: str, seeded: Iterable[str]) -> int:
+    """Commit seeded paths so ``finalize_worktree_patch`` only sees worker edits.
+
+    Without this, ``git add -A`` at finalize treats seeded untracked/dirty
+    copies as worker changes — analysis-mode jobs then falsely report
+    "applied N files" for pre-existing diagnostics the seeder copied in.
+
+    Returns how many paths were committed. Best-effort; never raises.
+    """
+    paths = []
+    seen: set[str] = set()
+    for rel in seeded or []:
+        r = str(rel or "").replace("\\", "/").strip()
+        if not r or r in seen:
+            continue
+        seen.add(r)
+        paths.append(r)
+    if not wt_path or not paths:
+        return 0
+    try:
+        for rel in paths:
+            subprocess.run(
+                ["git", "-C", wt_path, "add", "--", rel],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=30,
+            )
+        staged = subprocess.run(
+            ["git", "-C", wt_path, "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=15,
+        )
+        staged_paths = [
+            ln.strip() for ln in (staged.stdout or "").splitlines() if ln.strip()
+        ]
+        if not staged_paths:
+            return 0
+        env = os.environ.copy()
+        env["GIT_AUTHOR_NAME"] = "marionette-seed"
+        env["GIT_AUTHOR_EMAIL"] = "seed@marionette.local"
+        env["GIT_COMMITTER_NAME"] = "marionette-seed"
+        env["GIT_COMMITTER_EMAIL"] = "seed@marionette.local"
+        # Avoid interactive hooks / identity prompts in worker worktrees.
+        env.setdefault("GIT_TERMINAL_PROMPT", "0")
+        commit = subprocess.run(
+            [
+                "git", "-C", wt_path, "commit",
+                "-m", "marionette: seed baseline (not a worker edit)",
+                "--no-verify",
+            ],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=30, env=env,
+        )
+        if commit.returncode != 0:
+            return 0
+        return len(staged_paths)
+    except Exception:
+        return 0
+
+
 def seed_untracked_matching(repo: str, wt_path: str, prefixes: Iterable[str]) -> list[str]:
     """Copy untracked live files under any of ``prefixes`` into the worktree."""
     seeded: list[str] = []

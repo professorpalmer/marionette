@@ -300,7 +300,13 @@ class ConversationJobsMixin:
                     "artifact_types": [],
                     "ar_list": []
                 }
-            elif not (res.patch or "").strip():
+            elif not expects_diff or not (res.patch or "").strip():
+                # Analysis/review (expects_diff=False): findings-only — never
+                # apply a patch even if finalize left seed noise in res.patch.
+                # Empty-patch implement also lands here for the no-op path.
+                if not expects_diff:
+                    res.patch = ""
+                    res.files_changed = []
                 # Analysis/review with no patch: only green when the summary
                 # carries substantive findings. Verification/plumbing-only
                 # outputs must surface degraded/failed, never a clean done.

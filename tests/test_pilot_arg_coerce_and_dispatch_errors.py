@@ -98,6 +98,64 @@ def test_execute_turn_actions_settles_dispatch_exception_with_real_error():
     assert disposition[0] is None
 
 
+def test_execute_turn_actions_settles_local_dispatch_exception_with_real_error():
+    """run_command (LOCAL_ACTION_KINDS) exceptions must yield a real action_result."""
+    act = PilotAction(kind="run_command", command="echo hi")
+    act.tool_call_id = "call_run_1"
+    turn = SimpleNamespace(actions=[act])
+
+    def boom(*_a, **_k):
+        raise RuntimeError("local dispatch boom")
+        yield  # pragma: no cover
+
+    session = SimpleNamespace(
+        _cancel=SimpleNamespace(is_set=lambda: False),
+        _steer_pending=False,
+        _history=[],
+        _turn_guard_state=None,
+        _pending_advisor_warnings=[],
+        config=SimpleNamespace(repo="/repo", swarm_adapter="agentic", no_delegation=False),
+        _check_and_inject_steer=lambda: iter(()),
+        _sanitize_tool_pairs=MagicMock(),
+        _append_action_result=MagicMock(),
+        _turn_economy=SimpleNamespace(enforce_tool_batch=lambda msgs: None),
+        pilot=None,
+    )
+
+    import harness.send_loop_actions as actions_mod
+
+    original = actions_mod.dispatch_local_action
+    actions_mod.dispatch_local_action = boom
+    try:
+        counters = {"action_seq": 0, "swarms": 0, "demo_swarms": 0}
+        gen = execute_turn_actions(
+            session,
+            turn=turn,
+            user_message="run",
+            is_native=True,
+            plan=False,
+            counters=counters,
+            step=0,
+            turn_findings=[],
+        )
+        events = []
+        try:
+            while True:
+                events.append(next(gen))
+        except StopIteration as stop:
+            disposition = stop.value
+    finally:
+        actions_mod.dispatch_local_action = original
+
+    results = [e for e in events if e.kind == "action_result"]
+    assert results
+    assert results[-1].data.get("id") == "call_run_1"
+    assert "local dispatch boom" in (results[-1].data.get("error") or "")
+    assert "missing action_result" not in (results[-1].data.get("error") or "")
+    session._append_action_result.assert_called()
+    assert disposition[0] is None
+
+
 def test_dispatch_parallel_agentic_exception_after_start_yields_real_error(tmp_path, monkeypatch):
     """Agentic run_parallel path: raise after action_start -> real error result."""
     act = PilotAction(

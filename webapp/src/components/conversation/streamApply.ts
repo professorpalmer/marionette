@@ -33,6 +33,7 @@ import {
   MAX_JOB_ACTIONS,
   normalizeNestedActionStatus,
 } from "./nestedActionBounds";
+import { normalizeToolKind } from "../../lib/turnProgress";
 
 export {
   boundActionField,
@@ -335,14 +336,21 @@ export function reconcileOrphanInvestigationCards(
 ): Item[] {
   const live = liveJobIds instanceof Set ? liveJobIds : new Set(liveJobIds);
   let changed = false;
-  const next = items.map((it) => {
-    if (it.kind !== "card") return it;
+  const next: Item[] = [];
+  for (const it of items) {
+    if (it.kind !== "card") {
+      next.push(it);
+      continue;
+    }
     const card = it.card;
     const jobId = String(card.result?.job_id || "").trim();
     const parts = jobId
       ? jobId.split(",").map((p) => p.trim()).filter(Boolean)
       : [];
-    if (parts.some((p) => live.has(p))) return it;
+    if (parts.some((p) => live.has(p))) {
+      next.push(it);
+      continue;
+    }
 
     const nestedRunning = (card.actions || []).some((a) => a.status === "running");
     const hasResult = Boolean(card.result);
@@ -363,12 +371,33 @@ export function reconcileOrphanInvestigationCards(
       || resultStatus === "stalled"
       || isTerminalJobStatus(card.result?.status);
 
+    // Provisional tool_prep shells (especially name-only Codex hints like
+    // tool-prep:run_command) are not real dispatches. Drop anonymous ones and
+    // soft-complete call_id-bearing prep — never invent red "missing
+    // action_result" for a hint that action_start already replaced.
+    if (isPrep && !jobId && (!hasResult || orphanPending)) {
+      changed = true;
+      if (!card.call_id) {
+        continue; // drop anonymous kind-keyed prep
+      }
+      next.push({
+        kind: "card" as const,
+        card: {
+          ...card,
+          running: false,
+          actions: settleNestedRunning(card.actions, "complete"),
+          result: card.result || { status: "complete" },
+        },
+      });
+      continue;
+    }
+
     // Result already present (read/search/… or terminal job ack) but parent
     // still flagged running — clear the stale spinner without inventing errors.
     // Leave non-terminal job acks alone when the tracker momentarily omits them.
     if (card.running && hasResult && resultTerminal) {
       changed = true;
-      return {
+      next.push({
         kind: "card" as const,
         card: {
           ...card,
@@ -377,26 +406,32 @@ export function reconcileOrphanInvestigationCards(
             ? settleNestedRunning(card.actions, "complete")
             : card.actions,
         },
-      };
+      });
+      continue;
     }
 
     // Nested-only stale after parent settled / never had a live job.
-    if (!isPrep && !orphanPending) {
+    if (!orphanPending) {
       if (nestedRunning && !jobId) {
         changed = true;
-        return {
+        next.push({
           kind: "card" as const,
           card: {
             ...card,
             actions: settleNestedRunning(card.actions, "complete"),
           },
-        };
+        });
+        continue;
       }
-      return it;
+      next.push(it);
+      continue;
     }
-    if (!card.running && !nestedRunning) return it;
+    if (!card.running && !nestedRunning) {
+      next.push(it);
+      continue;
+    }
     changed = true;
-    return {
+    next.push({
       kind: "card" as const,
       card: {
         ...card,
@@ -404,8 +439,8 @@ export function reconcileOrphanInvestigationCards(
         actions: settleNestedRunning(card.actions, "complete"),
         result: card.result || { status: "interrupted", error: "missing action_result" },
       },
-    };
-  });
+    });
+  }
   return changed ? next : items;
 }
 
@@ -913,6 +948,26 @@ export function finalizePilotMessage(
 }
 
 /** Idempotent action_start card append (session-switch SSE race safe). */
+/** Drop anonymous name-only tool_prep shells for ``kind`` once a real
+ * action_start owns the row. Keeps call_id-bearing Cursor-native prep. */
+function dropAnonymousKindPrep(items: Item[], kind: string): Item[] {
+  const raw = String(kind || "").trim();
+  if (!raw) return items;
+  const norm = normalizeToolKind(raw) || raw;
+  const anonIds = new Set([
+    `tool-prep:${raw}`,
+    `tool-prep:${norm}`,
+  ]);
+  return items.filter((it) => {
+    if (it.kind !== "card") return true;
+    const id = String(it.card.id || "");
+    if (!anonIds.has(id)) return true;
+    // Identity-bearing prep is not anonymous.
+    if (String(it.card.call_id || "").trim()) return true;
+    return false;
+  });
+}
+
 export function appendActionStartCard(
   items: Item[],
   d: {
@@ -927,7 +982,10 @@ export function appendActionStartCard(
   // Seal thinking + pilot bubbles first so tool cards never absorb prior text.
   const sealed = sealOpenStreamSurfaces(items);
   if (sealed.some((it) => it.kind === "card" && it.card.id === d.id)) {
-    return sealed.filter((it) => it.kind !== "tool_prep");
+    return dropAnonymousKindPrep(
+      sealed.filter((it) => it.kind !== "tool_prep"),
+      String(d.kind || ""),
+    );
   }
 
   // Promote a provisional tool-prep hint IN PLACE when correlation is safe.
@@ -954,7 +1012,9 @@ export function appendActionStartCard(
     (callId
       ? prepIndexes.find((i) => {
           const card = (sealed[i] as Extract<Item, { kind: "card" }>).card;
-          return card.id === `tool-prep:${callId}`;
+          return card.id === `tool-prep:${callId}`
+            || card.call_id === callId
+            || card.id === callId;
         })
       : undefined)
     ?? prepIndexes.find((i) => {
@@ -964,33 +1024,52 @@ export function appendActionStartCard(
       return Boolean(goal) && Boolean(kind)
         && cardGoal === goal
         && cardKind === kind;
+    })
+    // Name-only Codex hints land as tool-prep:<kind> with empty goal. Promote
+    // that shell when this action_start is the first real owner of the kind.
+    ?? prepIndexes.find((i) => {
+      const card = (sealed[i] as Extract<Item, { kind: "card" }>).card;
+      if (String(card.call_id || "").trim()) return false;
+      if (String(card.goal || "").trim()) return false;
+      const cardKind = String(card.kind || "").trim();
+      const norm = normalizeToolKind(kind) || kind;
+      return Boolean(kind)
+        && (cardKind === kind || cardKind === norm
+          || card.id === `tool-prep:${kind}`
+          || card.id === `tool-prep:${norm}`);
     });
   if (prepIdx != null) {
-    return sealed
-      .map((it, i) => (
-        i === prepIdx
-          ? {
-              kind: "card" as const,
-              card: {
-                id: d.id,
-                goal: (d.goal as string) || goal,
-                goals: Array.isArray(d.goals) ? d.goals.map(String) : undefined,
-                cwd: d.cwd,
-                running: true,
-                open: false,
-                kind: d.kind,
-                call_id: callId || undefined,
-              },
-            }
-          : it
-      ))
-      .filter((it) => it.kind !== "tool_prep");
+    return dropAnonymousKindPrep(
+      sealed
+        .map((it, i) => (
+          i === prepIdx
+            ? {
+                kind: "card" as const,
+                card: {
+                  id: d.id,
+                  goal: (d.goal as string) || goal,
+                  goals: Array.isArray(d.goals) ? d.goals.map(String) : undefined,
+                  cwd: d.cwd,
+                  running: true,
+                  open: false,
+                  kind: d.kind,
+                  call_id: callId || undefined,
+                },
+              }
+            : it
+        ))
+        .filter((it) => it.kind !== "tool_prep"),
+      kind,
+    );
   }
 
-  // No safe prep match: append a distinct durable card. Leave unrelated
-  // provisional hints alone (clearToolPrepPlaceholders would wipe them).
+  // No safe prep match: append a distinct durable card, and drop the anonymous
+  // kind-keyed prep shell so it cannot settle as a red missing action_result.
   return [
-    ...sealed.filter((it) => it.kind !== "tool_prep"),
+    ...dropAnonymousKindPrep(
+      sealed.filter((it) => it.kind !== "tool_prep"),
+      kind,
+    ),
     {
       kind: "card",
       card: {

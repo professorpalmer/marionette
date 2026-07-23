@@ -98,11 +98,12 @@ def managed_worktree_for_goal(
     copies any goal-referenced live files into the worktree so agentic/native
     workers can see them (empty-diff / ``C:\\dev\\null`` class of failures).
     """
-    from harness.worktree_seed import seed_worktree_from_goal
+    from harness.worktree_seed import commit_seed_baseline, seed_worktree_from_goal
 
     with managed_worktree(repo, base=base) as wt_path:
         with contextlib.suppress(Exception):
-            seed_worktree_from_goal(repo, wt_path, goal)
+            seeded = seed_worktree_from_goal(repo, wt_path, goal)
+            commit_seed_baseline(wt_path, seeded)
         yield wt_path
 
 
@@ -259,11 +260,21 @@ def run_native_edit(
     """Marionette's own pilot loop driven in a worktree (the rich engine)."""
     from harness.autobudget import AutoBudget
     from harness.worker import ProviderWorker
+    from pmharness.bridge import worker_token_budget
 
+    # Per-worker ceiling (Settings / HARNESS_WORKER_TOKEN_BUDGET), not the
+    # full-auto tree ceiling — AutoBudget.from_env() used to starve analysis
+    # workers at 50k mid-turn.
     worker = ProviderWorker(
         config.repo, goal,
         driver=config.driver, reach=config.reach,
-        budget=AutoBudget.from_env(), require_codegraph=False,
+        budget=AutoBudget(
+            max_tokens=worker_token_budget(),
+            max_seconds=900,
+            max_swarms=2,
+            max_idle_steps=2,
+        ),
+        require_codegraph=False,
         job_id=job_id,
         expects_diff=expects_diff,
         on_event=on_event,
@@ -375,6 +386,11 @@ def run_agentic_edit(
             patch, files_changed = finalize_worktree_patch(wt_path)
             tokens_out, tokens_in, failure, final_text = _summarize_agentic_result(result)
             routed_model = _routed_model_id(result)
+
+            # Analysis/review: never report seed leftovers as applied edits.
+            if not expects_diff:
+                patch = ""
+                files_changed = []
 
             if not patch.strip():
                 # Distinguish "engine could not run" (route/provider failure) from

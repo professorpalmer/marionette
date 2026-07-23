@@ -2501,7 +2501,11 @@ class ConversationalSession(
         """
         for later in (actions or [])[current_idx + 1:]:
             action_seq += 1
-            skip_aid = f"a{action_seq}"
+            # Prefer the provider tool_call_id so a prior action_start (or
+            # tool_prep) with that id is settled — synthetic a{n} left orphans
+            # that the UI painted as "missing action_result".
+            _tcid = str(getattr(later, "tool_call_id", None) or "").strip()
+            skip_aid = _tcid or f"a{action_seq}"
             kind = getattr(later, "kind", "") or "action"
             skip_msg = (
                 f"(skipped {kind}: prior background dispatch is a pause-point; "
@@ -2511,6 +2515,7 @@ class ConversationalSession(
                 "id": skip_aid,
                 "status": "skipped",
                 "message": skip_msg,
+                "call_id": _tcid or None,
             })
             self._append_action_result(later, skip_aid, skip_msg, is_native, ok=True)
 

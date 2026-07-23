@@ -2061,6 +2061,16 @@ export default function Conversation({
             ? busyProgress.pill
             : undefined
         }
+        onBusyDetailClick={() => {
+          // Worker / shell busy chrome → terminal, never the file editor.
+          try {
+            window.dispatchEvent(
+              new CustomEvent("harness-focus-tab", { detail: "terminal" }),
+            );
+          } catch {
+            /* ignore */
+          }
+        }}
       />
 
       <EditorTabStrip

@@ -61,6 +61,18 @@ describe("agentLinks detection", () => {
       linkKind: "command",
       value: "pytest -q",
     });
+    // Worker goals often embed paths — never open the file editor for them.
+    expect(classifyActionGoal(
+      "run_implement",
+      "Prefer C:\\Users\\pwall\\.marionette\\marionette over parent",
+    )).toEqual({
+      linkKind: "command",
+      value: "Prefer C:\\Users\\pwall\\.marionette\\marionette over parent",
+    });
+    expect(classifyActionGoal(
+      "run_parallel",
+      "audit harness/send_loop_dispatch.py mode=analysis",
+    ).linkKind).toBe("command");
   });
 });
 

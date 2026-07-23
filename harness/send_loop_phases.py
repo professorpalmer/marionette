@@ -1529,6 +1529,15 @@ def dispatch_local_action(
                     "reason": pending.get("reason") or block.get("reason"),
                     "matched": pending.get("matched") or block.get("matched"),
                 })
+                # Pair action_start so turn-end settle cannot invent opaque
+                # "missing action_result" while the approval card is open.
+                yield ConvEvent("action_result", {
+                    "id": aid,
+                    "kind": "run_command",
+                    "command": command,
+                    "status": "pending_approval",
+                    "message": block_msg,
+                })
                 session._append_action_result(act, aid, f"(run_command {aid} {block_msg})", is_native)
             else:
                 yield ConvEvent("action_result", {

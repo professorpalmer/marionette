@@ -67,7 +67,7 @@ def test_agentic_swarm_pins_allowed_adapters(monkeypatch, tmp_path):
     assert payload.get("auto_route") is True
     assert payload.get("allowed_adapters") == ["agentic"]
     assert payload.get("prefer_plan_billed") is False
-    assert payload.get("token_budget") == 40000
+    assert payload.get("token_budget") == 250000
     assert _CapturingWorkerSpec._last_captured[0].adapter == "agentic"
 
 

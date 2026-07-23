@@ -68,7 +68,7 @@ def test_from_env(monkeypatch):
 
 def test_default_unattended_ceilings():
     b = AutoBudget()
-    assert b.max_tokens == 50_000
+    assert b.max_tokens == 500_000
     assert b.max_swarms == 20
     assert b.max_seconds == 3600
 
@@ -78,7 +78,7 @@ def test_from_env_defaults_match_dataclass(monkeypatch):
     monkeypatch.delenv("HARNESS_AUTO_MAX_SWARMS", raising=False)
     monkeypatch.delenv("HARNESS_AUTO_MAX_SECONDS", raising=False)
     b = AutoBudget.from_env()
-    assert b.max_tokens == 50_000
+    assert b.max_tokens == 500_000
     assert b.max_swarms == 20
     assert b.max_seconds == 3600
 

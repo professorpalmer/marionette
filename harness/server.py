@@ -2787,7 +2787,7 @@ def _get_settings_dict():
         "commandTimeout": (os.environ.get("HARNESS_COMMAND_TIMEOUT", "").strip() or "120"),
         "maxPilotSteps": (os.environ.get("HARNESS_MAX_PILOT_STEPS", "").strip() or "40"),
         "workerTokenBudget": (
-            os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "").strip() or "40000"
+            os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "").strip() or "250000"
         ),
         "reasoning_effort": current_reasoning_effort(),
         "state_dir": _session.state_dir,

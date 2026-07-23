@@ -328,17 +328,45 @@ def execute_turn_actions(
 
         # ---- read-only tool-result assembly (prefetch or live) ----
         if act.kind in READ_ONLY_KINDS:
-            yield from dispatch_readonly_action(
-                session, act, idx, aid, prefetch, is_native
-            )
+            try:
+                yield from dispatch_readonly_action(
+                    session, act, idx, aid, prefetch, is_native
+                )
+            except Exception as e:
+                err = str(e) or e.__class__.__name__
+                try:
+                    yield ConvEvent("action_result", {"id": aid, "error": err})
+                except Exception:
+                    pass
+                try:
+                    session._append_action_result(
+                        act, aid, f"({act.kind} {aid} failed: {err})", is_native, ok=False,
+                    )
+                except Exception:
+                    pass
             continue
 
         # ---- local tool-result assembly (workspace / mutate / browse / mcp) ----
         if act.kind in LOCAL_ACTION_KINDS:
-            yield from dispatch_local_action(
-                session, act, aid, is_native, turn_changed_files,
-                act_goal=act_goal, plan=plan,
-            )
+            try:
+                yield from dispatch_local_action(
+                    session, act, aid, is_native, turn_changed_files,
+                    act_goal=act_goal, plan=plan,
+                )
+            except Exception as e:
+                # Same contract as DISPATCH_ACTION_KINDS: never leave action_start
+                # hanging for the opaque turn-end "missing action_result" settle.
+                err = str(e) or e.__class__.__name__
+                try:
+                    yield ConvEvent("action_result", {"id": aid, "error": err})
+                except Exception:
+                    pass
+                try:
+                    session._append_action_result(
+                        act, aid, f"({act.kind} {aid} failed: {err})", is_native, ok=False,
+                    )
+                except Exception:
+                    pass
             continue
 
         # ---- delegate / swarm / memory tool-result assembly ----
