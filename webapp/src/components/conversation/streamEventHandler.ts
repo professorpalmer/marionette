@@ -6,6 +6,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { Card, Item } from "../TranscriptList";
 import {
+  sealStreamById,
   upsertStreamingThinking,
   upsertToolPrep,
 } from "./thinkingToolPrep";
@@ -39,6 +40,7 @@ import {
   workspaceRootFromActionResult,
 } from "./streamApply";
 import {
+  appendStreamingTextToItems,
   finalizeOpenPilotBubble,
   sealedAssistantCoversDelta,
 } from "./streamBubbles";
@@ -168,22 +170,32 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // Live reasoning deltas (delta:true) paint mid-turn so GLM/OR token
       // climbs are visible. Full post-answer reasoning dumps (no delta) stay
       // suppressed -- the answer is already on screen.
+      //
+      // Do NOT flush/seal on every reasoning token — that made dual-channel
+      // Sol mint one REASONING row per word. Append by stream_id; seal only
+      // on stream_item_done / tool_prep / action_start / terminal.
       setCompactingStatus(null);
       const { painting, chunk } = shouldPaintThinking(d);
       if (!painting) return;
       setStatus((prev) =>
         prev === "streaming" || prev === "executing" ? prev : "thinking"
       );
-      // Drain typewriter before sealing so buffered prose cannot orphan after
-      // a later tool card (same barrier as tool_prep / action_start).
-      flushTypewriter();
+      const streamId = d.stream_id != null ? String(d.stream_id) : "";
       if (d.delta && chunk) {
-        // Seal any open pilot bubble first so thinking cannot reopen or
-        // re-parent streamed assistant text into a reasoning row.
-        setItems((p) => upsertStreamingThinking(finalizeOpenPilotBubble(p), chunk));
+        setItems((p) =>
+          upsertStreamingThinking(p, chunk, {
+            streamId: streamId || undefined,
+          })
+        );
       } else if (chunk.trim()) {
+        // Non-delta dumps still seal open pilot prose (legacy ring frames).
         setItems((p) => appendNonStreamingThinking(finalizeOpenPilotBubble(p), chunk));
       }
+    } else if (ev.kind === "stream_item_done") {
+      const streamId = d.stream_id != null ? String(d.stream_id) : "";
+      if (!streamId) return;
+      flushTypewriter();
+      setItems((p) => sealStreamById(p, streamId));
     } else if (ev.kind === "tool_prep") {
       const name = String(d.name || "").trim();
       const callId = String(d.id || "").trim();
@@ -210,10 +222,48 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // cards (Cursor CLI / investigation), paint deltas instantly — the
       // typewriter over an open Investigating fold reads as chat "loading
       // from top to bottom" after hard commands. Bare prose turns still
-      // use the cadence typewriter. ensureAssistantStreamingBubble seals
-      // open thinking so reasoning stays on its own finalized row.
+      // use the cadence typewriter.
+      //
+      // Identity-bearing deltas (Codex/Sol) append to the matching stream_id
+      // surface without sealing thinking — dual channels stay open together.
       const chunk = d.text || "";
       if (!chunk) return;
+      const streamId = d.stream_id != null ? String(d.stream_id) : "";
+      const channel = d.channel != null ? String(d.channel) : "";
+      if (streamId) {
+        flushTypewriter();
+        setItems((p) => {
+          let next = p;
+          // Final-answer item start seals open progress surfaces.
+          if (channel === "answer") {
+            for (const it of p) {
+              if (
+                it.kind === "msg"
+                && it.msg.role === "assistant"
+                && it.msg.streaming
+                && it.msg.channel === "progress"
+                && it.msg.stream_id
+                && it.msg.stream_id !== streamId
+              ) {
+                next = sealStreamById(next, it.msg.stream_id);
+              }
+            }
+          }
+          next = ensureAssistantStreamingBubble(next, {
+            isPlan: planTurnRef.current,
+            streamId,
+            channel: channel || undefined,
+          });
+          next = appendStreamingTextToItems(next, chunk, {
+            isPlan: planTurnRef.current,
+            streamId,
+            channel: channel || undefined,
+          });
+          itemsRef.current = next;
+          return next;
+        });
+        return;
+      }
       // Cover check + bubble open must run inside the state updater so
       // synchronous chatEvents replay / back-to-back SSE never consults an
       // effect-lagged itemsRef and drop a live post-tool delta.

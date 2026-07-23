@@ -9,7 +9,6 @@ import type {
 import type { AutoBudgetSnapshot } from "../../lib/autoReceipts";
 import {
   finalizeStreamingThinking,
-  hoistCardsBeforeTrailingFinals,
   isTrivialAssistantCrumb,
   upsertStreamingThinking,
 } from "./thinkingToolPrep";
@@ -73,9 +72,9 @@ export function sealOpenStreamSurfaces(items: Item[]): Item[] {
     }
     next.push(it);
   }
-  // Sealing can turn a short stream into a final-looking answer that already
-  // has late Cursor tool cards after it — hoist so Explored stays above.
-  return hoistCardsBeforeTrailingFinals(changed ? next : withThinking);
+  // Seal in place only — never reorder. Live streaming is append-only;
+  // hoistCardsBeforeTrailingFinals is hydrate/end-of-turn cleanup only.
+  return changed ? next : withThinking;
 }
 
 export function swarmPendingStatus(item: SwarmPendingItem): SwarmPendingStatus {
@@ -769,10 +768,15 @@ export function shouldPaintThinking(d: {
 /** Ensure an open pilot streaming bubble exists (message_delta path). */
 export function ensureAssistantStreamingBubble(
   items: Item[],
-  opts?: { isPlan?: boolean },
+  opts?: { isPlan?: boolean; streamId?: string; channel?: string },
 ): Item[] {
-  const base = finalizeStreamingThinking(items);
-  if (findStreamingBubbleIdx(base) >= 0) return base;
+  const streamId = (opts?.streamId || "").trim();
+  // Identity-bearing deltas must NOT seal thinking — dual-channel Sol keeps
+  // progress + reasoning open together until an explicit lifecycle barrier.
+  const base = streamId ? items : finalizeStreamingThinking(items);
+  if (findStreamingBubbleIdx(base, { streamId: streamId || undefined }) >= 0) {
+    return base;
+  }
   return [
     ...base,
     {
@@ -782,6 +786,8 @@ export function ensureAssistantStreamingBubble(
         text: "",
         streaming: true,
         isPlan: opts?.isPlan,
+        ...(streamId ? { stream_id: streamId } : {}),
+        ...(opts?.channel ? { channel: opts.channel } : {}),
       },
     },
   ];
@@ -841,25 +847,23 @@ export function finalizePilotMessage(
     const finalText = text || lastMsg.msg.text || "";
     // Drop empty / markdown-marker finals so they cannot fence later reasoning.
     if (isTrivialAssistantCrumb(finalText)) {
-      return hoistCardsBeforeTrailingFinals([
+      return [
         ...p.slice(0, streamIdx),
         ...p.slice(streamIdx + 1),
-      ]);
+      ];
     }
     const updatedItems = [...p];
     updatedItems[streamIdx] = {
       kind: "msg",
       msg: { ...lastMsg.msg, text: finalText, streaming: false },
     };
-    return hoistCardsBeforeTrailingFinals(
-      deduplicateConsecutiveAssistantMessages(updatedItems),
-    );
+    return deduplicateConsecutiveAssistantMessages(updatedItems);
   }
-  if (!text) return hoistCardsBeforeTrailingFinals(p);
+  if (!text) return p;
   // Standalone final with only markdown markers — omit entirely.
-  if (isTrivialAssistantCrumb(text)) return hoistCardsBeforeTrailingFinals(p);
+  if (isTrivialAssistantCrumb(text)) return p;
   const incoming = text.trim();
-  if (!incoming) return hoistCardsBeforeTrailingFinals(p);
+  if (!incoming) return p;
 
   // Idempotent finals: exact identity always no-ops. Streamed finals may only
   // extend a sealed bubble when nothing (card/tool/thinking/msg) follows it —
@@ -871,7 +875,7 @@ export function finalizePilotMessage(
     if (it.msg.streaming || it.msg.workerStream) continue;
     const prior = (it.msg.text || "").trim();
     if (!prior) continue;
-    if (prior === incoming) return hoistCardsBeforeTrailingFinals(p);
+    if (prior === incoming) return p;
 
     if (!opts?.streamed) continue;
     if (!(incoming.startsWith(prior) && incoming.length > prior.length)) continue;
@@ -896,20 +900,16 @@ export function finalizePilotMessage(
         isPlan: opts?.isPlan ?? it.msg.isPlan,
       },
     };
-    return hoistCardsBeforeTrailingFinals(
-      deduplicateConsecutiveAssistantMessages(updated),
-    );
+    return deduplicateConsecutiveAssistantMessages(updated);
   }
 
-  return hoistCardsBeforeTrailingFinals(
-    deduplicateConsecutiveAssistantMessages([
-      ...p,
-      {
-        kind: "msg",
-        msg: { role: "assistant", text: text || "", isPlan: opts?.isPlan },
-      },
-    ]),
-  );
+  return deduplicateConsecutiveAssistantMessages([
+    ...p,
+    {
+      kind: "msg",
+      msg: { role: "assistant", text: text || "", isPlan: opts?.isPlan },
+    },
+  ]);
 }
 
 /** Idempotent action_start card append (session-switch SSE race safe). */
@@ -1179,7 +1179,6 @@ export function appendNonStreamingThinking(items: Item[], text: string): Item[] 
   // Ring/replay often delivers thinking without delta:true — sometimes as
   // cumulative snapshots. Opt into snapshot de-duplication here only; live
   // delta:true upserts keep strict append so repeated/prefix chunks are kept.
-  // Finale hoist stays inside upsertStreamingThinking.
   return finalizeStreamingThinking(
     upsertStreamingThinking(items, text, { coalesceSnapshots: true }),
   );

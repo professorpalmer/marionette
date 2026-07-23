@@ -226,21 +226,108 @@ def _usage_cost(usage: Any) -> Any:
     return cost
 
 
+def _codex_channel_for_item(itype: str, phase_raw: Any) -> Optional[str]:
+    """Map a Codex output item to a stable channel (never by arrival order).
+
+    Routing policy:
+      commentary  -> progress (visible assistant/progress stream)
+      final_answer -> answer
+      analysis / reasoning_* -> reasoning
+      function_call -> tool
+    """
+    kind = (itype or "").strip().lower()
+    if "function_call" in kind:
+        return "tool"
+    if kind == "reasoning" or kind.startswith("reasoning"):
+        return "reasoning"
+    if kind == "message":
+        phase = phase_raw.strip().lower() if isinstance(phase_raw, str) else ""
+        if phase == "commentary":
+            return "progress"
+        if phase == "analysis":
+            return "reasoning"
+        if phase == "final_answer":
+            return "answer"
+        # Message without a phase is visible answer prose.
+        return "answer"
+    return None
+
+
+def _codex_stream_id(item_id: Any, output_index: Any) -> str:
+    if isinstance(item_id, str) and item_id.strip():
+        return item_id.strip()
+    if output_index is not None:
+        try:
+            return f"out-{int(output_index)}"
+        except (TypeError, ValueError):
+            pass
+    return ""
+
+
+def _safe_cb(cb: Optional[Callable[..., None]], payload: Any) -> None:
+    if cb is None or payload is None:
+        return
+    try:
+        cb(payload)
+    except Exception:
+        pass
+
+
+def _delta_payload(
+    text: str,
+    *,
+    stream_id: str = "",
+    output_index: Any = None,
+    channel: str = "",
+) -> Any:
+    """Rich identity payload when stream identity is known; plain str otherwise."""
+    # Keep legacy ``on_delta(str)`` callers working for identity-less answer
+    # tokens. Progress/reasoning always carry a channel so the send loop can
+    # route them without treating arrival order as ownership.
+    rich = bool(stream_id) or output_index is not None or channel in {
+        "progress", "reasoning",
+    }
+    if not rich:
+        return text
+    payload: Dict[str, Any] = {"text": text}
+    if stream_id:
+        payload["stream_id"] = stream_id
+    if channel:
+        payload["channel"] = channel
+    if output_index is not None:
+        try:
+            payload["output_index"] = int(output_index)
+        except (TypeError, ValueError):
+            pass
+    return payload
+
+
 def _consume_codex_sse(
     resp_fp,
     *,
-    on_delta: Optional[Callable[[str], None]] = None,
-    on_reasoning_delta: Optional[Callable[[str], None]] = None,
+    on_delta: Optional[Callable[..., None]] = None,
+    on_reasoning_delta: Optional[Callable[..., None]] = None,
+    on_stream_item_done: Optional[Callable[..., None]] = None,
 ) -> dict:
     """Consume Codex Responses SSE; return a synthetic Responses-shaped dict.
 
     Mirrors Hermes ``_consume_codex_event_stream``: assemble from
     ``output_item.done`` + ``output_text.delta``; ignore terminal ``response.output``.
+
+    Channel ownership is keyed by ``item_id`` / ``output_index`` — never by the
+    most-recently-added item. Commentary is visible progress; analysis/reasoning
+    stay on the reasoning stream; final_answer is the answer stream.
     """
     collected_items: List[dict] = []
     text_deltas: List[str] = []
     has_tool_calls = False
-    active_phase: Optional[str] = None
+    phase_by_item_id: Dict[str, str] = {}
+    phase_by_output_index: Dict[int, str] = {}
+    stream_id_by_output_index: Dict[int, str] = {}
+    # Only for identity-less items (fixtures / odd providers). Cleared as soon
+    # as an item with item_id/output_index is remembered so arrival order can
+    # never own interleaved dual-channel deltas.
+    fallback_channel: Optional[str] = None
     terminal_status = "completed"
     terminal_usage: Any = None
     terminal_error: Any = None
@@ -248,6 +335,51 @@ def _consume_codex_sse(
     terminal_incomplete_details: Any = None
     saw_terminal = False
     stream_error: Optional[str] = None
+
+    def _remember_item(
+        item: dict,
+        *,
+        output_index: Any = None,
+    ) -> Tuple[str, str]:
+        itype = str(item.get("type") or "")
+        channel = _codex_channel_for_item(itype, item.get("phase")) or ""
+        item_id = item.get("id") or item.get("item_id")
+        sid = _codex_stream_id(item_id, output_index)
+        if isinstance(item_id, str) and item_id.strip() and channel:
+            phase_by_item_id[item_id.strip()] = channel
+        oi_int: Optional[int] = None
+        if output_index is not None:
+            try:
+                oi_int = int(output_index)
+            except (TypeError, ValueError):
+                oi_int = None
+        if oi_int is not None:
+            if channel:
+                phase_by_output_index[oi_int] = channel
+            if sid:
+                stream_id_by_output_index[oi_int] = sid
+        return sid, channel
+
+    def _resolve_channel(
+        *,
+        item_id: Any = None,
+        output_index: Any = None,
+    ) -> Tuple[str, str, Any]:
+        sid = _codex_stream_id(item_id, output_index)
+        channel = ""
+        if isinstance(item_id, str) and item_id.strip():
+            channel = phase_by_item_id.get(item_id.strip(), "")
+        oi_int: Optional[int] = None
+        if output_index is not None:
+            try:
+                oi_int = int(output_index)
+            except (TypeError, ValueError):
+                oi_int = None
+        if not channel and oi_int is not None:
+            channel = phase_by_output_index.get(oi_int, "")
+        if not sid and oi_int is not None:
+            sid = stream_id_by_output_index.get(oi_int, "") or _codex_stream_id(None, oi_int)
+        return sid, channel, oi_int
 
     for raw_line in resp_fp:
         line = raw_line.decode("utf-8", "replace").strip() if isinstance(raw_line, bytes) else str(raw_line).strip()
@@ -275,36 +407,65 @@ def _consume_codex_sse(
         if event_type == "response.output_item.added":
             item = event.get("item") or {}
             if isinstance(item, dict):
-                itype = str(item.get("type") or "")
-                if itype == "message":
-                    phase = item.get("phase")
-                    active_phase = (
-                        phase.strip().lower() if isinstance(phase, str) else None
-                    )
+                out_idx = event.get("output_index")
+                if out_idx is None:
+                    out_idx = item.get("output_index")
+                sid, channel = _remember_item(item, output_index=out_idx)
+                if sid:
+                    fallback_channel = None
                 else:
-                    active_phase = None
+                    fallback_channel = channel or None
+                itype = str(item.get("type") or "")
                 if "function_call" in itype:
                     has_tool_calls = True
+                # Final-answer item start is a lifecycle barrier for open
+                # progress streams — seal them before answer deltas land.
+                if channel == "answer" and on_stream_item_done is not None:
+                    for prev_sid, prev_ch in list(phase_by_item_id.items()):
+                        if prev_ch == "progress" and prev_sid and prev_sid != sid:
+                            _safe_cb(on_stream_item_done, {"stream_id": prev_sid})
+                    for oi, prev_ch in list(phase_by_output_index.items()):
+                        if prev_ch != "progress":
+                            continue
+                        prev_sid = stream_id_by_output_index.get(oi, "")
+                        if prev_sid and prev_sid != sid:
+                            _safe_cb(on_stream_item_done, {"stream_id": prev_sid})
             continue
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
             delta_text = event.get("delta") or ""
             if not isinstance(delta_text, str) or not delta_text:
                 continue
-            is_commentary = active_phase in {"commentary", "analysis"}
-            if is_commentary:
-                if on_reasoning_delta is not None:
-                    try:
-                        on_reasoning_delta(delta_text)
-                    except Exception:
-                        pass
+            item_id = event.get("item_id") or event.get("id")
+            out_idx = event.get("output_index")
+            sid, channel, oi_int = _resolve_channel(
+                item_id=item_id, output_index=out_idx,
+            )
+            if not channel and fallback_channel:
+                channel = fallback_channel
+            # Identity-less deltas (legacy fixtures) stay on the answer stream.
+            if not channel:
+                channel = "answer"
+            payload = _delta_payload(
+                delta_text,
+                stream_id=sid,
+                output_index=oi_int if oi_int is not None else out_idx,
+                channel=channel,
+            )
+            if channel == "reasoning":
+                _safe_cb(on_reasoning_delta, payload)
+            elif channel == "progress":
+                # Visible progress prose — not part of final answer assembly.
+                _safe_cb(on_delta, payload)
+            elif channel == "tool":
+                has_tool_calls = True
             else:
                 text_deltas.append(delta_text)
-                if not has_tool_calls and on_delta is not None:
-                    try:
-                        on_delta(delta_text)
-                    except Exception:
-                        pass
+                # Suppress anonymous mid-tool answer crumbs (legacy JSON
+                # envelopes). Identity-bearing final_answer streams must still
+                # paint after function_call items.
+                if not has_tool_calls or bool(sid) or channel == "answer":
+                    _safe_cb(on_delta, payload)
             continue
 
         if "function_call" in event_type:
@@ -312,17 +473,40 @@ def _consume_codex_sse(
 
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = event.get("delta") or ""
-            if isinstance(reasoning_text, str) and reasoning_text and on_reasoning_delta:
-                try:
-                    on_reasoning_delta(reasoning_text)
-                except Exception:
-                    pass
+            if isinstance(reasoning_text, str) and reasoning_text:
+                item_id = event.get("item_id") or event.get("id")
+                out_idx = event.get("output_index")
+                sid, channel, oi_int = _resolve_channel(
+                    item_id=item_id, output_index=out_idx,
+                )
+                if not channel:
+                    channel = "reasoning"
+                _safe_cb(
+                    on_reasoning_delta,
+                    _delta_payload(
+                        reasoning_text,
+                        stream_id=sid,
+                        output_index=oi_int if oi_int is not None else out_idx,
+                        channel="reasoning",
+                    ),
+                )
             continue
 
         if event_type == "response.output_item.done":
             done_item = event.get("item")
             if isinstance(done_item, dict):
                 collected_items.append(done_item)
+                out_idx = event.get("output_index")
+                if out_idx is None:
+                    out_idx = done_item.get("output_index")
+                sid, _channel = _remember_item(done_item, output_index=out_idx)
+                if not sid:
+                    sid = _codex_stream_id(
+                        done_item.get("id") or done_item.get("item_id"),
+                        out_idx,
+                    )
+                if sid:
+                    _safe_cb(on_stream_item_done, {"stream_id": sid})
             continue
 
         if event_type in _TERMINAL_EVENT_TYPES:
@@ -517,8 +701,9 @@ class CodexResponsesDriver:
         body: dict,
         data: bytes,
         *,
-        on_delta: Optional[Callable[[str], None]],
-        on_reasoning_delta: Optional[Callable[[str], None]],
+        on_delta: Optional[Callable[..., None]],
+        on_reasoning_delta: Optional[Callable[..., None]],
+        on_stream_item_done: Optional[Callable[..., None]] = None,
         t0: float,
     ) -> Tuple[Optional[dict], Optional[DriverResponse], bytes]:
         """POST once (with reasoning-strip / pool rotate). Returns (raw, err_resp, data)."""
@@ -537,6 +722,7 @@ class CodexResponsesDriver:
                         resp,
                         on_delta=on_delta,
                         on_reasoning_delta=on_reasoning_delta,
+                        on_stream_item_done=on_stream_item_done,
                     )
                 return raw, None, data
             except urllib.error.HTTPError as e:
@@ -635,8 +821,9 @@ class CodexResponsesDriver:
         self,
         body: dict,
         *,
-        on_delta: Optional[Callable[[str], None]] = None,
-        on_reasoning_delta: Optional[Callable[[str], None]] = None,
+        on_delta: Optional[Callable[..., None]] = None,
+        on_reasoning_delta: Optional[Callable[..., None]] = None,
+        on_stream_item_done: Optional[Callable[..., None]] = None,
         on_wait_notice: Optional[Callable[[str], None]] = None,
     ) -> DriverResponse:
         # Enforce stream even if a caller mutated the body.
@@ -656,6 +843,7 @@ class CodexResponsesDriver:
                     data,
                     on_delta=on_delta,
                     on_reasoning_delta=on_reasoning_delta,
+                    on_stream_item_done=on_stream_item_done,
                     t0=t0,
                 )
                 if err_resp is not None:
@@ -771,9 +959,10 @@ class CodexResponsesDriver:
         *,
         tools: list | None = None,
         system: str | None = None,
-        on_delta: Callable[[str], None],
+        on_delta: Callable[..., None],
         session_id: str | None = None,
-        on_reasoning_delta: Callable[[str], None] | None = None,
+        on_reasoning_delta: Callable[..., None] | None = None,
+        on_stream_item_done: Callable[..., None] | None = None,
         on_tool_hint: Callable[[str], None] | None = None,
         on_wait_notice: Callable[[str], None] | None = None,
     ) -> DriverResponse:
@@ -781,7 +970,7 @@ class CodexResponsesDriver:
             messages, tools=tools, system=system, session_id=session_id,
         )
         # Tool names are available only after output_item.done; hint then.
-        def _delta_and_hint(piece: str) -> None:
+        def _delta_and_hint(piece: Any) -> None:
             if on_delta is not None:
                 on_delta(piece)
 
@@ -789,6 +978,7 @@ class CodexResponsesDriver:
             body,
             on_delta=_delta_and_hint,
             on_reasoning_delta=on_reasoning_delta,
+            on_stream_item_done=on_stream_item_done,
             on_wait_notice=on_wait_notice,
         )
         if on_tool_hint is not None:

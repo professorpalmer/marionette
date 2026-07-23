@@ -48,6 +48,10 @@ export type Msg = {
   // (the worker's real output is carried by the swarm artifacts/summary), so a
   // multi-worker swarm can't concatenate into one unbounded permanent bubble.
   workerStream?: boolean;
+  /** Provider output-item identity (Codex/Sol dual-channel streams). */
+  stream_id?: string;
+  /** Visible channel: progress (commentary) vs answer (final_answer). */
+  channel?: "progress" | "answer" | string;
 };
 /** Bounded nested worker tool row (from local job actions[] / display hydrate). */
 export type NestedAction = {
@@ -115,7 +119,7 @@ export type CommandApprovalItem = {
 export type Item =
   | { kind: "msg"; msg: Msg }
   | { kind: "card"; card: Card }
-  | { kind: "thinking"; text: string; streaming?: boolean; id?: string }
+  | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | { kind: "tool_prep"; name: string }
   | SwarmPendingItem
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
@@ -131,7 +135,7 @@ export type Item =
 
 export type GroupedItem =
   | { kind: "msg"; msg: Msg }
-  | { kind: "thinking"; text: string; streaming?: boolean; id?: string }
+  | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | SwarmPendingItem
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
@@ -147,7 +151,7 @@ export type GroupedItem =
 
 type ActivityItem =
   | { kind: "card"; card: Card }
-  | { kind: "thinking"; text: string; streaming?: boolean; id?: string }
+  | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
@@ -309,6 +313,25 @@ const __thinkingExpanded = new Map<string, boolean>();
 // the reverse). Streaming used to key off objKey(thinking) which changed every
 // token and remounted the fold -- expand clicked shut, inner scroll stuck at top.
 const __activityGroupCanon = new Map<string, string>();
+
+/**
+ * Index of the current-turn investigation fold in a grouped transcript, or -1
+ * when the latest user message has no activity_group yet.
+ *
+ * Live/spinning chrome must fence on this — never "last group in the whole
+ * transcript" — so submitting a new prompt cannot reopen a prior Explored fold.
+ */
+export function liveActivityGroupIndex(grouped: GroupedItem[]): number {
+  let lastUserIdx = -1;
+  for (let i = 0; i < grouped.length; i++) {
+    const g = grouped[i];
+    if (g.kind === "msg" && g.msg.role === "user") lastUserIdx = i;
+  }
+  for (let i = grouped.length - 1; i > lastUserIdx; i--) {
+    if (grouped[i].kind === "activity_group") return i;
+  }
+  return -1;
+}
 
 /** Stable React key for one investigation fold. Exported for unit tests. */
 export function activityGroupStableId(items: ActivityItem[], fallbackIndex: number): string {
@@ -517,13 +540,10 @@ export const TranscriptList = memo(function TranscriptList({
     }
   }
 
-  let lastActivityGroupIdx = -1;
-  for (let gi = grouped.length - 1; gi >= 0; gi--) {
-    if (grouped[gi].kind === "activity_group") {
-      lastActivityGroupIdx = gi;
-      break;
-    }
-  }
+  // Only the newest fold AFTER the latest user message may be live. Prior
+  // turns stay sealed even while turnOpen/busy — otherwise a new prompt
+  // reactivates the previous Investigating pill until turn-2 tools land.
+  const lastActivityGroupIdx = liveActivityGroupIndex(grouped);
 
   const list = grouped.map((it, i) => {
     if (i < hiddenCount) return null;

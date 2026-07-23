@@ -24,6 +24,7 @@ export {
   looksLikeFinalAnswer,
   hoistCardsBeforeTrailingFinals,
   isTrivialAssistantCrumb,
+  sealStreamById,
 } from "./thinkingToolPrep";
 export {
   nextAppliedCursor,

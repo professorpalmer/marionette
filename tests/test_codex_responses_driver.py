@@ -74,14 +74,15 @@ def test_consume_sse_assembles_text_and_usage():
     assert text == "hello"
 
 
-def test_consume_sse_routes_commentary_to_reasoning():
+def test_consume_sse_routes_commentary_to_progress():
+    """Commentary is visible progress — never the reasoning/thinking stream."""
     reasoning = []
     text = []
     lines = [
-        b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"commentary"}}\n',
-        b'data: {"type":"response.output_text.delta","delta":"thinking..."}\n',
-        b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer"}}\n',
-        b'data: {"type":"response.output_text.delta","delta":"answer"}\n',
+        b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"commentary","id":"msg_c"}}\n',
+        b'data: {"type":"response.output_text.delta","item_id":"msg_c","delta":"Scanning..."}\n',
+        b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n',
+        b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"answer"}\n',
         b'data: {"type":"response.completed","response":{"status":"completed","usage":{}}}\n',
     ]
     raw = _consume_codex_sse(
@@ -89,9 +90,70 @@ def test_consume_sse_routes_commentary_to_reasoning():
         on_delta=text.append,
         on_reasoning_delta=reasoning.append,
     )
-    assert reasoning == ["thinking..."]
-    assert text == ["answer"]
+    assert reasoning == []
+    assert len(text) == 2
+    assert text[0]["text"] == "Scanning..."
+    assert text[0]["channel"] == "progress"
+    assert text[0]["stream_id"] == "msg_c"
+    assert text[1]["text"] == "answer"
+    assert text[1]["channel"] == "answer"
     assert raw["output_text"] == "answer"
+
+
+def test_consume_sse_interleaved_channels_use_item_identity():
+    """Arrival order must never reassign another item's channel."""
+    progress = []
+    reasoning = []
+    answers = []
+    item_done = []
+
+    def on_delta(payload):
+        if isinstance(payload, dict) and payload.get("channel") == "progress":
+            progress.append(payload)
+        else:
+            answers.append(payload)
+
+    lines = [
+        b'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_0"}}\n',
+        b'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_0","output_index":0,"delta":"Planning "}\n',
+        b'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","phase":"commentary","id":"msg_1"}}\n',
+        b'data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"delta":"I\'ll inspect "}\n',
+        b'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_0","output_index":0,"delta":"the parser "}\n',
+        b'data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"delta":"the stream."}\n',
+        b'data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","name":"read_file","arguments":"{}"}}\n',
+        b'data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","name":"read_file","arguments":"{}"}}\n',
+        b'data: {"type":"response.output_item.added","output_index":3,"item":{"type":"message","phase":"final_answer","id":"msg_3"}}\n',
+        b'data: {"type":"response.output_text.delta","item_id":"msg_3","output_index":3,"delta":"Found it."}\n',
+        b'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_0"}}\n',
+        b'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","phase":"commentary","id":"msg_1"}}\n',
+        b'data: {"type":"response.output_item.done","output_index":3,"item":{"type":"message","phase":"final_answer","id":"msg_3"}}\n',
+        b'data: {"type":"response.completed","response":{"status":"completed","usage":{}}}\n',
+    ]
+    raw = _consume_codex_sse(
+        lines,
+        on_delta=on_delta,
+        on_reasoning_delta=reasoning.append,
+        on_stream_item_done=item_done.append,
+    )
+    progress_text = "".join(p["text"] for p in progress)
+    reasoning_text = "".join(
+        (r["text"] if isinstance(r, dict) else r) for r in reasoning
+    )
+    answer_text = "".join(
+        (a["text"] if isinstance(a, dict) else a) for a in answers
+    )
+    assert progress_text == "I'll inspect the stream."
+    assert reasoning_text == "Planning the parser "
+    assert answer_text == "Found it."
+    assert raw["output_text"] == "Found it."
+    # Function-call boundaries must not steal another item's phase.
+    assert all(p["stream_id"] == "msg_1" for p in progress)
+    assert all(
+        (r["stream_id"] if isinstance(r, dict) else "rs_0") == "rs_0"
+        for r in reasoning
+    )
+    assert any(d.get("stream_id") == "fc_2" for d in item_done if isinstance(d, dict))
+    assert any(d.get("stream_id") == "msg_1" for d in item_done if isinstance(d, dict))
 
 
 def test_driver_complete_sends_stream_true(pool_dir, monkeypatch):

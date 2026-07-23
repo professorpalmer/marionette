@@ -16,8 +16,11 @@ Transcript model:
   transcript never enters a worker. Conversation and investigation are decoupled.
 
 Events yielded (for GUI/CLI):
-- ("thinking", {text, delta?})                 -> live reasoning deltas (delta=true);
-                                                 post-answer envelope thinking is not emitted
+- ("thinking", {text, delta?, stream_id?,      -> live reasoning deltas (delta=true);
+       output_index?, channel?})                 post-answer envelope thinking is not emitted
+- ("message_delta", {text, stream_id?,         -> visible assistant/progress deltas;
+       output_index?, channel?})                 channel=progress|answer when known
+- ("stream_item_done", {stream_id})            -> seal one identity-bearing surface
 - ("tool_prep", {name})                        -> tool name assembling before action_start
 - ("message", {role:"assistant", text})        -> pilot prose (conversation)
 - ("action_start", {id, kind, goal, cwd})      -> a collapsible card opens
@@ -454,6 +457,7 @@ ConvEventKind = Literal[
     "pilot_resume",
     "queued_prompt",
     "steer",
+    "stream_item_done",
     "swarm_auth_failure",
     "swarm_pending",
     "swarm_result",

@@ -58,18 +58,47 @@ export function sealedAssistantCoversDelta(items: Item[], chunk: string): boolea
 /**
  * Find the open streaming assistant bubble.
  *
- * Skip ephemeral decoration that may land while the typewriter drains
- * (thinking rows, codegraph chips). Do NOT scan past tool/prep cards: once a
- * card exists after an assistant bubble, later deltas must open a post-card
- * bubble rather than resume pre-tool narration (Cursor CLI/ACP investigation).
+ * When `streamId` is set, search the current turn for that identity even if
+ * thinking rows or other channels sit after it — ownership is by stream_id,
+ * not arrival order. Tool/prep cards are still a hard phase fence: a same-
+ * stream delta after a card opens a NEW bubble at the end (new segment) so
+ * the transcript stays append-only and never grows text above a card.
+ *
+ * Without stream identity: skip ephemeral decoration that may land while the
+ * typewriter drains (thinking rows, codegraph chips). Do NOT scan past
+ * tool/prep cards: once a card exists after an assistant bubble, later deltas
+ * must open a post-card bubble rather than resume pre-tool narration.
  *
  * When excludeWorkerStream is set, skip ephemeral swarm worker preview bubbles
  * so the pilot's open bubble is finalized instead.
  */
 export function findStreamingBubbleIdx(
   items: Item[],
-  opts?: { excludeWorkerStream?: boolean },
+  opts?: { excludeWorkerStream?: boolean; streamId?: string },
 ): number {
+  const streamId = (opts?.streamId || "").trim();
+  if (streamId) {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "msg" && it.msg.role === "user") break;
+      // Tool activity is a hard phase fence — never resume a bubble above it,
+      // even when stream_id matches (post-tool deltas start a new segment).
+      if (it.kind === "card" || it.kind === "tool_prep") {
+        return -1;
+      }
+      if (it.kind !== "msg") continue;
+      const m = (it as { kind: "msg"; msg: Msg }).msg;
+      if (
+        m.role === "assistant"
+        && m.streaming
+        && m.stream_id === streamId
+        && (!opts?.excludeWorkerStream || !m.workerStream)
+      ) {
+        return i;
+      }
+    }
+    return -1;
+  }
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     // Tool activity is a hard phase fence — never resume a bubble above it.
@@ -98,10 +127,11 @@ export function findStreamingBubbleIdx(
 export function appendStreamingTextToItems(
   items: Item[],
   chunk: string,
-  opts?: { isPlan?: boolean },
+  opts?: { isPlan?: boolean; streamId?: string; channel?: string },
 ): Item[] {
   if (!chunk) return items;
-  const idx = findStreamingBubbleIdx(items);
+  const streamId = (opts?.streamId || "").trim();
+  const idx = findStreamingBubbleIdx(items, { streamId: streamId || undefined });
   if (idx >= 0) {
     const bubble = items[idx] as { kind: "msg"; msg: Msg };
     const updated = [...items];
@@ -125,6 +155,8 @@ export function appendStreamingTextToItems(
         text: chunk,
         streaming: true,
         isPlan: opts?.isPlan,
+        ...(streamId ? { stream_id: streamId } : {}),
+        ...(opts?.channel ? { channel: opts.channel } : {}),
       },
     },
   ];

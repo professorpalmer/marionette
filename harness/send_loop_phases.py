@@ -17,14 +17,17 @@ route_task / memory dispatch lives in ``send_loop_dispatch``.
 """
 
 import inspect
+import queue as queue_mod
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from typing import Any, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional
 
 from pmharness.bridge import execute_intent
 
 from .pilot import PilotAction, StreamingSayExtractor
+from .stream_identity import StreamDeltaBatch, normalize_delta_payload
 from .url_safety import sanitize_url_for_display
 
 # job_XXXXXXXXXXXX — same pattern the parallel-dispatch stdout scanner used
@@ -115,14 +118,17 @@ def run_stream(
             "on_tool_hint": lambda name: q.put(("tool_hint", name)),
         }
         try:
-            if "on_wait_notice" in inspect.signature(
-                session.pilot.chat_stream
-            ).parameters:
-                kwargs["on_wait_notice"] = (
-                    lambda msg: q.put(("wait", msg))
-                )
+            params = inspect.signature(session.pilot.chat_stream).parameters
         except Exception:
-            pass
+            params = {}
+        if "on_wait_notice" in params:
+            kwargs["on_wait_notice"] = (
+                lambda msg: q.put(("wait", msg))
+            )
+        if "on_stream_item_done" in params:
+            kwargs["on_stream_item_done"] = (
+                lambda payload: q.put(("item_done", payload))
+            )
         # Sanitize immediately before dispatch (same seam as sync chat).
         r = session.pilot.chat_stream(
             session._messages_for_provider(),
@@ -318,6 +324,32 @@ def promote_trailing_reasoning_to_say(
     return reasoning
 
 
+def _emit_batched_delta(
+    batch: StreamDeltaBatch,
+    *,
+    event_kind: str,
+    default_channel: str,
+) -> Optional[Any]:
+    """Flush a pending batch into a ConvEvent, or None when empty."""
+    from .conversation import ConvEvent
+
+    payload = batch.flush()
+    if not payload:
+        return None
+    text = payload.get("text") or ""
+    if not text:
+        return None
+    data: Dict[str, Any] = {"text": text}
+    if event_kind == "thinking":
+        data["delta"] = True
+    for key in ("stream_id", "output_index", "channel"):
+        if key in payload and payload[key] is not None:
+            data[key] = payload[key]
+    if "channel" not in data and default_channel:
+        data["channel"] = default_channel
+    return ConvEvent(event_kind, data)  # type: ignore[arg-type]
+
+
 def drain_stream_queue(q: Any) -> Iterator[Any]:
     """Consume a ``run_stream`` queue and yield ConvEvents until done/error.
 
@@ -329,6 +361,10 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
     Accumulated reasoning is stashed on ``resp.meta`` (when present) as
     ``streamed_reasoning`` / ``stream_ended_on_reasoning`` so the send loop
     can promote a thought-only finale into an assistant message.
+
+    Same-(channel, stream_id) deltas are batched (~40ms / 80 chars) before
+    becoming SSE frames so word-sized tokens cannot exhaust the replay ring.
+    Barriers (item done, tool hint, channel change, terminal) always flush first.
     """
     from .conversation import ConvEvent
 
@@ -342,23 +378,159 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
     streamed_prose: list[str] = []
     streamed_reasoning: list[str] = []
     last_content_kind = ""  # "prose" | "reasoning"
+    answer_batch = StreamDeltaBatch()
+    progress_batch = StreamDeltaBatch()
+    reasoning_batch = StreamDeltaBatch()
+
+    def _flush_all():
+        for bat, ek, ch in (
+            (progress_batch, "message_delta", "progress"),
+            (answer_batch, "message_delta", "answer"),
+            (reasoning_batch, "thinking", "reasoning"),
+        ):
+            ev = _emit_batched_delta(bat, event_kind=ek, default_channel=ch)
+            if ev is not None:
+                yield ev
+
+    def _flush_overdue():
+        now = time.monotonic()
+        for bat, ek, ch in (
+            (progress_batch, "message_delta", "progress"),
+            (answer_batch, "message_delta", "answer"),
+            (reasoning_batch, "thinking", "reasoning"),
+        ):
+            if bat.overdue(now):
+                ev = _emit_batched_delta(bat, event_kind=ek, default_channel=ch)
+                if ev is not None:
+                    yield ev
+
+    def _handle_assistant_delta(val: Any):
+        nonlocal last_content_kind
+        text, meta = normalize_delta_payload(val)
+        if not text:
+            return
+        channel = str(meta.get("channel") or "answer").strip().lower()
+        if channel == "progress":
+            # Visible progress must not enter the JSON say extractor — a leading
+            # commentary stream would force BARE mode and break later envelopes.
+            last_content_kind = "prose"
+            sid = str(meta.get("stream_id") or "").strip()
+            if not sid:
+                # No identity → no batching (legacy / crumb path).
+                for ev in _flush_all():
+                    yield ev
+                data = {"text": text, "channel": "progress"}
+                yield ConvEvent("message_delta", data)
+                return
+            flushed = progress_batch.push(
+                text, meta, default_channel="progress",
+            )
+            if flushed:
+                data = dict(flushed)
+                data.setdefault("channel", "progress")
+                yield ConvEvent("message_delta", data)
+            return
+        # Answer / legacy plain deltas: extract say prose when JSON-shaped.
+        clean = say_extractor.feed(text)
+        if not clean:
+            return
+        streamed_prose.append(clean)
+        last_content_kind = "prose"
+        ans_meta = dict(meta)
+        ans_meta["channel"] = "answer"
+        sid = str(ans_meta.get("stream_id") or "").strip()
+        if not sid:
+            for ev in _flush_all():
+                yield ev
+            data = {"text": clean, "channel": "answer"}
+            # Preserve output_index when present even without stream_id.
+            if "output_index" in ans_meta:
+                data["output_index"] = ans_meta["output_index"]
+            yield ConvEvent("message_delta", data)
+            return
+        flushed = answer_batch.push(clean, ans_meta, default_channel="answer")
+        if flushed:
+            data = dict(flushed)
+            data.setdefault("channel", "answer")
+            yield ConvEvent("message_delta", data)
+
+    def _handle_reasoning_delta(val: Any):
+        nonlocal last_content_kind
+        text, meta = normalize_delta_payload(val)
+        if not text:
+            return
+        streamed_reasoning.append(text)
+        last_content_kind = "reasoning"
+        r_meta = dict(meta)
+        r_meta["channel"] = "reasoning"
+        sid = str(r_meta.get("stream_id") or "").strip()
+        if not sid:
+            for ev in _flush_all():
+                yield ev
+            yield ConvEvent("thinking", {"text": text, "delta": True})
+            return
+        flushed = reasoning_batch.push(
+            text, r_meta, default_channel="reasoning",
+        )
+        if flushed:
+            data = dict(flushed)
+            data["delta"] = True
+            data.setdefault("channel", "reasoning")
+            yield ConvEvent("thinking", data)
+
     while True:
-        kind, val = q.get()
+        # Prefer a short wait when a batch is open so time thresholds can fire
+        # without needing another inbound token.
+        has_pending = (
+            answer_batch.pending
+            or progress_batch.pending
+            or reasoning_batch.pending
+        )
+        try:
+            if has_pending:
+                kind, val = q.get(timeout=0.01)
+            else:
+                kind, val = q.get()
+        except queue_mod.Empty:
+            for ev in _flush_overdue():
+                yield ev
+            # If still pending after overdue check, force-flush on idle.
+            if (
+                answer_batch.pending
+                or progress_batch.pending
+                or reasoning_batch.pending
+            ):
+                for ev in _flush_all():
+                    yield ev
+            continue
+
         if kind == "delta":
-            clean = say_extractor.feed(val)
-            if clean:
-                streamed_prose.append(clean)
-                last_content_kind = "prose"
-                yield ConvEvent("message_delta", {"text": clean})
+            for ev in _handle_assistant_delta(val):
+                yield ev
+            for ev in _flush_overdue():
+                yield ev
         elif kind == "reasoning":
-            if val:
-                streamed_reasoning.append(str(val))
-                last_content_kind = "reasoning"
-                yield ConvEvent("thinking", {"text": val, "delta": True})
+            for ev in _handle_reasoning_delta(val):
+                yield ev
+            for ev in _flush_overdue():
+                yield ev
+        elif kind == "item_done":
+            for ev in _flush_all():
+                yield ev
+            text, meta = normalize_delta_payload(val if val is not None else {})
+            sid = meta.get("stream_id")
+            if not sid and isinstance(val, dict):
+                sid = val.get("stream_id")
+            if not sid and isinstance(val, str) and val.strip():
+                sid = val.strip()
+            if sid:
+                yield ConvEvent("stream_item_done", {"stream_id": str(sid)})
         elif kind == "tool_hint":
             # Drivers may pass a plain name or a structured
             # {name, goal, id, status} payload (Cursor ACP / stream-json).
             # Bare "tool" used to paint "Investigating · tool tool" in the fold.
+            for ev in _flush_all():
+                yield ev
             if isinstance(val, dict):
                 name = str(val.get("name") or "").strip()
                 if name or val.get("id"):
@@ -386,6 +558,8 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
                     "kind": "wait",
                 })
         elif kind == "done":
+            for ev in _flush_all():
+                yield ev
             reasoning = "".join(streamed_reasoning)
             if reasoning:
                 meta = getattr(val, "meta", None)
@@ -405,6 +579,8 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
                         meta["reasoning"] = reasoning
             return "".join(streamed_prose), val
         elif kind == "error":
+            for ev in _flush_all():
+                yield ev
             raise val
 
 

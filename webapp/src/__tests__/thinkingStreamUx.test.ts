@@ -6,11 +6,13 @@ import {
   finalizePilotMessage,
   finalizeStreamingThinking,
   isTrivialAssistantCrumb,
-  looksLikeFinalAnswer,
   upsertStreamingThinking,
 } from "../components/Conversation";
-import { activityGroupStableId } from "../components/TranscriptList";
-import type { Item } from "../components/TranscriptList";
+import {
+  activityGroupStableId,
+  liveActivityGroupIndex,
+} from "../components/TranscriptList";
+import type { GroupedItem, Item } from "../components/TranscriptList";
 import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
 import { flushTypewriterBuffer } from "../components/conversation/streamTypewriter";
 
@@ -162,10 +164,9 @@ describe("upsertStreamingThinking preserves durable id", () => {
     expect(thinking[0].text).toBe("Release mechanics are");
   });
 
-  it("coalesces Sol word deltas hoisted above a trailing finale", () => {
-    // Late reasoning after a flushed final-looking answer used to append
-    // after the finale, get hoisted, then repeat — one REASONING header
-    // per word ("The" / "source" / "confirms" / …).
+  it("keys thinking by stream_id across sealed assistant surfaces", () => {
+    // Identity owns the surface — a flushed finale must not mint one
+    // REASONING header per word when stream_id is stable.
     const finalText =
       "Ship it.\n\n"
       + "| Step | Status |\n|---|---|\n"
@@ -187,8 +188,7 @@ describe("upsertStreamingThinking preserves durable id", () => {
       { kind: "msg", msg: { role: "assistant", text: finalText } },
     ];
     for (const word of ["The", " source", " confirms", " both"]) {
-      items = upsertStreamingThinking(items, word);
-      items = finalizeStreamingThinking(items);
+      items = upsertStreamingThinking(items, word, { streamId: "rs_1" });
     }
     const thinking = items.filter((i) => i.kind === "thinking") as Extract<
       Item,
@@ -196,11 +196,8 @@ describe("upsertStreamingThinking preserves durable id", () => {
     >[];
     expect(thinking).toHaveLength(1);
     expect(thinking[0].text).toBe("The source confirms both");
-    const assistantAt = items.findIndex(
-      (it) => it.kind === "msg" && it.msg.role === "assistant",
-    );
-    const thinkAt = items.findIndex((it) => it.kind === "thinking");
-    expect(thinkAt).toBeLessThan(assistantAt);
+    expect(thinking[0].stream_id).toBe("rs_1");
+    expect(thinking[0].id).toBeTruthy();
   });
 });
 
@@ -263,19 +260,26 @@ describe("createApplyStreamEvent Sol reasoning coalescing", () => {
     };
     state.itemsRef.current = state.items;
     const apply = createApplyStreamEvent(makeApplyDeps(state));
-    apply({ kind: "thinking", data: { text: "Planning ", delta: true } });
+    // With stream_id, reasoning owns its surface — misrouted markdown crumbs
+    // on message_delta cannot mint one REASONING row per word.
+    apply({
+      kind: "thinking",
+      data: { text: "Planning ", delta: true, stream_id: "rs_1" },
+    });
     apply({ kind: "message_delta", data: { text: "**" } });
-    apply({ kind: "thinking", data: { text: "archive ", delta: true } });
+    apply({
+      kind: "thinking",
+      data: { text: "archive ", delta: true, stream_id: "rs_1" },
+    });
     apply({ kind: "message_delta", data: { text: "  " } });
-    apply({ kind: "thinking", data: { text: "and settle", delta: true } });
+    apply({
+      kind: "thinking",
+      data: { text: "and settle", delta: true, stream_id: "rs_1" },
+    });
     const thinking = thinkingRows(state.items);
     expect(thinking).toHaveLength(1);
     expect(thinking[0].text).toBe("Planning archive and settle");
-    // Trivial crumbs are dropped on the thinking barrier path, not sealed.
-    const assistants = state.items.filter(
-      (it) => it.kind === "msg" && it.msg.role === "assistant",
-    );
-    expect(assistants.every((it) => it.kind === "msg" && !isTrivialLike(it.msg.text))).toBe(true);
+    expect(thinking[0].stream_id).toBe("rs_1");
   });
 
   it("keeps substantive assistant narration as a hard thinking boundary", () => {
@@ -386,34 +390,104 @@ describe("createApplyStreamEvent Sol reasoning coalescing", () => {
     expect(thinking[1].id).not.toBe(thinking[0].id);
   });
 
-  it("hoists/coalesces late deltas above a looksLikeFinalAnswer finale", () => {
-    const finalText =
-      "Ship it.\n\n"
-      + "| Step | Status |\n|---|---|\n"
-      + "| CI | green |\n\n"
-      + "Ready when you are.";
-    expect(looksLikeFinalAnswer(finalText)).toBe(true);
+  it("keeps one stream_id thinking surface without per-token seal/reopen", () => {
     const state = {
-      items: [
-        { kind: "msg", msg: { role: "user", text: "go" } },
-        { kind: "msg", msg: { role: "assistant", text: finalText } },
-      ] as Item[],
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
       itemsRef: { current: [] as Item[] },
       typeBufRef: { current: "" },
     };
     state.itemsRef.current = state.items;
     const apply = createApplyStreamEvent(makeApplyDeps(state));
-    for (const word of ["The", " source", " confirms"]) {
-      apply({ kind: "thinking", data: { text: word, delta: true } });
+    const words = ["Release", " mechanics", " are", " now", " verified"];
+    for (const word of words) {
+      apply({
+        kind: "thinking",
+        data: { text: word, delta: true, stream_id: "rs_stable" },
+      });
     }
     const thinking = thinkingRows(state.items);
     expect(thinking).toHaveLength(1);
-    expect(thinking[0].text).toBe("The source confirms");
-    const assistantAt = state.items.findIndex(
-      (it) => it.kind === "msg" && it.msg.role === "assistant",
+    expect(thinking[0].id).toBeTruthy();
+    expect(thinking[0].stream_id).toBe("rs_stable");
+    expect(thinking[0].text).toBe("Release mechanics are now verified");
+    expect(thinking[0].streaming).toBe(true);
+    // Tool-start barrier seals exactly once.
+    apply({
+      kind: "tool_prep",
+      data: { name: "Read", id: "call-1", goal: "foo.ts" },
+    });
+    const afterTool = thinkingRows(state.items);
+    expect(afterTool).toHaveLength(1);
+    expect(afterTool[0].streaming).toBeFalsy();
+    expect(afterTool[0].id).toBe(thinking[0].id);
+  });
+
+  it("interleaves progress + reasoning into one surface each", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({
+      kind: "message_delta",
+      data: { text: "A1 ", stream_id: "msg_prog", channel: "progress" },
+    });
+    apply({
+      kind: "thinking",
+      data: { text: "R1 ", delta: true, stream_id: "rs_1" },
+    });
+    apply({
+      kind: "message_delta",
+      data: { text: "A2", stream_id: "msg_prog", channel: "progress" },
+    });
+    apply({
+      kind: "thinking",
+      data: { text: "R2", delta: true, stream_id: "rs_1" },
+    });
+    apply({
+      kind: "tool_prep",
+      data: { name: "Read", id: "call-x", goal: "x.ts" },
+    });
+    apply({
+      kind: "message_delta",
+      data: { text: "F1", stream_id: "msg_final", channel: "answer" },
+    });
+
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("R1 R2");
+    expect(thinking[0].stream_id).toBe("rs_1");
+    // No one-word Thinking rows.
+    expect(thinking.every((t) => t.text.trim().split(/\s+/).length >= 2)).toBe(true);
+
+    const progress = state.items.filter(
+      (it) =>
+        it.kind === "msg"
+        && it.msg.role === "assistant"
+        && it.msg.stream_id === "msg_prog",
     );
-    const thinkAt = state.items.findIndex((it) => it.kind === "thinking");
-    expect(thinkAt).toBeLessThan(assistantAt);
+    expect(progress).toHaveLength(1);
+    expect(progress[0]).toMatchObject({
+      kind: "msg",
+      msg: { text: "A1 A2", channel: "progress" },
+    });
+
+    const finals = state.items.filter(
+      (it) =>
+        it.kind === "msg"
+        && it.msg.role === "assistant"
+        && it.msg.stream_id === "msg_final",
+    );
+    expect(finals).toHaveLength(1);
+    expect(finals[0]).toMatchObject({
+      kind: "msg",
+      msg: { text: "F1", channel: "answer" },
+    });
+
+    const cards = state.items.filter((it) => it.kind === "card");
+    expect(cards.length).toBeGreaterThanOrEqual(1);
   });
 
   it("coalesces non-delta thinking frames through the same upsert path", () => {
@@ -527,10 +601,6 @@ describe("createApplyStreamEvent Sol reasoning coalescing", () => {
   });
 });
 
-function isTrivialLike(text: string): boolean {
-  return isTrivialAssistantCrumb(text);
-}
-
 describe("activityGroupStableId survives thinking → tool transition", () => {
   it("keeps the same key when a tool card joins a thinking-led group", () => {
     const thinking: Item = {
@@ -611,5 +681,245 @@ describe("activityGroupStableId survives thinking → tool transition", () => {
     const atFive = activityGroupStableId([card], 5);
     expect(atFive).toBe(atThree);
     expect(atThree).not.toContain("#");
+  });
+});
+
+describe("liveActivityGroupIndex fences prior turns", () => {
+  const sealedCard = (id: string): Extract<Item, { kind: "card" }> => ({
+    kind: "card",
+    card: {
+      id,
+      goal: "read foo",
+      cwd: null,
+      kind: "read_file",
+      running: false,
+      open: false,
+      result: { status: "ok" },
+    },
+  });
+
+  it("returns -1 when the latest user message has no activity group yet", () => {
+    const grouped: GroupedItem[] = [
+      { kind: "msg", msg: { role: "user", text: "turn 1" } },
+      {
+        kind: "activity_group",
+        items: [sealedCard("prior-card")],
+      },
+      { kind: "msg", msg: { role: "assistant", text: "done" } },
+      { kind: "msg", msg: { role: "user", text: "turn 2" } },
+    ];
+    expect(liveActivityGroupIndex(grouped)).toBe(-1);
+  });
+
+  it("selects only the activity group after the latest user message", () => {
+    const grouped: GroupedItem[] = [
+      { kind: "msg", msg: { role: "user", text: "turn 1" } },
+      {
+        kind: "activity_group",
+        items: [{ kind: "thinking", text: "old", id: "th-old" }],
+      },
+      { kind: "msg", msg: { role: "user", text: "turn 2" } },
+      {
+        kind: "activity_group",
+        items: [{ kind: "thinking", text: "new", id: "th-new" }],
+      },
+    ];
+    expect(liveActivityGroupIndex(grouped)).toBe(3);
+  });
+});
+
+/** Stable identity keys for append-only order assertions (ignore mutating text). */
+function itemOrderKeys(items: Item[]): string[] {
+  return items.map((it, i) => {
+    if (it.kind === "msg") {
+      const sid = it.msg.stream_id || "";
+      const ch = it.msg.channel || "";
+      // Segment index among same role+stream so post-tool bubbles get a new key.
+      let seg = 0;
+      for (let j = 0; j < i; j++) {
+        const prev = items[j];
+        if (
+          prev.kind === "msg"
+          && prev.msg.role === it.msg.role
+          && (prev.msg.stream_id || "") === sid
+          && (prev.msg.channel || "") === ch
+        ) {
+          seg += 1;
+        }
+      }
+      return `msg:${it.msg.role}:${sid || "_"}:${ch || "_"}:${seg}`;
+    }
+    if (it.kind === "card") return `card:${it.card.id}`;
+    if (it.kind === "thinking") return `thinking:${it.id || `anon-${i}`}`;
+    if (it.kind === "tool_prep") return `tool_prep:${it.name}`;
+    return `${it.kind}:${i}`;
+  });
+}
+
+function expectOrderIsPrefix(prev: string[], next: string[]) {
+  expect(next.slice(0, prev.length)).toEqual(prev);
+}
+
+describe("live transcript chronological append-only ordering", () => {
+  it("keeps prose → tool → prose → final in event order with stable prefixes", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    const snapshots: string[][] = [];
+    const snap = () => {
+      const keys = itemOrderKeys(state.items);
+      if (snapshots.length > 0) {
+        expectOrderIsPrefix(snapshots[snapshots.length - 1], keys);
+      }
+      snapshots.push(keys);
+    };
+    snap();
+
+    apply({
+      kind: "message_delta",
+      data: { text: "block A", stream_id: "S1", channel: "progress" },
+    });
+    snap();
+    expect(state.items.filter((it) => it.kind === "msg" && it.msg.role === "assistant"))
+      .toHaveLength(1);
+
+    apply({
+      kind: "tool_prep",
+      data: { name: "Read", id: "T1", goal: "foo.ts" },
+    });
+    snap();
+
+    apply({
+      kind: "message_delta",
+      data: { text: "block B", stream_id: "S1", channel: "progress" },
+    });
+    snap();
+
+    apply({
+      kind: "action_result",
+      data: {
+        id: "tool-prep:T1",
+        call_id: "T1",
+        kind: "read_file",
+        goal: "foo.ts",
+        status: "complete",
+      },
+    });
+    snap();
+
+    apply({
+      kind: "message",
+      data: { text: "final answer" },
+    });
+    snap();
+
+    const assistants = state.items.filter(
+      (it): it is Extract<Item, { kind: "msg" }> =>
+        it.kind === "msg" && it.msg.role === "assistant",
+    );
+    const cards = state.items.filter((it) => it.kind === "card");
+    expect(assistants.map((a) => a.msg.text)).toEqual([
+      "block A",
+      "block B",
+      "final answer",
+    ]);
+    expect(cards.length).toBeGreaterThanOrEqual(1);
+
+    const kinds = state.items.map((it) => {
+      if (it.kind === "msg") {
+        return it.msg.role === "user" ? "user" : `bubble:${it.msg.text}`;
+      }
+      if (it.kind === "card") return `card:${it.card.id || it.card.call_id}`;
+      if (it.kind === "tool_prep") return "tool_prep";
+      return it.kind;
+    });
+    // bubble(A), card(T1), bubble(B), final — nothing inserted above earlier rows.
+    expect(kinds.indexOf("bubble:block A")).toBeLessThan(
+      kinds.findIndex((k) => k.startsWith("card:")),
+    );
+    expect(kinds.findIndex((k) => k.startsWith("card:"))).toBeLessThan(
+      kinds.indexOf("bubble:block B"),
+    );
+    expect(kinds.indexOf("bubble:block B")).toBeLessThan(
+      kinds.indexOf("bubble:final answer"),
+    );
+  });
+
+  it("opens a new reasoning segment below a tool card for the same stream_id", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    const snapshots: string[][] = [];
+    const snap = () => {
+      const keys = itemOrderKeys(state.items);
+      if (snapshots.length > 0) {
+        expectOrderIsPrefix(snapshots[snapshots.length - 1], keys);
+      }
+      snapshots.push(keys);
+    };
+
+    apply({
+      kind: "message_delta",
+      data: { text: "prose ", stream_id: "S1", channel: "progress" },
+    });
+    snap();
+    apply({
+      kind: "thinking",
+      data: { text: "R1a ", delta: true, stream_id: "R1" },
+    });
+    snap();
+    apply({
+      kind: "tool_prep",
+      data: { name: "Read", id: "T1", goal: "x.ts" },
+    });
+    snap();
+    apply({
+      kind: "thinking",
+      data: { text: "R1b", delta: true, stream_id: "R1" },
+    });
+    snap();
+    apply({
+      kind: "message_delta",
+      data: { text: "more prose", stream_id: "S1", channel: "progress" },
+    });
+    snap();
+
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(2);
+    expect(thinking[0].text).toBe("R1a ");
+    expect(thinking[0].stream_id).toBe("R1");
+    expect(thinking[0].streaming).toBeFalsy();
+    expect(thinking[1].text).toBe("R1b");
+    expect(thinking[1].stream_id).toBe("R1");
+    expect(thinking[1].id).not.toBe(thinking[0].id);
+
+    const kinds = state.items.map((it) => {
+      if (it.kind === "msg" && it.msg.role === "assistant") {
+        return `bubble:${it.msg.text}`;
+      }
+      if (it.kind === "thinking") return `thinking:${it.text}`;
+      if (it.kind === "card") return "card";
+      if (it.kind === "tool_prep") return "tool_prep";
+      if (it.kind === "msg") return "user";
+      return it.kind;
+    });
+    // Reasoning continuation is BELOW the tool card; post-tool prose is a new bubble.
+    expect(kinds).toEqual([
+      "user",
+      "bubble:prose ",
+      "thinking:R1a ",
+      "card",
+      "tool_prep",
+      "thinking:R1b",
+      "bubble:more prose",
+    ]);
   });
 });

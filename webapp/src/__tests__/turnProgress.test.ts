@@ -390,7 +390,7 @@ describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
     ).toBe(true);
   });
 
-  it("inserts first late tool card before a sealed final answer", () => {
+  it("appends late tool card after a sealed final answer (chronological)", () => {
     const finalText =
       "Validated — schedule audit close on v0.9.106 looks correct.\n\n"
       + "| Fix | Implementation |\n|---|---|\n"
@@ -411,12 +411,13 @@ describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
       if (it.kind === "msg") return `msg:${it.msg.role}`;
       return it.kind;
     });
+    // Live path is append-only — never leapfrog the already-rendered finale.
     expect(kinds).toEqual([
       "msg:user",
       "thinking",
+      "msg:assistant",
       "card:tool-prep:c-late",
       "tool_prep",
-      "msg:assistant",
     ]);
   });
 
@@ -509,7 +510,7 @@ describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
     ]);
   });
 
-  it("upsertStreamingThinking hoists deltas that arrive after the finale", () => {
+  it("upsertStreamingThinking keys late deltas by stream_id after a finale", () => {
     const finalText =
       "Ship it.\n\n"
       + "| Step | Status |\n|---|---|\n"
@@ -530,16 +531,18 @@ describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
       },
       { kind: "msg", msg: { role: "assistant", text: finalText } },
     ];
-    items = upsertStreamingThinking(items, "checking tag…");
-    const assistantAt = items.findIndex(
-      (it) => it.kind === "msg" && it.msg.role === "assistant",
-    );
-    const thinkAt = items.findIndex((it) => it.kind === "thinking");
-    expect(thinkAt).toBeGreaterThanOrEqual(0);
-    expect(thinkAt).toBeLessThan(assistantAt);
+    items = upsertStreamingThinking(items, "checking ", { streamId: "rs_late" });
+    items = upsertStreamingThinking(items, "tag…", { streamId: "rs_late" });
+    const thinking = items.filter((it) => it.kind === "thinking");
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]).toMatchObject({
+      text: "checking tag…",
+      stream_id: "rs_late",
+      streaming: true,
+    });
   });
 
-  it("late tool after first card still leapfrogs a trailing sealed finale", () => {
+  it("late tool after first card appends after a trailing sealed finale", () => {
     const finalText =
       "Validated — MCP peel gaps closed.\n\n"
       + "| Gap | Evidence |\n|---|---|\n"
@@ -570,13 +573,14 @@ describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
       if (it.kind === "msg") return `msg:${it.msg.role}`;
       return it.kind;
     });
-    // Both cards before the finale — Explored above summary.
-    expect(kinds.indexOf("msg:assistant")).toBeGreaterThan(
-      kinds.lastIndexOf("card:tool-prep:c-late"),
-    );
-    expect(kinds.indexOf("msg:assistant")).toBeGreaterThan(
-      kinds.indexOf("card:tool-prep:c1"),
-    );
+    // Chronological: first card, finale, then the late tool — no leapfrog.
+    expect(kinds).toEqual([
+      "msg:user",
+      "card:tool-prep:c1",
+      "msg:assistant",
+      "card:tool-prep:c-late",
+      "tool_prep",
+    ]);
   });
 
   it("appends later tools after mid-turn narration (chronological interleave)", () => {

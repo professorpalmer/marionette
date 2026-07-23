@@ -12,7 +12,12 @@ export function newThinkingId(): string {
 export function finalizeStreamingThinking(items: Item[]): Item[] {
   return items.map((it) =>
     it.kind === "thinking" && it.streaming
-      ? { kind: "thinking" as const, text: it.text, id: it.id || newThinkingId() }
+      ? {
+          kind: "thinking" as const,
+          text: it.text,
+          id: it.id || newThinkingId(),
+          ...(it.stream_id ? { stream_id: it.stream_id } : {}),
+        }
       : it
   );
 }
@@ -52,6 +57,8 @@ export type UpsertStreamingThinkingOpts = {
    * repeated or prefix-looking deltas are never dropped.
    */
   coalesceSnapshots?: boolean;
+  /** Provider output-item identity — keys the surface across interleaved channels. */
+  streamId?: string;
 };
 
 function mergeThinkingText(
@@ -65,88 +72,84 @@ function mergeThinkingText(
   return existing + chunk;
 }
 
-/** Append/update the open streaming reasoning row for the current turn.
- * Preserves a durable `id` across token upserts so the ActivityGroup React key
- * (and expand/scroll state) does not remount on every thinking delta.
- *
- * Live deltas (`delta:true`) always append. Snapshot de-duplication is opt-in
- * via `{ coalesceSnapshots: true }` for non-delta ring/replay frames only.
- *
- * Phase barrier: never reopen or append into a thinking row that already has a
- * later *substantive* assistant bubble or tool card after it — those surfaces
- * are committed. A new thinking_delta after narration/tool APPENDs a fresh row.
- * Trivial sealed assistant crumbs (empty / markdown punctuation) are skipped
- * so interleaved message_delta markers cannot mint one REASONING header per
- * Sol word delta.
- *
- * Reopen trailing sealed thinking: Sol/OR often emit word-sized reasoning
- * deltas; any mid-stream finalize that clears `streaming` must not spawn a new
- * REASONING header per token. Only a card/substantive assistant is a barrier.
- *
- * Trailing sealed finale: late Cursor/Sol reasoning is hoisted above a
- * looksLikeFinalAnswer assistant. Appending AFTER that finale then hoisting
- * used to spawn one REASONING header per word. Insert/reopen immediately
- * before the finale instead so word deltas coalesce into one row. */
+function turnStartIndex(items: Item[]): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "msg" && it.msg.role === "user") return i + 1;
+  }
+  return 0;
+}
+
+/**
+ * Append/update the open streaming reasoning row for the current turn.
+ * When `streamId` is present, identity owns the surface — interleaved
+ * assistant/progress deltas never mint a new REASONING row. Tool/prep cards
+ * are a hard fence: post-tool deltas for the same stream_id open a NEW
+ * reasoning segment at the end (append-only). Seal only via explicit
+ * lifecycle helpers (item done / tool start / terminal).
+ */
 export function upsertStreamingThinking(
   items: Item[],
   chunk: string,
   opts?: UpsertStreamingThinkingOpts,
 ): Item[] {
   const coalesceSnapshots = Boolean(opts?.coalesceSnapshots);
-  let next: Item[];
-  for (let i = items.length - 1; i >= 0; i--) {
+  const streamId = (opts?.streamId || "").trim();
+  const turnStart = turnStartIndex(items);
+
+  if (streamId) {
+    for (let i = items.length - 1; i >= turnStart; i--) {
+      const it = items[i];
+      // Never resume a reasoning row that sits above a tool boundary.
+      if (it.kind === "card" || it.kind === "tool_prep") {
+        break;
+      }
+      if (it.kind === "thinking" && it.stream_id === streamId) {
+        const copy = items.slice();
+        copy[i] = {
+          kind: "thinking",
+          text: mergeThinkingText(it.text, chunk, coalesceSnapshots),
+          streaming: true,
+          id: it.id || newThinkingId(),
+          stream_id: streamId,
+        };
+        return copy;
+      }
+    }
+    return [
+      ...items,
+      {
+        kind: "thinking",
+        text: chunk,
+        streaming: true,
+        id: newThinkingId(),
+        stream_id: streamId,
+      },
+    ];
+  }
+
+  // Legacy path (no stream identity): append into the open streaming row, or
+  // start a new one after a committed card / substantive assistant fence.
+  for (let i = items.length - 1; i >= turnStart; i--) {
     const it = items[i];
-    if (it.kind === "msg" && it.msg.role === "user") break;
-    // Committed surfaces after an earlier thinking row: seal any still-open
-    // reasoning and start a new row so content cannot jump back into thinking.
     if (
       it.kind === "card"
-      || (it.kind === "msg" && it.msg.role === "assistant")
+      || (it.kind === "msg" && it.msg.role === "assistant" && !it.msg.workerStream)
     ) {
-      // Dual-channel Sol crumbs between word deltas are not phase fences.
       if (
         it.kind === "msg"
-        && it.msg.role === "assistant"
-        && !it.msg.workerStream
         && isTrivialAssistantCrumb(it.msg.text || "")
       ) {
         continue;
       }
-      // Word-sized Sol deltas after a flushed finale: keep one Thought row
-      // immediately before the answer (hoist-stable), not N rows after it.
-      if (
-        it.kind === "msg"
-        && it.msg.role === "assistant"
-        && !it.msg.streaming
-        && !it.msg.workerStream
-        && looksLikeFinalAnswer(it.msg.text || "")
-      ) {
-        const copy = items.slice();
-        const prev = i > 0 ? copy[i - 1] : null;
-        if (prev && prev.kind === "thinking") {
-          copy[i - 1] = {
-            kind: "thinking",
-            text: mergeThinkingText(prev.text, chunk, coalesceSnapshots),
-            streaming: true,
-            id: prev.id || newThinkingId(),
-          };
-          return hoistCardsBeforeTrailingFinals(copy);
-        }
-        copy.splice(i, 0, {
-          kind: "thinking",
-          text: chunk,
-          streaming: true,
-          id: newThinkingId(),
-        });
-        return hoistCardsBeforeTrailingFinals(copy);
-      }
-
+      // Substantive assistant (open or sealed) fences identity-less thinking so
+      // a later reasoning phase starts a new row. Trivial crumbs are skipped
+      // above so markdown markers cannot mint one REASONING header per word.
       const sealed = finalizeStreamingThinking(items);
-      next = [
+      return [
         ...sealed,
         { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() },
       ];
-      return hoistCardsBeforeTrailingFinals(next);
     }
     if (it.kind === "thinking") {
       const copy = items.slice();
@@ -155,12 +158,15 @@ export function upsertStreamingThinking(
         text: mergeThinkingText(it.text, chunk, coalesceSnapshots),
         streaming: true,
         id: it.id || newThinkingId(),
+        ...(it.stream_id ? { stream_id: it.stream_id } : {}),
       };
-      return hoistCardsBeforeTrailingFinals(copy);
+      return copy;
     }
   }
-  next = [...items, { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() }];
-  return hoistCardsBeforeTrailingFinals(next);
+  return [
+    ...items,
+    { kind: "thinking", text: chunk, streaming: true, id: newThinkingId() },
+  ];
 }
 
 export type ToolPrepOpts = {
@@ -202,14 +208,14 @@ function isSealedFinalAssistant(it: Item): boolean {
 }
 
 /**
- * Move investigation rows (tool cards, reasoning, tool_prep chrome) that
- * landed after a trailing sealed final-looking assistant to just before that
- * assistant — preserving their relative order.
+ * Hydrate/replay cleanup only: move investigation rows (tool cards, reasoning,
+ * tool_prep chrome) that landed after a trailing sealed final-looking
+ * assistant to just before that assistant — preserving their relative order.
  *
- * Cursor CLI often flushes the answer before buffered tool_call / thinking
- * events; the first-card leapfrog alone cannot fix rows that already sit
- * under the summary. Without this, Explored (and uncapped REASONING rows)
- * render beneath the PILOT finale.
+ * Must NOT run on the live streaming path. Mid-turn application is strictly
+ * append-only; reordering already-rendered items causes visible jumps once
+ * surfaces are identity-keyed. Call only from end-of-turn / hydrate cleanup
+ * that cannot fire while a turn is still streaming.
  */
 export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
   let turnStart = 0;
@@ -271,27 +277,12 @@ export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
 }
 
 /**
- * Insert index for a new tool/prep card inside the current turn.
- * Pre-tool narration (assistant/thinking with no prior card) stays above;
- * once a card exists, later mid-turn assistant/thinking stays below new tools
- * unless a trailing sealed *final-looking* answer is at the end — leapfrog
- * that so late Cursor tool events cannot leave Explored under the summary.
+ * Insert index for a new tool/prep card: always append after every existing
+ * item in the turn. Live streaming is chronological / append-only — never
+ * leapfrog sealed finals or insert above already-rendered narration.
  */
-function toolPrepInsertIndex(items: Item[], turnStart: number): number {
-  let insertAt = items.length;
-  // Leapfrog consecutive trailing sealed finals (first card or late cards).
-  // Stop at mid-turn narration / thinking / existing cards so chronology
-  // inside the fold stays think → tool → type → tool.
-  for (let i = items.length - 1; i >= turnStart; i--) {
-    const it = items[i];
-    if (it.kind === "tool_prep") continue;
-    if (isSealedFinalAssistant(it)) {
-      insertAt = i;
-      continue;
-    }
-    break;
-  }
-  return insertAt;
+function toolPrepInsertIndex(items: Item[], _turnStart: number): number {
+  return items.length;
 }
 
 function withToolPrepChrome(
@@ -373,9 +364,7 @@ export function upsertToolPrep(
       };
     });
     if (hit) {
-      return hoistCardsBeforeTrailingFinals(
-        patched.filter((it, i) => !(i >= turnStart && it.kind === "tool_prep")),
-      );
+      return patched.filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
     }
   }
 
@@ -414,18 +403,16 @@ export function upsertToolPrep(
       return it;
     }).filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
     if (replaced) {
-      return hoistCardsBeforeTrailingFinals([
+      return [
         ...next,
         { kind: "tool_prep" as const, name: kind },
-      ]);
+      ];
     }
-    return hoistCardsBeforeTrailingFinals(
-      withToolPrepChrome(
-        next,
-        toolPrepInsertIndex(next, turnStart),
-        { kind: "card" as const, card },
-        kind,
-      ),
+    return withToolPrepChrome(
+      next,
+      toolPrepInsertIndex(next, turnStart),
+      { kind: "card" as const, card },
+      kind,
     );
   }
 
@@ -457,18 +444,16 @@ export function upsertToolPrep(
     return it;
   }).filter((it, i) => !(i >= turnStart && it.kind === "tool_prep"));
   if (replaced) {
-    return hoistCardsBeforeTrailingFinals([
+    return [
       ...next,
       { kind: "tool_prep" as const, name: kind },
-    ]);
+    ];
   }
-  return hoistCardsBeforeTrailingFinals(
-    withToolPrepChrome(
-      next,
-      toolPrepInsertIndex(next, turnStart),
-      { kind: "card" as const, card: legacyCard },
-      kind,
-    ),
+  return withToolPrepChrome(
+    next,
+    toolPrepInsertIndex(next, turnStart),
+    { kind: "card" as const, card: legacyCard },
+    kind,
   );
 }
 
@@ -485,4 +470,35 @@ export function clearToolPrepPlaceholders(items: Item[]): Item[] {
     }
     return true;
   });
+}
+
+/** Seal a single stream surface by provider stream_id (item-done barrier). */
+export function sealStreamById(items: Item[], streamId: string): Item[] {
+  const sid = (streamId || "").trim();
+  if (!sid) return items;
+  const next: Item[] = [];
+  for (const it of items) {
+    if (it.kind === "thinking" && it.stream_id === sid && it.streaming) {
+      next.push({
+        kind: "thinking",
+        text: it.text,
+        id: it.id || newThinkingId(),
+        stream_id: sid,
+      });
+      continue;
+    }
+    if (
+      it.kind === "msg"
+      && it.msg.role === "assistant"
+      && it.msg.stream_id === sid
+      && it.msg.streaming
+      && !it.msg.workerStream
+    ) {
+      if (isTrivialAssistantCrumb(it.msg.text || "")) continue;
+      next.push({ kind: "msg", msg: { ...it.msg, streaming: false } });
+      continue;
+    }
+    next.push(it);
+  }
+  return next;
 }
