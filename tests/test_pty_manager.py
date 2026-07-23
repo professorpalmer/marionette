@@ -23,6 +23,33 @@ pytestmark_win_e2e = pytest.mark.skipif(os.name != "nt", reason="Windows ConPTY 
 pytestmark_pty = pytest.mark.skipif(not PTY_AVAILABLE, reason="PTY not available on this system")
 
 
+def _wait_until(predicate, timeout=5.0, interval=0.05):
+    """Poll predicate until true or timeout; returns last truthy result or False."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(interval)
+    return False
+
+
+def _wait_output_contains(session, needle, *, offset=0, timeout=5.0):
+    """Wait until session output contains needle (bytes or str). Returns (data, offset)."""
+    if isinstance(needle, str):
+        needle_b = needle.encode("utf-8")
+    else:
+        needle_b = needle
+    deadline = time.time() + timeout
+    data = b""
+    while time.time() < deadline:
+        data, offset = session.read_since(offset)
+        if needle_b in data:
+            return data, offset
+        time.sleep(0.05)
+    return data, offset
+
+
 # ---------------------------------------------------------------------------
 # Cross-platform unit tests (no real PTY required)
 # ---------------------------------------------------------------------------
@@ -311,18 +338,16 @@ def test_pty_create_write_read_kill():
     s = m.create(cwd="/tmp", cols=80, rows=24)
     assert s.id
     assert s.alive()
-    time.sleep(0.5)  # shell init
+    assert _wait_until(s.alive, timeout=2.0)
     s.write("echo PTY_TEST_$((6*7))\n")
-    time.sleep(0.7)
-    data, off = s.read_since(0)
+    data, off = _wait_output_contains(s, b"PTY_TEST_42", timeout=5.0)
     out = data.decode("utf-8", "replace")
     assert "PTY_TEST_42" in out
     s.write("printf done\n")
-    time.sleep(0.4)
-    data2, off2 = s.read_since(off)
+    data2, off2 = _wait_output_contains(s, b"done", offset=off, timeout=3.0)
     assert off2 >= off
     m.kill(s.id)
-    time.sleep(0.2)
+    assert _wait_until(lambda: not s.alive(), timeout=2.0)
     assert not s.alive()
     assert m.get(s.id) is None
 
@@ -351,7 +376,7 @@ def test_pty_reap_removes_dead_sessions():
     sid = s.id
     assert m.get(sid) is not None
     s.kill()
-    time.sleep(0.1)
+    assert _wait_until(lambda: not s.alive(), timeout=2.0)
     m.reap()
     assert m.get(sid) is None
 
@@ -374,7 +399,7 @@ def test_pty_write_after_kill_is_safe():
     m = PtyManager()
     s = m.create()
     s.kill()
-    time.sleep(0.1)
+    assert _wait_until(lambda: not s.alive(), timeout=2.0)
     s.write("echo hi\n")
     assert s.alive() is False
 
@@ -392,8 +417,7 @@ def test_conpty_zero_dims_clamped_and_alive():
     s = m.create(cwd=os.getcwd(), cols=0, rows=0)
     try:
         assert s.cols == 80 and s.rows == 24
-        time.sleep(0.3)
-        assert s.alive()
+        assert _wait_until(s.alive, timeout=3.0)
         s.resize(0, 0)
         assert s.cols == 80 and s.rows == 24
         assert s.alive()
@@ -408,31 +432,17 @@ def test_conpty_create_write_read_resize_kill():
     cwd = os.getcwd()
     s = m.create(cwd=cwd, cols=80, rows=24)
     assert s.id
-    assert s.alive()
-
-    deadline = time.time() + 5.0
-    offset = 0
-    while time.time() < deadline:
-        time.sleep(0.2)
-        if s.alive():
-            break
+    assert _wait_until(s.alive, timeout=5.0)
     assert s.alive()
 
     s.write("echo hello\r\n")
-    found = False
-    deadline = time.time() + 10.0
-    while time.time() < deadline:
-        data, offset = s.read_since(offset)
-        if b"hello" in data.lower():
-            found = True
-            break
-        time.sleep(0.15)
-    assert found, "expected 'hello' in ConPTY output"
+    data, _offset = _wait_output_contains(s, b"hello", timeout=10.0)
+    assert b"hello" in data.lower(), "expected 'hello' in ConPTY output"
 
     s.resize(40, 120)
     assert s.cols == 120 and s.rows == 40
 
     m.kill(s.id)
-    time.sleep(0.3)
+    assert _wait_until(lambda: not s.alive(), timeout=3.0)
     assert not s.alive()
     assert m.get(s.id) is None

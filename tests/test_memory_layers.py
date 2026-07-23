@@ -3,9 +3,8 @@ import json
 import os
 import shutil
 import tempfile
-import threading
-import urllib.request
 
+from harness.api.usage import get_usage
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 from harness.memory_layers import (
@@ -137,39 +136,44 @@ def test_send_records_memory_layers_journal():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def _fast_usage_services(srv):
+    """Peeled get_usage without walking real swarm job stores (shape tests only)."""
+    svc = srv._usage_services()
+    svc.boot_repos = lambda: set()
+    svc.scoped_jobs_with_stores = lambda repo_root=None: ([], None, None)
+    svc.active_session_total = lambda *a, **k: None
+    svc.sum_job_set_savings = lambda *a, **k: (0.0, 0.0)
+    svc.sum_job_set_savings_detail = lambda *a, **k: {
+        "routing_saved_usd": 0.0,
+        "cache_saved_usd_swarm": 0.0,
+        "routing_savings_basis": "unknown",
+        "routing_tokens_compared": 0,
+    }
+    svc.persist_boot_usage = lambda **kw: None
+    return svc
+
+
 def test_usage_api_includes_memory_layers():
+    """Shape check via peeled get_usage — auth/HTTP dispatch covered elsewhere."""
     tmp_dir = tempfile.mkdtemp()
     try:
         import harness.server as srv
 
+        srv._cfg.repo = tmp_dir
         srv._session.state_dir = tmp_dir
         srv._pilot.state_dir = tmp_dir
         srv._pilot.harness_session_id = "usage-mem-session"
         snap = snapshot_memory_layers(srv._pilot, tmp_dir, "usage-mem-session")
         record_memory_layer_snapshot(tmp_dir, "usage-mem-session", 1, snap)
 
-        from http.server import ThreadingHTTPServer
-
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
-        port = httpd.server_address[1]
-        t = threading.Thread(target=httpd.serve_forever, daemon=True)
-        t.start()
-        try:
-            headers = {"X-Harness-Token": srv._TOKEN}
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/api/usage",
-                headers=headers,
-                method="GET",
-            )
-            usage = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
-            layers = usage["session"].get("memory_layers")
-            assert isinstance(layers, dict)
-            assert layers.get("L0", {}).get("bytes", 0) >= 0
-            advice = usage["session"].get("compaction_advice")
-            assert isinstance(advice, dict)
-            assert advice.get("level") in ("none", "soon", "now")
-        finally:
-            httpd.shutdown()
+        code, usage = get_usage("", _fast_usage_services(srv))
+        assert code == 200
+        layers = usage["session"].get("memory_layers")
+        assert isinstance(layers, dict)
+        assert layers.get("L0", {}).get("bytes", 0) >= 0
+        advice = usage["session"].get("compaction_advice")
+        assert isinstance(advice, dict)
+        assert advice.get("level") in ("none", "soon", "now")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -180,29 +184,16 @@ def test_usage_api_compaction_advice_absent_when_disabled(monkeypatch):
         import harness.server as srv
 
         monkeypatch.setenv("HARNESS_COMPACTION_ADVISOR", "off")
+        srv._cfg.repo = tmp_dir
         srv._session.state_dir = tmp_dir
         srv._pilot.state_dir = tmp_dir
         srv._pilot.harness_session_id = "advice-off-session"
         snap = snapshot_memory_layers(srv._pilot, tmp_dir, "advice-off-session")
         record_memory_layer_snapshot(tmp_dir, "advice-off-session", 1, snap)
 
-        from http.server import ThreadingHTTPServer
-
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
-        port = httpd.server_address[1]
-        t = threading.Thread(target=httpd.serve_forever, daemon=True)
-        t.start()
-        try:
-            headers = {"X-Harness-Token": srv._TOKEN}
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/api/usage",
-                headers=headers,
-                method="GET",
-            )
-            usage = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
-            assert "compaction_advice" not in usage["session"]
-        finally:
-            httpd.shutdown()
+        code, usage = get_usage("", _fast_usage_services(srv))
+        assert code == 200
+        assert "compaction_advice" not in usage["session"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -212,26 +203,13 @@ def test_usage_api_missing_journal_degrades_to_empty_dict():
     try:
         import harness.server as srv
 
+        srv._cfg.repo = tmp_dir
         srv._session.state_dir = tmp_dir
         srv._pilot.state_dir = tmp_dir
         srv._pilot.harness_session_id = "empty-mem-session"
 
-        from http.server import ThreadingHTTPServer
-
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
-        port = httpd.server_address[1]
-        t = threading.Thread(target=httpd.serve_forever, daemon=True)
-        t.start()
-        try:
-            headers = {"X-Harness-Token": srv._TOKEN}
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/api/usage",
-                headers=headers,
-                method="GET",
-            )
-            usage = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
-            assert usage["session"].get("memory_layers") == {}
-        finally:
-            httpd.shutdown()
+        code, usage = get_usage("", _fast_usage_services(srv))
+        assert code == 200
+        assert usage["session"].get("memory_layers") == {}
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
