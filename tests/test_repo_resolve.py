@@ -55,17 +55,70 @@ def test_exactly_one_git_child_returns_child(tmp_path):
     assert _norm(got) == _norm(str(child))
 
 
-def test_two_git_children_returns_root_unchanged(tmp_path):
+def test_two_git_children_no_preferred_returns_root_unchanged(tmp_path):
+    """foo + bar (no preferred basename) stays ambiguous — leave parent."""
     home = tmp_path / "home"
     home.mkdir()
-    a = home / "a"
-    b = home / "b"
+    a = home / "foo"
+    b = home / "bar"
     a.mkdir()
     b.mkdir()
     _git_init(str(a))
     _git_init(str(b))
     got = resolve_effective_repo(str(home))
     assert _norm(got) == _norm(str(home))
+
+
+def test_marionette_and_wiki_prefers_marionette_child(tmp_path):
+    """Home with marionette + wiki git children resolves to marionette."""
+    home = tmp_path / "home" / ".marionette"
+    home.mkdir(parents=True)
+    marionette = home / "marionette"
+    wiki = home / "wiki"
+    marionette.mkdir()
+    wiki.mkdir()
+    _git_init(str(marionette))
+    _git_init(str(wiki))
+    got = resolve_effective_repo(str(home))
+    assert _norm(got) == _norm(str(marionette))
+
+
+def test_only_wiki_git_child_selected_as_single_child(tmp_path):
+    """Exactly one git child still resolves, even when the name is not preferred."""
+    home = tmp_path / "home" / ".marionette"
+    home.mkdir(parents=True)
+    wiki = home / "wiki"
+    wiki.mkdir()
+    _git_init(str(wiki))
+    got = resolve_effective_repo(str(home))
+    assert _norm(got) == _norm(str(wiki))
+
+
+def test_wiki_only_among_multiple_non_preferred_leaves_parent(tmp_path):
+    """Multiple git children, zero preferred names → leave parent unchanged."""
+    home = tmp_path / "home" / ".marionette"
+    home.mkdir(parents=True)
+    wiki = home / "wiki"
+    docs = home / "docs"
+    wiki.mkdir()
+    docs.mkdir()
+    _git_init(str(wiki))
+    _git_init(str(docs))
+    got = resolve_effective_repo(str(home))
+    assert _norm(got) == _norm(str(home))
+
+
+def test_preferred_name_case_insensitive(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    marionette = home / "Marionette"
+    wiki = home / "wiki"
+    marionette.mkdir()
+    wiki.mkdir()
+    _git_init(str(marionette))
+    _git_init(str(wiki))
+    got = resolve_effective_repo(str(home))
+    assert _norm(got) == _norm(str(marionette))
 
 
 def test_non_git_root_no_git_children_unchanged(tmp_path):

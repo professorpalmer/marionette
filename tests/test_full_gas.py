@@ -400,12 +400,18 @@ def test_executor_smoke_run_parallel():
 @patch("shutil.rmtree")
 @patch("subprocess.Popen")
 @patch("subprocess.run")
-def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, mock_mkdtemp, mock_which):
+def test_run_parallel_state_dir_and_fallback(mock_run, mock_popen, mock_rmtree, mock_mkdtemp, mock_which, tmp_path):
     mock_which.return_value = None
     mock_mkdtemp.side_effect = ["/tmp/pmh-par-1", "/tmp/pmh-par-2"]
-    
+
+    # Marker-only checkout: subprocess.run is mocked below, so a real
+    # `git init` would hit the mock. The soft-refuse guard accepts a .git dir.
+    repo = tmp_path / "mock-repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir="/tmp/test-state-dir")
-    cfg.repo = "/mock/repo"
+    cfg.repo = str(repo)
     
     mock_p1 = MagicMock()
     mock_p1.stdout = ["Started job job_111111111111"]

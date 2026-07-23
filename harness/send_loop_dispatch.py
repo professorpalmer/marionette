@@ -13,7 +13,7 @@ Public orchestration stays on ``SendLoopMixin``; helpers take an explicit
 
 import re
 import subprocess
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
 from pmharness.intent import DriverIntent
 
@@ -24,6 +24,53 @@ from .send_loop_phases import read_stdout_thread, stream_swarm
 DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
     "run_swarm", "run_implement", "run_parallel", "route_task", "memory",
 })
+
+
+def _non_git_workspace_error(repo: str) -> Optional[str]:
+    """Calm refuse when the resolved workspace is not a git work tree.
+
+    Used after ``resolve_effective_repo`` for swarm/implement/parallel so we
+    never launch workers against a non-git Home parent. Returns None when
+    ``repo`` is empty (callers handle missing workspace separately) or when
+    the path looks like a git checkout.
+
+    Prefer a filesystem ``.git`` marker check first — ``subprocess.run`` goes
+    through ``Popen``, which tests (and some call sites) mock, so a git
+    rev-parse-only check falsely refused real worktrees under those mocks.
+    """
+    import os
+
+    path = (repo or "").strip()
+    if not path:
+        return None
+    try:
+        abs_path = os.path.abspath(path)
+    except Exception:
+        abs_path = path
+    git_marker = os.path.join(abs_path, ".git")
+    try:
+        if os.path.isdir(git_marker) or os.path.isfile(git_marker):
+            return None
+    except Exception:
+        pass
+    try:
+        proc = subprocess.run(
+            ["git", "-C", abs_path, "rev-parse", "--is-inside-work-tree"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+        if proc.returncode == 0 and (proc.stdout or "").strip() == "true":
+            return None
+    except Exception:
+        pass
+    return (
+        f"Workspace is not a git repository (resolved to {abs_path}). "
+        "Open the project checkout or ensure Home has a marionette child."
+    )
 
 # Best-effort guard: refuse memory adds that look like pasted credentials.
 _MEMORY_SECRET_RE = re.compile(
@@ -91,6 +138,12 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     )
     _sync_local_id = f'local-swarm-{aid}'
     _swarm_repo = resolve_effective_repo(session.config.repo or '') if (session.config.repo or '').strip() else ''
+    _non_git = _non_git_workspace_error(_swarm_repo)
+    if _non_git:
+        # action_start already emitted by execute_turn_actions for run_swarm
+        yield ConvEvent('action_result', {'id': aid, 'error': _non_git})
+        session._append_action_result(act, aid, f'(swarm {aid} failed: {_non_git})', is_native)
+        return None
     try:
         session._register_local_job(_sync_local_id, act.goal, role='explore', cwd=_swarm_repo, engine='agentic')
         session._session_job_ids.append(_sync_local_id)
@@ -253,6 +306,12 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         yield ConvEvent('action_start', {'id': aid, 'kind': 'run_implement', 'goal': act.goal, 'cwd': None})
         yield ConvEvent('action_result', {'id': aid, 'error': error_msg})
         session._append_action_result(act, aid, f'(run_implement {aid} failed: {error_msg})', is_native)
+        return None
+    _non_git = _non_git_workspace_error(effective_repo)
+    if _non_git:
+        yield ConvEvent('action_start', {'id': aid, 'kind': 'run_implement', 'goal': act.goal, 'cwd': effective_repo})
+        yield ConvEvent('action_result', {'id': aid, 'error': _non_git})
+        session._append_action_result(act, aid, f'(run_implement {aid} failed: {_non_git})', is_native)
         return None
     try:
         from harness.implement_guards import check_implement_workspace
@@ -454,6 +513,13 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     if not goals:
         yield ConvEvent('action_result', {'id': aid, 'error': 'run_parallel requires a non-empty goals array'})
         session._append_action_result(act, aid, f'(run_parallel {aid} failed: run_parallel requires a non-empty goals array)', is_native)
+        return None
+    _non_git = _non_git_workspace_error(effective_repo)
+    if _non_git:
+        # Pair with action_start so chrome never shows a hanging start.
+        yield ConvEvent('action_start', {'id': aid, 'kind': 'run_parallel', 'goals': goals, 'cwd': effective_repo})
+        yield ConvEvent('action_result', {'id': aid, 'error': _non_git})
+        session._append_action_result(act, aid, f'(run_parallel {aid} failed: {_non_git})', is_native)
         return None
     try:
         from harness.implement_guards import check_implement_workspace

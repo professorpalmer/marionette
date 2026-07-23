@@ -2320,7 +2320,10 @@ class ConversationalSession(
             )
             if p_check.returncode != 0:
                 self._last_checkpoint_id = None
-                return False, [], f"not a git repository: {repo_root}"
+                return False, [], (
+                    f"not a git repository: {repo_root}. "
+                    "Open the project checkout or ensure Home has a marionette child."
+                )
         except Exception as e:
             self._last_checkpoint_id = None
             return False, [], f"failed to check git repo: {e}"

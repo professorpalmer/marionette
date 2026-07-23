@@ -2408,6 +2408,13 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
         self.wfile.write(data)
+        # Keep-alive responses must leave the buffer; without an explicit
+        # flush a small body can sit in BufferedIO until the socket closes,
+        # and the client times out waiting for Content-Length bytes.
+        try:
+            self.wfile.flush()
+        except Exception:
+            pass
 
     def _handle_wiki_connect(self, u):
         """Apply wiki config from a loopback handoff (nonce + personal LLM URL)."""

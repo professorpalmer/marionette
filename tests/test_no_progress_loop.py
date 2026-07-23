@@ -223,6 +223,10 @@ def test_bare_run_implement_forces_analysis_for_audit_goal(monkeypatch):
         lambda r: "/tmp/repo",
     )
     monkeypatch.setattr(
+        "harness.send_loop_dispatch._non_git_workspace_error",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
         "harness.implement_guards.check_implement_workspace",
         lambda *a, **k: None,
     )

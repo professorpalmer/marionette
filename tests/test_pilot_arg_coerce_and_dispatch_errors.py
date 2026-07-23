@@ -25,7 +25,11 @@ from harness.pilot import (
     from_wire,
 )
 from harness.send_loop_actions import execute_turn_actions
-from harness.send_loop_dispatch import dispatch_parallel_action
+from harness.send_loop_dispatch import (
+    dispatch_implement_action,
+    dispatch_parallel_action,
+    dispatch_swarm_action,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +136,10 @@ def test_dispatch_parallel_agentic_exception_after_start_yields_real_error(tmp_p
         "harness.repo_resolve.resolve_effective_repo",
         lambda p: p,
     )
+    monkeypatch.setattr(
+        "harness.send_loop_dispatch._non_git_workspace_error",
+        lambda *_a, **_k: None,
+    )
 
     events = list(
         dispatch_parallel_action(
@@ -154,6 +162,108 @@ def test_dispatch_parallel_agentic_exception_after_start_yields_real_error(tmp_p
     assert "claim exploded" in (results[-1].data.get("error") or "")
     assert "missing action_result" not in (results[-1].data.get("error") or "")
     session._append_action_result.assert_called()
+
+
+def test_dispatch_swarm_refuses_non_git_resolved_workspace(tmp_path):
+    """run_swarm must soft-fail closed when resolve yields a non-git path."""
+    bare = tmp_path / "not-a-repo"
+    bare.mkdir()
+    act = PilotAction(kind="run_swarm", goal="audit peel", roles=["explore"])
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=str(bare)),
+        _session_job_ids=[],
+        _register_local_job=MagicMock(),
+        _finish_local_job=MagicMock(),
+        _append_action_result=MagicMock(),
+        _display_transcript=[],
+    )
+    events = list(
+        dispatch_swarm_action(
+            session,
+            act,
+            "sw1",
+            True,
+            counters={"swarms": 0, "demo_swarms": 0},
+            turn_findings=[],
+        )
+    )
+    results = [e for e in events if e.kind == "action_result"]
+    assert results
+    err = results[0].data.get("error") or ""
+    assert "Workspace is not a git repository" in err
+    assert str(bare) in err or "resolved to" in err
+    assert not any(e.kind == "swarm_pending" for e in events)
+    session._register_local_job.assert_not_called()
+    session._append_action_result.assert_called_once()
+
+
+def test_dispatch_implement_refuses_non_git_resolved_workspace(tmp_path):
+    """run_implement yields action_start + calm action_result for non-git cwd."""
+    bare = tmp_path / "home-parent"
+    bare.mkdir()
+    act = PilotAction(kind="run_implement", goal="edit foo.py")
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=str(bare)),
+        _append_action_result=MagicMock(),
+        _validate_target_repo=MagicMock(),
+        _claim_objective=MagicMock(),
+    )
+    events = list(
+        dispatch_implement_action(
+            session,
+            act,
+            "im1",
+            True,
+            turn_actions=[act],
+            action_idx=0,
+            action_seq=1,
+            step=0,
+            swarms=0,
+        )
+    )
+    kinds = [e.kind for e in events]
+    assert "action_start" in kinds
+    results = [e for e in events if e.kind == "action_result"]
+    assert results
+    err = results[0].data.get("error") or ""
+    assert "Workspace is not a git repository" in err
+    assert kinds.index("action_start") < kinds.index("action_result")
+    session._claim_objective.assert_not_called()
+    session._append_action_result.assert_called_once()
+
+
+def test_dispatch_parallel_refuses_non_git_resolved_workspace(tmp_path):
+    """run_parallel must not launch workers against a non-git resolved path."""
+    bare = tmp_path / "ambiguous-home"
+    bare.mkdir()
+    act = PilotAction(kind="run_parallel", goals=["review auth", "review cache"])
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo=str(bare)),
+        _append_action_result=MagicMock(),
+        _validate_target_repo=MagicMock(),
+        _claim_objective=MagicMock(),
+    )
+    events = list(
+        dispatch_parallel_action(
+            session,
+            act,
+            "par_ng",
+            True,
+            turn_actions=[act],
+            action_idx=0,
+            action_seq=1,
+            step=0,
+            swarms=0,
+        )
+    )
+    starts = [e for e in events if e.kind == "action_start"]
+    results = [e for e in events if e.kind == "action_result"]
+    assert starts and results
+    assert starts[0].data.get("id") == "par_ng"
+    assert results[0].data.get("id") == "par_ng"
+    assert "Workspace is not a git repository" in (results[0].data.get("error") or "")
+    session._claim_objective.assert_not_called()
+    session._append_action_result.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +336,55 @@ def test_empty_goals_still_errors_with_existing_message():
     with pytest.raises(PilotError) as ei3:
         from_wire("run_parallel", {})
     assert "requires a list of 'goals'" in str(ei3.value)
+
+
+def test_nested_arguments_repo_preserved_for_run_implement(tmp_path):
+    """Native tool shape nests repo under arguments — must not fall back to Home."""
+    repo = tmp_path / "marionette"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    abs_repo = str(repo.resolve())
+    act = from_wire(
+        "run_implement",
+        {
+            "goal": "Validate nested repo routing",
+            "arguments": {"repo": abs_repo},
+        },
+    )
+    assert act.repo == abs_repo
+
+
+def test_nested_arguments_repo_preserved_for_run_parallel(tmp_path):
+    repo = tmp_path / "marionette"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    abs_repo = str(repo.resolve())
+    act = from_wire(
+        "run_parallel",
+        {
+            "goals": ["Slice A", "Slice B"],
+            "arguments": {"repo": abs_repo, "cwd": "should-not-win"},
+        },
+    )
+    assert act.repo == abs_repo
+
+
+def test_top_level_repo_wins_over_nested_arguments(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / ".git").mkdir()
+    (b / ".git").mkdir()
+    act = from_wire(
+        "run_implement",
+        {
+            "goal": "Prefer top-level",
+            "repo": str(a.resolve()),
+            "arguments": {"repo": str(b.resolve())},
+        },
+    )
+    assert act.repo == str(a.resolve())
 
 
 def test_run_parallel_schema_states_goals_array_contract():

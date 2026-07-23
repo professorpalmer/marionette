@@ -224,7 +224,7 @@ def test_dispatch_parallel_requires_goals():
     session._append_action_result.assert_called_once()
 
 
-def test_dispatch_swarm_registers_and_surfaces_error():
+def test_dispatch_swarm_registers_and_surfaces_error(monkeypatch):
     act = PilotAction(kind="run_swarm", goal="audit the peel", roles=["explore"])
     session = SimpleNamespace(
         config=SimpleNamespace(repo="/repo"),
@@ -235,6 +235,8 @@ def test_dispatch_swarm_registers_and_surfaces_error():
         _display_transcript=[],
     )
     import harness.send_loop_dispatch as dispatch
+
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
 
     def boom(session, intent, q):
         q.put(("error", RuntimeError("stream failed")))

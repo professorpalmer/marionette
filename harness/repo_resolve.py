@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import os
 import threading
+from typing import Optional
 
 from .paths import git_toplevel
 
 _cache_lock = threading.Lock()
 _cache: dict[str, str] = {}
+
+# When Home has multiple first-level git children (e.g. marionette + wiki),
+# prefer these basenames (case-insensitive). Exactly one match wins.
+_PREFERRED_GIT_CHILD_NAMES = frozenset({"marionette", "pm-harness", "pmharness"})
 
 
 def clear_effective_repo_cache() -> None:
@@ -28,12 +33,15 @@ def resolve_effective_repo(root: str) -> str:
        --show-toplevel`` for it (never raises — falls back to ``root``).
     2. Else if ``root`` contains exactly one first-level child directory that
        is a git checkout (has a ``.git`` file or directory), return that child
-       (Marionette Home layout). Multiple git children are ambiguous — leave
-       ``root`` unchanged.
-    3. Anything else: return ``root`` unchanged.
+       (Marionette Home layout).
+    3. Else if multiple git children exist, prefer a child whose basename
+       matches ``marionette`` / ``pm-harness`` / ``pmharness``
+       (case-insensitive). Exactly one preferred match wins; zero or multiple
+       preferred matches leave ``root`` unchanged (ambiguous).
+    4. Anything else: return ``root`` unchanged.
 
     Results are cached by normalized absolute path so hot dispatch paths do
-    not re-probe git or readdir every turn.
+    not re-probe git or readdir every turn. Never mutates caller config.
     """
     if not (root or "").strip():
         return root or ""
@@ -56,7 +64,46 @@ def _is_git_checkout(path: str) -> bool:
     return os.path.isdir(marker) or os.path.isfile(marker)
 
 
+def _preferred_git_child(git_children: list[str]) -> Optional[str]:
+    """Return the sole preferred-name git child, or None if none/ambiguous."""
+    preferred = [
+        child
+        for child in git_children
+        if os.path.basename(child).lower() in _PREFERRED_GIT_CHILD_NAMES
+    ]
+    if len(preferred) == 1:
+        return preferred[0]
+    return None
+
+
+def _return_child_toplevel(child: str) -> str:
+    # Marker-first (same rationale as _resolve_uncached fast path).
+    if _is_git_checkout(child):
+        try:
+            return os.path.normpath(os.path.abspath(child))
+        except Exception:
+            return child
+    try:
+        child_top = git_toplevel(child)
+        if child_top:
+            return child_top
+    except Exception:
+        pass
+    try:
+        return os.path.normpath(os.path.abspath(child))
+    except Exception:
+        return child
+
+
 def _resolve_uncached(root: str) -> str:
+    # Fast path: root itself is a checkout. Prefer the filesystem .git marker
+    # over `git rev-parse` so mocked subprocess.run in tests (and other
+    # Popen patches) cannot rewrite a valid path into garbage stdout.
+    if _is_git_checkout(root):
+        try:
+            return os.path.normpath(os.path.abspath(root))
+        except Exception:
+            return root
     try:
         top = git_toplevel(root)
         if top:
@@ -74,22 +121,14 @@ def _resolve_uncached(root: str) -> str:
                     continue
                 if _is_git_checkout(child):
                     git_children.append(child)
-                    if len(git_children) > 1:
-                        return root
             except Exception:
                 continue
         if len(git_children) == 1:
-            child = git_children[0]
-            try:
-                child_top = git_toplevel(child)
-                if child_top:
-                    return child_top
-            except Exception:
-                pass
-            try:
-                return os.path.normpath(os.path.abspath(child))
-            except Exception:
-                return child
+            return _return_child_toplevel(git_children[0])
+        if len(git_children) > 1:
+            preferred = _preferred_git_child(git_children)
+            if preferred is not None:
+                return _return_child_toplevel(preferred)
         return root
     except Exception:
         return root

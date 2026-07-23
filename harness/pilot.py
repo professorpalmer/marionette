@@ -438,20 +438,39 @@ def from_wire(
     command = raw.get("command") or raw.get("cmd") or raw.get("shell") or ""
     query = raw.get("query") or ""
     url = raw.get("url") or ""
-    instruction = raw.get("instruction") or ""
+    instruction = (
+        raw.get("instruction")
+        or arguments.get("instruction")
+        or ""
+    )
     # Envelope often puts the brief on instruction/task; keep instruction
     # distinct but fill goal when empty (matches prior coerce behavior).
-    goal = raw.get("goal") or raw.get("task") or instruction or ""
-    roles = _as_str_list(raw.get("roles"))
+    # Prefer top-level wire keys, then nested arguments (native/envelope).
+    goal = (
+        raw.get("goal")
+        or raw.get("task")
+        or arguments.get("goal")
+        or arguments.get("task")
+        or instruction
+        or ""
+    )
+    roles = _as_str_list(raw.get("roles") if "roles" in raw else arguments.get("roles"))
     coercion_notes = []
     # Tolerant goals/goal coercion for delegation verbs. Models commonly emit
     # a bare string, a JSON-encoded array string, or swap goal/goals.
     if kind == "run_parallel":
-        goals, g_notes = _coerce_goals_list(raw.get("goals"))
+        goals_raw = raw["goals"] if "goals" in raw else arguments.get("goals")
+        goals, g_notes = _coerce_goals_list(goals_raw)
         coercion_notes.extend(g_notes)
         if not goals:
             # goal (singular) where goals (array) was expected
-            singular = raw.get("goal") or raw.get("task") or ""
+            singular = (
+                raw.get("goal")
+                or raw.get("task")
+                or arguments.get("goal")
+                or arguments.get("task")
+                or ""
+            )
             if singular:
                 alt, alt_notes = _coerce_goals_list(singular)
                 if alt:
@@ -463,18 +482,25 @@ def from_wire(
     elif kind in ("run_swarm", "run_implement"):
         goals = []
         if not str(goal or "").strip():
-            alt, alt_notes = _coerce_goals_list(raw.get("goals"))
+            goals_raw = raw["goals"] if "goals" in raw else arguments.get("goals")
+            alt, alt_notes = _coerce_goals_list(goals_raw)
             if alt:
                 # Single-goal tools: take the first non-empty entry.
                 goal = alt[0]
                 coercion_notes.extend(alt_notes)
                 coercion_notes.append("remapped goals -> goal")
     else:
-        goals = _as_str_list(raw.get("goals"))
-    adapter, adapter_note = _normalize_adapter_mode(raw.get("adapter") or "")
+        goals = _as_str_list(
+            raw.get("goals") if "goals" in raw else arguments.get("goals")
+        )
+    adapter, adapter_note = _normalize_adapter_mode(
+        raw.get("adapter") or arguments.get("adapter") or ""
+    )
     if adapter_note and kind in ("run_implement", "run_parallel", "run_swarm"):
         coercion_notes.append(f"adapter {adapter_note}")
-    mode, mode_note = _normalize_adapter_mode(raw.get("mode") or "")
+    mode, mode_note = _normalize_adapter_mode(
+        raw.get("mode") or arguments.get("mode") or ""
+    )
     if mode_note and kind in ("run_implement", "run_parallel"):
         coercion_notes.append(f"mode {mode_note}")
     _log_arg_coercion(kind, coercion_notes)
@@ -492,9 +518,24 @@ def from_wire(
 
     repo_arg = ""
     if kind in ("run_implement", "run_parallel"):
-        repo_arg = (raw.get("repo") or raw.get("target_dir") or "").strip()
+        # Native tool calls often nest repo under arguments={...}; top-level
+        # raw keys win when both are present. Dropping the nested form made
+        # explicit C:\...\marionette\marionette fall back to the Home parent.
+        repo_arg = (
+            raw.get("repo")
+            or raw.get("target_dir")
+            or arguments.get("repo")
+            or arguments.get("target_dir")
+            or arguments.get("cwd")
+            or arguments.get("workspace_root")
+            or ""
+        ).strip()
     elif kind == "relocate_session":
-        repo_arg = (raw.get("repo") or "").strip()
+        repo_arg = (
+            raw.get("repo")
+            or arguments.get("repo")
+            or ""
+        ).strip()
 
     resolved_tool = tool or raw.get("tool") or ""
     resolved_tc_id = tool_call_id or raw.get("tool_call_id") or ""

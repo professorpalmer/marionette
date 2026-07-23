@@ -67,15 +67,10 @@ def open_cli_durable_state(workspace_root: str = ""):
     state_dir = resolve_cli_state_dir(workspace_root)
     if not state_dir:
         return None
-    try:
-        from harness.state import DurableState
-
-        durable = DurableState(state_dir)
-        _retry_on_locked(lambda: durable.store.list_jobs())
-        return durable
-    except Exception as exc:
-        _log_merge_failure("cli_job_merge.open_store", exc)
-        return None
+    # Same short lock wait as cross-project opens: a parent worker / live app
+    # holding state.sqlite3 must not stall /api/usage for multi-second busy
+    # timeouts on every StatusBar poll.
+    return open_cli_durable_at(state_dir, busy_timeout_ms=400)
 
 
 # Cross-project live merge bounds. Machines can accrue thousands of stale
@@ -264,14 +259,18 @@ def merge_scoped_cli_jobs(
         except Exception as exc:
             _log_merge_failure("cli_job_merge.merge_jobs", exc)
 
-    try:
-        for row in merge_running_cli_jobs_all_projects(
-            seen_ids=seen_ids,
-            primary_state_dir=primary_state_dir,
-        ):
-            merged.append(row)
-    except Exception as exc:
-        _log_merge_failure("cli_job_merge.merge_running_all", exc)
+    # Opt-out for hermetic pytest (conftest sets HARNESS_CLI_CROSS_PROJECT=0)
+    # and operators who want workspace-scoped tracker views only.
+    _cross = (os.environ.get("HARNESS_CLI_CROSS_PROJECT") or "1").strip().lower()
+    if _cross not in ("0", "false", "no", "off"):
+        try:
+            for row in merge_running_cli_jobs_all_projects(
+                seen_ids=seen_ids,
+                primary_state_dir=primary_state_dir,
+            ):
+                merged.append(row)
+        except Exception as exc:
+            _log_merge_failure("cli_job_merge.merge_running_all", exc)
 
     return merged, primary_store
 

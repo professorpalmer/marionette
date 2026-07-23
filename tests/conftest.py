@@ -115,10 +115,48 @@ def force_throwaway_harness_state_dir() -> str:
 
 
 force_throwaway_harness_state_dir()
+
+
+def _clear_live_puppetmaster_state_dir() -> None:
+    """Drop a worker-injected ``PUPPETMASTER_STATE_DIR`` that points at a live store.
+
+    Puppetmaster implement workers export ``PUPPETMASTER_STATE_DIR`` to the
+    host project's SQLite. ``harness.cli_job_merge`` then opens that DB on
+    every ``/api/usage`` poll; when the parent worker still holds the lock,
+    scoped job merges stall for seconds and HTTP client timeouts flake
+    (usage-meter / spill / swarm-live tests). Tests must resolve CLI stores
+    from the fixture workspace, not the live parent project.
+    """
+    key = "PUPPETMASTER_STATE_DIR"
+    current = (os.environ.get(key) or "").strip()
+    if not current:
+        return
+    live_root = os.path.join(
+        os.environ.get("APPDATA") or os.path.expanduser("~"),
+        "puppetmaster",
+    )
+    # Also cover XDG / macOS-style app roots used by puppetmaster.state.
+    alt_roots = (
+        live_root,
+        os.path.join(os.path.expanduser("~"), ".puppetmaster"),
+        os.path.join(
+            os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+            "puppetmaster",
+        ),
+    )
+    if any(_path_under_dir(current, root) for root in alt_roots if root):
+        os.environ.pop(key, None)
+
+
+_clear_live_puppetmaster_state_dir()
 # Dispatch tests use bare /mock/repo and tmp fixtures without .git. The
 # production git/Home soft-refuse stays on by default outside pytest; unit
 # tests that assert the refuse path re-enable via monkeypatch.
 os.environ.setdefault("HARNESS_IMPLEMENT_GIT_GUARD", "0")
+# Cross-project CLI merges scan ~/.puppetmaster/projects; under a live
+# Puppetmaster worker those DBs are often locked. Keep unit tests on the
+# fixture workspace only (tracker cross-project coverage has dedicated tests).
+os.environ.setdefault("HARNESS_CLI_CROSS_PROJECT", "0")
 
 _real_socket = socket.socket
 
