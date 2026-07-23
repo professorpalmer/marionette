@@ -32,9 +32,12 @@ conversation from the token-heavy investigation.
 """
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional, Union, cast, get_args
+
+_log = logging.getLogger(__name__)
 
 
 # Canonical set of dispatchable action kinds. `__invalid__` is modeled
@@ -100,6 +103,81 @@ def _as_str_list(value: Any) -> list:
     if isinstance(value, list):
         return value
     return []
+
+
+def _coerce_goals_list(value: Any) -> tuple:
+    """Normalize common model malformations of a ``goals`` wire value.
+
+    Returns ``(goals: list[str], notes: list[str])``. Notes are non-empty only
+    when an unambiguous coercion fired (string -> array, JSON-encoded array
+    string decoded, whitespace-only entries dropped). Genuinely empty / missing
+    input returns ``([], [])`` so callers keep the existing clear error.
+    """
+    notes = []
+    if value is None:
+        return [], notes
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return [], notes
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                notes.append("decoded JSON-encoded goals array string")
+                value = parsed
+            else:
+                notes.append("coerced string goals to one-element array")
+                value = [stripped]
+        else:
+            notes.append("coerced string goals to one-element array")
+            value = [stripped]
+    if not isinstance(value, list):
+        return [], notes
+    out = []
+    dropped = False
+    for item in value:
+        if item is None:
+            dropped = True
+            continue
+        text = str(item).strip()
+        if not text:
+            dropped = True
+            continue
+        out.append(text)
+    if dropped:
+        notes.append("dropped whitespace-only goals entries")
+    return out, notes
+
+
+def _normalize_adapter_mode(value: Any) -> tuple:
+    """Case-normalize adapter/mode strings. Returns ``(normalized, note_or_None)``."""
+    if value is None:
+        return "", None
+    text = str(value).strip()
+    if not text:
+        return "", None
+    lowered = text.lower()
+    if lowered != text:
+        return lowered, "case-normalized"
+    return text, None
+
+
+def _log_arg_coercion(kind: str, notes: list) -> None:
+    """Best-effort one-line notice when pilot arg coercion fired."""
+    if not notes:
+        return
+    try:
+        _log.debug("pilot coerce %s: %s", kind, "; ".join(notes))
+    except Exception:
+        pass
+    try:
+        from .diag import note as _diag_note
+        _diag_note("pilot_arg_coerce", msg=f"{kind}: {'; '.join(notes)}")
+    except Exception:
+        pass
 
 
 @dataclass
@@ -365,9 +443,41 @@ def from_wire(
     # distinct but fill goal when empty (matches prior coerce behavior).
     goal = raw.get("goal") or raw.get("task") or instruction or ""
     roles = _as_str_list(raw.get("roles"))
-    goals = _as_str_list(raw.get("goals"))
-    adapter = raw.get("adapter") or ""
-    mode = raw.get("mode") or ""
+    coercion_notes = []
+    # Tolerant goals/goal coercion for delegation verbs. Models commonly emit
+    # a bare string, a JSON-encoded array string, or swap goal/goals.
+    if kind == "run_parallel":
+        goals, g_notes = _coerce_goals_list(raw.get("goals"))
+        coercion_notes.extend(g_notes)
+        if not goals:
+            # goal (singular) where goals (array) was expected
+            singular = raw.get("goal") or raw.get("task") or ""
+            if singular:
+                alt, alt_notes = _coerce_goals_list(singular)
+                if alt:
+                    goals = alt
+                    coercion_notes.extend(alt_notes)
+                    coercion_notes.append("remapped goal -> goals")
+        if goals and not str(goal or "").strip():
+            goal = goals[0]
+    elif kind in ("run_swarm", "run_implement"):
+        goals = []
+        if not str(goal or "").strip():
+            alt, alt_notes = _coerce_goals_list(raw.get("goals"))
+            if alt:
+                # Single-goal tools: take the first non-empty entry.
+                goal = alt[0]
+                coercion_notes.extend(alt_notes)
+                coercion_notes.append("remapped goals -> goal")
+    else:
+        goals = _as_str_list(raw.get("goals"))
+    adapter, adapter_note = _normalize_adapter_mode(raw.get("adapter") or "")
+    if adapter_note and kind in ("run_implement", "run_parallel", "run_swarm"):
+        coercion_notes.append(f"adapter {adapter_note}")
+    mode, mode_note = _normalize_adapter_mode(raw.get("mode") or "")
+    if mode_note and kind in ("run_implement", "run_parallel"):
+        coercion_notes.append(f"mode {mode_note}")
+    _log_arg_coercion(kind, coercion_notes)
     model = (raw.get("model") or "").strip() if kind == "run_swarm" else ""
 
     memory_action = ""
@@ -784,7 +894,10 @@ def build_tools_schema(
             "function": {
                 "name": "run_swarm",
                 "description": (
-                    "Dispatch a PARALLEL agent swarm for complex/broad investigations. Requires `goal`. "
+                    "Dispatch a PARALLEL agent swarm for complex/broad investigations. Requires a single "
+                    "`goal` string (not an array). For 2-8 independent file-scoped goals use `run_parallel` "
+                    "instead with goals like "
+                    "[\"Add unit tests for auth.py\", \"Document the API routes in README\"]. "
                     "One worker runs PER role, each with its own lens and its own right-sized model -- so "
                     "for a broad ask (audit, 'review the platform', 'find ways to improve quality/robustness/scale', "
                     "'how does the whole system work') pass SEVERAL roles to fan out. Passing no roles runs a single "
@@ -793,7 +906,13 @@ def build_tools_schema(
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "goal": {"type": "string", "description": "The specific objective or question for the swarm workers"},
+                        "goal": {
+                            "type": "string",
+                            "description": (
+                                "Single objective/question for the swarm workers. "
+                                "For multiple independent goals use run_parallel with a goals array."
+                            ),
+                        },
                         "roles": {
                             "type": "array",
                             "items": {
@@ -985,9 +1104,10 @@ def build_tools_schema(
             "function": {
                 "name": "run_parallel",
                 "description": (
-                    "dispatch multiple workers concurrently. Requires `goals` "
-                    "array. Same git-workspace rules as run_implement (not Home / "
-                    "non-git); pass repo= when needed."
+                    "dispatch multiple workers concurrently. Requires `goals`: a JSON array "
+                    "of 2-8 independent goal strings "
+                    "(example: [\"Add unit tests for auth.py\", \"Document the API routes in README\"]). "
+                    "Same git-workspace rules as run_implement (not Home / non-git); pass repo= when needed."
                 ),
                 "parameters": {
                     "type": "object",
@@ -995,7 +1115,12 @@ def build_tools_schema(
                         "goals": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Array of goals/objectives to run in parallel"
+                            "minItems": 2,
+                            "maxItems": 8,
+                            "description": (
+                                "JSON array of 2-8 independent goal strings. "
+                                "Example: [\"Fix the flaky login test\", \"Update CONTRIBUTING.md setup steps\"]."
+                            ),
                         },
                         "adapter": {"type": "string", "description": "Optional edit engine (default 'agentic' -- standalone keys-only; 'native' for the richer pilot; 'cursor'/'codex'/'claude-code' for external CLIs when installed)"},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"},
@@ -1605,7 +1730,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
 - `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. When the user names a specific swarm model, pass `model` (registry id or adapter name); omit `model` for auto-route. Prompt text alone does not pin a model.
 - `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Default engine is standalone `agentic` (routes directly through your provider keys, no external CLI); pass `adapter` only to force a specific engine. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports).
-- `run_parallel`: dispatch multiple Puppetmaster workers concurrently. Requires `goals` array, optional `adapter`, optional `mode`.
+- `run_parallel`: dispatch multiple Puppetmaster workers concurrently. Requires `goals` as a JSON array of 2-8 independent goal strings (example: ["Add unit tests for auth.py", "Document the API routes in README"]), optional `adapter`, optional `mode`.
 - `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.
 - `web_search`: search the internet and return top results. Requires `query`.
 - `web_fetch`: read a web page's text contents. Requires `url`.

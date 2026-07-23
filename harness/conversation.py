@@ -2286,14 +2286,26 @@ class ConversationalSession(
 
     def _apply_worker_patch(self, artifacts: list, job_id: str = "") -> tuple[bool, list[str], str]:
         """Finds the patch artifact (type=="patch"), extracts its unified_diff,
-        and applies it cleanly/idempotently via git apply to self.config.repo.
+        and applies it cleanly/idempotently via git apply to the effective git
+        checkout for ``self.config.repo`` (Home parent → single git child).
         Returns (applied_bool, files_changed, message). Checkpoint id (if any) is stashed on self._last_checkpoint_id.
+
+        Resolution is per-operation only — never mutates ``config.repo``.
         """
         import os
         import tempfile
         import subprocess
 
+        from .repo_resolve import resolve_effective_repo
+
         if not self.config.repo or not os.path.exists(self.config.repo):
+            self._last_checkpoint_id = None
+            return False, [], "no workspace directory (config.repo) is open"
+
+        # Home / workspace root may not be a git checkout; workers already
+        # dispatch into the resolved child — apply must use the same target.
+        repo_root = resolve_effective_repo(self.config.repo)
+        if not repo_root or not os.path.exists(repo_root):
             self._last_checkpoint_id = None
             return False, [], "no workspace directory (config.repo) is open"
 
@@ -2301,14 +2313,14 @@ class ConversationalSession(
         try:
             p_check = subprocess.run(
                 ["git", "rev-parse", "--is-inside-work-tree"],
-                cwd=self.config.repo,
+                cwd=repo_root,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
             )
             if p_check.returncode != 0:
                 self._last_checkpoint_id = None
-                return False, [], f"not a git repository: {self.config.repo}"
+                return False, [], f"not a git repository: {repo_root}"
         except Exception as e:
             self._last_checkpoint_id = None
             return False, [], f"failed to check git repo: {e}"
@@ -2336,7 +2348,7 @@ class ConversationalSession(
             # a. First check if already applied (idempotent): git apply --reverse --check on the diff
             rev_p = subprocess.run(
                 ["git", "apply", "--reverse", "--check", temp_path],
-                cwd=self.config.repo,
+                cwd=repo_root,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
@@ -2345,11 +2357,27 @@ class ConversationalSession(
                 self._last_checkpoint_id = None
                 return True, files, "already applied"
 
-            # Take checkpoint before applying patch
+            # Take checkpoint before applying patch (bind to effective checkout
+            # when the session store still points at a non-git Home parent).
             checkpoint_id = None
             try:
                 label_suffix = f" {job_id}" if job_id else ""
-                checkpoint_id = self._checkpoints.snapshot(
+                cp_store = self._checkpoints
+                try:
+                    bound = getattr(cp_store, "repo", None) or ""
+                    enabled = bool(getattr(cp_store, "_enabled", False))
+                    same = (
+                        bound
+                        and os.path.realpath(bound) == os.path.realpath(repo_root)
+                    )
+                except Exception:
+                    enabled, same = False, False
+                if not (enabled and same):
+                    cp_store = CheckpointStore(
+                        repo_root,
+                        session_id=self.harness_session_id or None,
+                    )
+                checkpoint_id = cp_store.snapshot(
                     label=f"Before swarm patch{label_suffix}".strip(),
                     trigger="swarm_patch",
                     session_id=self.harness_session_id or None,
@@ -2361,7 +2389,7 @@ class ConversationalSession(
             # b. Else git apply --check to verify it applies cleanly
             check_p = subprocess.run(
                 ["git", "apply", "--check", temp_path],
-                cwd=self.config.repo,
+                cwd=repo_root,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
@@ -2370,7 +2398,7 @@ class ConversationalSession(
                 # It applies cleanly, so apply it!
                 apply_p = subprocess.run(
                     ["git", "apply", temp_path],
-                    cwd=self.config.repo,
+                    cwd=repo_root,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True
@@ -2390,7 +2418,6 @@ class ConversationalSession(
                 # merge does not apply. An autonomous re-derive must read clean
                 # source -- never marker-polluted files -- and we must never
                 # clobber an earlier worker's already-landed (unstaged) edit.
-                repo_root = self.config.repo
                 pre_apply_bytes = {}
                 for rel_path in files:
                     abs_path = os.path.join(repo_root, rel_path)

@@ -239,7 +239,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         _abs, _err = session._validate_target_repo(act.repo)
         if _err:
             error_msg = f'run_implement: target repo {act.repo} is not a valid git repository'
-            yield ConvEvent('action_start', {'id': aid, 'kind': 'run_implement', 'goal': act.goal, 'cwd': session.config.repo or None})
+            _cwd = resolve_effective_repo(session.config.repo or '') if (session.config.repo or '').strip() else None
+            yield ConvEvent('action_start', {'id': aid, 'kind': 'run_implement', 'goal': act.goal, 'cwd': _cwd})
             yield ConvEvent('action_result', {'id': aid, 'error': error_msg})
             session._append_action_result(act, aid, f'(run_implement {aid} failed: {error_msg})', is_native)
             return None
@@ -496,7 +497,10 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         requested_adapter = ''
     if use_external:
         adapter = requested_adapter
-        mode = act.mode or 'implement'
+        try:
+            mode = (act.mode or 'implement').strip().lower() or 'implement'
+        except Exception:
+            mode = 'implement'
         # Parent card first so reload/hydrate never sees orphan child results.
         yield ConvEvent('action_start', {
             'id': aid, 'kind': 'run_parallel', 'goals': goals,
@@ -510,110 +514,142 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 'id': sub_aid, 'kind': f'run_{mode}', 'goal': sub_goal,
                 'cwd': effective_repo, 'parent_id': aid,
             })
-        import json
-        import threading
-        import tempfile
-        import shutil
-        processes = []
-        threads = []
-        for idx, sub_goal in enumerate(goals):
-            sub_aid = sub_aids[idx]
-            try:
-                state_dir = tempfile.mkdtemp(prefix='pmh-par-')
-            except Exception as e:
-                yield ConvEvent('action_result', {'id': sub_aid, 'error': f'Failed to create temp state-dir: {e}'})
-                continue
-            cmd = _puppetmaster_cmd('--state-dir', state_dir, adapter, sub_goal, '--cwd', effective_repo, '--mode', mode, '--allow-dirty', '--allow-non-worktree', *session._job_dispatch_label_args())
-            try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=effective_repo, encoding='utf-8', errors='replace')
+        # Track which cards already got an action_result so an unexpected
+        # exception (or a continue that skipped the parent) settles every
+        # started id with the REAL error — never the opaque
+        # "missing action_result" turn-end sweep.
+        emitted_results = set()
+
+        def _result(data):
+            rid = data.get('id')
+            if rid:
+                emitted_results.add(rid)
+            return ConvEvent('action_result', data)
+
+        def _settle_unfinished(err_msg):
+            for sub_aid in sub_aids:
+                if sub_aid not in emitted_results:
+                    yield ConvEvent('action_result', {'id': sub_aid, 'error': err_msg})
+                    emitted_results.add(sub_aid)
+            if aid not in emitted_results:
+                yield ConvEvent('action_result', {'id': aid, 'error': err_msg})
+                emitted_results.add(aid)
                 try:
-                    from harness.worktrees import bind_worktree_subprocess
-                    bind_worktree_subprocess(effective_repo, proc, kind="worker")
+                    session._append_action_result(
+                        act, aid, f'(run_parallel {aid} failed: {err_msg})', is_native,
+                    )
                 except Exception:
                     pass
-                p_info = {'proc': proc, 'goal': sub_goal, 'id': sub_aid, 'job_id': None, 'lines': [], 'state_dir': state_dir}
-                processes.append(p_info)
-                t = threading.Thread(target=read_stdout_thread, args=(p_info,), daemon=True)
-                t.start()
-                threads.append(t)
-            except Exception as e:
-                yield ConvEvent('action_result', {'id': sub_aid, 'error': f'Failed to start: {e}'})
-                shutil.rmtree(state_dir, ignore_errors=True)
-        for p_info in processes:
-            try:
+
+        try:
+            import threading
+            import tempfile
+            import shutil
+            processes = []
+            threads = []
+            for idx, sub_goal in enumerate(goals):
+                sub_aid = sub_aids[idx]
                 try:
-                    p_info['proc'].wait(timeout=600)
-                except subprocess.TimeoutExpired:
-                    p_info['proc'].kill()
-                    p_info['proc'].wait()
-            finally:
+                    state_dir = tempfile.mkdtemp(prefix='pmh-par-')
+                except Exception as e:
+                    yield _result({'id': sub_aid, 'error': f'Failed to create temp state-dir: {e}'})
+                    continue
+                cmd = _puppetmaster_cmd('--state-dir', state_dir, adapter, sub_goal, '--cwd', effective_repo, '--mode', mode, '--allow-dirty', '--allow-non-worktree', *session._job_dispatch_label_args())
                 try:
-                    from harness.worktrees import release_worktree_subprocess
-                    release_worktree_subprocess(effective_repo, p_info['proc'])
-                except Exception:
-                    pass
-        for t in threads:
-            t.join(timeout=5)
-        aggregate_artifacts_summary = []
-        job_ids_collected = []
-        aggregate_num_artifacts = 0
-        worker_statuses = []
-        for idx, p_info in enumerate(processes):
-            sub_aid = p_info['id']
-            sub_goal = p_info['goal']
-            state_dir = p_info.get('state_dir')
-            try:
-                job_id = p_info['job_id']
-                if not job_id and state_dir:
+                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=effective_repo, encoding='utf-8', errors='replace')
                     try:
-                        last_cmd = _puppetmaster_cmd('--state-dir', state_dir, 'last')
-                        last_p = subprocess.run(last_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', timeout=10)
-                        if last_p.returncode == 0:
-                            last_out = last_p.stdout or ''
-                            m = re.search('\\b(job_[a-fA-F0-9]{12})\\b', last_out)
-                            if m:
-                                p_info['job_id'] = m.group(1)
-                                job_id = p_info['job_id']
+                        from harness.worktrees import bind_worktree_subprocess
+                        bind_worktree_subprocess(effective_repo, proc, kind="worker")
                     except Exception:
                         pass
-                if job_id:
-                    if not session._submit_swarm(session._run_swarm_background, job_id, sub_goal, state_dir):
-                        cap_msg = f'Swarm capacity reached ({session._swarm_inflight()} in flight); not dispatching follow-up for job {job_id}.'
-                        yield ConvEvent('action_result', {'id': sub_aid, 'status': 'deferred', 'message': cap_msg})
-                        aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' deferred: {cap_msg}")
-                        continue
-                    job_ids_collected.append(job_id)
-                    session._session_job_ids.append(job_id)
-                    p_info['state_dir'] = None
-                    yield ConvEvent('action_result', {'id': sub_aid, 'job_id': job_id, 'status': 'pending', 'message': f'Dispatched parallel background swarm job {job_id}'})
-                else:
-                    ret_code = p_info['proc'].returncode
-                    output_text = ''.join(p_info['lines'])
-                    lower_out = output_text.lower()
-                    has_success_marker = any((m in lower_out for m in ['success', 'complete', 'finished', 'done', 'written', 'saved']))
-                    if ret_code != 0:
-                        err_msg = f'worker process failed (exit {ret_code})'
-                    elif has_success_marker:
-                        err_msg = 'worker completed but job_id unrecoverable'
+                    p_info = {'proc': proc, 'goal': sub_goal, 'id': sub_aid, 'job_id': None, 'lines': [], 'state_dir': state_dir}
+                    processes.append(p_info)
+                    t = threading.Thread(target=read_stdout_thread, args=(p_info,), daemon=True)
+                    t.start()
+                    threads.append(t)
+                except Exception as e:
+                    yield _result({'id': sub_aid, 'error': f'Failed to start: {e}'})
+                    shutil.rmtree(state_dir, ignore_errors=True)
+            for p_info in processes:
+                try:
+                    try:
+                        p_info['proc'].wait(timeout=600)
+                    except subprocess.TimeoutExpired:
+                        p_info['proc'].kill()
+                        p_info['proc'].wait()
+                finally:
+                    try:
+                        from harness.worktrees import release_worktree_subprocess
+                        release_worktree_subprocess(effective_repo, p_info['proc'])
+                    except Exception:
+                        pass
+            for t in threads:
+                t.join(timeout=5)
+            aggregate_artifacts_summary = []
+            job_ids_collected = []
+            for idx, p_info in enumerate(processes):
+                sub_aid = p_info['id']
+                sub_goal = p_info['goal']
+                state_dir = p_info.get('state_dir')
+                try:
+                    job_id = p_info['job_id']
+                    if not job_id and state_dir:
+                        try:
+                            last_cmd = _puppetmaster_cmd('--state-dir', state_dir, 'last')
+                            last_p = subprocess.run(last_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', timeout=10)
+                            if last_p.returncode == 0:
+                                last_out = last_p.stdout or ''
+                                m = re.search('\\b(job_[a-fA-F0-9]{12})\\b', last_out)
+                                if m:
+                                    p_info['job_id'] = m.group(1)
+                                    job_id = p_info['job_id']
+                        except Exception:
+                            pass
+                    if job_id:
+                        if not session._submit_swarm(session._run_swarm_background, job_id, sub_goal, state_dir):
+                            cap_msg = f'Swarm capacity reached ({session._swarm_inflight()} in flight); not dispatching follow-up for job {job_id}.'
+                            yield _result({'id': sub_aid, 'status': 'deferred', 'message': cap_msg})
+                            aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' deferred: {cap_msg}")
+                            continue
+                        job_ids_collected.append(job_id)
+                        session._session_job_ids.append(job_id)
+                        p_info['state_dir'] = None
+                        yield _result({'id': sub_aid, 'job_id': job_id, 'status': 'pending', 'message': f'Dispatched parallel background swarm job {job_id}'})
                     else:
-                        err_msg = 'worker completed but job_id unrecoverable (no success marker found)'
-                    yield ConvEvent('action_result', {'id': sub_aid, 'error': err_msg})
-                    aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' failed: {err_msg}")
-            finally:
-                if p_info.get('state_dir'):
-                    import shutil
-                    shutil.rmtree(p_info['state_dir'], ignore_errors=True)
-        if job_ids_collected:
-            yield ConvEvent('swarm_pending', {'job_ids': job_ids_collected, 'objective': f"Parallel wave of goals: {', '.join(goals)}"})
-            yield ConvEvent('action_result', {'id': aid, 'job_id': ','.join(job_ids_collected), 'status': 'pending', 'message': f"Dispatched parallel background swarm jobs: {', '.join(job_ids_collected)}"})
-            session._append_action_result(act, aid, f"(run_parallel dispatched {len(job_ids_collected)} jobs in background: {', '.join(job_ids_collected)})", is_native)
-            yield from session._answer_remaining_tool_calls(turn_actions, action_idx, is_native, action_seq)
-            yield ConvEvent('assistant_done', {'turns': step + 1, 'swarms': swarms + len(job_ids_collected)})
-            return 'return'
-        else:
-            yield ConvEvent('action_result', {'id': aid, 'error': 'No jobs successfully dispatched'})
+                        ret_code = p_info['proc'].returncode
+                        output_text = ''.join(p_info['lines'])
+                        lower_out = output_text.lower()
+                        has_success_marker = any((m in lower_out for m in ['success', 'complete', 'finished', 'done', 'written', 'saved']))
+                        if ret_code != 0:
+                            err_msg = f'worker process failed (exit {ret_code})'
+                        elif has_success_marker:
+                            err_msg = 'worker completed but job_id unrecoverable'
+                        else:
+                            err_msg = 'worker completed but job_id unrecoverable (no success marker found)'
+                        yield _result({'id': sub_aid, 'error': err_msg})
+                        aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' failed: {err_msg}")
+                finally:
+                    if p_info.get('state_dir'):
+                        import shutil
+                        shutil.rmtree(p_info['state_dir'], ignore_errors=True)
+            # Settle any sub card that never entered the process list.
+            for sub_aid in sub_aids:
+                if sub_aid not in emitted_results:
+                    yield _result({'id': sub_aid, 'error': 'No jobs successfully dispatched'})
+            if job_ids_collected:
+                yield ConvEvent('swarm_pending', {'job_ids': job_ids_collected, 'objective': f"Parallel wave of goals: {', '.join(goals)}"})
+                yield _result({'id': aid, 'job_id': ','.join(job_ids_collected), 'status': 'pending', 'message': f"Dispatched parallel background swarm jobs: {', '.join(job_ids_collected)}"})
+                session._append_action_result(act, aid, f"(run_parallel dispatched {len(job_ids_collected)} jobs in background: {', '.join(job_ids_collected)})", is_native)
+                yield from session._answer_remaining_tool_calls(turn_actions, action_idx, is_native, action_seq)
+                yield ConvEvent('assistant_done', {'turns': step + 1, 'swarms': swarms + len(job_ids_collected)})
+                return 'return'
+            yield _result({'id': aid, 'error': 'No jobs successfully dispatched'})
             session._append_action_result(act, aid, f'(run_parallel failed to dispatch any jobs)', is_native)
-        return None
+            return None
+        except Exception as e:
+            err = str(e) or e.__class__.__name__
+            yield from _settle_unfinished(err)
+            return None
     else:
         from harness.edit_engines import select_edit_engine
         engine = select_edit_engine(session.config, requested_adapter)
@@ -664,8 +700,17 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             yield ConvEvent('assistant_done', {'turns': step + 1, 'swarms': swarms + len(job_ids_collected)})
             return 'return'
         except Exception as e:
-            yield ConvEvent('action_result', {'id': aid, 'error': str(e)})
-            session._append_action_result(act, aid, f'(run_parallel {aid} failed: {e})', is_native)
+            err = str(e) or e.__class__.__name__
+            try:
+                yield ConvEvent('action_result', {'id': aid, 'error': err})
+            except Exception:
+                pass
+            try:
+                session._append_action_result(
+                    act, aid, f'(run_parallel {aid} failed: {err})', is_native, ok=False,
+                )
+            except Exception:
+                pass
         return None
     return None
 

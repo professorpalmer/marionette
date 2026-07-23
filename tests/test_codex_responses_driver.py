@@ -49,6 +49,104 @@ def test_extract_text_and_tools():
     assert finish == "completed"
 
 
+def test_extract_excludes_commentary_from_final_text():
+    """Completed commentary must not contaminate DriverResponse.text."""
+    raw = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "phase": "commentary",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "Checking. "}],
+            },
+            {
+                "type": "message",
+                "phase": "final_answer",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "Done."}],
+            },
+        ],
+    }
+    text, tools, finish = _extract_text_and_tools(raw)
+    assert text == "Done."
+    assert tools == []
+    assert finish == "completed"
+
+
+def test_extract_excludes_analysis_and_keeps_phaseless_legacy():
+    """Analysis excluded; phase-less legacy messages still count as answer."""
+    raw = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "phase": "analysis",
+                "content": [{"type": "output_text", "text": "thinking aloud "}],
+            },
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "legacy answer"}],
+            },
+        ],
+    }
+    text, _, _ = _extract_text_and_tools(raw)
+    assert text == "legacy answer"
+
+
+def test_extract_empty_final_does_not_fallback_to_commentary():
+    """Empty final_answer must not fall back to commentary prose."""
+    raw = {
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "Checking. "}],
+            },
+            {
+                "type": "message",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": ""}],
+            },
+        ],
+        "output_text": "Checking. ",
+    }
+    text, _, _ = _extract_text_and_tools(raw)
+    assert text == ""
+
+
+def test_commentary_streams_via_delta_but_extract_is_final_only():
+    """Commentary arrives on progress/on_delta; extract text is final_answer."""
+    progress = []
+    answers = []
+
+    def on_delta(payload):
+        if isinstance(payload, dict) and payload.get("channel") == "progress":
+            progress.append(payload)
+        else:
+            answers.append(payload)
+
+    lines = [
+        b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"commentary","id":"msg_c"}}\n',
+        b'data: {"type":"response.output_text.delta","item_id":"msg_c","delta":"Checking. "}\n',
+        b'data: {"type":"response.output_item.done","item":{"type":"message","phase":"commentary","id":"msg_c","content":[{"type":"output_text","text":"Checking. "}]}}\n',
+        b'data: {"type":"response.output_item.added","item":{"type":"message","phase":"final_answer","id":"msg_f"}}\n',
+        b'data: {"type":"response.output_text.delta","item_id":"msg_f","delta":"Done."}\n',
+        b'data: {"type":"response.output_item.done","item":{"type":"message","phase":"final_answer","id":"msg_f","content":[{"type":"output_text","text":"Done."}]}}\n',
+        b'data: {"type":"response.completed","response":{"status":"completed","usage":{}}}\n',
+    ]
+    raw = _consume_codex_sse(lines, on_delta=on_delta)
+    assert "".join(p["text"] for p in progress) == "Checking. "
+    answer_text = "".join(
+        (a["text"] if isinstance(a, dict) else a) for a in answers
+    )
+    assert answer_text == "Done."
+    text, _, _ = _extract_text_and_tools(raw)
+    assert text == "Done."
+    assert raw["output_text"] == "Done."
+
+
 def test_messages_to_input_skips_system():
     inp = _messages_to_responses_input([
         {"role": "system", "content": "sys"},

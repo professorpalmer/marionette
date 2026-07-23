@@ -156,9 +156,15 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
     Maps ``status=incomplete`` + ``incomplete_details.reason=content_filter`` to
     finish_reason ``content_filter`` (Hermes) so callers refuse instead of
     burning continuation retries.
+
+    Message text for ``DriverResponse.text`` prefers ``final_answer`` and
+    phase-less (legacy) items. Commentary and analysis are excluded — they
+    stream via progress/reasoning callbacks and must not contaminate the
+    final answer even when final text is empty.
     """
     text_parts: List[str] = []
     tool_calls: List[dict] = []
+    saw_answer_item = False
     status = str(raw.get("status") or "")
     reason = _incomplete_reason(raw)
     if status == "incomplete" and reason == "content_filter":
@@ -172,6 +178,12 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
             continue
         itype = item.get("type")
         if itype == "message":
+            # Reuse channel policy: commentary -> progress, analysis ->
+            # reasoning, final_answer / phase-less -> answer.
+            channel = _codex_channel_for_item("message", item.get("phase"))
+            if channel != "answer":
+                continue
+            saw_answer_item = True
             for part in item.get("content") or []:
                 if isinstance(part, dict) and part.get("type") in (
                     "output_text", "text",
@@ -188,7 +200,12 @@ def _extract_text_and_tools(raw: dict) -> Tuple[str, list, str]:
                     else json.dumps(item.get("arguments") or {}),
                 },
             })
-    if not text_parts and isinstance(raw.get("output_text"), str):
+    # Legacy / SSE-assembled bodies may only populate output_text. Never fall
+    # back to it when answer-phase items existed (even if their text is empty)
+    # — that would re-introduce commentary contamination via a mixed blob.
+    if not text_parts and not saw_answer_item and isinstance(
+        raw.get("output_text"), str
+    ):
         text_parts.append(raw["output_text"])
     return "".join(text_parts), tool_calls, finish
 

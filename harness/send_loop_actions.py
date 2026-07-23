@@ -25,6 +25,7 @@ from .pilot_guards import (
     record_action_execution,
     reuse_or_new_turn_guard_state,
 )
+from .repo_resolve import resolve_effective_repo
 from .send_loop_dispatch import (
     DISPATCH_ACTION_KINDS,
     dispatch_implement_action,
@@ -70,6 +71,11 @@ def execute_turn_actions(
     action_seq = counters["action_seq"]
     swarms = counters["swarms"]
     demo_swarms = counters["demo_swarms"]
+
+    # Per-operation cwd for action cards — resolve Home → git child without
+    # mutating boot-restorable config.repo.
+    _raw_cwd = (session.config.repo or "").strip()
+    action_cwd = resolve_effective_repo(_raw_cwd) if _raw_cwd else None
 
     # 4. Execute each action as a collapsible tool-call.
     # Persist TurnGuardState across model steps and keep-alive resume for the
@@ -189,7 +195,7 @@ def execute_turn_actions(
         if act.kind not in ("run_implement", "run_parallel"):
             yield ConvEvent("action_start", {
                 "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
-                "cwd": session.config.repo or None,
+                "cwd": action_cwd,
                 "adapter": session.config.swarm_adapter,
                 "call_id": _tcid or None,
             })
@@ -200,7 +206,7 @@ def execute_turn_actions(
             if act.kind in ("run_implement", "run_parallel"):
                 yield ConvEvent("action_start", {
                     "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
-                    "cwd": session.config.repo or None,
+                    "cwd": action_cwd,
                     "call_id": _tcid or None,
                 })
             yield ConvEvent("action_result", {
@@ -216,7 +222,7 @@ def execute_turn_actions(
             if act.kind in ("run_implement", "run_parallel"):
                 yield ConvEvent("action_start", {
                     "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
-                    "cwd": session.config.repo or None,
+                    "cwd": action_cwd,
                     "call_id": _tcid or None,
                 })
             err_msg = "delegation is disabled for workers; edit the files directly with write_file, edit_file, or hash_edit"
@@ -338,41 +344,57 @@ def execute_turn_actions(
         # ---- delegate / swarm / memory tool-result assembly ----
         if act.kind in DISPATCH_ACTION_KINDS:
             disposition = None
-            if act.kind == "run_swarm":
-                _counters = {"swarms": swarms, "demo_swarms": demo_swarms}
-                disposition = yield from dispatch_swarm_action(
-                    session, act, aid, is_native,
-                    counters=_counters,
-                    turn_findings=turn_findings,
-                )
-                swarms = _counters["swarms"]
-                demo_swarms = _counters["demo_swarms"]
-            elif act.kind == "run_implement":
-                disposition = yield from dispatch_implement_action(
-                    session, act, aid, is_native,
-                    turn_actions=turn.actions,
-                    action_idx=idx,
-                    action_seq=action_seq,
-                    step=step,
-                    swarms=swarms,
-                )
-            elif act.kind == "run_parallel":
-                disposition = yield from dispatch_parallel_action(
-                    session, act, aid, is_native,
-                    turn_actions=turn.actions,
-                    action_idx=idx,
-                    action_seq=action_seq,
-                    step=step,
-                    swarms=swarms,
-                )
-            elif act.kind == "route_task":
-                disposition = yield from dispatch_route_task_action(
-                    session, act, aid, is_native,
-                )
-            elif act.kind == "memory":
-                disposition = yield from dispatch_memory_action(
-                    session, act, aid, is_native,
-                )
+            try:
+                if act.kind == "run_swarm":
+                    _counters = {"swarms": swarms, "demo_swarms": demo_swarms}
+                    disposition = yield from dispatch_swarm_action(
+                        session, act, aid, is_native,
+                        counters=_counters,
+                        turn_findings=turn_findings,
+                    )
+                    swarms = _counters["swarms"]
+                    demo_swarms = _counters["demo_swarms"]
+                elif act.kind == "run_implement":
+                    disposition = yield from dispatch_implement_action(
+                        session, act, aid, is_native,
+                        turn_actions=turn.actions,
+                        action_idx=idx,
+                        action_seq=action_seq,
+                        step=step,
+                        swarms=swarms,
+                    )
+                elif act.kind == "run_parallel":
+                    disposition = yield from dispatch_parallel_action(
+                        session, act, aid, is_native,
+                        turn_actions=turn.actions,
+                        action_idx=idx,
+                        action_seq=action_seq,
+                        step=step,
+                        swarms=swarms,
+                    )
+                elif act.kind == "route_task":
+                    disposition = yield from dispatch_route_task_action(
+                        session, act, aid, is_native,
+                    )
+                elif act.kind == "memory":
+                    disposition = yield from dispatch_memory_action(
+                        session, act, aid, is_native,
+                    )
+            except Exception as e:
+                # Never leave an action_start without a real action_result —
+                # the turn-end "missing action_result" settle is last resort.
+                err = str(e) or e.__class__.__name__
+                try:
+                    yield ConvEvent("action_result", {"id": aid, "error": err})
+                except Exception:
+                    pass
+                try:
+                    session._append_action_result(
+                        act, aid, f"({act.kind} {aid} failed: {err})", is_native, ok=False,
+                    )
+                except Exception:
+                    pass
+                continue
             if disposition == "return":
                 counters["action_seq"] = action_seq
                 counters["swarms"] = swarms

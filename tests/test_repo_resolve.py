@@ -125,6 +125,76 @@ def _marionette_home_layout(tmp_path):
     return home, child
 
 
+def _git_commit_ready(repo: str) -> None:
+    """Configure identity + empty initial commit so git apply has a base."""
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+    # Allow empty commit on newer git; fall back to a seed file if needed.
+    seed = os.path.join(repo, ".keep")
+    with open(seed, "w", encoding="utf-8") as f:
+        f.write("keep\n")
+    subprocess.run(
+        ["git", "add", ".keep"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+
+
+def test_apply_worker_patch_resolves_home_parent_to_git_child(tmp_path):
+    """Session rooted at Marionette Home must apply patches into the git child."""
+    import tempfile
+
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    home, child = _marionette_home_layout(tmp_path)
+    _git_commit_ready(str(child))
+    child_resolved = resolve_effective_repo(str(home))
+    assert _norm(child_resolved) == _norm(str(child))
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = str(home)  # session parent = non-git Home
+    session = ConversationalSession(cfg)
+
+    artifacts = [
+        {
+            "type": "patch",
+            "payload": {
+                "files": ["home_apply.txt"],
+                "unified_diff": (
+                    "diff --git a/home_apply.txt b/home_apply.txt\n"
+                    "new file mode 100644\n"
+                    "--- /dev/null\n"
+                    "+++ b/home_apply.txt\n"
+                    "@@ -0,0 +1 @@\n"
+                    "+applied into git child\n"
+                ),
+            },
+        }
+    ]
+    applied, files, msg = session._apply_worker_patch(artifacts)
+    assert applied is True
+    assert files == ["home_apply.txt"]
+    assert "applied" in msg.lower() or "already" in msg.lower()
+
+    child_file = child / "home_apply.txt"
+    parent_file = home / "home_apply.txt"
+    assert child_file.is_file()
+    assert child_file.read_text(encoding="utf-8") == "applied into git child\n"
+    assert not parent_file.exists()
+    # Per-operation resolve must never persist the child onto boot state.
+    assert _norm(cfg.repo) == _norm(str(home))
+
+
 def _brief_target_path(instruction: str) -> str:
     """Extract the path after 'Analyze the REAL codebase at ' (before trailing '.')."""
     marker = "Analyze the REAL codebase at "

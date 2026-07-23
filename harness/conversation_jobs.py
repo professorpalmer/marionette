@@ -37,19 +37,28 @@ class ConversationJobsMixin:
     def _await_and_apply_job(self, job_id: str, state_dir: Optional[str] = None, objective: str = "") -> dict:
         import json
         import subprocess
+        from .repo_resolve import resolve_effective_repo
+
+        # Per-operation only — do not persist the resolved child onto config.repo.
+        effective_repo = (
+            resolve_effective_repo(self.config.repo or "")
+            if (self.config.repo or "").strip()
+            else (self.config.repo or "")
+        )
+
         # 1. Await job
         if state_dir:
-            await_cmd = _puppetmaster_cmd("--state-dir", state_dir, "await", job_id, "--cwd", self.config.repo)
+            await_cmd = _puppetmaster_cmd("--state-dir", state_dir, "await", job_id, "--cwd", effective_repo)
         else:
-            await_cmd = _puppetmaster_cmd("await", job_id, "--cwd", self.config.repo)
-        subprocess.run(await_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
+            await_cmd = _puppetmaster_cmd("await", job_id, "--cwd", effective_repo)
+        subprocess.run(await_cmd, cwd=effective_repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
 
         # 2. Fetch artifacts
         if state_dir:
-            art_cmd = _puppetmaster_cmd("--state-dir", state_dir, "artifacts", job_id, "--cwd", self.config.repo)
+            art_cmd = _puppetmaster_cmd("--state-dir", state_dir, "artifacts", job_id, "--cwd", effective_repo)
         else:
-            art_cmd = _puppetmaster_cmd("artifacts", job_id, "--cwd", self.config.repo)
-        art_p = subprocess.run(art_cmd, cwd=self.config.repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", timeout=60)
+            art_cmd = _puppetmaster_cmd("artifacts", job_id, "--cwd", effective_repo)
+        art_p = subprocess.run(art_cmd, cwd=effective_repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", timeout=60)
         art_out = art_p.stdout or ""
         try:
             artifacts = json.loads(art_out)
