@@ -167,7 +167,7 @@ def test_supervised_worker_gets_independent_default_budget():
         # Preserves today's behavior: a fresh, per-worker default budget with no
         # parent -- so a supervised run is not regressed onto some shared ceiling.
         assert worker.budget.parent is None
-        assert worker.budget.max_tokens == 40000
+        assert worker.budget.max_tokens == 250000
         assert worker.budget.max_swarms == 2
     finally:
         shutil.rmtree(repo, ignore_errors=True)
