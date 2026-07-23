@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.120, deliberately pre-1.0. Rides puppetmaster-ai==1.20.10 (CodeGraph Windows UTF-8). Hotfix: Electron startBackend no longer TDZ-crashes on path, so clean launches after a failed update spawn the harness again.
+> Status: v0.9.121, deliberately pre-1.0. Rides puppetmaster-ai==1.20.10 (CodeGraph Windows UTF-8). Durable Settle inbox triage is independent of archive; Codex/Sol word-sized reasoning deltas coalesce into stable investigation rows without swallowing narration, tool boundaries, or final answers.
 
 ## Documentation
 

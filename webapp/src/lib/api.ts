@@ -274,7 +274,7 @@ export type WorkspaceInfo = {
 };
 
 export type Workspace = { name: string; branch: string; active: boolean; dirty?: boolean };
-export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
+export type Session = { id: string; title: string; created: number; active?: boolean; archived?: boolean; settled?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
 
 export type SessionState = {
   state: "idle" | "thinking" | "awaiting_swarm";
@@ -878,10 +878,10 @@ export const api = {
     ),
   clearSessions: () =>
     postJSON<{ ok: boolean; deleted: number; active: string | null }>(withToken("/api/sessions/clear"), {}),
-  /** Persist settle state. Wire flag is still `archived` on the session row. */
+  /** Persist archive flag (distinct from inbox Settle triage). */
   archiveSession: (id: string, archived: boolean) => postJSON<{ ok: boolean }>("/api/sessions/archive", { session: id, archived }),
-  /** UX alias for archiveSession — Settle / Unsettle in the LeftRail inbox. */
-  settleSession: (id: string, settled: boolean) => postJSON<{ ok: boolean }>("/api/sessions/archive", { session: id, archived: settled }),
+  /** Persist independent inbox Settle / Unsettle triage. */
+  settleSession: (id: string, settled: boolean) => postJSON<{ ok: boolean }>("/api/sessions/settle", { session: id, settled }),
   renameSession: (id: string, title: string) => postJSON<{ ok: boolean }>("/api/sessions/rename", { session: id, title }),
   swapPilot: (model: string) => getJSON(withToken(`/api/pilot?model=${encodeURIComponent(model)}`)),
   uploadImage: async (file: File | Blob): Promise<{ path: string; name: string }> => {

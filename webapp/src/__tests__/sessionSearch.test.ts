@@ -44,8 +44,20 @@ describe("sessionSearch helpers", () => {
         { s1: "Alpha chat" },
       ),
     ).toEqual([
-      { id: "s1", title: "Alpha chat", snippet: "...alpha...", rank: -2 },
-      { id: "s2", title: "Untitled", snippet: "", rank: 0 },
+      { id: "s1", title: "Alpha chat", snippet: "...alpha...", rank: -2, settled: false },
+      { id: "s2", title: "Untitled", snippet: "", rank: 0, settled: false },
+    ]);
+  });
+
+  it("mapSessionSearchHits marks settled hits for Settled labeling", () => {
+    expect(
+      mapSessionSearchHits(
+        [{ session_id: "done", snippet: "wrap", rank: 1 }],
+        { done: "Done chat" },
+        { done: true },
+      ),
+    ).toEqual([
+      { id: "done", title: "Done chat", snippet: "wrap", rank: 1, settled: true },
     ]);
   });
 });

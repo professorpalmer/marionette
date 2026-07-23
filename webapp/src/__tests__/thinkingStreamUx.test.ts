@@ -1,10 +1,77 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendNonStreamingThinking,
+  appendStreamingTextToItems,
+  chatFrameToStreamEvent,
+  finalizePilotMessage,
   finalizeStreamingThinking,
+  isTrivialAssistantCrumb,
+  looksLikeFinalAnswer,
   upsertStreamingThinking,
 } from "../components/Conversation";
 import { activityGroupStableId } from "../components/TranscriptList";
 import type { Item } from "../components/TranscriptList";
+import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
+import { flushTypewriterBuffer } from "../components/conversation/streamTypewriter";
+
+function makeApplyDeps(opts: {
+  items: Item[];
+  itemsRef: { current: Item[] };
+  typeBufRef: { current: string };
+}) {
+  const pendingJobIdsRef = { current: [] as string[] };
+  const setItems = (updater: Item[] | ((prev: Item[]) => Item[])) => {
+    const next = typeof updater === "function" ? updater(opts.items) : updater;
+    opts.items = next;
+    opts.itemsRef.current = next;
+  };
+  const appendStreamingText = (chunk: string) => {
+    if (!chunk) return;
+    setItems((p) => appendStreamingTextToItems(p, chunk));
+  };
+  const flushTypewriter = () => {
+    flushTypewriterBuffer(
+      {
+        typeBufRef: opts.typeBufRef,
+        typeRafRef: { current: null },
+        typeDoneRef: { current: false },
+      },
+      appendStreamingText,
+      () => {},
+    );
+  };
+  return {
+    setCompactingStatus: ((_v?: string | null) => {}) as (v: string | null) => void,
+    setItems,
+    setDistillNotice: () => {},
+    setWikiPrepared: () => {},
+    setMemoryProposals: () => {},
+    setWaitHint: () => {},
+    setStatus: () => {},
+    setTurnOpen: () => {},
+    setPendingJobIds: () => {},
+    pendingJobIdsRef,
+    setSafeTimeout: () => {},
+    itemsRef: opts.itemsRef,
+    planTurnRef: { current: false },
+    turnSettledRef: { current: false },
+    resumeQueuedRef: { current: false },
+    typeBufRef: opts.typeBufRef,
+    flushTypewriter,
+    startTypewriter: () => {},
+    appendStreamingText,
+    setCard: () => {},
+    onArtifacts: () => {},
+    onJobChange: () => {},
+    handleSwarmResult: () => {},
+    refreshQueue: () => {},
+    fetchContextUsage: () => {},
+  };
+}
+
+function thinkingRows(items: Item[]) {
+  return items.filter((i): i is Extract<Item, { kind: "thinking" }> => i.kind === "thinking");
+}
 
 describe("upsertStreamingThinking preserves durable id", () => {
   it("stamps an id on the first chunk and keeps it across deltas", () => {
@@ -23,6 +90,17 @@ describe("upsertStreamingThinking preserves durable id", () => {
     >;
     expect(think2.id).toBe(think1.id);
     expect(think2.text).toBe("First — more tokens");
+  });
+
+  it("strict-appends identical and prefix-looking live deltas", () => {
+    // Snapshot coalescing must not run on ordinary upsert — providers can
+    // emit repeated or prefix-looking delta:true chunks that are real text.
+    let items = upsertStreamingThinking([], "ha");
+    items = upsertStreamingThinking(items, "ha");
+    expect(thinkingRows(items)[0].text).toBe("haha");
+
+    items = upsertStreamingThinking(items, "h");
+    expect(thinkingRows(items)[0].text).toBe("hahah");
   });
 
   it("keeps the id when streaming ends", () => {
@@ -66,6 +144,24 @@ describe("upsertStreamingThinking preserves durable id", () => {
     expect(texts).toEqual(["phase-one ", "phase-two"]);
   });
 
+  it("skips trivial sealed assistant crumbs when coalescing word deltas", () => {
+    let items: Item[] = upsertStreamingThinking([], "Release");
+    items = finalizeStreamingThinking(items);
+    items = [
+      ...items,
+      { kind: "msg", msg: { role: "assistant", text: "**" } },
+    ];
+    items = upsertStreamingThinking(items, " mechanics");
+    items = [
+      ...items,
+      { kind: "msg", msg: { role: "assistant", text: "****" } },
+    ];
+    items = upsertStreamingThinking(items, " are");
+    const thinking = thinkingRows(items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("Release mechanics are");
+  });
+
   it("coalesces Sol word deltas hoisted above a trailing finale", () => {
     // Late reasoning after a flushed final-looking answer used to append
     // after the finale, get hoisted, then repeat — one REASONING header
@@ -107,6 +203,333 @@ describe("upsertStreamingThinking preserves durable id", () => {
     expect(thinkAt).toBeLessThan(assistantAt);
   });
 });
+
+describe("createApplyStreamEvent Sol reasoning coalescing", () => {
+  it("keeps one durable thinking id/text across word-sized delta:true frames", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    for (const word of ["Release", " mechanics", " are", " now", " verified"]) {
+      apply({ kind: "thinking", data: { text: word, delta: true } });
+    }
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].id).toBeTruthy();
+    expect(thinking[0].text).toBe("Release mechanics are now verified");
+    expect(thinking[0].streaming).toBe(true);
+  });
+
+  it("appends two identical streaming deltas instead of snapshot-deduping them", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({ kind: "thinking", data: { text: "ha", delta: true } });
+    apply({ kind: "thinking", data: { text: "ha", delta: true } });
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("haha");
+    expect(thinking[0].streaming).toBe(true);
+  });
+
+  it("coalesces markdown markers split across thinking deltas", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({ kind: "thinking", data: { text: "redesign", delta: true } });
+    apply({ kind: "thinking", data: { text: "****", delta: true } });
+    apply({ kind: "thinking", data: { text: "Finalizing...", delta: true } });
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("redesign****Finalizing...");
+  });
+
+  it("ignores interleaved trivial message_delta crumbs between word deltas", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({ kind: "thinking", data: { text: "Planning ", delta: true } });
+    apply({ kind: "message_delta", data: { text: "**" } });
+    apply({ kind: "thinking", data: { text: "archive ", delta: true } });
+    apply({ kind: "message_delta", data: { text: "  " } });
+    apply({ kind: "thinking", data: { text: "and settle", delta: true } });
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("Planning archive and settle");
+    // Trivial crumbs are dropped on the thinking barrier path, not sealed.
+    const assistants = state.items.filter(
+      (it) => it.kind === "msg" && it.msg.role === "assistant",
+    );
+    expect(assistants.every((it) => it.kind === "msg" && !isTrivialLike(it.msg.text))).toBe(true);
+  });
+
+  it("keeps substantive assistant narration as a hard thinking boundary", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({ kind: "thinking", data: { text: "phase-one ", delta: true } });
+    apply({ kind: "message_delta", data: { text: "I will inspect the handler carefully." } });
+    apply({ kind: "thinking", data: { text: "phase-two", delta: true } });
+    expect(thinkingRows(state.items).map((t) => t.text)).toEqual([
+      "phase-one ",
+      "phase-two",
+    ]);
+  });
+
+  it("keeps non-Latin substantive narration as a hard thinking boundary", () => {
+    expect(isTrivialAssistantCrumb("調査を続けます。")).toBe(false);
+    expect(isTrivialAssistantCrumb("**")).toBe(true);
+    expect(isTrivialAssistantCrumb("→")).toBe(false);
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({ kind: "thinking", data: { text: "phase-one ", delta: true } });
+    apply({ kind: "message_delta", data: { text: "調査を続けます。" } });
+    apply({ kind: "thinking", data: { text: "phase-two", delta: true } });
+    expect(thinkingRows(state.items).map((t) => t.text)).toEqual([
+      "phase-one ",
+      "phase-two",
+    ]);
+    const assistants = state.items.filter(
+      (it) => it.kind === "msg" && it.msg.role === "assistant",
+    );
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({
+      kind: "msg",
+      msg: { role: "assistant", text: "調査を続けます。" },
+    });
+  });
+
+  it("drops markdown-marker finals so they cannot fence later reasoning", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({ kind: "thinking", data: { text: "Planning ", delta: true } });
+    apply({ kind: "message", data: { text: "**" } });
+    apply({ kind: "thinking", data: { text: "archive", delta: true } });
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("Planning archive");
+    const assistants = state.items.filter(
+      (it) => it.kind === "msg" && it.msg.role === "assistant",
+    );
+    expect(assistants).toHaveLength(0);
+
+    // Standalone finalizePilotMessage path (no open streaming bubble).
+    const sealed = finalizePilotMessage(
+      [{ kind: "msg", msg: { role: "user", text: "go" } }],
+      "****",
+    );
+    expect(sealed.filter((it) => it.kind === "msg" && it.msg.role === "assistant")).toHaveLength(0);
+
+    // Open streaming bubble containing only a markdown marker.
+    const fromBubble = finalizePilotMessage(
+      [
+        { kind: "msg", msg: { role: "user", text: "go" } },
+        { kind: "msg", msg: { role: "assistant", text: "**", streaming: true } },
+      ],
+      undefined,
+    );
+    expect(
+      fromBubble.filter((it) => it.kind === "msg" && it.msg.role === "assistant"),
+    ).toHaveLength(0);
+  });
+
+  it("opens a new thinking phase after tool_prep/card then coalesces post-tool words", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({ kind: "thinking", data: { text: "analysis-1", delta: true } });
+    apply({
+      kind: "tool_prep",
+      data: { name: "Read", id: "call-1", goal: "foo.ts" },
+    });
+    for (const word of ["post", " tool", " words"]) {
+      apply({ kind: "thinking", data: { text: word, delta: true } });
+    }
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(2);
+    expect(thinking[0].text).toBe("analysis-1");
+    expect(thinking[1].text).toBe("post tool words");
+    expect(thinking[1].id).toBeTruthy();
+    expect(thinking[1].id).not.toBe(thinking[0].id);
+  });
+
+  it("hoists/coalesces late deltas above a looksLikeFinalAnswer finale", () => {
+    const finalText =
+      "Ship it.\n\n"
+      + "| Step | Status |\n|---|---|\n"
+      + "| CI | green |\n\n"
+      + "Ready when you are.";
+    expect(looksLikeFinalAnswer(finalText)).toBe(true);
+    const state = {
+      items: [
+        { kind: "msg", msg: { role: "user", text: "go" } },
+        { kind: "msg", msg: { role: "assistant", text: finalText } },
+      ] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    for (const word of ["The", " source", " confirms"]) {
+      apply({ kind: "thinking", data: { text: word, delta: true } });
+    }
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("The source confirms");
+    const assistantAt = state.items.findIndex(
+      (it) => it.kind === "msg" && it.msg.role === "assistant",
+    );
+    const thinkAt = state.items.findIndex((it) => it.kind === "thinking");
+    expect(thinkAt).toBeLessThan(assistantAt);
+  });
+
+  it("coalesces non-delta thinking frames through the same upsert path", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({ kind: "thinking", data: { text: "Ring ", delta: false } });
+    apply({ kind: "thinking", data: { text: "fragment ", delta: false } });
+    apply({ kind: "thinking", data: { text: "replay" } });
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("Ring fragment replay");
+    expect(thinking[0].streaming).toBeFalsy();
+  });
+
+  it("hardens non-delta coalescing against cumulative snapshot frames", () => {
+    let items: Item[] = [{ kind: "msg", msg: { role: "user", text: "go" } }];
+    items = appendNonStreamingThinking(items, "Hello");
+    items = appendNonStreamingThinking(items, "Hello"); // identical snapshot
+    items = appendNonStreamingThinking(items, "Hello world"); // strict extension
+    items = appendNonStreamingThinking(items, "Hello"); // stale prefix
+    const thinking = thinkingRows(items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("Hello world");
+
+    // True non-overlapping fragments still append.
+    items = appendNonStreamingThinking(items, " more");
+    expect(thinkingRows(items)[0].text).toBe("Hello world more");
+  });
+
+  it("chatFrameToStreamEvent replay matches live word-delta coalescing", () => {
+    const live = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    live.itemsRef.current = live.items;
+    const applyLive = createApplyStreamEvent(makeApplyDeps(live));
+
+    const replay = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    replay.itemsRef.current = replay.items;
+    const applyReplay = createApplyStreamEvent(makeApplyDeps(replay));
+
+    const frames = [
+      { kind: "thinking", data: { text: "Muse", delta: true } },
+      { kind: "thinking", data: { text: " Spark", delta: true } },
+      { kind: "message_delta", data: { text: "**" } },
+      { kind: "thinking", data: { text: " 1.1", delta: true } },
+    ];
+    for (const frame of frames) {
+      applyLive(frame);
+      applyReplay(chatFrameToStreamEvent(frame));
+    }
+    expect(thinkingRows(live.items).map((t) => t.text)).toEqual([
+      "Muse Spark 1.1",
+    ]);
+    expect(thinkingRows(replay.items).map((t) => t.text)).toEqual(
+      thinkingRows(live.items).map((t) => t.text),
+    );
+  });
+
+  it("action_result drops a trivial open pilot crumb so later thinking coalesces", () => {
+    // Dual-channel Sol can stream a markdown-marker message_delta while a
+    // tool is running; action_result must drop that crumb (not seal it) so
+    // post-tool word deltas reopen/coalesce one thinking row.
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({
+      kind: "action_start",
+      data: { id: "a1", kind: "Read", goal: "foo.ts", call_id: "call-1" },
+    });
+    apply({ kind: "message_delta", data: { text: "**" } });
+    apply({
+      kind: "action_result",
+      data: {
+        id: "a1",
+        call_id: "call-1",
+        kind: "Read",
+        goal: "foo.ts",
+        status: "complete",
+      },
+    });
+    const assistantsAfterResult = state.items.filter(
+      (it) => it.kind === "msg" && it.msg.role === "assistant",
+    );
+    expect(assistantsAfterResult).toHaveLength(0);
+
+    for (const word of ["post", " tool", " words"]) {
+      apply({ kind: "thinking", data: { text: word, delta: true } });
+    }
+    const thinking = thinkingRows(state.items);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].text).toBe("post tool words");
+    expect(thinking[0].id).toBeTruthy();
+    expect(
+      state.items.filter((it) => it.kind === "msg" && it.msg.role === "assistant"),
+    ).toHaveLength(0);
+  });
+});
+
+function isTrivialLike(text: string): boolean {
+  return isTrivialAssistantCrumb(text);
+}
 
 describe("activityGroupStableId survives thinking → tool transition", () => {
   it("keeps the same key when a tool card joins a thinking-led group", () => {

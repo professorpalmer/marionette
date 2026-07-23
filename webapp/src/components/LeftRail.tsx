@@ -86,8 +86,19 @@ export function filterForgottenRecent(recents: string[], path: string): string[]
 }
 
 /**
+ * Settle/Unsettle only work for sessions under the active workspace
+ * (POST /api/sessions/settle 403s foreign roots). Hide affordances elsewhere.
+ */
+export function canSettleSessionsForProject(
+  projectPath: string,
+  activeRepo: string | undefined | null,
+): boolean {
+  return !!(activeRepo && projectPath && repoPathsEqual(projectPath, activeRepo));
+}
+
+/**
  * Split project-scoped sessions into open (inbox) vs settled.
- * Durable flag remains `session.archived`; Settle is the UX verb.
+ * Durable flag is independent `session.settled` (not archived).
  * Rootless orphans only appear under the active workspace row.
  */
 export function partitionProjectSessions(
@@ -103,13 +114,28 @@ export function partitionProjectSessions(
   const open: Session[] = [];
   const settled: Session[] = [];
   for (const s of scoped) {
-    if (s.archived) settled.push(s);
+    if (s.settled) settled.push(s);
     else open.push(s);
   }
   return { open, settled };
 }
 
-/** Optimistically flip settle (`archived`) on every per-root sessions cache that holds the id. */
+/** Read current settled flag for a session id from per-root caches (first hit). */
+export function readSessionSettledFromCaches(
+  roots: string[],
+  sessionId: string,
+  read: (key: string) => Session[] | undefined = readSWRCache,
+): boolean | undefined {
+  for (const root of roots) {
+    if (!root) continue;
+    const cached = read(`sessions:${root}`);
+    const hit = cached?.find((s) => s.id === sessionId);
+    if (hit) return !!hit.settled;
+  }
+  return undefined;
+}
+
+/** Optimistically flip durable `settled` on every per-root sessions cache that holds the id. */
 export function patchSessionSettledInCaches(
   roots: string[],
   sessionId: string,
@@ -125,7 +151,7 @@ export function patchSessionSettledInCaches(
     if (!cached || !cached.some((s) => s.id === sessionId)) continue;
     write(
       key,
-      cached.map((s) => (s.id === sessionId ? { ...s, archived: settled } : s)),
+      cached.map((s) => (s.id === sessionId ? { ...s, settled } : s)),
     );
     touched += 1;
   }
@@ -226,9 +252,24 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     x: number;
     y: number;
     sessionId: string;
-    archived: boolean;
+    settled: boolean;
     running: boolean;
+    /** False when browsing a non-active project (API would 403). */
+    canSettle: boolean;
   } | null>(null);
+  /** Per-project Settled section expand; collapsed by default. */
+  const [expandedSettled, setExpandedSettled] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem(SETTLED_EXPANDED_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed as Record<string, boolean> : {};
+    } catch {
+      return {};
+    }
+  });
+  const settleUndoRef = useRef<{ sid: string; priorSettled: boolean } | null>(null);
+  const bankAllRef = useRef<Session[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [projectContextMenu, setProjectContextMenu] = useState<{
     x: number;
@@ -817,8 +858,12 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     setBankLoading(true);
     try {
       const rows = await api.sessionsBank({ limit: 80 });
-      setBankSessions(Array.isArray(rows) ? rows.filter((s) => !s.archived) : []);
+      const all = Array.isArray(rows) ? rows : [];
+      bankAllRef.current = all;
+      // Recent stays active-primary; settled rows remain available for search labels.
+      setBankSessions(all.filter((s) => !s.settled));
     } catch {
+      bankAllRef.current = [];
       setBankSessions([]);
     } finally {
       setBankLoading(false);
@@ -849,13 +894,26 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           const hits = await api.searchSessions(trimmed, 20);
           if (reqId !== sessionSearchReqId.current) return;
           const titleById: Record<string, string> = {};
-          for (const s of bankSessions) {
-            if (s?.id) titleById[s.id] = s.title || "";
+          const settledById: Record<string, boolean> = {};
+          for (const s of bankAllRef.current) {
+            if (!s?.id) continue;
+            titleById[s.id] = s.title || "";
+            settledById[s.id] = !!s.settled;
           }
           for (const s of sessions) {
-            if (s?.id && titleById[s.id] == null) titleById[s.id] = s.title || "";
+            if (!s?.id) continue;
+            if (titleById[s.id] == null) titleById[s.id] = s.title || "";
+            if (settledById[s.id] == null) settledById[s.id] = !!s.settled;
           }
-          setSessionSearchRows(mapSessionSearchHits(hits, titleById));
+          for (const root of projectsRef.current.filter(Boolean)) {
+            const cached = readSWRCache<Session[]>(`sessions:${root}`);
+            for (const s of cached || []) {
+              if (!s?.id) continue;
+              if (titleById[s.id] == null) titleById[s.id] = s.title || "";
+              if (settledById[s.id] == null) settledById[s.id] = !!s.settled;
+            }
+          }
+          setSessionSearchRows(mapSessionSearchHits(hits, titleById, settledById));
         } catch {
           if (reqId !== sessionSearchReqId.current) return;
           setSessionSearchRows([]);
@@ -964,14 +1022,15 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     document.body.removeChild(a);
   };
 
-  const handleContextMenu = (e: React.MouseEvent, s: Session) => {
+  const handleContextMenu = (e: React.MouseEvent, s: Session, allowSettle: boolean) => {
     e.preventDefault();
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
       sessionId: s.id,
-      archived: !!s.archived,
+      settled: !!s.settled,
       running: runners[s.id] === "running",
+      canSettle: allowSettle,
     });
   };
 
@@ -984,19 +1043,52 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
   };
 
-  const settledSessions = sessions.filter((s) => s.archived);
+  const settledSessions = sessions.filter((s) => s.settled);
 
   const settleSession = async (sid: string, settled: boolean) => {
-    patchSessionSettledInCaches(projectsRef.current.filter(Boolean), sid, settled);
+    const roots = projectsRef.current.filter(Boolean);
+    const priorSettled = readSessionSettledFromCaches(roots, sid) ?? !settled;
+    patchSessionSettledInCaches(roots, sid, settled);
     setSessionsCacheEpoch((n) => n + 1);
     try {
       await api.settleSession(sid, settled);
+      settleUndoRef.current = { sid, priorSettled };
+      window.dispatchEvent(new CustomEvent("harness-toast", {
+        detail: {
+          message: settled ? "Settled" : "Unsettled",
+          actionLabel: "Undo",
+          actionEvent: "harness-settle-undo",
+        },
+      }));
       await refreshSessionsRef.current();
+      if (railTab === "sessions") void refreshBankSessions();
     } catch (err) {
       console.error(err);
+      patchSessionSettledInCaches(roots, sid, priorSettled);
+      setSessionsCacheEpoch((n) => n + 1);
+      const e = err as { message?: string; error?: string } | undefined;
+      const detail = String(e?.error || e?.message || err || "").trim();
+      toast(
+        detail
+          ? `Could not ${settled ? "settle" : "unsettle"} session: ${detail}`
+          : `Could not ${settled ? "settle" : "unsettle"} session`,
+      );
       await refreshSessionsRef.current();
     }
   };
+
+  useEffect(() => {
+    const onUndo = () => {
+      const pending = settleUndoRef.current;
+      if (!pending) return;
+      settleUndoRef.current = null;
+      void settleSession(pending.sid, pending.priorSettled);
+    };
+    window.addEventListener("harness-settle-undo", onUndo);
+    return () => window.removeEventListener("harness-settle-undo", onUndo);
+    // settleSession closes over latest caches/refs; rebind when rail tab changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [railTab]);
 
   const rawRecents = workspaceInfo?.recents || [];
   // Stable PROJECTS order: recents as-is, append current only if missing.
@@ -1324,6 +1416,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       <div className="text-[12.5px] truncate flex-1 text-muted">
                         {row.title}
                       </div>
+                      {row.settled ? (
+                        <span className="shrink-0 text-[9px] uppercase tracking-wider text-faint font-medium">
+                          Settled
+                        </span>
+                      ) : null}
                     </div>
                     {row.snippet ? (
                       <div className="text-[10px] text-faint truncate">{row.snippet}</div>
@@ -1380,7 +1477,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         <div className="space-y-1">
           {projects.map((projectPath) => {
             const basename = getWorkspaceBasename(projectPath) || "Untitled Project";
-            const isCurrentActive = !!(workspaceInfo?.repo && repoPathsEqual(projectPath, workspaceInfo.repo));
+            const isCurrentActive = canSettleSessionsForProject(projectPath, workspaceInfo?.repo);
             const isSelected = repoPathsEqual(projectPath, selectedProjectPath);
             // Expand is mostly user-driven; open/switch/newSession also expand
             // the landing root so sessions appear without an extra click.
@@ -1517,7 +1614,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                   setRenamingId(s.id);
                                   setRenamingTitle(s.title || "Untitled");
                                 }}
-                                onContextMenu={(e) => handleContextMenu(e, s)}
+                                onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
                                 className={`flex-1 min-w-0 text-left rounded px-1.5 py-1 flex items-start gap-1.5 text-[12.5px] transition disabled:opacity-60
                                   ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}
                                   ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
@@ -1564,24 +1661,26 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                 </div>
                               ) : (
                                 <>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      void settleSession(s.id, true);
-                                    }}
-                                    title="Settle — move to Settled"
-                                    aria-label="Settle session"
-                                    className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-faint hover:text-good hover:bg-panel2 transition-all shrink-0"
-                                  >
-                                    <CheckCircle2 size={11} />
-                                  </button>
+                                  {isCurrentActive ? (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void settleSession(s.id, true);
+                                      }}
+                                      title="Settle — move to Settled"
+                                      aria-label="Settle session"
+                                      className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-faint hover:text-good hover:bg-panel2 motion-safe:transition-all shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                                    >
+                                      <CheckCircle2 size={11} />
+                                    </button>
+                                  ) : null}
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setConfirmDeleteId(s.id);
                                     }}
                                     title="Delete session"
-                                    className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-faint hover:text-red-400 hover:bg-panel2 transition-all shrink-0"
+                                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-faint hover:text-red-400 hover:bg-panel2 motion-safe:transition-all shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
                                   >
                                     <Trash2 size={11} />
                                   </button>
@@ -1594,38 +1693,56 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                     )}
                     {projectSettled.length > 0 && (
                       <div className={`${projectSessions.length > 0 ? "mt-1.5 pt-1 border-t border-edge/30" : ""}`}>
-                        <div className="px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-faint font-medium">
-                          Settled
-                        </div>
-                        <div className="space-y-0">
-                          {projectSettled.map((s) => (
-                            <div key={s.id} className="group relative flex items-center gap-0.5 min-w-0">
-                              <button
-                                onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
-                                disabled={!!switchingSessionId || opening}
-                                onContextMenu={(e) => handleContextMenu(e, s)}
-                                className={`flex-1 min-w-0 text-left rounded px-1.5 py-0.5 flex items-center gap-1.5 text-[11px] transition opacity-45 hover:opacity-90 disabled:opacity-40
-                                  ${s.active ? "bg-accent/10 text-accent" : "text-faint hover:bg-panel2/50 hover:text-muted"}
-                                  ${switchingSessionId === s.id ? "opacity-70" : ""}`}
-                                title={s.title || "Untitled"}
-                              >
-                                <Square size={10} className="shrink-0" />
-                                <span className="truncate">{s.title || "Untitled"}</span>
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void settleSession(s.id, false);
-                                }}
-                                title="Unsettle — return to open list"
-                                aria-label="Unsettle session"
-                                className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-faint hover:text-accent hover:bg-panel2 transition-all shrink-0"
-                              >
-                                <MessageSquare size={11} />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setExpandedSettled((prev) => {
+                              const next = { ...prev, [projectPath]: !prev[projectPath] };
+                              try { localStorage.setItem(SETTLED_EXPANDED_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+                              return next;
+                            });
+                          }}
+                          className="w-full flex items-center gap-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-faint font-medium hover:text-muted focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent rounded"
+                          aria-expanded={!!expandedSettled[projectPath]}
+                        >
+                          {expandedSettled[projectPath]
+                            ? <ChevronDown size={10} className="shrink-0" />
+                            : <ChevronRight size={10} className="shrink-0" />}
+                          <span>Settled · {projectSettled.length}</span>
+                        </button>
+                        {expandedSettled[projectPath] ? (
+                          <div className="space-y-0 motion-safe:transition-opacity">
+                            {projectSettled.map((s) => (
+                              <div key={s.id} className="group relative flex items-center gap-0.5 min-w-0">
+                                <button
+                                  onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                                  disabled={!!switchingSessionId || opening}
+                                  onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
+                                  className={`flex-1 min-w-0 text-left rounded px-1.5 py-0.5 flex items-center gap-1.5 text-[11px] motion-safe:transition opacity-45 hover:opacity-90 disabled:opacity-40
+                                    ${s.active ? "bg-accent/10 text-accent" : "text-faint hover:bg-panel2/50 hover:text-muted"}
+                                    ${switchingSessionId === s.id ? "opacity-70" : ""}`}
+                                  title={s.title || "Untitled"}
+                                >
+                                  <Square size={10} className="shrink-0" />
+                                  <span className="truncate">{s.title || "Untitled"}</span>
+                                </button>
+                                {isCurrentActive ? (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void settleSession(s.id, false);
+                                    }}
+                                    title="Unsettle — return to open list"
+                                    aria-label="Unsettle session"
+                                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-faint hover:text-accent hover:bg-panel2 motion-safe:transition-all shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                                  >
+                                    <MessageSquare size={11} />
+                                  </button>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     )}
                   </div>
@@ -1905,16 +2022,20 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           >
             Export as JSON
           </button>
-          <div className="border-t border-edge my-1" />
-          <button
-            onClick={async () => {
-              await settleSession(contextMenu.sessionId, !contextMenu.archived);
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            {contextMenu.archived ? "Unsettle" : "Settle"}
-          </button>
+          {contextMenu.canSettle ? (
+            <>
+              <div className="border-t border-edge my-1" />
+              <button
+                onClick={async () => {
+                  await settleSession(contextMenu.sessionId, !contextMenu.settled);
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+              >
+                {contextMenu.settled ? "Unsettle" : "Settle"}
+              </button>
+            </>
+          ) : null}
           <div className="border-t border-edge my-1" />
           {confirmDeleteId === contextMenu.sessionId ? (
             <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
@@ -1999,6 +2120,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 type JobStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
 const SESSION_JOBS_COLLAPSED_KEY = "pmharness.leftRail.sessionJobsCollapsed";
+const SETTLED_EXPANDED_KEY = "pmharness.leftRail.settledExpanded";
 const SESSION_JOBS_HEIGHT_KEY = "pmharness.leftRail.sessionJobsHeight.v1";
 const SESSION_JOBS_HIDDEN_KEY = "pmharness.leftRail.hiddenSessionJobs.v1";
 const SESSION_JOBS_DISPLAY_CAP = 20;

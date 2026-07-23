@@ -1,4 +1,5 @@
 import type { Item, Msg } from "../TranscriptList";
+import { isTrivialAssistantCrumb } from "./thinkingToolPrep";
 
 /**
  * Short shared prefixes ("I will") must never suppress a distinct post-tool
@@ -131,15 +132,15 @@ export function appendStreamingTextToItems(
 
 /**
  * Seal the open pilot streaming bubble in place so a later phase (thinking /
- * tool card) cannot re-parent or reopen it. Empty bubbles are dropped.
+ * tool card) cannot re-parent or reopen it. Empty / markdown-punctuation
+ * crumbs are dropped so they cannot fence Sol word-sized thinking deltas.
  * Worker-stream previews are left alone (ephemeral; action_result drops them).
  */
 export function finalizeOpenPilotBubble(items: Item[]): Item[] {
   const idx = findStreamingBubbleIdx(items, { excludeWorkerStream: true });
   if (idx < 0) return items;
   const bubble = items[idx] as { kind: "msg"; msg: Msg };
-  const finalText = (bubble.msg.text || "").trim();
-  if (!finalText) {
+  if (isTrivialAssistantCrumb(bubble.msg.text || "")) {
     return [...items.slice(0, idx), ...items.slice(idx + 1)];
   }
   const updated = [...items];

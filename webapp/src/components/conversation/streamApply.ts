@@ -10,7 +10,8 @@ import type { AutoBudgetSnapshot } from "../../lib/autoReceipts";
 import {
   finalizeStreamingThinking,
   hoistCardsBeforeTrailingFinals,
-  newThinkingId,
+  isTrivialAssistantCrumb,
+  upsertStreamingThinking,
 } from "./thinkingToolPrep";
 import {
   findStreamingBubbleIdx,
@@ -65,8 +66,8 @@ export function sealOpenStreamSurfaces(items: Item[]): Item[] {
       && !it.msg.workerStream
     ) {
       changed = true;
-      const finalText = (it.msg.text || "").trim();
-      if (!finalText) continue;
+      // Drop empty / markdown-punctuation crumbs — same as finalizeOpenPilotBubble.
+      if (isTrivialAssistantCrumb(it.msg.text || "")) continue;
       next.push({ kind: "msg", msg: { ...it.msg, streaming: false } });
       continue;
     }
@@ -838,7 +839,8 @@ export function finalizePilotMessage(
   if (streamIdx >= 0) {
     const lastMsg = p[streamIdx] as Extract<Item, { kind: "msg" }>;
     const finalText = text || lastMsg.msg.text || "";
-    if (!finalText.trim()) {
+    // Drop empty / markdown-marker finals so they cannot fence later reasoning.
+    if (isTrivialAssistantCrumb(finalText)) {
       return hoistCardsBeforeTrailingFinals([
         ...p.slice(0, streamIdx),
         ...p.slice(streamIdx + 1),
@@ -854,6 +856,8 @@ export function finalizePilotMessage(
     );
   }
   if (!text) return hoistCardsBeforeTrailingFinals(p);
+  // Standalone final with only markdown markers — omit entirely.
+  if (isTrivialAssistantCrumb(text)) return hoistCardsBeforeTrailingFinals(p);
   const incoming = text.trim();
   if (!incoming) return hoistCardsBeforeTrailingFinals(p);
 
@@ -1006,18 +1010,20 @@ export function appendActionStartCard(
 
 /**
  * On action_result: drop ephemeral worker preview, or finalize a non-empty
- * pilot streaming bubble in place.
+ * pilot streaming bubble in place. Empty / markdown-punctuation crumbs are
+ * dropped — same as finalizeOpenPilotBubble / sealOpenStreamSurfaces /
+ * finalizePilotMessage — so they cannot fence later Sol word deltas.
  */
 export function finalizeStreamingBubbleOnActionResult(items: Item[]): Item[] {
   const lastIdx = items.length - 1;
   if (lastIdx >= 0 && items[lastIdx].kind === "msg") {
     const lastMsg = items[lastIdx] as { kind: "msg"; msg: Msg };
     if (lastMsg.msg.role === "assistant" && lastMsg.msg.streaming) {
-      const finalText = (lastMsg.msg.text || "").trim();
       if (lastMsg.msg.workerStream) {
         return items.slice(0, lastIdx);
       }
-      if (!finalText) {
+      // Drop empty / markdown-marker crumbs; seal only substantive narration.
+      if (isTrivialAssistantCrumb(lastMsg.msg.text || "")) {
         return items.slice(0, lastIdx);
       }
       const updated = [...items];
@@ -1170,12 +1176,13 @@ export function appendStreamError(items: Item[], error: string): Item[] {
 }
 
 export function appendNonStreamingThinking(items: Item[], text: string): Item[] {
-  // Cursor CLI sometimes dumps full thinking frames after the answer — hoist
-  // into the investigation fold above the trailing finale (same as cards).
-  return hoistCardsBeforeTrailingFinals([
-    ...items,
-    { kind: "thinking", text, id: newThinkingId() },
-  ]);
+  // Ring/replay often delivers thinking without delta:true — sometimes as
+  // cumulative snapshots. Opt into snapshot de-duplication here only; live
+  // delta:true upserts keep strict append so repeated/prefix chunks are kept.
+  // Finale hoist stays inside upsertStreamingThinking.
+  return finalizeStreamingThinking(
+    upsertStreamingThinking(items, text, { coalesceSnapshots: true }),
+  );
 }
 
 /**

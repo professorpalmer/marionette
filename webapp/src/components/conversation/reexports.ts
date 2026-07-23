@@ -23,6 +23,7 @@ export {
   newThinkingId,
   looksLikeFinalAnswer,
   hoistCardsBeforeTrailingFinals,
+  isTrivialAssistantCrumb,
 } from "./thinkingToolPrep";
 export {
   nextAppliedCursor,

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, partitionProjectSessions, patchSessionSettledInCaches, projectSessionsEmptyState, purgeSessionFromRootCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, partitionProjectSessions, patchSessionSettledInCaches, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -434,39 +434,53 @@ describe("LeftRail session list contracts", () => {
     expect(projectSessionsEmptyState(false, false)).toBe("pending");
   });
 
+  it("canSettleSessionsForProject gates settle affordances to the active workspace", () => {
+    const active = "C:\\Projects\\marionette";
+    const other = "C:\\Projects\\other";
+    expect(canSettleSessionsForProject(active, active)).toBe(true);
+    expect(canSettleSessionsForProject("C:/Projects/marionette", active)).toBe(true);
+    expect(canSettleSessionsForProject(other, active)).toBe(false);
+    expect(canSettleSessionsForProject(active, undefined)).toBe(false);
+    expect(canSettleSessionsForProject(active, "")).toBe(false);
+    expect(canSettleSessionsForProject("", active)).toBe(false);
+  });
+
   it("partitionProjectSessions splits open vs settled and scopes rootless orphans", () => {
     const root = "C:\\Projects\\marionette";
     const other = "C:\\Projects\\other";
     const rows: Session[] = [
-      { id: "open-1", title: "Live", created: 3, repo: root, workspace_root: root, archived: false },
-      { id: "settled-1", title: "Done", created: 2, repo: root, workspace_root: root, archived: true },
-      { id: "orphan", title: "Orphan", created: 1, archived: false },
-      { id: "other-open", title: "Other", created: 4, repo: other, workspace_root: other, archived: false },
+      { id: "open-1", title: "Live", created: 3, repo: root, workspace_root: root, settled: false },
+      { id: "settled-1", title: "Done", created: 2, repo: root, workspace_root: root, settled: true },
+      { id: "archived-only", title: "Archived", created: 2.5, repo: root, workspace_root: root, archived: true, settled: false },
+      { id: "orphan", title: "Orphan", created: 1, settled: false },
+      { id: "other-open", title: "Other", created: 4, repo: other, workspace_root: other, settled: false },
     ];
     const active = partitionProjectSessions(rows, root, true);
-    expect(active.open.map((s) => s.id)).toEqual(["open-1", "orphan"]);
+    expect(active.open.map((s) => s.id)).toEqual(["open-1", "archived-only", "orphan"]);
     expect(active.settled.map((s) => s.id)).toEqual(["settled-1"]);
 
     const inactive = partitionProjectSessions(rows, root, false);
-    expect(inactive.open.map((s) => s.id)).toEqual(["open-1"]);
+    expect(inactive.open.map((s) => s.id)).toEqual(["open-1", "archived-only"]);
     expect(inactive.settled.map((s) => s.id)).toEqual(["settled-1"]);
   });
 
-  it("patchSessionSettledInCaches flips archived on matching root caches", () => {
+  it("patchSessionSettledInCaches flips settled on matching root caches", () => {
     const marionette = "C:\\Projects\\marionette";
     const dugout = "C:\\Projects\\dugout";
     writeSWRCache(`sessions:${marionette}`, [
-      { id: "sess-a", title: "A", created: 1, repo: marionette, workspace_root: marionette, archived: false },
+      { id: "sess-a", title: "A", created: 1, repo: marionette, workspace_root: marionette, settled: false, archived: false },
     ]);
     writeSWRCache(`sessions:${dugout}`, [
-      { id: "sess-b", title: "B", created: 2, repo: dugout, workspace_root: dugout, archived: false },
+      { id: "sess-b", title: "B", created: 2, repo: dugout, workspace_root: dugout, settled: false },
     ]);
 
     expect(patchSessionSettledInCaches([marionette, dugout], "sess-a", true)).toBe(1);
-    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.archived).toBe(true);
-    expect(readSWRCache<Session[]>(`sessions:${dugout}`)?.[0]?.archived).toBe(false);
+    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.settled).toBe(true);
+    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.archived).toBe(false);
+    expect(readSWRCache<Session[]>(`sessions:${dugout}`)?.[0]?.settled).toBe(false);
+    expect(readSessionSettledFromCaches([marionette, dugout], "sess-a")).toBe(true);
 
     expect(patchSessionSettledInCaches([marionette], "sess-a", false)).toBe(1);
-    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.archived).toBe(false);
+    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.settled).toBe(false);
   });
 });

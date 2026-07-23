@@ -39,17 +39,35 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
   const costRef = useRef<HTMLDivElement | null>(null);
   const [update, setUpdate] = useState<{ behind: number; branch: string; version: string } | null>(null);
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{
+    message: string;
+    actionLabel?: string;
+    actionEvent?: string;
+  } | null>(null);
   const [sessionState, setSessionState] = useState<SessionState | null>(null);
 
   // Transient toast (e.g. a refused model switch). Auto-dismisses; never blocks.
+  // detail may be a string or { message, actionLabel?, actionEvent? } for Undo.
   useEffect(() => {
     const onToast = (e: Event) => {
-      const msg = (e as CustomEvent).detail;
-      if (typeof msg === "string" && msg) {
-        setToast(msg);
-        window.setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 4000);
+      const detail = (e as CustomEvent).detail;
+      let next: { message: string; actionLabel?: string; actionEvent?: string } | null = null;
+      if (typeof detail === "string" && detail) {
+        next = { message: detail };
+      } else if (detail && typeof detail === "object" && typeof detail.message === "string" && detail.message) {
+        next = {
+          message: detail.message,
+          actionLabel: typeof detail.actionLabel === "string" ? detail.actionLabel : undefined,
+          actionEvent: typeof detail.actionEvent === "string" ? detail.actionEvent : undefined,
+        };
       }
+      if (!next) return;
+      setToast(next);
+      const snapshot = next;
+      window.setTimeout(
+        () => setToast((cur) => (cur?.message === snapshot.message ? null : cur)),
+        4000,
+      );
     };
     window.addEventListener("harness-toast", onToast);
     return () => window.removeEventListener("harness-toast", onToast);
@@ -392,8 +410,20 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
       )}
       <div className="flex-1" />
       {toast && (
-        <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300/90">
-          {toast}
+        <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300/90">
+          <span>{toast.message}</span>
+          {toast.actionLabel && toast.actionEvent ? (
+            <button
+              type="button"
+              className="underline font-semibold hover:text-amber-200 focus-visible:outline focus-visible:outline-1 focus-visible:outline-amber-300 rounded-sm"
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent(toast.actionEvent!));
+                setToast(null);
+              }}
+            >
+              {toast.actionLabel}
+            </button>
+          ) : null}
         </span>
       )}
       <span className="flex items-center gap-1"><Cpu size={10} />{config?.driver?.split(":").pop() || "pilot"}</span>

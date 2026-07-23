@@ -17,23 +17,82 @@ export function finalizeStreamingThinking(items: Item[]): Item[] {
   );
 }
 
+/**
+ * Empty/whitespace or markdown-formatting-only assistant crumbs (Sol dual-
+ * channel `*` / `**` / `****` markers). Narrow on purpose: non-Latin prose
+ * and meaningful symbol-only text remain real narration fences.
+ */
+export function isTrivialAssistantCrumb(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return true;
+  // Emphasis / code-fence crumbs only — not "→", "…", or CJK/etc. prose.
+  return /^[*_`~]+$/.test(t);
+}
+
+/**
+ * Merge a cumulative snapshot frame into an existing thinking row.
+ * Identical / stale-prefix / strict-extension snapshots replace once;
+ * non-overlapping fragments still append. Used only by non-delta
+ * (`appendNonStreamingThinking`) paths — never for provider `delta:true`
+ * chunks, which must keep strict append semantics.
+ */
+export function coalesceThinkingChunk(existing: string, chunk: string): string {
+  if (!chunk) return existing;
+  if (!existing) return chunk;
+  if (chunk === existing) return existing;
+  if (existing.startsWith(chunk)) return existing;
+  if (chunk.startsWith(existing)) return chunk;
+  return existing + chunk;
+}
+
+export type UpsertStreamingThinkingOpts = {
+  /**
+   * When true, treat `chunk` as a cumulative snapshot (ring/replay).
+   * Default false: strict append for live `delta:true` provider chunks so
+   * repeated or prefix-looking deltas are never dropped.
+   */
+  coalesceSnapshots?: boolean;
+};
+
+function mergeThinkingText(
+  existing: string,
+  chunk: string,
+  coalesceSnapshots: boolean,
+): string {
+  if (coalesceSnapshots) return coalesceThinkingChunk(existing, chunk);
+  if (!chunk) return existing;
+  if (!existing) return chunk;
+  return existing + chunk;
+}
+
 /** Append/update the open streaming reasoning row for the current turn.
  * Preserves a durable `id` across token upserts so the ActivityGroup React key
  * (and expand/scroll state) does not remount on every thinking delta.
  *
+ * Live deltas (`delta:true`) always append. Snapshot de-duplication is opt-in
+ * via `{ coalesceSnapshots: true }` for non-delta ring/replay frames only.
+ *
  * Phase barrier: never reopen or append into a thinking row that already has a
- * later assistant bubble or tool card after it — those surfaces are committed.
- * A new thinking_delta after a message/tool always APPENDs a fresh thinking row.
+ * later *substantive* assistant bubble or tool card after it — those surfaces
+ * are committed. A new thinking_delta after narration/tool APPENDs a fresh row.
+ * Trivial sealed assistant crumbs (empty / markdown punctuation) are skipped
+ * so interleaved message_delta markers cannot mint one REASONING header per
+ * Sol word delta.
  *
  * Reopen trailing sealed thinking: Sol/OR often emit word-sized reasoning
  * deltas; any mid-stream finalize that clears `streaming` must not spawn a new
- * REASONING header per token. Only a card/assistant after the row is a barrier.
+ * REASONING header per token. Only a card/substantive assistant is a barrier.
  *
  * Trailing sealed finale: late Cursor/Sol reasoning is hoisted above a
  * looksLikeFinalAnswer assistant. Appending AFTER that finale then hoisting
  * used to spawn one REASONING header per word. Insert/reopen immediately
  * before the finale instead so word deltas coalesce into one row. */
-export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
+export function upsertStreamingThinking(
+  items: Item[],
+  chunk: string,
+  opts?: UpsertStreamingThinkingOpts,
+): Item[] {
+  const coalesceSnapshots = Boolean(opts?.coalesceSnapshots);
   let next: Item[];
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
@@ -44,6 +103,15 @@ export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
       it.kind === "card"
       || (it.kind === "msg" && it.msg.role === "assistant")
     ) {
+      // Dual-channel Sol crumbs between word deltas are not phase fences.
+      if (
+        it.kind === "msg"
+        && it.msg.role === "assistant"
+        && !it.msg.workerStream
+        && isTrivialAssistantCrumb(it.msg.text || "")
+      ) {
+        continue;
+      }
       // Word-sized Sol deltas after a flushed finale: keep one Thought row
       // immediately before the answer (hoist-stable), not N rows after it.
       if (
@@ -58,7 +126,7 @@ export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
         if (prev && prev.kind === "thinking") {
           copy[i - 1] = {
             kind: "thinking",
-            text: prev.text + chunk,
+            text: mergeThinkingText(prev.text, chunk, coalesceSnapshots),
             streaming: true,
             id: prev.id || newThinkingId(),
           };
@@ -84,7 +152,7 @@ export function upsertStreamingThinking(items: Item[], chunk: string): Item[] {
       const copy = items.slice();
       copy[i] = {
         kind: "thinking",
-        text: it.text + chunk,
+        text: mergeThinkingText(it.text, chunk, coalesceSnapshots),
         streaming: true,
         id: it.id || newThinkingId(),
       };

@@ -37,6 +37,7 @@ def test_debounced_save_coalesces_mutations(tmp_path, monkeypatch):
     store.create(title="One", repo=str(tmp_path / "r1"))
     store.rename(store.active or "", "Two")
     store.archive(store.active or "", True)
+    store.settle(store.active or "", True)
     mid = replaces["n"]
     assert mid == 0
     assert not path.exists() or replaces["n"] == 0
@@ -49,6 +50,7 @@ def test_debounced_save_coalesces_mutations(tmp_path, monkeypatch):
     assert len(data["sessions"]) == 1
     assert data["sessions"][0]["title"] == "Two"
     assert data["sessions"][0]["archived"] is True
+    assert data["sessions"][0]["settled"] is True
 
 
 def test_delete_flushes_immediately_outside_pytest(tmp_path, monkeypatch):

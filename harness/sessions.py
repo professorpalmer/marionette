@@ -113,6 +113,7 @@ class SessionMeta:
     created: float
     active: bool = False
     archived: bool = False
+    settled: bool = False
     repo: str = ""
     branch: str = ""
     workspace_root: str = ""
@@ -244,6 +245,9 @@ class SessionStore:
             **s,
             "active": s["id"] == active,
             "archived": s.get("archived", False),
+            # Defaults-only migration: missing key => False. Never rewrite
+            # legacy archived into settled.
+            "settled": s.get("settled", False),
             "repo": s.get("repo", ""),
             "branch": s.get("branch", ""),
             "workspace_root": session_stored_root(s),
@@ -429,6 +433,19 @@ class SessionStore:
                     s["archived"] = archived
                     break
             self._save()
+
+    def settle(self, sid: str, settled: bool = True) -> bool:
+        """Flip inbox triage ``settled`` without touching ``archived``.
+
+        Returns True when the session row exists (and was updated).
+        """
+        with self._lock:
+            for s in self._sessions:
+                if s["id"] == sid:
+                    s["settled"] = settled
+                    self._save()
+                    return True
+            return False
 
     def set_title_if_default(self, sid: str, title: str) -> None:
         with self._lock:
