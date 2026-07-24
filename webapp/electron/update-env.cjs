@@ -117,15 +117,17 @@ function windowsProfilePathCandidates(env = process.env) {
   push(path.join(localAppData, "fnm"));
   push(path.join(home, ".fnm", "aliases", "default"));
 
-  // Common package-manager shims.
+  // Common package-manager shims. Use path.win32 so unit tests on Linux CI
+  // still assert the Windows-shaped candidate strings this helper exists for.
+  const win = path.win32;
   push(path.join(home, "scoop", "shims"));
-  push("C:\\ProgramData\\chocolatey\\bin");
+  push(win.join("C:", "ProgramData", "chocolatey", "bin"));
 
   // Stock Node/Git MSI installs (existingProfilePaths filters to dirs on disk).
-  push("C:\\Program Files\\nodejs");
-  push("C:\\Program Files (x86)\\nodejs");
-  push("C:\\Program Files\\Git\\cmd");
-  push("C:\\Program Files (x86)\\Git\\cmd");
+  push(win.join("C:", "Program Files", "nodejs"));
+  push(win.join("C:", "Program Files (x86)", "nodejs"));
+  push(win.join("C:", "Program Files", "Git", "cmd"));
+  push(win.join("C:", "Program Files (x86)", "Git", "cmd"));
 
   return candidates;
 }

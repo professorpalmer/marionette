@@ -141,13 +141,15 @@ test("buildUpdaterEnv: an empty shell env leaves the base PATH intact", () => {
 });
 
 test("mergePathStrings: order-preserving de-duplication across segments", () => {
+  // Use platform-neutral segments — path.delimiter is ";" on win32 and ":" on
+  // Linux CI; hard-coded Windows paths made the assertion host-specific.
+  const a = path.join("tools");
+  const b = path.join("bin");
+  const c = path.join("extra");
   const joinPath = (...dirs) => dirs.join(path.delimiter);
-  const merged = env.mergePathStrings(
-    joinPath("C:\\tools", "C:\\bin"),
-    joinPath("C:\\bin", "C:\\extra"),
-  );
+  const merged = env.mergePathStrings(joinPath(a, b), joinPath(b, c));
   const parts = merged.split(path.delimiter);
-  assert.deepEqual(parts, ["C:\\tools", "C:\\bin", "C:\\extra"]);
+  assert.deepEqual(parts, [a, b, c]);
 });
 
 test("parseRegQueryPath: extracts PATH value from reg query output", () => {
@@ -175,17 +177,23 @@ test("expandWinEnv: expands %VAR% tokens against a supplied env map", () => {
 });
 
 test("windowsProfilePathCandidates: includes npm, uv, and portable tool dirs", () => {
-  const home = "C:\\Users\\dev";
+  // Match helper construction: path.join for USERPROFILE-relative dirs;
+  // path.win32 for stock MSI literals (Windows-shaped even on Linux CI).
+  const home = path.join("C:", "Users", "dev");
+  const localAppData = path.join(home, "AppData", "Local");
+  const appData = path.join(home, "AppData", "Roaming");
   const candidates = env.windowsProfilePathCandidates({
     USERPROFILE: home,
-    LOCALAPPDATA: `${home}\\AppData\\Local`,
-    APPDATA: `${home}\\AppData\\Roaming`,
+    LOCALAPPDATA: localAppData,
+    APPDATA: appData,
   });
-  assert.ok(candidates.includes(`${home}\\AppData\\Roaming\\npm`));
-  assert.ok(candidates.includes(`${home}\\.local\\bin`));
-  assert.ok(candidates.includes(`${home}\\AppData\\Local\\marionette\\tools\\node`));
+  assert.ok(candidates.includes(path.join(appData, "npm")));
+  assert.ok(candidates.includes(path.join(home, ".local", "bin")));
+  assert.ok(
+    candidates.includes(path.join(localAppData, "marionette", "tools", "node")),
+  );
   // Default MSI install dir even when NVM_SYMLINK is unset (candidates, not exists filter).
-  assert.ok(candidates.includes("C:\\Program Files\\nodejs"));
+  assert.ok(candidates.includes(path.win32.join("C:", "Program Files", "nodejs")));
 });
 
 test("windowsShellEnv: merges profile, registry, and inherited PATH on win32", () => {
