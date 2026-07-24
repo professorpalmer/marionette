@@ -25,7 +25,7 @@ def test_worker_patch_excludes_build_artifacts(monkeypatch):
 
     # Simulate the worker session writing a real edit AND a build artifact landing
     # in the worktree (as pytest would create when the worker runs tests).
-    def fake_run_auto(self, objective, budget=None, *, require_codegraph=True):
+    def fake_run_auto(self, objective, budget=None, *, require_codegraph=True, **kwargs):
         wt = self.config.repo
         with open(os.path.join(wt, "mod.py"), "w") as fh:
             fh.write("def f():\n    return 2\n")
