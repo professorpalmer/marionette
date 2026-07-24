@@ -534,6 +534,43 @@ def test_agentic_analysis_empty_result_fails_structured_gate(monkeypatch):
         shutil.rmtree(repo_dir, ignore_errors=True)
 
 
+def test_agentic_analysis_summary_from_artifacts_is_substantive(monkeypatch):
+    """Artifact FINDING must become a parent-gate-passing summary, not a stub."""
+    from harness.edit_engines import _agentic_analysis_summary
+    from harness.pilot_guards import analysis_summary_is_substantive
+
+    claim = (
+        "FINDING: harness/edit_engines.py:330 analysis must use "
+        "read-only analyze mode instead of mode=implement."
+    )
+    summary = _agentic_analysis_summary(
+        [{"type": "finding", "headline": claim, "body": claim, "empty_headline": False}],
+        "",
+    )
+    assert "FINDING:" in summary
+    assert analysis_summary_is_substantive(summary)
+
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        finding = _fake_artifact(claim=claim, tokens_out=10, tokens_in=5)
+        finding.type = "finding"
+        _install_agentic_mocks(
+            monkeypatch,
+            orchestrator_result=_fake_pm_result([finding]),
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("", []),
+        )
+        result = run_agentic_edit(cfg, "audit analyze path", expects_diff=False)
+        assert result.ok is True
+        assert analysis_summary_is_substantive(result.summary or "")
+        assert "FINDING:" in (result.summary or "")
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
 # --- run_agentic_edit error paths ---
 
 

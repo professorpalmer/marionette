@@ -385,3 +385,62 @@ def test_implement_mode_still_halts_on_no_swarm(monkeypatch):
     halt = [e for e in events if e.kind == "auto_halt"][-1]
     assert "objective met" in (halt.data.get("reason") or "")
     assert len(cycles) == 1
+
+
+def test_analysis_mode_leaf_tools_do_not_burn_swarm_ceiling(monkeypatch):
+    """read_file x3 must not trip max_swarms=2; FINDING summary can still land."""
+    from harness.autobudget import AutoBudget
+    from harness.config import HarnessConfig
+
+    cfg = HarnessConfig()
+    cfg.swarm_adapter = "demo"
+    cfg.repo = ""
+    session = ConversationalSession(cfg)
+    cycles: list[str] = []
+
+    def fake_send(self, msg):
+        cycles.append(msg)
+        if len(cycles) == 1:
+            for i in range(3):
+                yield ConvEvent("action_start", {
+                    "id": f"r{i}", "kind": "read_file", "goal": f"f{i}.py",
+                })
+                yield ConvEvent("action_result", {
+                    "id": f"r{i}", "kind": "read_file", "goal": f"f{i}.py",
+                    "status": "complete",
+                })
+            yield ConvEvent(
+                "message",
+                {"text": "Now let me synthesize the three files..."},
+            )
+            yield ConvEvent("assistant_done", {"turns": 1})
+        else:
+            yield ConvEvent(
+                "message",
+                {
+                    "text": (
+                        "FINDING: harness/worker.py:700 empty-diff analysis "
+                        "must reject reasoning-only output."
+                    )
+                },
+            )
+            yield ConvEvent("assistant_done", {"turns": 2})
+
+    monkeypatch.setattr(ConversationalSession, "send", fake_send)
+    budget = AutoBudget(
+        max_tokens=100000, max_seconds=60, max_swarms=2, max_idle_steps=5,
+    )
+    events = list(
+        session.run_auto(
+            "audit three files",
+            budget=budget,
+            require_codegraph=False,
+            analysis_mode=True,
+        )
+    )
+    halt = [e for e in events if e.kind == "auto_halt"][-1]
+    reason = halt.data.get("reason") or ""
+    assert "swarm ceiling" not in reason
+    assert "findings submitted" in reason
+    assert budget.swarms_used == 0
+    assert len(cycles) >= 2

@@ -2868,6 +2868,13 @@ class ConversationalSession(
             turn_had_retryable_error = False
             last_cycle_message = ""
             tripped = None
+            # Only real delegation actions burn the swarm ceiling. Counting
+            # every read_file/write_file as a "swarm" made analysis workers
+            # with max_swarms=2 halt after two tool calls
+            # ("swarm ceiling reached (2/2)") before any FINDING summary.
+            _swarm_budget_kinds = frozenset({
+                "run_swarm", "run_implement", "run_parallel",
+            })
             for ev in self.send(loop_msg):
                 # meter the governor off the stream
                 if ev.kind == "message":
@@ -2875,8 +2882,13 @@ class ConversationalSession(
                     if _msg:
                         last_cycle_message = _msg
                 if ev.kind == "action_result" and not ev.data.get("error"):
-                    budget.add_swarm()
-                    turn_findings_count += int(ev.data.get("num", 0) or 0)
+                    _akind = (ev.data.get("kind") or "").strip().lower()
+                    if _akind in _swarm_budget_kinds:
+                        budget.add_swarm()
+                    # Leaf tool progress (reads/searches) counts as activity so
+                    # the idle stall does not fire mid-investigation.
+                    _n = int(ev.data.get("num", 0) or 0)
+                    turn_findings_count += _n if _n > 0 else 1
                 elif ev.kind == "action_result" and ev.data.get("error"):
                     # a tool error (e.g. malformed write_file) is recoverable -- the model
                     # gets the error in history and should retry; do NOT let this turn count

@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.126, deliberately pre-1.0. Read-only run_implement/run_parallel analysis no longer early-halts after one no-swarm cycle (structured FINDING/RISK/DECISION required); agentic analysis uses analyze mode instead of mode=implement so retries do not burn the 900s wall; seed baseline + worker budget lifts from 0.9.125 retained. Rides puppetmaster-ai==1.20.10.
+> Status: v0.9.127, deliberately pre-1.0. Leaf tools (read_file etc.) no longer burn the AutoBudget swarm ceiling — analysis workers can investigate past two tool calls and still emit FINDING/RISK/DECISION; agentic analyze summaries promote artifact headlines so the parent substantive gate does not reject real findings as plumbing. Rides puppetmaster-ai==1.20.10.
 
 ## Documentation
 

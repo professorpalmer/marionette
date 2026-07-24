@@ -444,6 +444,7 @@ def run_agentic_edit(
                     ), result)
                 if not expects_diff:
                     # Gate on structured findings — never green "No summary".
+                    compact: list = []
                     try:
                         from pmharness.bridge import _compact_artifact
                         compact = [
@@ -458,9 +459,12 @@ def run_agentic_edit(
                         halt_reason=failure or "",
                     )
                     if has_structured or structured_ok:
+                        summary = _agentic_analysis_summary(
+                            compact, final_text or "",
+                        )
                         return _stamp_agentic(WorkerResult(
                             ok=True, tokens_out=tokens_out, tokens_in=tokens_in,
-                            summary=final_text or "Analysis complete.",
+                            summary=summary,
                             model=routed_model,
                             events=list(mapped_events),
                         ), result)
@@ -590,6 +594,36 @@ def agentic_events_from_store(store: Any, job_id: str) -> list:
             "error": err,
         }))
     return out
+
+
+def _agentic_analysis_summary(compact: list, final_text: str) -> str:
+    """Build a substantive analysis summary from stdout + FINDING/RISK/DECISION.
+
+    Thin placeholders like ``Analysis complete.`` fail the parent job's
+    ``analysis_summary_is_substantive`` gate even when artifacts were real.
+    Prefer concrete artifact headlines so a green worker stays green upstream.
+    """
+    parts: list[str] = []
+    body = (final_text or "").strip()
+    if body:
+        parts.append(body)
+    for a in compact or []:
+        if not isinstance(a, dict):
+            continue
+        if str(a.get("type") or "").lower() not in (
+            "finding", "risk", "decision",
+        ):
+            continue
+        if a.get("empty_headline"):
+            continue
+        text = str(a.get("body") or a.get("headline") or "").strip()
+        if not text:
+            continue
+        if body and text in body:
+            continue
+        parts.append(text)
+    summary = "\n\n".join(parts).strip()
+    return summary or body or "Analysis complete."
 
 
 def _summarize_agentic_result(result) -> tuple[int, int, str, str]:
