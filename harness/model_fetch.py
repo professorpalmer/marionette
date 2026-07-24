@@ -36,6 +36,32 @@ def last_fetch_error(provider_name: str) -> Optional[str]:
     return _LAST_ERROR.get(provider_name)
 
 
+def invalidate_models_cache(provider_name: Optional[str] = None) -> None:
+    """Drop in-memory + on-disk model catalog cache.
+
+    Pass a provider name (e.g. ``cursor-cli``) to invalidate one entry, or
+    ``None`` to clear every provider. Call after plan-account login / refresh
+    so newly shipped models (Opus 5, …) are not stuck behind the 24h TTL.
+    Best-effort: never raises.
+    """
+    try:
+        if provider_name:
+            _MEM.pop(provider_name, None)
+            _MEM_AT.pop(provider_name, None)
+            _LAST_ERROR.pop(provider_name, None)
+            disk = _read_cache()
+            if provider_name in disk:
+                disk.pop(provider_name, None)
+                _write_cache(disk)
+            return
+        _MEM.clear()
+        _MEM_AT.clear()
+        _LAST_ERROR.clear()
+        _write_cache({})
+    except Exception as e:
+        _diag("model_fetch.invalidate", e)
+
+
 def _cache_path() -> str:
     base = os.path.join(os.path.expanduser("~"), ".pmharness")
     try:

@@ -451,6 +451,14 @@ def post_auth_cursor_cli_status(body: dict) -> tuple[int, dict]:
         res = get_status(refresh=refresh)
     except Exception as e:
         return 400, {"error": str(e)}
+    # Plan catalogs change when Anthropic/Cursor ship models; a status refresh
+    # after login must not leave Opus 5 etc. behind the 24h models cache.
+    if refresh and res.get("authenticated"):
+        try:
+            from ..model_fetch import invalidate_models_cache
+            invalidate_models_cache("cursor-cli")
+        except Exception:
+            pass
     return 200, res
 
 
@@ -462,6 +470,12 @@ def post_auth_cursor_cli_login(body: dict, svc: ProviderServices) -> tuple[int, 
         res = start_login(workspace=ws or None)
     except Exception as e:
         return 400, {"error": str(e)}
+    if res.get("ok"):
+        try:
+            from ..model_fetch import invalidate_models_cache
+            invalidate_models_cache("cursor-cli")
+        except Exception:
+            pass
     status = 200 if res.get("ok") else 400
     return status, res
 

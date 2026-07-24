@@ -733,6 +733,15 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   const refreshCursorCliStatus = async (opts?: { refresh?: boolean }) => {
     try {
+      // ModelsSettingsPage keeps a localStorage snapshot; clear it when the
+      // user refreshes Cursor CLI auth so the next Models visit isn't stuck
+      // on a pre-Opus-5 catalog.
+      try {
+        const { clearCatalogSnapshot } = await import("./ModelsSettingsPage");
+        clearCatalogSnapshot();
+      } catch {
+        /* ignore */
+      }
       const st = await api.getCursorCliStatus({ refresh: opts?.refresh !== false });
       setCursorCliStatus(st);
       return st;

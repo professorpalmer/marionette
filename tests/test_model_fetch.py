@@ -101,14 +101,45 @@ def test_provider_models_no_key_returns_curated(monkeypatch):
     assert merged == list(p.pilot_models)
 
 
+def test_invalidate_models_cache_drops_provider_entry(tmp_path, monkeypatch):
+    """Plan login/status refresh must bust the 24h disk cache so new CLI
+    models (Opus 5) appear without waiting for TTL."""
+    cache = tmp_path / "provider_models_cache.json"
+    cache.write_text(
+        '{"cursor-cli": {"fetched_at": 1, "models": ["composer-2.5"]},'
+        ' "anthropic": {"fetched_at": 1, "models": ["claude-opus-4-8"]}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mf, "_cache_path", lambda: str(cache))
+    mf._MEM["cursor-cli"] = ["composer-2.5"]
+    mf._MEM_AT["cursor-cli"] = 1.0
+    mf.invalidate_models_cache("cursor-cli")
+    assert "cursor-cli" not in mf._MEM
+    disk = mf._read_cache()
+    assert "cursor-cli" not in disk
+    assert "anthropic" in disk
+
+
+def test_cursor_cli_curated_includes_opus_5():
+    from pmharness.drivers.cursor_cli import DEFAULT_CURSOR_CLI_MODELS
+    p = prov.get_provider("cursor-cli")
+    for mid in (
+        "claude-opus-5-high",
+        "claude-opus-5-high-fast",
+        "claude-opus-5-thinking-high",
+    ):
+        assert mid in DEFAULT_CURSOR_CLI_MODELS
+        assert mid in p.pilot_models
+
+
 def test_chat_model_filter_drops_non_chat():
     """Live model fetch must drop image/video/audio/embedding/etc models -- a
     pilot must be a text chat model. This kept veo/imagen/lyria/tts/embedding
     entries out of the picker."""
     from harness.model_fetch import _is_chat_model
     # Chat models -> kept
-    for m in ["gpt-5.5", "gpt-5.4", "claude-opus-4-8", "gemini-3-pro-preview",
-              "deepseek-chat", "glm-5.2"]:
+    for m in ["gpt-5.5", "gpt-5.4", "claude-opus-4-8", "claude-opus-5-high",
+              "gemini-3-pro-preview", "deepseek-chat", "glm-5.2"]:
         assert _is_chat_model(m), f"{m} should be a chat model"
     # Non-chat -> dropped
     for m in ["veo-3.0-generate-001", "imagen-4.0-generate-001", "lyria-3-pro-preview",
