@@ -14,8 +14,73 @@ inheritance. Busy/send/swarm drain stay on ConversationalSession.
 
 import os
 import subprocess
+import threading
+import time
+from typing import Optional, Tuple
 
 from ._exec import _puppetmaster_available, _puppetmaster_cmd
+
+# Short TTL so Settings > Platform flips refresh without re-which every turn.
+_AVAIL_CACHE_TTL_SECONDS = 20.0
+_avail_lock = threading.Lock()
+_avail_cache: dict[str, Tuple[bool, float]] = {}
+
+_DETECT_PREF = ("agentic", "hermes", "codex", "cursor", "claude-code")
+
+
+def clear_adapter_avail_cache() -> None:
+    """Drop the adapter-availability cache (tests / rare invalidation)."""
+    with _avail_lock:
+        _avail_cache.clear()
+
+
+def _probe_external_adapter_available(adapter: str) -> bool:
+    """Uncached availability probe (platform lock + PATH / env)."""
+    import shutil
+
+    a = (adapter or "").lower().strip()
+    try:
+        from puppetmaster.platform_lock import KNOWN_ADAPTERS, is_adapter_enabled
+
+        if a in KNOWN_ADAPTERS and not is_adapter_enabled(a):
+            return False
+    except Exception:
+        pass
+    if a == "cursor":
+        return shutil.which("cursor") is not None
+    if a == "claude-code":
+        return shutil.which("claude") is not None
+    if a == "codex":
+        return shutil.which("codex") is not None
+    if a == "openai":
+        return bool(os.environ.get("OPENAI_API_KEY"))
+    if a == "hermes":
+        return shutil.which("hermes") is not None
+    # Unknown adapter name: let the external path try (it will report its own error).
+    return True
+
+
+def _scrape_platform_status_on() -> Optional[set]:
+    """Last-resort parse of ``puppetmaster platform status`` when lock import fails."""
+    if not _puppetmaster_available():
+        return None
+    try:
+        p = subprocess.run(
+            _puppetmaster_cmd("platform", "status"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        output = p.stdout or ""
+        import re
+
+        matches = re.findall(r"\[on\s*\]\s*([a-zA-Z0-9_-]+)", output)
+        return {m.lower().strip() for m in matches}
+    except Exception:
+        return None
 
 
 class AdapterResolveMixin:
@@ -34,26 +99,20 @@ class AdapterResolveMixin:
         the operator disables cursor and enables agentic). The provider-native
         / agentic in-process path is always the fallback when this returns False.
         """
-        import shutil
         a = (adapter or "").lower().strip()
-        try:
-            from puppetmaster.platform_lock import KNOWN_ADAPTERS, is_adapter_enabled
-            if a in KNOWN_ADAPTERS and not is_adapter_enabled(a):
-                return False
-        except Exception:
-            pass
-        if a == "cursor":
-            return shutil.which("cursor") is not None
-        if a == "claude-code":
-            return shutil.which("claude") is not None
-        if a == "codex":
-            return shutil.which("codex") is not None
-        if a == "openai":
-            return bool(os.environ.get("OPENAI_API_KEY"))
-        if a == "hermes":
-            return shutil.which("hermes") is not None
-        # Unknown adapter name: let the external path try (it will report its own error).
-        return True
+        if not a:
+            return True
+        now = time.monotonic()
+        with _avail_lock:
+            hit = _avail_cache.get(a)
+            if hit is not None:
+                ok, expires = hit
+                if now < expires:
+                    return ok
+        ok = _probe_external_adapter_available(a)
+        with _avail_lock:
+            _avail_cache[a] = (ok, time.monotonic() + float(_AVAIL_CACHE_TTL_SECONDS))
+        return ok
 
     def _validate_target_repo(self, repo: str):
         """Validate an optional per-dispatch target repo for run_implement /
@@ -82,7 +141,12 @@ class AdapterResolveMixin:
         try:
             r = subprocess.run(
                 ["git", "-C", abs_path, "rev-parse", "--is-inside-work-tree"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", timeout=5,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
             )
             if r.returncode == 0 and (r.stdout or "").strip() == "true":
                 return abs_path, ""
@@ -117,6 +181,7 @@ class AdapterResolveMixin:
         Settings > Platform."""
         try:
             from puppetmaster.platform_lock import enabled_adapters
+
             enabled = sorted(enabled_adapters())
         except Exception:
             return ""
@@ -129,9 +194,12 @@ class AdapterResolveMixin:
         disabled_hint = ""
         try:
             from puppetmaster.platform_lock import KNOWN_ADAPTERS
+
             disabled = sorted(set(KNOWN_ADAPTERS) - set(enabled))
             if disabled:
-                disabled_hint = f" Do NOT pass adapter={{{', '.join(disabled)}}} — those are disabled."
+                disabled_hint = (
+                    f" Do NOT pass adapter={{{', '.join(disabled)}}} — those are disabled."
+                )
         except Exception:
             pass
         return (
@@ -140,38 +208,33 @@ class AdapterResolveMixin:
         )
 
     def _detect_default_implement_adapter(self) -> str:
-        """Prefer agentic when enabled; never return a platform-locked adapter."""
+        """Prefer agentic when enabled; never return a platform-locked adapter.
+
+        Uses ``platform_lock.enabled_adapters()`` as the source of truth. The
+        old ``puppetmaster platform status`` CLI scrape remains only as a
+        last-resort when the lock module cannot be imported.
+        """
+        enabled = None
         try:
             from puppetmaster.platform_lock import enabled_adapters, is_adapter_enabled
-            enabled = enabled_adapters()
-            if "agentic" in enabled:
-                return "agentic"
-        except Exception:
-            enabled = None
-            is_adapter_enabled = None  # type: ignore
 
-        if not _puppetmaster_available():
-            return "agentic"
-        try:
-            p = subprocess.run(
-                _puppetmaster_cmd("platform", "status"),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
-                timeout=10
-            )
-            output = p.stdout or ""
-            import re
-            matches = re.findall(r"\[on\s*\]\s*([a-zA-Z0-9_-]+)", output)
-            on = {m.lower().strip() for m in matches}
-            pref = ["agentic", "hermes", "codex", "cursor", "claude-code"]
-            for adapter in pref:
-                if adapter not in on:
-                    continue
-                if is_adapter_enabled is not None and not is_adapter_enabled(adapter):
-                    continue
-                if adapter == "agentic" or self._external_adapter_available(adapter):
-                    return adapter
+            enabled = set(enabled_adapters() or ())
         except Exception:
-            pass
+            is_adapter_enabled = None  # type: ignore
+            scraped = _scrape_platform_status_on()
+            if scraped is not None:
+                enabled = scraped
+
+        if enabled is None:
+            return "agentic"
+        if "agentic" in enabled:
+            return "agentic"
+
+        for adapter in _DETECT_PREF:
+            if adapter not in enabled:
+                continue
+            if is_adapter_enabled is not None and not is_adapter_enabled(adapter):
+                continue
+            if adapter == "agentic" or self._external_adapter_available(adapter):
+                return adapter
         return "agentic"

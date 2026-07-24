@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.134, deliberately pre-1.0. repo_resolve: 30s cache TTL + preferred-child priority (marionette over pm-harness); cost fallback logs when registry pricing blows up to 0.5/2.0. Rides puppetmaster-ai==1.20.10.
+> Status: v0.9.135, deliberately pre-1.0. LeftRail title-only session rows; StreamDeltaBatch flushes on overdue; adapter_resolve uses platform_lock + avail cache (no CLI scrape); jobs/usage cost fallback logs; SessionStore boot-helper tests; import-audit smoke. Rides puppetmaster-ai==1.20.10.
 
 ## Documentation
 

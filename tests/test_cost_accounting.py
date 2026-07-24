@@ -284,6 +284,66 @@ def test_resolve_active_prices_logs_on_registry_exception(monkeypatch, caplog):
     assert any("default 0.5/2.0" in r.message for r in caplog.records)
 
 
+def test_get_swarm_live_logs_on_price_resolve_exception(monkeypatch, caplog):
+    """jobs.py resolve_price failures must warn via harness.cost before 0.5/2.0."""
+    import logging
+
+    from harness.api.jobs import JobServices, get_swarm_live
+
+    def _boom(_name):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(
+        "pmharness.registry.resolve_price", _boom, raising=False
+    )
+
+    class _Session:
+        def state(self):
+            return SimpleNamespace()
+
+    class _Pilot:
+        _tokens_used = 0
+        _tokens_cached = 0
+        _worker_tokens_in = 0
+        _worker_tokens_out = 0
+        _provider_cost_usd = 0.0
+        harness_session_id = ""
+
+        def live_local_jobs(self):
+            return []
+
+    svc = JobServices(
+        cfg=SimpleNamespace(driver="broken/driver", repo="/repo"),
+        sessions=SimpleNamespace(active=""),
+        get_pilot=lambda: _Pilot(),
+        get_session=lambda: _Session(),
+        diag=lambda *_a, **_k: None,
+        scoped_jobs_snapshot=lambda **_k: [],
+        scoped_jobs_with_stores=lambda **_k: ([], None, None),
+        retry_on_locked=lambda fn: fn(),
+        swarm_registry=lambda: [],
+        job_status_is_terminal=lambda _s: False,
+        slim_swarm_list_artifacts=lambda *_a, **_k: [],
+        job_swarm_accounting=lambda *_a, **_k: (0, 0.0),
+        task_swarm_accounting=lambda *_a, **_k: {},
+        routing_saved_usd=lambda *_a, **_k: 0.0,
+        cache_saved_usd_swarm=lambda *_a, **_k: 0.0,
+        tokens_cached_swarm=lambda *_a, **_k: 0,
+        job_dead_run_failure=lambda *_a, **_k: None,
+        job_savings_fields=lambda *_a, **_k: {},
+        repo_session_stamped_meters=lambda *_a, **_k: {},
+        session_cost_split=lambda *_a, **_k: 0.0,
+        cache_savings=lambda *_a, **_k: 0.0,
+        tool_output_savings_fields=lambda *_a, **_k: {},
+        cost_source_label=lambda *_a, **_k: "estimated",
+    )
+    with caplog.at_level(logging.WARNING, logger="harness.cost"):
+        code, payload = get_swarm_live(None, svc)
+    assert code == 200
+    assert payload["session"]["price_source"] == "default"
+    assert any("default 0.5/2.0" in r.message for r in caplog.records)
+
+
 def test_provider_override_keeps_spend_non_estimated():
     assert _spend_is_estimated("provider", "default") is False
     assert _spend_is_estimated("estimated", "live") is True

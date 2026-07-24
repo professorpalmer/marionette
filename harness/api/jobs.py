@@ -152,7 +152,13 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         price_source = _normalize_price_source(
             None if raw_in is None or raw_out is None else _price_src
         )
-    except Exception:
+    except Exception as exc:
+        try:
+            from .cost_accounting import _log_price_fallback
+
+            _log_price_fallback("jobs", exc)
+        except Exception:
+            pass
         price_in, price_out, price_source = 0.5, 2.0, "default"
     try:
         state_obj = svc.get_session().state()

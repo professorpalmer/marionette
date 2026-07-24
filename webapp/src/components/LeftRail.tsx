@@ -1511,9 +1511,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                           {s.title || "Untitled"}
                         </div>
                       </div>
-                      {s.preview ? (
-                        <div className="text-[10px] text-faint truncate pl-0.5">{s.preview}</div>
-                      ) : null}
                       <div className="text-[10px] text-faint truncate font-mono">{label}</div>
                     </button>
                   );
@@ -1665,23 +1662,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                               <button
                                 onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                 disabled={!!switchingSessionId || opening}
+                                title={s.preview ? `${s.title || "Untitled"}\n${s.preview}` : (s.title || "Untitled")}
                                 onDoubleClick={() => {
                                   setRenamingId(s.id);
                                   setRenamingTitle(s.title || "Untitled");
                                 }}
                                 onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
-                                className={`flex-1 min-w-0 text-left rounded px-1.5 py-1 flex items-start gap-1.5 text-[12.5px] transition disabled:opacity-60
+                                className={`flex-1 min-w-0 text-left rounded px-1.5 py-1 flex items-center gap-1.5 text-[12.5px] transition disabled:opacity-60
                                   ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}
                                   ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
                                 {switchingSessionId === s.id
-                                  ? <Loader2 size={11} className="shrink-0 mt-0.5 animate-spin text-accent" />
-                                  : <MessageSquare size={11} className={`shrink-0 mt-0.5 ${s.active ? "text-accent" : "text-faint"}`} />}
-                                <span className="flex-1 min-w-0">
-                                  <span className="block truncate">{s.title || "Untitled"}</span>
-                                  {s.preview ? (
-                                    <span className="block truncate text-[10px] font-normal text-faint">{s.preview}</span>
-                                  ) : null}
-                                </span>
+                                  ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                                  : <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />}
+                                <span className="flex-1 min-w-0 truncate">{s.title || "Untitled"}</span>
                                 {unreadFinishedIds[s.id] && !s.active && runners[s.id] !== "running" ? (
                                   <span
                                     className="w-1.5 h-1.5 rounded-full shrink-0 bg-good"

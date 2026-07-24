@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import time
 
 from harness.api.sse import SseEventRing, _SSE_RING_CAP
 from harness.send_loop_phases import drain_stream_queue
@@ -37,6 +38,52 @@ def test_stream_delta_batch_merges_same_identity():
     final = bat.flush()
     assert final["text"] == "Other"
     assert final["stream_id"] == "b"
+
+
+def test_stream_delta_batch_flushes_when_max_chars_overdue():
+    """max_chars overdue must flush from push without an identity change."""
+    bat = StreamDeltaBatch(max_ms=10_000, max_chars=10)
+    assert bat.push("12345", {"stream_id": "a", "channel": "progress"}, default_channel="progress") is None
+    flushed = bat.push("67890X", {"stream_id": "a", "channel": "progress"}, default_channel="progress")
+    assert flushed is not None
+    assert flushed["text"] == "1234567890X"
+    assert flushed["stream_id"] == "a"
+    assert bat.pending is False
+
+
+def test_stream_delta_batch_identity_change_returns_old_when_new_also_overdue():
+    """Identity change must return the prior flush even if the new buffer is overdue."""
+    bat = StreamDeltaBatch(max_ms=10_000, max_chars=5)
+    assert bat.push("ab", {"stream_id": "a", "channel": "progress"}, default_channel="progress") is None
+    # New identity is longer than max_chars — must still surface old "ab" first.
+    flushed = bat.push(
+        "overdue-new",
+        {"stream_id": "b", "channel": "progress"},
+        default_channel="progress",
+    )
+    assert flushed is not None
+    assert flushed["text"] == "ab"
+    assert flushed["stream_id"] == "a"
+    # New overdue text may remain pending for a later flush mechanism.
+    if bat.pending:
+        final = bat.flush()
+        assert final is not None
+        assert final["text"] == "overdue-new"
+        assert final["stream_id"] == "b"
+
+
+def test_stream_delta_batch_flushes_when_max_ms_overdue(monkeypatch):
+    """max_ms overdue must flush from push once the batch window elapses."""
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+    bat = StreamDeltaBatch(max_ms=40, max_chars=10_000)
+    assert bat.push("Hi", {"stream_id": "a", "channel": "progress"}, default_channel="progress") is None
+    clock["t"] = 1000.05  # 50ms later — past max_ms
+    flushed = bat.push(" there", {"stream_id": "a", "channel": "progress"}, default_channel="progress")
+    assert flushed is not None
+    assert flushed["text"] == "Hi there"
+    assert flushed["stream_id"] == "a"
+    assert bat.pending is False
 
 
 def test_drain_batches_word_deltas_without_exhausting_sse_ring():

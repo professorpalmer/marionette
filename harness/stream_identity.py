@@ -86,7 +86,7 @@ class StreamDeltaBatch:
         return sum(len(p) for p in self._text_parts) >= self.max_chars
 
     def push(self, text: str, meta: Dict[str, Any], *, default_channel: str) -> Optional[Dict[str, Any]]:
-        """Append ``text``. Returns a flushed payload when identity changes."""
+        """Append ``text``. Returns a flushed payload on identity change or overdue."""
         if not text:
             return None
         channel, stream_id = delta_identity_key(meta, default_channel=default_channel)
@@ -105,9 +105,13 @@ class StreamDeltaBatch:
                     self._meta[k] = v
         self._text_parts.append(text)
         if self.overdue():
-            # Prefer returning via caller after push when overdue so a single
-            # push never yields two flushes; overdue flush happens next peek.
-            pass
+            # Flush immediately so char/time thresholds do not wait for the
+            # next identity change. If this push already flushed a prior
+            # identity, return that first — the new overdue buffer is picked
+            # up by the drain loop's _flush_overdue peek.
+            if flushed is not None:
+                return flushed
+            return self.flush()
         return flushed
 
     def flush(self) -> Optional[Dict[str, Any]]:
