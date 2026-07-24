@@ -495,8 +495,16 @@ class ConversationJobsMixin:
             # (progressive callback may have already recorded most of them).
             try:
                 self._ingest_local_job_events(job_id, getattr(res, "events", None))
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    from harness.diag import note as _diag_note
+                    _diag_note(
+                        "conversation_jobs.ingest_local_job_events",
+                        exc,
+                        msg=f"job_id={job_id}",
+                    )
+                except Exception:
+                    pass
 
             wr_engine = (getattr(res, "engine", None) or "").strip()
             wr_model = (getattr(res, "model", None) or "").strip()

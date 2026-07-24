@@ -1675,6 +1675,19 @@ def dispatch_local_action(
             yield ConvEvent("action_result", {"id": aid, "error": "MCP not available"})
             session._append_action_result(act, aid, f"(mcp {aid} unavailable)", is_native)
             return
+        from .send_loop_dispatch import (
+            _TRACKABLE_SWARM_REFUSAL,
+            is_untracked_pm_start_tool,
+        )
+        if is_untracked_pm_start_tool(str(act.tool or "")):
+            yield ConvEvent("action_result", {
+                "id": aid,
+                "error": _TRACKABLE_SWARM_REFUSAL,
+            })
+            session._append_action_result(
+                act, aid, f"(mcp {act.tool} refused: untracked start_*)", is_native,
+            )
+            return
         try:
             if act.tool:
                 session._tool_catalog.activate([act.tool])

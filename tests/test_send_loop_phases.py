@@ -935,6 +935,27 @@ def test_dispatch_local_action_call_mcp_unavailable():
     assert events[0].data.get("error") == "MCP not available"
 
 
+def test_dispatch_local_action_call_mcp_refuses_untracked_start():
+    """MCP start_* must not create jobs outside the Swarm Tracker."""
+    mcp = MagicMock()
+    session = SimpleNamespace(
+        _mcp=mcp,
+        _append_action_result=MagicMock(),
+        _tool_catalog=SimpleNamespace(activate=MagicMock()),
+    )
+    act = PilotAction(
+        kind="call_mcp",
+        tool="puppetmaster_start_cursor_swarm",
+        arguments={"goal": "audit"},
+    )
+    events = list(dispatch_local_action(session, act, "a-mcp", False, []))
+    assert events
+    err = events[0].data.get("error") or ""
+    assert "Untracked swarm" in err or "run_swarm" in err
+    mcp.call.assert_not_called()
+    session._append_action_result.assert_called_once()
+
+
 def test_dispatch_local_action_plan_mode_blocks_mcp_mutate_paths():
     """Phases-layer plan gate: call_mcp / manage_mcp never reach the manager."""
     from harness.send_loop_phases import PLAN_SKIP_KINDS

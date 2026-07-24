@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.130, deliberately pre-1.0. Cursor CLI late tool_call events hoist above a flushed finale (Explored no longer renders under the answer); Archive + Settle remain independent. Rides puppetmaster-ai==1.20.10.
+> Status: v0.9.131, deliberately pre-1.0. Swarm Tracker honesty: fail-closed findings gate, register-before-swarm_pending, refuse untracked MCP start_*; Cursor CLI kernel steers shell swarm; Electron unit tests in CI. Rides puppetmaster-ai==1.20.10.
 
 ## Documentation
 

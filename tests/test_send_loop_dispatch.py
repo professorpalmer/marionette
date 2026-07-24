@@ -21,6 +21,7 @@ from harness.send_loop_dispatch import (
     dispatch_parallel_action,
     dispatch_route_task_action,
     dispatch_swarm_action,
+    is_untracked_pm_start_tool,
 )
 
 DISPATCH_HELPERS = (
@@ -461,5 +462,48 @@ def test_substantive_artifact_gate():
         "body": "x" * 250,
     })
 
-    # Malformed payloads never crash the gate closed.
-    assert _is_substantive_artifact({"type": "finding", "body": None, "headline": None}) in (True, False)
+    # Malformed payloads fail closed (never paint green on parse errors).
+    assert not _is_substantive_artifact({"type": "finding", "body": None, "headline": None})
+    # Outer-gate exceptions also fail closed (non-mapping payloads).
+    assert not _is_substantive_artifact(None)  # type: ignore[arg-type]
+
+
+def test_dispatch_swarm_no_pending_when_register_fails(monkeypatch):
+    """swarm_pending must not fire without a successful tracker row."""
+    act = PilotAction(kind="run_swarm", goal="audit peel", roles=["explore"])
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        _session_job_ids=[],
+        _register_local_job=MagicMock(side_effect=RuntimeError("store down")),
+        _finish_local_job=MagicMock(),
+        _append_action_result=MagicMock(),
+        _display_transcript=[],
+    )
+    import harness.send_loop_dispatch as dispatch
+
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
+    events = list(
+        dispatch_swarm_action(
+            session,
+            act,
+            "a-reg",
+            True,
+            counters={"swarms": 0, "demo_swarms": 0},
+            turn_findings=[],
+        )
+    )
+    assert not any(e.kind == "swarm_pending" for e in events)
+    results = [e for e in events if e.kind == "action_result"]
+    assert results
+    assert "tracker register failed" in (results[0].data.get("error") or "")
+    assert session._session_job_ids == []
+    session._append_action_result.assert_called_once()
+
+
+def test_is_untracked_pm_start_tool():
+    assert is_untracked_pm_start_tool("puppetmaster_start_cursor_swarm")
+    assert is_untracked_pm_start_tool("user-puppetmaster/start_implement")
+    assert is_untracked_pm_start_tool("start_swarm")
+    assert not is_untracked_pm_start_tool("puppetmaster_codegraph_search")
+    assert not is_untracked_pm_start_tool("query_wiki")
+    assert not is_untracked_pm_start_tool("")

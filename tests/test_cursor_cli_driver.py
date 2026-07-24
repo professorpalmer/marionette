@@ -450,6 +450,10 @@ def test_kernel_steers_mcp_before_shell_codegraph():
     assert "finding" in k or "plumbing" in k
     # Shell remains a fallback, not the only path.
     assert "python -m puppetmaster codegraph" in k
+    # Trackable swarms only: ban MCP start_*; shell swarm is the path.
+    assert "never call puppetmaster_start" in k or "never call" in k and "start_" in k
+    assert "python -m puppetmaster swarm" in k
+    assert "start_cursor_swarm" not in k or "never" in k
 
 
 def test_driver_missing_binary_errors(monkeypatch):

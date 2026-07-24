@@ -119,7 +119,47 @@ def _is_substantive_artifact(a: dict) -> bool:
             return True
         return len(text) >= 40 and bool(_PATH_REF_RE.search(text))
     except Exception:
-        return True
+        # Fail closed: thin/plumbing FINDINGs must not paint the badge green
+        # when the gate itself cannot parse the payload.
+        return False
+
+
+# Puppetmaster MCP verbs that create jobs outside Marionette's local tracker.
+# Host pilots must use run_swarm / run_implement / run_parallel (or shell
+# ``python -m puppetmaster swarm`` which lands in the CLI durable store the
+# tracker merges). MCP start_* bypasses swarm_pending + _register_local_job.
+_UNTRACKED_PM_START_TOOLS = frozenset({
+    "start_cursor_swarm",
+    "start_swarm",
+    "start_implement",
+    "start_cursor_implement",
+    "start_claude_implement",
+    "start_codex",
+    "start_agentic",
+    "start_browser_swarm",
+    "start_openai",
+    "start_prewalk",
+})
+
+
+def is_untracked_pm_start_tool(tool: str) -> bool:
+    """True when ``tool`` is a Puppetmaster start_* verb that skips the tracker."""
+    t = (tool or "").strip().lower().replace("-", "_")
+    if not t:
+        return False
+    if "/" in t:
+        t = t.rsplit("/", 1)[-1]
+    if t.startswith("puppetmaster_"):
+        t = t[len("puppetmaster_"):]
+    return t in _UNTRACKED_PM_START_TOOLS
+
+
+_TRACKABLE_SWARM_REFUSAL = (
+    "Untracked swarm/implement: do not call Puppetmaster MCP start_* tools. "
+    "Use host run_swarm / run_implement / run_parallel so the Swarm Tracker "
+    "registers the job, or shell `python -m puppetmaster swarm \"<goal>\"` "
+    "(CLI store is merged into the tracker for this workspace)."
+)
 
 
 def dispatch_swarm_action(session, act, aid, is_native, *, counters, turn_findings) -> Iterator[Any]:
@@ -147,8 +187,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     try:
         session._register_local_job(_sync_local_id, act.goal, role='explore', cwd=_swarm_repo, engine='agentic')
         session._session_job_ids.append(_sync_local_id)
-    except Exception:
-        pass
+    except Exception as e:
+        err = f'tracker register failed: {e}'
+        yield ConvEvent('action_result', {'id': aid, 'error': err})
+        session._append_action_result(act, aid, f'(swarm {aid} failed: {err})', is_native)
+        return None
     yield ConvEvent('swarm_pending', {'job_ids': [_sync_local_id], 'objective': act.goal})
     import queue as _queue
     import threading as _threading
@@ -452,8 +495,18 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             import uuid
             short = uuid.uuid4().hex[:8]
             job_id = f'local-{short}'
+            try:
+                session._register_local_job(
+                    job_id, act.goal, role=_mode, cwd=effective_repo, engine=engine,
+                    model=session.config.driver or '' if engine == 'native' else '',
+                )
+            except Exception as e:
+                session._release_objective(act.goal)
+                err = f'tracker register failed: {e}'
+                yield ConvEvent('action_result', {'id': aid, 'error': err})
+                session._append_action_result(act, aid, f'(run_implement {aid} failed: {err})', is_native)
+                return None
             session._session_job_ids.append(job_id)
-            session._register_local_job(job_id, act.goal, role=_mode, cwd=effective_repo, engine=engine, model=session.config.driver or '' if engine == 'native' else '')
             _prewarm_worker_imports()
             if not session._submit_swarm(session._run_provider_worker_background, job_id, act.goal, requested_adapter, effective_repo, expects_diff):
                 cap_msg = f'Swarm capacity reached ({session._swarm_inflight()} in flight); not dispatching more right now. Wait for an in-flight worker to finish.'

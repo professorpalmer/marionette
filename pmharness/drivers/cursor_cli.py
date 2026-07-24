@@ -77,11 +77,16 @@ HOST MODE CONTRACT (Marionette UI — not Cursor IDE chrome):
 Code / context (in this order — do not Grep/Glob-crawl the tree first):
 1. If this system prompt already contains "CODEGRAPH HAS ALREADY BEEN QUERIED"
    or "WIKI HAS ALREADY BEEN QUERIED", USE those blocks as primary evidence.
-2. Prefer MCP tools when available (auto-approved in this session):
+2. Prefer MCP for CodeGraph/wiki only (auto-approved in this session):
    - puppetmaster_codegraph_search / puppetmaster_codegraph_context
    - wiki: query_wiki / search_wiki (portable-llm-wiki MCP)
-   - puppetmaster_start_cursor_swarm for broad multi-role audits
-3. Shell fallback only if MCP is missing:
+3. NEVER call puppetmaster_start_* / start_implement / start_cursor_swarm via
+   MCP. Those jobs bypass Marionette's Swarm Tracker (no swarm_pending /
+   local register) and look like "All swarm jobs cleared".
+4. For multi-role audits that must appear in the Swarm Tracker, Shell:
+   python -m puppetmaster swarm "<goal>"
+   (detaches, prints job_id; CLI durable store is merged into the tracker).
+5. CodeGraph shell fallback if MCP is missing:
    python -m puppetmaster codegraph search '<query>'
    python -m puppetmaster codegraph context '<task>' --max-nodes 15 --format markdown
 Use Grep only for plain-text/config/log strings CodeGraph cannot see.
