@@ -270,6 +270,83 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(whenDone.has(postTool)).toBe(false);
   });
 
+  it("sealed: planning before Thought+finale stays inside the fold (no PILOT split)", () => {
+    const card: Item = {
+      kind: "card",
+      card: {
+        id: "c1",
+        goal: "edit_engines.py",
+        cwd: null,
+        kind: "read_file",
+        running: false,
+        open: false,
+        result: { status: "ok" },
+      },
+    };
+    const planning: Item = {
+      kind: "msg",
+      msg: {
+        role: "assistant",
+        text: "Planning tests for edit_engines validation****Validating delegation fix",
+      },
+    };
+    const thought: Item = {
+      kind: "thinking",
+      text: "Confirming successful worker validation",
+      id: "th-confirm",
+    };
+    const finale: Item = {
+      kind: "msg",
+      msg: {
+        role: "assistant",
+        text: "The v0.9.127 live validation succeeded.",
+      },
+    };
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "try again" } },
+      card,
+      planning,
+      thought,
+      finale,
+    ];
+    const whenDone = collectIntermediateAssistantItems(items, false);
+    expect(whenDone.has(planning)).toBe(true);
+    // True trailing finale still peels even when late Thought preceded it.
+    expect(whenDone.has(finale)).toBe(false);
+  });
+
+  it("sealed: true finale before late thinking does not bury the answer", () => {
+    const card: Item = {
+      kind: "card",
+      card: {
+        id: "c1",
+        goal: "x.py",
+        cwd: null,
+        kind: "read_file",
+        running: false,
+        open: false,
+        result: { status: "ok" },
+      },
+    };
+    const finale: Item = {
+      kind: "msg",
+      msg: { role: "assistant", text: "Done. Auth is fine." },
+    };
+    const lateThink: Item = {
+      kind: "thinking",
+      text: "also note the cache path…",
+      id: "th-late",
+    };
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      card,
+      finale,
+      lateThink,
+    ];
+    const whenDone = collectIntermediateAssistantItems(items, false);
+    expect(whenDone.has(finale)).toBe(false);
+  });
+
   it("open loop does not re-fold prior-turn finales into Explored (no disappear)", () => {
     // Historical sealed turn: tools + trailing PILOT answer.
     const priorFinale: Item = {

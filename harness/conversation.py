@@ -3009,4 +3009,23 @@ class ConversationalSession(
                         yield ConvEvent("distilled", d)
                     self._maybe_ingest(objective, [], [])
                     return
+            if analysis_mode and budget.max_tokens > 0:
+                # Near the token ceiling: nudge a FINDING summary before the
+                # hard stop surfaces as a bare "no structured findings".
+                try:
+                    from harness.worker import _analysis_output_is_structured
+                    _have_findings, _ = _analysis_output_is_structured(
+                        last_cycle_message,
+                    )
+                except Exception:
+                    _have_findings = False
+                if (
+                    not _have_findings
+                    and budget.tokens_used >= int(budget.max_tokens * 0.8)
+                ):
+                    loop_msg = (
+                        "(system) Token budget is nearly exhausted. STOP "
+                        "exploring and end NOW with a structured "
+                        "FINDING/RISK/DECISION summary citing file:line evidence."
+                    )
 

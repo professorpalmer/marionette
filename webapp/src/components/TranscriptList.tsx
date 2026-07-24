@@ -215,17 +215,30 @@ export function collectIntermediateAssistantItems(
     }
 
     if (!seenCardBefore) continue; // sealed pre-tool sticky outside when done
-    // Sealed / prior turns: fold only if another tool card still follows.
-    let cardAfter = false;
+    // Sealed / prior turns: fold mid-turn narration when investigation still
+    // continues after it. A later tool/swarm_result always counts. Later
+    // thinking alone is not enough (Cursor late-reasoning after a true finale
+    // must not bury the answer inside Explored) — but thinking PLUS a later
+    // assistant means planning→Thought→answer, so the planning line folds.
+    let laterCardOrSwarm = false;
+    let laterThinking = false;
+    let laterAssistant = false;
     for (let j = i + 1; j < items.length; j++) {
       const later = items[j];
       if (later.kind === "msg" && later.msg.role === "user") break;
-      if (later.kind === "card") {
-        cardAfter = true;
-        break;
+      if (later.kind === "msg" && later.msg.role === "assistant") {
+        laterAssistant = true;
+      }
+      if (later.kind === "card" || later.kind === "swarm_result") {
+        laterCardOrSwarm = true;
+      }
+      if (later.kind === "thinking") {
+        laterThinking = true;
       }
     }
-    if (cardAfter) intermediateItems.add(item);
+    if (laterCardOrSwarm || (laterThinking && laterAssistant)) {
+      intermediateItems.add(item);
+    }
   }
   return intermediateItems;
 }

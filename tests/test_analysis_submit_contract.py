@@ -256,6 +256,41 @@ def test_native_analysis_brief_aligns_with_swarm_contract():
     assert "submit_findings" in tool_inst
 
 
+def test_analysis_degrade_label_prefers_token_ceiling():
+    from harness.worker import _analysis_degrade_label
+
+    label = _analysis_degrade_label(
+        "no structured findings",
+        "token ceiling reached (257173/250000)",
+    )
+    assert "token ceiling reached" in label
+    assert "no structured findings" in label
+
+
+def test_worker_token_ceiling_surfaces_in_error(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
+            yield ConvEvent(
+                "message",
+                {"text": "Now let me look at a few more modules..."},
+            )
+            yield ConvEvent(
+                "auto_halt",
+                {"reason": "token ceiling reached (257173/250000)"},
+            )
+
+        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto)
+        worker = ProviderWorker(
+            repo=repo_dir, goal="broad audit", expects_diff=False,
+        )
+        res = worker.run()
+        assert res.ok is False
+        assert "token ceiling reached" in (res.error or "")
+    finally:
+        shutil.rmtree(repo_dir)
+
+
 def test_pick_analysis_message_prefers_structured_over_later_reasoning():
     from harness.worker import _pick_analysis_message
 

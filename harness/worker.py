@@ -443,6 +443,30 @@ def _pick_analysis_message(events: list) -> tuple[str, str]:
     return max(messages, key=len), halt_reason
 
 
+def _analysis_degrade_label(degrade_reason: str, halt_reason: str) -> str:
+    """Prefer budget/stall halt text over a bare structured-findings label.
+
+    Live UI used to show only ``no structured findings`` when the real stop
+    was ``token ceiling reached (257173/250000)`` — bury the actionable cause.
+    """
+    halt = (halt_reason or "").strip()
+    low = halt.lower()
+    if halt and any(
+        marker in low
+        for marker in (
+            "token ceiling",
+            "swarm ceiling",
+            "time ceiling",
+            "stall:",
+        )
+    ):
+        gate = (degrade_reason or "no structured findings").strip()
+        if gate and gate.lower() not in low:
+            return f"{halt}; {gate}"
+        return halt
+    return (degrade_reason or "no structured findings").strip()
+
+
 class ProviderWorker:
     def __init__(
         self,
@@ -795,10 +819,10 @@ class ProviderWorker:
                 )
                 if not structured_ok:
                     success = True  # clean worktree; the failure is contractual
-                    label = degrade_reason or "no structured findings"
+                    label = _analysis_degrade_label(degrade_reason, halt_reason)
                     # Keep diagnostic prose for the pilot; error carries the gate.
                     summary_parts = [label]
-                    if halt_reason:
+                    if halt_reason and halt_reason not in label:
                         summary_parts.append(f"Halt reason: {halt_reason}")
                     if last_message:
                         summary_parts.append(

@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.127, deliberately pre-1.0. Leaf tools (read_file etc.) no longer burn the AutoBudget swarm ceiling — analysis workers can investigate past two tool calls and still emit FINDING/RISK/DECISION; agentic analyze summaries promote artifact headlines so the parent substantive gate does not reject real findings as plumbing. Rides puppetmaster-ai==1.20.10.
+> Status: v0.9.128, deliberately pre-1.0. Sealed transcript folds absorb mid-turn Planning when Thought plus a later assistant follow; analysis degrade labels prefer token/swarm/time/stall halt text over bare "no structured findings"; analysis run_auto nudges a FINDING summary at 80% of the token ceiling. Rides puppetmaster-ai==1.20.10.
 
 ## Documentation
 
