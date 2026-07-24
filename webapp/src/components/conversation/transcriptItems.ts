@@ -12,6 +12,7 @@ import {
   MAX_ACTION_KIND_CHARS,
   normalizeNestedActionStatus,
 } from "./nestedActionBounds";
+import { hoistCardsBeforeTrailingFinals } from "./thinkingToolPrep";
 
 /** Same SHA-256 hex gate as SSE ``appendCommandApproval`` (streamApply). */
 const COMMAND_HASH_HEX = /^[0-9a-f]{64}$/;
@@ -368,7 +369,11 @@ export function transcriptResponseToItems(res: {
         };
       });
   }
-  return deduplicateConsecutiveAssistantMessages(dedupeDisplayItems(loadedItems));
+  // Cursor CLI may persist tool cards after a flushed finale; hoist on hydrate
+  // so Explored sits above the answer after reload (same as assistant_done).
+  return hoistCardsBeforeTrailingFinals(
+    deduplicateConsecutiveAssistantMessages(dedupeDisplayItems(loadedItems)),
+  );
 }
 
 function cardCount(items: Item[]): number {

@@ -6,6 +6,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { Card, Item } from "../TranscriptList";
 import {
+  hoistCardsBeforeTrailingFinals,
   sealStreamById,
   upsertStreamingThinking,
   upsertToolPrep,
@@ -442,7 +443,12 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setPendingJobIds(liveIds);
       setItems((p) =>
         reconcileOrphanInvestigationCards(
-          finalizeOrphanSwarmPills(sealOpenStreamSurfaces(p), liveIds),
+          finalizeOrphanSwarmPills(
+            // Cursor CLI often paints the finale before buffered tool_call
+            // events; hoist late cards/thinking under that readout into the fold.
+            hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+            liveIds,
+          ),
           liveIds,
         ),
       );
@@ -465,7 +471,10 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setPendingJobIds(liveIds);
       setItems((p) =>
         reconcileOrphanInvestigationCards(
-          finalizeOrphanSwarmPills(appendStreamError(p, d.error || ""), liveIds),
+          finalizeOrphanSwarmPills(
+            hoistCardsBeforeTrailingFinals(appendStreamError(p, d.error || "")),
+            liveIds,
+          ),
           liveIds,
         ),
       );

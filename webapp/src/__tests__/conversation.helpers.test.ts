@@ -16,6 +16,7 @@ import {
 import {
   clearToolPrepPlaceholders,
   finalizeStreamingThinking,
+  hoistCardsBeforeTrailingFinals,
   upsertStreamingThinking,
   upsertToolPrep,
 } from "../components/conversation/thinkingToolPrep";
@@ -853,8 +854,8 @@ describe("streamApply module", () => {
   });
 
   it("stop-path seal closes streaming surfaces then settles orphan cards", () => {
-    // Mirrors Conversation.stop / assistant_done: sealOpenStreamSurfaces before
-    // finalizeOrphanSwarmPills / reconcileOrphanInvestigationCards.
+    // Mirrors Conversation.stop / assistant_done: seal → hoist late Cursor CLI
+    // tools → finalizeOrphanSwarmPills → reconcileOrphanInvestigationCards.
     let items: Item[] = [
       { kind: "msg", msg: { role: "user", text: "go" } },
     ];
@@ -883,7 +884,10 @@ describe("streamApply module", () => {
     ];
     const liveIds: string[] = [];
     const next = reconcileOrphanInvestigationCards(
-      finalizeOrphanSwarmPills(sealOpenStreamSurfaces(items), liveIds),
+      finalizeOrphanSwarmPills(
+        hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(items)),
+        liveIds,
+      ),
       liveIds,
     );
 

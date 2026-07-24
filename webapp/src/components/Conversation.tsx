@@ -17,7 +17,7 @@ import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
 
 import { writeTranscriptCache } from "./conversation/transcriptCache";
 import { transcriptResponseToItems } from "./conversation/transcriptItems";
-import { newThinkingId } from "./conversation/thinkingToolPrep";
+import { hoistCardsBeforeTrailingFinals, newThinkingId } from "./conversation/thinkingToolPrep";
 import {
   type MentionListingCap,
   mergeSlashCommands,
@@ -1975,7 +1975,10 @@ export default function Conversation({
     // pilot/reasoning surface before folding orphan swarm/investigation cards.
     setItems((p) =>
       reconcileOrphanInvestigationCards(
-        finalizeOrphanSwarmPills(sealOpenStreamSurfaces(p), liveIds),
+        finalizeOrphanSwarmPills(
+          hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+          liveIds,
+        ),
         liveIds,
       ),
     );

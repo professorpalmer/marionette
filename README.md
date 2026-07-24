@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.129, deliberately pre-1.0. LeftRail Archive is back alongside Settle — independent durable flags (inbox triage vs deeper shelf); archived sessions leave the project tree for the global Archived section. Rides puppetmaster-ai==1.20.10.
+> Status: v0.9.130, deliberately pre-1.0. Cursor CLI late tool_call events hoist above a flushed finale (Explored no longer renders under the answer); Archive + Settle remain independent. Rides puppetmaster-ai==1.20.10.
 
 ## Documentation
 

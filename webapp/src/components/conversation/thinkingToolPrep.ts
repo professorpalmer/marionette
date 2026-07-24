@@ -277,11 +277,31 @@ export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
 }
 
 /**
- * Insert index for a new tool/prep card: always append after every existing
- * item in the turn. Live streaming is chronological / append-only — never
- * leapfrog sealed finals or insert above already-rendered narration.
+ * Insert index for a new tool/prep card.
+ *
+ * Default is append (chronological). Cursor CLI/ACP often flushes a sealed
+ * final-looking answer before buffered tool_call events — slot the new card
+ * immediately before that trailing finale (scanning past already-late
+ * cards/thinking) so Explored does not render under the summary.
  */
-function toolPrepInsertIndex(items: Item[], _turnStart: number): number {
+function toolPrepInsertIndex(items: Item[], turnStart: number): number {
+  for (let i = items.length - 1; i >= turnStart; i--) {
+    const it = items[i];
+    if (it.kind === "msg" && it.msg.role === "user") break;
+    if (isSealedFinalAssistant(it)) {
+      return i;
+    }
+    if (
+      it.kind === "card"
+      || it.kind === "thinking"
+      || it.kind === "tool_prep"
+      || it.kind === "swarm_result"
+      || it.kind === "codegraph_context"
+    ) {
+      continue;
+    }
+    break;
+  }
   return items.length;
 }
 

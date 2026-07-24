@@ -67,6 +67,28 @@ def test_persist_cursor_tool_prep_inserts_before_trailing_assistant():
     assert session._display_transcript[2]["text"] == "Done."
 
 
+def test_persist_cursor_tool_prep_in_progress_also_slots_before_finale():
+    """Started (not only completed) late tools must not append under the answer."""
+    cfg = HarnessConfig()
+    session = ConversationalSession(cfg)
+    session._display_transcript = [
+        {"type": "message", "role": "user", "text": "go"},
+        {"type": "message", "role": "assistant", "text": "Ship-ready summary."},
+    ]
+    session._persist_cursor_tool_prep({
+        "name": "Read",
+        "goal": "LeftRail.tsx",
+        "id": "call-started",
+        "status": "in_progress",
+    })
+    assert [r.get("type") for r in session._display_transcript] == [
+        "message", "card", "message",
+    ]
+    assert session._display_transcript[1]["call_id"] == "call-started"
+    assert session._display_transcript[1]["result"] is None
+    assert session._display_transcript[2]["text"] == "Ship-ready summary."
+
+
 def test_persist_cursor_tool_prep_preserves_pre_tool_narration():
     """Pre-tool narration stays above a late card; only the final prose sits below."""
     cfg = HarnessConfig()

@@ -181,18 +181,20 @@ class SendLoopMixin:
             else:
                 card["result"] = {"status": "complete"}
 
-        # Late first card: slot immediately before the final trailing assistant
-        # of this turn so pre-tool narration stays above the card. Multiple
-        # late call_ids stack in arrival order before that final message.
+        # Late first card (started or completed): slot immediately before the
+        # rightmost assistant of this turn. Cursor CLI often flushes final prose
+        # before buffered tool_call events — appending after that readout puts
+        # Explored under the summary. Multiple late call_ids stack in arrival
+        # order before that final message; pre-tool narration stays above.
         insert_at = len(display)
-        if terminal:
-            for i in range(len(display) - 1, turn_start - 1, -1):
-                row = display[i]
-                if not isinstance(row, dict):
-                    break
-                if row.get("type") == "message" and row.get("role") == "assistant":
-                    insert_at = i
-                    break
+        for i in range(len(display) - 1, turn_start - 1, -1):
+            row = display[i]
+            if not isinstance(row, dict):
+                continue
+            if row.get("type") == "message" and row.get("role") == "user":
+                break
+            if row.get("type") == "message" and row.get("role") == "assistant":
+                insert_at = i
                 break
         display.insert(insert_at, card)
         return card
