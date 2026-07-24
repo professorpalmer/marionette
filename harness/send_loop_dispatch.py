@@ -139,19 +139,38 @@ _UNTRACKED_PM_START_TOOLS = frozenset({
     "start_browser_swarm",
     "start_openai",
     "start_prewalk",
+    # Sync MCP wait verbs (after stripping puppetmaster_).
+    "cursor_implement",
+    "claude_implement",
+    "cursor_swarm",
+})
+
+# Short names that collide with other MCP servers — only refuse when the
+# original tool id was Puppetmaster-scoped.
+_UNTRACKED_PM_AMBIGUOUS = frozenset({
+    "codex",
+    "agentic",
+    "openai",
 })
 
 
 def is_untracked_pm_start_tool(tool: str) -> bool:
-    """True when ``tool`` is a Puppetmaster start_* verb that skips the tracker."""
-    t = (tool or "").strip().lower().replace("-", "_")
-    if not t:
+    """True when ``tool`` is a Puppetmaster start_* / sync implement verb that skips the tracker."""
+    raw = (tool or "").strip().lower().replace("-", "_")
+    if not raw:
         return False
+    pm_scoped = "puppetmaster" in raw
+    t = raw
     if "/" in t:
         t = t.rsplit("/", 1)[-1]
     if t.startswith("puppetmaster_"):
         t = t[len("puppetmaster_"):]
-    return t in _UNTRACKED_PM_START_TOOLS
+        pm_scoped = True
+    if t in _UNTRACKED_PM_START_TOOLS:
+        return True
+    if t in _UNTRACKED_PM_AMBIGUOUS:
+        return pm_scoped
+    return False
 
 
 _TRACKABLE_SWARM_REFUSAL = (

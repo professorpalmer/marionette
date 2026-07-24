@@ -504,6 +504,10 @@ def test_is_untracked_pm_start_tool():
     assert is_untracked_pm_start_tool("puppetmaster_start_cursor_swarm")
     assert is_untracked_pm_start_tool("user-puppetmaster/start_implement")
     assert is_untracked_pm_start_tool("start_swarm")
+    assert is_untracked_pm_start_tool("puppetmaster_cursor_implement")
+    assert is_untracked_pm_start_tool("cursor_implement")
+    assert is_untracked_pm_start_tool("puppetmaster_codex")
+    assert not is_untracked_pm_start_tool("codex")  # ambiguous without PM scope
     assert not is_untracked_pm_start_tool("puppetmaster_codegraph_search")
     assert not is_untracked_pm_start_tool("query_wiki")
     assert not is_untracked_pm_start_tool("")

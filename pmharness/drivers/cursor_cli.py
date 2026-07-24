@@ -134,6 +134,10 @@ def _agent_child_env() -> dict:
     env["PATH"] = os.pathsep.join(parts)
     # Pin the interpreter Agent shells should prefer when they expand `python`.
     env.setdefault("HARNESS_PYTHON", sys.executable)
+    # Hard-refuse Puppetmaster MCP start_*/implement verbs in Agent grandchildren
+    # (prompt-only bans are not enough — Agent calls MCP directly). Shell swarm
+    # + cli_job_merge remain the trackable path. Puppetmaster reads this flag.
+    env["MARIONETTE_TRACKABLE_SWARMS"] = "1"
     return env
 
 
@@ -510,6 +514,14 @@ def consume_stream_json(
         if not isinstance(event, dict):
             continue
 
+        # Usage can land on assistant/result/system — capture before any
+        # branch ``continue`` so StatusBar meters are not stuck at 0.
+        usage_blob = (
+            event.get("usage") or event.get("tokenUsage") or event.get("token_usage")
+        )
+        if isinstance(usage_blob, dict) and usage_blob:
+            usage = usage_blob
+
         etype = event.get("type")
         if etype == "system" and event.get("subtype") == "init":
             session_id = str(event.get("session_id") or session_id)
@@ -587,8 +599,6 @@ def consume_stream_json(
                 error = str(event.get("result") or event.get("error") or "cursor-cli error")
             else:
                 final_result_text = str(event.get("result") or "")
-            if isinstance(event.get("usage"), dict):
-                usage = event["usage"]
             continue
 
     accumulated = "".join(text_parts)

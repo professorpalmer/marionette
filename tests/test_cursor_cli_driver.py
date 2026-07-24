@@ -79,6 +79,26 @@ def test_consume_partial_deltas_and_skip_flushes():
     assert parsed["error"] is None
 
 
+def test_consume_stream_json_keeps_usage_from_non_result_events():
+    """Cursor sometimes emits usage before the terminal result event."""
+    lines = [
+        json.dumps({
+            "type": "assistant",
+            "timestamp_ms": 1,
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            "usage": {"inputTokens": 50, "outputTokens": 3, "cacheReadTokens": 200},
+        }),
+        json.dumps({
+            "type": "result",
+            "is_error": False,
+            "result": "hi",
+        }),
+    ]
+    parsed = consume_stream_json(lines, expect_partial=True)
+    assert parsed["usage"]["inputTokens"] == 50
+    assert parsed["usage"]["cacheReadTokens"] == 200
+
+
 def test_consume_tool_hint_unwraps_generic_tool_key():
     lines = [
         json.dumps({
@@ -308,6 +328,7 @@ def test_agent_child_env_puts_harness_python_first(monkeypatch, tmp_path):
     parts = (env.get("PATH") or "").split(os.pathsep)
     assert parts[0] == scripts
     assert env.get("HARNESS_PYTHON") == sys.executable
+    assert env.get("MARIONETTE_TRACKABLE_SWARMS") == "1"
 
     fake_bin = tmp_path / "agent.exe"
     fake_bin.write_text("x", encoding="utf-8")
