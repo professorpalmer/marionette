@@ -144,3 +144,46 @@ def test_send_recovers_wedged_thinking_via_send_stale(monkeypatch):
     events = list(s.send("hello after wedge"))
     busy = [e for e in events if e.kind == "error" and "busy" in str(e.data.get("error", ""))]
     assert not busy, f"send-path stale recovery failed: {busy}"
+
+
+def test_reap_keeps_busy_since_when_release_fails(monkeypatch):
+    """If release raises RuntimeError, keep _busy_since so a later reap can retry."""
+    monkeypatch.setenv("HARNESS_TURN_DEADLINE_SECONDS", "1")
+    s = _session()
+
+    class BoomLock:
+        def acquire(self, blocking=False):
+            return True
+
+        def release(self):
+            raise RuntimeError("not held")
+
+    s._busy = BoomLock()
+    s._busy_since = time.monotonic() - 100.0
+    s._state = "thinking"
+    s._busy_gen = 1
+    since_before = s._busy_since
+    assert s._reap_stuck_turn() is False
+    assert s._busy_since == since_before
+    # Generation still advanced so a late holder's finally is a no-op.
+    assert s._busy_gen == 2
+
+
+def test_send_stale_recovers_even_if_on_interrupt_raises(monkeypatch):
+    """on_interrupt failures must not leave the send-stale path wedged."""
+    monkeypatch.setenv("HARNESS_SEND_STALE_SECONDS", "2")
+    monkeypatch.setenv("HARNESS_TURN_DEADLINE_SECONDS", "600")
+    s = _session()
+    s._busy.acquire(blocking=False)
+    s._mark_busy_acquired()
+    s._busy_since = time.monotonic() - 5.0
+    s._state = "thinking"
+
+    class BoomPilot:
+        def on_interrupt(self):
+            raise RuntimeError("interrupt hook exploded")
+
+    s.pilot = BoomPilot()
+    events = list(s.send("hello after boom interrupt"))
+    busy = [e for e in events if e.kind == "error" and "busy" in str(e.data.get("error", ""))]
+    assert not busy, f"on_interrupt raise left session busy: {busy}"

@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.131, deliberately pre-1.0. Swarm Tracker honesty: fail-closed findings gate, register-before-swarm_pending, refuse untracked MCP start_*; Cursor CLI kernel steers shell swarm; Electron unit tests in CI. Rides puppetmaster-ai==1.20.10.
+> Status: v0.9.132, deliberately pre-1.0. Wedged-turn reap keeps `_busy_since` until release succeeds; send-stale recovers even if on_interrupt raises; analysis structured gate fails closed on exception (no early run_auto halt on mid-thought prose). Rides puppetmaster-ai==1.20.10.
 
 ## Documentation
 

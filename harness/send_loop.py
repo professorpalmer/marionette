@@ -244,8 +244,12 @@ class SendLoopMixin:
                 try:
                     if self._reap_stuck_turn():
                         stale = True
-                except Exception:
-                    pass
+                except Exception as exc:
+                    try:
+                        from harness.diag import note as _diag_note
+                        _diag_note("send_loop.reap_stuck_turn", exc)
+                    except Exception:
+                        pass
             # Shorter send-path recovery for wedged thinking/executing turns
             # (default 180s). Without this, users wait the full 600s reap.
             # Intentional race window: the interrupted turn's generator/finally may
@@ -267,8 +271,14 @@ class SendLoopMixin:
                         on_int = getattr(pilot, "on_interrupt", None)
                         if callable(on_int):
                             on_int()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        try:
+                            from harness.diag import note as _diag_note
+                            _diag_note("send_loop.on_interrupt_stale", exc)
+                        except Exception:
+                            pass
+                    # Always force-unwedge after the send-stale window even when
+                    # on_interrupt raises — prefer recover-over-wedge.
                     stale = True
             if stale:
                 self._interrupt_requested = False

@@ -394,24 +394,34 @@ def _analysis_output_is_structured(
 
     Returns ``(ok, degrade_reason)``. Reasoning-only / empty / no_tool_calls
     outputs must fail so they never surface as a clean completed artifact.
+    Outer failures fail closed (never treat opaque exceptions as structured).
     """
-    text = (last_message or "").strip()
-    halt = (halt_reason or "").strip().lower()
-    # no_tool_calls only fails closed when there is no body to evaluate; a
-    # later FINDING summary must not be discarded by a stale halt tag.
-    if "no_tool_calls" in halt and not text:
-        return False, "no structured findings (no_tool_calls)"
-    if not text:
-        return False, "no structured findings"
     try:
-        from pmharness.bridge import _looks_like_reasoning_fragment
-        if _looks_like_reasoning_fragment(text):
-            return False, "no structured findings (reasoning only)"
+        text = (last_message or "").strip()
+        halt = (halt_reason or "").strip().lower()
+        # no_tool_calls only fails closed when there is no body to evaluate; a
+        # later FINDING summary must not be discarded by a stale halt tag.
+        if "no_tool_calls" in halt and not text:
+            return False, "no structured findings (no_tool_calls)"
+        if not text:
+            return False, "no structured findings"
+        try:
+            from pmharness.bridge import _looks_like_reasoning_fragment
+            if _looks_like_reasoning_fragment(text):
+                return False, "no structured findings (reasoning only)"
+        except Exception:
+            low = text.lower()
+            if (
+                low.startswith("now let me")
+                or low.startswith("let me look")
+                or low.startswith("let me check")
+                or low.startswith("i'll look")
+                or low.startswith("i will look")
+            ):
+                return False, "no structured findings (reasoning only)"
+        return True, ""
     except Exception:
-        low = text.lower()
-        if low.startswith("now let me") or low.startswith("let me look"):
-            return False, "no structured findings (reasoning only)"
-    return True, ""
+        return False, "no structured findings"
 
 
 def _pick_analysis_message(events: list) -> tuple[str, str]:

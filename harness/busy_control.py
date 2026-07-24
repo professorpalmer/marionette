@@ -254,13 +254,16 @@ class BusyControlMixin:
             if held <= deadline:
                 return False
             # Reap: bump the generation so the stale holder's _release_busy is a
-            # no-op, then free the lock and reset visible state.
+            # no-op, then free the lock and reset visible state. Clear
+            # ``_busy_since`` only after a successful release — clearing first
+            # then failing RuntimeError left the lock held with since=0 so
+            # later reaps could never fire again.
             self._busy_gen += 1
-            self._busy_since = 0.0
             try:
                 self._busy.release()
             except RuntimeError:
                 return False
+            self._busy_since = 0.0
         try:
             self._state = "idle"
         except Exception:

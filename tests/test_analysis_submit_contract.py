@@ -85,6 +85,69 @@ def test_analysis_output_helper_rejects_reasoning_only():
     assert ok3 is True
     assert reason3 == ""
 
+    # Outer gate failures fail closed (never paint structured on crash).
+    ok4, reason4 = _analysis_output_is_structured(object())  # type: ignore[arg-type]
+    assert ok4 is False
+    assert "no structured findings" in reason4
+
+
+def test_analysis_mode_gate_crash_does_not_early_halt(monkeypatch):
+    """run_auto analysis must not halt as findings-submitted if the gate raises."""
+    from harness.autobudget import AutoBudget
+    from harness.config import HarnessConfig
+    import harness.worker as worker_mod
+
+    cfg = HarnessConfig()
+    cfg.swarm_adapter = "demo"
+    cfg.repo = ""
+    session = ConversationalSession(cfg)
+    cycles: list[str] = []
+
+    def fake_send(self, msg):
+        cycles.append(msg)
+        if len(cycles) == 1:
+            yield ConvEvent("message", {"text": "non-empty mid-thought prose"})
+            yield ConvEvent("assistant_done", {"turns": 1})
+        else:
+            yield ConvEvent(
+                "message",
+                {
+                    "text": (
+                        "FINDING: harness/conversation.py:2955 fail-closed "
+                        "structured gate on exception."
+                    )
+                },
+            )
+            yield ConvEvent("assistant_done", {"turns": 2})
+
+    # First cycle: gate raises (must not early-halt). Later: real gate so FINDING lands.
+    real_gate = _analysis_output_is_structured
+    calls = {"n": 0}
+
+    def gate_then_real(last_message, *, halt_reason=""):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("gate exploded")
+        return real_gate(last_message, halt_reason=halt_reason)
+
+    monkeypatch.setattr(worker_mod, "_analysis_output_is_structured", gate_then_real)
+    monkeypatch.setattr(ConversationalSession, "send", fake_send)
+    budget = AutoBudget(
+        max_tokens=100000, max_seconds=60, max_swarms=2, max_idle_steps=5,
+    )
+    events = list(
+        session.run_auto(
+            "audit auth",
+            budget=budget,
+            require_codegraph=False,
+            analysis_mode=True,
+        )
+    )
+    halt = [e for e in events if e.kind == "auto_halt"][-1]
+    assert "findings submitted" in (halt.data.get("reason") or "")
+    assert len(cycles) >= 2
+    assert calls["n"] >= 2
+
 
 def test_worker_reasoning_only_analysis_fails(monkeypatch):
     """expects_diff=False + reasoning-only last message => ok=False, no headline."""

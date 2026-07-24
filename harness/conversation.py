@@ -2952,7 +2952,9 @@ class ConversationalSession(
                             last_cycle_message,
                         )
                     except Exception:
-                        structured_ok = bool((last_cycle_message or "").strip())
+                        # Fail closed: a gate crash must not early-halt run_auto
+                        # on non-empty mid-thought prose.
+                        structured_ok = False
                     if structured_ok:
                         yield ConvEvent("auto_halt", {
                             "reason": "analysis findings submitted",
