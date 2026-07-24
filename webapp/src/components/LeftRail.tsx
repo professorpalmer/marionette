@@ -98,7 +98,8 @@ export function canSettleSessionsForProject(
 
 /**
  * Split project-scoped sessions into open (inbox) vs settled.
- * Durable flag is independent `session.settled` (not archived).
+ * `settled` and `archived` are independent durable flags. Archived rows are
+ * excluded here — they live in the global Archived section, not the project tree.
  * Rootless orphans only appear under the active workspace row.
  */
 export function partitionProjectSessions(
@@ -114,6 +115,7 @@ export function partitionProjectSessions(
   const open: Session[] = [];
   const settled: Session[] = [];
   for (const s of scoped) {
+    if (s.archived) continue;
     if (s.settled) settled.push(s);
     else open.push(s);
   }
@@ -152,6 +154,29 @@ export function patchSessionSettledInCaches(
     write(
       key,
       cached.map((s) => (s.id === sessionId ? { ...s, settled } : s)),
+    );
+    touched += 1;
+  }
+  return touched;
+}
+
+/** Optimistically flip durable `archived` on every per-root sessions cache that holds the id. */
+export function patchSessionArchivedInCaches(
+  roots: string[],
+  sessionId: string,
+  archived: boolean,
+  read: (key: string) => Session[] | undefined = readSWRCache,
+  write: (key: string, data: Session[]) => void = writeSWRCache,
+): number {
+  let touched = 0;
+  for (const root of roots) {
+    if (!root) continue;
+    const key = `sessions:${root}`;
+    const cached = read(key);
+    if (!cached || !cached.some((s) => s.id === sessionId)) continue;
+    write(
+      key,
+      cached.map((s) => (s.id === sessionId ? { ...s, archived } : s)),
     );
     touched += 1;
   }
@@ -253,6 +278,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     y: number;
     sessionId: string;
     settled: boolean;
+    archived: boolean;
     running: boolean;
     /** False when browsing a non-active project (API would 403). */
     canSettle: boolean;
@@ -268,6 +294,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       return {};
     }
   });
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
   const settleUndoRef = useRef<{ sid: string; priorSettled: boolean } | null>(null);
   const bankAllRef = useRef<Session[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -860,8 +887,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       const rows = await api.sessionsBank({ limit: 80 });
       const all = Array.isArray(rows) ? rows : [];
       bankAllRef.current = all;
-      // Recent stays active-primary; settled rows remain available for search labels.
-      setBankSessions(all.filter((s) => !s.settled));
+      // Recent stays active-primary; settled/archived remain available for search labels.
+      setBankSessions(all.filter((s) => !s.settled && !s.archived));
     } catch {
       bankAllRef.current = [];
       setBankSessions([]);
@@ -1029,6 +1056,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       y: e.clientY,
       sessionId: s.id,
       settled: !!s.settled,
+      archived: !!s.archived,
       running: runners[s.id] === "running",
       canSettle: allowSettle,
     });
@@ -1043,7 +1071,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     }
   };
 
-  const settledSessions = sessions.filter((s) => s.settled);
+  const settledSessions = sessions.filter((s) => s.settled && !s.archived);
+  const archivedSessions = sessions.filter((s) => s.archived);
 
   const settleSession = async (sid: string, settled: boolean) => {
     const roots = projectsRef.current.filter(Boolean);
@@ -1072,6 +1101,32 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         detail
           ? `Could not ${settled ? "settle" : "unsettle"} session: ${detail}`
           : `Could not ${settled ? "settle" : "unsettle"} session`,
+      );
+      await refreshSessionsRef.current();
+    }
+  };
+
+  const archiveSession = async (sid: string, archived: boolean) => {
+    const roots = projectsRef.current.filter(Boolean);
+    const prior = sessions.find((s) => s.id === sid)?.archived
+      ?? readSWRCache<Session[]>(`sessions:${currentRepo}`)?.find((s) => s.id === sid)?.archived
+      ?? !archived;
+    patchSessionArchivedInCaches(roots, sid, archived);
+    setSessionsCacheEpoch((n) => n + 1);
+    try {
+      await api.archiveSession(sid, archived);
+      await refreshSessionsRef.current();
+      if (railTab === "sessions") void refreshBankSessions();
+    } catch (err) {
+      console.error(err);
+      patchSessionArchivedInCaches(roots, sid, !!prior);
+      setSessionsCacheEpoch((n) => n + 1);
+      const e = err as { message?: string; error?: string } | undefined;
+      const detail = String(e?.error || e?.message || err || "").trim();
+      toast(
+        detail
+          ? `Could not ${archived ? "archive" : "unarchive"} session: ${detail}`
+          : `Could not ${archived ? "archive" : "unarchive"} session`,
       );
       await refreshSessionsRef.current();
     }
@@ -1238,7 +1293,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     clampToViewport();
     window.addEventListener("resize", clampToViewport);
     return () => window.removeEventListener("resize", clampToViewport);
-  }, [settledSessions.length, workspaceInfo?.is_git, projects.length, sessionJobsCollapsed, sessionJobsHeight, workspaces.length]);
+  }, [archivedExpanded, archivedSessions.length, settledSessions.length, workspaceInfo?.is_git, projects.length, sessionJobsCollapsed, sessionJobsHeight, workspaces.length]);
 
   const toggleSessionJobsCollapsed = () => {
     setSessionJobsCollapsed((v) => {
@@ -1755,6 +1810,64 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       </div>
       )}
 
+      {/* ARCHIVED SESSIONS — deeper shelf than Settled; independent of settle. */}
+      {railTab === "projects" && archivedSessions.length > 0 && (
+        <Section title="Archived">
+          <button
+            type="button"
+            onClick={() => setArchivedExpanded(!archivedExpanded)}
+            className="w-full text-left px-2 py-1 text-[10px] uppercase tracking-wider text-faint font-medium hover:text-muted flex items-center justify-between focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent rounded"
+          >
+            <span>Sessions ({archivedSessions.length})</span>
+            {archivedExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          </button>
+          {archivedExpanded && (
+            <div className="mt-1 pl-1 border-l border-edge space-y-0.5">
+              {archivedSessions.map((s) => (
+                <div key={s.id} className="group relative">
+                  {renamingId === s.id ? (
+                    <input
+                      type="text"
+                      value={renamingTitle}
+                      onChange={(e) => setRenamingTitle(e.target.value)}
+                      onBlur={() => handleRenameSubmit(s.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          handleRenameSubmit(s.id);
+                        } else if (e.key === "Escape") {
+                          setRenamingId(null);
+                        }
+                      }}
+                      autoFocus
+                      className="w-full bg-bg border border-accent rounded px-2 py-1 text-[12px] text-txt focus:outline-none"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                      disabled={!!switchingSessionId || opening}
+                      onDoubleClick={() => {
+                        setRenamingId(s.id);
+                        setRenamingTitle(s.title || "Untitled");
+                      }}
+                      onContextMenu={(e) => handleContextMenu(e, s, true)}
+                      className={`w-full text-left rounded px-2 py-1 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
+                        ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted"}
+                        ${switchingSessionId === s.id ? "opacity-70" : ""}`}
+                    >
+                      {switchingSessionId === s.id
+                        ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                        : <MessageSquare size={11} />}
+                      <span className="flex-1 truncate">{s.title || "Untitled"}</span>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
       {/* BRANCH SWITCHING / WORKSPACES */}
       {railTab === "projects" && workspaceInfo?.is_git && (
         <Section
@@ -2036,6 +2149,16 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
               </button>
             </>
           ) : null}
+          <div className="border-t border-edge my-1" />
+          <button
+            onClick={async () => {
+              await archiveSession(contextMenu.sessionId, !contextMenu.archived);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          >
+            {contextMenu.archived ? "Unarchive" : "Archive"}
+          </button>
           <div className="border-t border-edge my-1" />
           {confirmDeleteId === contextMenu.sessionId ? (
             <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">

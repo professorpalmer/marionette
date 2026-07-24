@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, partitionProjectSessions, patchSessionSettledInCaches, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, partitionProjectSessions, patchSessionArchivedInCaches, patchSessionSettledInCaches, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -452,15 +452,17 @@ describe("LeftRail session list contracts", () => {
       { id: "open-1", title: "Live", created: 3, repo: root, workspace_root: root, settled: false },
       { id: "settled-1", title: "Done", created: 2, repo: root, workspace_root: root, settled: true },
       { id: "archived-only", title: "Archived", created: 2.5, repo: root, workspace_root: root, archived: true, settled: false },
+      { id: "settled-and-archived", title: "Both", created: 2.2, repo: root, workspace_root: root, archived: true, settled: true },
       { id: "orphan", title: "Orphan", created: 1, settled: false },
       { id: "other-open", title: "Other", created: 4, repo: other, workspace_root: other, settled: false },
     ];
     const active = partitionProjectSessions(rows, root, true);
-    expect(active.open.map((s) => s.id)).toEqual(["open-1", "archived-only", "orphan"]);
+    // Archived rows leave the project tree (global Archived section owns them).
+    expect(active.open.map((s) => s.id)).toEqual(["open-1", "orphan"]);
     expect(active.settled.map((s) => s.id)).toEqual(["settled-1"]);
 
     const inactive = partitionProjectSessions(rows, root, false);
-    expect(inactive.open.map((s) => s.id)).toEqual(["open-1", "archived-only"]);
+    expect(inactive.open.map((s) => s.id)).toEqual(["open-1"]);
     expect(inactive.settled.map((s) => s.id)).toEqual(["settled-1"]);
   });
 
@@ -482,5 +484,21 @@ describe("LeftRail session list contracts", () => {
 
     expect(patchSessionSettledInCaches([marionette], "sess-a", false)).toBe(1);
     expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.settled).toBe(false);
+  });
+
+  it("patchSessionArchivedInCaches flips archived without touching settled", () => {
+    const marionette = "C:\\Projects\\marionette";
+    writeSWRCache(`sessions:${marionette}`, [
+      { id: "sess-a", title: "A", created: 1, repo: marionette, workspace_root: marionette, settled: true, archived: false },
+    ]);
+
+    expect(patchSessionArchivedInCaches([marionette], "sess-a", true)).toBe(1);
+    const row = readSWRCache<Session[]>(`sessions:${marionette}`)?.[0];
+    expect(row?.archived).toBe(true);
+    expect(row?.settled).toBe(true);
+
+    expect(patchSessionArchivedInCaches([marionette], "sess-a", false)).toBe(1);
+    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.archived).toBe(false);
+    expect(readSWRCache<Session[]>(`sessions:${marionette}`)?.[0]?.settled).toBe(true);
   });
 });
