@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.133, deliberately pre-1.0. Cursor CLI/ACP usage meters expand uncached `inputTokens` with cache read/write so StatusBar tok/$ match Cursor's token sum (no more cache clamp to tiny uncached input). Rides puppetmaster-ai==1.20.10.
+> Status: v0.9.134, deliberately pre-1.0. repo_resolve: 30s cache TTL + preferred-child priority (marionette over pm-harness); cost fallback logs when registry pricing blows up to 0.5/2.0. Rides puppetmaster-ai==1.20.10.
 
 ## Documentation
 

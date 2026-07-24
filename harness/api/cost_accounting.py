@@ -293,6 +293,21 @@ def _job_cost_is_unsplit(
     return float(tokens_total or 0.0) > 0.0
 
 
+def _log_price_fallback(where: str, err: BaseException) -> None:
+    """Surface silent 0.5/2.0 default pricing so registry misconfig is visible."""
+    try:
+        import logging
+
+        logging.getLogger("harness.cost").warning(
+            "price resolve fell back to default 0.5/2.0 MTok (%s): %s: %s",
+            where,
+            type(err).__name__,
+            err,
+        )
+    except Exception:
+        pass
+
+
 def _resolve_active_prices_with_source() -> tuple:
     """Per-Mtok (price_in, price_out, price_source) for the active driver."""
     from .cost import _cfg
@@ -309,7 +324,8 @@ def _resolve_active_prices_with_source() -> tuple:
                 None if raw_in is None or raw_out is None else src
             ),
         )
-    except Exception:
+    except Exception as exc:
+        _log_price_fallback("active", exc)
         return 0.5, 2.0, PRICE_SOURCE_DEFAULT
 
 
@@ -338,8 +354,8 @@ def _resolve_prices_for_runner_with_source(runner: Any) -> tuple:
                     None if raw_in is None or raw_out is None else src
                 ),
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_price_fallback("runner", exc)
     resolve_active = _server_attr(
         "_resolve_active_prices_with_source", _resolve_active_prices_with_source
     )

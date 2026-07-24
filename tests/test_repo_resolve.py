@@ -121,6 +121,72 @@ def test_preferred_name_case_insensitive(tmp_path):
     assert _norm(got) == _norm(str(marionette))
 
 
+def test_marionette_and_pm_harness_prefers_marionette(tmp_path):
+    """Two preferred basenames: priority order picks marionette over pm-harness."""
+    home = tmp_path / "home" / ".marionette"
+    home.mkdir(parents=True)
+    marionette = home / "marionette"
+    pm = home / "pm-harness"
+    wiki = home / "wiki"
+    marionette.mkdir()
+    pm.mkdir()
+    wiki.mkdir()
+    _git_init(str(marionette))
+    _git_init(str(pm))
+    _git_init(str(wiki))
+    got = resolve_effective_repo(str(home))
+    assert _norm(got) == _norm(str(marionette))
+
+
+def test_pm_harness_preferred_when_no_marionette_child(tmp_path):
+    home = tmp_path / "home" / ".marionette"
+    home.mkdir(parents=True)
+    pm = home / "pm-harness"
+    wiki = home / "wiki"
+    pm.mkdir()
+    wiki.mkdir()
+    _git_init(str(pm))
+    _git_init(str(wiki))
+    got = resolve_effective_repo(str(home))
+    assert _norm(got) == _norm(str(pm))
+
+
+def test_cache_expires_after_ttl(tmp_path, monkeypatch):
+    """Stale cache must re-probe so mid-session git layout changes apply."""
+    import harness.repo_resolve as rr
+
+    home = tmp_path / "home"
+    home.mkdir()
+    child = home / "only"
+    child.mkdir()
+    _git_init(str(child))
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(rr.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(rr, "_CACHE_TTL_SECONDS", 30.0)
+
+    first = resolve_effective_repo(str(home))
+    assert _norm(first) == _norm(str(child))
+
+    calls = {"n": 0}
+    real_listdir = os.listdir
+
+    def counting_listdir(path):
+        calls["n"] += 1
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", counting_listdir)
+    # Within TTL: cache hit.
+    clock["t"] = 1020.0
+    assert _norm(resolve_effective_repo(str(home))) == _norm(first)
+    assert calls["n"] == 0
+
+    # Past TTL: re-resolve.
+    clock["t"] = 1031.0
+    assert _norm(resolve_effective_repo(str(home))) == _norm(first)
+    assert calls["n"] >= 1
+
+
 def test_non_git_root_no_git_children_unchanged(tmp_path):
     home = tmp_path / "empty-home"
     home.mkdir()

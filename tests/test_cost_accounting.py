@@ -262,6 +262,28 @@ def test_resolve_active_prices_with_source_surfaces_default(monkeypatch):
     assert _spend_is_estimated("estimated", src) is True
 
 
+def test_resolve_active_prices_logs_on_registry_exception(monkeypatch, caplog):
+    """Registry blow-ups must not stay silent when falling back to 0.5/2.0."""
+    import logging
+
+    import harness.api.cost as cost_mod
+
+    class _Cfg:
+        driver = "broken/driver"
+
+    def _boom(_name):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(cost_mod, "_cfg", lambda: _Cfg())
+    monkeypatch.setattr(
+        "pmharness.registry.resolve_price", _boom, raising=False
+    )
+    with caplog.at_level(logging.WARNING, logger="harness.cost"):
+        pin, pout, src = _resolve_active_prices_with_source()
+    assert (pin, pout, src) == (0.5, 2.0, "default")
+    assert any("default 0.5/2.0" in r.message for r in caplog.records)
+
+
 def test_provider_override_keeps_spend_non_estimated():
     assert _spend_is_estimated("provider", "default") is False
     assert _spend_is_estimated("estimated", "live") is True

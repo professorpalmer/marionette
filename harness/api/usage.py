@@ -66,7 +66,17 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
         price_source = _normalize_price_source(
             None if raw_in is None or raw_out is None else _price_src
         )
-    except Exception:
+    except Exception as exc:
+        try:
+            import logging
+
+            logging.getLogger("harness.cost").warning(
+                "usage price resolve fell back to default 0.5/2.0 MTok: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+        except Exception:
+            pass
         price_in, price_out, price_source = 0.5, 2.0, "default"
     # Boot pill: process-lifetime meters (carry + ALL live runners), not
     # just the active view -- so attaching another session never drops

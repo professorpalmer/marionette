@@ -8,16 +8,23 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Optional
+import time
+from typing import Optional, Tuple
 
 from .paths import git_toplevel
 
 _cache_lock = threading.Lock()
-_cache: dict[str, str] = {}
+# key -> (resolved_path, expires_at_monotonic)
+_cache: dict[str, Tuple[str, float]] = {}
 
-# When Home has multiple first-level git children (e.g. marionette + wiki),
-# prefer these basenames (case-insensitive). Exactly one match wins.
-_PREFERRED_GIT_CHILD_NAMES = frozenset({"marionette", "pm-harness", "pmharness"})
+# Prefer these basenames (case-insensitive) when Home has multiple first-level
+# git children. First match in this order wins (marionette over pm-harness).
+_PREFERRED_GIT_CHILD_PRIORITY = ("marionette", "pm-harness", "pmharness")
+_PREFERRED_GIT_CHILD_NAMES = frozenset(_PREFERRED_GIT_CHILD_PRIORITY)
+
+# Short TTL so mid-session git layout changes (init child, delete .git) are
+# picked up without forcing every hot dispatch path to readdir + probe.
+_CACHE_TTL_SECONDS = 30.0
 
 
 def clear_effective_repo_cache() -> None:
@@ -34,14 +41,14 @@ def resolve_effective_repo(root: str) -> str:
     2. Else if ``root`` contains exactly one first-level child directory that
        is a git checkout (has a ``.git`` file or directory), return that child
        (Marionette Home layout).
-    3. Else if multiple git children exist, prefer a child whose basename
-       matches ``marionette`` / ``pm-harness`` / ``pmharness``
-       (case-insensitive). Exactly one preferred match wins; zero or multiple
-       preferred matches leave ``root`` unchanged (ambiguous).
+    3. Else if multiple git children exist, pick the highest-priority preferred
+       basename (``marionette`` > ``pm-harness`` > ``pmharness``,
+       case-insensitive). No preferred match leaves ``root`` unchanged.
     4. Anything else: return ``root`` unchanged.
 
-    Results are cached by normalized absolute path so hot dispatch paths do
-    not re-probe git or readdir every turn. Never mutates caller config.
+    Results are cached by normalized absolute path with a short TTL so hot
+    dispatch paths do not re-probe every turn, but mid-session git layout
+    changes still refresh. Never mutates caller config.
     """
     if not (root or "").strip():
         return root or ""
@@ -49,13 +56,16 @@ def resolve_effective_repo(root: str) -> str:
         key = os.path.normpath(os.path.abspath(root))
     except Exception:
         key = (root or "").strip()
+    now = time.monotonic()
     with _cache_lock:
         cached = _cache.get(key)
         if cached is not None:
-            return cached
+            result, expires = cached
+            if now < expires:
+                return result
     result = _resolve_uncached(key)
     with _cache_lock:
-        _cache[key] = result
+        _cache[key] = (result, time.monotonic() + float(_CACHE_TTL_SECONDS))
     return result
 
 
@@ -65,14 +75,14 @@ def _is_git_checkout(path: str) -> bool:
 
 
 def _preferred_git_child(git_children: list[str]) -> Optional[str]:
-    """Return the sole preferred-name git child, or None if none/ambiguous."""
-    preferred = [
-        child
-        for child in git_children
-        if os.path.basename(child).lower() in _PREFERRED_GIT_CHILD_NAMES
-    ]
-    if len(preferred) == 1:
-        return preferred[0]
+    """Return the highest-priority preferred-name git child, or None."""
+    by_name = {
+        os.path.basename(child).lower(): child for child in git_children
+    }
+    for name in _PREFERRED_GIT_CHILD_PRIORITY:
+        child = by_name.get(name)
+        if child is not None:
+            return child
     return None
 
 
