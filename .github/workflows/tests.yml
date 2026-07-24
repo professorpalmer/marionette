@@ -46,7 +46,7 @@ jobs:
           # Floor matches the accounting/routing fixes this release needs.
           # Unpinned `puppetmaster-ai` + pip cache can leave CI on an older
           # wheel (e.g. 1.14.0) and fail fallback-pricing regressions.
-          pip install -e ".[dev]" "puppetmaster-ai==1.20.10"
+          pip install -e ".[dev]" "puppetmaster-ai==1.21.0"
 
       # full_auto_safety modules already run inside this job via conftest
       # auto-tagging; a separate named job was redundant PR compute.

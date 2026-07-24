@@ -51,7 +51,7 @@ architecture gap; no core change required.
 2. The driver loop's contract is exact: emit a structured intent that maps to
    `Orchestrator.run` args; fold `RunResult.artifacts` back. That is the entire
    token-thesis mechanism, and it is concrete.
-3. Puppetmaster runtime is pinned at `puppetmaster-ai==1.20.10` (CI,
+3. Puppetmaster runtime is pinned at `puppetmaster-ai==1.21.0` (CI,
    desktop bootstrap, and CONTRIBUTING); the old 0.9.x wiki note is obsolete.
 
 ## Stage 2 -- The driver eval rig (built, green offline)
