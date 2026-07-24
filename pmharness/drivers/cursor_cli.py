@@ -89,20 +89,52 @@ Code / context (in this order — do not Grep/Glob-crawl the tree first):
 3. NEVER call puppetmaster_start_* / start_implement / start_cursor_swarm via
    MCP. Those jobs bypass Marionette's Swarm Tracker (no swarm_pending /
    local register) and look like "All swarm jobs cleared".
-4. For multi-role audits that must appear in the Swarm Tracker, Shell:
-   python -m puppetmaster swarm "<goal>"
-   (detaches, prints job_id; CLI durable store is merged into the tracker).
+4. Prefer answering a focused audit from CodeGraph/wiki + reads. Only fan out
+   a multi-role swarm when the ask is broad ("audit the whole platform") AND
+   the user will watch Swarm Tracker. Then Shell (Marionette puts its venv
+   python first on PATH — do not hunt for another interpreter):
+   python -m puppetmaster swarm "<goal>" --cwd "<workspace>"
+   If that returns "invalid choice: swarm", use:
+   python -m puppetmaster run "<goal>" --workers explore audit review
+   (detaches / prints job_id; CLI durable store merges into the tracker).
 5. CodeGraph shell fallback if MCP is missing:
    python -m puppetmaster codegraph search '<query>'
    python -m puppetmaster codegraph context '<task>' --max-nodes 15 --format markdown
 Use Grep only for plain-text/config/log strings CodeGraph cannot see.
 
-Do not claim a swarm/audit succeeded when you only have routing/verification
-plumbing and no FINDING/RISK/DECISION content.
+Do not spend the turn debating swarm verbs / tracker rules. Do not claim a
+swarm/audit succeeded when you only have routing/verification plumbing and
+no FINDING/RISK/DECISION content.
 
 Your user message is already in this prompt. Never treat OS temp files
 (pmh-cursor-cli-*.txt or similar) as codebase tasks — do not read/grep them.
 """
+
+
+def _agent_child_env() -> dict:
+    """Env for the Agent CLI child — put Marionette's python ahead of PATH.
+
+    Cursor Agent Shell tools inherit this env. Without the harness venv first,
+    ``python -m puppetmaster swarm`` resolves to a stale system install that
+    predates the ``swarm`` verb (invalid choice) and the pilot thrash-loops.
+    """
+    env = dict(os.environ)
+    try:
+        scripts = str(Path(sys.executable).resolve().parent)
+    except OSError:
+        return env
+    if not scripts:
+        return env
+    path = env.get("PATH") or env.get("Path") or ""
+    parts = [p for p in path.split(os.pathsep) if p]
+    if scripts in parts:
+        parts = [scripts] + [p for p in parts if p != scripts]
+    else:
+        parts = [scripts] + parts
+    env["PATH"] = os.pathsep.join(parts)
+    # Pin the interpreter Agent shells should prefer when they expand `python`.
+    env.setdefault("HARNESS_PYTHON", sys.executable)
+    return env
 
 
 def resolve_cursor_execution_mode(*, plan: bool = False, explicit: str | None = None) -> str:
@@ -797,6 +829,7 @@ class CursorCliDriver:
             "stderr": subprocess.PIPE,
             "stdin": subprocess.DEVNULL,
             "cwd": workspace or self.cwd or None,
+            "env": _agent_child_env(),
             "text": True,
             "encoding": "utf-8",
             "errors": "replace",

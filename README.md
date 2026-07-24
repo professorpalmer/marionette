@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.137, deliberately pre-1.0. Cursor CLI Models refresh busts stale catalog so Opus 5 appears; rides puppetmaster-ai==1.21.0.
+> Status: v0.9.138, deliberately pre-1.0. Cursor CLI Agent PATH prefers Marionette venv so puppetmaster swarm works; rides puppetmaster-ai==1.21.0.
 
 ## Documentation
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 
 import pytest
 
@@ -292,6 +293,57 @@ def test_driver_chat_stream_mocked_subprocess(monkeypatch, tmp_path):
     # Kernel system — not Marionette's skills dump.
     assert "CodeGraph" in joined or "puppetmaster codegraph" in joined
     assert "HOST MODE CONTRACT" in joined
+
+
+def test_agent_child_env_puts_harness_python_first(monkeypatch, tmp_path):
+    """Shell `python -m puppetmaster swarm` must see Marionette's venv, not a
+    stale system install missing the swarm verb."""
+    from pmharness.drivers.cursor_cli import _agent_child_env
+    import sys
+    from pathlib import Path
+
+    scripts = str(Path(sys.executable).resolve().parent)
+    monkeypatch.setenv("PATH", f"C:\\stale-python{os.pathsep}C:\\Windows\\System32")
+    env = _agent_child_env()
+    parts = (env.get("PATH") or "").split(os.pathsep)
+    assert parts[0] == scripts
+    assert env.get("HARNESS_PYTHON") == sys.executable
+
+    fake_bin = tmp_path / "agent.exe"
+    fake_bin.write_text("x", encoding="utf-8")
+    stream = "\n".join([
+        json.dumps({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+            "timestamp_ms": 1,
+        }),
+        json.dumps({"type": "result", "is_error": False, "result": "ok"}),
+        "",
+    ])
+
+    class FakeProc:
+        returncode = 0
+        stdout = io.StringIO(stream)
+        stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return FakeProc()
+
+    monkeypatch.setattr("pmharness.drivers.cursor_cli.subprocess.Popen", fake_popen)
+    d = CursorCliDriver(name="cursor-cli:m", model="composer-2.5", agent_binary=str(fake_bin))
+    d.chat_stream([{"role": "user", "content": "hi"}], on_delta=lambda _t: None)
+    assert captured.get("env") is not None
+    path0 = (captured["env"].get("PATH") or "").split(os.pathsep)[0]
+    assert path0 == scripts
 
 
 def test_long_prompt_never_in_argv(monkeypatch, tmp_path):
