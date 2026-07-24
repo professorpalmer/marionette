@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.125, deliberately pre-1.0. Analysis worktrees commit a seed baseline so pre-existing untracked files are never reported as applied edits; worker token ceilings rise to 250k (auto tree 500k); run_implement / run_parallel goals open the terminal instead of the file editor; Codex tool hints carry call_id so orphan tool-prep shells stop settling as red missing action_result. Rides puppetmaster-ai==1.20.10.
+> Status: v0.9.126, deliberately pre-1.0. Read-only run_implement/run_parallel analysis no longer early-halts after one no-swarm cycle (structured FINDING/RISK/DECISION required); agentic analysis uses analyze mode instead of mode=implement so retries do not burn the 900s wall; seed baseline + worker budget lifts from 0.9.125 retained. Rides puppetmaster-ai==1.20.10.
 
 ## Documentation
 

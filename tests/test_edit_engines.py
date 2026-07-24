@@ -73,17 +73,27 @@ def _fake_managed_worktree(repo: str, base: str = "HEAD"):
         shutil.rmtree(wt, ignore_errors=True)
 
 
-def _install_agentic_mocks(monkeypatch, *, orchestrator_result=None, capture_payload=None):
+def _install_agentic_mocks(
+    monkeypatch, *, orchestrator_result=None, capture_payload=None,
+    capture_specs=None,
+):
     """Patch Puppetmaster + worktree so run_agentic_edit stays hermetic."""
     monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
     monkeypatch.setattr("harness.edit_engines.managed_worktree", _fake_managed_worktree)
     monkeypatch.setattr("harness.edit_engines.managed_worktree_for_goal", _fake_managed_worktree)
 
     storage: list[dict] = capture_payload if capture_payload is not None else []
+    specs_out: list[dict] = capture_specs if capture_specs is not None else []
 
     class _CapturingWorkerSpec:
         def __init__(self, role, instruction, adapter, payload):
             storage.append(payload)
+            specs_out.append({
+                "role": role,
+                "instruction": instruction,
+                "adapter": adapter,
+                "payload": payload,
+            })
             self.role = role
             self.instruction = instruction
             self.adapter = adapter
@@ -452,6 +462,74 @@ def test_agentic_payload_explicit_provider_and_model(monkeypatch):
         assert payload["auto_route"] is False
         assert "max_capability" not in payload
         assert "min_capability" not in payload
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_analysis_uses_analyze_payload_not_implement(monkeypatch):
+    """expects_diff=False must not stamp mode=implement (avoids 900s edit loop)."""
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        captured: list[dict] = []
+        specs: list[dict] = []
+        finding = _fake_artifact(
+            stdout=(
+                "FINDING: harness/edit_engines.py:330 analysis must use "
+                "read-only analyze mode."
+            ),
+            tokens_out=10,
+            tokens_in=5,
+        )
+        finding.type = "finding"
+        _install_agentic_mocks(
+            monkeypatch,
+            orchestrator_result=_fake_pm_result([finding]),
+            capture_payload=captured,
+            capture_specs=specs,
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("", []),
+        )
+        result = run_agentic_edit(cfg, "audit seed baseline", expects_diff=False)
+        assert result.ok is True
+        assert len(captured) == 1
+        payload = captured[0]
+        assert payload.get("mode") != "implement"
+        assert "mode" not in payload or payload.get("mode") != "implement"
+        assert payload.get("read_only") is True
+        assert payload.get("no_edit") is True
+        assert payload.get("max_turns", 0) >= 16
+        assert specs[0]["role"] == "explore"
+        assert "submit_findings" in (specs[0]["instruction"] or "")
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_analysis_empty_result_fails_structured_gate(monkeypatch):
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        _install_agentic_mocks(
+            monkeypatch,
+            orchestrator_result=_fake_pm_result([
+                _fake_artifact(
+                    stdout="Now let me look at the modules more carefully...",
+                    tokens_out=3,
+                    tokens_in=2,
+                    failure="empty_or_unstructured_agentic_result",
+                ),
+            ]),
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("", []),
+        )
+        result = run_agentic_edit(cfg, "audit auth", expects_diff=False)
+        assert result.ok is False
+        assert "no structured findings" in (result.error or result.summary or "")
+        assert "Now let me look" in (result.summary or "")
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)
 

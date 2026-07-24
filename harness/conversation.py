@@ -2779,14 +2779,25 @@ class ConversationalSession(
         return passed, output
 
     def run_auto(self, objective: str, budget: "AutoBudget" = None,
-                 *, require_codegraph: bool = True):
+                 *, require_codegraph: bool = True,
+                 analysis_mode: bool = False):
         """FULL-AUTO entry point. Thin wrapper that marks unattended mode for the
         duration of the run (so run_command applies the safety guard) and always
         resets it, even on exception or early return, so the next interactive
-        command is never wrongly gated."""
+        command is never wrongly gated.
+
+        ``analysis_mode``: leaf read-only workers never emit swarm findings, so
+        the default "no swarms => objective met" early halt must not fire; they
+        continue until a structured FINDING/RISK/DECISION summary or a budget
+        ceiling.
+        """
         self._auto_mode = True
         try:
-            yield from self._run_auto_inner(objective, budget, require_codegraph=require_codegraph)
+            yield from self._run_auto_inner(
+                objective, budget,
+                require_codegraph=require_codegraph,
+                analysis_mode=analysis_mode,
+            )
         finally:
             self._auto_mode = False
             # Drop the governing budget so the next interactive/supervised
@@ -2794,7 +2805,8 @@ class ConversationalSession(
             self._auto_budget = None
 
     def _run_auto_inner(self, objective: str, budget: "AutoBudget" = None,
-                 *, require_codegraph: bool = True):
+                 *, require_codegraph: bool = True,
+                 analysis_mode: bool = False):
         """FULLY-AUTO (unattended) mode: pursue an objective across many pilot
         turns WITHOUT user re-prompting, bounded by an AutoBudget governor. Yields
         the same ConvEvents as send(), plus 'auto_status' (governor snapshots) and
@@ -2854,9 +2866,14 @@ class ConversationalSession(
             # one pilot turn (send() drives say->act->react until it yields back)
             turn_findings_count = 0
             turn_had_retryable_error = False
+            last_cycle_message = ""
             tripped = None
             for ev in self.send(loop_msg):
                 # meter the governor off the stream
+                if ev.kind == "message":
+                    _msg = (ev.data.get("text") or "").strip()
+                    if _msg:
+                        last_cycle_message = _msg
                 if ev.kind == "action_result" and not ev.data.get("error"):
                     budget.add_swarm()
                     turn_findings_count += int(ev.data.get("num", 0) or 0)
@@ -2913,8 +2930,33 @@ class ConversationalSession(
             yield ConvEvent("auto_status", {"cycle": cycle, "snapshot": budget.snapshot()})
             # if the pilot finished a turn with no swarms at all, it considers the
             # objective met -> stop the autonomous loop.
+            # Analysis leaf workers never emit swarm findings; do not treat that
+            # as done until a structured FINDING/RISK/DECISION summary lands.
             if turn_findings_count == 0 and budget.idle_steps >= 1 and not turn_had_retryable_error:
-                if self.config.verify_cmd:
+                if analysis_mode:
+                    try:
+                        from harness.worker import _analysis_output_is_structured
+                        structured_ok, _ = _analysis_output_is_structured(
+                            last_cycle_message,
+                        )
+                    except Exception:
+                        structured_ok = bool((last_cycle_message or "").strip())
+                    if structured_ok:
+                        yield ConvEvent("auto_halt", {
+                            "reason": "analysis findings submitted",
+                            "snapshot": budget.snapshot(),
+                        })
+                        d = self._maybe_auto_distill()
+                        if d:
+                            yield ConvEvent("distilled", d)
+                        self._maybe_ingest(objective, [], [])
+                        return
+                    loop_msg = (
+                        "(system) Do not stop yet. End with a structured "
+                        "FINDING/RISK/DECISION summary citing file:line evidence. "
+                        "Do not end on planning or mid-thought reasoning alone."
+                    )
+                elif self.config.verify_cmd:
                     yield ConvEvent("verifying", {"cmd": self.config.verify_cmd})
                     passed, out = self._run_verification()
                     yield ConvEvent("verification", {"passed": passed, "output": out[:1000]})

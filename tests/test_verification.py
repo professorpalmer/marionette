@@ -125,7 +125,7 @@ def test_run_auto_verification_failing_with_retry(monkeypatch):
 def test_worker_run_tests_failing_and_passing(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:
-        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
             filepath = os.path.join(self.config.repo, "added_by_worker.txt")
             with open(filepath, "w") as f:
                 f.write("this is a new file created by the worker\n")

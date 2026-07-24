@@ -264,7 +264,8 @@ def run_native_edit(
 
     # Per-worker ceiling (Settings / HARNESS_WORKER_TOKEN_BUDGET), not the
     # full-auto tree ceiling — AutoBudget.from_env() used to starve analysis
-    # workers at 50k mid-turn.
+    # workers at 50k mid-turn. Analysis gets more idle headroom (no swarm
+    # findings to reset the stall counter).
     worker = ProviderWorker(
         config.repo, goal,
         driver=config.driver, reach=config.reach,
@@ -272,7 +273,7 @@ def run_native_edit(
             max_tokens=worker_token_budget(),
             max_seconds=900,
             max_swarms=2,
-            max_idle_steps=2,
+            max_idle_steps=5 if not expects_diff else 2,
         ),
         require_codegraph=False,
         job_id=job_id,
@@ -290,13 +291,16 @@ def run_agentic_edit(
     config: "HarnessConfig", goal: str, *, session_id: str = "", cwd: str = "",
     expects_diff: bool = True,
 ) -> "WorkerResult":
-    """Puppetmaster's first-class agentic adapter in implement mode, run in an
-    isolated worktree; the diff is captured for the normal review/apply gate.
+    """Puppetmaster agentic adapter in a managed worktree.
+
+    ``expects_diff=True`` (default): implement mode + patch capture.
+    ``expects_diff=False``: read-only analyze mode (submit_findings contract),
+    matching bridge agentic swarms — never ``mode=implement``.
 
     Never raises for a run failure -- it returns a WorkerResult whose ``error`` is
     one of the ``AGENTIC_*`` reasons so the dispatcher can fall back to native.
     """
-    from harness.worker import WorkerResult
+    from harness.worker import WorkerResult, _analysis_output_is_structured
     from harness.job_scoping import job_label_for_session, stamp_task_payload
 
     if not agentic_available():
@@ -323,47 +327,83 @@ def run_agentic_edit(
         repo_root = cwd or config.repo
         with managed_worktree_for_goal(repo_root, goal) as wt_path:
             from pmharness.bridge import (
+                _analysis_capability_payload,
+                _analysis_instruction,
+                _analyze_max_turns,
+                _has_real_structured_findings,
                 _router_supports_max_capability,
                 worker_token_budget,
             )
-            payload: dict = stamp_task_payload({
-                "mode": "implement",
-                "cwd": wt_path,
-                "prompt": goal,
-                "auto_route": not (provider and model),
-                "token_budget": worker_token_budget(),
-            }, session_id=session_id, cwd=wt_path)
-            if not (provider and model):
-                # Cost guardrail (mirrors the analysis-swarm cap in bridge.py):
-                # role="implement" has a high base score that first-picks the
-                # frontier model (opus, ~$15/$75 per Mtok). A balanced policy with
-                # a capability CEILING (max_capability, not min_capability --
-                # min would force every edit to the exact same score and pin one
-                # model) lands on a strong-but-far-cheaper coder that is more
-                # than capable of edits. Opt into frontier depth with
-                # HARNESS_IMPLEMENT_DEEP=1.
-                payload["routing_policy"] = "balanced"
-                if os.environ.get("HARNESS_IMPLEMENT_DEEP", "").strip() not in ("1", "true", "yes"):
-                    try:
-                        _cap = int(
-                            os.environ.get("HARNESS_IMPLEMENT_MAX_CAPABILITY", "86"))
-                    except (TypeError, ValueError):
-                        _cap = 86
-                    _cap_key = ("max_capability"
-                                if _router_supports_max_capability()
-                                else "min_capability")
-                    payload[_cap_key] = _cap
-            if provider:
-                payload["provider"] = provider
-            if model:
-                payload["model"] = model
 
-            spec = WorkerSpec(
-                role="implement",
-                instruction=goal,
-                adapter="agentic",
-                payload=payload,
-            )
+            if not expects_diff:
+                # Mirror bridge agentic analysis swarms: read-only analyze
+                # mode (no mode=implement) so the adapter does not burn the
+                # full-edit loop until the 900s wall deadline.
+                base_payload = {
+                    "read_only": True,
+                    "no_edit": True,
+                    "dry_run": True,
+                    "cwd": wt_path,
+                    "prompt": goal,
+                    "auto_route": True,
+                    "allowed_adapters": ["agentic"],
+                    "prefer_plan_billed": False,
+                    "max_turns": _analyze_max_turns(),
+                    "token_budget": worker_token_budget(),
+                    "routing_policy": "balanced",
+                    **_analysis_capability_payload(),
+                }
+                payload = stamp_task_payload(
+                    base_payload, session_id=session_id, cwd=wt_path,
+                )
+                instruction = _analysis_instruction(
+                    goal, wt_path, "explore", via_tool=True,
+                )
+                spec = WorkerSpec(
+                    role="explore",
+                    instruction=instruction,
+                    adapter="agentic",
+                    payload=payload,
+                )
+            else:
+                payload = stamp_task_payload({
+                    "mode": "implement",
+                    "cwd": wt_path,
+                    "prompt": goal,
+                    "auto_route": not (provider and model),
+                    "token_budget": worker_token_budget(),
+                }, session_id=session_id, cwd=wt_path)
+                if not (provider and model):
+                    # Cost guardrail (mirrors the analysis-swarm cap in bridge.py):
+                    # role="implement" has a high base score that first-picks the
+                    # frontier model (opus, ~$15/$75 per Mtok). A balanced policy with
+                    # a capability CEILING (max_capability, not min_capability --
+                    # min would force every edit to the exact same score and pin one
+                    # model) lands on a strong-but-far-cheaper coder that is more
+                    # than capable of edits. Opt into frontier depth with
+                    # HARNESS_IMPLEMENT_DEEP=1.
+                    payload["routing_policy"] = "balanced"
+                    if os.environ.get("HARNESS_IMPLEMENT_DEEP", "").strip() not in ("1", "true", "yes"):
+                        try:
+                            _cap = int(
+                                os.environ.get("HARNESS_IMPLEMENT_MAX_CAPABILITY", "86"))
+                        except (TypeError, ValueError):
+                            _cap = 86
+                        _cap_key = ("max_capability"
+                                    if _router_supports_max_capability()
+                                    else "min_capability")
+                        payload[_cap_key] = _cap
+                if provider:
+                    payload["provider"] = provider
+                if model:
+                    payload["model"] = model
+
+                spec = WorkerSpec(
+                    role="implement",
+                    instruction=goal,
+                    adapter="agentic",
+                    payload=payload,
+                )
             # The PM sqlite store is scratch state for this single inline run.
             # Map any structured tool/action events BEFORE deleting the store;
             # never parse prose/stdout. Without the rmtree every agentic
@@ -403,9 +443,37 @@ def run_agentic_edit(
                         events=list(mapped_events),
                     ), result)
                 if not expects_diff:
+                    # Gate on structured findings — never green "No summary".
+                    try:
+                        from pmharness.bridge import _compact_artifact
+                        compact = [
+                            _compact_artifact(a)
+                            for a in (getattr(result, "artifacts", None) or [])
+                        ]
+                        has_structured = _has_real_structured_findings(compact)
+                    except Exception:
+                        has_structured = False
+                    structured_ok, degrade_reason = _analysis_output_is_structured(
+                        final_text or "",
+                        halt_reason=failure or "",
+                    )
+                    if has_structured or structured_ok:
+                        return _stamp_agentic(WorkerResult(
+                            ok=True, tokens_out=tokens_out, tokens_in=tokens_in,
+                            summary=final_text or "Analysis complete.",
+                            model=routed_model,
+                            events=list(mapped_events),
+                        ), result)
+                    label = degrade_reason or "no structured findings"
+                    summary_parts = [label]
+                    if final_text:
+                        summary_parts.append(
+                            f"Last assistant message: {final_text}"
+                        )
                     return _stamp_agentic(WorkerResult(
-                        ok=True, tokens_out=tokens_out, tokens_in=tokens_in,
-                        summary=final_text or "No summary available.",
+                        ok=False, error=label,
+                        tokens_out=tokens_out, tokens_in=tokens_in,
+                        summary="\n".join(summary_parts),
                         model=routed_model,
                         events=list(mapped_events),
                     ), result)

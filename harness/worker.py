@@ -395,10 +395,12 @@ def _analysis_output_is_structured(
     Returns ``(ok, degrade_reason)``. Reasoning-only / empty / no_tool_calls
     outputs must fail so they never surface as a clean completed artifact.
     """
-    halt = (halt_reason or "").strip().lower()
-    if "no_tool_calls" in halt:
-        return False, "no structured findings (no_tool_calls)"
     text = (last_message or "").strip()
+    halt = (halt_reason or "").strip().lower()
+    # no_tool_calls only fails closed when there is no body to evaluate; a
+    # later FINDING summary must not be discarded by a stale halt tag.
+    if "no_tool_calls" in halt and not text:
+        return False, "no structured findings (no_tool_calls)"
     if not text:
         return False, "no structured findings"
     try:
@@ -410,6 +412,35 @@ def _analysis_output_is_structured(
         if low.startswith("now let me") or low.startswith("let me look"):
             return False, "no structured findings (reasoning only)"
     return True, ""
+
+
+def _pick_analysis_message(events: list) -> tuple[str, str]:
+    """Select the best analysis summary text and last halt reason from events.
+
+    Prefers the last message that passes the structured-findings gate; otherwise
+    the longest non-empty assistant message (for diagnostics on degrade).
+    """
+    messages: list[str] = []
+    halt_reason = ""
+    for ev in events or []:
+        kind = getattr(ev, "kind", None)
+        data = getattr(ev, "data", None) or {}
+        if kind == "message":
+            text = (data.get("text") or "").strip()
+            if text:
+                messages.append(text)
+        elif kind == "auto_halt":
+            halt_reason = data.get("reason") or ""
+    if not messages:
+        return "", halt_reason
+    # Prefer last structured message (ignore halt_reason for the pick so a
+    # no_tool_calls halt does not discard an earlier FINDING: body).
+    for text in reversed(messages):
+        ok, _ = _analysis_output_is_structured(text, halt_reason="")
+        if ok:
+            return text, halt_reason
+    # Fallback: longest non-empty for diagnostic summary.
+    return max(messages, key=len), halt_reason
 
 
 class ProviderWorker:
@@ -461,11 +492,14 @@ class ProviderWorker:
                 _default_tokens = 250000
             if _default_tokens < 1:
                 _default_tokens = 250000
+            # Analysis needs more idle headroom: leaf workers do not emit
+            # swarm findings, so each investigate-only cycle increments idle.
+            _idle = 5 if not self.expects_diff else 2
             self.budget = budget or AutoBudget(
                 max_tokens=_default_tokens,
                 max_seconds=900,
                 max_swarms=2,
-                max_idle_steps=2
+                max_idle_steps=_idle,
             )
         self.run_tests = run_tests
         self.keep_worktree_on_failure = keep_worktree_on_failure
@@ -630,7 +664,8 @@ class ProviderWorker:
                 for ev in session.run_auto(
                     worker_objective,
                     budget=self.budget,
-                    require_codegraph=self.require_codegraph
+                    require_codegraph=self.require_codegraph,
+                    analysis_mode=not self.expects_diff,
                 ):
                     events.append(ev)
                     cb = self.on_event
@@ -754,23 +789,25 @@ class ProviderWorker:
                 # produced structured findings. Free-text reasoning alone
                 # (e.g. "Now let me look at...") must fail degraded so the
                 # pilot re-dispatches -- same submit contract as swarm workers.
-                last_message = ""
-                halt_reason = ""
-                for ev in events:
-                    if ev.kind == "message":
-                        last_message = ev.data.get("text") or ""
-                    elif ev.kind == "auto_halt":
-                        halt_reason = ev.data.get("reason") or ""
+                last_message, halt_reason = _pick_analysis_message(events)
                 structured_ok, degrade_reason = _analysis_output_is_structured(
                     last_message, halt_reason=halt_reason,
                 )
                 if not structured_ok:
                     success = True  # clean worktree; the failure is contractual
                     label = degrade_reason or "no structured findings"
+                    # Keep diagnostic prose for the pilot; error carries the gate.
+                    summary_parts = [label]
+                    if halt_reason:
+                        summary_parts.append(f"Halt reason: {halt_reason}")
+                    if last_message:
+                        summary_parts.append(
+                            f"Last assistant message: {last_message}"
+                        )
                     return WorkerResult(
                         ok=False,
                         error=label,
-                        summary=label,
+                        summary="\n".join(summary_parts),
                         events=events,
                         worktree=wt_path,
                         declarative_checks=check_payload,

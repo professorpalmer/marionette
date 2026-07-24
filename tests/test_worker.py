@@ -128,7 +128,7 @@ def test_worker_success(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:
         # We monkeypatch ConversationalSession.run_auto to simulate writing a file and yielding some events.
-        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
             # self is the ConversationalSession instance
             assert self.config.repo != repo_dir  # Must be a separate worktree path
             assert os.path.exists(self.config.repo)
@@ -196,7 +196,7 @@ def test_worker_success(monkeypatch):
 def test_worker_empty_change(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:
-        def mock_run_auto_empty(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto_empty(self, objective, budget=None, require_codegraph=True, **kwargs):
             yield ConvEvent("message", {"text": "I looked around but made no changes."})
             yield ConvEvent("auto_halt", {"reason": "pilot reports objective met"})
 
@@ -233,7 +233,7 @@ def test_worker_empty_change_analysis_ok(monkeypatch):
     and summarize from the last assistant message / halt reason."""
     repo_dir = create_temp_git_repo()
     try:
-        def mock_run_auto_empty(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto_empty(self, objective, budget=None, require_codegraph=True, **kwargs):
             yield ConvEvent("message", {"text": "Audit complete: no issues found in auth."})
             yield ConvEvent("auto_halt", {"reason": "pilot reports objective met"})
 
@@ -262,7 +262,7 @@ def test_worker_destructive_guards(monkeypatch):
         commands_run = []
         
         # We monkeypatch run_auto to run a destructive command, and a safe command
-        def mock_run_auto_destructive(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto_destructive(self, objective, budget=None, require_codegraph=True, **kwargs):
             # Try running a destructive command
             p_dest = subprocess.run("rm -rf /", shell=True)
             commands_run.append(("rm -rf /", p_dest.returncode, p_dest.stdout))
@@ -340,7 +340,7 @@ def test_worker_leaf_mode_schemas_and_defense(monkeypatch):
 
         monkeypatch.setattr(ConversationalSession, "__init__", mock_init)
 
-        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
             yield ConvEvent("auto_halt", {"reason": "pilot reports objective met"})
 
         monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto)
@@ -388,7 +388,7 @@ def test_provider_worker_leak_and_failure_cleanup(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:
         # Mock run_auto to write a file
-        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
             filepath = os.path.join(self.config.repo, "added_by_worker.txt")
             with open(filepath, "w") as f:
                 f.write("this is a new file created by the worker\n")
@@ -418,7 +418,7 @@ def test_provider_worker_leak_and_failure_cleanup(monkeypatch):
         assert p_branches.stdout.strip() == ""
 
         # 2. FAILURE PATH (must clean up by default too)
-        def mock_run_auto_fail(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto_fail(self, objective, budget=None, require_codegraph=True, **kwargs):
             # Write a file but raise an error to trigger failure
             filepath = os.path.join(self.config.repo, "added_by_worker_fail.txt")
             with open(filepath, "w") as f:

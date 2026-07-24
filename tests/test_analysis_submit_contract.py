@@ -90,7 +90,7 @@ def test_worker_reasoning_only_analysis_fails(monkeypatch):
     """expects_diff=False + reasoning-only last message => ok=False, no headline."""
     repo_dir = create_temp_git_repo()
     try:
-        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
             # Analysis brief must be used (not IMPLEMENT TASK).
             assert "ANALYSIS" in objective or "READ-ONLY" in objective
             assert "IMPLEMENT TASK" not in objective
@@ -109,9 +109,11 @@ def test_worker_reasoning_only_analysis_fails(monkeypatch):
         )
         res = worker.run()
         assert res.ok is False
-        assert "no structured findings" in (res.error or res.summary or "")
-        # Never surface the truncated reasoning as a success summary/headline.
-        assert "Now let me look" not in (res.summary or "")
+        assert "no structured findings" in (res.error or "")
+        # Degrade label is the error; diagnostic prose may remain in summary
+        # for the pilot, but must not be treated as a clean success headline.
+        assert res.ok is False
+        assert not (res.patch or "").strip()
     finally:
         shutil.rmtree(repo_dir)
 
@@ -119,7 +121,7 @@ def test_worker_reasoning_only_analysis_fails(monkeypatch):
 def test_worker_structured_analysis_still_passes(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:
-        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
             yield ConvEvent(
                 "message",
                 {
@@ -252,3 +254,134 @@ def test_native_analysis_brief_aligns_with_swarm_contract():
     # Swarm tool brief still asks for submit_findings.
     tool_inst = _analysis_instruction("audit auth", "/repo", "explore", via_tool=True)
     assert "submit_findings" in tool_inst
+
+
+def test_pick_analysis_message_prefers_structured_over_later_reasoning():
+    from harness.worker import _pick_analysis_message
+
+    events = [
+        ConvEvent(
+            "message",
+            {
+                "text": (
+                    "FINDING: harness/worker.py:700 analysis empty-diff path "
+                    "must reject reasoning-only output."
+                )
+            },
+        ),
+        ConvEvent(
+            "message",
+            {"text": "Now let me look at one more module..."},
+        ),
+        ConvEvent("auto_halt", {"reason": "stall: 5 steps with no new findings"}),
+    ]
+    text, halt = _pick_analysis_message(events)
+    assert "FINDING:" in text
+    assert "Now let me look" not in text
+    assert "stall" in halt
+
+
+def test_worker_degrade_keeps_diagnostic_summary(monkeypatch):
+    """Contract fail keeps last message under summary for the pilot."""
+    repo_dir = create_temp_git_repo()
+    try:
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
+            yield ConvEvent(
+                "message",
+                {"text": "Now let me look at the auth module more carefully..."},
+            )
+            yield ConvEvent("auto_halt", {"reason": "max turns"})
+
+        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto)
+
+        worker = ProviderWorker(
+            repo=repo_dir,
+            goal="Audit auth",
+            expects_diff=False,
+        )
+        res = worker.run()
+        assert res.ok is False
+        assert "no structured findings" in (res.error or "")
+        assert "Now let me look" in (res.summary or "")
+    finally:
+        shutil.rmtree(repo_dir)
+
+
+def test_analysis_mode_skips_no_swarm_early_halt(monkeypatch):
+    """Leaf analysis must not halt after one idle no-swarm cycle."""
+    from harness.autobudget import AutoBudget
+    from harness.config import HarnessConfig
+
+    cfg = HarnessConfig()
+    cfg.swarm_adapter = "demo"
+    cfg.repo = ""
+    session = ConversationalSession(cfg)
+    cycles: list[str] = []
+
+    def fake_send(self, msg):
+        cycles.append(msg)
+        if len(cycles) == 1:
+            yield ConvEvent(
+                "message",
+                {"text": "Now let me look at the routing layer..."},
+            )
+            yield ConvEvent("assistant_done", {"turns": 1})
+        else:
+            yield ConvEvent(
+                "message",
+                {
+                    "text": (
+                        "FINDING: harness/worker.py:700 empty-diff analysis "
+                        "must reject reasoning-only output."
+                    )
+                },
+            )
+            yield ConvEvent("assistant_done", {"turns": 2})
+
+    monkeypatch.setattr(ConversationalSession, "send", fake_send)
+    budget = AutoBudget(
+        max_tokens=100000, max_seconds=60, max_swarms=2, max_idle_steps=5,
+    )
+    events = list(
+        session.run_auto(
+            "audit auth",
+            budget=budget,
+            require_codegraph=False,
+            analysis_mode=True,
+        )
+    )
+    halt = [e for e in events if e.kind == "auto_halt"][-1]
+    assert "findings submitted" in (halt.data.get("reason") or "")
+    assert len(cycles) >= 2
+
+
+def test_implement_mode_still_halts_on_no_swarm(monkeypatch):
+    from harness.autobudget import AutoBudget
+    from harness.config import HarnessConfig
+
+    cfg = HarnessConfig()
+    cfg.swarm_adapter = "demo"
+    cfg.repo = ""
+    session = ConversationalSession(cfg)
+    cycles: list[str] = []
+
+    def fake_send(self, msg):
+        cycles.append(msg)
+        yield ConvEvent("message", {"text": "done looking"})
+        yield ConvEvent("assistant_done", {"turns": 1})
+
+    monkeypatch.setattr(ConversationalSession, "send", fake_send)
+    budget = AutoBudget(
+        max_tokens=100000, max_seconds=60, max_swarms=2, max_idle_steps=5,
+    )
+    events = list(
+        session.run_auto(
+            "implement foo",
+            budget=budget,
+            require_codegraph=False,
+            analysis_mode=False,
+        )
+    )
+    halt = [e for e in events if e.kind == "auto_halt"][-1]
+    assert "objective met" in (halt.data.get("reason") or "")
+    assert len(cycles) == 1

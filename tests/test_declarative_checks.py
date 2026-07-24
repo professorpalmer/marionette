@@ -318,7 +318,7 @@ def test_blocked_pre_check_prevents_worker_turn(monkeypatch):
 
         called = {"run_auto": False}
 
-        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
             called["run_auto"] = True
             yield from ()
 
@@ -353,7 +353,7 @@ def test_failed_post_check_surfaces_in_session_summary(monkeypatch):
         with open(os.path.join(checks_dir, "post.json"), "w", encoding="utf-8") as f:
             json.dump(spec, f)
 
-        def mock_run_auto(self, objective, budget=None, require_codegraph=True):
+        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
             yield from ()
 
         def mock_finalize(_wt_path):
