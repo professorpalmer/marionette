@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.136, deliberately pre-1.0. Puppetmaster pin to 1.21.0 (Claude Opus 5 everyday frontier — near-Fable at half price). Rides puppetmaster-ai==1.21.0.
+> Status: v0.9.137, deliberately pre-1.0. Cursor CLI Models refresh busts stale catalog so Opus 5 appears; rides puppetmaster-ai==1.21.0.
 
 ## Documentation
 
