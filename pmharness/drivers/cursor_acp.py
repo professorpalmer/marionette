@@ -876,7 +876,9 @@ class WarmAcpSession:
         usage_blobs.append(resp)
         from .token_usage import coerce_token_usage_detail
 
-        tin, tout, cost, cache_read = coerce_token_usage_detail(*usage_blobs)
+        tin, tout, cost, cache_read, cache_write = coerce_token_usage_detail(
+            *usage_blobs
+        )
         out = {
             "text": final_text,
             # Thought-channel accumulation: Grok/ACP often puts the final
@@ -891,6 +893,8 @@ class WarmAcpSession:
         }
         if cache_read > 0:
             out["cache_read_tokens"] = cache_read
+        if cache_write > 0:
+            out["cache_write_tokens"] = cache_write
         return out
 
 
@@ -1060,6 +1064,9 @@ class CursorAcpDriver:
         cache_read = int(out.get("cache_read_tokens") or 0)
         if cache_read > 0:
             meta["cache_read_tokens"] = cache_read
+        cache_write = int(out.get("cache_write_tokens") or 0)
+        if cache_write > 0:
+            meta["cache_write_tokens"] = cache_write
         return DriverResponse(
             text=str(out.get("text") or ""),
             tokens_in=tin,

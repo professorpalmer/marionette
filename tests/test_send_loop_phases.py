@@ -622,6 +622,73 @@ def test_meter_pilot_step_accumulates_tokens_and_provider_cost(monkeypatch):
     assert meters["output_tokens"] == 10
 
 
+def test_meter_pilot_step_cursor_cli_full_prompt_and_cache_buckets(monkeypatch):
+    """Cursor CLI reports uncached input + cache buckets; driver expands tin.
+
+    StatusBar previously undercounted tok/$ because _session_cost clamped
+    cache_read to the tiny uncached tin. Drivers now pass full prompt tin
+    plus cache meta so meters match Cursor's dashboard token sum.
+    """
+    meters = {}
+    session = SimpleNamespace(
+        _tokens_used=0,
+        _tokens_out=0,
+        _turn_output_tokens=0,
+        _tokens_in=0,
+        _last_prompt_tokens=0,
+        _tokens_cached=0,
+        _tokens_cache_write=0,
+        _tokens_cache_write_5m=0,
+        _tokens_cache_write_1h=0,
+        _plan_billing=False,
+        _price_source="",
+        _provider_cost_usd=0.0,
+        _provider_billed_tokens_in=0,
+        _provider_billed_tokens_out=0,
+        _provider_billed_tokens_cached=0,
+        _provider_billed_tokens_cache_write=0,
+        _provider_billed_tokens_cache_write_5m=0,
+        _provider_billed_tokens_cache_write_1h=0,
+        config=SimpleNamespace(driver="cursor-cli/test"),
+        _accumulate_session_meters=lambda **kw: meters.update(kw),
+    )
+    uncached, cached, write, tout = 7, 147_695, 39_331, 412
+    full_in = uncached + cached + write
+    resp = SimpleNamespace(
+        tokens_out=tout,
+        tokens_in=full_in,
+        meta={
+            "billing": "plan",
+            "cache_read_tokens": cached,
+            "cache_write_tokens": write,
+        },
+    )
+    monkeypatch.setattr(
+        "pmharness.registry.resolve_price_with_source",
+        lambda _name: (1.0, 5.0, "catalog"),
+        raising=False,
+    )
+    from harness.api.cost_accounting import _session_cost
+
+    monkeypatch.setattr(
+        "harness.server._session_cost",
+        _session_cost,
+        raising=False,
+    )
+    meter_pilot_step(session, resp, prompt="hi")
+    assert session._plan_billing is True
+    assert session._tokens_in == full_in
+    assert session._tokens_used == full_in + tout
+    assert session._tokens_cached == cached
+    assert session._tokens_cache_write == write
+    expected = _session_cost(
+        full_in, tout, cached, 1.0, 5.0, cache_write=write,
+    )
+    assert meters["estimated_cost_usd"] == expected
+    # Clamping bug would bill ~uncached-only and collapse cache to tin=7.
+    assert expected > _session_cost(7, tout, 7, 1.0, 5.0)
+
+
 def test_meter_pilot_step_estimates_tokens_in_from_prompt():
     meters = {}
     session = SimpleNamespace(

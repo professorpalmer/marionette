@@ -1,6 +1,10 @@
 """coerce_token_usage shape coverage."""
 
-from pmharness.drivers.token_usage import coerce_token_usage, coerce_token_usage_detail
+from pmharness.drivers.token_usage import (
+    coerce_token_usage,
+    coerce_token_usage_detail,
+    expand_uncached_prompt_tokens,
+)
 
 
 def test_coerce_openai_style():
@@ -27,7 +31,7 @@ def test_later_blob_wins_nonzero():
 
 
 def test_coerce_cache_read_from_cursor_cli_shape():
-    tin, tout, cost, cached = coerce_token_usage_detail(
+    tin, tout, cost, cached, write = coerce_token_usage_detail(
         {
             "usage": {
                 "input_tokens": 1000,
@@ -36,11 +40,12 @@ def test_coerce_cache_read_from_cursor_cli_shape():
             }
         }
     )
-    assert (tin, tout, cost, cached) == (1000, 40, None, 800)
+    # OpenAI/Anthropic-subset style: cached <= input → leave tin alone.
+    assert (tin, tout, cost, cached, write) == (1000, 40, None, 800, 0)
 
 
 def test_coerce_cache_read_from_prompt_tokens_details():
-    _tin, _tout, _cost, cached = coerce_token_usage_detail(
+    _tin, _tout, _cost, cached, _write = coerce_token_usage_detail(
         {
             "usage": {
                 "prompt_tokens": 500,
@@ -50,3 +55,69 @@ def test_coerce_cache_read_from_prompt_tokens_details():
         }
     )
     assert cached == 400
+
+
+def test_expand_uncached_prompt_tokens_cursor_cli_semantics():
+    # Cursor forum: inputTokens is uncached only; dashboard Tokens =
+    # input + cacheRead + cacheWrite (+ output separately).
+    full, cached, write = expand_uncached_prompt_tokens(7, 147_695, 39_331)
+    assert full == 7 + 147_695 + 39_331
+    assert (cached, write) == (147_695, 39_331)
+
+
+def test_expand_leaves_openai_full_prompt_alone():
+    full, cached, write = expand_uncached_prompt_tokens(1000, 800, 0)
+    assert (full, cached, write) == (1000, 800, 0)
+
+
+def test_coerce_cursor_cli_uncached_plus_cache_buckets():
+    tin, tout, cost, cached, write = coerce_token_usage_detail(
+        {
+            "usage": {
+                "inputTokens": 7,
+                "outputTokens": 412,
+                "cacheReadTokens": 147_695,
+                "cacheWriteTokens": 39_331,
+            }
+        }
+    )
+    assert tin == 7 + 147_695 + 39_331
+    assert tout == 412
+    assert cost is None
+    assert cached == 147_695
+    assert write == 39_331
+
+
+def test_coerce_nested_result_usage():
+    tin, tout, _cost, cached, write = coerce_token_usage_detail(
+        {
+            "result": {
+                "usage": {
+                    "inputTokens": 3,
+                    "outputTokens": 9,
+                    "cacheReadTokens": 50_000,
+                    "cacheWriteTokens": 1_000,
+                }
+            }
+        }
+    )
+    assert tin == 3 + 50_000 + 1_000
+    assert tout == 9
+    assert cached == 50_000
+    assert write == 1_000
+
+
+def test_coerce_anthropic_uncached_plus_cache_creation():
+    tin, tout, _cost, cached, write = coerce_token_usage_detail(
+        {
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "cache_read_input_tokens": 5_000,
+                "cache_creation_input_tokens": 200,
+            }
+        }
+    )
+    assert tin == 100 + 5_000 + 200
+    assert (cached, write) == (5_000, 200)
+    assert tout == 20
