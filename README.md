@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.139, deliberately pre-1.0. Hard MCP refuse for untracked Cursor Agent swarms + fuller CLI usage capture; rides puppetmaster-ai==1.21.1.
+> Status: v0.9.140, deliberately pre-1.0. Installer ship + HARNESS_REPO race fix + PM auto-upgrade show-by-name; rides puppetmaster-ai==1.21.1.
 
 ## Documentation
 

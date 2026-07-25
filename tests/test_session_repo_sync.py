@@ -88,7 +88,13 @@ def test_session_switch_repo_sync(tmp_path, monkeypatch):
         assert data3["repo"] == str(repo_a)
         assert srv._cfg.repo == str(repo_a)
         assert os.environ["HARNESS_REPO"] == str(repo_a)
-        
+
+        # Give deferred cold-attach builds a beat to finish — a late
+        # ConversationalSession for repo_b must not clobber HARNESS_REPO.
+        time.sleep(0.5)
+        assert os.environ["HARNESS_REPO"] == str(repo_a)
+        assert srv._cfg.repo == str(repo_a)
+
         # Verify that indexing was triggered for repo_a because .codegraph is missing
         assert str(repo_a) in bg_index_calls
 
@@ -102,6 +108,8 @@ def test_session_switch_repo_sync(tmp_path, monkeypatch):
         assert data4["ok"] is True
         assert data4["repo"] == str(repo_a)
         assert len(bg_index_calls) == 0
+        time.sleep(0.25)
+        assert os.environ["HARNESS_REPO"] == str(repo_a)
 
     finally:
         httpd.shutdown()

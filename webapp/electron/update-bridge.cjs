@@ -25,7 +25,11 @@ const { chooseFetchRemote } = require("./update-remote.cjs");
 const { resolveBehindCount, shouldCountCommits } = require("./update-count.cjs");
 const { overallPercent } = require("./update-steps.cjs");
 const { runRebuildWithRetry } = require("./update-rebuild.cjs");
-const { planPuppetmasterUpgrade, DEFAULT_PUPPETMASTER_SPEC } = require("./update-pm.cjs");
+const {
+  planPuppetmasterUpgrade,
+  DEFAULT_PUPPETMASTER_SPEC,
+  PUPPETMASTER_DIST_NAME,
+} = require("./update-pm.cjs");
 const marker = require("./update-marker.cjs");
 
 const DEFAULT_BRANCH = process.env.PMHARNESS_UPDATE_BRANCH || "main";
@@ -451,14 +455,23 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     // Upgrade it on every update so overhauls reach existing installs, unless a
     // dev/custom spec owns it. Non-fatal: a PyPI blip or offline machine must
     // never strand an otherwise-successful app update -- PM just stays put.
+    // Show by dist name (not ==pin): `uv pip show pkg==X` fails when an older
+    // version is installed, which made the updater look like a no-op and left
+    // app venvs stuck on stale Puppetmaster (1.20.10 after a 1.21.1 pin bump).
     progress("deps", "Checking Puppetmaster", 0.85);
     const pmShow = hasUv
-      ? await execCapture("uv", ["pip", "show", "--python", py, DEFAULT_PUPPETMASTER_SPEC], { env: childEnv })
-      : await execCapture(py, ["-m", "pip", "show", DEFAULT_PUPPETMASTER_SPEC], { env: childEnv });
+      ? await execCapture("uv", ["pip", "show", "--python", py, PUPPETMASTER_DIST_NAME], { env: childEnv })
+      : await execCapture(py, ["-m", "pip", "show", PUPPETMASTER_DIST_NAME], { env: childEnv });
     const pmPlan = planPuppetmasterUpgrade({
       specEnv: process.env.MARIONETTE_PUPPETMASTER_SPEC,
       pipShowOutput: pmShow.out,
+      pinnedSpec: DEFAULT_PUPPETMASTER_SPEC,
     });
+    appendUpdateLog(
+      `[deps] Puppetmaster plan: skip=${pmPlan.skip}`
+      + (pmPlan.reason ? ` reason=${pmPlan.reason}` : "")
+      + (pmPlan.have || pmPlan.want ? ` have=${pmPlan.have || "?"} want=${pmPlan.want || "?"}` : "")
+    );
     if (pmPlan.skip) {
       progress("deps", "Puppetmaster: " + pmPlan.reason + ", leaving as-is", 0.9);
     } else {
@@ -472,6 +485,8 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
       if (pm.code !== 0) {
         appendUpdateLog(`[deps] Puppetmaster upgrade skipped: ${pm.tail || "unavailable"}`);
         progress("deps", "Puppetmaster upgrade skipped", 0.95);
+      } else {
+        appendUpdateLog(`[deps] Puppetmaster upgraded to ${pmPlan.spec}`);
       }
     }
 

@@ -19,6 +19,7 @@ from ..deferred_attach import (
     normalize_transcript_payload,
     schedule_deferred_build,
 )
+from ..repo_env import sync_harness_repo_from_cfg
 from ..session import Session
 from ..conversation import ConversationalSession
 from ..sessions import load_transcript
@@ -105,6 +106,9 @@ def attach_view(
                         )
                 except Exception as e:
                     svc.diag("server.attach_warm_acp_workspace", e)
+            # Re-assert live workspace after warm reuse — deferred builds for
+            # other sessions must not leave HARNESS_REPO on a stale root.
+            sync_harness_repo_from_cfg(svc.cfg)
             return svc.get_pilot()
 
     created = True
@@ -193,6 +197,7 @@ def attach_view(
                         pass
                     svc.bind_pilot_services(real)
                     svc.sync_pilot_session_id()
+                    sync_harness_repo_from_cfg(svc.cfg)
             placeholder.mark_ready(real)
 
         def _on_error(exc: BaseException) -> None:
@@ -200,6 +205,7 @@ def attach_view(
             placeholder.mark_failed(exc)
 
         schedule_deferred_build(_build, on_done=_on_done, on_error=_on_error)
+        sync_harness_repo_from_cfg(svc.cfg)
         return runner
 
     def _factory():
@@ -225,6 +231,7 @@ def attach_view(
         # Only hydrate from disk when the runner was just created.
         if created and load_transcript_on_create:
             svc.get_pilot().load_history(history)
+    sync_harness_repo_from_cfg(svc.cfg)
     return svc.get_pilot()
 
 

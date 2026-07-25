@@ -95,9 +95,11 @@ class Session:
             self.driver = _prov.build_pilot(self.config.driver)
         # Propagate repo/adapter to env so the bridge's execute_intent picks them
         # up. Real analysis requires BOTH a repo and the openai adapter.
+        # Do not clobber a different live workspace (deferred multi-session).
         import os as _os
         if self.config.repo:
-            _os.environ["HARNESS_REPO"] = self.config.repo
+            from .repo_env import publish_harness_repo
+            publish_harness_repo(self.config.repo, force=False)
         if self.config.swarm_adapter:
             _os.environ["HARNESS_SWARM_ADAPTER"] = self.config.swarm_adapter
 

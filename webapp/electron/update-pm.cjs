@@ -20,6 +20,7 @@
 //     never clobber it with a PyPI wheel.
 
 const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.21.1";
+const PUPPETMASTER_DIST_NAME = "puppetmaster-ai";
 
 // True when `pip show` / `uv pip show` output describes an editable install
 // (a dev checkout linked with `-e`), which we must not overwrite from PyPI.
@@ -27,11 +28,21 @@ function isEditableInstall(pipShowOutput) {
   return /^Editable project location:\s*\S/m.test(String(pipShowOutput || ""));
 }
 
+function pinnedVersionFromSpec(spec) {
+  const m = String(spec || "").match(/==\s*([^\s]+)/);
+  return m ? m[1] : "";
+}
+
+function installedPuppetmasterVersion(pipShowOutput) {
+  const m = String(pipShowOutput || "").match(/^Version:\s*(\S+)/m);
+  return m ? m[1] : "";
+}
+
 // Decide whether the updater should upgrade Puppetmaster, given the environment
 // and the current install's `pip show` text. Returns either
 //   { skip: true, reason }                       -- leave the install untouched
 //   { skip: false, spec: "puppetmaster-ai==1.21.1" }     -- install the pinned PyPI release
-function planPuppetmasterUpgrade({ specEnv, pipShowOutput } = {}) {
+function planPuppetmasterUpgrade({ specEnv, pipShowOutput, pinnedSpec } = {}) {
   const spec = String(specEnv || "").trim();
   if (spec) {
     return { skip: true, reason: "MARIONETTE_PUPPETMASTER_SPEC pins a custom spec" };
@@ -39,7 +50,19 @@ function planPuppetmasterUpgrade({ specEnv, pipShowOutput } = {}) {
   if (isEditableInstall(pipShowOutput)) {
     return { skip: true, reason: "editable install (dev checkout)" };
   }
-  return { skip: false, spec: DEFAULT_PUPPETMASTER_SPEC };
+  const want = pinnedVersionFromSpec(pinnedSpec || DEFAULT_PUPPETMASTER_SPEC);
+  const have = installedPuppetmasterVersion(pipShowOutput);
+  if (want && have && have === want) {
+    return { skip: true, reason: `already at ${want}` };
+  }
+  return { skip: false, spec: DEFAULT_PUPPETMASTER_SPEC, have: have || "", want };
 }
 
-module.exports = { DEFAULT_PUPPETMASTER_SPEC, isEditableInstall, planPuppetmasterUpgrade };
+module.exports = {
+  DEFAULT_PUPPETMASTER_SPEC,
+  PUPPETMASTER_DIST_NAME,
+  isEditableInstall,
+  pinnedVersionFromSpec,
+  installedPuppetmasterVersion,
+  planPuppetmasterUpgrade,
+};

@@ -519,9 +519,11 @@ class ConversationalSession(
         except prov.ProviderError:
             # fall back to the eval registry (OpenRouter field) for known names
             self.pilot = prov._finalize_driver(reg.build(config.driver, reach=config.reach))
-        # propagate repo/adapter so the bridge runs real analysis when configured
+        # Propagate repo/adapter for the bridge. Never clobber a different
+        # live workspace — deferred multi-session builds race switches.
         if config.repo:
-            os.environ["HARNESS_REPO"] = config.repo
+            from .repo_env import publish_harness_repo
+            publish_harness_repo(config.repo, force=False)
         if config.swarm_adapter:
             os.environ["HARNESS_SWARM_ADAPTER"] = config.swarm_adapter
         # self-learning: load ACTIVE skills into the pilot's system context so

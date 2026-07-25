@@ -92,6 +92,26 @@ test("planPuppetmasterUpgrade: a plain PyPI install upgrades to the pinned Puppe
   });
   assert.equal(plan.skip, false);
   assert.equal(plan.spec, pm.DEFAULT_PUPPETMASTER_SPEC);
+  assert.equal(plan.have, "1.1.0");
+});
+
+test("planPuppetmasterUpgrade: already at the pin is a no-op", () => {
+  const want = pm.pinnedVersionFromSpec(pm.DEFAULT_PUPPETMASTER_SPEC);
+  const plan = pm.planPuppetmasterUpgrade({
+    specEnv: "",
+    pipShowOutput: `Name: puppetmaster-ai\nVersion: ${want}\nLocation: /app/.venv/lib/python3.11/site-packages`,
+  });
+  assert.equal(plan.skip, true);
+  assert.match(plan.reason, new RegExp(`already at ${want}`));
+});
+
+test("planPuppetmasterUpgrade: missing show output still upgrades (fresh / broken venv)", () => {
+  const plan = pm.planPuppetmasterUpgrade({
+    specEnv: "",
+    pipShowOutput: "",
+  });
+  assert.equal(plan.skip, false);
+  assert.equal(plan.spec, pm.DEFAULT_PUPPETMASTER_SPEC);
 });
 
 test("planPuppetmasterUpgrade: an editable dev checkout is left untouched", () => {
