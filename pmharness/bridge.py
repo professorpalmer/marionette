@@ -199,9 +199,12 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
     single git child checkout exists.
     """
     from harness.repo_resolve import resolve_effective_repo
+    from harness.git_upstream import maybe_git_upstream_brief
     repo_cwd = resolve_effective_repo(repo_cwd or "")
     lens = ROLE_LENSES.get(role, "")
     lens_line = f"\n\n{lens}" if lens else ""
+    git_brief = maybe_git_upstream_brief(repo_cwd)
+    git_block = f"\n\n{git_brief}" if git_brief else ""
     submit = _analysis_submit_contract(via_tool=via_tool)
     if browser:
         submit_tail = (
@@ -219,13 +222,14 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
             f"This is READ-ONLY: do not edit, create, or delete any files, and "
             f"do not submit credentials or perform destructive actions on the "
             f"site. Emit what each browser tool returned as evidenced findings, "
-            f"{submit_tail}\n\n"
+            f"{submit_tail}{git_block}\n\n"
             f"{submit}\n\n{_STOP_CONDITIONS}"
         )
     return (
         f"{goal}{lens_line}\n\nAnalyze the REAL codebase at {repo_cwd}. "
         f"Emit evidenced findings/risks/decisions as artifacts. This is "
-        f"a READ-ONLY analysis: do not edit, create, or delete any files.\n\n"
+        f"a READ-ONLY analysis: do not edit, create, or delete any files."
+        f"{git_block}\n\n"
         # Turn-budget guardrail: broad-audit workers on cheaper models were
         # burning every turn exploring and hitting max_turns WITHOUT ever
         # calling submit_findings -- surfacing as a "completed without
