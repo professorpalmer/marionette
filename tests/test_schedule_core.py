@@ -184,7 +184,7 @@ def test_schedule_from_row_defaults():
     row = {"id": "x", "name": "n", "objective": "o", "cron": "* * * * *"}
     s = Schedule.from_row(row)
     assert s.enabled is True
-    assert s.swarm_adapter == "demo"
+    assert s.swarm_adapter == "agentic"
     assert s.max_tokens == 0
     assert s.last_fire_at == 0.0
 

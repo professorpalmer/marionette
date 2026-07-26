@@ -589,7 +589,7 @@ def test_legacy_wal_row_migrated_via_backup(tmp_path, monkeypatch):
             objective TEXT NOT NULL,
             cron TEXT NOT NULL,
             repo TEXT NOT NULL DEFAULT '',
-            swarm_adapter TEXT NOT NULL DEFAULT 'demo',
+            swarm_adapter TEXT NOT NULL DEFAULT 'agentic',
             driver TEXT NOT NULL DEFAULT '',
             enabled INTEGER NOT NULL DEFAULT 1,
             max_tokens INTEGER NOT NULL DEFAULT 0,

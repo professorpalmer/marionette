@@ -1170,10 +1170,21 @@ def dispatch_local_action(
             session.config.repo = target_repo
             os.environ["HARNESS_REPO"] = target_repo
             _cfg.repo = target_repo
+            try:
+                from harness.swarm_adapter import ensure_repo_swarm_adapter
+                ensure_repo_swarm_adapter(session.config)
+                ensure_repo_swarm_adapter(_cfg)
+            except Exception:
+                pass
             _record_recent_workspace(target_repo)
         except Exception:
             session.config.repo = target_repo
             os.environ["HARNESS_REPO"] = target_repo
+            try:
+                from harness.swarm_adapter import ensure_repo_swarm_adapter
+                ensure_repo_swarm_adapter(session.config)
+            except Exception:
+                pass
 
         basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
         yield ConvEvent("action_result", {

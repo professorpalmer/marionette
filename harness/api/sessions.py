@@ -185,6 +185,11 @@ def handle_session_relocate(body: dict, svc: SessionServices) -> tuple[int, dict
 
     svc.cfg.repo = target_repo
     os.environ["HARNESS_REPO"] = target_repo
+    try:
+        from ..swarm_adapter import ensure_repo_swarm_adapter
+        ensure_repo_swarm_adapter(svc.cfg)
+    except Exception as e:
+        svc.diag("server.session_relocate_swarm_adapter", e)
     svc.note_boot_repo(target_repo)
     try:
         svc.record_recent_workspace(target_repo)
@@ -326,6 +331,11 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
         ):
             svc.cfg.repo = target_repo
             os.environ["HARNESS_REPO"] = target_repo
+            try:
+                from ..swarm_adapter import ensure_repo_swarm_adapter
+                ensure_repo_swarm_adapter(svc.cfg)
+            except Exception as e:
+                svc.diag("server.session_switch_swarm_adapter", e)
             svc.note_boot_repo(target_repo)
             # Session-switch repoints must land in recents too, or the
             # dir only exists in the projects list while it is current

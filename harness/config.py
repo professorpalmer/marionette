@@ -15,7 +15,7 @@ class HarnessConfig:
     state_dir: str = ""              # PM state dir; blank -> per-session temp
     worker_mode: str = "subprocess"
     repo: str = ""                   # target repo for REAL analysis (HARNESS_REPO)
-    swarm_adapter: str = "demo"      # demo (free/safe) | agentic (standalone, key-routed) | openai
+    swarm_adapter: str = "agentic"   # agentic (default) | openai | demo (ALLOW_DEMO only)
     wiki_url: str = ""               # portable-llm-wiki base url (HARNESS_WIKI_URL)
     wiki_auto: bool = False          # auto-ingest findings to the wiki (HARNESS_WIKI_AUTO)
     max_context_tokens: int = 96000
@@ -53,7 +53,6 @@ class HarnessConfig:
             return file_cfg.get(file_key, default)
 
         repo_val = pick("HARNESS_REPO", "repo", "")
-        has_explicit_adapter = ("HARNESS_SWARM_ADAPTER" in os.environ) or ("swarm_adapter" in file_cfg)
         # Standalone by default: a repo-scoped swarm routes through the built-in
         # 'agentic' adapter -- direct provider API on the user's own key, no external
         # CLI, model picked live by Puppetmaster's router. This is the shipped
@@ -61,10 +60,27 @@ class HarnessConfig:
         # We deliberately do NOT fall back to 'demo' when keyless -- a demo run
         # produces deterministic placeholder findings that read as "the product is
         # broken." Instead the UI nudges the keyless user to add a key (see
-        # ProviderKeyBanner), and 'demo' stays only for the no-repo case and as an
-        # explicit opt-in. 'agentic_ready' on /api/config reflects real key posture.
-        default_adapter = "agentic" if (repo_val and not has_explicit_adapter) else "demo"
-        swarm_adapter_val = pick("HARNESS_SWARM_ADAPTER", "swarm_adapter", default_adapter)
+        # ProviderKeyBanner), and 'demo' stays only for the no-repo case or when
+        # HARNESS_ALLOW_DEMO_SWARM=1. A stale HARNESS_SWARM_ADAPTER=demo left in
+        # the process env from boot-before-workspace-restore is NOT an opt-in.
+        from .swarm_adapter import (
+            allow_demo_swarm,
+            normalize_swarm_adapter,
+            resolve_bridge_swarm_adapter,
+        )
+
+        if "HARNESS_SWARM_ADAPTER" in os.environ:
+            raw_adapter = os.environ["HARNESS_SWARM_ADAPTER"]
+        elif "swarm_adapter" in file_cfg:
+            raw_adapter = file_cfg.get("swarm_adapter", "")
+        else:
+            raw_adapter = "agentic"
+        swarm_adapter_val = resolve_bridge_swarm_adapter(
+            normalize_swarm_adapter(str(raw_adapter or "")),
+            repo_cwd=str(repo_val or ""),
+        )
+        if swarm_adapter_val == "demo" and not allow_demo_swarm():
+            swarm_adapter_val = "agentic"
 
         driver_val = pick("HARNESS_DRIVER", "driver", "qwen3-coder-30b")
 

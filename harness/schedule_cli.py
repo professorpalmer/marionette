@@ -300,7 +300,7 @@ def _run_schedule(argv) -> int:
     p_add.add_argument("--objective", required=True)
     p_add.add_argument("--repo", default=None)
     p_add.add_argument("--driver", default=None)
-    p_add.add_argument("--swarm-adapter", dest="swarm_adapter", default="demo")
+    p_add.add_argument("--swarm-adapter", dest="swarm_adapter", default="agentic")
     p_add.add_argument("--max-tokens", dest="max_tokens", type=int, default=0)
     p_add.add_argument("--max-seconds", dest="max_seconds", type=int, default=0)
     p_add.add_argument("--max-swarms", dest="max_swarms", type=int, default=0)

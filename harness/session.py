@@ -100,8 +100,12 @@ class Session:
         if self.config.repo:
             from .repo_env import publish_harness_repo
             publish_harness_repo(self.config.repo, force=False)
+        from .swarm_adapter import ensure_repo_swarm_adapter, publish_swarm_adapter
+        ensure_repo_swarm_adapter(self.config)
         if self.config.swarm_adapter:
-            _os.environ["HARNESS_SWARM_ADAPTER"] = self.config.swarm_adapter
+            publish_swarm_adapter(
+                self.config.swarm_adapter, repo=self.config.repo or ""
+            )
 
     def state(self) -> DurableState:
         return DurableState(self.state_dir)

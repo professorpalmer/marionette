@@ -249,6 +249,14 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     counters['swarms'] += 1
     if result.adapter == 'demo':
         counters['demo_swarms'] += 1
+    # Product rule: never treat demo substrate as a successful audit, and never
+    # surface its placeholder findings to the pilot/UI.
+    _demo_refused = False
+    try:
+        from harness.swarm_adapter import refuse_demo_result
+        _demo_refused = refuse_demo_result(getattr(result, 'adapter', '') or '')
+    except Exception:
+        _demo_refused = (getattr(result, 'adapter', '') or '') == 'demo'
     auth_failure = getattr(result, 'auth_failure', '') or ''
     # Re-derive from artifacts when the bridge field is empty so a zero-signal
     # auth death (verification-only http_status:401) still leads the badge.
@@ -261,7 +269,9 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     if auth_failure:
         yield ConvEvent('swarm_auth_failure', {'id': aid, 'job_id': result.job_id, 'message': auth_failure})
     _SIGNAL = {'finding', 'risk', 'decision'}
-    _all_arts = list(result.artifacts)
+    # Strip demo artifacts entirely so placeholder headlines never reach the
+    # transcript card or pilot digest.
+    _all_arts = [] if _demo_refused else list(result.artifacts)
     # Reasoning-only fragments must never appear as finding/risk/decision
     # headlines in the digest (same submit contract as swarm workers).
     try:
@@ -287,14 +297,19 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             pass
     ordered = _signal + _plumbing
     digest_arts = _signal[:20] + _plumbing[:3] if _signal else _plumbing[:8]
-    yield ConvEvent('action_result', {'id': aid, 'job_id': result.job_id, 'num': result.num_artifacts, 'types': result.artifact_types, 'artifacts': ordered[:12], 'adapter': result.adapter, 'mode': result.mode, 'auth_failure': auth_failure})
+    _ui_adapter = 'refused-demo' if _demo_refused else result.adapter
+    _ui_num = 0 if _demo_refused else result.num_artifacts
+    _ui_types = [] if _demo_refused else result.artifact_types
+    yield ConvEvent('action_result', {'id': aid, 'job_id': result.job_id, 'num': _ui_num, 'types': _ui_types, 'artifacts': ordered[:12], 'adapter': _ui_adapter, 'mode': result.mode, 'auth_failure': auth_failure, 'error': ('demo substrate -- not real codebase analysis' if _demo_refused else None)})
     _has_signal = bool(_signal)
     # Quality gate: a "finding" with no substance (a one-liner with no file
     # reference) must not turn the badge green -- a swarm whose workers choked
     # on the goal used to read as a clean "N findings" success.
     _substantive = [a for a in _signal if _is_substantive_artifact(a)]
-    _swarm_ok = bool(_substantive) and (not auth_failure)
-    if auth_failure:
+    _swarm_ok = bool(_substantive) and (not auth_failure) and (not _demo_refused)
+    if _demo_refused:
+        _badge_summary = 'refused: demo substrate (not real codebase analysis)'
+    elif auth_failure:
         # Lead with the provider/key note, never a generic "no findings" badge.
         _badge_summary = auth_failure[:160] if len(auth_failure) > 20 else 'auth failure'
     elif _substantive:
@@ -305,13 +320,15 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         _badge_summary = f'degraded: {result.num_artifacts} plumbing artifacts via {result.adapter}, no findings'
     else:
         _badge_summary = 'no artifacts produced'
-    _badge_error = auth_failure or (
-        None if _swarm_ok
-        else 'swarm findings are thin/generic (no file-backed substance)' if _has_signal
-        else 'swarm produced no FINDING/RISK/DECISION artifacts' if result.num_artifacts
-        else 'swarm produced no artifacts')
+    _badge_error = (
+        'demo substrate -- not real codebase analysis' if _demo_refused
+        else auth_failure or (
+            None if _swarm_ok
+            else 'swarm findings are thin/generic (no file-backed substance)' if _has_signal
+            else 'swarm produced no FINDING/RISK/DECISION artifacts' if result.num_artifacts
+            else 'swarm produced no artifacts'))
     _store_jid = (result.job_id or '').strip() or _sync_local_id
-    _badge = {'job_id': _store_jid, 'applied': _swarm_ok, 'files': [], 'summary': _badge_summary, 'error': _badge_error, 'objective': act.goal}
+    _badge = {'job_id': _store_jid, 'applied': _swarm_ok, 'files': [], 'summary': _badge_summary, 'error': _badge_error, 'objective': act.goal, 'adapter': 'refused-demo' if _demo_refused else result.adapter}
     try:
         session._finish_local_job(_sync_local_id, ok=_swarm_ok, summary=_badge_summary, status='done' if _swarm_ok else 'failed', engine=result.adapter or 'agentic')
         if _store_jid != _sync_local_id:
@@ -329,8 +346,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     if auth_failure and not _has_signal and auth_failure not in digest:
         digest = f"  - [auth] {auth_failure}\n{digest}"
     stall = ''
-    if counters['demo_swarms'] >= 2:
-        stall = '\n(NOTE: swarms are running on the DEMO substrate, which returns generic artifacts -- not real codebase analysis. Do NOT keep retrying; explain this to the user and finish with no actions. Real analysis needs --repo + --swarm-adapter openai.)'
+    if _demo_refused or counters['demo_swarms'] >= 1:
+        stall = '\n(NOTE: swarm hit the DEMO substrate and was refused -- Marionette never treats demo findings as real analysis. Do NOT retry or cite those findings. Tell the user analysis needs HARNESS_SWARM_ADAPTER=agentic and a provider key, then stop.)'
     if auth_failure:
         stall = f'\n(PROVIDER AUTH FAILURE -- {auth_failure} This is a dead/revoked/wrong API key, NOT a weak model or bad prompt. Do NOT re-run the swarm; tell the user to fix the named key, then stop.)' + stall
     elif not _has_signal:

@@ -984,15 +984,18 @@ def execute_intent(
             )
 
         # Swarm adapter selection (safety-first):
-        #   demo (default)  -> built-in local demo adapter: deterministic, free, no
-        #                      real code analysis. The substrate for driver eval.
-        #   openai          -> REAL LLM analysis of REAL code. We build READ-ONLY
-        #                      analysis WorkerSpecs pointed at the target repo cwd so
-        #                      Puppetmaster injects CodeGraph context. The "openai"
-        #                      adapter is NOT in _EDIT_CAPABLE_ADAPTERS, and we also
-        #                      stamp read_only=True -- a triple guard so a real run
-        #                      can NEVER edit a target repo (safe even on live repos).
-        swarm_adapter = (_os.environ.get("HARNESS_SWARM_ADAPTER", "demo") or "demo").lower()
+        #   agentic (default with repo) -> REAL LLM analysis via provider keys.
+        #   openai          -> REAL LLM analysis of REAL code (OpenAI-compatible).
+        #   demo (no-repo / ALLOW_DEMO only) -> built-in local substrate for eval.
+        # A live repo NEVER silently falls through to demo -- that produces
+        # generic placeholder findings that read as a successful audit.
+        try:
+            from harness.swarm_adapter import resolve_bridge_swarm_adapter
+            swarm_adapter = resolve_bridge_swarm_adapter(repo_cwd=repo_cwd)
+        except Exception:
+            swarm_adapter = (_os.environ.get("HARNESS_SWARM_ADAPTER", "demo") or "demo").lower()
+            if repo_cwd and swarm_adapter not in ("agentic", "openai"):
+                swarm_adapter = "agentic"
 
         if swarm_adapter == "agentic" and repo_cwd:
             # Standalone path: run READ-ONLY analysis workers on the built-in
@@ -1116,8 +1119,20 @@ def execute_intent(
             )
             adapter = "openai"
         else:
-            # The default role path (roles=None) uses the built-in local demo adapter:
-            # no API keys, deterministic, free. Label as demo substrate honestly.
+            # Product path never runs demo. Opt-in eval only.
+            try:
+                from harness.swarm_adapter import allow_demo_swarm
+                _demo_ok = allow_demo_swarm()
+            except Exception:
+                _demo_ok = False
+            if not _demo_ok:
+                raise ValueError(
+                    "refusing demo substrate in Marionette product path. "
+                    "Swarms require HARNESS_SWARM_ADAPTER=agentic (default) "
+                    "and a provider key. Set HARNESS_ALLOW_DEMO_SWARM=1 only "
+                    "for intentional driver-eval."
+                )
+            # Eval substrate: local deterministic adapter, no API keys.
             result = Orchestrator(store).run(
                 intent.goal,
                 roles=intent.roles,

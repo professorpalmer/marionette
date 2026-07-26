@@ -475,7 +475,7 @@ class Schedule:
     objective: str
     cron: str
     repo: str = ""
-    swarm_adapter: str = "demo"
+    swarm_adapter: str = "agentic"
     driver: str = ""
     enabled: bool = True
     max_tokens: int = 0
@@ -513,7 +513,7 @@ class Schedule:
             objective=str(row["objective"]),
             cron=str(row["cron"]),
             repo=str(row.get("repo") or ""),
-            swarm_adapter=str(row.get("swarm_adapter") or "demo"),
+            swarm_adapter=str(row.get("swarm_adapter") or "agentic"),
             driver=str(row.get("driver") or ""),
             enabled=bool(row.get("enabled", 1)),
             max_tokens=int(row.get("max_tokens") or 0),

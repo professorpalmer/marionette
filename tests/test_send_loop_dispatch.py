@@ -500,6 +500,68 @@ def test_dispatch_swarm_no_pending_when_register_fails(monkeypatch):
     session._append_action_result.assert_called_once()
 
 
+def test_dispatch_swarm_demo_never_shown(monkeypatch):
+    """Demo substrate findings are stripped and the badge fails hard."""
+    act = PilotAction(kind="run_swarm", goal="audit memory", roles=["explore"])
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo/wiki"),
+        _session_job_ids=[],
+        _register_local_job=MagicMock(),
+        _finish_local_job=MagicMock(),
+        _append_action_result=MagicMock(),
+        _display_transcript=[],
+    )
+    import harness.send_loop_dispatch as dispatch
+
+    monkeypatch.delenv("HARNESS_ALLOW_DEMO_SWARM", raising=False)
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
+
+    long_finding = {
+        "type": "finding",
+        "headline": "The swarm should share durable state, not inherited transcript.",
+        "body": "x" * 250,
+    }
+    demo_result = SimpleNamespace(
+        job_id="job-demo",
+        adapter="demo",
+        mode="swarm",
+        num_artifacts=1,
+        artifact_types=["finding"],
+        artifacts=[long_finding],
+        auth_failure="",
+        summary="demo",
+    )
+
+    def fake_stream(session, intent, q):
+        q.put(("done", demo_result))
+
+    monkeypatch.setattr(dispatch, "stream_swarm", fake_stream)
+    events = list(
+        dispatch_swarm_action(
+            session,
+            act,
+            "a-demo",
+            True,
+            counters={"swarms": 0, "demo_swarms": 0},
+            turn_findings=[],
+        )
+    )
+    action_results = [e for e in events if e.kind == "action_result"]
+    assert action_results
+    assert action_results[0].data.get("adapter") == "refused-demo"
+    assert action_results[0].data.get("artifacts") == []
+    assert action_results[0].data.get("num") == 0
+    swarm_results = [e for e in events if e.kind == "swarm_result"]
+    assert swarm_results
+    badge = swarm_results[0].data["result"]
+    assert badge["applied"] is False
+    assert badge.get("adapter") == "refused-demo"
+    assert "demo substrate" in (badge.get("error") or "")
+    session._finish_local_job.assert_called()
+    finish_kwargs = session._finish_local_job.call_args.kwargs
+    assert finish_kwargs.get("ok") is False or finish_kwargs.get("status") == "failed"
+
+
 def test_is_untracked_pm_start_tool():
     assert is_untracked_pm_start_tool("puppetmaster_start_cursor_swarm")
     assert is_untracked_pm_start_tool("user-puppetmaster/start_implement")

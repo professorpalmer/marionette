@@ -916,6 +916,13 @@ if not os.environ.get("HARNESS_REPO") and os.path.exists(_ws_boot_path):
         if _boot_repo:
             _cfg.repo = _boot_repo
             os.environ["HARNESS_REPO"] = _boot_repo
+            # from_env() ran before workspace.json restore and often left
+            # swarm_adapter=demo; promote to agentic for the live project.
+            try:
+                from .swarm_adapter import ensure_repo_swarm_adapter
+                ensure_repo_swarm_adapter(_cfg)
+            except Exception as _sa_e:
+                _diag("server.workspace_boot_swarm_adapter", _sa_e)
         # Scrub app-install paths left in recents by older builds so the
         # PROJECTS rail does not keep surfacing Marionette itself. Close the
         # read handle first -- Windows cannot replace an open file.

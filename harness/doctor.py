@@ -87,10 +87,23 @@ def run_doctor(argv) -> int:
     except Exception as e:
         _line("warn", "bedrock", f"could not resolve: {e}")
 
-    # 3b. Swarm adapter -- demo (substrate), agentic (standalone keys-only), or
-    # openai (OpenRouter-routed) real read-only analysis.
-    sa = os.environ.get("HARNESS_SWARM_ADAPTER", "demo").lower()
+    # 3b. Swarm adapter -- agentic (default with repo), openai, or demo (no-repo /
+    # explicit ALLOW_DEMO only). A live repo must never silently sit on demo.
     repo = os.environ.get("HARNESS_REPO", "").strip()
+    try:
+        from types import SimpleNamespace
+        from .swarm_adapter import ensure_repo_swarm_adapter, normalize_swarm_adapter
+        _sa_cfg = SimpleNamespace(
+            repo=repo,
+            swarm_adapter=os.environ.get("HARNESS_SWARM_ADAPTER", "")
+            or ("agentic" if repo else "demo"),
+        )
+        ensure_repo_swarm_adapter(_sa_cfg)
+        sa = normalize_swarm_adapter(
+            os.environ.get("HARNESS_SWARM_ADAPTER", _sa_cfg.swarm_adapter) or "demo"
+        )
+    except Exception:
+        sa = os.environ.get("HARNESS_SWARM_ADAPTER", "demo").lower()
     import os.path as _op
     _indexed = bool(repo) and _op.isdir(_op.join(repo, ".codegraph"))
     if sa in ("agentic", "openai") and repo:
@@ -102,9 +115,9 @@ def run_doctor(argv) -> int:
                   f"{label} analysis of {repo} but NO .codegraph index -- analysis runs "
                   f"BLIND (~30% vs ~81% accuracy). Run: python -m puppetmaster codegraph init --index")
     elif sa in ("agentic", "openai") and not repo:
-        _line("warn", "swarm adapter", f"{sa} set but HARNESS_REPO empty -> falls back to demo substrate")
+        _line("warn", "swarm adapter", f"{sa} set but HARNESS_REPO empty -- open a project before running swarms")
     else:
-        _line("ok", "swarm adapter", "demo (deterministic substrate -- set HARNESS_SWARM_ADAPTER=agentic + HARNESS_REPO for real standalone analysis)")
+        _line("warn", "swarm adapter", "demo is eval-only; product swarms use agentic (set HARNESS_ALLOW_DEMO_SWARM=1 only for benches)")
 
     # 3b-2. Edit engine -- which in-process worker run_implement will use, and
     # whether the standalone (keys-only) path is actually available.

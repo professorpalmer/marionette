@@ -254,6 +254,12 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
 
     svc.cfg.repo = target_repo
     os.environ["HARNESS_REPO"] = target_repo
+    # Boot often locked swarm_adapter=demo before workspace restore; promote.
+    try:
+        from ..swarm_adapter import ensure_repo_swarm_adapter
+        ensure_repo_swarm_adapter(svc.cfg)
+    except Exception:
+        pass
     if svc.note_boot_repo is not None:
         svc.note_boot_repo(target_repo)
 

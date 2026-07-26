@@ -142,7 +142,7 @@ def post_schedules_add(body: dict) -> tuple[int, JsonPayload]:
         objective=objective,
         cron=cron,
         repo=str(body.get("repo") or ""),
-        swarm_adapter=str(body.get("swarm_adapter") or "demo"),
+        swarm_adapter=str(body.get("swarm_adapter") or "agentic"),
         driver=str(body.get("driver") or ""),
         enabled=bool(body.get("enabled", True)),
         max_tokens=int(body.get("max_tokens") or 0),

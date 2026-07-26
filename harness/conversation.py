@@ -521,11 +521,14 @@ class ConversationalSession(
             self.pilot = prov._finalize_driver(reg.build(config.driver, reach=config.reach))
         # Propagate repo/adapter for the bridge. Never clobber a different
         # live workspace — deferred multi-session builds race switches.
+        # Never stamp demo into the process env for a live repo (boot poison).
         if config.repo:
             from .repo_env import publish_harness_repo
             publish_harness_repo(config.repo, force=False)
+        from .swarm_adapter import ensure_repo_swarm_adapter, publish_swarm_adapter
+        ensure_repo_swarm_adapter(config)
         if config.swarm_adapter:
-            os.environ["HARNESS_SWARM_ADAPTER"] = config.swarm_adapter
+            publish_swarm_adapter(config.swarm_adapter, repo=config.repo or "")
         # self-learning: load ACTIVE skills into the pilot's system context so
         # the loop compounds (procedural memory). Pending skills are NOT loaded.
         self._skills = SkillStore()

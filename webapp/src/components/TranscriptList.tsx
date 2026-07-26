@@ -1881,8 +1881,14 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
               ) : (card.result.message || card.result.status) ? (
                 <KV k="status" v={card.result.message || card.result.status || ""} />
               ) : null}
-              {card.result.adapter === "demo" && <div className="text-warn text-[10px] mt-1 font-sans">demo substrate -- not real codebase analysis</div>}
-              {(card.result.artifacts || []).map((a, i) => (
+              {(card.result.adapter === "demo" || card.result.adapter === "refused-demo") && (
+                <div className="text-warn text-[10px] mt-1 font-sans">
+                  demo substrate refused -- not real codebase analysis
+                </div>
+              )}
+              {/* Never render demo placeholder findings as audit results. */}
+              {card.result.adapter !== "demo" && card.result.adapter !== "refused-demo" &&
+                (card.result.artifacts || []).map((a, i) => (
                 <div key={i} className="flex gap-2 py-0.5 border-t border-edge/30 mt-1 items-center font-sans">
                   <span className="text-[9px] uppercase px-1.5 rounded bg-panel2 text-faint h-fit leading-none py-0.5 border border-edge/50">{a.type}</span>
                   <span className="text-txt/80 truncate">{a.headline}</span>

@@ -185,6 +185,12 @@ def _default_session_factory(schedule: Schedule):
         cfg.swarm_adapter = schedule.swarm_adapter
     if schedule.driver:
         cfg.driver = schedule.driver
+    # Schedule rows default swarm_adapter=demo; never leave that on a live repo.
+    try:
+        from .swarm_adapter import ensure_repo_swarm_adapter
+        ensure_repo_swarm_adapter(cfg)
+    except Exception:
+        pass
     return ConversationalSession(cfg)
 
 

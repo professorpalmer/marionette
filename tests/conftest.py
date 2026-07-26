@@ -258,9 +258,9 @@ def _isolate_pilot_env(monkeypatch):
     The app also persists feature flags via _set_env_setting that can change
     test behavior (auto-verify, edit review, distill, hash-edit, etc.).
     HARNESS_SWARM_ADAPTER/HARNESS_REPO matter most: the running app exports
-    them (agentic + the open workspace), and with them inherited the e2e/stage4
-    tests leave the documented "demo" default and fail with "swarm exited with
-    incomplete tasks". Tests that need a specific adapter set it explicitly."""
+    them (agentic + the open workspace). Inherited ambient values can skew
+    e2e/stage4 swarms. Tests that need a specific adapter set it explicitly;
+    demo substrate requires HARNESS_ALLOW_DEMO_SWARM=1."""
     for _var in (
         "HARNESS_MAX_PILOT_STEPS",
         "HARNESS_WORKER_TOKEN_BUDGET",
