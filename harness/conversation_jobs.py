@@ -31,7 +31,7 @@ _WORKER_PROVENANCE_PATH_CAP = 12
 
 def _worker_provenance_text(provenance: dict) -> str:
     """Render measured worker/live-tree facts for pilot-facing text."""
-    if not isinstance(provenance, dict):
+    if not isinstance(provenance, dict) or not provenance:
         return ""
     before = list(provenance.get("live_dirty_paths_before") or [])
     after = list(provenance.get("live_dirty_paths_after") or [])
@@ -726,7 +726,7 @@ class ConversationJobsMixin:
                     # "swarm done / swarm failed" badge survives a session reload or
                     # app restart -- the live ConvEvent below only reaches a renderer
                     # that is open right now.
-                    self._display_transcript.append({
+                    display_result = {
                         "type": "swarm_result",
                         "job_id": job_id,
                         "applied": bool(applied),
@@ -734,8 +734,11 @@ class ConversationJobsMixin:
                         "summary": summary or "",
                         "error": display_error,
                         "objective": objective,
-                        "worker_provenance": res_job.get("worker_provenance") or {},
-                    })
+                    }
+                    worker_provenance = res_job.get("worker_provenance") or {}
+                    if worker_provenance:
+                        display_result["worker_provenance"] = worker_provenance
+                    self._display_transcript.append(display_result)
                     # Nested actions are progressive via /api/swarm/live; mirror
                     # onto display cards only here under _busy for reload durability.
                     try:
