@@ -338,11 +338,15 @@ def test_build_agentic_spec_uses_live_prices(monkeypatch):
 
     assert spec["input_per_mtok_usd"] == live_in
     assert spec["output_per_mtok_usd"] == live_out
-    # Static capability/context/tags preserved from template.
+    # Static capability/context preserved; tools/agentic tags are always stamped
+    # so Puppetmaster tool-loop roles can select these models.
     template = _AGENTIC_TEMPLATES["anthropic"]["balanced"]
     assert spec["capability_score"] == template[0]
     assert spec["context_window"] == template[3]
-    assert spec["tags"] == list(template[4])
+    for required in ("tools", "agentic"):
+        assert required in spec["tags"]
+    for tag in template[4]:
+        assert tag in spec["tags"]
 
 
 def test_build_agentic_spec_keeps_static_on_price_miss(monkeypatch):
@@ -479,3 +483,81 @@ def test_seed_catalog_filters_marionette_unconfigured(monkeypatch, tmp_path):
     scrub_provider_env("bedrock")
     allowed2 = _marionette_allowed_agentic_providers({"bedrock", "anthropic"})
     assert "bedrock" not in allowed2
+
+
+def test_sync_skips_oauth_cli_identities(monkeypatch, tmp_path):
+    """ChatGPT Codex / Cursor CLI keys must not stamp agentic HTTP models.
+
+    Fresh installs with only openai-codex OAuth used to seed agentic/gpt-5.6-*
+    rows that fail credential checks and empty the SESSION COST savings path.
+    """
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        if provider.name in ("openrouter", "openai-codex", "cursor-cli"):
+            return f"fake-key-{provider.name}"
+        return None
+
+    def mock_fetch_models(provider, key, force=False):
+        return []
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", mock_fetch_models):
+        from harness.auto_registry import sync_agentic_registry
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    assert "openrouter" in result["providers"]
+    assert "openai-codex" not in result["providers"]
+    assert "cursor-cli" not in result["providers"]
+
+    data = json.loads(models_path.read_text())
+    for model in data.get("models", []):
+        assert model.get("adapter") == "agentic"
+        prov = (model.get("payload_defaults") or {}).get("provider")
+        assert prov not in ("openai-codex", "cursor-cli")
+        assert "tools" in (model.get("tags") or [])
+        assert "agentic" in (model.get("tags") or [])
+
+
+def test_reconcile_restores_shared_non_agentic(monkeypatch, tmp_path):
+    """Agentic-only marionette registry regains plan peers from shared PM."""
+    home = tmp_path / "home"
+    pm = home / ".puppetmaster"
+    mh = home / ".pmharness"
+    pm.mkdir(parents=True)
+    mh.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    # pathlib Path.home() follows HOME on Unix
+    shared = pm / "models.json"
+    dest = mh / "marionette-models.json"
+    shared.write_text(json.dumps({
+        "models": [
+            {"id": "cursor/composer-2-5", "adapter": "cursor", "capability_score": 55},
+            {"id": "agentic/stale", "adapter": "agentic", "capability_score": 1},
+        ]
+    }))
+    dest.write_text(json.dumps({
+        "models": [
+            {
+                "id": "agentic/z-ai/glm-5.2",
+                "adapter": "agentic",
+                "capability_score": 86,
+                "payload_defaults": {"provider": "openrouter"},
+                "tags": ["tools", "agentic"],
+            }
+        ]
+    }))
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(dest))
+
+    from harness.marionette_registry import reconcile_shared_models
+    report = reconcile_shared_models()
+    assert report.get("merged") == 1
+    data = json.loads(dest.read_text())
+    adapters = {m["adapter"] for m in data["models"]}
+    assert adapters == {"cursor", "agentic"}
+    assert any(m["id"] == "agentic/z-ai/glm-5.2" for m in data["models"])
+    assert not any(m["id"] == "agentic/stale" for m in data["models"])

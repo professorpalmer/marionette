@@ -346,6 +346,15 @@ def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: st
     else:
         _LIVE_PRICE_FALLBACK += 1
 
+    # Puppetmaster's router soft-requires `tools` for agentic tool-loop roles
+    # (audit/explore/implement). Without it, every agentic model is rejected and
+    # routing falls through to $0-marginal plan adapters — so measured savings
+    # stay at $0 even when OpenRouter is ready.
+    tag_list = list(tags)
+    for required in ("tools", "agentic"):
+        if required not in tag_list:
+            tag_list.append(required)
+
     return {
         "id": f"agentic/{slug}",
         "adapter": "agentic",
@@ -354,7 +363,7 @@ def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: st
         "input_per_mtok_usd": input_price,
         "output_per_mtok_usd": output_price,
         "context_window": context_window,
-        "tags": list(tags),
+        "tags": tag_list,
         "payload_defaults": {"provider": provider_name},
         "billing": "api"
     }
@@ -398,14 +407,20 @@ def sync_agentic_registry(force: bool = False) -> dict:
         
         # Detect live providers with usable keys (get_provider_key rejects
         # disconnects and doctor/test/placeholder tokens).
+        # Only providers in provider_map are standalone HTTP targets for the
+        # agentic adapter — OAuth/CLI identities (openai-codex, cursor-cli)
+        # have keys but are not agentic providers; stamping them as agentic
+        # makes the router reject every model when OpenRouter is absent.
         live_providers = []
         for p in PROVIDERS:
             if p.name in disconnected:
                 continue
+            if p.name not in provider_map:
+                continue
             key = get_provider_key(p)
             if not key:
                 continue
-            agentic_name = provider_map.get(p.name, p.name)
+            agentic_name = provider_map[p.name]
             live_providers.append((p.name, agentic_name, key))
         
         # Build agentic specs for each live provider
@@ -475,18 +490,34 @@ def sync_agentic_registry(force: bool = False) -> dict:
 
 
 def sync_agentic_registry_safe() -> None:
-    """Wrapper for sync_agentic_registry that never raises.
-    
+    """Sync agentic rows, restore shared non-agentic peers, re-apply ladder.
+
     Safe to call at startup or in key-change hooks -- any error is logged
     via diagnostics but never blocks the calling code.
+
+    Ladder + reconcile run *after* sync on every call site so a key paste or
+    cold boot cannot leave openai-codex/cursor-cli stamped as agentic, wipe
+    plan models, or clobber Marionette capability scores (which made every
+    tool-loop role fall through to $0-marginal plan routing and empty
+    SESSION COST savings).
     """
     try:
         result = sync_agentic_registry()
         if result.get("synced"):
-            _diag("auto_registry.sync_ok", 
+            _diag("auto_registry.sync_ok",
                   msg=f"synced {result['models_count']} models from {', '.join(result['providers']) or 'none'}")
         else:
-            _diag("auto_registry.sync_failed", 
+            _diag("auto_registry.sync_failed",
                   msg=f"error: {result.get('error', 'unknown')}")
     except Exception as e:
         _diag("auto_registry.sync_safe", e)
+        return
+    try:
+        from .marionette_registry import (
+            apply_marionette_router_ladder,
+            reconcile_shared_models,
+        )
+        reconcile_shared_models()
+        apply_marionette_router_ladder()
+    except Exception as e:
+        _diag("auto_registry.post_sync_ladder", e)

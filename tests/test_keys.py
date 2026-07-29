@@ -504,3 +504,39 @@ def test_disconnect_bedrock_scrubs_env_in_process(monkeypatch, tmp_path):
     assert body.get("disconnected") is True
     assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") is None
     assert "bedrock" in get_disconnected()
+
+
+def test_persist_env_api_keys_imports_openrouter_once(monkeypatch, tmp_path):
+    """Login-shell OpenRouter must land in keys.json for the next cold start."""
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-fresh-install-test-key-99")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    from harness.keys import (
+        persist_env_api_keys,
+        load_api_keys_on_startup,
+        get_keys_file_path,
+        mark_disconnected,
+        get_disconnected,
+    )
+
+    imported = persist_env_api_keys()
+    assert "openrouter" in imported
+    stored = json.loads(open(get_keys_file_path(), encoding="utf-8").read())
+    assert stored["openrouter"].endswith("99")
+
+    # Second pass is a no-op (does not overwrite).
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-should-not-overwrite")
+    assert persist_env_api_keys() == []
+    stored2 = json.loads(open(get_keys_file_path(), encoding="utf-8").read())
+    assert stored2["openrouter"].endswith("99")
+
+    # Explicit disconnect wins over shell env on startup load.
+    mark_disconnected("openrouter")
+    assert "openrouter" in get_disconnected()
+    os.environ.pop("OPENROUTER_API_KEY", None)
+    # Re-export after disconnect scrub path: load must not resurrect into env
+    # when disconnected (scrub_disconnected_env clears it).
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-fresh-install-test-key-99")
+    load_api_keys_on_startup("openrouter")
+    assert os.environ.get("OPENROUTER_API_KEY") in (None, "")

@@ -140,10 +140,85 @@ def apply_marionette_router_ladder(path: Optional[str] = None) -> dict[str, Any]
     return report
 
 
+def reconcile_shared_models(path: Optional[str] = None) -> dict[str, Any]:
+    """Restore non-agentic rows from the shared PM registry if they vanished.
+
+    ``sync_agentic_registry`` preserves non-agentic entries that are already
+    present, but a fresh ``marionette-models.json`` that only ever received
+    agentic syncs (or a wipe) leaves the router with no plan/codex/cursor
+    ladder peers. Merge shared non-agentic models back in without touching
+    ``~/.puppetmaster/models.json``.
+    """
+    report: dict[str, Any] = {"merged": 0, "path": "", "skipped": False}
+    raw = (path or os.environ.get("PUPPETMASTER_MODELS_PATH") or "").strip()
+    if not raw:
+        raw = str(marionette_models_path())
+    report["path"] = raw
+    dest = Path(raw)
+    try:
+        dest_is_marionette = dest.resolve() == marionette_models_path().resolve()
+    except Exception:
+        dest_is_marionette = dest.name == MARIONETTE_MODELS_FILENAME
+    if not dest_is_marionette:
+        report["skipped"] = True
+        report["reason"] = "not marionette registry"
+        return report
+    if not dest.is_file():
+        report["error"] = "missing registry file"
+        return report
+    shared = shared_puppetmaster_models_path()
+    if not shared.is_file():
+        report["skipped"] = True
+        report["reason"] = "no shared registry"
+        return report
+    try:
+        data = json.loads(dest.read_text(encoding="utf-8"))
+        shared_data = json.loads(shared.read_text(encoding="utf-8"))
+    except Exception as exc:
+        _diag("marionette_registry.reconcile_read", exc)
+        report["error"] = str(exc)
+        return report
+    models = data.get("models")
+    shared_models = shared_data.get("models")
+    if not isinstance(models, list) or not isinstance(shared_models, list):
+        report["error"] = "invalid models list"
+        return report
+    non_agentic = [
+        m for m in models
+        if isinstance(m, dict) and m.get("adapter") != "agentic"
+    ]
+    if non_agentic:
+        report["skipped"] = True
+        report["reason"] = "non-agentic already present"
+        return report
+    shared_non_agentic = [
+        m for m in shared_models
+        if isinstance(m, dict) and m.get("adapter") != "agentic" and m.get("id")
+    ]
+    if not shared_non_agentic:
+        report["skipped"] = True
+        report["reason"] = "shared has no non-agentic rows"
+        return report
+    agentic = [
+        m for m in models
+        if isinstance(m, dict) and m.get("adapter") == "agentic"
+    ]
+    data["models"] = shared_non_agentic + agentic
+    try:
+        dest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        _diag("marionette_registry.reconcile_write", exc)
+        report["error"] = str(exc)
+        return report
+    report["merged"] = len(shared_non_agentic)
+    return report
+
+
 def boot_marionette_registry() -> None:
-    """Boot hook: isolate env, then apply the Marionette ladder (best-effort)."""
+    """Boot hook: isolate env, reconcile catalog, apply ladder (best-effort)."""
     try:
         ensure_marionette_models_env()
+        reconcile_shared_models()
         apply_marionette_router_ladder()
     except Exception as exc:
         _diag("marionette_registry.boot", exc)

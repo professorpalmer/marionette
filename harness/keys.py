@@ -599,6 +599,63 @@ def clear_api_key(reach: str):
     # exports this provider's key (which the login-shell env capture re-injects).
     mark_disconnected(reach)
 
+# API-key providers the agentic swarm can actually call. OAuth/CLI identities
+# (openai-codex, cursor-cli, …) are intentionally excluded — they authenticate
+# the pilot, not Puppetmaster's standalone HTTP workers.
+_PERSISTABLE_ENV_PROVIDERS = (
+    "openrouter",
+    "openai",
+    "anthropic",
+    "gemini",
+    "deepseek",
+    "zai",
+    "xai",
+    "cursor",
+    "google",
+    "groq",
+    "mistral",
+)
+
+
+def persist_env_api_keys() -> list[str]:
+    """Copy shell-exported API keys into keys.json when the store has none.
+
+    Fresh desktop installs often inherit ``OPENROUTER_API_KEY`` (etc.) from the
+    login-shell env Electron merges in, while ``keys.json`` is still empty. The
+    in-process env is enough for *this* session, but the next Finder launch can
+    miss those vars — agentic swarms then fail with "no usable provider
+    credential" and SESSION COST never accumulates routing/cache savings.
+
+    Never overwrites a stored key, never persists placeholders, and never
+    resurrects an explicitly disconnected provider.
+    """
+    disconnected = get_disconnected()
+    keys = _read_keys()
+    imported: list[str] = []
+    for name in _PERSISTABLE_ENV_PROVIDERS:
+        if name in disconnected:
+            continue
+        existing = keys.get(name)
+        if isinstance(existing, str) and existing.strip() and not is_placeholder_credential(existing):
+            continue
+        env_var = get_env_var_for_reach(name)
+        if not env_var:
+            continue
+        value = (os.environ.get(env_var) or "").strip()
+        if not value or is_placeholder_credential(value):
+            continue
+        keys[name] = value
+        imported.append(name)
+    if imported:
+        try:
+            _write_keys(keys)
+            _diag("keys.persist_env_api_keys", msg=f"imported={','.join(imported)}")
+        except Exception as exc:
+            _diag("keys.persist_env_api_keys", exc)
+            return []
+    return imported
+
+
 def load_api_keys_on_startup(reach: str):
     _keyfile = os.environ.get("HARNESS_KEY_FILE", "")
     if _keyfile and os.path.exists(_keyfile):
@@ -609,6 +666,12 @@ def load_api_keys_on_startup(reach: str):
                     os.environ[_envvar] = _kf.read().strip()
             except Exception:
                 pass
+    # Capture login-shell / Electron-merged keys into durable store first so
+    # agentic registry sync (and the next cold start) see them.
+    try:
+        persist_env_api_keys()
+    except Exception as exc:
+        _diag("keys.persist_env_on_startup", exc)
     keys = _read_keys()
     # Inject every stored provider credential so pilots/workers see them after
     # restart — not only the active reach. Skip obvious placeholders so a stale

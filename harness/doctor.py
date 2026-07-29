@@ -114,6 +114,31 @@ def run_doctor(argv) -> int:
             _line("warn", "swarm adapter",
                   f"{label} analysis of {repo} but NO .codegraph index -- analysis runs "
                   f"BLIND (~30% vs ~81% accuracy). Run: python -m puppetmaster codegraph init --index")
+        # ChatGPT Codex / Cursor OAuth can pilot the UI while agentic workers
+        # still have zero HTTP keys — surface that before the first red swarm.
+        if sa == "agentic":
+            try:
+                from .registry_wizard import get_provider_key
+                from .providers import PROVIDERS
+                _agentic_http = {
+                    "openrouter", "openai", "anthropic", "gemini",
+                    "deepseek", "zai", "xai", "bedrock",
+                }
+                ready = [
+                    p.name for p in PROVIDERS
+                    if p.name in _agentic_http and get_provider_key(p)
+                ]
+                if ready:
+                    _line("ok", "agentic credentials",
+                          f"swarm labor can bill via {', '.join(ready)}")
+                else:
+                    _line("warn", "agentic credentials",
+                          "no OpenRouter/OpenAI/Anthropic/Gemini/… API key visible — "
+                          "ChatGPT Codex OAuth alone cannot fund agentic swarms. "
+                          "Add a provider key in Settings (or export OPENROUTER_API_KEY) "
+                          "so SESSION COST routing/cache savings can accumulate.")
+            except Exception as e:
+                _line("warn", "agentic credentials", f"could not resolve: {e}")
     elif sa in ("agentic", "openai") and not repo:
         _line("warn", "swarm adapter", f"{sa} set but HARNESS_REPO empty -- open a project before running swarms")
     else:

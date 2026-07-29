@@ -3055,10 +3055,12 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
         except (ValueError, OSError):
             pass  # not on the main thread (e.g. under tests) -- atexit still covers it
     try:
-        # Sync the agentic registry at startup so models.json reflects current keys
+        # Sync agentic catalog from live keys. sync_agentic_registry_safe also
+        # reconciles shared non-agentic rows and re-applies the Marionette ladder
+        # so boot_marionette_registry() scores are not clobbered.
         from .auto_registry import sync_agentic_registry_safe
         sync_agentic_registry_safe()
-        
+
         _maybe_auto_index_codegraph()
         # Connect configured MCP servers (incl. local Docker HTTP) without
         # blocking the GUI bind. Failures land on status().error for State→MCP.
