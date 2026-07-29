@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import time
 from typing import Optional
 
@@ -47,6 +48,8 @@ _CHROME_PATH_NAMES = (
 
 
 def _macos_bundle_candidates() -> tuple:
+    if sys.platform != "darwin":
+        return ()
     roots = ("/Applications", os.path.expanduser("~/Applications"))
     return tuple(
         os.path.join(root, bundle, "Contents", "MacOS", executable)

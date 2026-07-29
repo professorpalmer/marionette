@@ -170,12 +170,13 @@ def test_guard_accepts_macos_application_path(monkeypatch, restore_engine, tmp_p
 
 
 def test_guard_accepts_path_name_via_which(monkeypatch, restore_engine, tmp_path):
-    shim = tmp_path / "google-chrome"
-    shim.write_text("#!/bin/sh\n", encoding="utf-8")
-    shim.chmod(0o755)
     monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
-    monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(browser, "chrome_candidates", lambda: ("google-chrome",))
+    monkeypatch.setattr(
+        browser.shutil,
+        "which",
+        lambda name: str(tmp_path / "google-chrome") if name == "google-chrome" else None,
+    )
     browser._ENGINE_ERR = ""
     browser._engine = _fake_engine(
         __name__="puppetmaster.browser_cdp",
@@ -184,6 +185,7 @@ def test_guard_accepts_path_name_via_which(monkeypatch, restore_engine, tmp_path
     assert browser.browser_snapshot() == "Page: ok"
 
 
+@pytest.mark.skipif(browser.sys.platform != "darwin", reason="macOS bundle paths")
 def test_candidates_include_per_user_applications_and_channels(monkeypatch):
     """Per-user installs and Beta/Dev/Canary must be discoverable, not just /Applications."""
     monkeypatch.setenv("HOME", "/Users/tester")
@@ -204,6 +206,7 @@ def test_candidates_include_per_user_applications_and_channels(monkeypatch):
     assert candidates[-len(browser._CHROME_PATH_NAMES):] == browser._CHROME_PATH_NAMES
 
 
+@pytest.mark.skipif(browser.sys.platform != "darwin", reason="macOS bundle paths")
 def test_user_applications_bundle_is_accepted(monkeypatch, restore_engine, tmp_path):
     app_exec = (
         tmp_path / "Applications" / "Google Chrome.app" / "Contents" / "MacOS"
@@ -215,6 +218,7 @@ def test_user_applications_bundle_is_accepted(monkeypatch, restore_engine, tmp_p
     monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    monkeypatch.setattr(browser, "chrome_candidates", lambda: (str(app_exec),))
     browser._chrome_probe_cache.clear()
     browser._ENGINE_ERR = ""
     browser._engine = _fake_engine(
