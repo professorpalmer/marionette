@@ -8,6 +8,39 @@ import pytest
 
 from harness import os_sandbox
 
+_SHARED_SYSTEM_TEMPS = ("/tmp", "/var/tmp")
+
+
+def _norm(path: str) -> str:
+    return os.path.normpath(path)
+
+
+def _assert_not_exact_shared_temp(path: str) -> None:
+    normalized = _norm(path)
+    shared = {_norm(p) for p in _SHARED_SYSTEM_TEMPS}
+    assert normalized not in shared
+
+
+def _assert_profile_excludes_shared_tmp(profile: str) -> None:
+    shared = {_norm(p) for p in _SHARED_SYSTEM_TEMPS}
+    for line in profile.splitlines():
+        line = line.strip()
+        if not line.startswith("(subpath "):
+            continue
+        quoted = line[len("(subpath ") :].rstrip(")").strip().strip('"')
+        assert _norm(quoted) not in shared
+
+
+def _assert_bwrap_excludes_shared_tmp(argv: list[str]) -> None:
+    shared = {_norm(p) for p in _SHARED_SYSTEM_TEMPS}
+    idx = 0
+    while idx < len(argv):
+        if argv[idx] == "--bind" and idx + 2 < len(argv):
+            assert _norm(argv[idx + 1]) not in shared
+            idx += 3
+            continue
+        idx += 1
+
 
 @pytest.fixture(autouse=True)
 def _reset_probe_cache():
@@ -128,7 +161,8 @@ def test_writable_paths_include_cwd_and_private_temp_only(monkeypatch, tmp_path)
     assert os.path.abspath(str(tmp_path / "repo")) in paths
     assert os.path.abspath(private) in paths
     assert os.path.abspath(str(tmp_path / "state")) not in paths
-    assert "/tmp" not in paths
+    for path in paths:
+        _assert_not_exact_shared_temp(path)
 
 
 def test_sibling_state_files_denied_by_seatbelt_profile(monkeypatch, tmp_path):
@@ -179,7 +213,7 @@ def test_prepare_sandbox_spawn_sets_private_temp_env(monkeypatch, tmp_path):
     private = plan.child_env["TMPDIR"]
     assert private.startswith(str(tmp_path / "state"))
     assert os.path.isdir(private)
-    assert "/tmp" not in private
+    _assert_not_exact_shared_temp(private)
     assert plan.cleanup is not None
     plan.cleanup()
     assert not os.path.isdir(private)
@@ -195,7 +229,7 @@ def test_active_profile_excludes_shared_tmp(monkeypatch, tmp_path):
         private_temp=private,
     )
     profile = os_sandbox.build_seatbelt_profile(writable)
-    assert "/tmp" not in profile
+    _assert_profile_excludes_shared_tmp(profile)
     assert private.replace("\\", "\\\\") in profile or private in profile
 
 
@@ -206,9 +240,8 @@ def test_bwrap_argv_excludes_shared_tmp(monkeypatch, tmp_path):
         [str(tmp_path / "repo"), private],
         "echo hi",
     )
-    joined = " ".join(argv)
-    assert "/tmp" not in joined
-    assert private in joined
+    _assert_bwrap_excludes_shared_tmp(argv)
+    assert private in argv
 
 
 def test_detect_sandbox_capability_windows_is_unavailable(monkeypatch):

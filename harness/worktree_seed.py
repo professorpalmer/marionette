@@ -664,19 +664,18 @@ def _copy_into_worktree(
         return False
     try:
         if os.path.isfile(dst):
-            # Skip identical content (cheap size+mtime, then bytes).
+            # Skip identical content (compare bytes when sizes match).
             try:
-                if (os.path.getsize(src) == os.path.getsize(dst)
-                        and os.path.getmtime(src) == os.path.getmtime(dst)):
-                    return False
-                with open(src, "rb") as a, open(dst, "rb") as b:
-                    if a.read() == b.read():
-                        return False
+                if os.path.getsize(src) == os.path.getsize(dst):
+                    with open(src, "rb") as a, open(dst, "rb") as b:
+                        if a.read() == b.read():
+                            return False
             except Exception:
                 pass
         os.makedirs(os.path.dirname(dst) or wt_abs, exist_ok=True)
         _copy_file_with_strategy(src, dst, strategy, stats)
         return True
     except Exception:
-        _cleanup_failed_clone_dst(dst)
+        # Staging failures are cleaned in _copy_file_with_strategy; never
+        # touch an existing destination until os.replace succeeds.
         return False

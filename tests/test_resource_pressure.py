@@ -224,7 +224,8 @@ def test_rss_uses_current_not_peak(monkeypatch):
 
     monkeypatch.setattr(rp, "_read_rss_bytes_linux_statm", lambda: 50 * 1024 * 1024)
     monkeypatch.setattr(rp, "_read_rss_bytes_ps", lambda: None)
-    monkeypatch.setattr(rp.sys, "platform", "linux")
+    monkeypatch.setattr(rp, "_platform_is_windows", lambda: False)
+    monkeypatch.setattr(rp, "_platform_is_linux", lambda: True)
 
     snap = rp.capture_resource_pressure_snapshot()
     assert snap.rss_bytes == 50 * 1024 * 1024
@@ -257,7 +258,8 @@ def test_rss_peak_drops_current_drops_reject_clears(monkeypatch):
 def test_rss_ps_fallback_on_macos(monkeypatch):
     import harness.resource_pressure as rp
 
-    monkeypatch.setattr(rp.sys, "platform", "darwin")
+    monkeypatch.setattr(rp, "_platform_is_windows", lambda: False)
+    monkeypatch.setattr(rp, "_platform_is_linux", lambda: False)
     monkeypatch.setattr(rp, "_read_rss_bytes_linux_statm", lambda: None)
     monkeypatch.setattr(rp, "_read_rss_bytes_ps", lambda: 32 * 1024 * 1024)
     assert rp._read_rss_bytes() == 32 * 1024 * 1024
@@ -266,8 +268,8 @@ def test_rss_ps_fallback_on_macos(monkeypatch):
 def test_rss_unavailable_on_windows(monkeypatch):
     import harness.resource_pressure as rp
 
-    monkeypatch.setattr(rp.os, "name", "nt", raising=False)
-    monkeypatch.setattr(rp.sys, "platform", "win32")
+    monkeypatch.setattr(rp, "_platform_is_windows", lambda: True)
+    monkeypatch.setattr(rp, "_platform_is_linux", lambda: False)
     assert rp._read_rss_bytes() is None
 
 
@@ -285,8 +287,8 @@ def test_resource_module_import_is_lazy_on_windows(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     mod = importlib.reload(importlib.import_module("harness.resource_pressure"))
-    monkeypatch.setattr(mod.os, "name", "nt", raising=False)
-    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_platform_is_windows", lambda: True)
+    monkeypatch.setattr(mod, "_platform_is_linux", lambda: False)
     snap = mod.capture_resource_pressure_snapshot()
     assert snap.rss_bytes is None
     th = mod.ResourcePressureThresholds(enabled=False)
@@ -294,8 +296,9 @@ def test_resource_module_import_is_lazy_on_windows(monkeypatch):
 
 
 def test_windows_open_fds_unavailable(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr("harness.resource_pressure.os.name", "nt", raising=False)
+    import harness.resource_pressure as rp
+
+    monkeypatch.setattr(rp, "_platform_is_windows", lambda: True)
     snap = capture_resource_pressure_snapshot()
     assert snap.open_fds is None
 

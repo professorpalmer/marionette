@@ -54,6 +54,16 @@ class ResourcePressureDecision:
         return self.action in ("allow", "advisory")
 
 
+def _platform_is_windows() -> bool:
+    """Injectable Windows probe (tests monkeypatch this, not sys.platform alone)."""
+    return os.name == "nt"
+
+
+def _platform_is_linux() -> bool:
+    """Injectable Linux probe (tests monkeypatch this, not sys.platform alone)."""
+    return sys.platform.startswith("linux")
+
+
 def capture_resource_pressure_snapshot() -> ResourcePressureSnapshot:
     """Collect best-effort metrics without raising."""
     return ResourcePressureSnapshot(
@@ -126,9 +136,9 @@ def _read_rss_bytes_ps() -> Optional[int]:
 
 def _read_rss_bytes() -> Optional[int]:
     """Current resident set size — never ``ru_maxrss`` peak."""
-    if os.name == "nt":
+    if _platform_is_windows():
         return None
-    if sys.platform.startswith("linux"):
+    if _platform_is_linux():
         rss = _read_rss_bytes_linux_statm()
         if rss is not None:
             return rss
@@ -136,7 +146,7 @@ def _read_rss_bytes() -> Optional[int]:
 
 
 def _read_open_fd_count() -> Optional[int]:
-    if os.name == "nt":
+    if _platform_is_windows():
         return None
     fd_dir = "/proc/self/fd"
     if not os.path.isdir(fd_dir):
@@ -213,19 +223,20 @@ def wait_for_resource_capacity(
     thresholds: ResourcePressureThresholds,
     *,
     requested_workers: int = 1,
-    snapshot_fn: Callable[[], ResourcePressureSnapshot] = capture_resource_pressure_snapshot,
+    snapshot_fn: Optional[Callable[[], ResourcePressureSnapshot]] = None,
     sleep_fn: Callable[[float], None] = time.sleep,
     monotonic_fn: Callable[[], float] = time.monotonic,
 ) -> ResourcePressureDecision:
     """Poll until pressure clears, timeout expires, or reject persists."""
+    snap_fn = snapshot_fn or capture_resource_pressure_snapshot
     if not thresholds.enabled:
-        snap = snapshot_fn()
+        snap = snap_fn()
         return ResourcePressureDecision("allow", (), snap, requested_workers)
 
     deadline = monotonic_fn() + max(0.0, float(thresholds.wait_timeout_sec))
     last_decision: Optional[ResourcePressureDecision] = None
     while True:
-        snap = snapshot_fn()
+        snap = snap_fn()
         decision = evaluate_resource_pressure(
             snap, thresholds, requested_workers=requested_workers,
         )
@@ -347,24 +358,25 @@ def admit_resource_pressure(
     thresholds: ResourcePressureThresholds,
     *,
     requested_workers: int = 1,
-    snapshot_fn: Callable[[], ResourcePressureSnapshot] = capture_resource_pressure_snapshot,
+    snapshot_fn: Optional[Callable[[], ResourcePressureSnapshot]] = None,
     sleep_fn: Callable[[float], None] = time.sleep,
     monotonic_fn: Callable[[], float] = time.monotonic,
 ) -> ResourcePressureDecision:
     """Single admission probe: wait (bounded) then allow or reject."""
+    snap_fn = snapshot_fn or capture_resource_pressure_snapshot
     requested = max(1, int(requested_workers))
     if not thresholds.enabled:
-        snap = snapshot_fn()
+        snap = snap_fn()
         return ResourcePressureDecision("allow", (), snap, requested)
 
     if thresholds.wait_timeout_sec > 0:
         return wait_for_resource_capacity(
             thresholds,
             requested_workers=requested,
-            snapshot_fn=snapshot_fn,
+            snapshot_fn=snap_fn,
             sleep_fn=sleep_fn,
             monotonic_fn=monotonic_fn,
         )
 
-    snap = snapshot_fn()
+    snap = snap_fn()
     return evaluate_resource_pressure(snap, thresholds, requested_workers=requested)

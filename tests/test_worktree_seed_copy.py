@@ -316,15 +316,65 @@ def test_atomic_replace_preserves_destination_on_failure(tmp_path, monkeypatch):
     src = repo / "keep.bin"
     dst = wt / "keep.bin"
     original = b"original-content"
-    src.write_bytes(original)
+    src.write_bytes(b"new-content-from-source")
     dst.write_bytes(original)
 
     stats = SeedCopyStats()
-    monkeypatch.setattr("harness.worktree_seed.shutil.copy2", lambda *_a, **_k: (_ for _ in ()).throw(OSError(errno.ENOSPC, "no space")))
+    copy_calls = {"n": 0}
+
+    def _fail_copy2(*_a, **_k):
+        copy_calls["n"] += 1
+        raise OSError(errno.ENOSPC, "no space")
+
+    monkeypatch.setattr("harness.worktree_seed.shutil.copy2", _fail_copy2)
 
     assert _copy_into_worktree(str(repo), str(wt), "keep.bin", "copy", stats) is False
+    assert copy_calls["n"] >= 1
     assert dst.read_bytes() == original
     assert stats.copied_files == 0
+    assert list(wt.glob(".pmseed-*")) == []
+
+
+def test_new_destination_failure_leaves_no_partial_file(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    wt = tmp_path / "wt"
+    repo.mkdir()
+    wt.mkdir()
+    src = repo / "fresh.bin"
+    dst = wt / "fresh.bin"
+    src.write_bytes(b"seed-me")
+
+    stats = SeedCopyStats()
+    monkeypatch.setattr(
+        "harness.worktree_seed.shutil.copy2",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError(errno.ENOSPC, "no space")),
+    )
+
+    assert not dst.exists()
+    assert _copy_into_worktree(str(repo), str(wt), "fresh.bin", "copy", stats) is False
+    assert not dst.exists()
+    assert stats.copied_files == 0
+    assert list(wt.glob(".pmseed-*")) == []
+
+
+def test_same_size_same_mtime_differing_content_replaced(tmp_path):
+    repo = tmp_path / "repo"
+    wt = tmp_path / "wt"
+    repo.mkdir()
+    wt.mkdir()
+    src = repo / "masked.bin"
+    dst = wt / "masked.bin"
+    mtime = 1_700_000_000.0
+    src.write_bytes(b"aaaa")
+    dst.write_bytes(b"bbbb")
+    os.utime(src, (mtime, mtime))
+    os.utime(dst, (mtime, mtime))
+
+    stats = SeedCopyStats()
+    assert _copy_into_worktree(str(repo), str(wt), "masked.bin", "copy", stats) is True
+    assert dst.read_bytes() == b"aaaa"
+    assert os.path.getmtime(dst) == pytest.approx(mtime, rel=1e-3)
+    assert stats.copied_files == 1
 
 
 def test_atomic_replace_overwrites_via_staging(tmp_path):

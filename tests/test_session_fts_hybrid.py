@@ -1,6 +1,7 @@
 """Hybrid FTS: transcript + preview + artifact headline projections."""
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sqlite3
@@ -287,9 +288,14 @@ def test_best_effort_hooks_never_raise(monkeypatch):
             "harness.session_fts.index_session_artifacts",
             boom,
         )
+
+        def _connect_fail(_state_dir: str):
+            raise OSError(errno.ENOSPC, "index unavailable")
+
+        monkeypatch.setattr("harness.session_fts._connect", _connect_fail)
         assert best_effort_index_job_artifacts(state_dir, "job-1", session_id="sess-x") is False
         assert index_session_preview(state_dir, "", "text") is False
-        assert index_session_preview("/no/such", "sess-x", "text") is False
+        assert index_session_preview(state_dir, "sess-x", "text") is False
 
 
 def test_reindex_store_artifacts_read_only_projection():
