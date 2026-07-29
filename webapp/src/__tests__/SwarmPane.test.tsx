@@ -429,6 +429,21 @@ describe("SwarmPane mid-run job-row meters", () => {
     expect(parts.total).toBeCloseTo(0.50, 8);
   });
 
+  it("marks partial cache value when cached tokens are unpriced", () => {
+    const parts = jobSavings({
+      id: "j1",
+      goal: "x",
+      status: "complete",
+      cache_saved_usd: 0.10,
+      swarm_cache_savings_basis: "unknown",
+      swarm_cache_unpriced_tokens: 25_000,
+    } as Job);
+
+    expect(parts.cache).toBeCloseTo(0.10, 8);
+    expect(parts.cachePartial).toBe(true);
+    expect(parts.cacheUnpricedTokens).toBe(25_000);
+  });
+
   it("does not replace measured zero delegation with routing estimate", () => {
     const parts = jobSavings({
       id: "j1",

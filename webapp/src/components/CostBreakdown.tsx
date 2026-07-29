@@ -33,6 +33,8 @@ export type CostBreakdownData = {
   delegation_savings_basis?: "actual_usage" | "estimated" | "unknown";
   delegation_tokens_compared?: number;
   cache_saved_usd_swarm?: number;
+  swarm_cache_savings_basis?: "actual_usage" | "estimated" | "unknown";
+  swarm_cache_unpriced_tokens?: number;
   tool_output_tokens_saved?: number;
   tool_output_savings_usd?: number;
   history_compactions?: number;
@@ -264,6 +266,18 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
     typeof data.cache_saved_usd_swarm === "number" && isFinite(data.cache_saved_usd_swarm) && data.cache_saved_usd_swarm > 0
       ? data.cache_saved_usd_swarm
       : 0;
+  const swarmCacheUnpricedTokens =
+    typeof data.swarm_cache_unpriced_tokens === "number"
+    && isFinite(data.swarm_cache_unpriced_tokens)
+    && data.swarm_cache_unpriced_tokens > 0
+      ? data.swarm_cache_unpriced_tokens
+      : 0;
+  const swarmCachePartial =
+    swarmCacheSaved > 0
+    && (
+      data.swarm_cache_savings_basis === "unknown"
+      || swarmCacheUnpricedTokens > 0
+    );
   // One Prompt-cache value row: uncapped pilot gross + store-job cache.
   const promptCacheSaved =
     (pilotCacheGross > 0 ? pilotCacheGross : 0) + swarmCacheSaved;
@@ -423,9 +437,17 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {promptCacheSaved > 0 ? (
         <div
           className="flex items-center justify-between mb-1"
-          title="Gross avoided full-price input value from prompt-cache hits (catalog/list rate). Continues growing with cached tokens; not a cash refund and not capped to provider spend."
+          title={
+            swarmCachePartial
+              ? swarmCacheUnpricedTokens > 0
+                ? `Partial avoided full-price input value; ${fmtTokens(swarmCacheUnpricedTokens)} swarm cache tokens could not be priced. Not a cash refund.`
+                : "Partial avoided full-price input value; not every swarm cache hit has a trustworthy list rate. Not a cash refund."
+              : "Gross avoided full-price input value from prompt-cache hits (catalog/list rate). Continues growing with cached tokens; not a cash refund and not capped to provider spend."
+          }
         >
-          <span className="text-muted">Prompt-cache value</span>
+          <span className="text-muted">
+            Prompt-cache value{swarmCachePartial ? " (partial)" : ""}
+          </span>
           <span className="text-accent font-medium tabular-nums">~{fmtCost(promptCacheSaved)}</span>
         </div>
       ) : null}

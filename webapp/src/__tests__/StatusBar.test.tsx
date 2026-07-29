@@ -129,6 +129,31 @@ describe("StatusBar usage pills", () => {
     });
   });
 
+  it("marks the saved chip when swarm cache pricing is partial", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 1000,
+        est_cost_usd: 0.10,
+        driver: "anthropic:claude-sonnet",
+        price_in: 3,
+        price_out: 15,
+        tokens_cached: 20_000,
+        cache_saved_usd_swarm: 0.05,
+        swarm_cache_savings_basis: "unknown",
+        swarm_cache_unpriced_tokens: 8_000,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    const saved = await screen.findByText("~$0.05 saved");
+    expect(saved.closest("span")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/8k tokens unpriced/i),
+    );
+  });
+
   it("hides the saved pill when there is no cache or compaction savings", async () => {
     mockGetUsage.mockResolvedValue({
       session: {

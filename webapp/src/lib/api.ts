@@ -180,6 +180,10 @@ export type Job = {
   delegation_savings_basis?: "actual_usage" | "estimated" | "unknown";
   /** Swarm prompt-cache savings priced from this job's usage x registry. */
   cache_saved_usd?: number;
+  /** actual_usage | unknown — whether all cached tokens on this job were priced. */
+  swarm_cache_savings_basis?: "actual_usage" | "estimated" | "unknown";
+  /** Cache-read tokens on this job that have no trustworthy list rate. */
+  swarm_cache_unpriced_tokens?: number;
   tool_output_tokens_saved?: number;
   tool_output_savings_usd?: number;
   tool_output_compactions?: number;

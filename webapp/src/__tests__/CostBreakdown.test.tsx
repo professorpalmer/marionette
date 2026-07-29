@@ -118,6 +118,26 @@ describe("CostBreakdown", () => {
     );
   });
 
+  it("labels swarm cache value as partial when some tokens are unpriced", () => {
+    render(
+      <CostBreakdown
+        data={{
+          ...baseData,
+          cache_savings_usd: 0,
+          cache_saved_usd_swarm: 0.22,
+          swarm_cache_savings_basis: "unknown",
+          swarm_cache_unpriced_tokens: 12_500,
+        }}
+      />,
+    );
+
+    const label = screen.getByText("Prompt-cache value (partial)");
+    expect(label.closest("div")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/12\.5k swarm cache tokens could not be priced/i),
+    );
+  });
+
   it("does not replace measured zero delegation value with a routing estimate", () => {
     const data: CostBreakdownData = {
       ...baseData,

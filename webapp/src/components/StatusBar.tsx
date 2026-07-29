@@ -313,6 +313,12 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                   ? usage.cache_savings_gross_usd
                   : usage.cache_savings_usd || 0)
                 + (usage.cache_saved_usd_swarm || 0);
+              const swarmCachePartial =
+                (usage.cache_saved_usd_swarm || 0) > 0
+                && (
+                  usage.swarm_cache_savings_basis === "unknown"
+                  || (usage.swarm_cache_unpriced_tokens || 0) > 0
+                );
               const savedUsd = listPriceValueTotal(usage);
               if (cached <= 0 && compacted <= 0 && savedUsd <= 0) return null;
               const delegationMeasured =
@@ -332,6 +338,14 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                 cached > 0
                   ? `${formatTokens(cached)} prompt tokens served from cache${
                       cacheValue > 0 ? ` (~${formatCost(cacheValue)} prompt-cache value)` : ""
+                    }${
+                      swarmCachePartial
+                        ? `, partial pricing${
+                            (usage.swarm_cache_unpriced_tokens || 0) > 0
+                              ? `; ${formatTokens(usage.swarm_cache_unpriced_tokens || 0)} tokens unpriced`
+                              : ""
+                          }`
+                        : ""
                     }`
                   : "",
                 compacted > 0
@@ -353,7 +367,9 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                   title={`List-price value from model selection, prompt-cache, and compaction (additive, not overlapping cash refunds): ${detail}`}
                 >
                   <span className="text-good/60" aria-hidden="true">&#8595;</span>
-                  {savedUsd > 0 ? `${formatCost(savedUsd)} saved` : `${formatTokens(cached + compacted)} saved`}
+                  {savedUsd > 0
+                    ? `${swarmCachePartial ? "~" : ""}${formatCost(savedUsd)} saved`
+                    : `${formatTokens(cached + compacted)} saved`}
                 </span>
               );
             })()}
@@ -399,6 +415,8 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                       delegation_savings_basis: usage.delegation_savings_basis,
                       delegation_tokens_compared: usage.delegation_tokens_compared,
                       cache_saved_usd_swarm: usage.cache_saved_usd_swarm,
+                      swarm_cache_savings_basis: usage.swarm_cache_savings_basis,
+                      swarm_cache_unpriced_tokens: usage.swarm_cache_unpriced_tokens,
                       tool_output_tokens_saved: usage.tool_output_tokens_saved,
                       tool_output_savings_usd: usage.tool_output_savings_usd,
                       history_compactions: usage.history_compactions,

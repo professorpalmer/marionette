@@ -148,6 +148,8 @@ from .api.cost import (  # noqa: E402
     _usage_cache_get,
     _usage_cache_put,
 )
+from .api.swarm_cost import _cache_saved_usd_swarm_detail  # noqa: E402
+
 
 def _sync_pilot_session_id() -> None:
     """Keep the pilot's savings-ledger session scope aligned with SessionStore."""
@@ -1452,6 +1454,7 @@ def _job_services():
         routing_saved_usd_detail=_routing_saved_usd_detail,
         delegation_saved_usd_detail=_delegation_saved_usd_detail,
         cache_saved_usd_swarm=_cache_saved_usd_swarm,
+        cache_saved_usd_swarm_detail=_cache_saved_usd_swarm_detail,
         tokens_cached_swarm=_tokens_cached_swarm,
         job_dead_run_failure=_job_dead_run_failure,
         job_savings_fields=_job_savings_fields,

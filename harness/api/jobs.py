@@ -42,6 +42,7 @@ class JobServices:
     # Optional: rich routing detail (basis + tokens). Older test stubs omit it.
     routing_saved_usd_detail: Callable[..., dict] | None = None
     delegation_saved_usd_detail: Callable[..., dict] | None = None
+    cache_saved_usd_swarm_detail: Callable[..., dict] | None = None
 
 
 def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
@@ -357,12 +358,31 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                     )
             except Exception:
                 job_delegation_saved = 0.0
+            job_cache_basis = "unknown"
+            job_cache_unpriced_tokens = 0
             try:
-                job_cache_saved = round(
-                    svc.cache_saved_usd_swarm(raw_arts, registry), 6
-                )
+                cache_detail_fn = svc.cache_saved_usd_swarm_detail
+                if cache_detail_fn is not None:
+                    cache_detail = cache_detail_fn(raw_arts, registry)
+                    job_cache_saved = round(
+                        float(cache_detail.get("cache_saved_usd_swarm") or 0.0),
+                        6,
+                    )
+                    job_cache_basis = str(
+                        cache_detail.get("swarm_cache_savings_basis") or "unknown"
+                    )
+                    job_cache_unpriced_tokens = int(
+                        cache_detail.get("swarm_cache_unpriced_tokens") or 0
+                    )
+                else:
+                    raise TypeError("no swarm cache detail helper")
             except Exception:
-                job_cache_saved = 0.0
+                try:
+                    job_cache_saved = round(
+                        svc.cache_saved_usd_swarm(raw_arts, registry), 6
+                    )
+                except Exception:
+                    job_cache_saved = 0.0
             try:
                 job_tokens_cached = int(svc.tokens_cached_swarm(raw_arts) or 0)
             except Exception:
@@ -441,6 +461,8 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "delegation_tokens_compared": job_delegation_tokens,
                 "delegation_savings_counted": job_delegation_counted,
                 "cache_saved_usd": job_cache_saved,
+                "swarm_cache_savings_basis": job_cache_basis,
+                "swarm_cache_unpriced_tokens": job_cache_unpriced_tokens,
                 "artifacts": artifacts_list,
                 "artifacts_complete": artifacts_complete,
                 "tasks": tasks_list,
@@ -504,6 +526,9 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     saw_routing_unknown = False
     saw_delegation_actual = False
     saw_delegation_unknown = False
+    saw_cache_actual = False
+    saw_cache_unknown = False
+    live_cache_unpriced_tokens = 0
     swarm_cached = 0
     job_tokens_sum = 0
     store_job_cost = 0.0
@@ -536,7 +561,16 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                     saw_delegation_actual = True
                 else:
                     saw_delegation_unknown = True
-            swarm_cached += int(j.get("tokens_cached") or 0)
+            job_cached = int(j.get("tokens_cached") or 0)
+            swarm_cached += job_cached
+            live_cache_unpriced_tokens += int(
+                j.get("swarm_cache_unpriced_tokens") or 0
+            )
+            if job_cached > 0:
+                if j.get("swarm_cache_savings_basis") == "actual_usage":
+                    saw_cache_actual = True
+                else:
+                    saw_cache_unknown = True
     except Exception:
         pass
     if saw_routing_actual:
@@ -549,6 +583,10 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         live_delegation_basis = "actual_usage"
     else:
         live_delegation_basis = "unknown"
+    if saw_cache_actual and not saw_cache_unknown and live_cache_unpriced_tokens == 0:
+        live_cache_basis = "actual_usage"
+    else:
+        live_cache_basis = "unknown"
 
     pilot = svc.get_pilot()
     if repo_scoped:
@@ -570,6 +608,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         except Exception:
             pass
         tokens_cached = swarm_cached
+        pilot_only_cached = 0
         _cache_savings_usd = 0.0
         _cache_savings_gross_usd = 0.0
         tool_savings = {}
@@ -645,6 +684,8 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             # UI can show how much input was served near-free -- proof the
             # harness is not token-hungry -- plus the USD it saved.
             "tokens_cached": tokens_cached,
+            "pilot_cache_read_tokens": int(pilot_only_cached),
+            "swarm_cache_read_tokens": int(swarm_cached),
             "cache_savings_usd": round(_cache_savings_usd, 6),
             "cache_savings_gross_usd": round(_cache_savings_gross_usd, 6),
             "cache_savings_basis": _cache_savings_basis,
@@ -655,6 +696,8 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             "delegation_savings_basis": live_delegation_basis,
             "delegation_tokens_compared": int(live_delegation_tokens),
             "cache_saved_usd_swarm": round(live_cache_saved, 6),
+            "swarm_cache_savings_basis": live_cache_basis,
+            "swarm_cache_unpriced_tokens": int(live_cache_unpriced_tokens),
             **tool_savings,
         },
         "jobs": res_jobs,

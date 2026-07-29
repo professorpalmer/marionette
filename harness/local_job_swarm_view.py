@@ -153,6 +153,12 @@ def project_local_job_for_swarm_live(job: dict) -> dict:
         "delegation_tokens_compared": _as_int(job.get("delegation_tokens_compared")),
         "delegation_savings_counted": bool(job.get("delegation_savings_counted")),
         "cache_saved_usd": round(_as_float(job.get("cache_saved_usd")), 6),
+        "swarm_cache_savings_basis": str(
+            job.get("swarm_cache_savings_basis") or "unknown"
+        ),
+        "swarm_cache_unpriced_tokens": _as_int(
+            job.get("swarm_cache_unpriced_tokens")
+        ),
         "artifacts": _normalize_artifacts(job.get("artifacts")),
         "artifacts_complete": _artifacts_complete(job.get("artifacts")),
         "tasks": _normalize_tasks(job.get("tasks"), terminal=terminal),

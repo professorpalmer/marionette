@@ -116,7 +116,17 @@ def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch):
             monkeypatch.setattr(srv, "_task_swarm_accounting", lambda arts, registry: {})
             monkeypatch.setattr(srv, "_routing_saved_usd", lambda arts: 0.0)
             monkeypatch.setattr(srv, "_cache_saved_usd_swarm", lambda arts, registry: 0.0)
-            monkeypatch.setattr(srv, "_tokens_cached_swarm", lambda arts: 0)
+            monkeypatch.setattr(
+                srv,
+                "_cache_saved_usd_swarm_detail",
+                lambda arts, registry: {
+                    "cache_saved_usd_swarm": 0.05,
+                    "swarm_cache_read_tokens": 1_000,
+                    "swarm_cache_savings_basis": "unknown",
+                    "swarm_cache_unpriced_tokens": 400,
+                },
+            )
+            monkeypatch.setattr(srv, "_tokens_cached_swarm", lambda arts: 1_000)
             monkeypatch.setattr(srv._pilot, "live_local_jobs", lambda: [])
             monkeypatch.setattr(srv, "_swarm_registry", lambda: [])
             monkeypatch.setattr(
@@ -138,6 +148,10 @@ def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch):
             # 0.11 stamped on A + 0.25 store job -- NOT pilot B meters.
             assert abs(live["session"]["est_cost_usd"] - 0.36) < 1e-6
             assert live["session"]["tokens_used"] == 1000 + 200 + 2_000
+            assert live["session"]["swarm_cache_read_tokens"] == 1_000
+            assert live["session"]["swarm_cache_savings_basis"] == "unknown"
+            assert live["session"]["swarm_cache_unpriced_tokens"] == 400
+            assert live["jobs"][0]["swarm_cache_unpriced_tokens"] == 400
 
             # Unscoped still includes the active pilot meters + active-repo jobs.
             unscoped = json.loads(

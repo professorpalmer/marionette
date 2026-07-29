@@ -222,6 +222,7 @@ function swarmSignature(res: SwarmLive | null): string {
       `:${j.tool_output_tokens_saved ?? 0}` +
       `:${(j.routing_saved_usd ?? 0).toFixed(4)}` +
       `:${(j.cache_saved_usd ?? 0).toFixed(4)}` +
+      `:${j.swarm_cache_savings_basis ?? ""}:${j.swarm_cache_unpriced_tokens ?? 0}` +
       `:${(j.tool_output_savings_usd ?? 0).toFixed(4)}` +
       `:${j.source ?? "harness"}` +
       `:${j.dead_run_failure ?? ""}:${j.updated_at ?? ""}`,
@@ -243,6 +244,7 @@ function swarmSignature(res: SwarmLive | null): string {
       `S:${s.driver ?? ""}:${s.tokens_used ?? 0}:${(s.est_cost_usd ?? 0).toFixed(4)}` +
       `:${(s.routing_saved_usd ?? 0).toFixed(4)}` +
       `:${(s.cache_saved_usd_swarm ?? 0).toFixed(4)}` +
+      `:${s.swarm_cache_savings_basis ?? ""}:${s.swarm_cache_unpriced_tokens ?? 0}` +
       `:${(s.cache_savings_usd ?? 0).toFixed(4)}` +
       `:${s.tool_output_tokens_saved ?? 0}` +
       `:${(s.tool_output_savings_usd ?? 0).toFixed(4)}`,
@@ -387,6 +389,8 @@ type SavingsParts = {
   modelSelection: number;
   modelSelectionEstimated: boolean;
   cache: number;
+  cachePartial: boolean;
+  cacheUnpricedTokens: number;
   compact: number;
   total: number;
 };
@@ -428,6 +432,8 @@ export function jobSavings(j: Job): SavingsParts {
       modelSelection: 0,
       modelSelectionEstimated: false,
       cache: 0,
+      cachePartial: false,
+      cacheUnpricedTokens: 0,
       compact: 0,
       total: 0,
     };
@@ -444,6 +450,13 @@ export function jobSavings(j: Job): SavingsParts {
   const modelSelectionEstimated =
     !delegationMeasured && modelSelection > 0 && routingBasis === "estimated";
   const cache = positiveUsd(j.cache_saved_usd);
+  const cacheUnpricedTokens = Math.max(0, j.swarm_cache_unpriced_tokens || 0);
+  const cachePartial =
+    cache > 0
+    && (
+      j.swarm_cache_savings_basis === "unknown"
+      || cacheUnpricedTokens > 0
+    );
   const compact = positiveUsd(j.tool_output_savings_usd);
   return {
     routing,
@@ -453,6 +466,8 @@ export function jobSavings(j: Job): SavingsParts {
     modelSelection,
     modelSelectionEstimated,
     cache,
+    cachePartial,
+    cacheUnpricedTokens,
     compact,
     total: modelSelection + cache + compact,
   };
@@ -480,7 +495,15 @@ function savingsDetail(parts: SavingsParts): string {
     );
   }
   if (parts.cache > 0) {
-    bits.push(`prompt-cache value (~${formatCost(parts.cache)})`);
+    bits.push(
+      `prompt-cache value (~${formatCost(parts.cache)}${
+        parts.cachePartial
+          ? parts.cacheUnpricedTokens > 0
+            ? `, partial; ${parts.cacheUnpricedTokens.toLocaleString()} tokens unpriced`
+            : ", partial pricing"
+          : ""
+      })`,
+    );
   }
   if (parts.compact > 0) {
     bits.push(`tool-output compaction (~${formatCost(parts.compact)})`);
@@ -496,7 +519,7 @@ export function SavingsChip({ parts, className }: { parts: SavingsParts; classNa
       title={`List-price value from model selection, prompt-cache, and compaction (additive, not billed): ${savingsDetail(parts)}`}
     >
       <span className="text-good/60" aria-hidden="true">{"\u2193"}</span>
-      {formatCost(parts.total, parts.modelSelectionEstimated)} saved
+      {formatCost(parts.total, parts.modelSelectionEstimated || parts.cachePartial)} saved
     </span>
   );
 }
