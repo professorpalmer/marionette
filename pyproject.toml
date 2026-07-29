@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pm-harness"
-version = "0.9.146"
+version = "0.9.147"
 description = "Research rig: which LLMs can drive Puppetmaster as a native harness layer"
 requires-python = ">=3.9"
 dependencies = [
@@ -31,4 +31,5 @@ markers = [
     "network: test requires real network access",
     "swarm: test drives real Puppetmaster (slow subprocess spawns)",
     "full_auto_safety: offline full-auto safety invariants (Wave 6 CI gate)",
+    "resource_soak: optional FD/RSS cleanup soak (manual/CI opt-in)",
 ]

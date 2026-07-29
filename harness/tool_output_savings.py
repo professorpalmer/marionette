@@ -269,6 +269,21 @@ class ToolOutputSavingsLedger:
             self.close()
         if inserted:
             self._append_jsonl(rec)
+            try:
+                from .observability_export import export_tool_output_savings
+
+                export_tool_output_savings(
+                    session_id=sid,
+                    tool_call_id=tool_call_id,
+                    original_chars=int(original_chars),
+                    compact_chars=int(compact_chars),
+                    tokens_saved=saved,
+                    reason=reason or "compact",
+                    job_id=job_id,
+                    basis="measured",
+                )
+            except Exception:
+                pass
         return inserted
 
     def summarize(

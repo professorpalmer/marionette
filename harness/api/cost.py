@@ -191,7 +191,7 @@ _COST_SCALAR_ALIASES = frozenset(
 def _scoped_jobs_with_stores(repo_root: str | None = None) -> tuple[list, Any, Any | None]:
     """Visible jobs plus harness and optional CLI stores for bulk reads."""
     from ..cli_job_merge import merge_scoped_cli_jobs
-    from ..job_scoping import filter_store_jobs
+    from ..job_scoping import annotate_jobs_accounting, filter_store_jobs_with_tasks
 
     jobs = _jobs_snapshot()
     try:
@@ -200,25 +200,41 @@ def _scoped_jobs_with_stores(repo_root: str | None = None) -> tuple[list, Any, A
         return jobs, None, None
     effective_repo = (repo_root or "").strip() or (_cfg().repo or "")
     workspace_root = effective_repo or os.getcwd()
-    active_session_id = _sessions().active or getattr(_pilot(), "harness_session_id", "") or ""
-    visible = filter_store_jobs(
+    pilot = _pilot()
+    active_session_id = _sessions().active or getattr(pilot, "harness_session_id", "") or ""
+    registered_job_ids = list(getattr(pilot, "_session_job_ids", []) or [])
+    visible, harness_tasks = filter_store_jobs_with_tasks(
         jobs,
         store,
         active_session_id=active_session_id,
         repo_root=effective_repo,
     )
     try:
-        merged, cli_store = merge_scoped_cli_jobs(
+        merged, cli_store, cli_tasks = merge_scoped_cli_jobs(
             visible,
             harness_store=store,
             active_session_id=active_session_id,
             repo_root=effective_repo,
             workspace_root=workspace_root,
         )
-        return merged, store, cli_store
+        tasks_by_job = {**harness_tasks, **cli_tasks}
+        tagged = annotate_jobs_accounting(
+            merged,
+            active_session_id=active_session_id,
+            registered_job_ids=registered_job_ids,
+            tasks_by_job=tasks_by_job,
+        )
+        return tagged, store, cli_store
     except Exception as e:
         _diag("server.scoped_jobs_cli_merge", e)
-        return [{**j, "source": j.get("source", "harness")} for j in visible], store, None
+        fallback = [{**j, "source": j.get("source", "harness")} for j in visible]
+        tagged = annotate_jobs_accounting(
+            fallback,
+            active_session_id=active_session_id,
+            registered_job_ids=registered_job_ids,
+            tasks_by_job=harness_tasks,
+        )
+        return tagged, store, None
 
 
 def _scoped_jobs_snapshot(repo_root: str | None = None) -> list:

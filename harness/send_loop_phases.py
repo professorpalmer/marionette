@@ -608,6 +608,13 @@ def meter_pilot_step(
     # the driver's actual number over the chars//4 heuristic.
     if _t_in > 0:
         session._last_prompt_tokens = _t_in
+        # Schema-token EMA calibration (experiment-gated; telemetry-only).
+        try:
+            updater = getattr(session, "_maybe_update_schema_token_calibration", None)
+            if callable(updater):
+                updater(_t_in)
+        except Exception:
+            pass
     # Cache read/write credit: drivers report prompt-prefix cache
     # hits (and Anthropic/Bedrock writes) in meta. Reads save; writes
     # cost a premium -- both feed the same _session_cost formula.
@@ -627,6 +634,18 @@ def meter_pilot_step(
         _write_delta = 0
         _write_5m = 0
         _write_1h = 0
+    try:
+        session._last_turn_cache_read_tokens = int(_cache_delta or 0)
+    except Exception:
+        pass
+    if _cache_delta > 0:
+        # Standing-economics warm window: refresh only on explicit cache reads.
+        try:
+            import time as _time_mod
+
+            session._last_prompt_cache_activity_at = _time_mod.time()
+        except Exception:
+            pass
     if str(_meta.get("billing") or "").lower() == "plan":
         session._plan_billing = True
     try:

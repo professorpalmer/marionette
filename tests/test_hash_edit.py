@@ -188,10 +188,23 @@ def test_file_hash_stable():
 
 
 def test_hash_edit_disabled_by_default(monkeypatch):
+    """HARNESS_HASH_EDIT is opt-in and must stay off by default."""
     monkeypatch.delenv("HARNESS_HASH_EDIT", raising=False)
     assert not hash_edit_enabled()
     names = {t["function"]["name"] for t in build_tools_schema()}
     assert "hash_edit" not in names
+    plain = "alpha\nbeta\n"
+    assert annotate_read_content(plain, total_lines=2) == plain
+
+
+def test_hash_edit_opt_in_truthy_values(monkeypatch):
+    """Only explicit truthy values enable the parity/benchmark feature."""
+    for value in ("1", "true", "TRUE", "yes", "Yes"):
+        monkeypatch.setenv("HARNESS_HASH_EDIT", value)
+        assert hash_edit_enabled(), f"expected enabled for {value!r}"
+    for value in ("0", "false", "no", "", "maybe"):
+        monkeypatch.setenv("HARNESS_HASH_EDIT", value)
+        assert not hash_edit_enabled(), f"expected disabled for {value!r}"
 
 
 def test_hash_edit_session_checkpoint(tmp_path):

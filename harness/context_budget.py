@@ -1,8 +1,9 @@
 import os
+import math
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from typing import Tuple, List, Dict, Optional, Any, Callable
+from typing import Tuple, List, Dict, Optional, Any, Callable, Union
 
 CompactionCallback = Callable[[int, int, str], None]
 
@@ -10,6 +11,17 @@ logger = logging.getLogger(__name__)
 
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
+
+# Token<->char conversion and window fractions adapted from Hermes
+# budget_for_context_window. Caps stay Marionette's historical defaults.
+_CHARS_PER_TOKEN: int = 4
+_PER_RESULT_WINDOW_FRACTION: float = 0.15
+_PER_TURN_WINDOW_FRACTION: float = 0.30
+
+# Floors keep a usable preview under tiny windows. Lower than Hermes's
+# 8K/16K so both dimensions can still scale under Marionette's 8K/48K caps.
+_MIN_RESULT_SIZE_CHARS: int = 2_000
+_MIN_TURN_BUDGET_CHARS: int = 8_000
 
 
 def byte_size(content: str) -> int:
@@ -58,6 +70,45 @@ class BudgetConfig:
     max_result_chars: int = field(default_factory=_default_max_result)
     turn_budget_chars: int = field(default_factory=_default_turn_budget)
     preview_chars: int = 1500
+    tool_overrides: Dict[str, Union[int, float]] = field(default_factory=dict)
+
+    def resolve_threshold(self, tool_name: str) -> Union[int, float]:
+        """Resolve the Layer-2 persistence threshold for a tool.
+
+        Callers may explicitly opt a tool out of persistence with an infinite
+        override. No tool is unbounded by default because that would bypass the
+        savings gate for ordinary large results.
+        """
+        name = (tool_name or "").strip()
+        if name in self.tool_overrides:
+            return self.tool_overrides[name]
+        return self.max_result_chars
+
+
+def budget_for_context_window(context_length: Optional[int]) -> BudgetConfig:
+    """Return a BudgetConfig scaled to the active model's context window.
+
+    Large windows stay at Marionette's historical defaults (env-aware caps).
+    Small windows shrink proportionally (Hermes fractions), floored so a
+    usable preview always survives. Invalid / missing lengths keep defaults.
+    """
+    cap_result = _default_max_result()
+    cap_turn = _default_turn_budget()
+    if not context_length or context_length <= 0:
+        return BudgetConfig(max_result_chars=cap_result, turn_budget_chars=cap_turn)
+
+    window_chars = int(context_length) * _CHARS_PER_TOKEN
+    per_result = int(window_chars * _PER_RESULT_WINDOW_FRACTION)
+    per_turn = int(window_chars * _PER_TURN_WINDOW_FRACTION)
+
+    per_result = max(_MIN_RESULT_SIZE_CHARS, min(per_result, cap_result))
+    per_turn = max(_MIN_TURN_BUDGET_CHARS, min(per_turn, cap_turn))
+
+    return BudgetConfig(
+        max_result_chars=per_result,
+        turn_budget_chars=per_turn,
+        preview_chars=1500,
+    )
 
 
 def generate_preview(
@@ -191,11 +242,12 @@ def maybe_persist_result(
     result_id: str,
     state_dir: str,
     config: BudgetConfig,
-    threshold: Optional[int] = None,
+    threshold: Optional[Union[int, float]] = None,
     head_tail: Optional[bool] = None,
     dedupe: bool = False,
     on_compaction: Optional[CompactionCallback] = None,
     spill_session_id: Optional[str] = None,
+    tool_name: Optional[str] = None,
 ) -> str:
     """Layer 2: persist oversized result, return preview + path. Falls back to inline truncation if write fails.
 
@@ -209,8 +261,17 @@ def maybe_persist_result(
     for command-like results so the trailing error is visible.
     dedupe: when True the persisted file name carries a content-hash suffix so
     identical large outputs share one file.
+    tool_name: optional tool kind for a configured per-tool override.
     """
-    effective_threshold = threshold if threshold is not None else config.max_result_chars
+    if threshold is not None:
+        effective_threshold = threshold
+    else:
+        resolved_name = (tool_name or "").strip()
+        effective_threshold = config.resolve_threshold(resolved_name)
+
+    # Explicit unbounded thresholds skip persistence.
+    if isinstance(effective_threshold, float) and math.isinf(effective_threshold):
+        return content
 
     if len(content) <= effective_threshold:
         return content

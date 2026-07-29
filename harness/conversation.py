@@ -495,8 +495,8 @@ class ConversationalSession(
     def __init__(self, config: HarnessConfig) -> None:
         self.config = config
         import tempfile
-        from harness.context_budget import BudgetConfig
-        self.context_budget_config = BudgetConfig()
+        from harness.context_budget import budget_for_context_window
+        self.context_budget_config = budget_for_context_window(config.max_context_tokens)
         self.state_dir = config.state_dir or tempfile.mkdtemp(prefix="pilot-")
         try:
             from harness.spill_registry import sweep_expired_spills
@@ -657,6 +657,15 @@ class ConversationalSession(
         # used to make the live context estimate track reality instead of the
         # chars//4 heuristic (see _estimate_context_tokens).
         self._last_prompt_tokens: int = 0
+        # Experiment-gated tool-schema token EMA (HARNESS_SCHEMA_TOKEN_CALIBRATION).
+        from .schema_token_calibration import SchemaTokenCalibrator
+
+        self._schema_token_calibrator = SchemaTokenCalibrator()
+        # Wall-clock time of the last metered prompt (cache activity). Used by
+        # standing-economics TTL forecasts; None until the first real turn.
+        self._last_prompt_cache_activity_at: Optional[float] = None
+        # Last metered turn's cache-read tokens (for cache-hot compaction defer).
+        self._last_turn_cache_read_tokens: int = 0
         # concurrency: a single ConversationalSession is single-flight. Two
         # concurrent send()/run_auto() calls would interleave self._history and
         # corrupt the transcript, so we reject re-entrant streams rather than
@@ -727,7 +736,8 @@ class ConversationalSession(
         import queue
         import concurrent.futures
         self._apply_lock = threading.Lock()
-        self._swarm_pool = concurrent.futures.ThreadPoolExecutor(max_workers=getattr(config, "max_workers", 4))
+        _max_workers = max(1, int(getattr(config, "max_workers", 4)))
+        self._swarm_pool = concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers)
         self._swarm_results: queue.Queue = queue.Queue()
         self._swarm_futures: set[concurrent.futures.Future] = set()
         self._swarm_futures_lock = threading.Lock()
@@ -737,7 +747,15 @@ class ConversationalSession(
         # memory. 4x the worker count is a generous ceiling that leaves
         # everyday bursts untouched but rejects pathological floods with a
         # notice to the pilot (see _submit_swarm).
-        self._swarm_capacity = max(1, int(getattr(config, "max_workers", 4)) * 4)
+        self._swarm_capacity = _max_workers * 4
+        # Resource-pressure admission: one probe per logical batch (see
+        # admission_group on _submit_swarm). Existing swarm capacity and pool
+        # semaphores remain the owners of concurrency slots.
+        self._resource_admission_grants: set[str] = set()
+        self._resource_admission_denied: set[str] = set()
+        self._resource_admission_lock = threading.Lock()
+        self._last_resource_pressure_decision = None
+        self._last_swarm_submit_reason: str | None = None
         self._interrupted_swarms = False
         # In-process provider-native worker jobs (job_id "local-*"). These run on
         # the user's own provider key instead of a Puppetmaster adapter, so they
@@ -1047,7 +1065,67 @@ class ConversationalSession(
         """True iff inflight count is at or above ``_swarm_capacity``."""
         return self._swarm_inflight() >= self._swarm_capacity
 
-    def _submit_swarm(self, fn, *args) -> bool:
+    def _resource_pressure_capacity_message(self) -> str:
+        """Pilot-visible reason for the most recent resource-pressure reject."""
+        from .resource_pressure import format_resource_pressure_message
+
+        decision = self._last_resource_pressure_decision
+        if decision is None:
+            return (
+                "Resource capacity constrained; not dispatching more workers right now."
+            )
+        return format_resource_pressure_message(decision)
+
+    def _swarm_submit_reject_message(self) -> str:
+        """Pilot-visible reason for the most recent ``_submit_swarm`` reject."""
+        reason = self._last_swarm_submit_reason or "capacity"
+        if reason == "resource_pressure":
+            return self._resource_pressure_capacity_message()
+        if reason == "capacity":
+            return (
+                f"Swarm capacity reached ({self._swarm_inflight()} in flight); "
+                "not dispatching more right now. Wait for an in-flight worker to finish."
+            )
+        return "Swarm dispatch failed; not dispatching more right now."
+
+    def _resource_pressure_admit(
+        self,
+        *,
+        admission_group: str | None,
+        admission_size: int,
+    ) -> bool:
+        """Probe stdlib resource pressure once per logical submission batch."""
+        from .resource_pressure import admit_resource_pressure, thresholds_from_config
+
+        size = max(1, int(admission_size))
+        if admission_group:
+            with self._resource_admission_lock:
+                if admission_group in self._resource_admission_grants:
+                    return True
+                if admission_group in self._resource_admission_denied:
+                    return False
+
+        thresholds = thresholds_from_config(self.config)
+        decision = admit_resource_pressure(thresholds, requested_workers=size)
+        if not decision.admitted:
+            self._last_resource_pressure_decision = decision
+            if admission_group:
+                with self._resource_admission_lock:
+                    self._resource_admission_denied.add(admission_group)
+            return False
+
+        if admission_group:
+            with self._resource_admission_lock:
+                self._resource_admission_grants.add(admission_group)
+        return True
+
+    def _submit_swarm(
+        self,
+        fn,
+        *args,
+        admission_group: str | None = None,
+        admission_size: int = 1,
+    ) -> bool:
         """Bounded-inflight choke point for ``_swarm_pool.submit``.
 
         The executor's work queue is unbounded, so if the pilot fires more
@@ -1055,8 +1133,12 @@ class ConversationalSession(
         limit. This gate rejects new submissions once ``_swarm_capacity``
         futures are already in flight; callers surface a short "swarm
         capacity reached" notice instead of silently piling work onto the
-        executor. Returns True on submit, False on reject. Never blocks
-        (that would risk deadlocking the pilot loop) and never raises.
+        executor. Optional resource-pressure admission runs once per
+        ``admission_group`` (for run_parallel batches) and either waits
+        within a bounded timeout or rejects the entire requested count.
+        Returns True on submit, False on reject. Never blocks indefinitely
+        (resource wait is bounded; swarm capacity reject is immediate) and
+        never raises.
 
         On successful submit, the future is registered in ``_swarm_futures``
         and a done-callback is attached that removes it under the lock. The
@@ -1064,13 +1146,22 @@ class ConversationalSession(
         (e.g. a bulk drain elsewhere) is idempotent.
         """
         try:
+            if not self._resource_pressure_admit(
+                admission_group=admission_group,
+                admission_size=admission_size,
+            ):
+                self._last_swarm_submit_reason = "resource_pressure"
+                return False
             if self._swarm_at_capacity():
+                self._last_swarm_submit_reason = "capacity"
                 return False
             future = self._swarm_pool.submit(fn, *args)
         except Exception:
             # Never raise from the gate; caller treats this as "not
             # dispatched" the same as an at-capacity reject.
+            self._last_swarm_submit_reason = "error"
             return False
+        self._last_swarm_submit_reason = None
         with self._swarm_futures_lock:
             self._swarm_futures.add(future)
 
@@ -1350,23 +1441,24 @@ class ConversationalSession(
             browser_enabled=getattr(self.config, "browser_enabled", True),
         )
 
-    def get_context_usage(self) -> dict:
-        import json
-        budget = getattr(self.config, "max_context_tokens", 96000)
-        
-        system_content = self._history[0]["content"] if (self._history and self._history[0].get("role") == "system") else ""
-        
-        # Calculate skills text
+    def _context_usage_prefix_tokens(self) -> dict:
+        """Token estimates for standing prefix categories (excludes tools)."""
+        system_content = (
+            self._history[0]["content"]
+            if (self._history and self._history[0].get("role") == "system")
+            else ""
+        )
+
         active_skills = getattr(self, "_skills", None)
         skills_text = ""
         if active_skills:
             active = active_skills.list("active")
             if active:
                 skills_block = "\n\n".join(
-                    f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active)
+                    f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active
+                )
                 skills_text = "\n\n# Learned skills (apply when relevant)\n" + skills_block
-            
-        # Calculate rules text
+
         rules_text_list = []
         active_rules = getattr(self, "_rules", None)
         if active_rules:
@@ -1378,20 +1470,17 @@ class ConversationalSession(
         if ws_rules:
             rules_text_list.append(ws_rules)
         rules_text = "".join(rules_text_list)
-        
-        # Calculate token counts
+
         skills_tokens = len(skills_text) // 4
         rules_tokens = len(rules_text) // 4
-        
-        # System base: system_content minus skills_text and rules_text
+
         system_base_text = system_content
         if skills_text and skills_text in system_base_text:
             system_base_text = system_base_text.replace(skills_text, "")
         if rules_text and rules_text in system_base_text:
             system_base_text = system_base_text.replace(rules_text, "")
         system_prompt_tokens = len(system_base_text) // 4
-        
-        # MCP section
+
         mcp_tokens = 0
         mcp_section = _format_mcp_tools_section(
             self._mcp,
@@ -1401,13 +1490,7 @@ class ConversationalSession(
         )
         if mcp_section:
             mcp_tokens = len("\n\n" + mcp_section) // 4
-            
-        # Tool definitions section
-        tools_schema = self._build_visible_tools_schema()
-        serialized_tools = json.dumps(tools_schema)
-        tool_definitions_tokens = len(serialized_tools) // 4
-        
-        # Summarized conversation vs Conversation
+
         summarized_tokens = 0
         conversation_tokens = 0
         for m in self._history[1:]:
@@ -1416,15 +1499,118 @@ class ConversationalSession(
                 summarized_tokens += msg_tokens
             else:
                 conversation_tokens += msg_tokens
-                
+
+        return {
+            "system_prompt_tokens": system_prompt_tokens,
+            "rules_tokens": rules_tokens,
+            "skills_tokens": skills_tokens,
+            "mcp_tokens": mcp_tokens,
+            "summarized_tokens": summarized_tokens,
+            "conversation_tokens": conversation_tokens,
+        }
+
+    def _resolve_tool_definitions_tokens(
+        self, tools_schema: list
+    ) -> tuple[int, int, int]:
+        """Return ``(billed_tool_tokens, cold_start_total, legacy_floor)``."""
+        from .schema_token_calibration import (
+            estimate_tools_from_schema,
+            legacy_whole_schema_tokens,
+            schema_token_calibration_enabled,
+        )
+
+        legacy_floor = legacy_whole_schema_tokens(tools_schema)
+        cold_total, _rows = estimate_tools_from_schema(tools_schema)
+        if not schema_token_calibration_enabled():
+            return legacy_floor, cold_total, legacy_floor
+
+        cal = getattr(self, "_schema_token_calibrator", None)
+        if cal is None:
+            from .schema_token_calibration import SchemaTokenCalibrator
+
+            cal = SchemaTokenCalibrator()
+            self._schema_token_calibrator = cal
+        billed, _cold, _rows = cal.fuse_tool_tokens(
+            tools_schema,
+            cold_start_total=cold_total,
+        )
+        return billed, cold_total, legacy_floor
+
+    def _maybe_update_schema_token_calibration(self, provider_floor: int) -> None:
+        """Learn EMA calibration from a metered provider prompt floor."""
+        from .schema_token_calibration import (
+            estimate_tools_from_schema,
+            schema_token_calibration_enabled,
+            tools_fingerprint,
+        )
+
+        if not schema_token_calibration_enabled() or provider_floor <= 0:
+            return
+        try:
+            prefix = self._context_usage_prefix_tokens()
+            non_tool = sum(prefix.values())
+            tools_schema = self._build_visible_tools_schema()
+            cold_total, _rows = estimate_tools_from_schema(tools_schema)
+            fingerprint = tools_fingerprint(tools_schema)
+            cal = getattr(self, "_schema_token_calibrator", None)
+            if cal is None:
+                return
+            cal.maybe_update(
+                provider_floor=int(provider_floor),
+                non_tool_heuristic=int(non_tool),
+                cold_start_tools=int(cold_total),
+                fingerprint=fingerprint,
+            )
+        except Exception:
+            pass
+
+    def _schema_token_calibration_fields(
+        self,
+        *,
+        cold_start_total: int,
+        billed_tool_tokens: int,
+        legacy_floor: int,
+    ) -> dict:
+        from .schema_token_calibration import schema_token_calibration_enabled
+
+        if not schema_token_calibration_enabled():
+            return {}
+        try:
+            cal = getattr(self, "_schema_token_calibrator", None)
+            if cal is None:
+                return {}
+            return cal.telemetry(
+                cold_start_total=cold_start_total,
+                billed_tool_tokens=billed_tool_tokens,
+                legacy_floor=legacy_floor,
+            )
+        except Exception:
+            return {}
+
+    def get_context_usage(self) -> dict:
+        budget = getattr(self.config, "max_context_tokens", 96000)
+
+        prefix = self._context_usage_prefix_tokens()
+        system_prompt_tokens = prefix["system_prompt_tokens"]
+        rules_tokens = prefix["rules_tokens"]
+        skills_tokens = prefix["skills_tokens"]
+        mcp_tokens = prefix["mcp_tokens"]
+        summarized_tokens = prefix["summarized_tokens"]
+        conversation_tokens = prefix["conversation_tokens"]
+
+        tools_schema = self._build_visible_tools_schema()
+        tool_definitions_tokens, cold_start_total, legacy_floor = (
+            self._resolve_tool_definitions_tokens(tools_schema)
+        )
+
         heuristic_total = (
-            system_prompt_tokens +
-            tool_definitions_tokens +
-            rules_tokens +
-            skills_tokens +
-            mcp_tokens +
-            summarized_tokens +
-            conversation_tokens
+            system_prompt_tokens
+            + tool_definitions_tokens
+            + rules_tokens
+            + skills_tokens
+            + mcp_tokens
+            + summarized_tokens
+            + conversation_tokens
         )
         # Prefer the driver's REAL last prompt-token count so the composer's
         # context-usage % matches the actual billed context, not a chars//4
@@ -1432,7 +1618,7 @@ class ConversationalSession(
         # real number and the heuristic so we never under-report usage.
         real_total = int(getattr(self, "_last_prompt_tokens", 0) or 0)
         total_tokens = max(real_total, heuristic_total) if real_total > 0 else heuristic_total
-        
+
         categories = [
             {"name": "System prompt", "tokens": system_prompt_tokens},
             {"name": "Tool definitions", "tokens": tool_definitions_tokens},
@@ -1441,13 +1627,18 @@ class ConversationalSession(
             {"name": "MCP", "tokens": mcp_tokens},
             {"name": "Subagent", "tokens": 0},
             {"name": "Summarized conversation", "tokens": summarized_tokens},
-            {"name": "Conversation", "tokens": conversation_tokens}
+            {"name": "Conversation", "tokens": conversation_tokens},
         ]
-        
+
         return {
             "total": total_tokens,
             "limit": budget,
             "categories": categories,
+            **self._schema_token_calibration_fields(
+                cold_start_total=cold_start_total,
+                billed_tool_tokens=tool_definitions_tokens,
+                legacy_floor=legacy_floor,
+            ),
             **self._tool_output_savings_fields(),
             **self._wiki_grounding_fields(),
             **self._history_compaction_fields(),
@@ -1918,7 +2109,9 @@ class ConversationalSession(
         self, act: Any, aid: str, content: str, is_native: bool, *, ok: bool = True,
     ) -> None:
         tc_id = getattr(act, "tool_call_id", None) or aid
-        clamped_content = self._turn_economy.persist_tool_result(content, tc_id)
+        clamped_content = self._turn_economy.persist_tool_result(
+            content, tc_id, tool_name=getattr(act, "kind", None),
+        )
         # Tag full-file reads with their path so the pre-send pass can elide an
         # EARLIER read of the same file once a newer read supersedes it (the
         # stale copy still costs tokens every turn otherwise). Only whole-file

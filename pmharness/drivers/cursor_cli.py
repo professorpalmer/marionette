@@ -906,9 +906,10 @@ class CursorCliDriver:
                     stderr = ""
 
             latency = (time.time() - t0) * 1000.0
-            from .token_usage import coerce_token_usage_detail
+            from .token_usage import attach_modality_fields, coerce_token_usage_record
+            usage_detail = coerce_token_usage_record(parsed.get("usage"), parsed)
             tokens_in, tokens_out, provider_cost, cache_read, cache_write = (
-                coerce_token_usage_detail(parsed.get("usage"), parsed)
+                usage_detail.as_tuple()
             )
 
             err = parsed.get("error")
@@ -940,6 +941,7 @@ class CursorCliDriver:
                 meta["cache_read_tokens"] = cache_read
             if cache_write > 0:
                 meta["cache_write_tokens"] = cache_write
+            attach_modality_fields(meta, usage_detail)
 
             return DriverResponse(
                 text=parsed.get("text") or "",

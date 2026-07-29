@@ -1,8 +1,13 @@
 """Hash-anchored file edits (stdlib-only, cross-platform).
 
-read_file can emit stable short content tags; hash_edit applies replace/insert/delete
-operations that verify anchors before writing. Stale anchors are rejected with no
-partial writes. Line endings are normalized for hashing and preserved on write.
+Opt-in parity/benchmark path only: off by default. Set HARNESS_HASH_EDIT=1 to
+expose the hash_edit tool and annotate read_file with content anchors. The
+default product edit path remains edit_file (and apply_hashline for workers).
+
+When enabled, read_file can emit stable short content tags; hash_edit applies
+replace/insert/delete operations that verify anchors before writing. Stale
+anchors are rejected with no partial writes. Line endings are normalized for
+hashing and preserved on write.
 """
 from __future__ import annotations
 
@@ -21,7 +26,12 @@ OpKind = Literal["replace", "insert", "delete"]
 
 
 def hash_edit_enabled() -> bool:
-    """Feature flag: hash-anchored edits are opt-in via HARNESS_HASH_EDIT."""
+    """Return whether hash-anchored edits are enabled.
+
+    Off by default. Opt in with HARNESS_HASH_EDIT=1/true/yes for parity and
+    benchmark work against hashline-style edit protocols, not the shipped
+    default edit path.
+    """
     import os
     return os.environ.get("HARNESS_HASH_EDIT", "").strip().lower() in ("1", "true", "yes")
 

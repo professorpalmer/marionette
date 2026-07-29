@@ -3,7 +3,12 @@ import { Circle, GitBranch, Cpu, PanelLeft, PanelRight, Coins, ArrowUpCircle, Re
 import { api, type Config, type SessionState, type UsageData } from "../lib/api";
 import { isDesktop } from "../lib/transport";
 import { usePolling } from "../lib/usePolling";
-import CostBreakdown, { listPriceValueTotal, spendIsEstimated } from "./CostBreakdown";
+import CostBreakdown, {
+  delegationSavingsCredited,
+  listPriceValueTotal,
+  routingSavingsCredited,
+  spendIsEstimated,
+} from "./CostBreakdown";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
 
 type FooterRuntimeStatus = "ready" | "thinking" | "busy";
@@ -312,10 +317,17 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
               if (cached <= 0 && compacted <= 0 && savedUsd <= 0) return null;
               const delegationMeasured =
                 usage.delegation_savings_basis === "actual_usage";
-              const modelSelectionUsd =
-                delegationMeasured || (usage.delegation_saved_usd || 0) > 0
-                  ? usage.delegation_saved_usd || 0
-                  : usage.routing_saved_usd || 0;
+              const delegationUsd = delegationSavingsCredited(
+                usage.delegation_savings_basis,
+                usage.delegation_saved_usd,
+              );
+              const routingUsd = routingSavingsCredited(
+                usage.routing_savings_basis,
+                usage.routing_saved_usd,
+              );
+              const modelSelectionUsd = delegationMeasured
+                ? delegationUsd
+                : (delegationUsd > 0 ? delegationUsd : routingUsd);
               const detail = [
                 cached > 0
                   ? `${formatTokens(cached)} prompt tokens served from cache${
@@ -391,6 +403,9 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                       tool_output_savings_usd: usage.tool_output_savings_usd,
                       history_compactions: usage.history_compactions,
                       history_tokens_saved: usage.history_tokens_saved,
+                      history_cache_bust_tokens: usage.history_cache_bust_tokens,
+                      history_thrash_events: usage.history_thrash_events,
+                      history_compaction_cost_usd: usage.history_compaction_cost_usd,
                       spill_count: usage.spill_count,
                       spill_chars: usage.spill_chars,
                       evals_recorded: usage.evals_recorded,
@@ -398,6 +413,16 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                       memory_layers: usage.memory_layers,
                       compaction_advice: usage.compaction_advice,
                       history_compaction_ran: usage.history_compaction_ran,
+                      standing_economics_basis: usage.standing_economics_basis,
+                      standing_system_tokens: usage.standing_system_tokens,
+                      standing_tool_tokens: usage.standing_tool_tokens,
+                      standing_floor_tokens: usage.standing_floor_tokens,
+                      standing_floor_cost_usd: usage.standing_floor_cost_usd,
+                      standing_floor_cost_cached_usd: usage.standing_floor_cost_cached_usd,
+                      prompt_cache_ttl_ms: usage.prompt_cache_ttl_ms,
+                      prompt_cache_age_ms: usage.prompt_cache_age_ms,
+                      prompt_cache_expires_in_ms: usage.prompt_cache_expires_in_ms,
+                      prompt_cache_state: usage.prompt_cache_state,
                       price_in: usage.price_in,
                       price_out: usage.price_out,
                     }}

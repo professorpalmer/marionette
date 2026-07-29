@@ -8,6 +8,7 @@ instead of bespoke per-resource schemas. Supported schemes:
   agent://     worker run records and fields
   conflict://  git merge-conflict listing and resolution dry-run previews
   spill://     oversized tool outputs persisted by the context budget layer
+               (?json=/RFC6901-pointer for read-only structural JSON views)
 
 Read-only by design; existing store APIs and HTTP endpoints are untouched.
 Paths are normalized to POSIX segments, traversal is rejected, and backslashes
@@ -21,7 +22,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from puppetmaster.models import to_jsonable
 from puppetmaster.store_factory import create_store
@@ -36,6 +37,12 @@ _CONFLICT_MARKER = re.compile(r"^(<{7}|={7}|>{7})")
 
 _LINE_SELECTOR = re.compile(r":(\d+)(?:-(\d+))?$")
 
+# Read-only spill JSON query guards (RFC 6901 pointer via ?json=/path).
+_MAX_JSON_POINTER_LEN = 4096
+_MAX_JSON_POINTER_DEPTH = 64
+_MAX_JSON_PARSE_CHARS = 10_485_760  # 10 MiB spill payload cap for json queries
+_MAX_JSON_QUERY_OUTPUT_CHARS = 262_144  # 256 KiB resolved view cap
+
 
 class InternalUriError(ValueError):
     """Invalid or unsafe internal URI, or missing backing resource."""
@@ -48,6 +55,7 @@ class ParsedInternalUri:
     raw: str
     start_line: Optional[int] = None
     end_line: Optional[int] = None
+    json_pointer: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -88,12 +96,20 @@ def parse_internal_uri(uri: str) -> ParsedInternalUri:
     if not raw:
         raise InternalUriError("empty URI")
 
+    path_and_query = raw.split("#", 1)[0]
+    path_only = path_and_query
+    query_string = ""
+    if "?" in path_and_query:
+        qmark = path_and_query.index("?")
+        if "://" in path_and_query[:qmark]:
+            path_only, query_string = path_and_query.split("?", 1)
+
     start_line: Optional[int] = None
     end_line: Optional[int] = None
-    path_part = raw
-    selector = _LINE_SELECTOR.search(raw)
-    if selector and "://" in raw[: selector.start()]:
-        path_part = raw[: selector.start()]
+    path_part = path_only
+    selector = _LINE_SELECTOR.search(path_only)
+    if selector and "://" in path_only[: selector.start()]:
+        path_part = path_only[: selector.start()]
         start_line = int(selector.group(1))
         end_line = int(selector.group(2) or selector.group(1))
 
@@ -105,13 +121,18 @@ def parse_internal_uri(uri: str) -> ParsedInternalUri:
     if scheme not in SUPPORTED_SCHEMES:
         raise InternalUriError(f"unsupported scheme {scheme!r}")
 
+    json_pointer: Optional[str] = None
+    if query_string:
+        if scheme == "spill":
+            json_pointer = _parse_spill_json_query(query_string)
+        elif _query_has_json_param(query_string):
+            raise InternalUriError("json query is only supported for spill:// URIs")
+
+    if json_pointer is not None and start_line is not None:
+        raise InternalUriError("json query cannot be combined with line selectors")
+
     if not remainder and scheme not in ("job", "agent", "conflict", "spill"):
         raise InternalUriError(f"{scheme}:// requires a path")
-
-    if "?" in remainder:
-        remainder = remainder.split("?", 1)[0]
-    if "#" in remainder:
-        remainder = remainder.split("#", 1)[0]
 
     # Reject Windows-style separators and null bytes in the URI itself.
     if "\\" in remainder or "\x00" in remainder:
@@ -137,6 +158,7 @@ def parse_internal_uri(uri: str) -> ParsedInternalUri:
         raw=raw,
         start_line=start_line,
         end_line=end_line,
+        json_pointer=json_pointer,
     )
 
 
@@ -149,6 +171,10 @@ def resolve_internal_uri(
 ) -> InternalResource:
     """Resolve an internal URI to readable text content."""
     parsed = parse_internal_uri(uri)
+    if parsed.json_pointer is not None and parsed.scheme != "spill":
+        raise InternalUriError("json query is only supported for spill:// URIs")
+    if parsed.json_pointer is not None and parsed.start_line is not None:
+        raise InternalUriError("json query cannot be combined with line selectors")
     if parsed.start_line is not None:
         start_line = parsed.start_line
         limit = (parsed.end_line - parsed.start_line + 1) if parsed.end_line else None
@@ -424,6 +450,8 @@ def _resolve_spill(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Intern
     url = f"spill://{parsed.path}" if parsed.path else "spill://"
 
     if not parsed.path:
+        if parsed.json_pointer is not None:
+            raise InternalUriError("json query requires a single spill resource (session_id/tool_call_id)")
         entries = [
             f"{row['session_id']}/{row['tool_call_id']}\t{row['chars']:,} chars"
             for row in list_spills(ctx.state_dir)
@@ -435,6 +463,8 @@ def _resolve_spill(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Intern
     _require_safe_id(session_id, "session id")
 
     if len(parts) == 1:
+        if parsed.json_pointer is not None:
+            raise InternalUriError("json query requires a single spill resource (session_id/tool_call_id)")
         entries = [
             f"{row['tool_call_id']}\t{row['chars']:,} chars"
             for row in list_spills(ctx.state_dir, session_id=session_id)
@@ -460,8 +490,14 @@ def _resolve_spill(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Intern
     if not os.path.isfile(file_path):
         raise InternalUriError(f"spill file no longer exists: {tool_call_id}")
 
+    if parsed.json_pointer is not None:
+        text = _read_spill_text(file_path, for_json_query=True)
+        return _resolve_spill_json_query(url, text, parsed.json_pointer)
+
     with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
-        return _text_resource(url, fh.read())
+        text = fh.read()
+
+    return _text_resource(url, text)
 
 
 def _resolve_conflict(parsed: ParsedInternalUri, ctx: InternalUriContext) -> InternalResource:
@@ -678,6 +714,162 @@ def _require_repo_relative_path(repo: str, rel_path: str) -> None:
     abs_path = os.path.realpath(os.path.join(repo, rel_path.replace("/", os.sep)))
     if not path_within(abs_path, repo, allow_equal=True):
         raise InternalUriError(f"path escapes repository: {rel_path!r}")
+
+
+def _query_has_json_param(query_string: str) -> bool:
+    for part in query_string.split("&"):
+        if not part:
+            continue
+        key = part.split("=", 1)[0]
+        if unquote(key).lower() == "json":
+            return True
+    return False
+
+
+def _parse_spill_json_query(query_string: str) -> str:
+    """Parse ``?json=/pointer`` for spill URIs. Returns decoded RFC 6901 pointer."""
+    params = parse_qs(query_string, keep_blank_values=True, strict_parsing=False)
+    if "json" not in params:
+        unknown = sorted(k for k in params if k)
+        if unknown:
+            raise InternalUriError(
+                f"unsupported spill query parameter(s): {', '.join(unknown)}"
+            )
+        raise InternalUriError("empty spill query string")
+
+    for key in params:
+        if key != "json":
+            raise InternalUriError(f"unsupported spill query parameter: {key!r}")
+
+    values = params["json"]
+    if len(values) != 1:
+        raise InternalUriError("duplicate json query parameter")
+
+    pointer = unquote(values[0])
+    _validate_json_pointer(pointer)
+    return pointer
+
+
+def _validate_json_pointer(pointer: str) -> None:
+    if len(pointer) > _MAX_JSON_POINTER_LEN:
+        raise InternalUriError("json pointer exceeds maximum length")
+    if pointer and not pointer.startswith("/"):
+        raise InternalUriError("json pointer must start with '/' or be empty")
+    token_count = len(pointer.split("/")) - 1 if pointer else 0
+    if token_count > _MAX_JSON_POINTER_DEPTH:
+        raise InternalUriError("json pointer exceeds maximum depth")
+
+
+def _json_pointer_tokens(pointer: str) -> list[str]:
+    _validate_json_pointer(pointer)
+    if not pointer:
+        return []
+    return pointer.split("/")[1:]
+
+
+def _unescape_json_pointer_token(token: str) -> str:
+    out: list[str] = []
+    idx = 0
+    while idx < len(token):
+        ch = token[idx]
+        if ch != "~":
+            out.append(ch)
+            idx += 1
+            continue
+        if idx + 1 >= len(token):
+            raise InternalUriError("invalid json pointer escape sequence")
+        nxt = token[idx + 1]
+        if nxt == "0":
+            out.append("~")
+        elif nxt == "1":
+            out.append("/")
+        else:
+            raise InternalUriError("invalid json pointer escape sequence")
+        idx += 2
+    return "".join(out)
+
+
+def _resolve_json_pointer(document: Any, pointer: str) -> Any:
+    current = document
+    for raw_token in _json_pointer_tokens(pointer):
+        key = _unescape_json_pointer_token(raw_token)
+        if isinstance(current, dict):
+            if key not in current:
+                raise InternalUriError(f"json pointer key not found: {key!r}")
+            current = current[key]
+            continue
+        if isinstance(current, list):
+            if key == "-":
+                raise InternalUriError("json pointer array index '-' is not readable")
+            if not key.isdigit() or (len(key) > 1 and key[0] == "0"):
+                raise InternalUriError(f"invalid json pointer array index: {key!r}")
+            index = int(key)
+            if index >= len(current):
+                raise InternalUriError(f"json pointer array index out of range: {index}")
+            current = current[index]
+            continue
+        raise InternalUriError("json pointer traverses a non-container value")
+    return current
+
+
+def _format_json_query_result(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        rendered = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    elif isinstance(value, str):
+        rendered = value
+    elif value is None:
+        rendered = "null"
+    elif isinstance(value, bool):
+        rendered = "true" if value else "false"
+    elif isinstance(value, (int, float)):
+        rendered = json.dumps(value)
+    else:
+        raise InternalUriError("json query result has unsupported scalar type")
+    if len(rendered) > _MAX_JSON_QUERY_OUTPUT_CHARS:
+        raise InternalUriError("json query result exceeds maximum output size")
+    return rendered
+
+
+def _read_spill_text(file_path: str, *, for_json_query: bool) -> str:
+    """Read spill content for JSON queries with a hard size cap before full load."""
+    try:
+        size = os.path.getsize(file_path)
+    except OSError as exc:
+        raise InternalUriError(f"spill file is not readable: {file_path}") from exc
+    if for_json_query and size > _MAX_JSON_PARSE_CHARS:
+        raise InternalUriError("spill content exceeds maximum size for json query")
+    if for_json_query:
+        with open(file_path, "rb") as fh:
+            chunk = fh.read(_MAX_JSON_PARSE_CHARS + 1)
+        if len(chunk) > _MAX_JSON_PARSE_CHARS:
+            raise InternalUriError("spill content exceeds maximum size for json query")
+        return chunk.decode("utf-8", errors="replace")
+    with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
+def _resolve_spill_json_query(url: str, text: str, pointer: str) -> InternalResource:
+    if len(text) > _MAX_JSON_PARSE_CHARS:
+        raise InternalUriError("spill content exceeds maximum size for json query")
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise InternalUriError("spill content is not valid JSON") from exc
+
+    try:
+        value = _resolve_json_pointer(document, pointer)
+    except InternalUriError:
+        raise
+    except Exception as exc:
+        raise InternalUriError("json pointer could not be resolved") from exc
+
+    content = _format_json_query_result(value)
+    content_type = (
+        "application/json"
+        if isinstance(value, (dict, list))
+        else "text/plain"
+    )
+    return InternalResource(url=url, content=content, content_type=content_type)
 
 
 def _text_resource(url: str, content: str) -> InternalResource:

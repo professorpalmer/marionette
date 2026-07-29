@@ -10,6 +10,7 @@ import copy
 
 from pmharness.drivers.openai_compat import OpenAICompatDriver
 from pmharness.drivers.prompt_cache import (
+    _can_carry_marker,
     apply_openai_compat_cache_control,
     explicit_cache_family,
 )
@@ -198,6 +199,109 @@ def test_empty_system_text_not_marked():
     apply_openai_compat_cache_control(body, model="anthropic/claude-sonnet-4")
     assert _marker_on_msg(body["messages"][0]) is None
     assert _marker_on_msg(body["messages"][1]) == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_can_carry_marker_skips_empty_envelopes():
+    assert _can_carry_marker({"role": "user", "content": "text"}) is True
+    assert _can_carry_marker({"role": "assistant", "content": ""}) is False
+    assert _can_carry_marker({"role": "assistant", "content": None}) is False
+    assert _can_carry_marker({"role": "assistant", "content": "   "}) is False
+    assert _can_carry_marker({"role": "tool", "content": ""}) is False
+    assert _can_carry_marker({"role": "tool", "content": "result"}) is True
+    assert _can_carry_marker({"role": "user", "content": []}) is False
+    assert _can_carry_marker(
+        {"role": "user", "content": [{"type": "text", "text": "a"}, "raw"]}
+    ) is False
+    assert _can_carry_marker(
+        {"role": "user", "content": [{"type": "text", "text": "   "}]}
+    ) is False
+
+
+def test_empty_tool_schema_envelope_not_marked():
+    """Trailing empty tools[] entries must not consume a stable breakpoint."""
+    body = {
+        "model": "anthropic/claude-sonnet-4",
+        "messages": [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+        ],
+        "tools": [
+            _openai_tool("read_file"),
+            {},  # empty envelope — must not be marked
+            {"type": "function", "function": {"name": "  ", "parameters": {}}},
+        ],
+    }
+    apply_openai_compat_cache_control(body, model="anthropic/claude-sonnet-4")
+    assert body["tools"][0].get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
+    assert "cache_control" not in body["tools"][1]
+    assert "cache_control" not in body["tools"][2]
+    assert _count_cache_markers(body) <= 4
+
+
+def test_history_walks_back_to_cache_carriers():
+    """Empty assistant/tool envelopes must not steal the two history breakpoints."""
+    body = {
+        "model": "anthropic/claude-sonnet-4",
+        "messages": [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "run tool 1"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "1", "type": "function",
+                                "function": {"name": "x", "arguments": "{}"}}],
+            },
+            {"role": "tool", "content": ""},  # empty tool envelope
+            {"role": "user", "content": "run tool 2"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "2", "type": "function",
+                                "function": {"name": "y", "arguments": "{}"}}],
+            },
+            {"role": "tool", "content": "tool result 2"},
+        ],
+        "tools": [_openai_tool("x")],
+    }
+    apply_openai_compat_cache_control(body, model="anthropic/claude-sonnet-4")
+
+    # Empty envelopes never carry markers
+    assert _marker_on_msg(body["messages"][2]) is None
+    assert _marker_on_msg(body["messages"][3]) is None
+    assert _marker_on_msg(body["messages"][5]) is None
+    assert "cache_control" not in body["messages"][2]
+    assert "cache_control" not in body["messages"][3]
+    assert "cache_control" not in body["messages"][5]
+
+    # History breakpoints land on the last two carriers (user + tool result)
+    assert _marker_on_msg(body["messages"][4]) == {"type": "ephemeral", "ttl": "1h"}
+    assert _marker_on_msg(body["messages"][6]) == {"type": "ephemeral", "ttl": "1h"}
+    assert _count_cache_markers(body) <= 4
+
+
+def test_whitespace_system_does_not_consume_breakpoint_slot():
+    """Whitespace system + full history still keeps ≤4 and history carriers marked."""
+    body = {
+        "model": "anthropic/claude-sonnet-4",
+        "messages": [
+            {"role": "system", "content": "\t  \n"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+            {"role": "user", "content": "third"},
+        ],
+        "tools": [_openai_tool("a")],
+    }
+    apply_openai_compat_cache_control(body, model="anthropic/claude-sonnet-4")
+    assert _marker_on_msg(body["messages"][0]) is None
+    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert _marker_on_msg(body["messages"][-1]) == {"type": "ephemeral", "ttl": "1h"}
+    assert _marker_on_msg(body["messages"][-2]) == {"type": "ephemeral", "ttl": "1h"}
+    assert _count_cache_markers(body) == 3  # tool + 2 history; system skipped
+
+
+def test_apply_never_raises_on_malformed_body():
+    body = {"model": "anthropic/claude-sonnet-4", "messages": "not-a-list", "tools": 123}
+    assert apply_openai_compat_cache_control(body, model="anthropic/claude-sonnet-4") == "claude"
 
 
 def test_prepare_body_is_idempotent_safe():

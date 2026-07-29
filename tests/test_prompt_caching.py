@@ -395,3 +395,28 @@ def test_single_message_history_still_valid():
     assert _count_cache_markers(body) <= 4
     assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert _marker_on(body["messages"][-1]) == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_openai_compat_carriers_preserve_four_breakpoint_budget():
+    """Shared stamper keeps ≤4 even when empty envelopes sit in the history tail."""
+    from pmharness.drivers.prompt_cache import apply_openai_compat_cache_control
+
+    body = {
+        "model": "anthropic/claude-sonnet-4",
+        "messages": [
+            {"role": "system", "content": "stable system"},
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+            {"role": "user", "content": "c"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "t"}]},
+            {"role": "tool", "content": "   "},
+        ],
+        "tools": [_openai_tool("read_file")],
+    }
+    apply_openai_compat_cache_control(body, model="anthropic/claude-sonnet-4")
+    assert _count_cache_markers(body) <= 4
+    # Empty tail skipped; last two carriers are user "c" and assistant "b"
+    assert _marker_on(body["messages"][2]) is not None  # assistant b
+    assert _marker_on(body["messages"][3]) is not None  # user c
+    assert _marker_on(body["messages"][4]) is None
+    assert _marker_on(body["messages"][5]) is None

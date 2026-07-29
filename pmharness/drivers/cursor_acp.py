@@ -874,11 +874,10 @@ class WarmAcpSession:
                     break
         usage_blobs.append(result)
         usage_blobs.append(resp)
-        from .token_usage import coerce_token_usage_detail
+        from .token_usage import attach_modality_fields, coerce_token_usage_record
 
-        tin, tout, cost, cache_read, cache_write = coerce_token_usage_detail(
-            *usage_blobs
-        )
+        usage_detail = coerce_token_usage_record(*usage_blobs)
+        tin, tout, cost, cache_read, cache_write = usage_detail.as_tuple()
         out = {
             "text": final_text,
             # Thought-channel accumulation: Grok/ACP often puts the final
@@ -895,6 +894,7 @@ class WarmAcpSession:
             out["cache_read_tokens"] = cache_read
         if cache_write > 0:
             out["cache_write_tokens"] = cache_write
+        attach_modality_fields(out, usage_detail)
         return out
 
 

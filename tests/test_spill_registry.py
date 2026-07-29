@@ -1,5 +1,7 @@
 """Spill registry: index spilled tool outputs and resolve them as spill:// URIs."""
+import json
 import os
+import sqlite3
 import tempfile
 
 from harness.context_budget import BudgetConfig, maybe_persist_result
@@ -7,6 +9,7 @@ from harness.internal_uri import (
     InternalUriContext,
     InternalUriError,
     is_internal_uri,
+    parse_internal_uri,
     resolve_internal_uri,
     search_internal_uris,
 )
@@ -21,6 +24,16 @@ from harness.spill_registry import (
 import pytest
 
 _GATE_FLOOR_CHARS = 12_500
+
+
+def _seed_json_spill(tmpdir: str, session_id: str, tool_call_id: str, payload) -> str:
+    results_dir = os.path.join(tmpdir, "pmharness-results")
+    os.makedirs(results_dir, exist_ok=True)
+    path = os.path.join(results_dir, f"{tool_call_id}.txt")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    register_spill(tmpdir, session_id, tool_call_id, path, os.path.getsize(path))
+    return path
 
 
 def test_register_and_resolve_round_trip():
@@ -196,6 +209,190 @@ def test_sweep_retention_zero_keeps_all():
         register_spill(tmpdir, "sess1", "keep_call", path, 10)
         assert sweep_expired_spills(tmpdir, 0) == 0
         assert resolve_spill(tmpdir, "sess1", "keep_call") is not None
+
+
+class TestSpillJsonQuery:
+    def test_parse_json_pointer_from_query(self):
+        parsed = parse_internal_uri("spill://sess1/call_a?json=/items/0/id")
+        assert parsed.path == "sess1/call_a"
+        assert parsed.json_pointer == "/items/0/id"
+        assert parsed.start_line is None
+
+    def test_url_decoded_json_pointer(self):
+        parsed = parse_internal_uri("spill://sess1/call_a?json=%2Fitems%2F0%2Fid")
+        assert parsed.json_pointer == "/items/0/id"
+
+    def test_resolve_object_slice_compact_json(self):
+        payload = {"items": [{"id": "alpha", "n": 1}, {"id": "beta", "n": 2}]}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _seed_json_spill(tmpdir, "sess1", "call_json", payload)
+            ctx = InternalUriContext(state_dir=tmpdir)
+            resource = resolve_internal_uri(
+                "spill://sess1/call_json?json=/items/0", ctx
+            )
+            assert resource.content_type == "application/json"
+            assert resource.content == '{"id":"alpha","n":1}'
+
+    def test_resolve_scalar_plain_text(self):
+        payload = {"items": [{"id": "alpha"}]}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _seed_json_spill(tmpdir, "sess1", "call_json", payload)
+            ctx = InternalUriContext(state_dir=tmpdir)
+            resource = resolve_internal_uri(
+                "spill://sess1/call_json?json=/items/0/id", ctx
+            )
+            assert resource.content_type == "text/plain"
+            assert resource.content == "alpha"
+
+    def test_resolve_scalar_number_and_bool(self):
+        payload = {"count": 42, "ok": True, "missing": None}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _seed_json_spill(tmpdir, "sess1", "call_json", payload)
+            ctx = InternalUriContext(state_dir=tmpdir)
+            assert resolve_internal_uri(
+                "spill://sess1/call_json?json=/count", ctx
+            ).content == "42"
+            assert resolve_internal_uri(
+                "spill://sess1/call_json?json=/ok", ctx
+            ).content == "true"
+            assert resolve_internal_uri(
+                "spill://sess1/call_json?json=/missing", ctx
+            ).content == "null"
+
+    def test_empty_pointer_returns_whole_document(self):
+        payload = {"items": []}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _seed_json_spill(tmpdir, "sess1", "call_json", payload)
+            ctx = InternalUriContext(state_dir=tmpdir)
+            resource = resolve_internal_uri("spill://sess1/call_json?json=", ctx)
+            assert resource.content == '{"items":[]}'
+
+    def test_rejects_missing_key_and_bad_index(self):
+        payload = {"items": [{"id": "only"}]}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _seed_json_spill(tmpdir, "sess1", "call_json", payload)
+            ctx = InternalUriContext(state_dir=tmpdir)
+            with pytest.raises(InternalUriError, match="key not found"):
+                resolve_internal_uri("spill://sess1/call_json?json=/nope", ctx)
+            with pytest.raises(InternalUriError, match="out of range"):
+                resolve_internal_uri("spill://sess1/call_json?json=/items/9", ctx)
+            with pytest.raises(InternalUriError, match="invalid json pointer array index"):
+                resolve_internal_uri("spill://sess1/call_json?json=/items/01", ctx)
+
+    def test_rejects_non_json_spill_content(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results_dir = os.path.join(tmpdir, "pmharness-results")
+            os.makedirs(results_dir, exist_ok=True)
+            path = os.path.join(results_dir, "plain.txt")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("not json\n")
+            register_spill(tmpdir, "sess1", "plain", path, 9)
+            ctx = InternalUriContext(state_dir=tmpdir)
+            with pytest.raises(InternalUriError, match="not valid JSON"):
+                resolve_internal_uri("spill://sess1/plain?json=/items/0", ctx)
+
+    def test_rejects_malformed_pointer_and_unknown_query(self):
+        with pytest.raises(InternalUriError, match="must start with"):
+            parse_internal_uri("spill://sess1/call_a?json=items/0")
+        with pytest.raises(InternalUriError, match="unsupported spill query"):
+            parse_internal_uri("spill://sess1/call_a?foo=bar")
+        with pytest.raises(InternalUriError, match="json query is only supported"):
+            parse_internal_uri("job://job_ok?json=/goal")
+
+    def test_rejects_json_with_line_selector(self):
+        payload = {"lines": ["a", "b", "c"]}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _seed_json_spill(tmpdir, "sess1", "call_json", payload)
+            ctx = InternalUriContext(state_dir=tmpdir)
+            with pytest.raises(InternalUriError, match="line selectors"):
+                resolve_internal_uri("spill://sess1/call_json:1-2?json=/lines/0", ctx)
+
+    def test_preserves_line_selector_without_json_query(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
+            large = "line one\n" * 2000
+            maybe_persist_result(large, "call_read", tmpdir, config, spill_session_id="sess1")
+            ctx = InternalUriContext(state_dir=tmpdir)
+            sliced = resolve_internal_uri("spill://sess1/call_read:2-3", ctx)
+            assert "[lines 2-3 of 2000]" in sliced.content
+
+    def test_json_pointer_escape_sequences(self):
+        payload = {"a/b": {"~tilde": "value"}}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _seed_json_spill(tmpdir, "sess1", "call_json", payload)
+            ctx = InternalUriContext(state_dir=tmpdir)
+            resource = resolve_internal_uri(
+                "spill://sess1/call_json?json=/a~1b/~0tilde", ctx
+            )
+            assert resource.content == "value"
+
+    def test_json_query_is_read_only(self):
+        payload = {"items": [{"id": "alpha"}]}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _seed_json_spill(tmpdir, "sess1", "call_json", payload)
+            db_path = os.path.join(tmpdir, "spill_index.sqlite")
+            file_mtime = os.path.getmtime(path)
+            db_mtime = os.path.getmtime(db_path)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row_count_before = conn.execute("SELECT COUNT(*) FROM spills").fetchone()[0]
+            finally:
+                conn.close()
+
+            ctx = InternalUriContext(state_dir=tmpdir)
+            resolve_internal_uri("spill://sess1/call_json?json=/items/0/id", ctx)
+
+            assert os.path.getmtime(path) == file_mtime
+            assert os.path.getmtime(db_path) == db_mtime
+            conn = sqlite3.connect(db_path)
+            try:
+                row_count_after = conn.execute("SELECT COUNT(*) FROM spills").fetchone()[0]
+            finally:
+                conn.close()
+            assert row_count_after == row_count_before
+
+    def test_rejects_json_query_on_directory_listing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ctx = InternalUriContext(state_dir=tmpdir)
+            with pytest.raises(InternalUriError, match="single spill resource"):
+                resolve_internal_uri("spill://?json=/items/0", ctx)
+
+    def test_rejects_excessive_pointer_depth(self):
+        deep = "/" + "/".join(f"k{i}" for i in range(65))
+        with pytest.raises(InternalUriError, match="maximum depth"):
+            parse_internal_uri(f"spill://sess1/call_a?json={deep}")
+
+    def test_rejects_oversized_spill_before_full_read(self):
+        from harness.internal_uri import _MAX_JSON_PARSE_CHARS
+
+        payload = {"items": [{"id": "alpha"}]}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _seed_json_spill(tmpdir, "sess1", "huge_json", payload)
+            os.truncate(path, _MAX_JSON_PARSE_CHARS + 1)
+            register_spill(
+                tmpdir,
+                "sess1",
+                "huge_json",
+                path,
+                os.path.getsize(path),
+            )
+            ctx = InternalUriContext(state_dir=tmpdir)
+            db_path = os.path.join(tmpdir, "spill_index.sqlite")
+            db_mtime = os.path.getmtime(db_path)
+            with pytest.raises(InternalUriError, match="maximum size"):
+                resolve_internal_uri("spill://sess1/huge_json?json=/items/0/id", ctx)
+            assert os.path.getmtime(db_path) == db_mtime
+
+    def test_rejects_oversized_query_output(self):
+        from harness.internal_uri import _MAX_JSON_QUERY_OUTPUT_CHARS
+
+        payload = {"blob": "x" * (_MAX_JSON_QUERY_OUTPUT_CHARS + 1)}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _seed_json_spill(tmpdir, "sess1", "call_json", payload)
+            ctx = InternalUriContext(state_dir=tmpdir)
+            with pytest.raises(InternalUriError, match="maximum output size"):
+                resolve_internal_uri("spill://sess1/call_json?json=/blob", ctx)
 
 
 def test_usage_api_includes_spill_fields():

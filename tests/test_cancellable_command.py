@@ -2,6 +2,7 @@
 blocks the thread uninterruptibly, so a user Stop could not kill a long/unbounded
 command. run_cancellable polls a cancel event and kills the whole process group.
 """
+import os
 import sys
 import threading
 import time
@@ -136,3 +137,101 @@ def test_bad_command_does_not_raise():
     # shell returns 127 for not-found; never raises
     assert code != 0
     assert status in ("ok", "error")
+
+
+def test_run_cancellable_off_mode_unchanged(monkeypatch):
+    """Default HARNESS_OS_SANDBOX=off preserves direct Popen path."""
+    monkeypatch.delenv("HARNESS_OS_SANDBOX", raising=False)
+    out, code, status = run_cancellable("echo direct_path", timeout=10)
+    assert "direct_path" in out
+    assert code == 0
+    assert status == "ok"
+
+
+def test_run_cancellable_required_unavailable_fails_closed(monkeypatch):
+    """required mode must fail before spawn when no sandbox backend exists."""
+    from harness import os_sandbox
+
+    os_sandbox.reset_probe_cache()
+    monkeypatch.setenv("HARNESS_OS_SANDBOX", "required")
+    monkeypatch.setattr(
+        os_sandbox,
+        "detect_sandbox_capability",
+        lambda *a, **k: os_sandbox.SandboxCapability("test", None, False),
+    )
+    out, code, status = run_cancellable("echo should_not_run", timeout=10)
+    assert status == "error"
+    assert code == -1
+    assert "required" in out.lower()
+    assert "should_not_run" not in out
+
+
+def test_run_cancellable_auto_uses_sandbox_when_available(monkeypatch):
+    """auto mode wraps the command when a sandbox backend is reported available."""
+    from harness import os_sandbox
+
+    os_sandbox.reset_probe_cache()
+    monkeypatch.setenv("HARNESS_OS_SANDBOX", "auto")
+    captured = {}
+
+    def _fake_prepare(command, *, cwd=None, env=None):
+        captured["command"] = command
+        return os_sandbox.SandboxSpawnPlan(
+            command=f"sh -c {command!r}",
+            cleanup=None,
+        )
+
+    monkeypatch.setattr(os_sandbox, "prepare_sandbox_spawn", _fake_prepare)
+    out, code, status = run_cancellable("echo wrapped", timeout=10)
+    assert captured.get("command") == "echo wrapped"
+    assert "wrapped" in out
+    assert code == 0
+    assert status == "ok"
+
+
+@pytest.mark.skipif(
+    __import__("sys").platform != "darwin"
+    or not __import__("harness.os_sandbox", fromlist=["_probe_macos_sandbox_exec"])._probe_macos_sandbox_exec(),
+    reason="macOS sandbox-exec not available",
+)
+def test_run_cancellable_sandbox_integration_echo():
+    from harness import os_sandbox
+
+    os_sandbox.reset_probe_cache()
+    prev = os.environ.get("HARNESS_OS_SANDBOX")
+    os.environ["HARNESS_OS_SANDBOX"] = "auto"
+    try:
+        out, code, status = run_cancellable("echo sandbox_integration", timeout=10)
+        assert status == "ok"
+        assert code == 0
+        assert "sandbox_integration" in out
+    finally:
+        if prev is None:
+            os.environ.pop("HARNESS_OS_SANDBOX", None)
+        else:
+            os.environ["HARNESS_OS_SANDBOX"] = prev
+        os_sandbox.reset_probe_cache()
+
+
+@pytest.mark.skipif(
+    __import__("sys").platform != "linux"
+    or not __import__("harness.os_sandbox", fromlist=["_probe_linux_bubblewrap"])._probe_linux_bubblewrap(),
+    reason="Linux bubblewrap not available",
+)
+def test_run_cancellable_sandbox_integration_echo_linux():
+    from harness import os_sandbox
+
+    os_sandbox.reset_probe_cache()
+    prev = os.environ.get("HARNESS_OS_SANDBOX")
+    os.environ["HARNESS_OS_SANDBOX"] = "auto"
+    try:
+        out, code, status = run_cancellable("echo sandbox_integration", timeout=10)
+        assert status == "ok"
+        assert code == 0
+        assert "sandbox_integration" in out
+    finally:
+        if prev is None:
+            os.environ.pop("HARNESS_OS_SANDBOX", None)
+        else:
+            os.environ["HARNESS_OS_SANDBOX"] = prev
+        os_sandbox.reset_probe_cache()

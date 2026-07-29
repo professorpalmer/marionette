@@ -12,7 +12,14 @@ import urllib.request
 import urllib.error
 
 from .base import DriverResponse, SYSTEM_PROMPT
-from .prompt_cache import cache_control as _cache_control, prompt_cache_enabled
+from .prompt_cache import (
+    _can_carry_marker,
+    _mark_content_block,
+    _tool_schema_can_carry,
+    cache_control as _cache_control,
+    history_cache_carriers,
+    prompt_cache_enabled,
+)
 from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
 
@@ -121,7 +128,7 @@ class AnthropicDriver:
             "max_tokens": self.max_tokens,
             "messages": [{"role": "user", "content": task_prompt}],
         }
-        if self._prompt_cache_on():
+        if self._prompt_cache_on() and _can_carry_marker({"content": system}):
             body["system"] = [{"type": "text", "text": system,
                                "cache_control": _cache_control(stable=True)}]
         else:
@@ -278,7 +285,10 @@ class AnthropicDriver:
         }
 
         if system:
-            if self._prompt_cache_on():
+            # Shared eligibility with OpenAI-compat: whitespace/empty system text
+            # must not receive cache_control (provider rejects empty text breakpoints
+            # and it would burn one of the ≤4 slots).
+            if self._prompt_cache_on() and _can_carry_marker({"content": system}):
                 body["system"] = [{"type": "text", "text": system,
                                    "cache_control": _cache_control(stable=True)}]
             else:
@@ -291,11 +301,18 @@ class AnthropicDriver:
             # Prompt-cache the tool schema too. It is large (~15 rich tool defs)
             # and IDENTICAL every turn, so without a breakpoint here we re-bill the
             # whole schema on every call. Anthropic caches the prefix up to the
-            # LAST cache_control marker, so marking the final tool caches
-            # system + tools together -- the big-dog multi-turn cost win.
-            if self._prompt_cache_on() and anthropic_tools:
-                anthropic_tools[-1] = {**anthropic_tools[-1],
-                                       "cache_control": _cache_control(stable=True)}
+            # LAST cache_control marker, so marking the final *eligible* tool
+            # caches system + tools together -- the big-dog multi-turn cost win.
+            # Walk back past empty/invalid schemas (shared ``_tool_schema_can_carry``)
+            # so they never receive a marker or consume the ≤4 budget.
+            if self._prompt_cache_on():
+                for i in range(len(anthropic_tools) - 1, -1, -1):
+                    if _tool_schema_can_carry(anthropic_tools[i]):
+                        anthropic_tools[i] = {
+                            **anthropic_tools[i],
+                            "cache_control": _cache_control(stable=True),
+                        }
+                        break
             body["tools"] = anthropic_tools
             body["tool_choice"] = {"type": "auto"}
 
@@ -308,46 +325,20 @@ class AnthropicDriver:
         # across turns -- each turn writes a fresh cache entry (a 25% write
         # surcharge) and the longest reusable prefix from the PREVIOUS turn ended
         # one message earlier, which this turn's single moving marker does not
-        # reuse. Placing a SECOND marker on the second-to-last message pins a
-        # breakpoint that WAS the last message last turn (already cached) so the
-        # bulk of the growing transcript is served as a cache READ (~10%) this
-        # turn, while the moving last-message marker extends the cache to include
-        # the newest suffix for next turn. This is the multi-turn cache pattern
-        # top agents (Cursor/Claude Code) rely on to keep input cost near-flat as
-        # the conversation grows.
+        # reuse. Placing a SECOND marker on the second-to-last *carrier*
+        # pins a breakpoint that WAS the last message last turn (already cached)
+        # so the bulk of the growing transcript is served as a cache READ (~10%)
+        # this turn, while the moving last-carrier marker extends the cache to
+        # include the newest suffix for next turn. Empty/whitespace tail
+        # envelopes are walked back via shared ``history_cache_carriers`` so they
+        # never waste a history breakpoint slot (same plane as OpenAI-compat).
         #
         # AGNT-style all-1h: history markers get the same ttl:1h as stable
         # system/tool breakpoints (override via HARNESS_ANTHROPIC_CACHE_TTL).
         if self._prompt_cache_on() and anthropic_msgs:
             history_cc = _cache_control(stable=False)
-
-            def _mark(msg: dict) -> None:
-                # Anthropic rejects cache_control on EMPTY text blocks (400
-                # "cache_control cannot be set for empty text blocks"). Only mark
-                # a block that carries real content, and skip whitespace-only
-                # text entirely -- otherwise the whole request 400s.
-                content = msg.get("content")
-                if isinstance(content, list) and content:
-                    last = content[-1]
-                    if isinstance(last, dict):
-                        # A text block must be non-empty; non-text blocks
-                        # (tool_use / tool_result / image) can carry the marker.
-                        if last.get("type") == "text" and not str(last.get("text") or "").strip():
-                            return
-                        content[-1] = {**last, "cache_control": dict(history_cc)}
-                elif isinstance(content, str):
-                    if not content.strip():
-                        return  # never mark an empty string block
-                    msg["content"] = [{"type": "text", "text": content,
-                                       "cache_control": dict(history_cc)}]
-            # Stable prefix breakpoint (second-to-last message): this position was
-            # the moving marker last turn, so its prefix is already cached and
-            # reused as a READ this turn.
-            if len(anthropic_msgs) >= 2:
-                _mark(anthropic_msgs[-2])
-            # Moving breakpoint (last message): extends the cached prefix to cover
-            # the newest turn so NEXT turn's stable marker can reuse it.
-            _mark(anthropic_msgs[-1])
+            for msg in history_cache_carriers(anthropic_msgs, limit=2):
+                _mark_content_block(msg, history_cc)
 
         # Extended thinking: request when effort != none and model supports it.
         # Streams already emit thinking_delta → on_reasoning_delta.

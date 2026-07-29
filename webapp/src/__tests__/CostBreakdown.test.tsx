@@ -2,7 +2,9 @@ import { fireEvent, render, screen, within, waitFor } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CostBreakdown, {
   compactionAdvicePresentation,
+  delegationSavingsCredited,
   listPriceValueTotal,
+  routingSavingsCredited,
   spendIsEstimated,
   type CostBreakdownData,
 } from "../components/CostBreakdown";
@@ -130,7 +132,7 @@ describe("CostBreakdown", () => {
     expect(listPriceValueTotal(data)).toBe(0);
     render(<CostBreakdown data={data} />);
     expect(screen.queryByText("Model selection value")).not.toBeInTheDocument();
-    expect(screen.getByText("Routing decision value")).toBeInTheDocument();
+    expect(screen.getByText("Routing decision value (est.)")).toBeInTheDocument();
   });
 
   it("shows soon calm copy and keeps machine reason in the title", () => {
@@ -393,5 +395,164 @@ describe("CostBreakdown", () => {
     );
     expect(screen.queryByText(/\(capped\)/)).not.toBeInTheDocument();
     expect(screen.getByText("Prompt-cache value")).toBeInTheDocument();
+  });
+
+  it("refuses unknown routing basis as measured list-price value", () => {
+    expect(routingSavingsCredited("unknown", 1.25)).toBe(0);
+    expect(routingSavingsCredited("estimated", 1.25)).toBe(1.25);
+    expect(delegationSavingsCredited("unknown", 2)).toBe(0);
+    expect(delegationSavingsCredited("actual_usage", 2)).toBe(2);
+
+    const data: CostBreakdownData = {
+      tokens_used: 1000,
+      est_cost_usd: 0.01,
+      routing_saved_usd: 1.25,
+      routing_savings_basis: "unknown",
+      cache_savings_usd: 0,
+      tool_output_savings_usd: 0,
+    };
+    expect(listPriceValueTotal(data)).toBe(0);
+    render(<CostBreakdown data={data} />);
+    expect(screen.queryByText("Model selection value")).not.toBeInTheDocument();
+    expect(screen.getByText("unknown basis")).toBeInTheDocument();
+    expect(screen.queryByText("Billed spend")).not.toBeInTheDocument();
+  });
+
+  it("labels estimated routing and never treats it as billed", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.05,
+          cost_source: "provider",
+          estimated: false,
+          routing_saved_usd: 0.40,
+          routing_savings_basis: "estimated",
+        }}
+      />,
+    );
+    expect(screen.getByText("Billed spend")).toBeInTheDocument();
+    expect(screen.getByText("Model selection value (est.)")).toBeInTheDocument();
+    const modelRow = screen.getByText("Model selection value (est.)").closest("div");
+    expect(within(modelRow!).getByText("~$0.40")).toBeInTheDocument();
+  });
+
+  it("shows history compaction tokens/thrash and USD only when measured", () => {
+    const { rerender } = render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.01,
+          history_compactions: 2,
+          history_tokens_saved: 1500,
+          history_cache_bust_tokens: 800,
+          history_thrash_events: 1,
+        }}
+      />,
+    );
+    expect(screen.getByText("History compaction")).toBeInTheDocument();
+    expect(screen.getByText(/1\.5k saved \(2 events\)/)).toBeInTheDocument();
+    expect(screen.getByText(/800 cache bust/)).toBeInTheDocument();
+    expect(screen.getByText(/1 thrash/)).toBeInTheDocument();
+    expect(screen.queryByText(/measured/)).not.toBeInTheDocument();
+
+    rerender(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.01,
+          history_compactions: 1,
+          history_tokens_saved: 500,
+          history_compaction_cost_usd: 0.0123,
+        }}
+      />,
+    );
+    expect(screen.getByText(/\$0\.01 measured/)).toBeInTheDocument();
+  });
+
+  it("does not fold history or standing floor into list-price totals", () => {
+    const data: CostBreakdownData = {
+      tokens_used: 1000,
+      est_cost_usd: 0.01,
+      cache_savings_usd: 0.10,
+      history_compaction_cost_usd: 9.99,
+      standing_economics_basis: "estimated",
+      standing_floor_cost_usd: 5.0,
+      standing_floor_cost_cached_usd: 0.5,
+    };
+    expect(listPriceValueTotal(data)).toBeCloseTo(0.10, 8);
+  });
+
+  it("renders standing economics only when estimated fields are present", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.01,
+          standing_economics_basis: "estimated",
+          standing_floor_tokens: 31_000,
+          standing_floor_cost_usd: 0.093,
+          standing_floor_cost_cached_usd: 0.0093,
+          prompt_cache_ttl_ms: 3_600_000,
+          prompt_cache_expires_in_ms: 2_700_000,
+          prompt_cache_state: "warm",
+        }}
+      />,
+    );
+    expect(screen.getByText("Standing context floor (est.)")).toBeInTheDocument();
+    expect(screen.getByText("Prompt-cache TTL (est.)")).toBeInTheDocument();
+    expect(screen.getByText(/warm/)).toBeInTheDocument();
+  });
+
+  it("hides standing economics when flag-off omits fields", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.01,
+        }}
+      />,
+    );
+    expect(screen.queryByText("Standing context floor (est.)")).not.toBeInTheDocument();
+    expect(screen.queryByText("Prompt-cache TTL (est.)")).not.toBeInTheDocument();
+  });
+
+  it("never claims cached standing floor after TTL expiry", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.01,
+          standing_economics_basis: "estimated",
+          standing_floor_cost_usd: 0.09,
+          standing_floor_tokens: 30_000,
+          // Backend omits cached USD when expired; UI must not invent it.
+          prompt_cache_ttl_ms: 3_600_000,
+          prompt_cache_expires_in_ms: 0,
+          prompt_cache_state: "expired",
+        }}
+      />,
+    );
+    expect(screen.getByText("Standing context floor (est.)")).toBeInTheDocument();
+    expect(screen.queryByText(/cached/)).not.toBeInTheDocument();
+    expect(screen.getByText("expired")).toBeInTheDocument();
+  });
+
+  it("shows sub-minute TTL expiry as <1m not 1m", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.01,
+          standing_economics_basis: "estimated",
+          standing_floor_cost_usd: 0.09,
+          prompt_cache_ttl_ms: 3_600_000,
+          prompt_cache_expires_in_ms: 45_000,
+          prompt_cache_state: "warm",
+        }}
+      />,
+    );
+    expect(screen.getByText(/warm · ~<1m left/)).toBeInTheDocument();
+    expect(screen.queryByText(/~1m left/)).not.toBeInTheDocument();
   });
 });

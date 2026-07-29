@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.146, deliberately pre-1.0. Project browsing no longer steals the active workspace, session jobs stay warm across swaps, and the left rail uses a quieter Cursor-class hierarchy; rides puppetmaster-ai==1.21.2.
+> Status: v0.9.147, deliberately pre-1.0. Codex cache usage and session economics are isolated from external Cursor jobs, with hardened cache, compaction, durability, search, sandbox, and resource-pressure paths; rides puppetmaster-ai==1.21.2.
 
 ## Documentation
 

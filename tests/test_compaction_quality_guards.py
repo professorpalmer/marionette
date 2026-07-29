@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from harness.compaction_mixin import (
+    ANTI_THRASH_STRIKES,
     DEFAULT_MAX_RETAINED_TAIL_TOKENS,
     DEFAULT_MAX_SUMMARY_TOKENS,
     MAX_REDUCTION_RATIO,
     MIN_COMPACTABLE_TOKENS,
+    MIN_EFFECTIVE_SAVINGS_RATIO,
     MIN_SUMMARY_SEED_CHARS,
     _ZERO_WIDTH_SPACE,
     compaction_model_override,
@@ -111,6 +113,32 @@ def test_insufficient_reduction_rejected(monkeypatch):
     assert aborted[0].data.get("after_tokens") == aborted[0].data.get("before_tokens")
     assert session._history == original
     assert MAX_REDUCTION_RATIO == 0.8
+    # Zero reclamation counts toward Hermes-style thrash strikes.
+    assert int(aborted[0].data.get("thrash_strikes") or 0) >= 1
+    assert int(getattr(session, "_compaction_ineffective_count", 0) or 0) >= 1
+
+
+def test_note_compaction_effectiveness_thresholds():
+    session = _session(budget=2000)
+    pct, strikes = session._note_compaction_effectiveness(
+        before_tokens=1000,
+        after_tokens=950,
+    )
+    assert pct < MIN_EFFECTIVE_SAVINGS_RATIO
+    assert strikes == 1
+    pct2, strikes2 = session._note_compaction_effectiveness(
+        before_tokens=1000,
+        after_tokens=950,
+    )
+    assert strikes2 == ANTI_THRASH_STRIKES
+    assert session._compaction_fail_until > 0
+    # Strong reclamation clears the breaker counter.
+    pct3, strikes3 = session._note_compaction_effectiveness(
+        before_tokens=1000,
+        after_tokens=200,
+    )
+    assert pct3 >= MIN_EFFECTIVE_SAVINGS_RATIO
+    assert strikes3 == 0
 
 
 def test_min_compactable_floor_skips_llm(monkeypatch):

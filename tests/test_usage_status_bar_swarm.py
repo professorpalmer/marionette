@@ -203,8 +203,8 @@ def test_cache_saved_usd_swarm_credits_real_cost_tasks():
     assert abs(_cache_saved_usd_swarm(arts, registry) - 0.378) < 1e-9
 
 
-def test_api_usage_includes_cli_store_job_dollars(tmp_path, monkeypatch):
-    """RC1: CLI-store swarm spend must appear in /api/usage boot + jobs list."""
+def test_api_usage_excludes_unowned_cli_store_jobs(tmp_path, monkeypatch):
+    """Unstamped CLI-store jobs stay visible on the tracker but not /api/usage."""
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"
@@ -213,6 +213,7 @@ def test_api_usage_includes_cli_store_job_dollars(tmp_path, monkeypatch):
 
     httpd, port = _api_server(str(harness_dir))
     try:
+        monkeypatch.delenv("HARNESS_CLI_COST_MERGE", raising=False)
         monkeypatch.setattr(server, "_jobs_snapshot", lambda: [])
         monkeypatch.setattr(
             server._session,
@@ -229,7 +230,6 @@ def test_api_usage_includes_cli_store_job_dollars(tmp_path, monkeypatch):
             lambda: [_registry_spec("worker-model")],
         )
         monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
-        # Force the CLI job into the boot cost window regardless of store stamp.
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
         server._cfg.repo = str(repo)
 
@@ -238,17 +238,16 @@ def test_api_usage_includes_cli_store_job_dollars(tmp_path, monkeypatch):
             _api_get(port, f"/api/usage?repo={scoped}", server._TOKEN).read().decode()
         )
         job_rows = [j for j in usage["jobs"] if j.get("job_id") == cli_job_id]
-        assert len(job_rows) == 1
-        assert abs(job_rows[0]["est_cost_usd"] - 0.07) < 1e-6
-        assert usage["session"]["est_cost_usd"] >= 0.07
+        assert len(job_rows) == 0
+        assert usage["session"]["est_cost_usd"] == 0.0
     finally:
         httpd.shutdown()
 
 
-def test_session_total_includes_task_stamp_and_unstamped_visible(
+def test_session_total_includes_task_stamp_not_unstamped_legacy(
     tmp_path, monkeypatch
 ):
-    """RC2: task-payload stamp (label-less) + workspace-visible unstamped job."""
+    """Task-payload stamp counts; cwd-only legacy unstamped jobs do not bill."""
     from harness.sessions import SessionStore
 
     repo = tmp_path / "repo"
@@ -321,8 +320,8 @@ def test_session_total_includes_task_stamp_and_unstamped_visible(
         )
         total = usage["session_total"]
         assert total is not None
-        # stamped: 10k*1 + 2k*2 = 0.014; unstamped: 20k*1 + 4k*2 = 0.028
-        assert abs(total["est_cost_usd"] - 0.042) < 1e-6
+        # Stamped only: 10k*1 + 2k*2 = 0.014 — unstamped legacy cwd match excluded.
+        assert abs(total["est_cost_usd"] - 0.014) < 1e-6
     finally:
         httpd.shutdown()
 

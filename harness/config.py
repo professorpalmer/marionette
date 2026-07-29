@@ -2,7 +2,9 @@ from __future__ import annotations
 
 """Harness configuration. Driver is a swappable choice -- the research proved
 the whole open-weights field drives at 100% under a good harness, so the default
-is picked on efficiency (glm-5.2: 932 tok, clean MIT license)."""
+is picked on efficiency + quality + license (qwen3-coder-30b: lowest tokens on
+both eval batteries, Apache-2.0). Override via HARNESS_DRIVER or ~/.harness.json;
+from_env layers defaults < file < environment."""
 
 from dataclasses import dataclass
 
@@ -30,6 +32,20 @@ class HarnessConfig:
     # Native browser / computer-use tools (raw CDP over local Chrome). Enabled
     # by default; set HARNESS_BROWSER_ENABLED=0 to hide the browser_* tools.
     browser_enabled: bool = True
+    # Swarm ThreadPoolExecutor worker count. Env HARNESS_MAX_WORKERS and
+    # ~/.harness.json "max_workers" override; default 4 matches historical
+    # getattr(config, "max_workers", 4) behavior in ConversationalSession.
+    max_workers: int = 4
+    # Optional resource-pressure admission (defaults off — see resource_pressure.py).
+    resource_pressure_enabled: bool = False
+    resource_pressure_rss_advisory_mb: int | None = None
+    resource_pressure_rss_reject_mb: int | None = None
+    resource_pressure_fd_advisory: int | None = None
+    resource_pressure_fd_reject: int | None = None
+    resource_pressure_load_advisory: float | None = None
+    resource_pressure_load_reject: float | None = None
+    resource_pressure_wait_timeout_sec: float = 5.0
+    resource_pressure_poll_interval_sec: float = 0.25
 
     @classmethod
     def from_env(cls) -> "HarnessConfig":
@@ -111,6 +127,33 @@ class HarnessConfig:
             except Exception:
                 max_ctx = 96000
 
+        def _opt_int(env_key: str, file_key: str):
+            raw = pick(env_key, file_key, "")
+            if raw in ("", None):
+                return None
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+
+        def _opt_float(env_key: str, file_key: str):
+            raw = pick(env_key, file_key, "")
+            if raw in ("", None):
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
+
+        def _bool(env_key: str, file_key: str, default: str = "") -> bool:
+            return str(pick(env_key, file_key, default)).strip().lower() in ("1", "true", "yes", "on")
+
+        max_workers_raw = pick("HARNESS_MAX_WORKERS", "max_workers", 4)
+        try:
+            max_workers_val = max(1, int(max_workers_raw))
+        except (TypeError, ValueError):
+            max_workers_val = 4
+
         return cls(
             driver=driver_val,
             reach=pick("HARNESS_REACH", "reach", "openrouter"),
@@ -126,4 +169,38 @@ class HarnessConfig:
             auto_verify=str(pick("HARNESS_AUTO_VERIFY", "auto_verify", "true")).strip() in ("1","true","yes","True"),
             verify_command=pick("HARNESS_VERIFY_COMMAND", "verify_command", ""),
             browser_enabled=str(pick("HARNESS_BROWSER_ENABLED", "browser_enabled", "true")).strip() in ("1","true","yes","True"),
+            max_workers=max_workers_val,
+            resource_pressure_enabled=_bool(
+                "HARNESS_RESOURCE_PRESSURE_ENABLED", "resource_pressure_enabled",
+            ),
+            resource_pressure_rss_advisory_mb=_opt_int(
+                "HARNESS_RESOURCE_PRESSURE_RSS_ADVISORY_MB", "resource_pressure_rss_advisory_mb",
+            ),
+            resource_pressure_rss_reject_mb=_opt_int(
+                "HARNESS_RESOURCE_PRESSURE_RSS_REJECT_MB", "resource_pressure_rss_reject_mb",
+            ),
+            resource_pressure_fd_advisory=_opt_int(
+                "HARNESS_RESOURCE_PRESSURE_FD_ADVISORY", "resource_pressure_fd_advisory",
+            ),
+            resource_pressure_fd_reject=_opt_int(
+                "HARNESS_RESOURCE_PRESSURE_FD_REJECT", "resource_pressure_fd_reject",
+            ),
+            resource_pressure_load_advisory=_opt_float(
+                "HARNESS_RESOURCE_PRESSURE_LOAD_ADVISORY", "resource_pressure_load_advisory",
+            ),
+            resource_pressure_load_reject=_opt_float(
+                "HARNESS_RESOURCE_PRESSURE_LOAD_REJECT", "resource_pressure_load_reject",
+            ),
+            resource_pressure_wait_timeout_sec=float(
+                _opt_float(
+                    "HARNESS_RESOURCE_PRESSURE_WAIT_TIMEOUT_SEC",
+                    "resource_pressure_wait_timeout_sec",
+                ) or 5.0
+            ),
+            resource_pressure_poll_interval_sec=float(
+                _opt_float(
+                    "HARNESS_RESOURCE_PRESSURE_POLL_INTERVAL_SEC",
+                    "resource_pressure_poll_interval_sec",
+                ) or 0.25
+            ),
         )

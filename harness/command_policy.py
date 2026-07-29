@@ -205,6 +205,23 @@ def run_cancellable(
     # (sibling-stream poison / leftover interrupt), not a stop aimed at us.
     stale_cancel = cancel_event is not None and cancel_event.is_set()
     start = _time.monotonic()
+
+    from harness import os_sandbox
+
+    spawn_command = command
+    sandbox_cleanup = None
+    spawn_env = None
+    try:
+        plan = os_sandbox.prepare_sandbox_spawn(command, cwd=cwd)
+        if plan is not None:
+            spawn_command = plan.command
+            sandbox_cleanup = plan.cleanup
+            if plan.child_env:
+                spawn_env = os.environ.copy()
+                spawn_env.update(plan.child_env)
+    except os_sandbox.SandboxRequiredUnavailable as exc:
+        return (exc.message, -1, "error")
+
     try:
         # Put the child in its own process group so we can signal the entire
         # tree (shell + everything it spawned). start_new_session is POSIX-only;
@@ -219,9 +236,10 @@ def run_cancellable(
             else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         )
         proc = subprocess.Popen(
-            command,
+            spawn_command,
             shell=True,
             cwd=cwd,
+            env=spawn_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -230,6 +248,8 @@ def run_cancellable(
             **group_kwargs,
         )
     except Exception as e:
+        if sandbox_cleanup is not None:
+            sandbox_cleanup()
         return (f"Failed to execute command: {e}", -1, "error")
 
     # Set the pipe to non-blocking so we can read from it without stalling.
@@ -396,5 +416,8 @@ def run_cancellable(
         elif status == "timeout":
             output = (output or "") + f"\n\n[TimeoutExpired after {timeout} seconds]"
             exit_code = -1
-            
+
+    if sandbox_cleanup is not None:
+        sandbox_cleanup()
+
     return (output, exit_code, status)

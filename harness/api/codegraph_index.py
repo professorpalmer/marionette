@@ -475,13 +475,20 @@ def codegraph_is_stale(repo_path: str) -> bool:
 def maybe_refresh_codegraph(repo_path: str, *, force: bool = False) -> None:
     """Debounced, background staleness-driven reindex. Safe to call on every turn
     and on session switch -- the debounce + the indexing-guard ensure it never
-    thrashes. force=True bypasses the debounce (e.g. an explicit user action)."""
+    thrashes. force=True bypasses the debounce and fail-until backoff (e.g. an
+    explicit user action)."""
     if not repo_path:
         return
     import time as _time
+    now = _time.monotonic()
     if not force:
         last = codegraph_stale_check_at.get(repo_path, 0.0)
-        if (_time.monotonic() - last) < CODEGRAPH_STALE_DEBOUNCE:
+        if (now - last) < CODEGRAPH_STALE_DEBOUNCE:
+            return
+        # Honor indexer failure backoff so chat-turn refresh cannot defeat the
+        # GET /api/codegraph fail-until window and thrash a doomed reindex.
+        fail_until = float(codegraph_fail_until.get(repo_path) or 0.0)
+        if fail_until > now:
             return
     codegraph_stale_check_at[repo_path] = _time.monotonic()
 

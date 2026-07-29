@@ -376,27 +376,82 @@ function positiveUsd(n?: number): number {
   return typeof n === "number" && isFinite(n) && n > 0 ? n : 0;
 }
 
+type SavingsBasis = "actual_usage" | "estimated" | "unknown";
+
 type SavingsParts = {
   routing: number;
+  routingBasis?: SavingsBasis;
   delegation: number;
+  delegationBasis?: SavingsBasis;
+  /** Credited model-selection plane (delegation measured, else routing). */
   modelSelection: number;
+  modelSelectionEstimated: boolean;
   cache: number;
   compact: number;
   total: number;
 };
 
-function jobSavings(j: Job): SavingsParts {
-  const routing = positiveUsd(j.routing_saved_usd);
-  const delegation = positiveUsd(j.delegation_saved_usd);
-  const delegationMeasured = j.delegation_savings_basis === "actual_usage";
-  const modelSelection =
-    delegationMeasured || delegation > 0 ? delegation : routing;
+function creditRoutingSavings(
+  basis: Job["routing_savings_basis"] | undefined,
+  usd?: number,
+): number {
+  const value = positiveUsd(usd);
+  if (value <= 0) return 0;
+  if (basis === "unknown") return 0;
+  return value;
+}
+
+function creditDelegationSavings(
+  basis: Job["delegation_savings_basis"] | undefined,
+  usd?: number,
+): number {
+  const value = positiveUsd(usd);
+  if (value <= 0) return 0;
+  if (basis === "actual_usage" || basis == null) return value;
+  return 0;
+}
+
+/** Missing ownership is owned for harness/local rows; CLI/external fail closed. */
+export function jobAccountingOwned(j: Job): boolean {
+  if (j.accounting_owned === true) return true;
+  if (j.accounting_owned === false) return false;
+  const src = (j.source || "harness").toLowerCase();
+  return src !== "cli";
+}
+
+/** Exported for focused Vitest — keeps routing / delegation / cache separate. */
+export function jobSavings(j: Job): SavingsParts {
+  if (!jobAccountingOwned(j)) {
+    return {
+      routing: 0,
+      delegation: 0,
+      modelSelection: 0,
+      modelSelectionEstimated: false,
+      cache: 0,
+      compact: 0,
+      total: 0,
+    };
+  }
+  const routingBasis = j.routing_savings_basis;
+  const delegationBasis = j.delegation_savings_basis;
+  const routing = creditRoutingSavings(routingBasis, j.routing_saved_usd);
+  const delegation = creditDelegationSavings(delegationBasis, j.delegation_saved_usd);
+  const delegationMeasured = delegationBasis === "actual_usage";
+  // Measured zero delegation must not be replaced by a routing estimate.
+  const modelSelection = delegationMeasured
+    ? delegation
+    : (delegation > 0 ? delegation : routing);
+  const modelSelectionEstimated =
+    !delegationMeasured && modelSelection > 0 && routingBasis === "estimated";
   const cache = positiveUsd(j.cache_saved_usd);
   const compact = positiveUsd(j.tool_output_savings_usd);
   return {
     routing,
+    routingBasis,
     delegation,
+    delegationBasis,
     modelSelection,
+    modelSelectionEstimated,
     cache,
     compact,
     total: modelSelection + cache + compact,
@@ -404,24 +459,44 @@ function jobSavings(j: Job): SavingsParts {
 }
 
 function savingsDetail(parts: SavingsParts): string {
-  return [
-    parts.modelSelection > 0
-      ? `model selection value vs frontier-equivalent list price (~${formatCost(parts.modelSelection)})`
-      : "",
-    parts.cache > 0 ? `prompt-cache value (~${formatCost(parts.cache)})` : "",
-    parts.compact > 0 ? `tool-output compaction (~${formatCost(parts.compact)})` : "",
-  ].filter(Boolean).join("  ·  ");
+  const bits: string[] = [];
+  if (parts.delegation > 0) {
+    bits.push(
+      `delegation value vs frontier-equivalent list price (~${formatCost(parts.delegation)})`,
+    );
+  }
+  if (parts.routing > 0 && parts.delegation > 0) {
+    // Both present — keep planes separate in the tooltip.
+    bits.push(
+      `routing decision value (~${formatCost(parts.routing)}${
+        parts.routingBasis === "estimated" ? ", estimate" : ""
+      })`,
+    );
+  } else if (parts.modelSelection > 0 && parts.delegation <= 0) {
+    bits.push(
+      parts.modelSelectionEstimated
+        ? `model selection value vs frontier-equivalent list price (~${formatCost(parts.modelSelection)}, estimate)`
+        : `model selection value vs frontier-equivalent list price (~${formatCost(parts.modelSelection)})`,
+    );
+  }
+  if (parts.cache > 0) {
+    bits.push(`prompt-cache value (~${formatCost(parts.cache)})`);
+  }
+  if (parts.compact > 0) {
+    bits.push(`tool-output compaction (~${formatCost(parts.compact)})`);
+  }
+  return bits.join("  ·  ");
 }
 
-function SavingsChip({ parts, className }: { parts: SavingsParts; className?: string }) {
+export function SavingsChip({ parts, className }: { parts: SavingsParts; className?: string }) {
   if (parts.total <= 0) return null;
   return (
     <span
       className={`inline-flex items-center gap-0.5 px-1 py-px rounded-full bg-good/10 border border-good/20 text-good/80 tabular-nums ${className ?? ""}`}
-      title={`List-price value from model selection, prompt-cache, and compaction (additive): ${savingsDetail(parts)}`}
+      title={`List-price value from model selection, prompt-cache, and compaction (additive, not billed): ${savingsDetail(parts)}`}
     >
       <span className="text-good/60" aria-hidden="true">{"\u2193"}</span>
-      {formatCost(parts.total)} saved
+      {formatCost(parts.total, parts.modelSelectionEstimated)} saved
     </span>
   );
 }
@@ -949,6 +1024,14 @@ export default function SwarmPane() {
                   external
                 </span>
               )}
+              {!jobAccountingOwned(j) && (
+                <span
+                  className="text-[9px] text-faint bg-panel2/40 border border-edge/40 px-1.5 py-0.5 rounded"
+                  title="Visible for cancellation only — does not affect Marionette session cost or savings"
+                >
+                  visibility only
+                </span>
+              )}
             </div>
           )}
 
@@ -1039,7 +1122,7 @@ export default function SwarmPane() {
                         </span>
                         <span className="font-mono text-good shrink-0 font-semibold">
                           {art.est_cost_usd !== undefined && art.est_cost_usd > 0
-                            ? `$${Number(art.est_cost_usd).toFixed(4)}`
+                            ? `~$${Number(art.est_cost_usd).toFixed(4)}`
                             : "$0"}
                         </span>
                       </div>

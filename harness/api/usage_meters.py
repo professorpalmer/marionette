@@ -380,6 +380,154 @@ def _repo_session_stamped_meters(repo_root: str) -> dict:
     return {"est_cost_usd": round(cost, 6), "tokens_used": tokens}
 
 
+def standing_economics_enabled() -> bool:
+    """AGNT-inspired standing floor / cache-TTL fields (default off)."""
+    raw = (os.environ.get("HARNESS_STANDING_ECONOMICS") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def prompt_cache_ttl_ms_for_driver(driver: str) -> Optional[int]:
+    """Known prompt-cache TTL in ms — re-export from prompt_cache helpers."""
+    from pmharness.drivers.prompt_cache import prompt_cache_ttl_ms_for_driver as _fn
+
+    return _fn(driver)
+
+
+def _standing_prefix_tokens(pilot: Any) -> Tuple[int, int, int]:
+    """Return ``(system_tokens, tool_tokens, floor_tokens)`` for the fixed prefix.
+
+    Floor = system + tools + standing rules/skills/MCP (not conversation).
+    """
+    system_tokens = 0
+    tool_tokens = 0
+    floor_tokens = 0
+    try:
+        usage = pilot.get_context_usage()
+    except Exception:
+        return 0, 0, 0
+    categories = usage.get("categories") if isinstance(usage, dict) else None
+    if not isinstance(categories, list):
+        return 0, 0, 0
+    standing_names = {
+        "System prompt",
+        "Tool definitions",
+        "Rules",
+        "Skills",
+        "MCP",
+    }
+    for cat in categories:
+        if not isinstance(cat, dict):
+            continue
+        name = str(cat.get("name") or "")
+        try:
+            toks = max(0, int(cat.get("tokens") or 0))
+        except (TypeError, ValueError):
+            toks = 0
+        if name == "System prompt":
+            system_tokens = toks
+        elif name == "Tool definitions":
+            tool_tokens = toks
+        if name in standing_names:
+            floor_tokens += toks
+    return system_tokens, tool_tokens, floor_tokens
+
+
+def _standing_economics_fields(price_in: float) -> dict:
+    """AGNT-inspired standing floor + prompt-cache TTL forecast (estimated only).
+
+    Gated by ``HARNESS_STANDING_ECONOMICS`` (default off). Never folds into
+    billed spend or list-price value totals — informational estimated fields.
+    After TTL expiry, cached-floor USD is omitted so we never claim cache value.
+    """
+    if not standing_economics_enabled():
+        return {}
+    try:
+        pilot = _pilot()
+    except Exception:
+        return {}
+    if pilot is None:
+        return {}
+
+    try:
+        pin = float(price_in or 0.0)
+    except (TypeError, ValueError):
+        pin = 0.0
+    if pin <= 0:
+        return {}
+
+    system_tokens, tool_tokens, floor_tokens = _standing_prefix_tokens(pilot)
+    if floor_tokens <= 0 and system_tokens <= 0 and tool_tokens <= 0:
+        return {}
+
+    from .cost_accounting import CACHE_READ_MULTIPLIER
+
+    floor_cost = (floor_tokens / 1.0e6) * pin
+    floor_cost_cached = (floor_tokens / 1.0e6) * pin * CACHE_READ_MULTIPLIER
+
+    driver = ""
+    try:
+        driver = str(getattr(getattr(pilot, "config", None), "driver", "") or "")
+    except Exception:
+        driver = ""
+    if not driver:
+        try:
+            driver = str(getattr(_cfg(), "driver", "") or "")
+        except Exception:
+            driver = ""
+
+    ttl_ms = prompt_cache_ttl_ms_for_driver(driver)
+    now = time.time()
+    last_cache_read = max(0, int(getattr(pilot, "_last_turn_cache_read_tokens", 0) or 0))
+    activity_at = getattr(pilot, "_last_prompt_cache_activity_at", None)
+    # Cached-floor display requires explicit cache-read evidence for this window.
+    if last_cache_read <= 0:
+        activity_at = None
+    age_ms: Optional[int] = None
+    expires_in_ms: Optional[int] = None
+    cache_state: Optional[str] = None
+    try:
+        if activity_at is not None:
+            age_ms = max(0, int((now - float(activity_at)) * 1000))
+    except (TypeError, ValueError):
+        age_ms = None
+    prompt_cache_on = True
+    try:
+        from pmharness.drivers.prompt_cache import prompt_cache_enabled
+
+        prompt_cache_on = prompt_cache_enabled()
+    except Exception:
+        prompt_cache_on = True
+
+    if prompt_cache_on and ttl_ms is not None and age_ms is not None:
+        if age_ms >= ttl_ms:
+            cache_state = "expired"
+            expires_in_ms = 0
+        else:
+            cache_state = "warm"
+            expires_in_ms = max(0, ttl_ms - age_ms)
+
+    payload: Dict[str, Any] = {
+        # Explicit estimated labeling — never billed / never list-price totals.
+        "standing_economics_basis": "estimated",
+        "standing_system_tokens": int(system_tokens),
+        "standing_tool_tokens": int(tool_tokens),
+        "standing_floor_tokens": int(floor_tokens),
+        "standing_floor_cost_usd": round(floor_cost, 6),
+    }
+    # Cached-floor value only for explicit warm TTL — never unknown/no activity.
+    if prompt_cache_on and cache_state == "warm":
+        payload["standing_floor_cost_cached_usd"] = round(floor_cost_cached, 6)
+    if prompt_cache_on:
+        if ttl_ms is not None:
+            payload["prompt_cache_ttl_ms"] = int(ttl_ms)
+        if age_ms is not None:
+            payload["prompt_cache_age_ms"] = int(age_ms)
+        if expires_in_ms is not None:
+            payload["prompt_cache_expires_in_ms"] = int(expires_in_ms)
+        if cache_state is not None:
+            payload["prompt_cache_state"] = cache_state
+    return payload
+
 
 def _tool_output_savings_fields(price_in: float, *, process_wide: bool = False) -> dict:
     """Compact tool-output savings for session payloads.
@@ -391,9 +539,11 @@ def _tool_output_savings_fields(price_in: float, *, process_wide: bool = False) 
     boot-repo state dirs (deduped by tool_call_id).
     """
     # Empty session_id => ledger summarize() aggregates all sessions.
+    from ..job_scoping import cli_cost_merge_enabled as _cli_cost_merge_enabled
+
     sid = "" if process_wide else (getattr(_pilot(), "harness_session_id", "") or "")
     cli_dirs: list[str] = []
-    if process_wide:
+    if process_wide and _cli_cost_merge_enabled():
         try:
             from ..cli_job_merge import resolve_cli_state_dir
 
@@ -486,6 +636,12 @@ def _tool_output_savings_fields(price_in: float, *, process_wide: bool = False) 
         )
     except Exception:
         pass
+    # Standing floor/TTL are session-scoped — omit from process-wide boot pill.
+    if not process_wide:
+        try:
+            payload.update(_standing_economics_fields(price_in))
+        except Exception:
+            pass
     return payload
 
 
@@ -493,6 +649,7 @@ def _job_savings_fields(job_id: str) -> dict:
     """Per-job tool-output savings, merging harness + PM/CLI JSONL ledgers."""
     try:
         from ..cli_job_merge import resolve_cli_state_dir
+        from ..job_scoping import cli_cost_merge_enabled
         from ..tool_output_savings import job_savings_payload
 
         try:
@@ -501,7 +658,9 @@ def _job_savings_fields(job_id: str) -> dict:
             price_in, _ = resolve_price(_cfg().driver)
         except Exception:
             price_in = 0.0
-        cli_dir = resolve_cli_state_dir(getattr(_cfg(), "repo", "") or "")
+        cli_dir = None
+        if cli_cost_merge_enabled():
+            cli_dir = resolve_cli_state_dir(getattr(_cfg(), "repo", "") or "")
         return job_savings_payload(
             _pilot().state_dir,
             job_id,

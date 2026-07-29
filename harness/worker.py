@@ -607,8 +607,8 @@ class ProviderWorker:
                     commit_seed_baseline,
                     seed_worktree_from_goal,
                 )
-                seeded = seed_worktree_from_goal(self.repo, wt_path, self.goal)
-                commit_seed_baseline(wt_path, seeded)
+                seed_result = seed_worktree_from_goal(self.repo, wt_path, self.goal)
+                commit_seed_baseline(wt_path, seed_result.paths)
             except Exception:
                 pass
 

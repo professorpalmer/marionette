@@ -496,7 +496,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             if job_id:
                 session._session_job_ids.append(job_id)
                 if not session._submit_swarm(session._run_swarm_background, job_id, act.goal, None):
-                    cap_msg = f'Swarm capacity reached ({session._swarm_inflight()} in flight); not dispatching more right now. Wait for an in-flight worker to finish.'
+                    cap_msg = session._swarm_submit_reject_message()
                     session._release_objective(act.goal)
                     yield ConvEvent('action_result', {'id': aid, 'error': cap_msg})
                     session._append_action_result(act, aid, f'(run_implement {aid} deferred: {cap_msg})', is_native)
@@ -545,7 +545,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             session._session_job_ids.append(job_id)
             _prewarm_worker_imports()
             if not session._submit_swarm(session._run_provider_worker_background, job_id, act.goal, requested_adapter, effective_repo, expects_diff):
-                cap_msg = f'Swarm capacity reached ({session._swarm_inflight()} in flight); not dispatching more right now. Wait for an in-flight worker to finish.'
+                cap_msg = session._swarm_submit_reject_message()
                 session._release_objective(act.goal)
                 yield ConvEvent('action_result', {'id': aid, 'status': 'deferred', 'message': cap_msg})
                 session._append_action_result(act, aid, f'(run_implement {aid} deferred: {cap_msg})', is_native)
@@ -761,8 +761,15 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                         except Exception:
                             pass
                     if job_id:
-                        if not session._submit_swarm(session._run_swarm_background, job_id, sub_goal, state_dir):
-                            cap_msg = f'Swarm capacity reached ({session._swarm_inflight()} in flight); not dispatching follow-up for job {job_id}.'
+                        if not session._submit_swarm(
+                            session._run_swarm_background,
+                            job_id,
+                            sub_goal,
+                            state_dir,
+                            admission_group=f"parallel-{aid}",
+                            admission_size=len(goals),
+                        ):
+                            cap_msg = session._swarm_submit_reject_message()
                             yield _result({'id': sub_aid, 'status': 'deferred', 'message': cap_msg})
                             aggregate_artifacts_summary.append(f"Sub-worker for '{sub_goal}' deferred: {cap_msg}")
                             continue
@@ -822,6 +829,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             job_ids_collected = []
             skipped_goals = []
             deferred_goals = []
+            _parallel_admission = f"parallel-{aid}"
             for sub_goal in goals:
                 if not session._claim_objective(sub_goal):
                     skipped_goals.append(sub_goal)
@@ -830,18 +838,34 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 job_id = f'local-{short}'
                 try:
                     session._register_local_job(job_id, sub_goal, role=_mode, cwd=effective_repo, engine=engine, model=session.config.driver or '' if engine == 'native' else '')
-                    submitted = session._submit_swarm(session._run_provider_worker_background, job_id, sub_goal, requested_adapter, effective_repo, expects_diff)
+                    submitted = session._submit_swarm(
+                        session._run_provider_worker_background,
+                        job_id,
+                        sub_goal,
+                        requested_adapter,
+                        effective_repo,
+                        expects_diff,
+                        admission_group=_parallel_admission,
+                        admission_size=len(goals),
+                    )
                 except Exception:
                     session._release_objective(sub_goal)
                     raise
                 if not submitted:
                     session._release_objective(sub_goal)
                     deferred_goals.append(sub_goal)
+                    if session._last_swarm_submit_reason == "resource_pressure":
+                        break
                     continue
                 job_ids_collected.append(job_id)
                 session._session_job_ids.append(job_id)
             if deferred_goals:
-                cap_msg = f'Swarm capacity reached ({session._swarm_inflight()} in flight); deferred {len(deferred_goals)} of {len(goals)} goal(s): ' + ', '.join(deferred_goals)
+                cap_msg = session._swarm_submit_reject_message()
+                if session._last_swarm_submit_reason != "resource_pressure":
+                    cap_msg = (
+                        f'{cap_msg} deferred {len(deferred_goals)} of {len(goals)} goal(s): '
+                        + ', '.join(deferred_goals)
+                    )
                 yield ConvEvent('notice', {'message': cap_msg})
             if not job_ids_collected:
                 skip_msg = 'All parallel objectives are already running in background workers -- nothing new dispatched. Wait for the in-flight workers rather than re-issuing them.'

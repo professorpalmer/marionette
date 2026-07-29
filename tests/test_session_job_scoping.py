@@ -69,7 +69,9 @@ def _verification(task_id: str, model: str, tin: int, tout: int):
 
 def test_job_label_roundtrip():
     label = job_label_for_session("sess-a")
-    assert json.loads(label)["session_id"] == "sess-a"
+    data = json.loads(label)
+    assert data["session_id"] == "sess-a"
+    assert data["origin"] == "marionette"
     assert parse_job_session_id(label, []) == "sess-a"
 
 

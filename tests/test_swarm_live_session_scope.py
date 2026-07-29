@@ -88,12 +88,22 @@ def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch):
                     break
             srv._sync_pilot_session_id()
 
+            # Monkeypatching _scoped_jobs_with_stores bypasses annotate_jobs_accounting;
+            # tag the fake harness store row as Marionette-owned for repo-scoped meters.
             monkeypatch.setattr(
                 srv,
                 "_scoped_jobs_with_stores",
                 lambda repo_root=None: (
-                    [{"id": "job_a1", "source": "harness", "status": "complete",
-                      "goal": "a", "adapter": "agentic", "task_count": 0}],
+                    [{
+                        "id": "job_a1",
+                        "source": "harness",
+                        "status": "complete",
+                        "goal": "a",
+                        "adapter": "agentic",
+                        "task_count": 0,
+                        "accounting_owned": True,
+                        "accounting_scope": "marionette",
+                    }],
                     SimpleNamespace(list_artifacts=lambda jid: [], list_tasks=lambda jid: []),
                     None,
                 ),

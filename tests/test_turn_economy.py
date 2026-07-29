@@ -138,6 +138,32 @@ def test_persist_tool_result_matches_maybe_persist_result():
         assert os.path.exists(os.path.join(tmpdir, "pmharness-results", "id-large.txt"))
 
 
+def test_persist_tool_result_propagates_tool_name_override():
+    """Optional tool_name reaches maybe_persist_result for explicit overrides."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        economy = TurnEconomy(
+            state_dir=tmpdir,
+            session_id="sess-te",
+            job_id="job-te",
+            config=BudgetConfig(
+                max_result_chars=10,
+                turn_budget_chars=3000,
+                preview_chars=1500,
+                tool_overrides={"read_file": float("inf")},
+            ),
+        )
+        large = "x" * _GATE_FLOOR_CHARS
+        pinned = economy.persist_tool_result(large, "id-pinned", tool_name="read_file")
+        assert pinned == large
+        assert PERSISTED_OUTPUT_TAG not in pinned
+
+        other = economy.persist_tool_result(large, "id-other", tool_name="web_fetch")
+        assert PERSISTED_OUTPUT_TAG in other
+
+        omitted = economy.persist_tool_result(large, "id-omitted")
+        assert PERSISTED_OUTPUT_TAG in omitted
+
+
 def test_enforce_tool_batch_matches_enforce_turn_budget():
     with tempfile.TemporaryDirectory() as tmpdir:
         economy = _economy(tmpdir)

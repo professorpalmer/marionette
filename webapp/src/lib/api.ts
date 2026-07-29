@@ -155,6 +155,10 @@ export type Job = {
   adapter?: string;
   /** "harness" (Marionette-dispatched) or "cli" (Cursor MCP / terminal PM). */
   source?: "harness" | "cli" | string;
+  /** marionette | visibility_only — whether Marionette owns economic totals. */
+  accounting_scope?: "marionette" | "visibility_only" | string;
+  /** False for external/CLI jobs that are visible but must not bill Marionette meters. */
+  accounting_owned?: boolean;
   created_at?: string | null;
   updated_at?: number | string | null;
   tokens?: number;
@@ -168,6 +172,8 @@ export type Job = {
   tokens_cached?: number;
   /** Router baseline-vs-chosen savings for this job (balanced/cheap). */
   routing_saved_usd?: number;
+  /** actual_usage | estimated | unknown — how routing decision value was measured. */
+  routing_savings_basis?: "actual_usage" | "estimated" | "unknown";
   /** Model-selection value: worker usage at frontier baseline vs chosen model. */
   delegation_saved_usd?: number;
   /** actual_usage | unknown — how delegation value was measured. */
@@ -486,6 +492,12 @@ export type UsageData = {
     tool_output_compactions?: number;
     history_compactions?: number;
     history_tokens_saved?: number;
+    /** Cache-bust tokens from history compaction journal (telemetry). */
+    history_cache_bust_tokens?: number;
+    /** Anti-thrash events from history compaction journal (telemetry). */
+    history_thrash_events?: number;
+    /** Measured summarizer USD only — never inferred from tokens. */
+    history_compaction_cost_usd?: number;
     spill_count?: number;
     spill_chars?: number;
     evals_recorded?: number;
@@ -501,6 +513,17 @@ export type UsageData = {
       warning_reason?: string;
     };
     history_compaction_ran?: boolean;
+    /** estimated — AGNT standing floor / TTL fields (HARNESS_STANDING_ECONOMICS). */
+    standing_economics_basis?: "estimated";
+    standing_system_tokens?: number;
+    standing_tool_tokens?: number;
+    standing_floor_tokens?: number;
+    standing_floor_cost_usd?: number;
+    standing_floor_cost_cached_usd?: number;
+    prompt_cache_ttl_ms?: number;
+    prompt_cache_age_ms?: number;
+    prompt_cache_expires_in_ms?: number;
+    prompt_cache_state?: "warm" | "expired";
   };
   // Lifetime running total for the active chat session (persisted across
   // app restarts/updates, unlike `session` which is boot-scoped).

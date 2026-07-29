@@ -461,8 +461,8 @@ def test_job_savings_payload_dedupes_shared_tool_call_id(tmp_path):
     assert payload["tool_output_compactions"] == 2
 
 
-def test_usage_and_swarm_live_surface_pm_only_job_offloads(tmp_path, monkeypatch):
-    """A CLI-store job with only PM JSONL offloads shows on /api/usage + /api/swarm/live."""
+def test_usage_and_swarm_live_pm_offloads_fail_closed_without_merge(tmp_path, monkeypatch):
+    """PM JSONL offloads on unstamped CLI jobs must not bill Marionette by default."""
     from types import SimpleNamespace
 
     from harness.job_scoping import stamp_task_payload
@@ -503,7 +503,7 @@ def test_usage_and_swarm_live_surface_pm_only_job_offloads(tmp_path, monkeypatch
             evidence=["usage"],
         )
     )
-    saved = _write_pm_offload_jsonl(
+    _write_pm_offload_jsonl(
         str(cli_dir),
         job_id=job.id,
         tool_call_id="pm-api-tc",
@@ -513,6 +513,7 @@ def test_usage_and_swarm_live_surface_pm_only_job_offloads(tmp_path, monkeypatch
 
     httpd, port, srv_mod = _usage_server(str(harness_dir))
     try:
+        monkeypatch.delenv("HARNESS_CLI_COST_MERGE", raising=False)
         monkeypatch.setattr(
             "harness.cli_job_merge.resolve_cli_state_dir",
             lambda workspace_root="": str(cli_dir),
@@ -544,16 +545,14 @@ def test_usage_and_swarm_live_surface_pm_only_job_offloads(tmp_path, monkeypatch
         scoped = urllib.parse.quote(str(repo), safe="")
         usage = _get_json(port, f"/api/usage?repo={scoped}", headers=headers)
         job_rows = [j for j in usage["jobs"] if j.get("job_id") == job.id]
-        assert len(job_rows) == 1
-        assert job_rows[0]["tool_output_tokens_saved"] == saved
-        assert job_rows[0]["tool_output_savings_usd"] > 0
-        assert usage["session"]["tool_output_tokens_saved"] >= saved
+        assert len(job_rows) == 0
 
         swarm = _get_json(port, f"/api/swarm/live?repo={scoped}", headers=headers)
         swarm_rows = [j for j in swarm["jobs"] if j.get("id") == job.id]
         assert len(swarm_rows) == 1
-        assert swarm_rows[0]["tool_output_tokens_saved"] == saved
-        assert swarm_rows[0]["tool_output_savings_usd"] > 0
+        assert swarm_rows[0]["accounting_owned"] is False
+        assert swarm_rows[0]["tool_output_tokens_saved"] == 0
+        assert swarm_rows[0]["tool_output_savings_usd"] == 0.0
     finally:
         httpd.shutdown()
         srv_mod._BOOT_REPOS.discard(str(repo))

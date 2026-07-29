@@ -22,7 +22,7 @@ Usage:
   # Live (loads ~/.pmharness/state/keys.json openrouter key):
   python -m bench.cache_wars --live --messages 12
 
-  # Dry overhead + projected dollars only (no API):
+  # Dry overhead + projected dollars + empty-envelope stamp regression (no API):
   python -m bench.cache_wars --dry-run
 
   # Full AGNT-length session (real spend):
@@ -339,6 +339,177 @@ def _configure_arm_env(arm: str) -> float:
     return CACHE_WRITE_1H_MULT
 
 
+def _count_stamp_markers(body: Dict[str, Any]) -> int:
+    n = 0
+    for m in body.get("messages") or []:
+        if not isinstance(m, dict):
+            continue
+        c = m.get("content")
+        if isinstance(c, list):
+            n += sum(1 for b in c if isinstance(b, dict) and b.get("cache_control"))
+    for t in body.get("tools") or []:
+        if isinstance(t, dict) and t.get("cache_control"):
+            n += 1
+    return n
+
+
+def _dry_stamp_regression() -> Dict[str, Any]:
+    """Hermetic dry arm: empty envelopes must not consume ≤4 breakpoints.
+
+    Exercises the shared stamper (Hermes cache-carrier / empty-envelope skip)
+    without calling the network. Failures raise so dry-run exits non-zero.
+    """
+    from pmharness.drivers.prompt_cache import apply_openai_compat_cache_control
+
+    # Restore default TTL for the stamp check (arms may have mutated env).
+    os.environ.pop("HARNESS_PROMPT_CACHE", None)
+    os.environ["HARNESS_ANTHROPIC_CACHE_TTL"] = "1h"
+
+    body: Dict[str, Any] = {
+        "model": "anthropic/claude-sonnet-4",
+        "messages": [
+            {"role": "system", "content": "   "},  # empty system envelope
+            {"role": "user", "content": "run tool"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "1", "type": "function",
+                                "function": {"name": "x", "arguments": "{}"}}],
+            },
+            {"role": "tool", "content": ""},  # empty tool envelope
+            {"role": "user", "content": "continue"},
+            {"role": "assistant", "content": "done"},
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "x",
+                    "description": "d",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {},  # empty tools[] envelope at end
+        ],
+    }
+    fam = apply_openai_compat_cache_control(body, model="anthropic/claude-sonnet-4")
+    markers = _count_stamp_markers(body)
+    sys_marked = False
+    c0 = body["messages"][0].get("content")
+    if isinstance(c0, list):
+        sys_marked = any(
+            isinstance(b, dict) and b.get("cache_control") for b in c0
+        )
+    empty_assistant_marked = "cache_control" in body["messages"][2]
+    empty_tool_msg_marked = False
+    c3 = body["messages"][3].get("content")
+    if isinstance(c3, list):
+        empty_tool_msg_marked = any(
+            isinstance(b, dict) and b.get("cache_control") for b in c3
+        )
+    elif isinstance(c3, str):
+        empty_tool_msg_marked = False
+    empty_tool_schema_marked = "cache_control" in body["tools"][1]
+    real_tool_marked = bool(body["tools"][0].get("cache_control"))
+    last_carrier = body["messages"][-1].get("content")
+    last_marked = (
+        isinstance(last_carrier, list)
+        and bool(last_carrier)
+        and isinstance(last_carrier[-1], dict)
+        and bool(last_carrier[-1].get("cache_control"))
+    )
+
+    ok = (
+        fam == "claude"
+        and markers <= 4
+        and not sys_marked
+        and not empty_assistant_marked
+        and not empty_tool_msg_marked
+        and not empty_tool_schema_marked
+        and real_tool_marked
+        and last_marked
+    )
+    result = {
+        "arm": "stamp_empty_envelope",
+        "ok": ok,
+        "family": fam,
+        "markers": markers,
+        "system_marked": sys_marked,
+        "empty_assistant_marked": empty_assistant_marked,
+        "empty_tool_msg_marked": empty_tool_msg_marked,
+        "empty_tool_schema_marked": empty_tool_schema_marked,
+        "real_tool_marked": real_tool_marked,
+        "last_carrier_marked": last_marked,
+    }
+    if not ok:
+        raise AssertionError(f"dry stamp regression failed: {result}")
+    return result
+
+
+def _dry_compact_policy_hooks() -> Dict[str, Any]:
+    """Hermetic compact-policy arm: warm/defer/refreeze helpers without network.
+
+    Benchmark acceptance hooks (live arms still required for dollar claims):
+      - defer: cache_read lift >= 20% vs off with zero overflow-emergency increase
+      - refreeze: prefix re-established within 2 turns after compaction
+      - rollback: emergency increase or invented USD aborts the experiment arm
+    """
+    import time
+    from types import SimpleNamespace
+
+    from pmharness.drivers.prompt_cache import (
+        cache_compact_policy,
+        prompt_cache_warm_for_session,
+    )
+
+    os.environ.pop("HARNESS_CACHE_COMPACT_POLICY", None)
+    assert cache_compact_policy() == "off"
+
+    os.environ["HARNESS_CACHE_COMPACT_POLICY"] = "defer"
+    assert cache_compact_policy() == "defer"
+
+    now = time.time()
+    warm_session = SimpleNamespace(
+        config=SimpleNamespace(driver="anthropic/claude-sonnet-4"),
+        _last_prompt_cache_activity_at=now - 60,
+        _last_turn_cache_read_tokens=12_000,
+    )
+    cold_session = SimpleNamespace(
+        config=SimpleNamespace(driver="anthropic/claude-sonnet-4"),
+        _last_prompt_cache_activity_at=now - 7200,
+        _last_turn_cache_read_tokens=12_000,
+    )
+    no_read_session = SimpleNamespace(
+        config=SimpleNamespace(driver="anthropic/claude-sonnet-4"),
+        _last_prompt_cache_activity_at=now - 60,
+        _last_turn_cache_read_tokens=0,
+    )
+
+    warm, warm_detail = prompt_cache_warm_for_session(warm_session)
+    cold, cold_detail = prompt_cache_warm_for_session(cold_session)
+    no_read, no_read_detail = prompt_cache_warm_for_session(no_read_session)
+
+    ok = warm and not cold and not no_read
+    result = {
+        "arm": "compact_policy_hooks",
+        "ok": ok,
+        "default_policy": "off",
+        "warm": warm,
+        "warm_detail": warm_detail,
+        "cold_reason": cold_detail.get("warm_reason"),
+        "no_read_reason": no_read_detail.get("warm_reason"),
+        "acceptance": {
+            "defer_cache_read_lift_pct_min": 20,
+            "refreeze_recovery_turns_max": 2,
+            "rollback_on_emergency_increase": True,
+            "rollback_on_invented_usd": True,
+        },
+    }
+    if not ok:
+        raise AssertionError(f"compact policy dry hooks failed: {result}")
+    return result
+
+
 def _write_receipt(payload: Dict[str, Any]) -> Tuple[Path, Path]:
     out_dir = REPO_ROOT / "bench" / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -486,6 +657,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         "overhead": overhead,
         "projection": projection,
     }
+
+    if not args.live:
+        # Dry regression arm: Hermes empty-envelope / cache-carrier stamp check.
+        stamp = _dry_stamp_regression()
+        payload["stamp_regression"] = stamp
+        print(
+            f"== dry arm stamp_empty_envelope ok={stamp['ok']} "
+            f"markers={stamp['markers']} =="
+        )
+        policy_hooks = _dry_compact_policy_hooks()
+        payload["compact_policy_hooks"] = policy_hooks
+        print(
+            f"== dry arm compact_policy_hooks ok={policy_hooks['ok']} "
+            f"warm={policy_hooks['warm']} =="
+        )
 
     if args.live:
         _load_openrouter_key()

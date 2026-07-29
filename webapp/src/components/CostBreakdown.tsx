@@ -37,6 +37,10 @@ export type CostBreakdownData = {
   tool_output_savings_usd?: number;
   history_compactions?: number;
   history_tokens_saved?: number;
+  history_cache_bust_tokens?: number;
+  history_thrash_events?: number;
+  /** Measured summarizer USD only — never inferred from tokens. */
+  history_compaction_cost_usd?: number;
   spill_count?: number;
   spill_chars?: number;
   evals_recorded?: number;
@@ -52,9 +56,50 @@ export type CostBreakdownData = {
     warning_reason?: string;
   };
   history_compaction_ran?: boolean;
+  /** estimated — standing floor / TTL (HARNESS_STANDING_ECONOMICS; flag-off omits). */
+  standing_economics_basis?: "estimated";
+  standing_system_tokens?: number;
+  standing_tool_tokens?: number;
+  standing_floor_tokens?: number;
+  standing_floor_cost_usd?: number;
+  standing_floor_cost_cached_usd?: number;
+  prompt_cache_ttl_ms?: number;
+  prompt_cache_age_ms?: number;
+  prompt_cache_expires_in_ms?: number;
+  prompt_cache_state?: "warm" | "expired";
   price_in?: number;
   price_out?: number;
 };
+
+/** Credit routing USD only when basis is actual or estimated — never unknown. */
+export function routingSavingsCredited(
+  basis: CostBreakdownData["routing_savings_basis"] | undefined,
+  usd: unknown,
+): number {
+  const value =
+    typeof usd === "number" && Number.isFinite(usd) && usd > 0 ? usd : 0;
+  if (value <= 0) return 0;
+  if (basis === "unknown") return 0;
+  // Missing basis on older payloads: treat as estimated (backward compatible).
+  if (basis === "actual_usage" || basis === "estimated" || basis == null) {
+    return value;
+  }
+  return 0;
+}
+
+/** Credit delegation USD only for measured actual_usage — refuse unknown. */
+export function delegationSavingsCredited(
+  basis: CostBreakdownData["delegation_savings_basis"] | undefined,
+  usd: unknown,
+): number {
+  const value =
+    typeof usd === "number" && Number.isFinite(usd) && usd > 0 ? usd : 0;
+  if (value <= 0) return 0;
+  if (basis === "actual_usage") return value;
+  // Missing basis with positive USD: legacy measured path.
+  if (basis == null) return value;
+  return 0;
+}
 
 /** Compact spend is estimated unless a full provider receipt backs it. */
 export function spendIsEstimated(data: Pick<CostBreakdownData, "cost_source" | "estimated" | "price_source">): boolean {
@@ -64,7 +109,12 @@ export function spendIsEstimated(data: Pick<CostBreakdownData, "cost_source" | "
   return true;
 }
 
-/** Additive list-price value shown in both footer and receipt. */
+/** Additive list-price value shown in both footer and receipt.
+
+ * Routing / delegation / provider-cache remain separate mechanisms. Unknown
+ * basis is refused. History-compaction USD and standing-floor estimates are
+ * never folded in (no second cost plane).
+ */
 export function listPriceValueTotal(
   data: Pick<
     CostBreakdownData,
@@ -74,6 +124,7 @@ export function listPriceValueTotal(
     | "delegation_saved_usd"
     | "delegation_savings_basis"
     | "routing_saved_usd"
+    | "routing_savings_basis"
     | "tool_output_savings_usd"
   >,
 ): number {
@@ -85,17 +136,34 @@ export function listPriceValueTotal(
       ? positive(data.cache_savings_gross_usd)
       : positive(data.cache_savings_usd);
   const delegationMeasured = data.delegation_savings_basis === "actual_usage";
-  const delegation = positive(data.delegation_saved_usd);
-  const modelSelection =
-    delegationMeasured || delegation > 0
-      ? delegation
-      : positive(data.routing_saved_usd);
+  const delegation = delegationSavingsCredited(
+    data.delegation_savings_basis,
+    data.delegation_saved_usd,
+  );
+  const routing = routingSavingsCredited(
+    data.routing_savings_basis,
+    data.routing_saved_usd,
+  );
+  // Measured zero delegation must not be replaced by a routing estimate.
+  // Otherwise prefer credited delegation, else credited routing — never both.
+  const modelSelection = delegationMeasured
+    ? delegation
+    : (delegation > 0 ? delegation : routing);
   return (
     pilotCache
     + positive(data.cache_saved_usd_swarm)
     + modelSelection
     + positive(data.tool_output_savings_usd)
   );
+}
+
+function fmtDurationMs(ms: number): string {
+  if (ms > 0 && ms < 60_000) return "<1m";
+  const mins = Math.max(0, Math.round(ms / 60_000));
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
 }
 
 /** Calm user-facing copy for compaction advice. Machine reasons stay in title. */
@@ -172,18 +240,22 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       : typeof data.cache_savings_usd === "number" && isFinite(data.cache_savings_usd)
         ? data.cache_savings_usd
         : 0;
-  const routingSaved =
-    typeof data.routing_saved_usd === "number" && isFinite(data.routing_saved_usd) && data.routing_saved_usd > 0
-      ? data.routing_saved_usd
-      : 0;
+  const routingSaved = routingSavingsCredited(
+    data.routing_savings_basis,
+    data.routing_saved_usd,
+  );
   const routingEstimated = data.routing_savings_basis === "estimated";
-  const delegationSaved =
-    typeof data.delegation_saved_usd === "number" && isFinite(data.delegation_saved_usd) && data.delegation_saved_usd > 0
-      ? data.delegation_saved_usd
-      : 0;
+  const routingUnknown = data.routing_savings_basis === "unknown";
+  const delegationSaved = delegationSavingsCredited(
+    data.delegation_savings_basis,
+    data.delegation_saved_usd,
+  );
   const delegationMeasured = data.delegation_savings_basis === "actual_usage";
-  const modelSelectionSaved =
-    delegationMeasured || delegationSaved > 0 ? delegationSaved : routingSaved;
+  // Keep routing and delegation separate: measured delegation (even $0)
+  // owns the model-selection row; routing estimate must not replace it.
+  const modelSelectionSaved = delegationMeasured
+    ? delegationSaved
+    : (delegationSaved > 0 ? delegationSaved : routingSaved);
   const showRoutingDecision =
     routingSaved > 0
     && (delegationMeasured || delegationSaved > 0)
@@ -212,6 +284,47 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
     typeof data.history_tokens_saved === "number" && isFinite(data.history_tokens_saved) && data.history_tokens_saved > 0
       ? data.history_tokens_saved
       : 0;
+  const historyCacheBust =
+    typeof data.history_cache_bust_tokens === "number" && isFinite(data.history_cache_bust_tokens) && data.history_cache_bust_tokens > 0
+      ? data.history_cache_bust_tokens
+      : 0;
+  const historyThrash =
+    typeof data.history_thrash_events === "number" && isFinite(data.history_thrash_events) && data.history_thrash_events > 0
+      ? data.history_thrash_events
+      : 0;
+  // USD only when the journal measured it — never infer from tokens.
+  const historyCostUsd =
+    typeof data.history_compaction_cost_usd === "number" && isFinite(data.history_compaction_cost_usd) && data.history_compaction_cost_usd > 0
+      ? data.history_compaction_cost_usd
+      : null;
+  const standingFloorCost =
+    data.standing_economics_basis === "estimated"
+    && typeof data.standing_floor_cost_usd === "number"
+    && isFinite(data.standing_floor_cost_usd)
+    && data.standing_floor_cost_usd > 0
+      ? data.standing_floor_cost_usd
+      : 0;
+  const standingFloorCached =
+    data.standing_economics_basis === "estimated"
+    && data.prompt_cache_state !== "expired"
+    && typeof data.standing_floor_cost_cached_usd === "number"
+    && isFinite(data.standing_floor_cost_cached_usd)
+    && data.standing_floor_cost_cached_usd > 0
+      ? data.standing_floor_cost_cached_usd
+      : 0;
+  const standingFloorTokens =
+    typeof data.standing_floor_tokens === "number" && isFinite(data.standing_floor_tokens) && data.standing_floor_tokens > 0
+      ? data.standing_floor_tokens
+      : 0;
+  const cacheTtlMs =
+    typeof data.prompt_cache_ttl_ms === "number" && isFinite(data.prompt_cache_ttl_ms) && data.prompt_cache_ttl_ms > 0
+      ? data.prompt_cache_ttl_ms
+      : 0;
+  const cacheExpiresInMs =
+    typeof data.prompt_cache_expires_in_ms === "number" && isFinite(data.prompt_cache_expires_in_ms)
+      ? data.prompt_cache_expires_in_ms
+      : null;
+  const cacheState = data.prompt_cache_state;
   const spillCount =
     typeof data.spill_count === "number" && isFinite(data.spill_count) && data.spill_count > 0
       ? data.spill_count
@@ -324,7 +437,7 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
             delegationSaved > 0
               ? "Full list-price value of choosing cheaper worker models vs a frontier-equivalent baseline on the same actual tokens (ignores prompt-cache discounts). Not a cash refund."
               : routingEstimated
-                ? "Running estimate vs frontier-equivalent list price (preflight). Not a cash refund."
+                ? "Running estimate vs frontier-equivalent list price (preflight). Not a cash refund or billed spend."
                 : "List-price value vs a frontier-equivalent baseline on the same actual tokens. Not a cash refund."
           }
         >
@@ -338,10 +451,20 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       {showRoutingDecision ? (
         <div
           className="flex items-center justify-between mb-1 text-faint"
-          title="Narrow router-decision delta (balanced/cheap policies only; includes prompt-cache discount in counterfactual). Shown separately from model-selection value."
+          title="Narrow router-decision delta (balanced/cheap policies only; includes prompt-cache discount in counterfactual). Shown separately from model-selection value. Not billed spend."
+        >
+          <span>Routing decision value{routingEstimated ? " (est.)" : ""}</span>
+          <span className="tabular-nums">~{fmtCost(routingSaved)}</span>
+        </div>
+      ) : null}
+
+      {routingUnknown && typeof data.routing_saved_usd === "number" && data.routing_saved_usd > 0 ? (
+        <div
+          className="flex items-center justify-between mb-1 text-faint"
+          title="Routing savings basis is unknown — refused as billed or measured value."
         >
           <span>Routing decision value</span>
-          <span className="tabular-nums">~{fmtCost(routingSaved)}</span>
+          <span className="tabular-nums">unknown basis</span>
         </div>
       ) : null}
 
@@ -377,9 +500,51 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
       ) : null}
 
       {historyCompactions > 0 ? (
-        <div className="flex items-center justify-between mb-1 text-faint">
+        <div
+          className="flex items-center justify-between mb-1 text-faint"
+          title="Tokens avoided by history compaction. USD shown only when the summarizer cost was measured — never inferred from tokens."
+        >
           <span>History compaction</span>
-          <span className="tabular-nums">{fmtTokens(historyTokensSaved)} saved ({historyCompactions} event{historyCompactions === 1 ? "" : "s"})</span>
+          <span className="tabular-nums text-right">
+            {fmtTokens(historyTokensSaved)} saved ({historyCompactions} event{historyCompactions === 1 ? "" : "s"})
+            {historyCostUsd != null ? ` · ${fmtCost(historyCostUsd)} measured` : ""}
+            {historyCacheBust > 0 ? ` · ${fmtTokens(historyCacheBust)} cache bust` : ""}
+            {historyThrash > 0 ? ` · ${historyThrash} thrash` : ""}
+          </span>
+        </div>
+      ) : null}
+
+      {standingFloorCost > 0 ? (
+        <div
+          className="flex items-center justify-between mb-1 text-faint"
+          title="Estimated per-turn cost of the standing system+tools prefix at current list rates. Not billed spend and not part of Total value saved."
+        >
+          <span>Standing context floor (est.)</span>
+          <span className="tabular-nums">
+            ~{fmtCost(standingFloorCost)}
+            {standingFloorTokens > 0 ? ` · ${fmtTokens(standingFloorTokens)} tok` : ""}
+            {standingFloorCached > 0 ? ` · ~${fmtCost(standingFloorCached)} cached` : ""}
+          </span>
+        </div>
+      ) : null}
+
+      {cacheTtlMs > 0 && cacheState ? (
+        <div
+          className="flex items-center justify-between mb-1 text-faint"
+          title={
+            cacheState === "expired"
+              ? "Prompt-cache TTL elapsed — no cache value claimed after expiry."
+              : "Estimated prompt-cache TTL remaining based on last activity (not a guarantee)."
+          }
+        >
+          <span>Prompt-cache TTL (est.)</span>
+          <span className="tabular-nums">
+            {cacheState === "expired"
+              ? "expired"
+              : cacheExpiresInMs != null
+                ? `warm · ~${fmtDurationMs(cacheExpiresInMs)} left`
+                : "warm"}
+          </span>
         </div>
       ) : null}
 

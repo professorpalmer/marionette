@@ -183,6 +183,8 @@ class OpenAICompatDriver:
     @classmethod
     def _usage_meta(cls, usage: dict) -> dict:
         """Shared cache + billed-cost fields for DriverResponse.meta."""
+        from .token_usage import attach_modality_fields, coerce_token_usage_record
+
         usage = usage or {}
         cached_tokens, cache_write_tokens = cls._cache_fields_from_usage(usage)
         meta = {
@@ -193,6 +195,7 @@ class OpenAICompatDriver:
         cost = cls._cost_from_usage(usage)
         if cost is not None:
             meta["provider_cost_usd"] = cost
+        attach_modality_fields(meta, coerce_token_usage_record(usage))
         return meta
 
     def complete(

@@ -11,9 +11,14 @@ Cursor CLI / Anthropic report ``inputTokens`` / ``input_tokens`` as the
 ``_session_cost`` formula expects ``t_in`` to be the FULL prompt total
 (uncached + cache read + cache write), so we expand uncached-only reports
 before returning.
+
+Optional modality buckets (reasoning, image, cached detail, encrypted/opaque)
+are extract-only: they never change tin/tout/cost/cache totals and are never
+priced or folded into billed spend.
 """
 
-from typing import Any, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional, Tuple
 
 
 def _as_int(val: Any) -> int:
@@ -36,6 +41,164 @@ def _as_cost(val: Any) -> Optional[float]:
         return n
     except (TypeError, ValueError):
         return None
+
+
+def _provider_int(val: Any) -> Optional[int]:
+    """Return a non-negative integer modality count; None when absent/malformed."""
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, float):
+        if val != val or val in (float("inf"), float("-inf")):
+            return None
+        if not val.is_integer():
+            return None
+        n = int(val)
+    elif isinstance(val, int):
+        n = val
+    else:
+        try:
+            n = int(val)
+        except (TypeError, ValueError):
+            return None
+    return n if n >= 0 else None
+
+
+@dataclass(frozen=True)
+class ModalityBucket:
+    """Extract-only modality count with explicit reporting basis."""
+
+    basis: str = "absent"  # "provider" | "absent"
+    count: Optional[int] = None
+
+    @classmethod
+    def absent(cls) -> ModalityBucket:
+        return cls(basis="absent", count=None)
+
+    @classmethod
+    def from_provider(cls, val: Any) -> Optional[ModalityBucket]:
+        n = _provider_int(val)
+        if n is None:
+            return None
+        return cls(basis="provider", count=n)
+
+
+def _first_provider_bucket(*candidates: Any) -> ModalityBucket:
+    for val in candidates:
+        bucket = ModalityBucket.from_provider(val)
+        if bucket is not None:
+            return bucket
+    return ModalityBucket.absent()
+
+
+def _merge_modality(prev: ModalityBucket, new: ModalityBucket) -> ModalityBucket:
+    if new.basis == "provider":
+        return new
+    return prev
+
+
+def _details_dict(usage: dict, *keys: str) -> dict:
+    for key in keys:
+        raw = usage.get(key)
+        if isinstance(raw, dict):
+            return raw
+    return {}
+
+
+def _modalities_from_usage_dict(usage: dict) -> Dict[str, ModalityBucket]:
+    usage = usage or {}
+    prompt_details = _details_dict(
+        usage, "prompt_tokens_details", "promptTokensDetails"
+    )
+    input_details = _details_dict(
+        usage, "input_tokens_details", "inputTokensDetails"
+    )
+    completion_details = _details_dict(
+        usage, "completion_tokens_details", "completionTokensDetails"
+    )
+    output_details = _details_dict(
+        usage, "output_tokens_details", "outputTokensDetails"
+    )
+    return {
+        "reasoning_tokens": _first_provider_bucket(
+            completion_details.get("reasoning_tokens"),
+            output_details.get("reasoning_tokens"),
+            usage.get("reasoning_tokens"),
+            usage.get("reasoningTokens"),
+            usage.get("reasoning_output_tokens"),
+            usage.get("reasoningOutputTokens"),
+        ),
+        "image_tokens": _first_provider_bucket(
+            prompt_details.get("image_tokens"),
+            input_details.get("image_tokens"),
+            usage.get("image_tokens"),
+            usage.get("imageTokens"),
+        ),
+        "cached_tokens_detail": _first_provider_bucket(
+            prompt_details.get("cached_tokens"),
+            input_details.get("cached_tokens"),
+            prompt_details.get("cache_read_tokens"),
+            input_details.get("cache_read_tokens"),
+        ),
+        "encrypted_opaque_tokens": _first_provider_bucket(
+            input_details.get("encrypted_content_tokens"),
+            prompt_details.get("encrypted_content_tokens"),
+            output_details.get("encrypted_content_tokens"),
+            usage.get("encrypted_content_tokens"),
+            usage.get("encryptedContentTokens"),
+            usage.get("opaque_content_tokens"),
+            usage.get("opaqueContentTokens"),
+        ),
+    }
+
+
+@dataclass
+class TokenUsageDetail:
+    """Full usage record: billed totals plus optional modality buckets."""
+
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost: Optional[float] = None
+    cache_read: int = 0
+    cache_write: int = 0
+    reasoning_tokens: ModalityBucket = field(default_factory=ModalityBucket.absent)
+    image_tokens: ModalityBucket = field(default_factory=ModalityBucket.absent)
+    cached_tokens_detail: ModalityBucket = field(default_factory=ModalityBucket.absent)
+    encrypted_opaque_tokens: ModalityBucket = field(
+        default_factory=ModalityBucket.absent
+    )
+
+    def as_tuple(self) -> Tuple[int, int, Optional[float], int, int]:
+        return (
+            self.tokens_in,
+            self.tokens_out,
+            self.cost,
+            self.cache_read,
+            self.cache_write,
+        )
+
+    def modality_dict(self) -> Dict[str, Any]:
+        """Provider-reported modality fields for meta/API passthrough.
+
+        Absent buckets are omitted rather than serialized as zero.
+        """
+        out: Dict[str, Any] = {}
+        for key, bucket in (
+            ("reasoning_tokens", self.reasoning_tokens),
+            ("image_tokens", self.image_tokens),
+            ("cached_tokens_detail", self.cached_tokens_detail),
+            ("encrypted_opaque_tokens", self.encrypted_opaque_tokens),
+        ):
+            if bucket.basis == "provider":
+                out[key] = bucket.count
+                out[f"{key}_basis"] = "provider"
+        return out
+
+
+def attach_modality_fields(target: dict, detail: TokenUsageDetail) -> None:
+    """Merge extract-only modality buckets into a driver meta/out dict."""
+    target.update(detail.modality_dict())
 
 
 def expand_uncached_prompt_tokens(
@@ -187,6 +350,45 @@ def _iter_usage_candidates(blob: Any) -> list:
     return candidates
 
 
+def coerce_token_usage_record(*blobs: Any) -> TokenUsageDetail:
+    """Return full usage detail including optional modality buckets."""
+    detail = TokenUsageDetail()
+    for blob in blobs:
+        if blob is None:
+            continue
+        for cand in _iter_usage_candidates(blob):
+            tin, tout, cost, cached, cache_write = _from_usage_dict(cand)
+            if tin > 0:
+                detail.tokens_in = tin
+            if tout > 0:
+                detail.tokens_out = tout
+            if cost is not None:
+                detail.cost = cost
+            if cached > 0:
+                detail.cache_read = cached
+            if cache_write > 0:
+                detail.cache_write = cache_write
+            mods = _modalities_from_usage_dict(cand)
+            detail.reasoning_tokens = _merge_modality(
+                detail.reasoning_tokens, mods["reasoning_tokens"]
+            )
+            detail.image_tokens = _merge_modality(
+                detail.image_tokens, mods["image_tokens"]
+            )
+            detail.cached_tokens_detail = _merge_modality(
+                detail.cached_tokens_detail, mods["cached_tokens_detail"]
+            )
+            detail.encrypted_opaque_tokens = _merge_modality(
+                detail.encrypted_opaque_tokens, mods["encrypted_opaque_tokens"]
+            )
+    detail.tokens_in, detail.cache_read, detail.cache_write = (
+        expand_uncached_prompt_tokens(
+            detail.tokens_in, detail.cache_read, detail.cache_write
+        )
+    )
+    return detail
+
+
 def coerce_token_usage(*blobs: Any) -> Tuple[int, int, Optional[float]]:
     """Return (tokens_in, tokens_out, provider_cost_usd|None) from any blobs.
 
@@ -194,8 +396,8 @@ def coerce_token_usage(*blobs: Any) -> Tuple[int, int, Optional[float]]:
     after streaming updates with partial counts). ``tokens_in`` is the full
     prompt total after Cursor/Anthropic uncached-only expansion.
     """
-    tin, tout, cost, _cached, _write = coerce_token_usage_detail(*blobs)
-    return tin, tout, cost
+    detail = coerce_token_usage_record(*blobs)
+    return detail.tokens_in, detail.tokens_out, detail.cost
 
 
 def coerce_token_usage_detail(
@@ -206,26 +408,7 @@ def coerce_token_usage_detail(
     ``tokens_in`` is the FULL prompt total (uncached + cache read + cache
     write) so StatusBar meters and ``_session_cost`` stay coherent. Cache
     buckets remain available for the cache-savings chip and write premiums.
+
+    Optional modality buckets are available via ``coerce_token_usage_record``.
     """
-    best_in, best_out, best_cost, best_cached, best_write = 0, 0, None, 0, 0
-    for blob in blobs:
-        if blob is None:
-            continue
-        for cand in _iter_usage_candidates(blob):
-            tin, tout, cost, cached, cache_write = _from_usage_dict(cand)
-            if tin > 0:
-                best_in = tin
-            if tout > 0:
-                best_out = tout
-            if cost is not None:
-                best_cost = cost
-            if cached > 0:
-                best_cached = cached
-            if cache_write > 0:
-                best_write = cache_write
-    # Re-expand after merge: cache buckets and uncached input can arrive on
-    # different blobs/candidates (streaming updates vs final result).
-    best_in, best_cached, best_write = expand_uncached_prompt_tokens(
-        best_in, best_cached, best_write
-    )
-    return best_in, best_out, best_cost, best_cached, best_write
+    return coerce_token_usage_record(*blobs).as_tuple()

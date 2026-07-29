@@ -127,13 +127,23 @@ def test_session_total_includes_swarm_store_job_cost(monkeypatch):
                 _get(port, "/api/usage", headers=headers).read().decode()
             )["session"]["est_cost_usd"]
 
+            # Monkeypatching _scoped_jobs_with_stores bypasses annotate_jobs_accounting;
+            # tag fake store rows as Marionette-owned so session totals count them.
+            _owned_harness_job = {
+                "id": "job_fake1",
+                "source": "harness",
+                "accounting_owned": True,
+                "accounting_scope": "marionette",
+            }
             monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [{"id": "job_fake1"}])
             monkeypatch.setattr(
                 srv,
                 "_scoped_jobs_with_stores",
-                lambda repo_root=None: ([{"id": "job_fake1", "source": "harness"}], srv._session.state().store, None),
+                lambda repo_root=None: ([_owned_harness_job], srv._session.state().store, None),
             )
-            monkeypatch.setattr(srv, "_scoped_jobs_snapshot", lambda repo_root=None: [{"id": "job_fake1"}])
+            monkeypatch.setattr(
+                srv, "_scoped_jobs_snapshot", lambda repo_root=None: [_owned_harness_job]
+            )
             monkeypatch.setattr(
                 srv, "_job_swarm_accounting", lambda arts, registry: (50_000, 0.37)
             )

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import SwarmPane from "../components/SwarmPane";
-import { api, type SwarmLive } from "../lib/api";
+import SwarmPane, { jobSavings } from "../components/SwarmPane";
+import { api, type Job, type SwarmLive } from "../lib/api";
 import { dispatchProjectSelected } from "../lib/panelTransition";
 import { clearSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 
@@ -314,6 +314,7 @@ describe("SwarmPane mid-run job-row meters", () => {
         tokens_cached: 8_000,
         cache_saved_usd: 0.0123,
         routing_saved_usd: 0.04,
+        routing_savings_basis: "estimated",
         tool_output_tokens_saved: 1_500,
         tool_output_savings_usd: 0.003,
       }),
@@ -325,7 +326,7 @@ describe("SwarmPane mid-run job-row meters", () => {
       expect(screen.getAllByText("12,000t").length).toBeGreaterThan(0);
       expect(screen.getByText("1,500 compact")).toBeInTheDocument();
       expect(screen.getAllByText("~$0.0500").length).toBeGreaterThan(0);
-      expect(screen.getByText("$0.0553 saved")).toBeInTheDocument();
+      expect(screen.getByText("~$0.0553 saved")).toBeInTheDocument();
     });
     expect(screen.queryByText("8,000 cached")).not.toBeInTheDocument();
     expect(screen.getByTitle(/model selection value vs frontier-equivalent list price/)).toBeInTheDocument();
@@ -370,6 +371,119 @@ describe("SwarmPane mid-run job-row meters", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("refuses visibility-only jobs in jobSavings totals", () => {
+    const parts = jobSavings({
+      id: "j-ext",
+      goal: "x",
+      status: "running",
+      source: "cli",
+      accounting_owned: false,
+      routing_saved_usd: 1.25,
+      routing_savings_basis: "estimated",
+      cache_saved_usd: 0.05,
+      tool_output_savings_usd: 0.01,
+    } as Job);
+    expect(parts.total).toBe(0);
+  });
+
+  it("treats missing accounting_owned on CLI as visibility-only", () => {
+    const parts = jobSavings({
+      id: "j-ext",
+      goal: "x",
+      status: "running",
+      source: "cli",
+      routing_saved_usd: 1.25,
+      routing_savings_basis: "estimated",
+    } as Job);
+    expect(parts.total).toBe(0);
+  });
+
+  it("refuses unknown routing basis in jobSavings totals", () => {
+    const parts = jobSavings({
+      id: "j1",
+      goal: "x",
+      status: "complete",
+      routing_saved_usd: 1.25,
+      routing_savings_basis: "unknown",
+      cache_saved_usd: 0.05,
+    } as Job);
+    expect(parts.routing).toBe(0);
+    expect(parts.modelSelection).toBe(0);
+    expect(parts.total).toBeCloseTo(0.05, 8);
+  });
+
+  it("keeps estimated routing labeled separately from measured cache", () => {
+    const parts = jobSavings({
+      id: "j1",
+      goal: "x",
+      status: "complete",
+      routing_saved_usd: 0.40,
+      routing_savings_basis: "estimated",
+      cache_saved_usd: 0.10,
+    } as Job);
+    expect(parts.routing).toBeCloseTo(0.40, 8);
+    expect(parts.modelSelectionEstimated).toBe(true);
+    expect(parts.cache).toBeCloseTo(0.10, 8);
+    expect(parts.total).toBeCloseTo(0.50, 8);
+  });
+
+  it("does not replace measured zero delegation with routing estimate", () => {
+    const parts = jobSavings({
+      id: "j1",
+      goal: "x",
+      status: "complete",
+      delegation_saved_usd: 0,
+      delegation_savings_basis: "actual_usage",
+      routing_saved_usd: 1.25,
+      routing_savings_basis: "estimated",
+    } as Job);
+    expect(parts.delegation).toBe(0);
+    expect(parts.modelSelection).toBe(0);
+    expect(parts.routing).toBeCloseTo(1.25, 8);
+    expect(parts.total).toBe(0);
+  });
+
+  it("renders local-job routing policy label after reload the same as live", async () => {
+    // Persisted local-* jobs carry UI-shaped ROUTING rows (with policy) inline;
+    // running jobs auto-expand so the chip is visible without a click.
+    mockSwarmLive.mockResolvedValue(
+      liveJob({
+        id: "local-1",
+        status: "running",
+        artifacts_complete: true,
+        artifacts: [
+          {
+            type: "ROUTING",
+            headline: "Routed to cheap-model",
+            created_by: "router",
+            model: "cheap-model",
+            policy: "balanced",
+            adapter: "agentic",
+            est_cost_usd: 0.02,
+            detail: "balanced pick",
+            task_id: "local-1-w0",
+          },
+        ],
+        tasks: [
+          {
+            id: "local-1-w0",
+            status: "running",
+            role: "implement (agentic)",
+            instruction: "",
+            adapter: "agentic",
+          },
+        ],
+      }),
+    );
+
+    render(<SwarmPane />);
+    await waitFor(() => {
+      expect(screen.getByText("balanced")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Right-sized: cheapest model/)).toBeInTheDocument();
+    expect(screen.queryByText("Pin attribution unknown")).not.toBeInTheDocument();
   });
 });
 

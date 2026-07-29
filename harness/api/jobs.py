@@ -128,12 +128,29 @@ def get_artifacts(job_id: str, svc: JobServices) -> tuple[int, list]:
                     artifacts = fmt.format_artifacts(raw)
         except Exception:
             pass
+    try:
+        from ..session_fts import best_effort_index_job_artifacts
+
+        best_effort_index_job_artifacts(
+            svc.cfg.state_dir or "",
+            job_id,
+            artifacts=artifacts,
+            durable=state_obj,
+        )
+    except Exception:
+        pass
     return 200, artifacts
 
 
 def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, dict]:
     """GET /api/swarm/live — swarm tracker JSON (auth already applied by Handler)."""
-    from ..job_scoping import filter_local_jobs, resolve_job_model
+    from ..job_scoping import (
+        apply_job_economics_policy,
+        annotate_job_accounting,
+        filter_local_jobs,
+        parse_job_session_id,
+        resolve_job_model,
+    )
     from ..cli_job_merge import (
         bulk_load_store_artifacts,
         bulk_load_store_tasks,
@@ -392,6 +409,15 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             except Exception:
                 pass
 
+            savings_fields = (
+                svc.job_savings_fields(jid)
+                if j.get("accounting_owned")
+                else {
+                    "tool_output_tokens_saved": 0,
+                    "tool_output_savings_usd": 0.0,
+                    "tool_output_compactions": 0,
+                }
+            )
             row = {
                 "id": jid,
                 "goal": j.get("goal", ""),
@@ -419,11 +445,15 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "artifacts_complete": artifacts_complete,
                 "tasks": tasks_list,
                 "source": j.get("source", "harness"),
-                **svc.job_savings_fields(jid),
+                "label": j.get("label"),
+                "session_id": j.get("session_id") or parse_job_session_id(j.get("label"), []),
+                "accounting_scope": j.get("accounting_scope", "visibility_only"),
+                "accounting_owned": bool(j.get("accounting_owned")),
+                **savings_fields,
             }
             if dead_run:
                 row["dead_run_failure"] = dead_run
-            res_jobs.append(row)
+            res_jobs.append(apply_job_economics_policy(row))
     except Exception as e:
         svc.diag("server.jobs_list_aggregate", e)
 
@@ -432,20 +462,27 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     # so they never enter the durable store above -- without this the panel
     # reads "No swarm jobs yet" while a worker is visibly running.
     try:
+        from ..local_job_swarm_view import merge_local_jobs_into_swarm_live
+
         pilot = svc.get_pilot()
-        existing_ids = {j.get("id") for j in res_jobs}
+        active_session_id = svc.sessions.active or getattr(pilot, "harness_session_id", "") or ""
+        registered_job_ids = list(getattr(pilot, "_session_job_ids", []) or [])
         scoped_locals = filter_local_jobs(
             pilot.live_local_jobs(),
-            active_session_id=svc.sessions.active or getattr(pilot, "harness_session_id", "") or "",
+            active_session_id=active_session_id,
             repo_root=scoped_repo,
         )
-        for lj in scoped_locals:
-            if lj.get("id") not in existing_ids:
-                # Local jobs already carry their (tiny) artifact list
-                # inline; mark complete so the UI never lazy-fetches.
-                if "artifacts_complete" not in lj:
-                    lj = {**lj, "artifacts_complete": True}
-                res_jobs.append(lj)
+        scoped_locals = [
+            apply_job_economics_policy(
+                annotate_job_accounting(
+                    job,
+                    active_session_id=active_session_id,
+                    registered_job_ids=registered_job_ids,
+                )
+            )
+            for job in scoped_locals
+        ]
+        res_jobs = merge_local_jobs_into_swarm_live(res_jobs, scoped_locals)
     except Exception as e:
         svc.diag("server.jobs_list_merge_local", e)
 
@@ -472,9 +509,14 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     store_job_cost = 0.0
     try:
         for j in res_jobs:
-            if str(j.get("id") or "").startswith("local-"):
+            if not j.get("accounting_owned"):
                 continue
-            store_job_cost += float(j.get("est_cost_usd") or 0.0)
+            is_local = str(j.get("id") or "").startswith("local-")
+            if not is_local:
+                store_job_cost += float(j.get("est_cost_usd") or 0.0)
+                job_tokens_sum += int(j.get("tokens") or 0)
+            # Savings meters: every visible row counts once (store + local).
+            # merge_local_jobs_into_swarm_live already dedupes store ids.
             live_routing_saved += float(j.get("routing_saved_usd") or 0.0)
             live_delegation_saved += float(j.get("delegation_saved_usd") or 0.0)
             live_cache_saved += float(j.get("cache_saved_usd") or 0.0)
@@ -495,7 +537,6 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 else:
                     saw_delegation_unknown = True
             swarm_cached += int(j.get("tokens_cached") or 0)
-            job_tokens_sum += int(j.get("tokens") or 0)
     except Exception:
         pass
     if saw_routing_actual:

@@ -102,8 +102,8 @@ def managed_worktree_for_goal(
 
     with managed_worktree(repo, base=base) as wt_path:
         with contextlib.suppress(Exception):
-            seeded = seed_worktree_from_goal(repo, wt_path, goal)
-            commit_seed_baseline(wt_path, seeded)
+            seed_result = seed_worktree_from_goal(repo, wt_path, goal)
+            commit_seed_baseline(wt_path, seed_result.paths)
         yield wt_path
 
 

@@ -172,7 +172,7 @@ def test_seed_untracked_into_worktree(tmp_path):
     seeded = seed_worktree_from_goal(
         str(repo), str(wt), "REWRITE the file addons/kotoba/translator.py",
     )
-    assert "addons/kotoba/translator.py" in seeded
+    assert "addons/kotoba/translator.py" in seeded.paths
     assert (wt / "addons" / "kotoba" / "translator.py").read_text(encoding="utf-8") == "print('live')\n"
 
 
@@ -209,11 +209,11 @@ def test_seed_dynamic_from_dirty_token_match(tmp_path):
     seeded = seed_worktree_from_goal(
         str(repo), str(wt), "fix the kotoba thrift ad",
     )
-    assert "addons/kotoba/ad.html" in seeded
+    assert "addons/kotoba/ad.html" in seeded.paths
     assert (wt / "addons" / "kotoba" / "ad.html").read_text(encoding="utf-8") == (
         "<html>ad</html>\n"
     )
-    assert "other/noise.py" not in seeded
+    assert "other/noise.py" not in seeded.paths
 
 
 def test_seed_html_path_token(tmp_path):
@@ -224,7 +224,7 @@ def test_seed_html_path_token(tmp_path):
     target = repo / "page.html"
     target.write_text("<p>hi</p>\n", encoding="utf-8")
     seeded = seed_worktree_from_goal(str(repo), str(wt), "edit page.html")
-    assert "page.html" in seeded
+    assert "page.html" in seeded.paths
 
 
 def test_seed_baseline_excludes_seeded_files_from_finalize(tmp_path):
@@ -258,8 +258,8 @@ def test_seed_baseline_excludes_seeded_files_from_finalize(tmp_path):
         seeded = seed_worktree_from_goal(
             str(repo), wt_path, f"analyze the repository at {repo}",
         )
-        assert seeded, "expected dynamic/dir seed of untracked diagnostics"
-        n = commit_seed_baseline(wt_path, seeded)
+        assert seeded.paths, "expected dynamic/dir seed of untracked diagnostics"
+        n = commit_seed_baseline(wt_path, seeded.paths)
         assert n >= 1
         patch, files = finalize_worktree_patch(wt_path)
         assert patch.strip() == ""
@@ -374,5 +374,6 @@ def test_finish_preserves_routing_artifact(monkeypatch):
     assert "ROUTING" in types
     assert "patch" in types
     routing = next(a for a in job["artifacts"] if a["type"] == "ROUTING")
-    assert abs(routing["est_cost_usd"] - 0.05) < 1e-9
+    assert abs(routing["est_cost_usd"] - 0.01) < 1e-9
+    assert abs(job["est_cost_usd"] - 0.05) < 1e-9
     assert max_single_file_rewrite_lines() >= 50

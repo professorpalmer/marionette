@@ -209,6 +209,32 @@ The cost thesis is enforced with real accounting, not estimates:
   `_last_prompt_tokens` from actual provider usage, so the context gauge reflects
   measured prompt size rather than a heuristic.
 
+### 7c. Single-owner planes (cache, offload, compaction, durability)
+
+Each economy/durability plane has one owner. Experiments extend these seams;
+they must not fork a parallel implementation.
+
+| Plane | Sole owner | What it owns |
+|-------|------------|--------------|
+| Prompt-cache stamping | `pmharness/drivers/prompt_cache.py` | Breakpoint / `cache_control` helpers (`cache_control`, `history_cache_carriers`, `apply_openai_compat_cache_control`, kill switch `HARNESS_PROMPT_CACHE`). Native Anthropic + OpenAI-compat drivers call it (including Hermes empty-envelope walk-back); they do not invent markers. |
+| Cache-read billing | `harness/api/cost.py` (via server cost helpers) | Prices cached prompt tokens (`CACHE_READ_MULTIPLIER`) and surfaces `cache_savings_usd`. Does not stamp cache markers. |
+| Tool-output offload gate | `harness/offload_policy.py` | Pure savings gate (`should_offload` / `gate_decision`): floor + margin. |
+| Spill engine | `harness/context_budget.py` (`maybe_persist_result`) | Writes oversized tool results under `pmharness-results/`, builds the preview replacement, invokes the ledger callback. |
+| Spill index / URI | `harness/spill_registry.py` (+ `internal_uri.py` resolve) | Indexes spills and `spill://` addresses. Not a second writer. |
+| Tool-output savings ledger | `harness/tool_output_savings.py` (`ToolOutputSavingsLedger`) | Append-only SQLite (+ optional JSONL), deduped by `(session_id, tool_call_id)`. |
+| Turn facade | `harness/turn_economy.py` (`TurnEconomy`) | Thin session-scoped delegation into the spill/gate/ledger helpers — no parallel engine. |
+| History compaction | `harness/compaction_mixin.py` (`CompactionContextMixin`) | Sole conversation-history compressor (`_maybe_compact_history`, summarize/elide, anti-thrash cooldown). Distinct from tool-output spill. |
+| Local job durability | `harness/local_jobs.py` (`LocalJobsMixin`) | Persist / cancel / reload in-process provider-worker jobs for the swarm panel. Not SwarmStore. |
+| Local job live read-model | `harness/local_job_swarm_view.py` | Pure projection of `swarm_local_jobs.json` rows into store-shaped `/api/swarm/live` vocabulary at merge time only. No SwarmStore writes. |
+| Puppetmaster worker store | Puppetmaster `SwarmStore` via `create_store` | Sole durable job/event/artifact store for Orchestrator workers. `harness/state.py` (`DurableState`) is read-only over it. |
+
+**No-copy constraints.** Do not add a second cache stamper, history compressor,
+spill engine, or worker-store replacement. New work lands as extensions of the
+owners above (driver call sites into `prompt_cache`, gate thresholds in
+`offload_policy`, callbacks on `maybe_persist_result`, mixin methods on
+`CompactionContextMixin` / `LocalJobsMixin`, or Orchestrator writes into
+`SwarmStore`).
+
 ## 8. Research rig (`pmharness/`) and the evaluation ladder
 
 The research package (`pmharness/`) validated the driver layer empirically. It is

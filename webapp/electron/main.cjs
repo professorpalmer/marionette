@@ -55,16 +55,32 @@ function pmharnessHome() {
   return path.join(os.homedir(), ".pmharness");
 }
 
+// Mirror harness.server._state_home(): honor HARNESS_STATE_DIR (canonical absolute
+// expansion), then prefer ~/.pmharness/state, then legacy flat ~/.pmharness.
+function resolveHarnessStateDir() {
+  const explicit = (process.env.HARNESS_STATE_DIR || "").trim();
+  if (explicit) {
+    return path.resolve(explicit);
+  }
+  const stateSub = path.join(pmharnessHome(), "state");
+  try {
+    if (fs.statSync(stateSub).isDirectory()) {
+      return stateSub;
+    }
+  } catch {}
+  return pmharnessHome();
+}
+
 // server.py anchors HARNESS_STATE_DIR to ~/.pmharness/state when unset and writes
 // token, backend.json, workspace.json, etc. there. Older installs used flat
 // ~/.pmharness/*. Prefer state/ on read (state first, then legacy) so a second
 // window reusing a live backend adopts the same files the server wrote.
 function pmharnessStateDir() {
-  return path.join(pmharnessHome(), "state");
+  return resolveHarnessStateDir();
 }
 
 function readPmHarnessStateFile(name) {
-  for (const dir of [pmharnessStateDir(), pmharnessHome()]) {
+  for (const dir of [resolveHarnessStateDir(), pmharnessHome()]) {
     try {
       return fs.readFileSync(path.join(dir, name), "utf8");
     } catch {}
@@ -723,6 +739,7 @@ async function _startBackendOnce() {
     PYTHONUNBUFFERED: "1",
     HARNESS_TOKEN: harnessToken,
     HARNESS_APP_RUN_ID: harnessAppRunId,
+    HARNESS_STATE_DIR: process.env.HARNESS_STATE_DIR || resolveHarnessStateDir(),
     // App source root (not the user's project). Backend excludes this path
     // from boot restore + PROJECTS recents so Marionette never auto-opens itself.
     MARIONETTE_APP_ROOT: repoRoot,

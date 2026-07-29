@@ -122,6 +122,7 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             cli_stores_by_job,
             partition_jobs_by_store,
         )
+        from ..job_scoping import filter_accountable_jobs
 
         # Boot-pill swarm dollars: merge epoch-windowed jobs across every
         # workspace opened this process (not only active _cfg.repo).
@@ -163,8 +164,9 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
 
         # Boot pill: only jobs created during THIS app run (epoch window).
         jobs = [j for j in all_jobs if svc.job_in_cost_window(j.get("created_at"))]
+        accountable_jobs = filter_accountable_jobs(jobs)
         registry = svc.swarm_registry()
-        jids = [j.get("id") for j in jobs if j.get("id")]
+        jids = [j.get("id") for j in accountable_jobs if j.get("id")]
         # Artifacts may live in harness or CLI stores; load from the
         # union of boot-scoped + active-scoped job ids.
         arts_source_jobs = list(all_jobs_by_id.values())
@@ -211,7 +213,7 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
         # wins via merge_scoped_cli_jobs order.
         session_jids: list = []
         seen_session: set = set()
-        for j in active_jobs:
+        for j in filter_accountable_jobs(active_jobs):
             jid = j.get("id")
             if not jid or jid in seen_session:
                 continue

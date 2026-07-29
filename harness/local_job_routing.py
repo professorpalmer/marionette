@@ -7,6 +7,11 @@ historically registered with ``model="agentic"`` and ``est_cost_usd=0`` until
 finish. The tracker then looked empty of metrics while the job ran. Dry-run the
 same router the agentic engine will use and stamp a UI-shaped ROUTING card at
 register time.
+
+ROUTING rows must carry the same ``policy`` / baseline fields that
+``DurableState.format_artifacts`` forwards for store jobs so after reload the
+SwarmPane basis labels match live jobs (never "Pin attribution unknown" for a
+balanced router pick).
 """
 
 import os
@@ -17,8 +22,10 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
     """Best-effort dry-run of the agentic implement router.
 
     Returns a dict with ``model_id``, ``est_cost_usd``, ``tokens_in``,
-    ``tokens_out``, ``reason``, ``rejected``, and a UI-ready ``artifact``.
-    Empty dict on any failure (never raises onto the dispatch path).
+    ``tokens_out``, ``reason``, ``rejected``, ``baseline_cost_usd``,
+    ``baseline_model_id``, ``routing_saved_usd``, ``routing_savings_basis``,
+    and a UI-ready ``artifact``. Empty dict on any failure (never raises onto
+    the dispatch path).
     """
     goal = (goal or "").strip()
     if not goal:
@@ -40,10 +47,19 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
             "tokens_out": 0,
             "reason": f"Pinned via HARNESS_IMPLEMENT_MODEL ({provider})",
             "rejected": [],
+            "baseline_cost_usd": 0.0,
+            "baseline_model_id": "",
+            "routing_saved_usd": 0.0,
+            "routing_savings_basis": "estimated",
             "artifact": _routing_artifact(
-                pinned_model, 0.0, role=role,
+                pinned_model,
+                0.0,
+                role=role,
                 reason=f"Pinned via HARNESS_IMPLEMENT_MODEL ({provider})",
                 rejected=[],
+                policy="explicit_pin",
+                provider=provider or None,
+                adapter="agentic",
             ),
         }
 
@@ -110,6 +126,9 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
     tokens_in = int(getattr(decision, "estimated_tokens_in", 0) or 0)
     tokens_out = int(getattr(decision, "estimated_tokens_out", 0) or 0)
     reason = str(getattr(decision, "reason", "") or "")
+    baseline = float(getattr(decision, "baseline_cost_usd", 0.0) or 0.0)
+    baseline_model_id = str(getattr(decision, "baseline_model_id", "") or "")
+    policy = str(getattr(decision, "policy", "") or "balanced")
     rejected: list[dict[str, str]] = []
     for spec, why in getattr(decision, "rejected", []) or []:
         try:
@@ -120,6 +139,7 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
         except Exception:
             continue
 
+    routing_saved = max(0.0, baseline - est) if baseline > 0 else 0.0
     return {
         "model_id": model_id,
         "est_cost_usd": round(est, 6),
@@ -127,8 +147,21 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
         "tokens_out": tokens_out,
         "reason": reason,
         "rejected": rejected,
+        "baseline_cost_usd": round(baseline, 6),
+        "baseline_model_id": baseline_model_id,
+        "routing_saved_usd": round(routing_saved, 6),
+        # Preflight preview — never claim actual_usage.
+        "routing_savings_basis": "estimated",
         "artifact": _routing_artifact(
-            model_id, est, role=role, reason=reason, rejected=rejected,
+            model_id,
+            est,
+            role=role,
+            reason=reason,
+            rejected=rejected,
+            policy=policy or "balanced",
+            adapter="agentic",
+            baseline_cost_usd=baseline,
+            baseline_model_id=baseline_model_id,
         ),
     }
 
@@ -140,9 +173,14 @@ def _routing_artifact(
     role: str,
     reason: str,
     rejected: list[dict[str, str]],
+    policy: str = "balanced",
+    provider: Optional[str] = None,
+    adapter: str = "agentic",
+    baseline_cost_usd: float = 0.0,
+    baseline_model_id: str = "",
 ) -> dict[str, Any]:
     """UI-shaped ROUTING row (same fields DurableState.format_artifacts emits)."""
-    return {
+    row: dict[str, Any] = {
         "type": "ROUTING",
         "headline": f"Routed to {model_id}",
         "created_by": "router",
@@ -151,4 +189,14 @@ def _routing_artifact(
         "role": (role or "implement").strip() or "implement",
         "rejected": list(rejected or []),
         "detail": reason or "",
+        # Attested policy so SwarmPane basis labels survive reload.
+        "policy": (policy or "").strip() or "balanced",
+        "adapter": (adapter or "").strip() or "agentic",
     }
+    if provider:
+        row["provider"] = provider
+    if baseline_cost_usd and float(baseline_cost_usd) > 0:
+        row["baseline_cost_usd"] = round(float(baseline_cost_usd), 6)
+    if baseline_model_id:
+        row["baseline_model_id"] = baseline_model_id
+    return row

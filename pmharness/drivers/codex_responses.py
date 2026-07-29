@@ -834,6 +834,9 @@ class CodexResponsesDriver:
             )
         usage = raw.get("usage") or {}
         tin, tout = _usage_ints(usage)
+        from .token_usage import attach_modality_fields, coerce_token_usage_record
+
+        usage_detail = coerce_token_usage_record(usage)
         meta = {
             "tool_calls": tool_calls,
             "finish_reason": finish,
@@ -843,6 +846,11 @@ class CodexResponsesDriver:
             "requested_model": self.model,
             "incomplete_retries": incomplete_retries,
         }
+        attach_modality_fields(meta, usage_detail)
+        if usage_detail.cache_read > 0:
+            meta["cache_read_tokens"] = int(usage_detail.cache_read)
+        if usage_detail.cache_write > 0:
+            meta["cache_write_tokens"] = int(usage_detail.cache_write)
         reason = _incomplete_reason(raw)
         if reason:
             meta["incomplete_reason"] = reason

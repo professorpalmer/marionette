@@ -14,7 +14,10 @@ from harness.cli_job_merge import (
     open_cli_durable_state,
     reset_merge_diag_for_tests,
 )
-from harness.job_scoping import stamp_task_payload
+from harness.job_scoping import (
+    ACCOUNTING_SCOPE_VISIBILITY,
+    stamp_task_payload,
+)
 from harness.server import _job_swarm_accounting, _scoped_jobs_snapshot
 from puppetmaster.models import Artifact, ArtifactType, Task
 from puppetmaster.store_factory import create_store
@@ -90,8 +93,8 @@ def test_merge_dedupes_ids_and_sets_source(tmp_path, monkeypatch):
         lambda workspace_root="": _FakeCliState(),
     )
     monkeypatch.setattr(
-        "harness.job_scoping.filter_store_jobs",
-        lambda rows, store, **kwargs: rows,
+        "harness.job_scoping.filter_store_jobs_with_tasks",
+        lambda rows, store, **kwargs: (rows, {}),
     )
     # Do not scan the developer's live PM project stores (SQLite locks hang).
     monkeypatch.setattr(
@@ -102,7 +105,7 @@ def test_merge_dedupes_ids_and_sets_source(tmp_path, monkeypatch):
     harness_rows = [
         {"id": harness_job.id, "goal": "harness goal", "status": "complete", "adapter": "agentic"},
     ]
-    merged, _ = merge_scoped_cli_jobs(
+    merged, _, _ = merge_scoped_cli_jobs(
         harness_rows,
         harness_store=harness_store,
         active_session_id="sess-x",
@@ -133,7 +136,7 @@ def test_unreadable_cli_store_contributes_nothing(tmp_path, monkeypatch):
     harness_rows = [
         {"id": harness_job.id, "goal": "harness goal", "status": "complete", "adapter": "agentic"},
     ]
-    merged, cli_store = merge_scoped_cli_jobs(
+    merged, cli_store, _ = merge_scoped_cli_jobs(
         harness_rows,
         harness_store=harness_store,
         active_session_id="sess-x",
@@ -288,11 +291,116 @@ def test_api_swarm_live_includes_cli_jobs_with_accounting(tmp_path, monkeypatch)
         assert len(cli_rows) == 1
         row = cli_rows[0]
         assert row["source"] == "cli"
-        assert row["tokens"] == 60_000
-        assert abs(row["est_cost_usd"] - 0.07) < 1e-6
+        assert row["accounting_owned"] is False
+        assert row["tokens"] == 0
+        assert row["est_cost_usd"] == 0.0
         assert row["model"] == "worker-model"
     finally:
         httpd.shutdown()
+
+
+def _save_unstamped_external_task(store, job_id: str, cwd: str):
+    """Plain cwd-only task — external Cursor MCP with no Marionette stamp."""
+    task = Task(
+        job_id=job_id,
+        role="implement",
+        instruction="do work",
+        adapter="agentic",
+        payload={"cwd": cwd},
+    )
+    store.save_task(task)
+    return task
+
+
+def _seed_unstamped_cli_store(tmp_path, repo_root: str, goal: str = "external cli"):
+    cli_dir = tmp_path / "cli-external"
+    store = create_store("sqlite", str(cli_dir))
+    job = store.create_job(goal)
+    _save_unstamped_external_task(store, job.id, repo_root)
+    store.save_artifact(_verification(job.id, "t-ext", "worker-model", 50_000, 10_000))
+    return store, str(cli_dir), job.id
+
+
+def test_scoped_jobs_snapshot_unstamped_external_cli_visibility_only(tmp_path, monkeypatch):
+    """External Cursor MCP row (cwd only) stays visible-only for accounting."""
+    import harness.server as srv
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_dir = tmp_path / "harness-state"
+    harness_store = create_store("sqlite", str(harness_dir))
+    _cli_store, cli_dir, cli_job_id = _seed_unstamped_cli_store(tmp_path, str(repo))
+
+    monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-test")
+    monkeypatch.setenv("HARNESS_CLI_COST_MERGE", "1")
+    monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [])
+    monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=harness_store))
+    monkeypatch.setattr(
+        "harness.cli_job_merge.resolve_cli_state_dir",
+        lambda workspace_root="": str(cli_dir),
+    )
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [],
+    )
+    srv._cfg.repo = str(repo)
+    srv._sessions._active = "sess-live"
+    srv._pilot.harness_session_id = "sess-live"
+
+    rows = _scoped_jobs_snapshot(repo_root=str(repo))
+    cli_rows = [r for r in rows if r.get("id") == cli_job_id]
+    assert len(cli_rows) == 1
+    row = cli_rows[0]
+    assert row["source"] == "cli"
+    assert row["accounting_owned"] is False
+    assert row["accounting_scope"] == ACCOUNTING_SCOPE_VISIBILITY
+
+
+def test_scoped_jobs_snapshot_task_only_marionette_stamp_owned(tmp_path, monkeypatch):
+    """Task payload stamps alone can own CLI economics when merge opt-in is on."""
+    import harness.server as srv
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_dir = tmp_path / "harness-state"
+    harness_store = create_store("sqlite", str(harness_dir))
+    cli_dir = tmp_path / "cli-task-stamp"
+    cli_store = create_store("sqlite", str(cli_dir))
+    job = cli_store.create_job("stamped via task")
+    payload = stamp_task_payload(
+        {"cwd": str(repo)},
+        session_id="sess-live",
+        origin="marionette",
+        app_run_id="run-test",
+    )
+    cli_store.save_task(Task(
+        job_id=job.id,
+        role="implement",
+        instruction="do work",
+        adapter="agentic",
+        payload=payload,
+    ))
+
+    monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-test")
+    monkeypatch.setenv("HARNESS_CLI_COST_MERGE", "1")
+    monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [])
+    monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=harness_store))
+    monkeypatch.setattr(
+        "harness.cli_job_merge.resolve_cli_state_dir",
+        lambda workspace_root="": str(cli_dir),
+    )
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [],
+    )
+    srv._cfg.repo = str(repo)
+    srv._sessions._active = "sess-live"
+    srv._pilot.harness_session_id = "sess-live"
+
+    rows = _scoped_jobs_snapshot(repo_root=str(repo))
+    cli_rows = [r for r in rows if r.get("id") == job.id]
+    assert len(cli_rows) == 1
+    assert cli_rows[0]["accounting_owned"] is True
 
 
 def test_scoped_jobs_snapshot_merges_cli_source(tmp_path, monkeypatch):

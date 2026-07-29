@@ -78,6 +78,9 @@ class LocalJobsMixin:
             model_id = (self.config.driver or "").strip()
         routing_arts: list = []
         est_cost = 0.0
+        routing_saved = 0.0
+        routing_basis = ""
+        preview: dict = {}
         if engine_label == "agentic" and not model_id:
             try:
                 from harness.local_job_routing import preview_agentic_route
@@ -86,6 +89,8 @@ class LocalJobsMixin:
                 preview = {}
             model_id = (preview.get("model_id") or "").strip()
             est_cost = float(preview.get("est_cost_usd") or 0.0)
+            routing_saved = float(preview.get("routing_saved_usd") or 0.0)
+            routing_basis = str(preview.get("routing_savings_basis") or "")
             art = preview.get("artifact")
             if isinstance(art, dict):
                 routing_arts.append(art)
@@ -94,7 +99,7 @@ class LocalJobsMixin:
         with self._local_jobs_lock:
             self._local_job_cancels[job_id] = threading.Event()
             now = time.time()
-            self._local_jobs[job_id] = {
+            row = {
                 "id": job_id,
                 "goal": goal,
                 "status": "running",
@@ -121,7 +126,30 @@ class LocalJobsMixin:
                 # ProviderWorker action events; never carries stdout/args/env.
                 "actions": [],
             }
+            # Preflight routing value — estimated only; survives reload so the
+            # SwarmPane chip shows the same basis label as a live job.
+            if routing_saved > 0:
+                row["routing_saved_usd"] = round(routing_saved, 6)
+                row["routing_savings_basis"] = routing_basis or "estimated"
+            self._local_jobs[job_id] = row
             self._persist_local_jobs_locked()
+            if routing_saved > 0:
+                try:
+                    from harness.observability_export import export_routing_savings
+
+                    export_routing_savings(
+                        job_id=job_id,
+                        session_id=session_id,
+                        routing_saved_usd=routing_saved,
+                        routing_savings_basis=routing_basis or "estimated",
+                        model_id=model_id,
+                        baseline_model_id=str(preview.get("baseline_model_id") or ""),
+                        tokens_compared=int(
+                            (preview.get("tokens_in") or 0) + (preview.get("tokens_out") or 0)
+                        ),
+                    )
+                except Exception:
+                    pass
 
     def _finish_local_job(self, job_id: str, ok: bool, summary: str = "",
                           files: Optional[list] = None, tokens: int = 0,
@@ -212,8 +240,9 @@ class LocalJobsMixin:
                     "Patch applied" if ok else "Worker failed")
             if files:
                 headline = f"{headline} ({len(files)} file{'s' if len(files) != 1 else ''})"
-            # Keep any pre-stamped ROUTING card (model/cost preview) and update
-            # its estimate to the real spend so expand still shows the model.
+            # Keep any pre-stamped ROUTING card (immutable preflight estimate).
+            # Realized spend stays on job["est_cost_usd"] — never overwrite
+            # ROUTING.est_cost_usd with provider receipts.
             keep_routing = []
             for art in (job.get("artifacts") or []):
                 if not isinstance(art, dict):
@@ -224,13 +253,18 @@ class LocalJobsMixin:
                 if model_id:
                     updated["model"] = model_id
                     updated["headline"] = f"Routed to {model_id}"
-                if real_cost:
-                    updated["est_cost_usd"] = round(real_cost, 6)
+                # Preserve attested policy; default balanced for router stamps.
+                if not (updated.get("policy") or "").strip():
+                    if updated.get("created_by") == "router":
+                        updated["policy"] = "balanced"
                 keep_routing.append(updated)
-            job["artifacts"] = keep_routing + [{
+            patch_art: dict = {
                 "type": "patch" if (ok and not cancelled) else "error",
                 "headline": headline[:240],
-            }]
+            }
+            if real_cost:
+                patch_art["est_cost_usd"] = round(real_cost, 6)
+            job["artifacts"] = keep_routing + [patch_art]
             # Nested UI must not spin forever after the parent job settles.
             settle_reason = (
                 "cancelled" if cancelled
@@ -240,6 +274,25 @@ class LocalJobsMixin:
                 job.get("actions"), reason=settle_reason,
             )
             self._persist_local_jobs_locked()
+            export_job = {
+                "job_id": job_id,
+                "session_id": str(job.get("session_id") or ""),
+                "status": terminal,
+                "engine": str(job.get("adapter") or engine_label or ""),
+                "model": str(job.get("model") or ""),
+                "tokens": int(job.get("tokens") or 0),
+                "est_cost_usd": float(job.get("est_cost_usd") or 0.0),
+                "cost_provenance": str(job.get("cost_provenance") or ""),
+                "routing_saved_usd": float(job.get("routing_saved_usd") or 0.0),
+                "routing_savings_basis": str(job.get("routing_savings_basis") or ""),
+                "summary": headline,
+            }
+        try:
+            from harness.observability_export import export_local_job_terminal
+
+            export_local_job_terminal(**export_job)
+        except Exception:
+            pass
 
     # Cap persisted history so the on-disk file cannot grow without bound.
     _LOCAL_JOBS_HISTORY_CAP = 200
@@ -304,7 +357,14 @@ class LocalJobsMixin:
                             job["tasks"][0]["status"] = "cancelled"
                         except Exception:
                             pass
-                    job["artifacts"] = [{
+                    # Keep ROUTING cards so policy/basis labels match live jobs
+                    # after reload (do not wipe attested attribution).
+                    keep_routing = [
+                        a for a in (job.get("artifacts") or [])
+                        if isinstance(a, dict)
+                        and (a.get("type") or "").strip().upper() == "ROUTING"
+                    ]
+                    job["artifacts"] = keep_routing + [{
                         "type": "error",
                         "headline": "Interrupted by backend restart",
                     }]

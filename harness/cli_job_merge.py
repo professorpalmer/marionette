@@ -216,16 +216,20 @@ def merge_scoped_cli_jobs(
     active_session_id: str,
     repo_root: str,
     workspace_root: str,
-) -> tuple[list[dict], Any | None]:
+) -> tuple[list[dict], Any | None, dict[str, list]]:
     """Return harness jobs plus visible CLI jobs, tagged with ``source``.
 
     Also merges **running** jobs from other Puppetmaster project stores so a
     Cursor-MCP swarm started under a sibling cwd still appears in the tracker.
+
+    The third tuple element is ``tasks_by_job`` loaded while filtering CLI rows
+    (harness tasks are loaded separately in ``filter_store_jobs_with_tasks``).
     """
-    from .job_scoping import filter_store_jobs
+    from .job_scoping import filter_store_jobs_with_tasks
 
     harness_ids = {j.get("id") for j in harness_jobs if j.get("id")}
     merged: list[dict] = []
+    cli_tasks_by_job: dict[str, list] = {}
     for job in harness_jobs:
         row = dict(job)
         row.setdefault("source", "harness")
@@ -239,7 +243,7 @@ def merge_scoped_cli_jobs(
     if cli_state is not None:
         try:
             cli_rows = _retry_on_locked(lambda: cli_state.list_jobs())
-            visible = filter_store_jobs(
+            visible, cli_tasks_by_job = filter_store_jobs_with_tasks(
                 cli_rows,
                 cli_state.store,
                 active_session_id=active_session_id,
@@ -272,7 +276,7 @@ def merge_scoped_cli_jobs(
         except Exception as exc:
             _log_merge_failure("cli_job_merge.merge_running_all", exc)
 
-    return merged, primary_store
+    return merged, primary_store, cli_tasks_by_job
 
 
 def partition_jobs_by_store(

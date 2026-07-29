@@ -40,6 +40,11 @@ DEFAULT_TAIL_OF_TRIGGER_RATIO = 0.20
 # Absolute ceiling on the injected summary. Large middles used to keep 20% of
 # themselves (~18k tokens on a 90k middle); cap + tiered ratio densifies.
 DEFAULT_MAX_SUMMARY_TOKENS = 8000
+# Hermes anti-thrash: two consecutive passes that each reclaim <10% trip the
+# breaker. Recovery reuses HARNESS_COMPACTION_COOLDOWN_S / _compaction_fail_until
+# (no second cooldown plane).
+MIN_EFFECTIVE_SAVINGS_RATIO = 0.10
+ANTI_THRASH_STRIKES = 2
 _ZERO_WIDTH_SPACE = "\u200b"
 _PRIOR_SUMMARY_WRAPPER = "PREVIOUS HISTORICAL CONVERSATION SUMMARY:\n"
 _INJECTED_SUMMARY_PREFIX = "[Earlier conversation summarized to fit context]\n"
@@ -56,6 +61,8 @@ REASON_BELOW_TRIGGER = "below_trigger"
 REASON_NO_COMPACTABLE = "no_compactable_history"
 REASON_BELOW_MIN_FLOOR = "below_min_compactable"
 REASON_SUMMARY_REJECTED = "summary_rejected"
+REASON_THRASH_COOLDOWN = "thrash_cooldown"
+REASON_CACHE_DEFERRED = "cache_deferred"
 
 
 def neutralize_compaction_control_tokens(text: str) -> str:
@@ -153,6 +160,14 @@ def tail_budget_for_trigger(trigger_tokens: int) -> int:
         trigger = 0
     proportional = int(trigger * DEFAULT_TAIL_OF_TRIGGER_RATIO)
     return max(1, min(proportional, _max_retained_tail_tokens()))
+
+
+def _compaction_cooldown_s() -> float:
+    """Seconds for summarizer-fail / anti-thrash cooldown (shared plane)."""
+    try:
+        return float(os.environ.get("HARNESS_COMPACTION_COOLDOWN_S", "120") or "120")
+    except Exception:
+        return 120.0
 
 
 class CompactionContextMixin:
@@ -269,6 +284,62 @@ class CompactionContextMixin:
             self._last_compaction_attempt = payload
         except Exception:
             pass
+
+    def _anti_thrash_blocked(self, *, force: bool) -> bool:
+        """True when automatic compaction must wait out an anti-thrash cooldown.
+
+        Manual ``force=True`` bypasses the breaker (Hermes ``/compress``). The
+        deadline lives on ``_compaction_fail_until`` — the same plane as
+        summarizer-fail cooldown — keyed by ``HARNESS_COMPACTION_COOLDOWN_S``.
+        """
+        if force:
+            return False
+        try:
+            strikes = int(getattr(self, "_compaction_ineffective_count", 0) or 0)
+            if strikes < ANTI_THRASH_STRIKES:
+                return False
+            until = float(getattr(self, "_compaction_fail_until", 0.0) or 0.0)
+            now = time.time()
+            if now < until:
+                return True
+            # Recovery probe: drop to one strike so another ineffective pass
+            # re-trips immediately, matching Hermes #14694.
+            self._compaction_ineffective_count = 1
+            return False
+        except Exception:
+            return False
+
+    def _note_compaction_effectiveness(
+        self,
+        *,
+        before_tokens: int,
+        after_tokens: int,
+    ) -> tuple[float, int]:
+        """Update thrash strikes from reclamation ratio; return (savings_pct, strikes).
+
+        Reuses ``_compaction_fail_until`` when the breaker trips — never a
+        second cooldown plane. Best-effort; never raises.
+        """
+        savings_pct = 0.0
+        strikes = int(getattr(self, "_compaction_ineffective_count", 0) or 0)
+        try:
+            before = max(0, int(before_tokens))
+            after = max(0, int(after_tokens))
+            if before > 0:
+                savings_pct = max(0.0, (before - after) / float(before))
+            if before <= 0 or savings_pct < MIN_EFFECTIVE_SAVINGS_RATIO:
+                strikes = strikes + 1
+                self._compaction_ineffective_count = strikes
+                if strikes >= ANTI_THRASH_STRIKES:
+                    self._compaction_fail_until = (
+                        time.time() + _compaction_cooldown_s()
+                    )
+            else:
+                strikes = 0
+                self._compaction_ineffective_count = 0
+        except Exception:
+            pass
+        return savings_pct, int(getattr(self, "_compaction_ineffective_count", 0) or 0)
 
     def _unwrap_prior_summary_content(self, content: str) -> str:
         """Peel nested prior-summary wrappers so re-compaction stays bounded."""
@@ -494,6 +565,18 @@ class CompactionContextMixin:
 
         self._set_compaction_attempt(REASON_BELOW_TRIGGER)
 
+        # Hermes anti-thrash: after repeated ineffective reclamations, skip
+        # automatic compaction until the shared _compaction_fail_until window
+        # elapses. force=True (manual Compact) bypasses the thrash gate and
+        # (below) the summarizer-fail cooldown so the pilot is actually called.
+        if self._anti_thrash_blocked(force=force):
+            self._set_compaction_attempt(
+                REASON_THRASH_COOLDOWN,
+                strikes=int(getattr(self, "_compaction_ineffective_count", 0) or 0),
+                fail_until=float(getattr(self, "_compaction_fail_until", 0.0) or 0.0),
+            )
+            return
+
         budget = getattr(self.config, "max_context_tokens", 96000)
         trigger = int(budget * 0.75)
         # When the layer-pressure advisor says "soon" or "now", compact at the
@@ -577,6 +660,51 @@ class CompactionContextMixin:
             except Exception:
                 pass
 
+        # Experiment-gated cache-hot deferral: skip automatic compaction while
+        # the provider prompt cache is explicitly warm. Never defers force,
+        # emergency, or advisor-driven (soon/now) compaction.
+        _compact_policy = "off"
+        try:
+            from pmharness.drivers.prompt_cache import (
+                cache_compact_policy,
+                prompt_cache_warm_for_session,
+            )
+
+            _compact_policy = cache_compact_policy()
+            if (
+                _compact_policy == "defer"
+                and not force
+                and not emergency
+                and not advised
+            ):
+                warm, warm_detail = prompt_cache_warm_for_session(self)
+                if warm:
+                    try:
+                        from harness.history_compaction_journal import (
+                            record_compact_deferred,
+                        )
+
+                        record_compact_deferred(
+                            self.state_dir,
+                            self.harness_session_id or "default",
+                            cache_read_tokens=int(
+                                warm_detail.get("last_turn_cache_read_tokens") or 0
+                            ),
+                            compact_policy=_compact_policy,
+                            warm_detail=warm_detail,
+                        )
+                    except Exception:
+                        pass
+                    self._set_compaction_attempt(
+                        REASON_CACHE_DEFERRED,
+                        policy=_compact_policy,
+                        before_tokens=before_tokens,
+                        **warm_detail,
+                    )
+                    return
+        except Exception:
+            pass
+
         yield ConvEvent("compacting", {"message": "Summarizing chat context"})
 
         # Pre-prune the middle block (cheap, pre-LLM). Large middles get a
@@ -631,10 +759,7 @@ class CompactionContextMixin:
             _compact_timeout = float(os.environ.get("HARNESS_COMPACTION_TIMEOUT_S", "45") or "45")
         except ValueError:
             _compact_timeout = 45.0
-        try:
-            _compact_cooldown = float(os.environ.get("HARNESS_COMPACTION_COOLDOWN_S", "120") or "120")
-        except ValueError:
-            _compact_cooldown = 120.0
+        _compact_cooldown = _compaction_cooldown_s()
 
         # Cheap compaction model knob. Driver.chat/complete have no model=
         # kwarg today; when set we temporarily swap pilot.model if present
@@ -647,8 +772,15 @@ class CompactionContextMixin:
             )
 
         summary = ""
+        # True only when the pilot returned usable summary text this pass.
+        # Timeout / error / cooldown-fallback paths keep the shared fail-until
+        # plane even if the extractive fallback later proves effective.
+        summarizer_ok = False
         now = time.time()
-        if now < float(getattr(self, "_compaction_fail_until", 0.0) or 0.0):
+        # Manual force bypasses summarizer-fail cooldown (same as anti-thrash)
+        # so Compact Now actually calls the pilot instead of only falling back.
+        _fail_until = float(getattr(self, "_compaction_fail_until", 0.0) or 0.0)
+        if (not force) and now < _fail_until:
             summary = _fallback()
         else:
             try:
@@ -699,6 +831,7 @@ class CompactionContextMixin:
 
                 if resp and not getattr(resp, "error", None) and getattr(resp, "text", None):
                     summary = resp.text.strip()
+                    summarizer_ok = True
                     if len(summary) > summary_char_budget:
                         summary = summary[:summary_char_budget] + "\n... [summary truncated to fit budget]"
                 else:
@@ -718,10 +851,15 @@ class CompactionContextMixin:
             if is_degenerate_summary(summary):
                 summary = _fallback()
                 if is_degenerate_summary(summary):
+                    _pct, _strikes = self._note_compaction_effectiveness(
+                        before_tokens=before_tokens,
+                        after_tokens=before_tokens,
+                    )
                     self._set_compaction_attempt(
                         REASON_SUMMARY_REJECTED,
                         before_tokens=before_tokens,
                         detail="degenerate_summary",
+                        thrash_strikes=_strikes,
                     )
                     # We already yielded ``compacting`` — must emit a terminal
                     # ``compaction`` so the UI clears "Summarizing chat context"
@@ -732,6 +870,7 @@ class CompactionContextMixin:
                         "summarized_messages": 0,
                         "aborted": True,
                         "reason": "degenerate_summary",
+                        "thrash_strikes": _strikes,
                     })
                     return
         except Exception:
@@ -766,12 +905,17 @@ class CompactionContextMixin:
                     is_degenerate_summary(fallback_summary)
                     or fallback_tokens > int(middle_tokens * MAX_REDUCTION_RATIO)
                 ):
+                    _pct, _strikes = self._note_compaction_effectiveness(
+                        before_tokens=before_tokens,
+                        after_tokens=before_tokens,
+                    )
                     self._set_compaction_attempt(
                         REASON_SUMMARY_REJECTED,
                         before_tokens=before_tokens,
                         detail="insufficient_reduction",
                         summary_tokens=fallback_tokens,
                         middle_tokens=middle_tokens,
+                        thrash_strikes=_strikes,
                     )
                     # Paired with the earlier ``compacting`` yield — clear UI chrome.
                     yield ConvEvent("compaction", {
@@ -780,6 +924,7 @@ class CompactionContextMixin:
                         "summarized_messages": 0,
                         "aborted": True,
                         "reason": "insufficient_reduction",
+                        "thrash_strikes": _strikes,
                     })
                     return
                 summary = fallback_summary
@@ -806,8 +951,34 @@ class CompactionContextMixin:
         except Exception:
             pass
 
+        after_tokens = self._estimate_context_tokens()
+        savings_pct, thrash_strikes = self._note_compaction_effectiveness(
+            before_tokens=before_tokens,
+            after_tokens=after_tokens,
+        )
+        # Effective pass that actually got a summarizer response clears the
+        # shared fail-until plane (strikes already cleared above). Do not clear
+        # after timeout/error fallback — that cooldown must stick.
+        if thrash_strikes == 0 and summarizer_ok:
+            try:
+                self._compaction_fail_until = 0.0
+            except Exception:
+                pass
+        # History rewrite invalidates the prompt-cache prefix. Journal the
+        # busted tokens once on a dedicated cache_bust row (not also on the
+        # compact row). Do not invent cache-read events from an unpopulated
+        # attribute; leave cache_read_tokens at 0 unless a real source lands.
+        # Cost honesty: use the measured before→after delta only (including
+        # zero). Never fabricate cache_bust_tokens from middle_tokens when the
+        # measured delta is <= 0 — journal and ConvEvent share this value.
+        busted = max(0, int(before_tokens) - int(after_tokens))
         try:
-            from harness.history_compaction_journal import record_history_compaction
+            from harness.history_compaction_journal import (
+                EVENT_CACHE_BUST,
+                EVENT_COMPACT,
+                record_cache_signal,
+                record_history_compaction,
+            )
 
             record_history_compaction(
                 self.state_dir,
@@ -816,23 +987,63 @@ class CompactionContextMixin:
                 chars_before,
                 chars_after,
                 summary,
+                event_kind=EVENT_COMPACT,
+                tokens_before=before_tokens,
+                tokens_after=after_tokens,
+                cache_read_tokens=0,
+                cache_bust_tokens=0,
+                estimated_cost_usd=None,
+                thrash_strikes=thrash_strikes,
+                # 0..1 ratio — same unit as ConvEvent / attempt payload.
+                savings_pct=savings_pct,
             )
+            # Dedicated cache-bust row so thrash/cache telemetry can be
+            # queried without conflating with compact message counts.
+            if busted > 0:
+                record_cache_signal(
+                    self.state_dir,
+                    self.harness_session_id or "default",
+                    event_kind=EVENT_CACHE_BUST,
+                    cache_bust_tokens=busted,
+                    cache_read_tokens=0,
+                    tokens_before=before_tokens,
+                    tokens_after=after_tokens,
+                    estimated_cost_usd=None,
+                )
+            if _compact_policy == "refreeze":
+                from harness.history_compaction_journal import record_compact_refreeze
+
+                record_compact_refreeze(
+                    self.state_dir,
+                    self.harness_session_id or "default",
+                    tokens_before=before_tokens,
+                    tokens_after=after_tokens,
+                    cache_bust_tokens=busted,
+                )
         except Exception:
             pass
 
-        after_tokens = self._estimate_context_tokens()
         self._set_compaction_attempt(
             REASON_OK,
             before_tokens=before_tokens,
             after_tokens=after_tokens,
             summarized_messages=len(middle_block),
             split_idx=split_idx,
+            savings_pct=savings_pct,
+            thrash_strikes=thrash_strikes,
+            **({"policy": _compact_policy} if _compact_policy != "off" else {}),
         )
-        yield ConvEvent("compaction", {
+        _compaction_payload = {
             "before_tokens": before_tokens,
             "after_tokens": after_tokens,
-            "summarized_messages": len(middle_block)
-        })
+            "summarized_messages": len(middle_block),
+            "savings_pct": savings_pct,
+            "thrash_strikes": thrash_strikes,
+            "cache_bust_tokens": busted,
+        }
+        if _compact_policy == "refreeze":
+            _compaction_payload["refreeze"] = True
+        yield ConvEvent("compaction", _compaction_payload)
 
     def _elide_stale_reads(self, messages: list) -> list:
         """Return a COPY of messages where superseded whole-file reads are elided.
