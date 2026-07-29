@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.148, deliberately pre-1.0. Fresh installs now fail closed on degraded swarms, reconcile provider keys and platform routing consistently, expose honest durable artifact provenance, and advertise only usable browser/LSP capabilities; rides puppetmaster-ai==1.21.2.
+> Status: v0.9.149, deliberately pre-1.0. Worker reports now distinguish disposable worktrees from the live checkout, Codex turns keep stable prompt-cache affinity, provider stream stalls surface honestly, and cache savings fail closed on ambiguous prices while marking unpriced portions as partial; rides puppetmaster-ai==1.21.2.
 
 ## Documentation
 
