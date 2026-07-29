@@ -13,6 +13,7 @@ import ast
 import inspect
 import queue
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -35,6 +36,8 @@ from harness.send_loop_phases import (
     run_prefetch,
     run_stream,
     stream_swarm,
+    STREAM_IDLE_NOTICE_MESSAGE,
+    STREAM_IDLE_NOTICE_SEC,
 )
 
 PHASE_HELPERS = (
@@ -513,6 +516,135 @@ def test_drain_stream_queue_stashes_trailing_reasoning_on_meta():
     assert got.meta["stream_ended_on_reasoning"] is True
     assert "No named section remains queued" in got.meta["streamed_reasoning"]
     assert got.meta["reasoning"] == got.meta["streamed_reasoning"]
+
+
+def _mock_stream_queue_get(clock, script):
+    """Deterministic queue.get script: items, queue.Empty, or ('advance', secs)."""
+
+    def fake_get(timeout=None):
+        if not script:
+            raise queue.Empty
+        step = script.pop(0)
+        if step is queue.Empty:
+            raise queue.Empty
+        if isinstance(step, tuple) and step[0] == "advance":
+            clock["t"] += step[1]
+            raise queue.Empty
+        return step
+
+    return fake_get
+
+
+def _collect_drain_events(gen, *, max_steps=32):
+    events = []
+    for _ in range(max_steps):
+        try:
+            events.append(next(gen))
+        except StopIteration as stop:
+            return events, stop.value
+    raise AssertionError("drain_stream_queue did not finish")
+
+
+def test_drain_stream_queue_emits_stream_idle_notice_after_threshold(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr("harness.send_loop_phases.STREAM_IDLE_POLL_SEC", 0)
+
+    resp = SimpleNamespace(text="ok")
+    script = [
+        ("reasoning", "partial thought"),
+        ("advance", STREAM_IDLE_NOTICE_SEC + 1),
+        queue.Empty,
+        ("done", resp),
+    ]
+    q = MagicMock()
+    q.get = _mock_stream_queue_get(clock, script)
+
+    events, (prose, got) = _collect_drain_events(drain_stream_queue(q))
+    idle = [
+        e for e in events
+        if e.kind == "notice" and e.data.get("kind") == "wait"
+    ]
+    assert len(idle) == 1
+    assert idle[0].data["message"] == STREAM_IDLE_NOTICE_MESSAGE
+    assert any(e.kind == "thinking" for e in events)
+    assert got is resp
+    assert prose == ""
+
+
+def test_drain_stream_queue_stream_idle_notice_is_one_shot_until_progress(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr("harness.send_loop_phases.STREAM_IDLE_POLL_SEC", 0)
+
+    resp = SimpleNamespace(text="ok")
+    script = [
+        ("reasoning", "partial"),
+        ("advance", STREAM_IDLE_NOTICE_SEC + 1),
+        queue.Empty,
+        queue.Empty,
+        ("delta", '{"say": "more"}'),
+        ("advance", STREAM_IDLE_NOTICE_SEC + 1),
+        queue.Empty,
+        ("done", resp),
+    ]
+    q = MagicMock()
+    q.get = _mock_stream_queue_get(clock, script)
+
+    events, (_prose, got) = _collect_drain_events(drain_stream_queue(q))
+    idle = [
+        e for e in events
+        if e.kind == "notice"
+        and e.data.get("kind") == "wait"
+        and e.data.get("message") == STREAM_IDLE_NOTICE_MESSAGE
+    ]
+    assert len(idle) == 2
+    assert got is resp
+
+
+def test_drain_stream_queue_no_stream_idle_notice_under_threshold(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr("harness.send_loop_phases.STREAM_IDLE_POLL_SEC", 0)
+
+    resp = SimpleNamespace(text="ok")
+    script = [
+        ("reasoning", "partial"),
+        ("advance", STREAM_IDLE_NOTICE_SEC - 1),
+        queue.Empty,
+        ("done", resp),
+    ]
+    q = MagicMock()
+    q.get = _mock_stream_queue_get(clock, script)
+
+    events, (_prose, got) = _collect_drain_events(drain_stream_queue(q))
+    idle = [e for e in events if e.kind == "notice" and e.data.get("kind") == "wait"]
+    assert idle == []
+    assert got is resp
+
+
+def test_drain_stream_queue_no_stream_idle_notice_on_completion(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr("harness.send_loop_phases.STREAM_IDLE_POLL_SEC", 0)
+
+    resp = SimpleNamespace(text="ok")
+    script = [
+        ("delta", '{"say": "Hello"}'),
+        ("done", resp),
+    ]
+    q = MagicMock()
+    q.get = _mock_stream_queue_get(clock, script)
+
+    events, (prose, got) = _collect_drain_events(drain_stream_queue(q))
+    idle = [
+        e for e in events
+        if e.kind == "notice"
+        and e.data.get("message") == STREAM_IDLE_NOTICE_MESSAGE
+    ]
+    assert idle == []
+    assert "Hello" in prose
+    assert got is resp
 
 
 def test_promote_trailing_reasoning_empty_say():

@@ -113,6 +113,20 @@ describe("deriveBusyProgress", () => {
     expect(p.label).not.toContain("Waiting on provider");
   });
 
+  it("waitHint overrides thinking after partial reasoning paints", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      { kind: "thinking", text: "Let me check", streaming: true },
+    ];
+    const p = deriveBusyProgress(items, "thinking", 12_000, {
+      waitHint: "Provider still working — stream idle",
+    });
+    expect(p.phase).toBe("waiting");
+    expect(p.label).toContain("Waiting on provider");
+    expect(p.label).toContain("Provider still working — stream idle");
+    expect(p.label.toLowerCase()).not.toContain("thinking");
+  });
+
   it("clears busy labels when pure-chat answer is complete despite lagging status (T5)", () => {
     const items: Item[] = [
       msg("user", "hi"),

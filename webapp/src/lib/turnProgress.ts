@@ -549,14 +549,26 @@ export function deriveBusyProgress(
   }
 
   // T3: honesty before first token / tool — do not pretend we are "thinking".
-  if (!hasSignal) {
+  const hint = (opts?.waitHint || "").trim();
+  if (hint) {
     const model = shortPilotModelLabel(opts?.modelLabel || "");
-    const hint = (opts?.waitHint || "").trim();
     const who = model ? `Waiting on ${model}` : "Waiting on provider";
     let waiting = elapsed ? `${who}… · ${elapsed}` : `${who}…`;
-    if (hint) {
-      waiting = `${waiting} · ${hint}`;
-    }
+    waiting = `${waiting} · ${hint}`;
+    return {
+      phase: "waiting",
+      label: waiting,
+      pill: waiting,
+      step,
+      runningGoal,
+      runningKind,
+    };
+  }
+
+  if (!hasSignal) {
+    const model = shortPilotModelLabel(opts?.modelLabel || "");
+    const who = model ? `Waiting on ${model}` : "Waiting on provider";
+    let waiting = elapsed ? `${who}… · ${elapsed}` : `${who}…`;
     return {
       phase: "waiting",
       label: waiting,

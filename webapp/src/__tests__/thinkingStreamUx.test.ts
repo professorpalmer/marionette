@@ -923,3 +923,47 @@ describe("live transcript chronological append-only ordering", () => {
     ]);
   });
 });
+
+describe("createApplyStreamEvent waitHint lifecycle", () => {
+  function makeWaitHintDeps() {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+      waitHint: null as string | null,
+    };
+    state.itemsRef.current = state.items;
+    const deps = makeApplyDeps(state);
+    deps.setWaitHint = (value: string | null | ((prev: string | null) => string | null)) => {
+      state.waitHint = typeof value === "function" ? value(state.waitHint) : value;
+    };
+    return { state, apply: createApplyStreamEvent(deps) };
+  }
+
+  it("sets waitHint from wait notices", () => {
+    const { state, apply } = makeWaitHintDeps();
+    apply({ kind: "notice", data: { kind: "wait", message: "Provider still working — stream idle" } });
+    expect(state.waitHint).toBe("Provider still working — stream idle");
+  });
+
+  it("clears waitHint on reasoning delta progress", () => {
+    const { state, apply } = makeWaitHintDeps();
+    apply({ kind: "notice", data: { kind: "wait", message: "Provider still working — stream idle" } });
+    apply({ kind: "thinking", data: { text: "More reasoning", delta: true, stream_id: "r1" } });
+    expect(state.waitHint).toBeNull();
+  });
+
+  it("clears waitHint on message_delta progress", () => {
+    const { state, apply } = makeWaitHintDeps();
+    apply({ kind: "notice", data: { kind: "wait", message: "Provider still working — stream idle" } });
+    apply({ kind: "message_delta", data: { text: "Hello", stream_id: "a1", channel: "answer" } });
+    expect(state.waitHint).toBeNull();
+  });
+
+  it("clears waitHint on terminal assistant_done", () => {
+    const { state, apply } = makeWaitHintDeps();
+    apply({ kind: "notice", data: { kind: "wait", message: "Provider still working — stream idle" } });
+    apply({ kind: "assistant_done", data: {} });
+    expect(state.waitHint).toBeNull();
+  });
+});

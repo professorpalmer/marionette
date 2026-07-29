@@ -113,6 +113,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     fetchContextUsage,
   } = deps;
 
+  const clearWaitHintOnProgress = () => setWaitHint(null);
+
   return (ev: StreamEvent) => {
     const d = ev.data || {};
     if (ev.kind === "compacting") {
@@ -178,6 +180,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setCompactingStatus(null);
       const { painting, chunk } = shouldPaintThinking(d);
       if (!painting) return;
+      clearWaitHintOnProgress();
       setStatus((prev) =>
         prev === "streaming" || prev === "executing" ? prev : "thinking"
       );
@@ -195,12 +198,14 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     } else if (ev.kind === "stream_item_done") {
       const streamId = d.stream_id != null ? String(d.stream_id) : "";
       if (!streamId) return;
+      clearWaitHintOnProgress();
       flushTypewriter();
       setItems((p) => sealStreamById(p, streamId));
     } else if (ev.kind === "tool_prep") {
       const name = String(d.name || "").trim();
       const callId = String(d.id || "").trim();
       if (!name && !callId) return;
+      clearWaitHintOnProgress();
       setCompactingStatus(null);
       setStatus((prev) =>
         prev === "streaming" || prev === "executing" ? prev : "thinking"
@@ -217,6 +222,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         })
       );
     } else if (ev.kind === "message_delta") {
+      clearWaitHintOnProgress();
       setCompactingStatus(null);
       setStatus("streaming");
       // Ensure a streaming bubble exists. When the turn already has tool
@@ -298,6 +304,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // the pilot's own message bubble, and never let several workers pile into
       // one unbounded permanent bubble.
       if (d.kind === "text" && d.text) {
+        clearWaitHintOnProgress();
         setCompactingStatus(null);
         setStatus("streaming");
         setItems((p) => ensureWorkerStreamingBubble(p, { isPlan: planTurnRef.current }));
@@ -316,6 +323,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         streamed: Boolean(d.streamed),
       }));
     } else if (ev.kind === "action_start") {
+      clearWaitHintOnProgress();
       setCompactingStatus(null);
       setStatus("executing");
       // Flush typewriter before seal inside appendActionStartCard so buffered
@@ -327,6 +335,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // running and snap shut on action_result, which read as a flicker.
       setItems((p) => appendActionStartCard(p, d));
     } else if (ev.kind === "action_result") {
+      clearWaitHintOnProgress();
       setCompactingStatus(null);
       setStatus("thinking");
       // The swarm is done: its structured artifacts/summary land below. Drop

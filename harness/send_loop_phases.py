@@ -41,6 +41,11 @@ READ_ONLY_KINDS: frozenset[str] = frozenset({
     "web_search", "web_fetch", "read_pdf", "view_image", "lsp",
 })
 
+# Honest composer wait-hint when the provider stream goes quiet mid-turn.
+STREAM_IDLE_NOTICE_SEC = 9.0
+STREAM_IDLE_POLL_SEC = 1.0
+STREAM_IDLE_NOTICE_MESSAGE = "Provider still working — stream idle"
+
 LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "open_project", "relocate_session", "session_bank",
     "write_file", "edit_file", "hash_edit", "run_command",
@@ -413,6 +418,26 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
     answer_batch = StreamDeltaBatch()
     progress_batch = StreamDeltaBatch()
     reasoning_batch = StreamDeltaBatch()
+    last_queue_activity = time.monotonic()
+    stream_idle_notice_sent = False
+
+    def _note_queue_activity():
+        nonlocal last_queue_activity, stream_idle_notice_sent
+        last_queue_activity = time.monotonic()
+        stream_idle_notice_sent = False
+
+    def _maybe_emit_stream_idle_notice():
+        nonlocal stream_idle_notice_sent
+        if stream_idle_notice_sent:
+            return None
+        now = time.monotonic()
+        if (now - last_queue_activity) < STREAM_IDLE_NOTICE_SEC:
+            return None
+        stream_idle_notice_sent = True
+        return ConvEvent("notice", {
+            "message": STREAM_IDLE_NOTICE_MESSAGE,
+            "kind": "wait",
+        })
 
     def _flush_all():
         for bat, ek, ch in (
@@ -522,7 +547,7 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
             if has_pending:
                 kind, val = q.get(timeout=0.01)
             else:
-                kind, val = q.get()
+                kind, val = q.get(timeout=STREAM_IDLE_POLL_SEC)
         except queue_mod.Empty:
             for ev in _flush_overdue():
                 yield ev
@@ -534,8 +559,12 @@ def drain_stream_queue(q: Any) -> Iterator[Any]:
             ):
                 for ev in _flush_all():
                     yield ev
+            idle_notice = _maybe_emit_stream_idle_notice()
+            if idle_notice is not None:
+                yield idle_notice
             continue
 
+        _note_queue_activity()
         if kind == "delta":
             for ev in _handle_assistant_delta(val):
                 yield ev
