@@ -100,6 +100,13 @@ class WorkerResult:
     # panel never stamps the pilot slug as the worker when the engine is agentic.
     engine: str = ""
     model: str = ""
+    # Measured worker provenance. These are populated from git/worktree state,
+    # never from provider prose, and remain optional for legacy callers.
+    managed_worktree_path: str = ""
+    managed_worktree_mode: str = ""
+    worktree_diff_empty: Optional[bool] = None
+    live_dirty_paths_before: list[str] = field(default_factory=list)
+    live_dirty_paths_after: list[str] = field(default_factory=list)
 
 
 # --- Escaped-write detection ------------------------------------------------
@@ -547,6 +554,7 @@ class ProviderWorker:
         # WorkerResult.tokens_cached in run() so the parent session's cache
         # savings include worker/swarm cache reads.
         self._session_tokens_cached = 0
+        self._worktree_diff_empty: Optional[bool] = None
 
     def run(self) -> WorkerResult:
         """Drive the worker and return a normalized result whose token counts
@@ -570,6 +578,11 @@ class ProviderWorker:
         # (never added on top), so we only need to mirror it here.
         if not result.tokens_cached:
             result.tokens_cached = self._session_tokens_cached
+        if result.worktree:
+            result.managed_worktree_path = result.worktree
+            result.managed_worktree_mode = "managed"
+        if result.worktree_diff_empty is None:
+            result.worktree_diff_empty = self._worktree_diff_empty
         return result
 
     def _run_impl(self) -> WorkerResult:
@@ -578,6 +591,7 @@ class ProviderWorker:
         self._session_tokens_in = 0
         self._session_tokens_total = 0
         self._session_tokens_cached = 0
+        self._worktree_diff_empty = None
         if not self.repo or not _is_repo(self.repo):
             return WorkerResult(ok=False, error="not a git repo")
 
@@ -761,6 +775,8 @@ class ProviderWorker:
             try:
                 from harness.edit_engines import finalize_worktree_patch
                 patch, files_changed = finalize_worktree_patch(wt_path)
+                # Record this before analysis intentionally discards its patch.
+                self._worktree_diff_empty = not bool(patch.strip())
             except RuntimeError as e:
                 return WorkerResult(
                     ok=False,

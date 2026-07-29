@@ -267,7 +267,7 @@ def run_native_edit(
     # workers at 50k mid-turn. Analysis gets more idle headroom (no swarm
     # findings to reset the stall counter).
     worker = ProviderWorker(
-        config.repo, goal,
+        cwd or config.repo, goal,
         driver=config.driver, reach=config.reach,
         budget=AutoBudget(
             max_tokens=worker_token_budget(),
@@ -424,6 +424,7 @@ def run_agentic_edit(
                 shutil.rmtree(tmp, ignore_errors=True)
 
             patch, files_changed = finalize_worktree_patch(wt_path)
+            worktree_diff_empty = not bool(patch.strip())
             tokens_out, tokens_in, failure, final_text = _summarize_agentic_result(result)
             routed_model = _routed_model_id(result)
 
@@ -440,6 +441,10 @@ def run_agentic_edit(
                         ok=False, error=AGENTIC_ROUTE_FAILED,
                         summary=final_text or "Agentic engine could not select a model/provider.",
                         model=routed_model,
+                        worktree=wt_path,
+                        managed_worktree_path=wt_path,
+                        managed_worktree_mode="managed",
+                        worktree_diff_empty=worktree_diff_empty,
                         events=list(mapped_events),
                     ), result)
                 if not expects_diff:
@@ -466,6 +471,10 @@ def run_agentic_edit(
                             ok=True, tokens_out=tokens_out, tokens_in=tokens_in,
                             summary=summary,
                             model=routed_model,
+                            worktree=wt_path,
+                            managed_worktree_path=wt_path,
+                            managed_worktree_mode="managed",
+                            worktree_diff_empty=worktree_diff_empty,
                             events=list(mapped_events),
                         ), result)
                     label = degrade_reason or "no structured findings"
@@ -479,12 +488,20 @@ def run_agentic_edit(
                         tokens_out=tokens_out, tokens_in=tokens_in,
                         summary="\n".join(summary_parts),
                         model=routed_model,
+                        worktree=wt_path,
+                        managed_worktree_path=wt_path,
+                        managed_worktree_mode="managed",
+                        worktree_diff_empty=worktree_diff_empty,
                         events=list(mapped_events),
                     ), result)
                 return _stamp_agentic(WorkerResult(
                     ok=False, tokens_out=tokens_out, tokens_in=tokens_in,
                     summary=final_text or "no changes produced",
                     model=routed_model,
+                    worktree=wt_path,
+                    managed_worktree_path=wt_path,
+                    managed_worktree_mode="managed",
+                    worktree_diff_empty=worktree_diff_empty,
                     events=list(mapped_events),
                 ), result)
 
@@ -493,6 +510,10 @@ def run_agentic_edit(
                 tokens_out=tokens_out, tokens_in=tokens_in,
                 summary=final_text or (f"Files changed: {', '.join(files_changed)}" if files_changed else "Patch generated"),
                 model=routed_model,
+                worktree=wt_path,
+                managed_worktree_path=wt_path,
+                managed_worktree_mode="managed",
+                worktree_diff_empty=worktree_diff_empty,
                 events=list(mapped_events),
             ), result)
     except Exception as exc:

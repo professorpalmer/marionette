@@ -161,7 +161,8 @@ class LocalJobsMixin:
                           status: str = "",
                           engine: str = "", model: str = "",
                           findings: Optional[list] = None,
-                          diff: str = "") -> None:
+                          diff: str = "",
+                          worker_provenance: Optional[dict] = None) -> None:
         """Flip a live local job to its terminal state so the panel stops showing
         a spinner and surfaces the outcome (files touched + a one-line summary).
 
@@ -252,6 +253,8 @@ class LocalJobsMixin:
                 job["cost_provenance"] = "provider"
             if job.get("tasks"):
                 job["tasks"][0]["status"] = terminal
+            if isinstance(worker_provenance, dict):
+                job["worker_provenance"] = copy.deepcopy(worker_provenance)
             if cancelled and not summary:
                 headline = "Cancelled by user"
             else:
@@ -296,6 +299,7 @@ class LocalJobsMixin:
                 "tokens": int(job.get("tokens") or 0),
                 "est_cost_usd": round(real_cost, 6) if real_cost else 0.0,
                 "cost_provenance": job.get("cost_provenance"),
+                "worker_provenance": copy.deepcopy(job.get("worker_provenance") or {}),
             })
             job["artifacts"] = (
                 keep_routing

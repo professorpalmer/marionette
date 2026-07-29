@@ -26,6 +26,36 @@ from typing import Iterator, Optional
 from ._exec import _puppetmaster_cmd
 
 
+_WORKER_PROVENANCE_PATH_CAP = 12
+
+
+def _worker_provenance_text(provenance: dict) -> str:
+    """Render measured worker/live-tree facts for pilot-facing text."""
+    if not isinstance(provenance, dict):
+        return ""
+    before = list(provenance.get("live_dirty_paths_before") or [])
+    after = list(provenance.get("live_dirty_paths_after") or [])
+    mode = str(provenance.get("managed_worktree_mode") or "unknown")
+    path = str(provenance.get("managed_worktree_path") or "")
+    diff_empty = provenance.get("worktree_diff_empty")
+    if diff_empty is True:
+        worker_line = "Worker produced no changes in disposable managed worktree"
+    elif diff_empty is False:
+        worker_line = "Worker produced changes in disposable managed worktree"
+    else:
+        worker_line = "Worker worktree diff status unavailable"
+    def path_list(paths: list) -> str:
+        shown = [str(item) for item in paths[:_WORKER_PROVENANCE_PATH_CAP]]
+        suffix = f", +{len(paths) - len(shown)} more" if len(paths) > len(shown) else ""
+        return ", ".join(shown) + suffix if shown else "none"
+    return (
+        f"[provenance] {worker_line}; mode={mode}"
+        f"{f', path={path}' if path else ''}. "
+        f"User checkout had {len(before)} pre-existing dirty paths before"
+        f" ({path_list(before)}) and {len(after)} after ({path_list(after)})."
+    )
+
+
 class ConversationJobsMixin:
     """Mixin holding swarm job await/apply/drain helpers.
 
@@ -227,8 +257,17 @@ class ConversationJobsMixin:
     ) -> None:
         from .conversation import append_failed_declarative_checks_summary
 
+        live_repo = target_repo or self.config.repo or ""
+        live_dirty_before: list[str] = []
+        live_dirty_after: list[str] = []
         try:
             from harness.worker import WorkerResult
+            from harness.worktree_seed import _list_git_status_porcelain_paths
+
+            try:
+                live_dirty_before = _list_git_status_porcelain_paths(live_repo)
+            except Exception:
+                live_dirty_before = []
 
             # Bounded run so a wedged worker frees its _swarm_pool slot on the
             # hard deadline instead of occupying it forever (audit finding #4).
@@ -246,6 +285,10 @@ class ConversationJobsMixin:
                 target_repo=target_repo, expects_diff=expects_diff,
                 on_event=_on_worker_event,
             )
+            try:
+                live_dirty_after = _list_git_status_porcelain_paths(live_repo)
+            except Exception:
+                live_dirty_after = []
             if self._local_job_cancelled(job_id):
                 # A cancel landed while the worker was running. The job was already
                 # flipped to 'cancelled' by cancel_local_job(); drop the result so
@@ -258,6 +301,22 @@ class ConversationJobsMixin:
                     error=f"worker exceeded {deadline}s wall-clock deadline",
                     summary=f"Worker exceeded its {deadline}s deadline and was abandoned to free the pool slot.",
                 )
+            provenance = {
+                "live_dirty_paths_before": list(live_dirty_before),
+                "live_dirty_paths_after": list(live_dirty_after),
+                "managed_worktree_path": str(getattr(res, "managed_worktree_path", "") or getattr(res, "worktree", "") or ""),
+                "managed_worktree_mode": str(getattr(res, "managed_worktree_mode", "") or ("managed" if getattr(res, "worktree", "") else "unknown")),
+                "worktree_diff_empty": getattr(res, "worktree_diff_empty", None),
+            }
+            res.live_dirty_paths_before = list(live_dirty_before)
+            res.live_dirty_paths_after = list(live_dirty_after)
+            res.managed_worktree_path = provenance["managed_worktree_path"]
+            res.managed_worktree_mode = provenance["managed_worktree_mode"]
+            res.worktree_diff_empty = provenance["worktree_diff_empty"]
+            raw_worker_summary = res.summary or ""
+            provenance_text = _worker_provenance_text(provenance)
+            if provenance_text:
+                res.summary = f"{provenance_text}\n{res.summary}".strip()
 
             if not res.ok:
                 # A worker that produced NO patch ("no changes produced" /
@@ -326,9 +385,11 @@ class ConversationJobsMixin:
                 if not expects_diff:
                     try:
                         from harness.pilot_guards import analysis_summary_is_substantive
-                        substantive = analysis_summary_is_substantive(summary)
+                        # Machine-generated provenance is diagnostic context, not
+                        # evidence that an analysis found something substantive.
+                        substantive = analysis_summary_is_substantive(raw_worker_summary)
                     except Exception:
-                        substantive = bool((summary or "").strip())
+                        substantive = bool(raw_worker_summary.strip())
                 if not expects_diff and not substantive:
                     degrade_err = (
                         "analysis produced no substantive findings "
@@ -491,6 +552,8 @@ class ConversationJobsMixin:
                     "pending_review": pending_review_info
                 }
 
+            res_dict["worker_provenance"] = provenance
+
             # Always fold completed WorkerResult.events into job['actions']
             # (progressive callback may have already recorded most of them).
             try:
@@ -527,6 +590,7 @@ class ConversationJobsMixin:
                 model=wr_model,
                 findings=_signal_rows,
                 diff=(getattr(res, "patch", "") or ""),
+                worker_provenance=provenance,
             )
             self._swarm_results.put({
                 "job_id": job_id,
@@ -536,7 +600,24 @@ class ConversationJobsMixin:
             })
 
         except Exception as e:
-            self._finish_local_job(job_id, ok=False, summary=f"Failed background worker: {e}")
+            try:
+                from harness.worktree_seed import _list_git_status_porcelain_paths
+                live_dirty_after = _list_git_status_porcelain_paths(live_repo)
+            except Exception:
+                live_dirty_after = []
+            failure_provenance = {
+                "live_dirty_paths_before": list(live_dirty_before),
+                "live_dirty_paths_after": list(live_dirty_after),
+                "managed_worktree_path": "",
+                "managed_worktree_mode": "unknown",
+                "worktree_diff_empty": None,
+            }
+            failure_text = _worker_provenance_text(failure_provenance)
+            failure_summary = f"{failure_text}\nFailed background worker: {e}".strip()
+            self._finish_local_job(
+                job_id, ok=False, summary=failure_summary,
+                worker_provenance=failure_provenance,
+            )
             self._swarm_results.put({
                 "job_id": job_id,
                 "objective": objective,
@@ -553,7 +634,8 @@ class ConversationJobsMixin:
                     "apply_msg": str(e),
                     "num_artifacts": 0,
                     "artifact_types": [],
-                    "ar_list": []
+                    "ar_list": [],
+                    "worker_provenance": failure_provenance,
                 },
                 "state_dir": None
             })
@@ -605,6 +687,11 @@ class ConversationJobsMixin:
                     applied = res_job["applied"]
                     applied_files = res_job["files"]
                     summary = res_job["summary"]
+                    provenance_text = _worker_provenance_text(
+                        res_job.get("worker_provenance") or {}
+                    )
+                    if provenance_text and provenance_text not in summary:
+                        summary = f"{provenance_text}\n{summary}".strip()
                     held_for_review = bool(res_job.get("held_for_review"))
                     failed = bool(
                         res_job.get("error")
@@ -647,6 +734,7 @@ class ConversationJobsMixin:
                         "summary": summary or "",
                         "error": display_error,
                         "objective": objective,
+                        "worker_provenance": res_job.get("worker_provenance") or {},
                     })
                     # Nested actions are progressive via /api/swarm/live; mirror
                     # onto display cards only here under _busy for reload durability.

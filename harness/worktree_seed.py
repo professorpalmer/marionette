@@ -336,8 +336,23 @@ def _path_matches_tokens(rel: str, tokens: set[str]) -> bool:
     return bool(candidates & tokens)
 
 
-def _list_live_dirty_paths(repo: str) -> list[str]:
-    """Relative paths that differ from HEAD in the live tree (dirty + untracked)."""
+def _parse_porcelain_path_field(path_field: str) -> list[str]:
+    """Normalize one porcelain path field into relative repo paths."""
+    path_field = path_field.strip().strip('"').replace("\\", "/")
+    if not path_field or path_field.endswith("/"):
+        return []
+    if " -> " in path_field:
+        old_path, new_path = path_field.split(" -> ", 1)
+        out: list[str] = []
+        for part in (old_path.strip(), new_path.strip()):
+            if part and not part.endswith("/"):
+                out.append(part)
+        return out
+    return [path_field]
+
+
+def _list_git_status_porcelain_paths(repo: str) -> list[str]:
+    """Every path from git status --porcelain, including deletes and renames."""
     if not repo or not os.path.isdir(repo):
         return []
     try:
@@ -358,17 +373,22 @@ def _list_live_dirty_paths(repo: str) -> list[str]:
     for line in p.stdout.splitlines():
         if len(line) < 4:
             continue
-        path_part = line[3:]
-        # renames: "old -> new"
-        if " -> " in path_part:
-            path_part = path_part.split(" -> ", 1)[1]
-        path_part = path_part.strip().strip('"').replace("\\", "/")
-        if not path_part or path_part.endswith("/"):
-            continue
-        if path_part in seen:
-            continue
-        seen.add(path_part)
-        src = os.path.join(os.path.abspath(repo), path_part.replace("/", os.sep))
+        for path_part in _parse_porcelain_path_field(line[3:]):
+            if path_part in seen:
+                continue
+            seen.add(path_part)
+            out.append(path_part)
+    return sorted(out)
+
+
+def _list_live_dirty_paths(repo: str) -> list[str]:
+    """Relative dirty/untracked paths that exist as files (worktree seeding)."""
+    if not repo or not os.path.isdir(repo):
+        return []
+    repo_abs = os.path.abspath(repo)
+    out: list[str] = []
+    for path_part in _list_git_status_porcelain_paths(repo):
+        src = os.path.join(repo_abs, path_part.replace("/", os.sep))
         if os.path.isfile(src):
             out.append(path_part)
     return out

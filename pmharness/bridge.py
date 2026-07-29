@@ -205,6 +205,11 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
     lens_line = f"\n\n{lens}" if lens else ""
     git_brief = maybe_git_upstream_brief(repo_cwd)
     git_block = f"\n\n{git_brief}" if git_brief else ""
+    worktree_notice = (
+        "\n\nYour git status describes a disposable managed worker worktree, "
+        "not the user's live checkout. Do not claim the user's checkout is clean "
+        "or dirty from this worktree's status."
+    )
     submit = _analysis_submit_contract(via_tool=via_tool)
     if browser:
         submit_tail = (
@@ -223,7 +228,7 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
             f"do not submit credentials or perform destructive actions on the "
             f"site. Emit what each browser tool returned as evidenced findings, "
             f"{submit_tail}{git_block}\n\n"
-            f"{submit}\n\n{_STOP_CONDITIONS}"
+            f"{submit}{worktree_notice}\n\n{_STOP_CONDITIONS}"
         )
     return (
         f"{goal}{lens_line}\n\nAnalyze the REAL codebase at {repo_cwd}. "
@@ -235,7 +240,7 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
         # calling submit_findings -- surfacing as a "completed without
         # structured findings" degrade. Tell the worker to budget explicitly
         # and always submit what it has rather than exhausting its turns.
-        f"{submit}\n\n{_STOP_CONDITIONS}"
+        f"{submit}{worktree_notice}\n\n{_STOP_CONDITIONS}"
     )
 
 
