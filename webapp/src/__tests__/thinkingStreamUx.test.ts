@@ -48,7 +48,7 @@ function makeApplyDeps(opts: {
     setDistillNotice: () => {},
     setWikiPrepared: () => {},
     setMemoryProposals: () => {},
-    setWaitHint: () => {},
+    setWaitHint: (_value: string | null | ((prev: string | null) => string | null)) => {},
     setStatus: () => {},
     setTurnOpen: () => {},
     setPendingJobIds: () => {},

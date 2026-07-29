@@ -24,10 +24,10 @@ import harness.server as server
 from harness.job_scoping import job_label_for_session, stamp_task_payload
 from harness.server import (
     _cache_saved_usd_swarm,
-    _cache_saved_usd_swarm_detail,
     _routing_saved_usd,
     _tokens_cached_swarm,
 )
+from harness.api.swarm_cost import _cache_saved_usd_swarm_detail
 from puppetmaster.models import Artifact, ArtifactType, Task
 from puppetmaster.store_factory import create_store
 
