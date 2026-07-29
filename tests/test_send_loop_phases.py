@@ -216,6 +216,16 @@ def test_run_prefetch_dispatches_read_file():
     session._do_read_file.assert_called_once_with(act)
 
 
+def test_run_prefetch_dispatches_lsp():
+    act = PilotAction(kind="lsp", path="src/main.py", arguments={"action": "definition"})
+    session = MagicMock()
+    session._do_lsp.return_value = (True, "success", '{"kind":"definition"}')
+    idx, res = run_prefetch(session, (2, act))
+    assert idx == 2
+    assert res == (True, "success", '{"kind":"definition"}')
+    session._do_lsp.assert_called_once_with(act)
+
+
 def test_run_prefetch_unknown_kind_returns_exception_tuple():
     act = PilotAction(kind="not_a_prefetch_tool", goal="x")
     idx, res = run_prefetch(SimpleNamespace(), (1, act))

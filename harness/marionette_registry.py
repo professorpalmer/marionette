@@ -50,12 +50,27 @@ def shared_puppetmaster_models_path() -> Path:
 def ensure_marionette_models_env() -> str:
     """Ensure ``PUPPETMASTER_MODELS_PATH`` points at the Marionette-only registry.
 
-    If the env is already set (tests / explicit override), leave it alone.
-    Otherwise copy the shared PM registry once into ``~/.pmharness/`` and export
-    the path for this process.
+    If the env is already set (tests / explicit override), preserve that exact
+    path, but materialize it when Electron supplied a path before first boot.
+    Otherwise copy the shared PM registry once into ``~/.pmharness/`` and
+    export the path for this process.
     """
     existing = (os.environ.get("PUPPETMASTER_MODELS_PATH") or "").strip()
     if existing:
+        target = Path(existing)
+        if target.is_file():
+            return existing
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # An explicit Electron/test path is an isolated target.  Do not
+            # import Cursor's catalog into it; an empty valid catalog is the
+            # deterministic seed and normal sync will add keyed providers.
+            target.write_text(
+                json.dumps({"version": 1, "models": []}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            _diag("marionette_registry.ensure_explicit", exc)
         return existing
     dest = marionette_models_path()
     try:

@@ -40,8 +40,8 @@ def test_build_stub_needs_no_key():
 
 def test_build_openrouter_driver_constructs():
     # constructs without a key (key only read at call time)
-    d = reg.build("kimi-k2.6", reach="openrouter")
-    assert d.name == "kimi-k2.6"
+    d = reg.build("kimi-k3", reach="openrouter")
+    assert d.name == "kimi-k3"
     assert "openrouter.ai" in d.base_url
 
 
@@ -73,7 +73,7 @@ def test_text_only_drivers_marked_no_vision():
 
 
 def test_kimi_has_vision():
-    assert reg.has_vision("kimi-k2.6") is True
+    assert reg.has_vision("kimi-k3") is True
 
 
 def test_vision_sidecars_exist():

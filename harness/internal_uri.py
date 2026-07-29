@@ -17,6 +17,7 @@ in URI paths are rejected so Windows drive-letter confusion cannot bypass checks
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -71,6 +72,7 @@ class InternalResource:
 class InternalUriContext:
     state_dir: str
     repo: Optional[str] = None
+    session_id: Optional[str] = None
 
     def store(self):
         if not self.state_dir:
@@ -81,6 +83,115 @@ class InternalUriContext:
 
     def durable(self) -> DurableState:
         return DurableState(self.state_dir)
+
+
+_LOCAL_JOBS_FILE = "swarm_local_jobs.json"
+_LOCAL_JOBS_MAX_BYTES = 4 * 1024 * 1024
+_LOCAL_TEXT_CAP = 4000
+_LOCAL_SECRET_KEYS = frozenset({
+    "api_key", "apikey", "authorization", "cookie", "env", "headers",
+    "password", "secret", "token",
+})
+
+
+def _local_jobs(ctx: InternalUriContext) -> list[dict]:
+    """Read the provider-worker sidecar as an untrusted, read-only index."""
+    if not ctx.state_dir:
+        return []
+    path = os.path.join(ctx.state_dir, _LOCAL_JOBS_FILE)
+    try:
+        if os.path.getsize(path) > _LOCAL_JOBS_MAX_BYTES:
+            return []
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return []
+    rows = payload.get("jobs") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    valid = [
+        row for row in rows
+        if isinstance(row, dict) and str(row.get("id") or "").startswith("local-")
+    ]
+    try:
+        from .job_scoping import cwd_under_repo, filter_local_jobs
+        visible = filter_local_jobs(
+            valid,
+            active_session_id=str(ctx.session_id or ""),
+            repo_root=str(ctx.repo or ""),
+        )
+        if ctx.repo:
+            visible = [
+                job for job in visible
+                if not job.get("cwd") or cwd_under_repo(str(job["cwd"]), str(ctx.repo))
+            ]
+        return visible
+    except Exception:
+        return []
+
+
+def _sanitize_local_value(value: Any, *, key: str = "") -> Any:
+    """Bound sidecar data and remove secret-shaped fields before serving it."""
+    if key.lower() in _LOCAL_SECRET_KEYS:
+        return "[redacted]"
+    if isinstance(value, str):
+        return value[:_LOCAL_TEXT_CAP]
+    if isinstance(value, list):
+        return [_sanitize_local_value(item) for item in value[:80]]
+    if isinstance(value, dict):
+        return {
+            str(name)[:120]: _sanitize_local_value(item, key=str(name))
+            for name, item in list(value.items())[:120]
+            if str(name).lower() not in _LOCAL_SECRET_KEYS
+        }
+    return value
+
+
+def _local_job_payload(job: dict) -> dict:
+    payload = _sanitize_local_value(job)
+    artifacts = payload.get("artifacts") if isinstance(payload, dict) else []
+    payload["artifacts"] = artifacts if isinstance(artifacts, list) else []
+    # A sidecar row is a bookkeeping projection, not a claim that durable
+    # Puppetmaster artifacts exist in the store.
+    payload["artifacts_complete"] = any(
+        isinstance(artifact, dict)
+        and str(artifact.get("type") or "").lower() not in ("routing", "placeholder")
+        and bool(str(artifact.get("headline") or "").strip())
+        for artifact in payload["artifacts"]
+    )
+    return payload
+
+
+def _local_artifact_id(
+    job_id: str,
+    index: int,
+    artifact: dict,
+    artifacts: Optional[list[dict]] = None,
+) -> str:
+    explicit = str(artifact.get("id") or "").strip()
+    explicit_is_unique = artifacts is None or sum(
+        str(candidate.get("id") or "").strip() == explicit
+        for candidate in artifacts
+    ) == 1
+    if explicit and _SAFE_SEGMENT.fullmatch(explicit) and explicit_is_unique:
+        return explicit
+    basis = json.dumps(
+        [job_id, index, explicit, artifact.get("type"), artifact.get("headline")],
+        sort_keys=True,
+        default=str,
+    )
+    return "local-artifact-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def _local_job_artifacts(job: dict) -> list[dict]:
+    raw = job.get("artifacts")
+    if not isinstance(raw, list):
+        return []
+    return [artifact for artifact in raw if isinstance(artifact, dict)]
+
+
+def _find_local_job(job_id: str, ctx: InternalUriContext) -> Optional[dict]:
+    return next((job for job in _local_jobs(ctx) if job.get("id") == job_id), None)
 
 
 def is_internal_uri(path: str) -> bool:
@@ -231,6 +342,13 @@ def search_internal_uris(
                     hits.append(f"job://{jid}\t{goal[:120]}")
                     if len(hits) >= max_results:
                         break
+            for job in _local_jobs(ctx):
+                jid = str(job.get("id") or "")
+                goal = str(job.get("goal") or "")
+                if needle in goal.lower() or needle in jid.lower():
+                    hits.append(f"job://{jid}\t{goal[:120]}")
+                    if len(hits) >= max_results:
+                        break
         elif sch == "artifact":
             for job in store.list_jobs():
                 for art in durable.format_artifacts(store.list_artifacts(job.id)):
@@ -239,6 +357,19 @@ def search_internal_uris(
                     if needle in headline.lower() or needle in aid.lower():
                         hits.append(
                             f"artifact://{job.id}/{aid}\t{art.get('type', '')}: {headline[:100]}"
+                        )
+                        if len(hits) >= max_results:
+                            break
+            for job in _local_jobs(ctx):
+                jid = str(job.get("id") or "")
+                artifacts = _local_job_artifacts(job)
+                for index, artifact in enumerate(artifacts):
+                    aid = _local_artifact_id(jid, index, artifact, artifacts)
+                    headline = str(artifact.get("headline") or "")
+                    if needle in headline.lower() or needle in aid.lower():
+                        hits.append(
+                            f"artifact://{jid}/{aid}\t"
+                            f"{artifact.get('type', '')}: {headline[:100]}"
                         )
                         if len(hits) >= max_results:
                             break
@@ -311,6 +442,16 @@ def _json_resource(url: str, payload: Any, *, is_directory: bool = False) -> Int
 
 
 def _resolve_job(parsed: ParsedInternalUri, ctx: InternalUriContext) -> InternalResource:
+    if parsed.path.startswith("local-"):
+        job_id = parsed.path.split("/", 1)[0]
+        _require_safe_id(job_id, "job id")
+        job = _find_local_job(job_id, ctx)
+        if job is None:
+            raise InternalUriError(f"local job not found: {job_id}")
+        url = f"job://{parsed.path}"
+        if parsed.path == job_id:
+            return _json_resource(url, _local_job_payload(job))
+        raise InternalUriError(f"unknown local job path: {parsed.path}")
     store = ctx.store()
     url = f"job://{parsed.path}" if parsed.path else "job://"
 
@@ -370,6 +511,32 @@ def _resolve_job(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Internal
 
 
 def _resolve_artifact(parsed: ParsedInternalUri, ctx: InternalUriContext) -> InternalResource:
+    if parsed.path.startswith("local-"):
+        parts = parsed.path.split("/")
+        if len(parts) not in (2, 3):
+            raise InternalUriError("artifact://local-* requires job_id/artifact_id")
+        job_id, artifact_id = parts[0], parts[1]
+        _require_safe_id(job_id, "job id")
+        _require_safe_id(artifact_id, "artifact id")
+        job = _find_local_job(job_id, ctx)
+        if job is None:
+            raise InternalUriError(f"local job not found: {job_id}")
+        artifacts = _local_job_artifacts(job)
+        for index, artifact in enumerate(artifacts):
+            if _local_artifact_id(job_id, index, artifact, artifacts) != artifact_id:
+                continue
+            data = dict(_sanitize_local_value(artifact))
+            data["id"] = artifact_id
+            data["job_id"] = job_id
+            url = f"artifact://{parsed.path}"
+            if len(parts) == 2:
+                return _json_resource(url, data)
+            field_name = parts[2]
+            _require_safe_id(field_name, "artifact field")
+            if field_name not in data:
+                raise InternalUriError(f"artifact field not found: {field_name}")
+            return _text_resource(url, _stringify(data[field_name]))
+        raise InternalUriError(f"local artifact not found: {artifact_id}")
     store = ctx.store()
     parts = parsed.path.split("/")
     if len(parts) < 2:

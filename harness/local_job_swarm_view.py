@@ -42,6 +42,16 @@ def _normalize_artifacts(raw: Any) -> list[dict]:
     return out
 
 
+def _artifacts_complete(raw: Any) -> bool:
+    """True only when the sidecar carries a non-placeholder artifact headline."""
+    return any(
+        isinstance(artifact, dict)
+        and str(artifact.get("type") or "").lower() not in ("routing", "placeholder")
+        and bool(str(artifact.get("headline") or "").strip())
+        for artifact in _normalize_artifacts(raw)
+    )
+
+
 def _normalize_tasks(raw: Any, *, terminal: bool) -> list[dict]:
     if not isinstance(raw, list):
         return []
@@ -148,7 +158,7 @@ def project_local_job_for_swarm_live(job: dict) -> dict:
         "delegation_savings_counted": bool(job.get("delegation_savings_counted")),
         "cache_saved_usd": round(_as_float(job.get("cache_saved_usd")), 6),
         "artifacts": _normalize_artifacts(job.get("artifacts")),
-        "artifacts_complete": True,
+        "artifacts_complete": _artifacts_complete(job.get("artifacts")),
         "tasks": _normalize_tasks(job.get("tasks"), terminal=terminal),
         "source": str(job.get("source") or "harness"),
         "actions": _normalize_actions(job.get("actions")),

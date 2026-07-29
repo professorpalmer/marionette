@@ -307,3 +307,202 @@ class TestToolDispatchIntegration:
         assert status == "success"
         assert "job://" in val
         assert "routing regressions" in val.lower()
+
+
+class TestLocalSidecarUri:
+    def _write_local_jobs(self, state_dir: str, jobs: list[dict]) -> None:
+        path = os.path.join(state_dir, "swarm_local_jobs.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"jobs": jobs}, fh)
+
+    def test_local_job_direct_read_and_artifacts_complete(self, tmp_path):
+        state_dir = str(tmp_path)
+        self._write_local_jobs(state_dir, [{
+            "id": "local-audit",
+            "goal": "audit browser probing",
+            "session_id": "sess-a",
+            "cwd": str(tmp_path),
+            "artifacts": [{"type": "ROUTING", "headline": "Routed to cheap"}],
+        }])
+        ctx = InternalUriContext(state_dir=state_dir, repo=str(tmp_path), session_id="sess-a")
+        detail = resolve_internal_uri("job://local-audit", ctx)
+        payload = json.loads(detail.content)
+        assert payload["goal"] == "audit browser probing"
+        assert payload["artifacts_complete"] is False
+
+    def test_local_job_artifacts_complete_true_with_real_headline(self, tmp_path):
+        state_dir = str(tmp_path)
+        self._write_local_jobs(state_dir, [{
+            "id": "local-done",
+            "goal": "ship fix",
+            "session_id": "sess-a",
+            "cwd": str(tmp_path),
+            "artifacts": [{"type": "finding", "headline": "Chrome guard accepts app bundles"}],
+        }])
+        ctx = InternalUriContext(state_dir=state_dir, repo=str(tmp_path), session_id="sess-a")
+        payload = json.loads(resolve_internal_uri("job://local-done", ctx).content)
+        assert payload["artifacts_complete"] is True
+
+    def test_local_job_scoped_by_session_and_repo(self, tmp_path):
+        state_dir = str(tmp_path)
+        repo_a = os.path.join(str(tmp_path), "repo-a")
+        repo_b = os.path.join(str(tmp_path), "repo-b")
+        os.makedirs(repo_a)
+        os.makedirs(repo_b)
+        self._write_local_jobs(state_dir, [
+            {
+                "id": "local-visible",
+                "goal": "visible job",
+                "session_id": "sess-a",
+                "cwd": repo_a,
+                "status": "completed",
+            },
+            {
+                "id": "local-hidden",
+                "goal": "hidden job",
+                "session_id": "sess-b",
+                "cwd": repo_b,
+                "status": "completed",
+            },
+        ])
+        ctx = InternalUriContext(state_dir=state_dir, repo=repo_a, session_id="sess-a")
+        with pytest.raises(InternalUriError, match="not found"):
+            resolve_internal_uri("job://local-hidden", ctx)
+        visible = resolve_internal_uri("job://local-visible", ctx)
+        assert "visible job" in visible.content
+
+    def test_local_artifact_read_redacts_secrets(self, tmp_path):
+        state_dir = str(tmp_path)
+        self._write_local_jobs(state_dir, [{
+            "id": "local-secret",
+            "goal": "probe sidecar",
+            "session_id": "sess-a",
+            "cwd": str(tmp_path),
+            "artifacts": [{
+                "type": "verification",
+                "headline": "worker output",
+                "token": "super-secret",
+            }],
+        }])
+        ctx = InternalUriContext(state_dir=state_dir, repo=str(tmp_path), session_id="sess-a")
+        result = search_internal_uris("worker output", ctx, scheme="artifact")
+        assert "artifact://" in result
+        artifact_uri = result.splitlines()[0].split("\t", 1)[0]
+        payload = json.loads(resolve_internal_uri(artifact_uri, ctx).content)
+        assert "token" not in payload
+        assert payload["headline"] == "worker output"
+
+    def test_local_artifact_id_stable_and_collision_safe(self, tmp_path):
+        state_dir = str(tmp_path)
+        self._write_local_jobs(state_dir, [{
+            "id": "local-stable",
+            "goal": "stable ids",
+            "session_id": "sess-a",
+            "cwd": str(tmp_path),
+            "artifacts": [
+                {"type": "finding", "headline": "same headline"},
+                {"type": "finding", "headline": "same headline"},
+            ],
+        }])
+        ctx = InternalUriContext(state_dir=state_dir, repo=str(tmp_path), session_id="sess-a")
+        result = search_internal_uris("same headline", ctx, scheme="artifact")
+        ids = {line.split("\t", 1)[0] for line in result.splitlines() if line.strip()}
+        assert len(ids) == 2
+
+    def test_local_duplicate_and_unsafe_explicit_artifact_ids_are_synthetic(self, tmp_path):
+        state_dir = str(tmp_path)
+        self._write_local_jobs(state_dir, [{
+            "id": "local-untrusted-ids",
+            "goal": "normalize artifact ids",
+            "session_id": "sess-a",
+            "cwd": str(tmp_path),
+            "artifacts": [
+                {"id": "duplicate", "type": "finding", "headline": "first duplicate"},
+                {"id": "duplicate", "type": "finding", "headline": "second duplicate"},
+                {"id": "unsafe/id", "type": "finding", "headline": "unsafe explicit"},
+            ],
+        }])
+        ctx = InternalUriContext(state_dir=state_dir, repo=str(tmp_path), session_id="sess-a")
+        result = search_internal_uris("duplicate", ctx, scheme="artifact")
+        duplicate_uris = [
+            line.split("\t", 1)[0] for line in result.splitlines() if line.strip()
+        ]
+        assert len(set(duplicate_uris)) == 2
+        assert all("/duplicate" not in uri for uri in duplicate_uris)
+        for uri in duplicate_uris:
+            assert json.loads(resolve_internal_uri(uri, ctx).content)["headline"]
+
+        unsafe_result = search_internal_uris("unsafe explicit", ctx, scheme="artifact")
+        unsafe_uri = unsafe_result.split("\t", 1)[0]
+        assert "unsafe/id" not in unsafe_uri
+        assert json.loads(resolve_internal_uri(unsafe_uri, ctx).content)["headline"] == "unsafe explicit"
+
+    def test_local_artifact_rejects_extra_and_unsafe_field_segments(self, tmp_path):
+        state_dir = str(tmp_path)
+        self._write_local_jobs(state_dir, [{
+            "id": "local-fields",
+            "goal": "safe artifact fields",
+            "session_id": "sess-a",
+            "cwd": str(tmp_path),
+            "artifacts": [{"id": "stable-id", "type": "finding", "headline": "safe"}],
+        }])
+        ctx = InternalUriContext(state_dir=state_dir, repo=str(tmp_path), session_id="sess-a")
+        with pytest.raises(InternalUriError, match="requires job_id/artifact_id"):
+            resolve_internal_uri(
+                "artifact://local-fields/stable-id/headline/ignored",
+                ctx,
+            )
+        with pytest.raises(InternalUriError, match="invalid artifact field"):
+            resolve_internal_uri(
+                "artifact://local-fields/stable-id/unsafe%20field",
+                ctx,
+            )
+
+    def test_local_search_finds_job_goal(self, tmp_path):
+        state_dir = str(tmp_path)
+        self._write_local_jobs(state_dir, [{
+            "id": "local-search-me",
+            "goal": "browser guard parity",
+            "session_id": "sess-a",
+            "cwd": str(tmp_path),
+        }])
+        ctx = InternalUriContext(state_dir=state_dir, repo=str(tmp_path), session_id="sess-a")
+        result = search_internal_uris("browser guard", ctx, scheme="job")
+        assert "job://local-search-me" in result
+
+    def test_local_unsafe_job_id_rejected(self, tmp_path):
+        ctx = InternalUriContext(state_dir=str(tmp_path), repo=str(tmp_path), session_id="sess-a")
+        with pytest.raises(InternalUriError, match="invalid job id"):
+            resolve_internal_uri("job://local@evil", ctx)
+
+    def test_local_non_list_artifacts_safe(self, tmp_path):
+        state_dir = str(tmp_path)
+        self._write_local_jobs(state_dir, [{
+            "id": "local-weird",
+            "goal": "bad artifacts shape",
+            "session_id": "sess-a",
+            "cwd": str(tmp_path),
+            "artifacts": "not-a-list",
+        }])
+        ctx = InternalUriContext(state_dir=state_dir, repo=str(tmp_path), session_id="sess-a")
+        payload = json.loads(resolve_internal_uri("job://local-weird", ctx).content)
+        assert payload["artifacts"] == []
+        assert payload["artifacts_complete"] is False
+
+    def test_local_sidecar_non_list_jobs_returns_empty(self, tmp_path):
+        state_dir = str(tmp_path)
+        path = os.path.join(state_dir, "swarm_local_jobs.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"jobs": "nope"}, fh)
+        ctx = InternalUriContext(state_dir=state_dir, repo=str(tmp_path), session_id="sess-a")
+        result = search_internal_uris("anything", ctx, scheme="job")
+        assert "(no internal URI matches" in result
+
+    def test_local_sidecar_oversized_file_ignored(self, tmp_path, monkeypatch):
+        state_dir = str(tmp_path)
+        path = os.path.join(state_dir, "swarm_local_jobs.json")
+        with open(path, "wb") as fh:
+            fh.write(b"x" * (4 * 1024 * 1024 + 1))
+        ctx = InternalUriContext(state_dir=state_dir, repo=str(tmp_path), session_id="sess-a")
+        result = search_internal_uris("anything", ctx, scheme="job")
+        assert "(no internal URI matches" in result

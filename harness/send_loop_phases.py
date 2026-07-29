@@ -163,6 +163,8 @@ def run_prefetch(
             return idx, session._do_read_pdf(act)
         elif kind == "view_image":
             return idx, session._do_view_image(act)
+        elif kind == "lsp":
+            return idx, session._do_lsp(act)
     except Exception as exc:
         return idx, (False, "exception", str(exc))
     return idx, (False, "exception", f"Unknown prefetch kind {kind}")

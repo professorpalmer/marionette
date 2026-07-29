@@ -12,6 +12,8 @@ instead of crashing the chat turn.
 """
 from __future__ import annotations
 
+import os
+import shutil
 from typing import Optional
 
 try:
@@ -21,12 +23,73 @@ except Exception as _e:  # pragma: no cover - engine should always be importable
     _engine = None
     _ENGINE_ERR = f"browser engine unavailable: {_e}"
 
+# Keep probe parity with puppetmaster.browser_cdp._CHROME_CANDIDATES so macOS
+# Application bundles are accepted alongside PATH names.
+_CHROME_CANDIDATES = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "chrome",
+)
+
+
+def _reject_embedded_browser(path: str) -> bool:
+    normalized = os.path.normpath(path)
+    components = {part.lower() for part in normalized.split(os.sep)}
+    executable_name = os.path.basename(normalized).lower()
+    return (
+        "marionette.app" in components
+        or "electron.app" in components
+        or executable_name == "marionette"
+        or executable_name == "electron"
+        or executable_name.startswith("electron helper")
+    )
+
+
+def _chrome_executable_available(path: str) -> bool:
+    if _reject_embedded_browser(path):
+        return False
+    if os.path.isfile(path) and os.access(path, os.X_OK):
+        return True
+    return bool(shutil.which(path))
+
+
+def _find_standalone_chrome() -> Optional[str]:
+    configured = os.environ.get("PM_BROWSER_CHROME", "").strip()
+    if configured:
+        return configured if _chrome_executable_available(configured) else None
+    for candidate in _CHROME_CANDIDATES:
+        if _chrome_executable_available(candidate):
+            return candidate
+    return None
+
 
 def _guard() -> Optional[str]:
     if _ENGINE_ERR:
         return _ENGINE_ERR
     if _engine is None:
         return "browser engine unavailable"
+    if getattr(_engine, "__name__", "") == "puppetmaster.browser_cdp":
+        configured = os.environ.get("PM_BROWSER_CHROME", "").strip()
+        if configured:
+            if _reject_embedded_browser(configured):
+                return (
+                    "browser unavailable: PM_BROWSER_CHROME must point to a "
+                    "standalone Chrome/Chromium executable, not Marionette/Electron"
+                )
+            if not _chrome_executable_available(configured):
+                return (
+                    "browser unavailable: PM_BROWSER_CHROME does not name an "
+                    "executable; install Chrome/Chromium or set PM_BROWSER_CHROME"
+                )
+        elif _find_standalone_chrome() is None:
+            return (
+                "browser unavailable: install Chrome/Chromium or set "
+                "PM_BROWSER_CHROME to its standalone executable"
+            )
     return None
 
 

@@ -107,3 +107,78 @@ def test_none_result_becomes_calm_error(restore_engine):
     out = browser.browser_navigate("https://example.com")
     assert out.startswith("navigate failed:")
     assert "empty result" in out
+
+
+def test_guard_accepts_configured_executable(monkeypatch, restore_engine, tmp_path):
+    chrome = tmp_path / "chrome-bin"
+    chrome.write_text("#!/bin/sh\n", encoding="utf-8")
+    chrome.chmod(0o755)
+    monkeypatch.setenv("PM_BROWSER_CHROME", str(chrome))
+    browser._ENGINE_ERR = ""
+    browser._engine = _fake_engine(
+        __name__="puppetmaster.browser_cdp",
+        navigate=lambda url: f"Navigated to {url}",
+    )
+    assert browser.browser_navigate("https://example.com") == "Navigated to https://example.com"
+
+
+def test_guard_accepts_standalone_chrome_inside_marionette_project(
+    monkeypatch, restore_engine, tmp_path,
+):
+    chrome = tmp_path / "marionette" / "tools" / "chrome"
+    chrome.parent.mkdir(parents=True)
+    chrome.write_text("#!/bin/sh\n", encoding="utf-8")
+    chrome.chmod(0o755)
+    monkeypatch.setenv("PM_BROWSER_CHROME", str(chrome))
+    browser._ENGINE_ERR = ""
+    browser._engine = _fake_engine(
+        __name__="puppetmaster.browser_cdp",
+        navigate=lambda url: "ok",
+    )
+    assert browser.browser_navigate("https://example.com") == "ok"
+
+
+def test_guard_rejects_marionette_pm_browser_chrome(monkeypatch, restore_engine):
+    monkeypatch.setenv("PM_BROWSER_CHROME", "/Applications/Marionette.app/Contents/MacOS/Marionette")
+    browser._ENGINE_ERR = ""
+    browser._engine = _fake_engine(__name__="puppetmaster.browser_cdp")
+    out = browser.browser_navigate("https://example.com")
+    assert "Marionette/Electron" in out
+
+
+def test_guard_rejects_electron_pm_browser_chrome(monkeypatch, restore_engine):
+    monkeypatch.setenv("PM_BROWSER_CHROME", "/tmp/Electron Helper")
+    browser._ENGINE_ERR = ""
+    browser._engine = _fake_engine(__name__="puppetmaster.browser_cdp")
+    out = browser.browser_snapshot()
+    assert "Marionette/Electron" in out
+
+
+def test_guard_accepts_macos_application_path(monkeypatch, restore_engine, tmp_path):
+    app_exec = tmp_path / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome"
+    app_exec.parent.mkdir(parents=True)
+    app_exec.write_text("#!/bin/sh\n", encoding="utf-8")
+    app_exec.chmod(0o755)
+    monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
+    monkeypatch.setattr(browser, "_CHROME_CANDIDATES", (str(app_exec),))
+    browser._ENGINE_ERR = ""
+    browser._engine = _fake_engine(
+        __name__="puppetmaster.browser_cdp",
+        navigate=lambda url: "ok",
+    )
+    assert browser.browser_navigate("https://example.com") == "ok"
+
+
+def test_guard_accepts_path_name_via_which(monkeypatch, restore_engine, tmp_path):
+    shim = tmp_path / "google-chrome"
+    shim.write_text("#!/bin/sh\n", encoding="utf-8")
+    shim.chmod(0o755)
+    monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(browser, "_CHROME_CANDIDATES", ("google-chrome",))
+    browser._ENGINE_ERR = ""
+    browser._engine = _fake_engine(
+        __name__="puppetmaster.browser_cdp",
+        snapshot=lambda: "Page: ok",
+    )
+    assert browser.browser_snapshot() == "Page: ok"

@@ -85,11 +85,13 @@ def test_providers_probe_no_key_static_fallback(test_server):
 def test_registry_get_set_roundtrip(test_server, tmp_path):
     httpd, port, srv = test_server
     
-    # 1. GET empty registry -> should return {"models": []}
+    # 1. GET an empty registry. Fresh boot may materialize the versioned
+    # Marionette registry before this endpoint is read.
     resp = _get(port, "/api/registry", {"X-Harness-Token": srv._TOKEN})
     assert resp.status == 200
     data = json.loads(resp.read().decode())
-    assert data == {"models": []}
+    assert data["models"] == []
+    assert set(data).issubset({"models", "version"})
 
     # 2. POST invalid registry (e.g. missing adapter or bad score) -> 400
     bad_model = {"id": "test/model", "adapter": 123, "capability_score": 90}

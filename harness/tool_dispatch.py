@@ -57,6 +57,7 @@ class ToolDispatchMixin:
         return InternalUriContext(
             state_dir=getattr(self, "state_dir", None) or self.config.state_dir or "",
             repo=self.config.repo or None,
+            session_id=getattr(self, "harness_session_id", None) or None,
         )
 
     def _do_read_file(self, act: PilotAction) -> tuple[bool, str, str]:

@@ -422,6 +422,15 @@ _SIGNAL_TYPES = frozenset({"finding", "risk", "decision"})
 _NO_STRUCTURE_FAILURES = frozenset({
     "no_tool_calls",
     "empty_or_unstructured_agentic_result",
+    # Provider/routing failures are diagnostics, never worker analysis.  In
+    # particular, their stdout often repeats the original goal verbatim.
+    "no_model",
+    "unknown_provider",
+    "route_failed",
+    "sdk_not_installed",
+    "provider_not_configured",
+    "routing_failed",
+    "auth_failed",
 })
 
 # Planning / mid-thought openers that must never masquerade as a finding headline.
@@ -494,7 +503,13 @@ def _is_meta_degrade_artifact(a: dict) -> bool:
     """True for plumbing RISK/verification rows that only report 'no findings'."""
     try:
         fail = str(a.get("failure") or "").strip().lower()
-        if fail in _NO_STRUCTURE_FAILURES or fail.startswith("no_tool_calls"):
+        if (
+            fail in _NO_STRUCTURE_FAILURES
+            or fail.startswith("no_tool_calls")
+            or fail.startswith("auth")
+            or fail.startswith("routing")
+            or fail.startswith("route_")
+        ):
             return True
         head = str(a.get("headline") or a.get("body") or "").lower()
         if "without structured findings" in head:
@@ -676,7 +691,13 @@ def _promote_degraded_prose(compact: list) -> list:
             if _is_meta_degrade_artifact(a):
                 continue
             fail = str(a.get("failure") or "").strip().lower()
-            if fail in _NO_STRUCTURE_FAILURES or fail.startswith("no_tool_calls"):
+            if (
+                fail in _NO_STRUCTURE_FAILURES
+                or fail.startswith("no_tool_calls")
+                or fail.startswith("auth")
+                or fail.startswith("routing")
+                or fail.startswith("route_")
+            ):
                 continue
             # Use the FULL body (untruncated stdout prose), falling back to the
             # display headline. Detection and the promoted finding both rely on

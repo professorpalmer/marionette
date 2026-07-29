@@ -562,3 +562,90 @@ def test_reconcile_restores_shared_non_agentic(monkeypatch, tmp_path):
     assert adapters == {"cursor", "agentic"}
     assert any(m["id"] == "agentic/z-ai/glm-5.2" for m in data["models"])
     assert not any(m["id"] == "agentic/stale" for m in data["models"])
+
+
+def test_kimi_k3_static_economics_match_marketplace():
+    from harness.auto_registry import _KNOWN_MODEL_SPECS
+
+    score, pin, pout, ctx, tags = _KNOWN_MODEL_SPECS["moonshotai/kimi-k3"]
+    assert score == 98
+    assert pin == 3.0
+    assert pout == 15.0
+    assert ctx == 1_000_000
+    assert "frontier" in tags
+
+
+def test_openrouter_picker_union_retains_curated_ladder(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        return "fake-openrouter" if provider.name == "openrouter" else None
+
+    def mock_enabled(_name):
+        return ["anthropic/claude-opus-4.8"] if _name == "openrouter" else []
+
+    def mock_fetch_models(provider, key, force=False):
+        return []
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", mock_fetch_models), \
+         patch("harness.auto_registry._enabled_picker_models", mock_enabled):
+        from harness.auto_registry import sync_agentic_registry
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    data = json.loads(models_path.read_text())
+    ids = {m["id"] for m in data["models"]}
+    assert "agentic/anthropic/claude-opus-4.8" in ids
+    assert "agentic/moonshotai/kimi-k3" in ids
+    assert "agentic/deepseek/deepseek-v4-pro" in ids
+    kimi = next(m for m in data["models"] if m["id"] == "agentic/moonshotai/kimi-k3")
+    assert kimi["payload_defaults"]["provider"] == "openrouter"
+    assert "tools" in kimi["tags"]
+
+
+def test_openrouter_discovery_retains_curated_ladder(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    def mock_get_provider_key(provider):
+        return "fake-openrouter" if provider.name == "openrouter" else None
+
+    def mock_fetch_models(provider, key, force=False):
+        return ["anthropic/claude-opus-4.8", "z-ai/glm-5.2"]
+
+    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
+         patch("harness.keys.get_disconnected", lambda: set()), \
+         patch("harness.model_fetch.fetch_models", mock_fetch_models), \
+         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
+        from harness.auto_registry import sync_agentic_registry
+        result = sync_agentic_registry()
+
+    data = json.loads(models_path.read_text())
+    ids = {m["id"] for m in data["models"]}
+    assert "agentic/moonshotai/kimi-k3" in ids
+    assert "agentic/deepseek/deepseek-v4-flash" in ids
+
+
+def test_sync_with_no_keys_writes_no_agentic_models(monkeypatch, tmp_path):
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps({"models": [{"id": "cursor/composer-2-5", "adapter": "cursor"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
+    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
+
+    with patch("harness.registry_wizard.get_provider_key", lambda _p: None), \
+         patch("harness.keys.get_disconnected", lambda: set()):
+        from harness.auto_registry import sync_agentic_registry
+        result = sync_agentic_registry()
+
+    assert result["synced"] is True
+    assert result["models_count"] == 0
+    data = json.loads(models_path.read_text())
+    assert data["models"] == [{"id": "cursor/composer-2-5", "adapter": "cursor"}]

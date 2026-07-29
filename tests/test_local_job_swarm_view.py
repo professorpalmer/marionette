@@ -97,14 +97,34 @@ def test_project_local_job_shape_parity():
     assert _STORE_LIVE_KEYS.issubset(row.keys())
     assert row["id"] == "local-abc"
     assert row["source"] == "harness"
-    assert row["artifacts_complete"] is True
+    assert row["artifacts_complete"] is False
     assert row["routing_savings_basis"] == "estimated"
     assert row["routing_savings_counted"] is True
     assert abs(row["routing_saved_usd"] - 0.04) < 1e-9
     assert row["actions"][0]["action_id"] == "a1"
 
 
-def test_project_provider_cost_not_estimated():
+def test_project_local_job_artifacts_complete_true_with_real_finding():
+    row = project_local_job_for_swarm_live(_sample_local_job(
+        artifacts=[
+            {"type": "ROUTING", "headline": "Routed to cheap-model"},
+            {"type": "finding", "headline": "Router drops rejected alternatives"},
+        ],
+    ))
+    assert row["artifacts_complete"] is True
+
+
+def test_project_local_job_artifacts_complete_false_when_empty():
+    row = project_local_job_for_swarm_live(_sample_local_job(artifacts=[]))
+    assert row["artifacts_complete"] is False
+
+
+def test_project_local_job_artifacts_complete_false_for_placeholder_only():
+    row = project_local_job_for_swarm_live(_sample_local_job(
+        artifacts=[{"type": "placeholder", "headline": "pending"}],
+    ))
+    assert row["artifacts_complete"] is False
+
     row = project_local_job_for_swarm_live(_sample_local_job(
         status="completed",
         est_cost_usd=0.42,
@@ -173,7 +193,7 @@ def test_merge_appends_unique_local_rows():
     ids = [j["id"] for j in merged]
     assert ids == ["job-store", "local-one", "local-two"]
     assert all(
-        j.get("artifacts_complete")
+        j.get("artifacts_complete") is False
         for j in merged
         if str(j["id"]).startswith("local-")
     )
@@ -302,7 +322,7 @@ def test_swarm_live_merge_uses_projected_local_shape(monkeypatch):
             assert len(live) == 1
             job = live[0]
             assert _STORE_LIVE_KEYS.issubset(job.keys())
-            assert job["artifacts_complete"] is True
+            assert job["artifacts_complete"] is False
             assert job["routing_savings_basis"] == "estimated"
             assert job["routing_savings_counted"] is True
             assert job["source"] == "harness"

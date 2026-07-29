@@ -70,7 +70,7 @@ _KNOWN_MODEL_SPECS = {
     "deepseek/deepseek-v4-flash": (66, 0.09, 0.18, 1000000, ["cheap", "fast", "code", "reading", "long-context"]),
     "deepseek/deepseek-v4-pro": (80, 0.435, 0.87, 1000000, ["balanced", "code", "reasoning", "long-context"]),
     "minimax/minimax-m3": (79, 0.098, 1.21, 1000000, ["balanced", "code", "vision", "long-context"]),
-    "moonshotai/kimi-k2.6": (78, 0.66, 3.41, 262144, ["balanced", "code", "vision", "agent-loop"]),
+    "moonshotai/kimi-k3": (98, 3.0, 15.0, 1000000, ["frontier", "code", "vision", "agent-loop"]),
     "z-ai/glm-5.2": (86, 1.0, 3.5, 1000000, ["quality", "code", "reasoning", "long-context"]),
     "anthropic/claude-opus-4.8": (99, 5.0, 25.0, 1000000, ["frontier", "reasoning", "code", "vision", "long-context"]),
 }
@@ -99,8 +99,8 @@ _CURATED_MODELS = {
         ("deepseek/deepseek-v4-flash", "cheap", "deepseek/deepseek-v4-flash"),
         ("minimax/minimax-m3", "balanced", "minimax/minimax-m3"),
         ("deepseek/deepseek-v4-pro", "balanced", "deepseek/deepseek-v4-pro"),
-        ("moonshotai/kimi-k2.6", "balanced", "moonshotai/kimi-k2.6"),
-        ("z-ai/glm-5.2", "frontier", "z-ai/glm-5.2"),
+        ("moonshotai/kimi-k3", "frontier", "moonshotai/kimi-k3"),
+        ("z-ai/glm-5.2", "balanced", "z-ai/glm-5.2"),
     ],
     "deepseek": [
         ("deepseek-chat", "balanced", "deepseek-chat"),
@@ -169,10 +169,21 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
                 return "cheap"
             return "balanced"
 
-        # The user's explicit picker curation wins outright.
+        curated = _CURATED_MODELS.get(provider_name, [])
+
+        # The user's explicit picker curation is authoritative for the
+        # discretionary rows.  Marionette's small OpenRouter ladder is the
+        # exception: retain those required fallbacks so a picker or discovery
+        # refresh cannot strand an otherwise keyed provider.
         enabled = _enabled_picker_models(provider_name)
         if enabled:
-            return [(m, _tier_of_known(m), m) for m in enabled]
+            selected = [(m, _tier_of_known(m), m) for m in enabled]
+            if provider_name == "openrouter":
+                selected_slugs = {item[2] for item in selected}
+                selected.extend(
+                    item for item in curated if item[2] not in selected_slugs
+                )
+            return selected
 
         # Try live discovery
         live_models = fetch_models(provider, provider_key, force=False)
@@ -265,7 +276,12 @@ def _get_provider_models_from_discovery(provider_name: str, provider_key: str) -
                 if len(result) >= 6:  # a handful per provider is plenty
                     break
 
-        return result if result else _CURATED_MODELS.get(provider_name, [])
+        if provider_name == "openrouter":
+            # Discovery is additive.  It may contribute useful current models,
+            # but must never evict the deterministic K3/DeepSeek ladder.
+            seen_slugs = {item[2] for item in result}
+            result.extend(item for item in curated if item[2] not in seen_slugs)
+        return result if result else curated
     except Exception as e:
         _diag("auto_registry.discovery", e, msg=f"provider={provider_name}")
         return _CURATED_MODELS.get(provider_name, [])

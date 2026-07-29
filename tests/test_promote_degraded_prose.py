@@ -98,3 +98,35 @@ def test_short_body_under_40_not_promoted():
     ]
     out = _promote_degraded_prose(compact)
     assert not any(a.get("type") == "finding" for a in out)
+
+
+def test_no_model_goal_echo_not_promoted_or_completed():
+    """Provider routing failures must not masquerade as findings or clean completion."""
+    from pmharness.bridge import (
+        _analysis_bridge_status,
+        _is_meta_degrade_artifact,
+        _promote_degraded_prose,
+    )
+
+    goal = (
+        "Review harness/browser.py for macOS Chrome path probing gaps and report "
+        "FINDING: missing Application paths."
+    )
+    compact = [{
+        "type": "verification",
+        "headline": goal[:240],
+        "body": goal,
+        "empty_headline": False,
+        "failure": "no_model",
+    }]
+    assert _is_meta_degrade_artifact(compact[0])
+    out = _promote_degraded_prose(compact)
+    assert not any(a.get("type") == "finding" for a in out)
+    status, summary = _analysis_bridge_status(
+        compact, job_status="completed", summary=goal[:120],
+    )
+    assert status == "failed"
+    assert "no structured findings" in summary.lower()
+    assert "completed" not in summary.lower()
+    assert "0 findings" not in summary.lower()
+    assert "without structured findings" not in summary.lower()

@@ -136,7 +136,7 @@ PROVIDERS = (
         base_url="https://openrouter.ai/api/v1",
         api_mode="chat_completions", display_name="OpenRouter",
         pilot_models=("qwen/qwen3-coder-30b-a3b-instruct", "z-ai/glm-5.2",
-                      "deepseek/deepseek-v4-pro", "moonshotai/kimi-k2.6",
+                      "deepseek/deepseek-v4-pro", "moonshotai/kimi-k3",
                       "anthropic/claude-opus-4.8", "openai/gpt-5.6-sol",
                       "openai/gpt-5.6-terra", "openai/gpt-5.5"),
         vision_model="qwen/qwen3-vl-30b-a3b-instruct",

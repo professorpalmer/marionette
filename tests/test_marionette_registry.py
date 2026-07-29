@@ -101,3 +101,43 @@ def test_ensure_respects_existing_env(tmp_path, monkeypatch):
     pinned.write_text('{"version":1,"models":[]}\n', encoding="utf-8")
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(pinned))
     assert ensure_marionette_models_env() == str(pinned)
+
+
+def test_ensure_materializes_missing_explicit_path(tmp_path, monkeypatch):
+    missing = tmp_path / "nested" / "marionette-models.json"
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(missing))
+    path = ensure_marionette_models_env()
+    assert path == str(missing)
+    assert missing.is_file()
+    data = json.loads(missing.read_text(encoding="utf-8"))
+    assert data == {"version": 1, "models": []}
+
+
+def test_marionette_ladder_and_demote_ids_producible(tmp_path, monkeypatch):
+    from harness.marionette_registry import _DEMOTE, _LADDER, apply_marionette_router_ladder
+
+    models = []
+    for mid, score, tags in _LADDER:
+        models.append({
+            "id": mid,
+            "adapter": "agentic" if mid.startswith("agentic/") else "cursor",
+            "capability_score": 1,
+            "tags": ["code"],
+        })
+    for mid, score in _DEMOTE.items():
+        models.append({
+            "id": mid,
+            "adapter": "agentic",
+            "capability_score": 99,
+            "tags": ["code"],
+        })
+    dest = tmp_path / "marionette-models.json"
+    dest.write_text(json.dumps({"version": 1, "models": models}), encoding="utf-8")
+    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(dest))
+
+    report = apply_marionette_router_ladder(str(dest))
+    assert report.get("missing") == []
+    data = json.loads(dest.read_text(encoding="utf-8"))
+    by_id = {m["id"]: m for m in data["models"]}
+    assert by_id["agentic/moonshotai/kimi-k3"]["capability_score"] == 98
+    assert by_id["agentic/minimax/minimax-m3"]["capability_score"] == 68

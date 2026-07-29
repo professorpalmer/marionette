@@ -41,20 +41,20 @@
       "context_window": 200000
     },
     {
-      "name": "kimi-k2.6",
+      "name": "kimi-k3",
       "tier": "flagship",
       "license": "other",
-      "hf": "moonshotai/Kimi-K2.6",
-      "price_in": 0.6,
-      "price_out": 2.8,
-      "openrouter": "moonshotai/kimi-k2.6",
+      "hf": "moonshotai/Kimi-K3",
+      "price_in": 3.0,
+      "price_out": 15.0,
+      "openrouter": "moonshotai/kimi-k3",
       "native": {
         "base_url": "https://api.moonshot.ai/v1",
-        "model": "kimi-k2.6",
+        "model": "kimi-k3",
         "api_key_env": "MOONSHOT_API_KEY"
       },
       "vision": true,
-      "context_window": 256000
+      "context_window": 1000000
     },
     {
       "name": "minimax-m2.7",
