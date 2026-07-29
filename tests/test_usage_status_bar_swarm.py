@@ -24,6 +24,7 @@ import harness.server as server
 from harness.job_scoping import job_label_for_session, stamp_task_payload
 from harness.server import (
     _cache_saved_usd_swarm,
+    _cache_saved_usd_swarm_detail,
     _routing_saved_usd,
     _tokens_cached_swarm,
 )
@@ -909,3 +910,201 @@ def test_api_usage_combined_cache_keeps_pilot_only_when_disjoint(tmp_path, monke
     finally:
         httpd.shutdown()
         server._pilot = old_pilot
+
+
+def test_cache_saved_usd_swarm_openrouter_slug_via_registry_prefix():
+    """Usage OpenRouter slug resolves against agentic-prefixed registry row."""
+    registry = [
+        _registry_spec(
+            "agentic/deepseek/deepseek-v4-pro",
+            input_per_mtok_usd=0.435,
+            output_per_mtok_usd=0.87,
+        ),
+    ]
+    tokens_cached = 290_816
+    arts = [
+        _verification(
+            "j1",
+            "t1",
+            "deepseek/deepseek-v4-pro",
+            300_000,
+            10_000,
+            tokens_cached=tokens_cached,
+        ),
+    ]
+    expected = (tokens_cached / 1_000_000.0) * 0.435 * 0.9
+    detail = _cache_saved_usd_swarm_detail(arts, registry)
+    assert detail["swarm_cache_read_tokens"] == tokens_cached
+    assert detail["swarm_cache_unpriced_tokens"] == 0
+    assert detail["swarm_cache_savings_basis"] == "actual_usage"
+    assert abs(detail["cache_saved_usd_swarm"] - expected) < 1e-6
+    assert abs(_cache_saved_usd_swarm(arts, registry) - expected) < 1e-6
+
+
+def test_cache_saved_usd_swarm_codex_dotted_id_matches_dashed_registry():
+    """Prefixed/dotted Codex ids price via fuzzy match to dashed registry ids."""
+    registry = [
+        _registry_spec(
+            "gpt-5-3-codex",
+            input_per_mtok_usd=2.5,
+            output_per_mtok_usd=10.0,
+        ),
+    ]
+    arts = [
+        _verification(
+            "j1",
+            "t1",
+            "codex/gpt.5.3.codex",
+            100_000,
+            5_000,
+            tokens_cached=50_000,
+        ),
+    ]
+    expected = (50_000 / 1_000_000.0) * 2.5 * 0.9
+    detail = _cache_saved_usd_swarm_detail(arts, registry)
+    assert detail["swarm_cache_read_tokens"] == 50_000
+    assert detail["swarm_cache_unpriced_tokens"] == 0
+    assert abs(detail["cache_saved_usd_swarm"] - expected) < 1e-9
+
+
+def test_cache_saved_usd_swarm_unpriceable_model_keeps_tokens_honest_basis(
+    monkeypatch,
+):
+    """Unknown worker models keep cache tokens but contribute zero USD."""
+    monkeypatch.setattr(
+        "harness.api.routing_savings._pmharness_positive_rates",
+        lambda _mid: (0.0, 0.0),
+    )
+    registry = [_registry_spec("priced-model", input_per_mtok_usd=3.0)]
+    arts = [
+        _verification(
+            "j1",
+            "t1",
+            "totally-unknown-worker",
+            100_000,
+            5_000,
+            tokens_cached=80_000,
+        ),
+    ]
+    detail = _cache_saved_usd_swarm_detail(arts, registry)
+    assert _tokens_cached_swarm(arts) == 80_000
+    assert detail["swarm_cache_read_tokens"] == 80_000
+    assert detail["cache_saved_usd_swarm"] == 0.0
+    assert detail["swarm_cache_unpriced_tokens"] == 80_000
+    assert detail["swarm_cache_savings_basis"] == "unknown"
+    assert _cache_saved_usd_swarm(arts, registry) == 0.0
+
+
+def test_cache_saved_usd_swarm_pmharness_fallback_when_registry_misses(
+    monkeypatch,
+):
+    """OpenRouter slug falls through registry miss to pmharness catalog rates."""
+    monkeypatch.setattr(
+        "harness.api.routing_savings._pmharness_positive_rates",
+        lambda _mid: (0.435, 0.87),
+    )
+    arts = [
+        _verification(
+            "j1",
+            "t1",
+            "deepseek/deepseek-v4-pro",
+            200_000,
+            10_000,
+            tokens_cached=100_000,
+        ),
+    ]
+    expected = (100_000 / 1_000_000.0) * 0.435 * 0.9
+    assert abs(_cache_saved_usd_swarm(arts, []) - expected) < 1e-9
+
+
+def test_api_usage_exposes_cache_token_split_reconcilable_with_usd(
+    tmp_path, monkeypatch
+):
+    """Pilot vs swarm cache read tokens reconcile to aggregate tokens_cached + USD."""
+    from harness.sessions import SessionStore
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    harness_dir = tmp_path / "harness-state"
+    harness_store = create_store("sqlite", str(harness_dir))
+
+    sess_store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    row = sess_store.create(title="cache split", repo=str(repo), workspace_root=str(repo))
+    sid = row["id"]
+    monkeypatch.setattr(server, "_sessions", sess_store)
+
+    job = harness_store.create_job("cache split", label=job_label_for_session(sid))
+    _save_task(harness_store, job.id, str(repo), session_id=sid, model="worker-model")
+    harness_store.save_artifact(
+        _verification(
+            job.id, "t1", "worker-model", 50_000, 5_000, tokens_cached=20_000
+        )
+    )
+
+    monkeypatch.setattr(
+        server,
+        "_boot_usage_meters",
+        lambda: {
+            "_tokens_used": 8_000,
+            "_tokens_in": 6_000,
+            "_tokens_out": 2_000,
+            "_tokens_cached": 50_000,
+            "_worker_tokens_in": 0,
+            "_worker_tokens_out": 0,
+            "_worker_cost_usd": 0.0,
+        },
+    )
+    monkeypatch.setattr(server, "_boot_session_cost", lambda price_in, price_out: 0.01)
+    monkeypatch.setattr(
+        "pmharness.registry.resolve_price",
+        lambda driver: (3.0, 15.0),
+    )
+
+    httpd, port = _api_server(str(harness_dir))
+    try:
+        monkeypatch.setattr(
+            server,
+            "_jobs_snapshot",
+            lambda: [
+                {
+                    "id": job.id,
+                    "goal": "cache split",
+                    "status": "complete",
+                    "adapter": "agentic",
+                    "label": job_label_for_session(sid),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            server._session,
+            "state",
+            lambda: SimpleNamespace(store=harness_store),
+        )
+        monkeypatch.setattr(
+            "harness.cli_job_merge.resolve_cli_state_dir",
+            lambda workspace_root="": None,
+        )
+        monkeypatch.setattr(
+            server,
+            "_swarm_registry",
+            lambda: [_registry_spec("worker-model", input_per_mtok_usd=3.0)],
+        )
+        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
+        monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
+        server._cfg.repo = str(repo)
+
+        scoped = urllib.parse.quote(str(repo), safe="")
+        usage = json.loads(
+            _api_get(port, f"/api/usage?repo={scoped}", server._TOKEN).read().decode()
+        )
+        sess = usage["session"]
+        pilot_cached = int(sess["pilot_cache_read_tokens"])
+        swarm_cached = int(sess["swarm_cache_read_tokens"])
+        assert pilot_cached == 30_000
+        assert swarm_cached == 20_000
+        assert sess["tokens_cached"] == pilot_cached + swarm_cached
+        assert abs(sess["cache_savings_usd"] - (pilot_cached / 1_000_000.0) * 3.0 * 0.9) < 1e-9
+        assert abs(sess["cache_saved_usd_swarm"] - (swarm_cached / 1_000_000.0) * 3.0 * 0.9) < 1e-9
+    finally:
+        httpd.shutdown()

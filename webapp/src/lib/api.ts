@@ -250,6 +250,10 @@ export type SwarmLive = {
     estimated?: boolean;
     driver?: string;
     tokens_cached?: number;
+    /** Pilot-only prompt-cache read tokens (exclusive of swarm store jobs). */
+    pilot_cache_read_tokens?: number;
+    /** Swarm store-job prompt-cache read tokens (authoritative per-task dedupe). */
+    swarm_cache_read_tokens?: number;
     cache_savings_usd?: number;
     /** Uncapped catalog/list-price cache value (grows with cached tokens). */
     cache_savings_gross_usd?: number;
@@ -468,6 +472,10 @@ export type UsageData = {
     price_in: number;
     price_out: number;
     tokens_cached?: number;
+    /** Pilot-only prompt-cache read tokens (exclusive of swarm store jobs). */
+    pilot_cache_read_tokens?: number;
+    /** Swarm store-job prompt-cache read tokens (authoritative per-task dedupe). */
+    swarm_cache_read_tokens?: number;
     cache_savings_usd?: number;
     /** Uncapped catalog/list-price cache value (grows with cached tokens). */
     cache_savings_gross_usd?: number;

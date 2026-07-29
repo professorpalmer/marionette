@@ -377,6 +377,8 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             # the USD that discount saved vs full input price (pilot-
             # only; store-job cache USD is cache_saved_usd_swarm).
             "tokens_cached": tokens_cached,
+            "pilot_cache_read_tokens": int(pilot_only_cached),
+            "swarm_cache_read_tokens": int(swarm_cached),
             "cache_savings_usd": round(cache_savings_usd, 6),
             "cache_savings_gross_usd": round(cache_savings_gross_usd, 6),
             # catalog = uncapped estimate; capped = limited to provider

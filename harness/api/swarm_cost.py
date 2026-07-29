@@ -357,6 +357,7 @@ from .routing_savings import (  # noqa: E402
     ROUTING_SAVINGS_UNKNOWN,
     _COST_OPTIMIZING_POLICIES,
     _registry_rates,
+    _resolve_positive_rates,
     _delegation_saved_usd,
     _delegation_saved_usd_detail,
     _routing_saved_usd,
@@ -403,23 +404,25 @@ def _tokens_cached_swarm(raw_arts) -> int:
     return total
 
 
-def _cache_saved_usd_swarm(raw_arts, registry: list) -> float:
-    """Store-job swarm prompt-cache savings for display (not spend).
+def _cache_saved_usd_swarm_detail(raw_arts, registry: list) -> dict:
+    """Store-job swarm prompt-cache savings with honest list-rate ladder.
 
-    Per task with ``tokens_cached > 0`` and a known registry input price:
-    tokens_cached/1e6 * input_per_mtok * (1 - CACHE_READ_MULTIPLIER).
-
-    Always credits cache hits even when ``real_cost_usd`` is set — that field
-    is the provider spend total (already cache-discounted); suppressing the
-    savings *display* left the status bar at $0 for agentic workers.
-
-    Store-job savings belong only here (``cache_saved_usd_swarm``). Harness-
-    attributed worker cache hits already land in pilot ``_tokens_cached`` /
-    ``cache_savings_usd``; do not fold store-job cache into those meters for
-    this figure. Spend math is unchanged. Best-effort.
+    Uses registry → pmharness positive rates only (never the active pilot rate
+    and never a fabricated default). Marginal plan billing is separate: a plan
+    row may bill $0 while still contributing a positive nominal input rate here.
     """
+    empty = {
+        "cache_saved_usd_swarm": 0.0,
+        "swarm_cache_read_tokens": 0,
+        "swarm_cache_savings_basis": ROUTING_SAVINGS_UNKNOWN,
+        "swarm_cache_unpriced_tokens": 0,
+    }
     seen_tasks: set = set()
-    total = 0.0
+    total_usd = 0.0
+    total_tokens = 0
+    unpriced_tokens = 0
+    saw_priced = False
+    saw_unpriced = False
     try:
         for artifact in raw_arts or []:
             payload = getattr(artifact, "payload", None) or {}
@@ -438,18 +441,61 @@ def _cache_saved_usd_swarm(raw_arts, registry: list) -> float:
                 continue
             if tokens_cached <= 0:
                 continue
+            total_tokens += tokens_cached
             model = (
                 payload.get("model")
                 or payload.get("model_id")
                 or ""
             )
-            price_in = _registry_input_per_mtok(str(model), registry)
-            if price_in <= 0:
+            rates = _resolve_positive_rates(str(model), registry or [])
+            if rates is None:
+                unpriced_tokens += tokens_cached
+                saw_unpriced = True
                 continue
-            total += (tokens_cached / 1.0e6) * price_in * (1.0 - CACHE_READ_MULTIPLIER)
+            price_in = float(rates[0] or 0.0)
+            if price_in <= 0:
+                unpriced_tokens += tokens_cached
+                saw_unpriced = True
+                continue
+            total_usd += (tokens_cached / 1.0e6) * price_in * (1.0 - CACHE_READ_MULTIPLIER)
+            saw_priced = True
+    except Exception:
+        return empty
+
+    if saw_priced and not saw_unpriced:
+        basis = ROUTING_SAVINGS_ACTUAL
+    elif saw_unpriced:
+        basis = ROUTING_SAVINGS_UNKNOWN
+    else:
+        basis = ROUTING_SAVINGS_UNKNOWN
+    return {
+        "cache_saved_usd_swarm": total_usd,
+        "swarm_cache_read_tokens": int(total_tokens),
+        "swarm_cache_savings_basis": basis,
+        "swarm_cache_unpriced_tokens": int(unpriced_tokens),
+    }
+
+
+def _cache_saved_usd_swarm(raw_arts, registry: list) -> float:
+    """Store-job swarm prompt-cache savings for display (not spend).
+
+    Per task with ``tokens_cached > 0`` and a resolvable list input price:
+    tokens_cached/1e6 * input_per_mtok * (1 - CACHE_READ_MULTIPLIER).
+
+    Always credits cache hits even when ``real_cost_usd`` is set — that field
+    is the provider spend total (already cache-discounted); suppressing the
+    savings *display* left the status bar at $0 for agentic workers.
+
+    Store-job savings belong only here (``cache_saved_usd_swarm``). Harness-
+    attributed worker cache hits already land in pilot ``_tokens_cached`` /
+    ``cache_savings_usd``; do not fold store-job cache into those meters for
+    this figure. Spend math is unchanged. Best-effort.
+    """
+    try:
+        detail = _cache_saved_usd_swarm_detail(raw_arts, registry)
+        return float(detail.get("cache_saved_usd_swarm") or 0.0)
     except Exception:
         return 0.0
-    return total
 
 
 # _sum_job_set_savings / _sum_job_set_savings_detail imported from routing_savings.

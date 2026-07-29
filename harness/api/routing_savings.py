@@ -7,10 +7,13 @@ are missing. ``harness.api.swarm_cost`` re-exports the historical names.
 
 from __future__ import annotations
 
+import re
 import sys
 from typing import Any
 
 from .cost_accounting import CACHE_READ_MULTIPLIER
+
+_CW_NORM_RE = re.compile(r"[^a-z0-9]")
 
 _COST_OPTIMIZING_POLICIES = frozenset({"balanced", "cheap"})
 
@@ -60,18 +63,100 @@ def _normalize_model_id_for_price(model_id: str) -> str:
     return mid
 
 
+def _cw_norm_slug(slug: str) -> str:
+    """Collapse provider/slug variants for fuzzy id match (dot vs dash, etc.)."""
+    s = (slug or "").lower()
+    if "/" in s:
+        s = s.split("/", 1)[1]
+    return _CW_NORM_RE.sub("", s)
+
+
+def _model_id_price_candidates(model_id: str) -> list:
+    """Ordered unique ids to try for registry / pmharness rate lookup."""
+    mid = (model_id or "").strip()
+    if not mid:
+        return []
+    out: list = []
+    seen: set = set()
+
+    def _add(val: str) -> None:
+        v = (val or "").strip()
+        if not v or v in seen:
+            return
+        seen.add(v)
+        out.append(v)
+
+    _add(mid)
+    normalized = _normalize_model_id_for_price(mid)
+    _add(normalized)
+    if ":" in mid:
+        _add(mid.split(":", 1)[1])
+    if normalized.startswith("cursor-cli:"):
+        _add("cursor/" + normalized[len("cursor-cli:") :])
+    lower = mid.lower()
+    for prefix in ("agentic/", "native/"):
+        if lower.startswith(prefix):
+            _add(mid[len(prefix) :])
+    return out
+
+
+def _registry_spec_price_ids(spec) -> list:
+    """Registry row ids worth comparing against usage / worker model slugs."""
+    ids: list = []
+    seen: set = set()
+
+    def _add(val: str) -> None:
+        v = (val or "").strip()
+        if not v or v in seen:
+            return
+        seen.add(v)
+        ids.append(v)
+
+    for raw in (
+        getattr(spec, "id", None),
+        getattr(spec, "adapter_model_name", None),
+    ):
+        if not raw:
+            continue
+        _add(str(raw))
+        normalized = _normalize_model_id_for_price(str(raw))
+        _add(normalized)
+        lower = str(raw).lower()
+        for prefix in ("agentic/", "native/"):
+            if lower.startswith(prefix):
+                _add(str(raw)[len(prefix) :])
+    return ids
+
+
+def _ids_match_for_price(left: str, right: str) -> bool:
+    """True when two model ids refer to the same priceable slug."""
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return _cw_norm_slug(left) == _cw_norm_slug(right)
+
+
+def _registry_spec_matches(spec, candidates: list) -> bool:
+    """True when a registry row prices any candidate worker / usage model id."""
+    spec_ids = _registry_spec_price_ids(spec)
+    cand_set = set(candidates)
+    if any(s in cand_set for s in spec_ids):
+        return True
+    for spec_id in spec_ids:
+        for candidate in candidates:
+            if _ids_match_for_price(spec_id, candidate):
+                return True
+    return False
+
+
 def _registry_rates(model_id: str, registry: list) -> tuple:
     """Return ``(price_in, price_out)`` from the Puppetmaster registry, or zeros."""
     if not model_id:
         return 0.0, 0.0
-    normalized = _normalize_model_id_for_price(model_id)
-    candidates = {model_id, normalized}
-    if normalized.startswith("cursor-cli:"):
-        candidates.add("cursor/" + normalized[len("cursor-cli:") :])
+    candidates = _model_id_price_candidates(model_id)
     for spec in registry or []:
-        sid = getattr(spec, "id", None)
-        aname = getattr(spec, "adapter_model_name", None)
-        if sid not in candidates and aname not in candidates:
+        if not _registry_spec_matches(spec, candidates):
             continue
         try:
             pin = float(getattr(spec, "input_per_mtok_usd", 0.0) or 0.0)
@@ -91,9 +176,7 @@ def _pmharness_positive_rates(model_id: str) -> tuple:
         from pmharness.registry import price_with_source
     except Exception:
         return 0.0, 0.0
-    for candidate in (model_id, _normalize_model_id_for_price(model_id)):
-        if not candidate:
-            continue
+    for candidate in _model_id_price_candidates(model_id):
         try:
             pin, pout, _src = price_with_source(candidate)
         except Exception:
