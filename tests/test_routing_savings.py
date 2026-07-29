@@ -484,6 +484,16 @@ def test_registry_rates_conflicting_fuzzy_prices_fail_closed(monkeypatch):
     assert pout == 0.0
 
 
+def test_registry_rates_conflicting_exact_prices_do_not_fall_through_to_fuzzy():
+    registry = [
+        _registry_spec("gpt-4", input_per_mtok_usd=3.0, output_per_mtok_usd=6.0),
+        _registry_spec("gpt-4", input_per_mtok_usd=4.0, output_per_mtok_usd=8.0),
+        _registry_spec("vendor-a/gpt4", input_per_mtok_usd=1.0, output_per_mtok_usd=2.0),
+    ]
+
+    assert _registry_rates("gpt-4", registry) == (0.0, 0.0)
+
+
 def test_registry_rates_unambiguous_fuzzy_still_resolves():
     registry = [
         _registry_spec("gpt-5-3-codex", input_per_mtok_usd=2.5, output_per_mtok_usd=10.0),

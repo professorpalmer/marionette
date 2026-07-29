@@ -207,9 +207,16 @@ def _registry_rates(model_id: str, registry: list) -> tuple:
         if pin > 0:
             by_tier[tier].append((pin, pout))
     for tier in (0, 1, 2):
-        pin, pout = _pick_consistent_positive_rates(by_tier.get(tier) or [])
+        tier_rates = by_tier.get(tier) or []
+        if not tier_rates:
+            continue
+        pin, pout = _pick_consistent_positive_rates(tier_rates)
         if pin > 0:
             return pin, pout
+        # Conflicting prices at the strongest available match tier are
+        # ambiguous. Do not hide that conflict by falling through to a
+        # weaker alias or fuzzy match.
+        return 0.0, 0.0
     return 0.0, 0.0
 
 
