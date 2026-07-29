@@ -236,42 +236,28 @@ def _job_dead_run_failure(raw_arts, status: str):
 
 
 def _get_platform_json_path() -> str:
-    override = os.environ.get("TEST_PLATFORM_JSON_PATH")
-    if override:
-        return override
-    return os.path.expanduser("~/.puppetmaster/platform.json")
+    """Canonical platform.json — same file Puppetmaster's lock reads."""
+    from .platform_config import platform_json_path
+    return platform_json_path()
 
 
 def _write_platform_json_atomic(path: str, data: dict) -> None:
-    dir_path = os.path.dirname(path)
-    if dir_path:
-        os.makedirs(dir_path, exist_ok=True)
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_path or ".", prefix="platform_")
-    try:
-        with os.fdopen(tmp_fd, 'w', encoding="utf-8", newline="\n") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, path)
-    except Exception:
-        if os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-        raise
+    from .platform_config import write_platform_config_atomic
+    write_platform_config_atomic(path, data)
 
 
 def _init_platform_lock() -> None:
+    from .platform_config import migrate_legacy_platform_config, read_platform_config
+
+    # Carry a pre-isolation ~/.puppetmaster lock forward before seeding
+    # defaults, so an upgrading user keeps their adapter choices.
+    try:
+        migrate_legacy_platform_config()
+    except Exception as e:
+        _diag("server.platform_lock_migrate", e)
     path = _get_platform_json_path()
-    pdata = {}
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                pdata = json.load(f)
-        except Exception as e:
-            _diag("server.platform_lock_read", e)
-    if not isinstance(pdata, dict):
-        pdata = {}
-    
+    pdata = read_platform_config(path)
+
     # A file with a well-formed "disabled" list is a configured install even
     # without our marker: Puppetmaster's CLI historically rewrote platform.json
     # with only its own keys, stripping "harness_initialized" -- re-applying
@@ -381,16 +367,9 @@ def _seed_agentic_catalog() -> None:
 def _get_platform_adapters() -> dict:
     import shutil
     from .keys import get_api_key_status
-    path = _get_platform_json_path()
-    disabled_list = []
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                pdata = json.load(f)
-                if isinstance(pdata, dict) and "disabled" in pdata and isinstance(pdata["disabled"], list):
-                    disabled_list = pdata["disabled"]
-        except Exception as e:
-            _diag("server.platform_disabled_read", e)
+    from .platform_config import read_platform_config
+    pdata = read_platform_config(_get_platform_json_path())
+    disabled_list = pdata["disabled"] if isinstance(pdata.get("disabled"), list) else []
 
     adapters_config = [
         {"name": "agentic", "implement_capable": True},
@@ -989,6 +968,14 @@ from .keys import (
 from .wiki_config import load_wiki_config_on_startup
 from .wiki_backend import ensure_wiki_backend_async
 load_api_keys_on_startup(_cfg.reach)
+# Keys are now live: reconcile the agentic catalog against them BEFORE any
+# route/swarm dispatch can read it. A restarted backend otherwise routes on rows
+# left over from a provider it no longer has a credential for.
+try:
+    from .auto_registry import ensure_keyed_provider_registry_health
+    ensure_keyed_provider_registry_health()
+except Exception as e:
+    _diag("server.keyed_registry_health_boot", e)
 # The Electron host spawns the backend with a stripped PATH; make Node visible so
 # CodeGraph (a Node CLI) works out of the box instead of reporting "unsupported".
 _ensure_node_on_path()
@@ -3071,11 +3058,12 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False) -> Non
         except (ValueError, OSError):
             pass  # not on the main thread (e.g. under tests) -- atexit still covers it
     try:
-        # Sync agentic catalog from live keys. sync_agentic_registry_safe also
-        # reconciles shared non-agentic rows and re-applies the Marionette ladder
-        # so boot_marionette_registry() scores are not clobbered.
-        from .auto_registry import sync_agentic_registry_safe
-        sync_agentic_registry_safe()
+        # Re-run the keyed-provider health gate immediately before serving: it
+        # syncs the agentic catalog from live keys, reconciles shared non-agentic
+        # rows, prunes rows for providers without a credential, and re-applies
+        # the Marionette ladder so boot scores are not clobbered.
+        from .auto_registry import ensure_keyed_provider_registry_health
+        ensure_keyed_provider_registry_health()
 
         _maybe_auto_index_codegraph()
         # Connect configured MCP servers (incl. local Docker HTTP) without

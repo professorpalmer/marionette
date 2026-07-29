@@ -297,9 +297,12 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             pass
     ordered = _signal + _plumbing
     digest_arts = _signal[:20] + _plumbing[:3] if _signal else _plumbing[:8]
+    # Every user-visible count/label below describes the SURFACED artifacts, not
+    # the raw bridge result. A refused demo surfaces nothing, so it must not
+    # report a nonzero count or claim it ran "via demo".
     _ui_adapter = 'refused-demo' if _demo_refused else result.adapter
-    _ui_num = 0 if _demo_refused else result.num_artifacts
-    _ui_types = [] if _demo_refused else result.artifact_types
+    _ui_num = len(_all_arts)
+    _ui_types = sorted({str(a.get('type')) for a in _all_arts if a.get('type')})
     yield ConvEvent('action_result', {'id': aid, 'job_id': result.job_id, 'num': _ui_num, 'types': _ui_types, 'artifacts': ordered[:12], 'adapter': _ui_adapter, 'mode': result.mode, 'auth_failure': auth_failure, 'error': ('demo substrate -- not real codebase analysis' if _demo_refused else None)})
     _has_signal = bool(_signal)
     # Quality gate: a "finding" with no substance (a one-liner with no file
@@ -313,11 +316,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         # Lead with the provider/key note, never a generic "no findings" badge.
         _badge_summary = auth_failure[:160] if len(auth_failure) > 20 else 'auth failure'
     elif _substantive:
-        _badge_summary = f'{len(_signal)} findings via {result.adapter} ({result.num_artifacts} artifacts)'
+        _badge_summary = f'{len(_signal)} findings via {_ui_adapter} ({_ui_num} artifacts)'
     elif _has_signal:
-        _badge_summary = f'degraded: {len(_signal)} thin findings via {result.adapter} (no file-backed substance)'
-    elif result.num_artifacts:
-        _badge_summary = f'degraded: {result.num_artifacts} plumbing artifacts via {result.adapter}, no findings'
+        _badge_summary = f'degraded: {len(_signal)} thin findings via {_ui_adapter} (no file-backed substance)'
+    elif _ui_num:
+        _badge_summary = f'degraded: {_ui_num} plumbing artifacts via {_ui_adapter}, no findings'
     else:
         _badge_summary = 'no artifacts produced'
     _badge_error = (
@@ -325,23 +328,27 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         else auth_failure or (
             None if _swarm_ok
             else 'swarm findings are thin/generic (no file-backed substance)' if _has_signal
-            else 'swarm produced no FINDING/RISK/DECISION artifacts' if result.num_artifacts
+            else 'swarm produced no FINDING/RISK/DECISION artifacts' if _ui_num
             else 'swarm produced no artifacts'))
     _store_jid = (result.job_id or '').strip() or _sync_local_id
-    _badge = {'job_id': _store_jid, 'applied': _swarm_ok, 'files': [], 'summary': _badge_summary, 'error': _badge_error, 'objective': act.goal, 'adapter': 'refused-demo' if _demo_refused else result.adapter}
+    _badge = {'job_id': _store_jid, 'applied': _swarm_ok, 'files': [], 'summary': _badge_summary, 'error': _badge_error, 'objective': act.goal, 'adapter': _ui_adapter}
+    _job_engine = _ui_adapter if _demo_refused else (result.adapter or 'agentic')
+    # Substantive surfaced findings only: the sidecar must not carry plumbing or
+    # refused-demo rows into artifact:// reads.
+    _job_findings = _substantive[:20]
     try:
-        session._finish_local_job(_sync_local_id, ok=_swarm_ok, summary=_badge_summary, status='done' if _swarm_ok else 'failed', engine=result.adapter or 'agentic')
+        session._finish_local_job(_sync_local_id, ok=_swarm_ok, summary=_badge_summary, status='done' if _swarm_ok else 'failed', engine=_job_engine, findings=_job_findings)
         if _store_jid != _sync_local_id:
             if _store_jid not in session._session_job_ids:
                 session._session_job_ids.append(_store_jid)
-            session._register_local_job(_store_jid, act.goal, role='explore', cwd=_swarm_repo, engine=result.adapter or 'agentic')
-            session._finish_local_job(_store_jid, ok=_swarm_ok, summary=_badge_summary, status='done' if _swarm_ok else 'failed', engine=result.adapter or 'agentic')
+            session._register_local_job(_store_jid, act.goal, role='explore', cwd=_swarm_repo, engine=_job_engine)
+            session._finish_local_job(_store_jid, ok=_swarm_ok, summary=_badge_summary, status='done' if _swarm_ok else 'failed', engine=_job_engine, findings=_job_findings)
     except Exception:
         pass
     session._display_transcript.append({'type': 'swarm_result', **_badge})
     yield ConvEvent('swarm_result', {'job_id': _badge['job_id'], 'objective': act.goal, 'result': _badge})
-    if result.adapter != 'demo':
-        turn_findings.extend((a for a in result.artifacts if a.get('type') != 'verification'))
+    # Only surfaced artifacts become turn findings; a refused demo contributes none.
+    turn_findings.extend((a for a in _all_arts if a.get('type') != 'verification'))
     digest = '\n'.join((f"  - [{a['type']}] {a['headline']}" for a in digest_arts)) or '  (no artifacts)'
     if auth_failure and not _has_signal and auth_failure not in digest:
         digest = f"  - [auth] {auth_failure}\n{digest}"
@@ -354,7 +361,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         stall = '\n(DEGRADED SWARM — only routing/verification plumbing, no FINDING/RISK/DECISION. Tell the user the audit did not produce real findings. Re-dispatch with fewer roles or a sharper goal; do NOT claim the repo was reviewed.)' + stall
     elif not _substantive:
         stall = '\n(THIN SWARM FINDINGS — the findings above are generic one-liners with no file-backed evidence, a known failure mode when the goal is too long/multi-part for the workers. Do NOT present these as a completed audit. Re-dispatch narrowed workers with tight single-domain objectives.)' + stall
-    session._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {result.num_artifacts} artifacts via {result.adapter}:\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
+    _pilot_via = 'refused demo substrate' if _demo_refused else f'via {_ui_adapter}'
+    session._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {_ui_num} artifacts {_pilot_via}:\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
     return None
     return None
 

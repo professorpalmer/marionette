@@ -152,13 +152,11 @@ def _local_job_payload(job: dict) -> dict:
     artifacts = payload.get("artifacts") if isinstance(payload, dict) else []
     payload["artifacts"] = artifacts if isinstance(artifacts, list) else []
     # A sidecar row is a bookkeeping projection, not a claim that durable
-    # Puppetmaster artifacts exist in the store.
-    payload["artifacts_complete"] = any(
-        isinstance(artifact, dict)
-        and str(artifact.get("type") or "").lower() not in ("routing", "placeholder")
-        and bool(str(artifact.get("headline") or "").strip())
-        for artifact in payload["artifacts"]
-    )
+    # Puppetmaster artifacts exist in the store: routing cards, placeholders and
+    # error rows alone never make a job look like it produced readable work.
+    from .local_job_artifacts import artifacts_are_complete
+
+    payload["artifacts_complete"] = artifacts_are_complete(payload["artifacts"])
     return payload
 
 

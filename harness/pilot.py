@@ -229,8 +229,15 @@ class PilotAction:
             if language not in ("auto", "python", "typescript"):
                 raise PilotError(f"lsp action language must be 'auto', 'python', or 'typescript' (got {language!r})")
             mode = args.get("mode") or "diagnostics"
-            if mode not in ("status", "diagnostics"):
-                raise PilotError("lsp action mode must be 'status' or 'diagnostics'")
+            # Keep this list in step with the tool schema's mode enum and
+            # get_lsp_report: rejecting a mode the schema advertises makes the
+            # pilot's own tool contract a lie.
+            if mode not in ("status", "diagnostics", "references"):
+                raise PilotError(
+                    "lsp action mode must be 'status', 'diagnostics', or 'references'"
+                )
+            if mode == "references" and not str(args.get("symbol") or "").strip():
+                raise PilotError("lsp action mode 'references' requires a non-empty symbol")
             root = args.get("root")
             if root is not None and not str(root).strip():
                 raise PilotError("lsp action root must be a non-empty string when provided")

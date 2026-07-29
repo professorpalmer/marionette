@@ -508,6 +508,14 @@ class ConversationJobsMixin:
 
             wr_engine = (getattr(res, "engine", None) or "").strip()
             wr_model = (getattr(res, "model", None) or "").strip()
+            # Carry real structured rows (never the patch/plumbing ones) onto the
+            # sidecar so artifact:// readers see the analysis, and pass the diff so
+            # a patch artifact is only claimed when one actually exists.
+            _signal_rows = [
+                row for row in (res_dict.get("ar_list") or [])
+                if isinstance(row, dict)
+                and str(row.get("type") or "") in ("finding", "risk", "decision")
+            ]
             self._finish_local_job(
                 job_id,
                 ok=not res_dict.get("error"),
@@ -517,6 +525,8 @@ class ConversationJobsMixin:
                 est_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
                 engine=wr_engine,
                 model=wr_model,
+                findings=_signal_rows,
+                diff=(getattr(res, "patch", "") or ""),
             )
             self._swarm_results.put({
                 "job_id": job_id,

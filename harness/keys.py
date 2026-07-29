@@ -29,25 +29,59 @@ def is_placeholder_credential(value: Optional[str]) -> bool:
 _KEYS_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "keys.json")
 
 def get_keys_file_path() -> str:
+    """The canonical keys.json Marionette reads and WRITES.
+
+    Always the state-dir file when ``HARNESS_STATE_DIR`` is set. Legacy keys
+    from the pre-state-dir layout are folded in on read by
+    :func:`legacy_keys_file_path` / :func:`_read_keys` instead of redirecting
+    writes back into the old location.
+    """
     state_dir = os.environ.get("HARNESS_STATE_DIR")
     if state_dir:
-        p = os.path.join(state_dir, "keys.json")
-        # MIGRATION: earlier builds wrote keys.json to ~/.pmharness/keys.json.
-        # Once HARNESS_STATE_DIR anchored to ~/.pmharness/state, upgraded installs
-        # with keys only in the parent directory appeared keyless until re-entered.
-        # Only fall back for real harness homes — never for ephemeral test /
-        # temp state dirs (same rule as disconnected.json).
-        if not os.path.exists(p) and os.path.exists(_KEYS_FILE):
-            try:
-                home_root = os.path.normcase(
-                    os.path.abspath(os.path.expanduser("~/.pmharness"))
-                )
-                abs_state = os.path.normcase(os.path.abspath(state_dir))
-                if abs_state.startswith(home_root):
-                    return _KEYS_FILE
-            except Exception:
-                pass
-        return p
+        return os.path.join(state_dir, "keys.json")
+    return _KEYS_FILE
+
+
+def _state_dir_under_product_home(state_dir: str) -> bool:
+    """True when ``state_dir`` is exactly ``~/.pmharness`` or a subdirectory.
+
+    Uses ``home_root + os.sep`` boundary matching so sibling paths like
+    ``~/.pmharness_shadow/state`` never qualify as in-tree.
+    """
+    try:
+        home_root = os.path.normcase(
+            os.path.abspath(os.path.expanduser("~/.pmharness"))
+        )
+        abs_state = os.path.normcase(os.path.abspath(state_dir))
+        return abs_state == home_root or abs_state.startswith(home_root + os.sep)
+    except Exception:
+        return False
+
+
+def legacy_keys_file_path() -> str:
+    """The pre-state-dir ``~/.pmharness/keys.json``, or "" when not applicable.
+
+    Earlier builds wrote keys.json directly to ``~/.pmharness``. Once
+    ``HARNESS_STATE_DIR`` anchored to ``~/.pmharness/state``, upgraded installs
+    with keys only in the parent directory appeared keyless until re-entered.
+    Only real harness homes see this fallback — never ephemeral test / temp
+    state dirs (same rule as disconnected.json), so tests cannot read the
+    developer's actual credentials.
+    """
+    state_dir = os.environ.get("HARNESS_STATE_DIR")
+    if not state_dir:
+        return ""
+    if not os.path.exists(_KEYS_FILE):
+        return ""
+    if not _state_dir_under_product_home(state_dir):
+        return ""
+    try:
+        abs_state = os.path.normcase(os.path.abspath(state_dir))
+        if abs_state == os.path.normcase(os.path.dirname(os.path.abspath(_KEYS_FILE))):
+            # State dir IS the legacy home; get_keys_file_path already points there.
+            return ""
+    except Exception:
+        return ""
     return _KEYS_FILE
 
 def get_env_var_for_reach(reach: str) -> str:
@@ -312,19 +346,64 @@ def _write_keys(keys: dict):
                 pass
         raise
 
-def _read_keys() -> dict:
-    path = get_keys_file_path()
-    if not os.path.exists(path):
+def _read_keys_file(path: str) -> dict:
+    if not path or not os.path.exists(path):
         return {}
     try:
         with open(path, 'r', encoding="utf-8", errors="replace") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception as exc:
         # A corrupted keys file must not crash callers, but silently treating
         # it as "no keys" made every provider look disconnected with no trail.
         from .diag import note
         note("keys.read_keys", exc, msg=f"unreadable keys file at {path}")
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _read_keys() -> dict:
+    """Every stored provider credential, legacy folded under the state file.
+
+    The merge is PER PROVIDER: an upgraded install whose legacy keys.json holds
+    openrouter while the state file holds anthropic must see both. The state
+    file wins any provider present in both, so re-entering a key in Settings
+    always takes effect.
+    """
+    state = _read_keys_file(get_keys_file_path())
+    legacy = _read_keys_file(legacy_keys_file_path())
+    if not legacy:
+        return state
+    merged = dict(legacy)
+    merged.update(state)
+    return merged
+
+
+def migrate_legacy_keys_into_state() -> list:
+    """Copy legacy-only providers into the state keys file. Returns their names.
+
+    One-way and non-destructive: providers already in the state file keep their
+    stored value, so this can run on every startup without clobbering a key the
+    user re-entered in Settings.
+    """
+    legacy_path = legacy_keys_file_path()
+    if not legacy_path:
+        return []
+    legacy = _read_keys_file(legacy_path)
+    if not legacy:
+        return []
+    state = _read_keys_file(get_keys_file_path())
+    migrated = sorted(name for name in legacy if name not in state)
+    if not migrated:
+        return []
+    merged = dict(legacy)
+    merged.update(state)
+    try:
+        _write_keys(merged)
+    except Exception as exc:
+        _diag("keys.migrate_legacy", exc)
+        return []
+    _diag("keys.migrate_legacy", msg=f"migrated={','.join(migrated)}")
+    return migrated
 
 _DISCONNECTED_FILE = os.path.join(os.path.expanduser("~/.pmharness"), "disconnected.json")
 
@@ -338,15 +417,8 @@ def _disconnected_file_path() -> str:
         # Legacy layout: disconnected.json lived under ~/.pmharness/ while
         # state moved to ~/.pmharness/state. Only fall back for real harness
         # homes — never for ephemeral test / temp state dirs.
-        try:
-            home_root = os.path.normcase(
-                os.path.abspath(os.path.expanduser("~/.pmharness"))
-            )
-            abs_state = os.path.normcase(os.path.abspath(state_dir))
-            if abs_state.startswith(home_root) and os.path.exists(_DISCONNECTED_FILE):
-                return _DISCONNECTED_FILE
-        except Exception:
-            pass
+        if _state_dir_under_product_home(state_dir) and os.path.exists(_DISCONNECTED_FILE):
+            return _DISCONNECTED_FILE
         return p
     return _DISCONNECTED_FILE
 
@@ -666,6 +738,12 @@ def load_api_keys_on_startup(reach: str):
                     os.environ[_envvar] = _kf.read().strip()
             except Exception:
                 pass
+    # Fold pre-state-dir keys into the canonical file before anything reads it,
+    # so an upgraded install stops depending on the legacy path to stay keyed.
+    try:
+        migrate_legacy_keys_into_state()
+    except Exception as exc:
+        _diag("keys.migrate_legacy_on_startup", exc)
     # Capture login-shell / Electron-merged keys into durable store first so
     # agentic registry sync (and the next cold start) see them.
     try:

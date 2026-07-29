@@ -249,6 +249,11 @@ def test_search_tools_loop_executes_and_activates(monkeypatch):
 
 def test_visible_schema_parity_when_discovery_disabled(monkeypatch):
     monkeypatch.setenv("HARNESS_TOOL_DISCOVERY", "0")
+    # Pin browser capability so parity does not depend on whether the host that
+    # runs the suite happens to have a standalone Chrome installed.
+    monkeypatch.setattr(
+        "harness.browser.standalone_browser_available", lambda **_k: True,
+    )
     cfg = HarnessConfig(
         driver="stub-oracle-v2",
         state_dir=tempfile.mkdtemp(),

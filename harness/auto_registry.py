@@ -385,6 +385,225 @@ def _build_agentic_spec(provider_name: str, model_name: str, tier: str, slug: st
     }
 
 
+# harness provider name -> agentic/puppetmaster provider slug. Only these are
+# standalone HTTP targets for the agentic adapter; OAuth/CLI identities
+# (openai-codex, cursor-cli, ...) authenticate a pilot, never a swarm worker.
+_AGENTIC_PROVIDER_SLUGS = {
+    "anthropic": "anthropic",
+    "openai": "openai-api",
+    "gemini": "gemini",
+    "openrouter": "openrouter",
+    "deepseek": "deepseek",
+    "zai": "zai",
+    "xai": "xai",
+    "bedrock": "bedrock",
+}
+
+
+def keyed_agentic_providers() -> set:
+    """Agentic provider slugs that currently hold a usable, connected key."""
+    try:
+        from .providers import PROVIDERS
+        from .keys import get_disconnected
+        from .registry_wizard import get_provider_key
+    except Exception as e:
+        _diag("auto_registry.keyed_providers_import", e)
+        return set()
+    disconnected = get_disconnected()
+    keyed = set()
+    for p in PROVIDERS:
+        slug = _AGENTIC_PROVIDER_SLUGS.get(p.name)
+        if not slug or p.name in disconnected:
+            continue
+        try:
+            if get_provider_key(p):
+                keyed.add(slug)
+        except Exception as e:
+            _diag("auto_registry.keyed_providers", e, msg=f"provider={p.name}")
+    return keyed
+
+
+def _agentic_row_provider(row: dict) -> str:
+    defaults = row.get("payload_defaults")
+    if isinstance(defaults, dict):
+        return str(defaults.get("provider") or "")
+    return ""
+
+
+def prune_unavailable_agentic_rows(keep_providers: set) -> dict:
+    """Drop agentic rows whose provider has no usable key. Preserves peers.
+
+    A restarted backend can inherit agentic rows written when a different
+    provider was keyed (or by another tool sharing the registry). Those rows
+    still carry high capability scores, so the router first-picks a model that
+    is guaranteed to 401 — and a keyed OpenRouter ladder never gets a turn.
+    Non-agentic rows (plan/cursor/codex peers) are never touched.
+    """
+    report = {"pruned": 0, "kept": 0, "path": ""}
+    try:
+        from .registry_wizard import get_models_file_path, write_json_atomic
+
+        path = get_models_file_path()
+        report["path"] = path
+        if not os.path.exists(path):
+            return report
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+        models = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            return report
+        kept = []
+        pruned = 0
+        for row in models:
+            if not isinstance(row, dict):
+                continue
+            if row.get("adapter") != "agentic":
+                kept.append(row)
+                continue
+            if _agentic_row_provider(row) in keep_providers:
+                kept.append(row)
+            else:
+                pruned += 1
+        report["kept"] = len(kept)
+        if pruned:
+            data["models"] = kept
+            write_json_atomic(path, data)
+            report["pruned"] = pruned
+    except Exception as e:
+        _diag("auto_registry.prune_agentic", e)
+    return report
+
+
+def _openrouter_ladder_ids() -> list:
+    """Marionette ladder ids that the OpenRouter catalog is expected to supply."""
+    try:
+        from .marionette_registry import _LADDER
+    except Exception:
+        return []
+    curated = {f"agentic/{slug}" for _n, _t, slug in _CURATED_MODELS.get("openrouter", [])}
+    return [mid for mid, _score, _tags in _LADDER if mid in curated]
+
+
+def _agentic_ids_present() -> set:
+    try:
+        from .registry_wizard import get_models_file_path
+
+        path = get_models_file_path()
+        if not os.path.exists(path):
+            return set()
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+        models = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            return set()
+        return {
+            str(row.get("id") or "")
+            for row in models
+            if isinstance(row, dict) and row.get("adapter") == "agentic" and row.get("id")
+        }
+    except Exception as e:
+        _diag("auto_registry.agentic_ids", e)
+        return set()
+
+
+def _seed_openrouter_ladder_rows(missing: list) -> int:
+    """Append the curated OpenRouter ladder rows the registry is missing."""
+    try:
+        from .registry_wizard import get_models_file_path, write_json_atomic
+
+        curated_by_id = {
+            f"agentic/{slug}": (name, tier, slug)
+            for name, tier, slug in _CURATED_MODELS.get("openrouter", [])
+        }
+        specs = [
+            _build_agentic_spec("openrouter", *curated_by_id[mid])
+            for mid in missing
+            if mid in curated_by_id
+        ]
+        if not specs:
+            return 0
+        path = get_models_file_path()
+        data = {"models": []}
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            data = {"models": []}
+        data["models"] = list(data["models"]) + specs
+        write_json_atomic(path, data)
+        return len(specs)
+    except Exception as e:
+        _diag("auto_registry.seed_openrouter_ladder", e)
+        return 0
+
+
+def ensure_keyed_provider_registry_health() -> dict:
+    """Boot gate: agentic rows must match live keys BEFORE route/swarm dispatch.
+
+    Called right after keys load (and again before ``serve_forever``) so a fresh
+    or restarted backend with, say, only OpenRouter keyed cannot dispatch against
+    a catalog full of rows for providers it has no credential for. Fail-closed:
+    with no keyed provider every agentic row is pruned and ``ready`` is False, so
+    routing refuses instead of 401-ing mid-swarm.
+
+    Returns a small report; never raises.
+    """
+    report = {
+        "ready": False,
+        "providers": [],
+        "pruned": 0,
+        "seeded_ladder": [],
+        "missing_ladder": [],
+        "reason": "",
+    }
+    try:
+        keyed = keyed_agentic_providers()
+        report["providers"] = sorted(keyed)
+        if not keyed:
+            report["pruned"] = prune_unavailable_agentic_rows(set()).get("pruned", 0)
+            report["reason"] = "no keyed agentic provider"
+            _diag("auto_registry.health_fail_closed",
+                  msg=f"pruned={report['pruned']}")
+            return report
+        sync_agentic_registry_safe()
+        report["pruned"] = prune_unavailable_agentic_rows(keyed).get("pruned", 0)
+        if "openrouter" in keyed:
+            required = _openrouter_ladder_ids()
+            present = _agentic_ids_present()
+            missing = [mid for mid in required if mid not in present]
+            # Every ladder row missing means auto_route has nothing Marionette
+            # curated to pick; re-seed from the curated set rather than routing
+            # blind. A partial gap is normal (picker curation) and left alone.
+            if required and len(missing) == len(required):
+                if _seed_openrouter_ladder_rows(missing):
+                    report["seeded_ladder"] = list(missing)
+                    present = _agentic_ids_present()
+                    missing = [mid for mid in required if mid not in present]
+            report["missing_ladder"] = missing
+        if report["pruned"] or report["seeded_ladder"]:
+            # Pruning/seeding rewrote the catalog; scores must be re-stamped.
+            try:
+                from .marionette_registry import apply_marionette_router_ladder
+
+                apply_marionette_router_ladder()
+            except Exception as e:
+                _diag("auto_registry.health_ladder", e)
+        report["ready"] = bool(_agentic_ids_present())
+        if not report["ready"]:
+            report["reason"] = "no agentic rows for keyed providers"
+        _diag(
+            "auto_registry.health",
+            msg=(
+                f"ready={int(report['ready'])} providers={','.join(report['providers'])} "
+                f"pruned={report['pruned']} missing_ladder={len(report['missing_ladder'])}"
+            ),
+        )
+    except Exception as e:
+        _diag("auto_registry.health", e)
+        report["reason"] = str(e)
+    return report
+
+
 def sync_agentic_registry(force: bool = False) -> dict:
     """Sync the agentic entries in ~/.puppetmaster/models.json based on provider keys.
     
@@ -409,18 +628,8 @@ def sync_agentic_registry(force: bool = False) -> dict:
         # Get disconnected providers
         disconnected = get_disconnected()
         
-        # Map provider names to their correct agentic provider identifier
-        provider_map = {
-            "anthropic": "anthropic",
-            "openai": "openai-api",
-            "gemini": "gemini",
-            "openrouter": "openrouter",
-            "deepseek": "deepseek",
-            "zai": "zai",
-            "xai": "xai",
-            "bedrock": "bedrock",
-        }
-        
+        provider_map = _AGENTIC_PROVIDER_SLUGS
+
         # Detect live providers with usable keys (get_provider_key rejects
         # disconnects and doctor/test/placeholder tokens).
         # Only providers in provider_map are standalone HTTP targets for the

@@ -300,8 +300,11 @@ class BridgeResult:
     job_id: str
     status: str
     mode: str
-    num_artifacts: int
-    artifact_types: list
+    num_artifacts: int  # == len(artifacts): describes the SURFACED compact list,
+    #   not the raw orchestrator output. Reporting the raw count while surfacing a
+    #   filtered list is how a run with only dropped reasoning fragments claimed
+    #   "N artifacts" the user could never see.
+    artifact_types: list  # types present in ``artifacts`` (same surfaced list)
     summary: str
     artifacts: list  # list of compact dicts (type, claim/decision/etc snippet)
     auth_failure: str = ""  # loud one-liner when a provider rejected the key
@@ -311,6 +314,8 @@ class BridgeResult:
     #   codebase analysis); set to a real worker adapter when configured. Surfaces
     #   use this to label generic substrate so it is never mistaken for real
     #   findings.
+    raw_num_artifacts: int = 0  # artifacts the orchestrator produced, pre-filter
+    dropped_artifacts: int = 0  # raw - surfaced, so filtering stays observable
 
 
 def _compact_artifact(a: Any) -> dict:
@@ -431,7 +436,32 @@ _NO_STRUCTURE_FAILURES = frozenset({
     "provider_not_configured",
     "routing_failed",
     "auth_failed",
+    # Transport / quota / capacity deaths. A worker that timed out or was
+    # rejected by the provider has NO analysis to report; whatever prose sits
+    # in its stdout is a truncated mid-thought or a repeat of the goal.
+    "timeout",
+    "timed_out",
+    "model_not_found",
+    "insufficient_credits",
+    "no_credentials",
+    "context_length_exceeded",
+    "provider_error",
+    "http_status:429",
+    "http_status:500",
 })
+
+
+def _is_nonpromotable_failure(failure: object) -> bool:
+    """True when a compact artifact must never be promoted to a finding.
+
+    ANY non-empty failure tag disqualifies promotion. Promotion exists to rescue
+    a worker that DID the analysis but skipped ``submit_findings``; a tagged
+    failure is the opposite — positive evidence that the run died. Enumerating
+    known-bad tags let every new tag (``timeout``, ``insufficient_credits``,
+    ``http_status:429``, ...) default to promotable, which is how a dead run
+    grew synthetic findings and a green badge.
+    """
+    return bool(str(failure or "").strip())
 
 # Planning / mid-thought openers that must never masquerade as a finding headline.
 _REASONING_FRAGMENT_PREFIXES = (
@@ -690,14 +720,11 @@ def _promote_degraded_prose(compact: list) -> list:
             # fragment as headline, clean "completed" badge).
             if _is_meta_degrade_artifact(a):
                 continue
-            fail = str(a.get("failure") or "").strip().lower()
-            if (
-                fail in _NO_STRUCTURE_FAILURES
-                or fail.startswith("no_tool_calls")
-                or fail.startswith("auth")
-                or fail.startswith("routing")
-                or fail.startswith("route_")
-            ):
+            # Promotion requires POSITIVE analysis evidence: prose with no
+            # failure tag at all. Any tag (timeout / model_not_found /
+            # insufficient_credits / http_status:* / provider_error / ...) means
+            # the run died, and its stdout is diagnostics, not findings.
+            if _is_nonpromotable_failure(a.get("failure")):
                 continue
             # Use the FULL body (untruncated stdout prose), falling back to the
             # display headline. Detection and the promoted finding both rely on
@@ -773,6 +800,41 @@ def _hoist_auth_risks(compact: list) -> list:
     rest = [a for a in compact
             if not _is_auth_failure_tag(a.get("failure"), a.get("headline"))]
     return auth + rest if auth else compact
+
+
+def _bridge_result(
+    *,
+    job_id: str,
+    status: str,
+    mode: str,
+    raw_num_artifacts: int,
+    summary: str,
+    artifacts: list,
+    auth_failure: str = "",
+    adapter: str = "demo",
+) -> BridgeResult:
+    """Build a BridgeResult whose counts describe the artifacts it carries.
+
+    Single constructor for both dispatch paths so ``num_artifacts`` and
+    ``artifact_types`` can never drift from the surfaced compact list after
+    promotion and reasoning-fragment filtering. ``dropped_artifacts`` keeps the
+    filtering observable instead of silently shrinking the count.
+    """
+    surfaced = list(artifacts or [])
+    raw = max(int(raw_num_artifacts or 0), 0)
+    return BridgeResult(
+        job_id=job_id,
+        status=status,
+        mode=mode,
+        num_artifacts=len(surfaced),
+        artifact_types=sorted({str(a.get("type") or "") for a in surfaced if a.get("type")}),
+        summary=summary,
+        artifacts=surfaced,
+        auth_failure=auth_failure,
+        adapter=adapter,
+        raw_num_artifacts=raw,
+        dropped_artifacts=max(raw - len(surfaced), 0),
+    )
 
 
 def _prewalk_timeout_seconds() -> int:
@@ -910,12 +972,11 @@ def _execute_prewalk(
     compact = _hoist_auth_risks([_compact_artifact(a) for a in artifacts])
     compact = _promote_degraded_prose(compact)
     auth_note = _auth_failure_note(compact)
-    return BridgeResult(
+    return _bridge_result(
         job_id=result.job.id,
         status=str(result.job.status),
         mode=str(result.mode),
-        num_artifacts=len(artifacts),
-        artifact_types=sorted({str(a.type) for a in artifacts}),
+        raw_num_artifacts=len(artifacts),
         summary=_summary_leading_with_auth(result.summary or "", auth_note),
         artifacts=compact,
         auth_failure=auth_note,
@@ -1187,12 +1248,11 @@ def execute_intent(
             summary=result.summary or "",
             auth_note=auth_note,
         )
-        return BridgeResult(
+        return _bridge_result(
             job_id=result.job.id,
             status=status,
             mode=str(result.mode),
-            num_artifacts=len(artifacts),
-            artifact_types=sorted({str(a.type) for a in artifacts}),
+            raw_num_artifacts=len(artifacts),
             summary=_summary_leading_with_auth(summary, auth_note),
             artifacts=compact,
             auth_failure=auth_note,

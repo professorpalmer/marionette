@@ -93,7 +93,11 @@ class LocalJobsMixin:
             routing_basis = str(preview.get("routing_savings_basis") or "")
             art = preview.get("artifact")
             if isinstance(art, dict):
-                routing_arts.append(art)
+                from .local_job_artifacts import routing_artifact_id
+
+                # Explicit id at creation: artifact://local-*/<id> must survive
+                # the headline/model rewrite _finish_local_job performs later.
+                routing_arts.append({**art, "id": routing_artifact_id(job_id)})
         display_model = f"{engine_label}/{model_id}" if model_id else engine_label
         task_role = f"{role} ({engine_label})" if role else f"implement ({engine_label})"
         with self._local_jobs_lock:
@@ -155,14 +159,29 @@ class LocalJobsMixin:
                           files: Optional[list] = None, tokens: int = 0,
                           est_cost_usd: float = 0.0,
                           status: str = "",
-                          engine: str = "", model: str = "") -> None:
+                          engine: str = "", model: str = "",
+                          findings: Optional[list] = None,
+                          diff: str = "") -> None:
         """Flip a live local job to its terminal state so the panel stops showing
         a spinner and surfaces the outcome (files touched + a one-line summary).
 
         When ``engine`` / ``model`` are known (from WorkerResult), overwrite the
         provisional register-time labels so an agentic run never keeps a native
         or pilot-slug stamp after it finishes.
+
+        The terminal artifact's TYPE is derived, never assumed: a read-only /
+        explore / analysis job (or any job that touched no files and produced no
+        diff) settles as an ``analysis`` finding summary, so the sidecar cannot
+        claim a ``patch`` that was never written. ``findings`` carries the
+        worker's real structured rows through to the artifact read surfaces.
         """
+        from .local_job_artifacts import (
+            normalize_finding_artifacts,
+            routing_artifact_id,
+            stamp_provenance,
+            terminal_artifact_id,
+            terminal_artifact_type,
+        )
         import time
         with self._local_jobs_lock:
             job = self._local_jobs.get(job_id)
@@ -250,6 +269,7 @@ class LocalJobsMixin:
                 if (art.get("type") or "").strip().upper() != "ROUTING":
                     continue
                 updated = dict(art)
+                updated["id"] = routing_artifact_id(job_id)
                 if model_id:
                     updated["model"] = model_id
                     updated["headline"] = f"Routed to {model_id}"
@@ -258,13 +278,30 @@ class LocalJobsMixin:
                     if updated.get("created_by") == "router":
                         updated["policy"] = "balanced"
                 keep_routing.append(updated)
-            patch_art: dict = {
-                "type": "patch" if (ok and not cancelled) else "error",
+            terminal_art: dict = {
+                "id": terminal_artifact_id(job_id),
+                "type": terminal_artifact_type(
+                    ok=ok,
+                    cancelled=cancelled,
+                    role=job.get("role"),
+                    has_file_evidence=bool(files) or bool((diff or "").strip()),
+                ),
                 "headline": headline[:240],
             }
-            if real_cost:
-                patch_art["est_cost_usd"] = round(real_cost, 6)
-            job["artifacts"] = keep_routing + [patch_art]
+            # Provenance the artifact read surfaces need to attribute the work.
+            terminal_art = stamp_provenance(terminal_art, {
+                "adapter": job.get("adapter"),
+                "model": job.get("model"),
+                "result": terminal,
+                "tokens": int(job.get("tokens") or 0),
+                "est_cost_usd": round(real_cost, 6) if real_cost else 0.0,
+                "cost_provenance": job.get("cost_provenance"),
+            })
+            job["artifacts"] = (
+                keep_routing
+                + [terminal_art]
+                + normalize_finding_artifacts(job_id, findings)
+            )
             # Nested UI must not spin forever after the parent job settles.
             settle_reason = (
                 "cancelled" if cancelled

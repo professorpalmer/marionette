@@ -88,6 +88,23 @@ def discovery_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def _browser_tools_usable() -> bool:
+    """Whether ``browser_*`` should appear in the catalog at all.
+
+    Config saying browser support is on is not enough: without a standalone
+    Chrome/Chromium every advertised ``builtin:browser_*`` tool can only return
+    "browser unavailable", which reads to the pilot as a broken tool rather than
+    an absent optional capability. Probing is TTL-cached, so this stays cheap
+    per refresh while an install or PM_BROWSER_CHROME edit still shows up.
+    """
+    try:
+        from .browser import standalone_browser_available
+
+        return standalone_browser_available()
+    except Exception:
+        return False
+
+
 def _tokenize(text: str) -> List[str]:
     return _TOKEN_RE.findall((text or "").lower())
 
@@ -172,7 +189,7 @@ class ToolCatalog:
         schema = build_tools_schema(
             mcp_tools,
             no_delegation=no_delegation,
-            browser_enabled=browser_enabled,
+            browser_enabled=browser_enabled and _browser_tools_usable(),
             include_search_tools=discovery_enabled(),
         )
         entries: Dict[str, CatalogEntry] = {}

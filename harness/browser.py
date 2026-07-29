@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from typing import Optional
 
 try:
@@ -23,17 +24,40 @@ except Exception as _e:  # pragma: no cover - engine should always be importable
     _engine = None
     _ENGINE_ERR = f"browser engine unavailable: {_e}"
 
-# Keep probe parity with puppetmaster.browser_cdp._CHROME_CANDIDATES so macOS
-# Application bundles are accepted alongside PATH names.
-_CHROME_CANDIDATES = (
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+# macOS bundle names, probed under both /Applications (system-wide) and
+# ~/Applications (per-user installs, which is where Chrome lands for anyone
+# without admin rights and where Beta/Dev/Canary channels usually live).
+_MACOS_BROWSER_BUNDLES = (
+    ("Google Chrome.app", "Google Chrome"),
+    ("Google Chrome Beta.app", "Google Chrome Beta"),
+    ("Google Chrome Dev.app", "Google Chrome Dev"),
+    ("Google Chrome Canary.app", "Google Chrome Canary"),
+    ("Chromium.app", "Chromium"),
+)
+
+# PATH names, probed after the bundles. Keeps parity with
+# puppetmaster.browser_cdp._CHROME_CANDIDATES.
+_CHROME_PATH_NAMES = (
     "google-chrome",
     "google-chrome-stable",
     "chromium",
     "chromium-browser",
     "chrome",
 )
+
+
+def _macos_bundle_candidates() -> tuple:
+    roots = ("/Applications", os.path.expanduser("~/Applications"))
+    return tuple(
+        os.path.join(root, bundle, "Contents", "MacOS", executable)
+        for root in roots
+        for bundle, executable in _MACOS_BROWSER_BUNDLES
+    )
+
+
+def chrome_candidates() -> tuple:
+    """Every standalone Chrome/Chromium path this host might have, in order."""
+    return _macos_bundle_candidates() + _CHROME_PATH_NAMES
 
 
 def _reject_embedded_browser(path: str) -> bool:
@@ -61,10 +85,38 @@ def _find_standalone_chrome() -> Optional[str]:
     configured = os.environ.get("PM_BROWSER_CHROME", "").strip()
     if configured:
         return configured if _chrome_executable_available(configured) else None
-    for candidate in _CHROME_CANDIDATES:
+    for candidate in chrome_candidates():
         if _chrome_executable_available(candidate):
             return candidate
     return None
+
+
+# Filesystem/PATH probing across ~14 candidates is too expensive to repeat for
+# every turn's tool schema, but must not go stale when the user installs Chrome
+# or edits PM_BROWSER_CHROME. Cache per configured-executable value with a short
+# TTL: an env change swaps the cache key and is visible immediately, while a
+# fresh install shows up on the next refresh after the TTL.
+_CHROME_PROBE_TTL_SECONDS = 30.0
+_chrome_probe_cache: dict = {}
+
+
+def standalone_browser_available(*, refresh: bool = False) -> bool:
+    """True when a real Chrome/Chromium (never Electron) can be driven via CDP.
+
+    Cheap enough to call on every tool-schema refresh. ``refresh=True`` forces a
+    re-probe for callers that just changed the browser configuration.
+    """
+    if _ENGINE_ERR or _engine is None:
+        return False
+    key = os.environ.get("PM_BROWSER_CHROME", "").strip()
+    now = time.monotonic()
+    cached = _chrome_probe_cache.get(key)
+    if cached is not None and not refresh and (now - cached[0]) < _CHROME_PROBE_TTL_SECONDS:
+        return cached[1]
+    available = _find_standalone_chrome() is not None
+    _chrome_probe_cache.clear()
+    _chrome_probe_cache[key] = (now, available)
+    return available
 
 
 def _guard() -> Optional[str]:

@@ -160,7 +160,7 @@ def test_guard_accepts_macos_application_path(monkeypatch, restore_engine, tmp_p
     app_exec.write_text("#!/bin/sh\n", encoding="utf-8")
     app_exec.chmod(0o755)
     monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
-    monkeypatch.setattr(browser, "_CHROME_CANDIDATES", (str(app_exec),))
+    monkeypatch.setattr(browser, "chrome_candidates", lambda: (str(app_exec),))
     browser._ENGINE_ERR = ""
     browser._engine = _fake_engine(
         __name__="puppetmaster.browser_cdp",
@@ -175,10 +175,137 @@ def test_guard_accepts_path_name_via_which(monkeypatch, restore_engine, tmp_path
     shim.chmod(0o755)
     monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(browser, "_CHROME_CANDIDATES", ("google-chrome",))
+    monkeypatch.setattr(browser, "chrome_candidates", lambda: ("google-chrome",))
     browser._ENGINE_ERR = ""
     browser._engine = _fake_engine(
         __name__="puppetmaster.browser_cdp",
         snapshot=lambda: "Page: ok",
     )
     assert browser.browser_snapshot() == "Page: ok"
+
+
+def test_candidates_include_per_user_applications_and_channels(monkeypatch):
+    """Per-user installs and Beta/Dev/Canary must be discoverable, not just /Applications."""
+    monkeypatch.setenv("HOME", "/Users/tester")
+    candidates = browser.chrome_candidates()
+
+    assert "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" in candidates
+    assert (
+        "/Users/tester/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        in candidates
+    )
+    for channel in ("Beta", "Dev", "Canary"):
+        assert (
+            f"/Users/tester/Applications/Google Chrome {channel}.app/Contents/"
+            f"MacOS/Google Chrome {channel}" in candidates
+        )
+    assert "/Users/tester/Applications/Chromium.app/Contents/MacOS/Chromium" in candidates
+    # PATH names stay last so an installed bundle wins over a shim.
+    assert candidates[-len(browser._CHROME_PATH_NAMES):] == browser._CHROME_PATH_NAMES
+
+
+def test_user_applications_bundle_is_accepted(monkeypatch, restore_engine, tmp_path):
+    app_exec = (
+        tmp_path / "Applications" / "Google Chrome.app" / "Contents" / "MacOS"
+        / "Google Chrome"
+    )
+    app_exec.parent.mkdir(parents=True)
+    app_exec.write_text("#!/bin/sh\n", encoding="utf-8")
+    app_exec.chmod(0o755)
+    monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    browser._chrome_probe_cache.clear()
+    browser._ENGINE_ERR = ""
+    browser._engine = _fake_engine(
+        __name__="puppetmaster.browser_cdp",
+        navigate=lambda url: "ok",
+    )
+
+    assert browser._find_standalone_chrome() == str(app_exec)
+    assert browser.standalone_browser_available(refresh=True) is True
+    assert browser.browser_navigate("https://example.com") == "ok"
+
+
+def test_no_chrome_anywhere_reports_unavailable(monkeypatch, restore_engine, tmp_path):
+    monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
+    monkeypatch.setattr(browser, "chrome_candidates", lambda: ())
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    browser._chrome_probe_cache.clear()
+    browser._ENGINE_ERR = ""
+    browser._engine = _fake_engine(
+        __name__="puppetmaster.browser_cdp",
+        navigate=lambda url: "should not be reached",
+    )
+
+    assert browser.standalone_browser_available(refresh=True) is False
+    assert "browser unavailable" in browser.browser_navigate("https://example.com")
+
+
+def test_electron_executable_is_never_treated_as_available(
+    monkeypatch, restore_engine, tmp_path,
+):
+    electron = tmp_path / "Electron.app" / "Contents" / "MacOS" / "Electron"
+    electron.parent.mkdir(parents=True)
+    electron.write_text("#!/bin/sh\n", encoding="utf-8")
+    electron.chmod(0o755)
+    monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
+    monkeypatch.setattr(browser, "chrome_candidates", lambda: (str(electron),))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    browser._chrome_probe_cache.clear()
+    browser._ENGINE_ERR = ""
+    browser._engine = _fake_engine(__name__="puppetmaster.browser_cdp")
+
+    assert browser._find_standalone_chrome() is None
+    assert browser.standalone_browser_available(refresh=True) is False
+
+
+def test_configured_executable_change_is_visible_without_ttl_wait(
+    monkeypatch, restore_engine, tmp_path,
+):
+    """PM_BROWSER_CHROME is the cache key, so an edit takes effect immediately."""
+    chrome = tmp_path / "chrome-bin"
+    chrome.write_text("#!/bin/sh\n", encoding="utf-8")
+    chrome.chmod(0o755)
+    monkeypatch.setattr(browser, "chrome_candidates", lambda: ())
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    browser._chrome_probe_cache.clear()
+    browser._ENGINE_ERR = ""
+    browser._engine = _fake_engine(__name__="puppetmaster.browser_cdp")
+
+    monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
+    assert browser.standalone_browser_available() is False
+
+    monkeypatch.setenv("PM_BROWSER_CHROME", str(chrome))
+    assert browser.standalone_browser_available() is True
+
+    monkeypatch.setenv("PM_BROWSER_CHROME", str(tmp_path / "missing-chrome"))
+    assert browser.standalone_browser_available() is False
+
+
+def test_tool_discovery_hides_browser_tools_when_no_chrome(monkeypatch):
+    from harness.tool_discovery import ToolCatalog
+
+    monkeypatch.setattr(
+        "harness.browser.standalone_browser_available", lambda **_k: False,
+    )
+    catalog = ToolCatalog()
+    catalog.refresh(mcp_tools=[], browser_enabled=True)
+
+    assert not any(
+        tool_id.startswith("builtin:browser_") for tool_id in catalog._entries
+    )
+
+
+def test_tool_discovery_advertises_browser_tools_when_chrome_present(monkeypatch):
+    from harness.tool_discovery import ToolCatalog
+
+    monkeypatch.setattr(
+        "harness.browser.standalone_browser_available", lambda **_k: True,
+    )
+    catalog = ToolCatalog()
+    catalog.refresh(mcp_tools=[], browser_enabled=True)
+
+    assert any(
+        tool_id.startswith("builtin:browser_") for tool_id in catalog._entries
+    )

@@ -11,6 +11,7 @@ same job/event/artifact vocabulary as durable store jobs.
 from typing import Any, Iterable, Optional
 
 from harness.job_scoping import ACCOUNTING_SCOPE_MARIONETTE
+from harness.local_job_artifacts import artifacts_are_complete
 
 _TERMINAL_STATUSES = frozenset({
     "completed", "failed", "cancelled", "complete", "done",
@@ -43,13 +44,8 @@ def _normalize_artifacts(raw: Any) -> list[dict]:
 
 
 def _artifacts_complete(raw: Any) -> bool:
-    """True only when the sidecar carries a non-placeholder artifact headline."""
-    return any(
-        isinstance(artifact, dict)
-        and str(artifact.get("type") or "").lower() not in ("routing", "placeholder")
-        and bool(str(artifact.get("headline") or "").strip())
-        for artifact in _normalize_artifacts(raw)
-    )
+    """True only when the sidecar carries a substantive, readable artifact."""
+    return artifacts_are_complete(_normalize_artifacts(raw))
 
 
 def _normalize_tasks(raw: Any, *, terminal: bool) -> list[dict]:

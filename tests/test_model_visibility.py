@@ -77,6 +77,11 @@ def test_enabled_pilots_filters_to_available(mv, monkeypatch):
 def test_enabled_pilots_falls_back_when_empty(mv, monkeypatch):
     import harness.providers as prov
     monkeypatch.setattr(prov, "available_providers", lambda: [prov.get_provider("openrouter")])
+    monkeypatch.setattr(
+        mv,
+        "provider_models",
+        lambda provider, **_kwargs: list(provider.pilot_models),
+    )
     # nothing curated -> full available set
     pilots = mv.enabled_pilots()
     assert len(pilots) == len(prov.get_provider("openrouter").pilot_models)
