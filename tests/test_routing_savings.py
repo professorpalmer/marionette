@@ -9,6 +9,7 @@ from harness.api.cost_accounting import CACHE_READ_MULTIPLIER, _cache_savings_gr
 from harness.api.routing_savings import (
     _delegation_saved_usd,
     _delegation_saved_usd_detail,
+    _registry_rates,
     _routing_saved_usd,
     _routing_saved_usd_detail,
     _sum_job_set_savings_detail,
@@ -446,3 +447,86 @@ def test_sum_job_set_savings_detail_includes_delegation(monkeypatch):
     assert detail["delegation_saved_usd"] == pytest.approx(9.0)
     assert detail["delegation_savings_basis"] == "actual_usage"
     assert detail["delegation_tokens_compared"] == 1_000_000
+
+
+def test_registry_rates_exact_id_beats_earlier_fuzzy_collision():
+    """Exact gpt-4 row wins even when vendor-a/gpt4 appears first in registry."""
+    registry = [
+        _registry_spec("vendor-a/gpt4", input_per_mtok_usd=1.0, output_per_mtok_usd=2.0),
+        _registry_spec("gpt-4", input_per_mtok_usd=3.0, output_per_mtok_usd=6.0),
+    ]
+    pin, pout = _registry_rates("gpt-4", registry)
+    assert pin == pytest.approx(3.0)
+    assert pout == pytest.approx(6.0)
+
+
+def test_registry_rates_exact_id_beats_fuzzy_when_reversed_order():
+    registry = [
+        _registry_spec("gpt-4", input_per_mtok_usd=3.0, output_per_mtok_usd=6.0),
+        _registry_spec("vendor-a/gpt4", input_per_mtok_usd=1.0, output_per_mtok_usd=2.0),
+    ]
+    pin, pout = _registry_rates("gpt-4", registry)
+    assert pin == pytest.approx(3.0)
+
+
+def test_registry_rates_conflicting_fuzzy_prices_fail_closed(monkeypatch):
+    """Ambiguous fuzzy-only matches must not pick first — fall through to zero."""
+    registry = [
+        _registry_spec("vendor-a/gpt4", input_per_mtok_usd=1.0, output_per_mtok_usd=2.0),
+        _registry_spec("vendor-b/gpt4", input_per_mtok_usd=5.0, output_per_mtok_usd=10.0),
+    ]
+    monkeypatch.setattr(
+        "harness.api.routing_savings._pmharness_positive_rates",
+        lambda _mid: (0.0, 0.0),
+    )
+    pin, pout = _registry_rates("gpt-4", registry)
+    assert pin == 0.0
+    assert pout == 0.0
+
+
+def test_registry_rates_unambiguous_fuzzy_still_resolves():
+    registry = [
+        _registry_spec("gpt-5-3-codex", input_per_mtok_usd=2.5, output_per_mtok_usd=10.0),
+    ]
+    pin, _pout = _registry_rates("codex/gpt.5.3.codex", registry)
+    assert pin == pytest.approx(2.5)
+
+
+def test_registry_rates_agentic_prefix_alias_exact_tier():
+    registry = [
+        _registry_spec(
+            "agentic/deepseek/deepseek-v4-pro",
+            input_per_mtok_usd=0.435,
+            output_per_mtok_usd=0.87,
+        ),
+    ]
+    pin, _pout = _registry_rates("deepseek/deepseek-v4-pro", registry)
+    assert pin == pytest.approx(0.435)
+
+
+def test_sum_job_set_savings_detail_threads_swarm_cache_honesty(monkeypatch):
+    """Aggregate swarm_cache_savings_basis and unpriced tokens across jobs."""
+    registry = [
+        _registry_spec("priced-model", input_per_mtok_usd=3.0, output_per_mtok_usd=6.0),
+    ]
+    priced_arts = [
+        _verification("t-priced", "priced-model", 100_000, 5_000, tokens_cached=20_000),
+    ]
+    unpriced_arts = [
+        _verification("t-unpriced", "totally-unknown", 100_000, 5_000, tokens_cached=30_000),
+    ]
+    arts_by_job = {"priced": priced_arts, "unpriced": unpriced_arts}
+
+    def _arts(jid):
+        return arts_by_job[jid]
+
+    monkeypatch.setattr(
+        "harness.api.routing_savings._pmharness_positive_rates",
+        lambda _mid: (0.0, 0.0),
+    )
+
+    detail = _sum_job_set_savings_detail(["priced", "unpriced"], _arts, registry)
+    expected_cache = (20_000 / 1_000_000.0) * 3.0 * (1.0 - CACHE_READ_MULTIPLIER)
+    assert detail["cache_saved_usd_swarm"] == pytest.approx(expected_cache)
+    assert detail["swarm_cache_unpriced_tokens"] == 30_000
+    assert detail["swarm_cache_savings_basis"] == "unknown"

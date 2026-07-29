@@ -139,15 +139,54 @@ def _ids_match_for_price(left: str, right: str) -> bool:
 
 def _registry_spec_matches(spec, candidates: list) -> bool:
     """True when a registry row prices any candidate worker / usage model id."""
-    spec_ids = _registry_spec_price_ids(spec)
+    return _registry_spec_match_tier(spec, candidates) is not None
+
+
+def _registry_spec_match_tier(spec, candidates: list):
+    """Match tier: 0=exact id/adapter_model_name, 1=alias exact, 2=fuzzy, None=no match."""
     cand_set = set(candidates)
+    raw_ids: list = []
+    for raw in (
+        getattr(spec, "id", None),
+        getattr(spec, "adapter_model_name", None),
+    ):
+        if not raw:
+            continue
+        rid = str(raw).strip()
+        if rid and rid in cand_set:
+            return 0
+        if rid:
+            raw_ids.append(rid)
+
+    spec_ids = _registry_spec_price_ids(spec)
     if any(s in cand_set for s in spec_ids):
-        return True
+        return 1
+
     for spec_id in spec_ids:
         for candidate in candidates:
             if _ids_match_for_price(spec_id, candidate):
-                return True
-    return False
+                return 2
+    return None
+
+
+def _pick_consistent_positive_rates(rate_pairs: list) -> tuple:
+    """Return the shared positive rate pair, or ``(0, 0)`` when rates conflict."""
+    positive: list = []
+    for pin, pout in rate_pairs:
+        try:
+            pin_f = float(pin or 0.0)
+            pout_f = float(pout or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if pin_f > 0:
+            positive.append((pin_f, max(0.0, pout_f)))
+    if not positive:
+        return 0.0, 0.0
+    first = positive[0]
+    for pin_f, pout_f in positive[1:]:
+        if abs(pin_f - first[0]) > 1e-9 or abs(pout_f - first[1]) > 1e-9:
+            return 0.0, 0.0
+    return first[0], first[1]
 
 
 def _registry_rates(model_id: str, registry: list) -> tuple:
@@ -155,16 +194,22 @@ def _registry_rates(model_id: str, registry: list) -> tuple:
     if not model_id:
         return 0.0, 0.0
     candidates = _model_id_price_candidates(model_id)
+    by_tier: dict = {0: [], 1: [], 2: []}
     for spec in registry or []:
-        if not _registry_spec_matches(spec, candidates):
+        tier = _registry_spec_match_tier(spec, candidates)
+        if tier is None:
             continue
         try:
             pin = float(getattr(spec, "input_per_mtok_usd", 0.0) or 0.0)
             pout = float(getattr(spec, "output_per_mtok_usd", 0.0) or 0.0)
         except (TypeError, ValueError):
-            return 0.0, 0.0
+            continue
         if pin > 0:
-            return pin, max(0.0, pout)
+            by_tier[tier].append((pin, pout))
+    for tier in (0, 1, 2):
+        pin, pout = _pick_consistent_positive_rates(by_tier.get(tier) or [])
+        if pin > 0:
+            return pin, pout
     return 0.0, 0.0
 
 
@@ -584,18 +629,24 @@ def _sum_job_set_savings_detail(
     routing_saved_usd=None,
 ) -> dict:
     """Sum routing + delegation + swarm-cache savings with aggregate basis."""
-    from .swarm_cost import _cache_saved_usd_swarm as _default_cache_fn
+    from .swarm_cost import (
+        _cache_saved_usd_swarm as _default_cache_fn,
+        _cache_saved_usd_swarm_detail as _default_cache_detail_fn,
+    )
 
     routing = 0.0
     delegation = 0.0
     cache = 0.0
     tokens_compared = 0
     delegation_tokens_compared = 0
+    swarm_cache_unpriced_tokens = 0
     saw_actual = False
     saw_estimated = False
     saw_unknown = False
     saw_delegation_actual = False
     saw_delegation_unknown = False
+    saw_swarm_cache_actual = False
+    saw_swarm_cache_unknown = False
     routing_detail_fn = _server_attr(
         "_routing_saved_usd_detail", _routing_saved_usd_detail
     )
@@ -608,7 +659,11 @@ def _sum_job_set_savings_detail(
     cache_fn = _server_attr(
         "_cache_saved_usd_swarm", cache_saved_usd_swarm or _default_cache_fn
     )
+    cache_detail_fn = _server_attr(
+        "_cache_saved_usd_swarm_detail", _default_cache_detail_fn
+    )
     routing_fn_patched = routing_fn is not _routing_saved_usd
+    cache_fn_patched = cache_fn is not _default_cache_fn
     for jid in job_ids or []:
         try:
             arts = arts_getter(jid)
@@ -658,7 +713,19 @@ def _sum_job_set_savings_detail(
         except Exception as e:
             _diag("server.usage_delegation_saved", e, msg=f"job={jid}")
         try:
-            cache += cache_fn(arts, registry)
+            if cache_fn_patched:
+                cache += float(cache_fn(arts, registry) or 0.0)
+            else:
+                cdetail = cache_detail_fn(arts, registry)
+                cache += float(cdetail.get("cache_saved_usd_swarm") or 0.0)
+                swarm_cache_unpriced_tokens += int(
+                    cdetail.get("swarm_cache_unpriced_tokens") or 0
+                )
+                cbasis = str(cdetail.get("swarm_cache_savings_basis") or "")
+                if cbasis == ROUTING_SAVINGS_ACTUAL:
+                    saw_swarm_cache_actual = True
+                elif cbasis == ROUTING_SAVINGS_UNKNOWN:
+                    saw_swarm_cache_unknown = True
         except Exception as e:
             _diag("server.usage_cache_saved_swarm", e, msg=f"job={jid}")
     # actual_usage if any measured value; estimated only when every counted
@@ -673,6 +740,12 @@ def _sum_job_set_savings_detail(
         delegation_basis = ROUTING_SAVINGS_ACTUAL
     else:
         delegation_basis = ROUTING_SAVINGS_UNKNOWN
+    if saw_swarm_cache_actual and not saw_swarm_cache_unknown:
+        swarm_cache_basis = ROUTING_SAVINGS_ACTUAL
+    elif saw_swarm_cache_unknown:
+        swarm_cache_basis = ROUTING_SAVINGS_UNKNOWN
+    else:
+        swarm_cache_basis = ROUTING_SAVINGS_UNKNOWN
     return {
         "routing_saved_usd": routing,
         "delegation_saved_usd": delegation,
@@ -681,6 +754,8 @@ def _sum_job_set_savings_detail(
         "cache_saved_usd_swarm": cache,
         "routing_savings_basis": basis,
         "routing_tokens_compared": int(tokens_compared),
+        "swarm_cache_savings_basis": swarm_cache_basis,
+        "swarm_cache_unpriced_tokens": int(swarm_cache_unpriced_tokens),
     }
 
 

@@ -112,6 +112,8 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     delegation_savings_basis = "unknown"
     routing_tokens_compared = 0
     delegation_tokens_compared = 0
+    swarm_cache_savings_basis = "unknown"
+    swarm_cache_unpriced_tokens = 0
     swarm_cached = 0
     try:
         # Same merged, workspace-scoped job set the tracker uses
@@ -295,6 +297,12 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             delegation_tokens_compared = int(
                 savings_detail.get("delegation_tokens_compared") or 0
             )
+            swarm_cache_savings_basis = str(
+                savings_detail.get("swarm_cache_savings_basis") or "unknown"
+            )
+            swarm_cache_unpriced_tokens = int(
+                savings_detail.get("swarm_cache_unpriced_tokens") or 0
+            )
         except Exception:
             # Compatible with monkeypatched 3-arg sum_job_set_savings stubs.
             try:
@@ -393,6 +401,8 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             "delegation_savings_basis": delegation_savings_basis,
             "delegation_tokens_compared": int(delegation_tokens_compared),
             "cache_saved_usd_swarm": round(cache_saved_usd_swarm, 6),
+            "swarm_cache_savings_basis": swarm_cache_savings_basis,
+            "swarm_cache_unpriced_tokens": int(swarm_cache_unpriced_tokens),
             **svc.tool_output_savings_fields(price_in, process_wide=True),
         },
         # Lifetime running total for the active chat session

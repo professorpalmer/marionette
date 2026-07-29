@@ -268,6 +268,10 @@ export type SwarmLive = {
     delegation_savings_basis?: "actual_usage" | "estimated" | "unknown";
     delegation_tokens_compared?: number;
     cache_saved_usd_swarm?: number;
+    /** actual_usage | unknown — how swarm cache savings were priced. */
+    swarm_cache_savings_basis?: "actual_usage" | "estimated" | "unknown";
+    /** Swarm cache-read tokens that could not be priced (honest unknown basis). */
+    swarm_cache_unpriced_tokens?: number;
     tool_output_tokens_saved?: number;
     tool_output_savings_usd?: number;
     tool_output_compactions?: number;
@@ -495,6 +499,10 @@ export type UsageData = {
     delegation_tokens_compared?: number;
     /** Swarm prompt-cache savings priced from usage artifacts x registry. */
     cache_saved_usd_swarm?: number;
+    /** actual_usage | unknown — how swarm cache savings were priced. */
+    swarm_cache_savings_basis?: "actual_usage" | "estimated" | "unknown";
+    /** Swarm cache-read tokens that could not be priced (honest unknown basis). */
+    swarm_cache_unpriced_tokens?: number;
     tool_output_tokens_saved?: number;
     tool_output_savings_usd?: number;
     tool_output_compactions?: number;
