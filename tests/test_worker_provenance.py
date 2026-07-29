@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import queue
 import subprocess
 import threading
 
 from harness.config import HarnessConfig
-from harness.conversation_jobs import _worker_provenance_text
+from harness.conversation_jobs import ConversationJobsMixin, _worker_provenance_text
 from harness.edit_engines import run_native_edit
 from harness.local_jobs import LocalJobsMixin
 from harness.worker import ProviderWorker, WorkerResult
@@ -108,6 +109,14 @@ class _LocalJobHost(LocalJobsMixin):
         self.config = type("Config", (), {"repo": str(repo), "driver": "driver"})()
 
 
+class _CancelledWorkerHost(ConversationJobsMixin, _LocalJobHost):
+    def __init__(self, state_dir, repo):
+        _LocalJobHost.__init__(self, state_dir, repo)
+        self._swarm_results = queue.Queue()
+        self._apply_lock = threading.RLock()
+        self._release_objective = lambda _objective: None
+
+
 def test_worker_provenance_is_persisted_on_job_and_terminal_artifact(tmp_path):
     repo = _git_repo(tmp_path)
     host = _LocalJobHost(tmp_path, repo)
@@ -128,3 +137,83 @@ def test_worker_provenance_is_persisted_on_job_and_terminal_artifact(tmp_path):
     terminal = next(item for item in job["artifacts"] if item["type"] == "analysis")
     assert job["worker_provenance"] == provenance
     assert terminal["worker_provenance"] == provenance
+
+
+def test_cancelled_worker_adds_late_provenance_without_enqueuing_or_applying(
+    monkeypatch, tmp_path
+):
+    repo = _git_repo(tmp_path)
+    host = _CancelledWorkerHost(tmp_path, repo)
+    host._register_local_job(
+        "cancelled-worker", "audit", role="analysis", cwd=str(repo), engine="native"
+    )
+    apply_calls = []
+    host._apply_worker_patch = lambda *args: apply_calls.append(args)
+
+    def run_worker(*_args, **_kwargs):
+        assert host.cancel_local_job("cancelled-worker") is True
+        return WorkerResult(
+            ok=True,
+            summary="late result",
+            patch="must not apply",
+            tokens_in=11,
+            tokens_out=7,
+            managed_worktree_path="/tmp/managed",
+            managed_worktree_mode="managed",
+            worktree_diff_empty=False,
+        )
+
+    host._run_edit_worker_bounded = run_worker
+    monkeypatch.setattr(
+        "harness.worktree_seed._list_git_status_porcelain_paths",
+        lambda _repo: ["before.txt"],
+    )
+
+    host._run_provider_worker_background("cancelled-worker", "audit")
+
+    assert host._local_jobs["cancelled-worker"]["status"] == "cancelled"
+    assert host._swarm_results.empty()
+    assert apply_calls == []
+    saved = json.loads((tmp_path / "jobs.json").read_text(encoding="utf-8"))
+    job = saved["jobs"][0]
+    assert job["status"] == "cancelled"
+    assert job["tokens"] == 18
+    assert job["worker_provenance"]["live_dirty_paths_before"] == ["before.txt"]
+    assert job["worker_provenance"]["live_dirty_paths_after"] == ["before.txt"]
+    assert job["worker_provenance"]["managed_worktree_path"] == "/tmp/managed"
+    assert job["worker_provenance"]["managed_worktree_mode"] == "managed"
+    assert job["worker_provenance"]["worktree_diff_empty"] is False
+    terminal = next(item for item in job["artifacts"] if item["id"].endswith("-result"))
+    assert terminal["worker_provenance"] == job["worker_provenance"]
+
+
+def test_cancelled_worker_provenance_collection_failure_is_best_effort(
+    monkeypatch, tmp_path
+):
+    repo = _git_repo(tmp_path)
+    host = _CancelledWorkerHost(tmp_path, repo)
+    host._register_local_job(
+        "cancelled-failure", "audit", role="analysis", cwd=str(repo), engine="native"
+    )
+
+    def run_worker(*_args, **_kwargs):
+        assert host.cancel_local_job("cancelled-failure") is True
+        raise RuntimeError("worker result unavailable")
+
+    host._run_edit_worker_bounded = run_worker
+
+    def fail_status(_repo):
+        raise OSError("git unavailable")
+
+    monkeypatch.setattr(
+        "harness.worktree_seed._list_git_status_porcelain_paths", fail_status
+    )
+
+    host._run_provider_worker_background("cancelled-failure", "audit")
+
+    assert host._local_jobs["cancelled-failure"]["status"] == "cancelled"
+    assert host._swarm_results.empty()
+    saved = json.loads((tmp_path / "jobs.json").read_text(encoding="utf-8"))
+    job = saved["jobs"][0]
+    assert job["status"] == "cancelled"
+    assert job["worker_provenance"]["managed_worktree_mode"] == "unknown"

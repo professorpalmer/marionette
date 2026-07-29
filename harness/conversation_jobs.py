@@ -289,11 +289,6 @@ class ConversationJobsMixin:
                 live_dirty_after = _list_git_status_porcelain_paths(live_repo)
             except Exception:
                 live_dirty_after = []
-            if self._local_job_cancelled(job_id):
-                # A cancel landed while the worker was running. The job was already
-                # flipped to 'cancelled' by cancel_local_job(); drop the result so
-                # we do not re-open/overwrite the terminal state, and stop here.
-                return
             if res is None:
                 deadline = int(self._worker_deadline_seconds())
                 res = WorkerResult(
@@ -301,18 +296,46 @@ class ConversationJobsMixin:
                     error=f"worker exceeded {deadline}s wall-clock deadline",
                     summary=f"Worker exceeded its {deadline}s deadline and was abandoned to free the pool slot.",
                 )
+
+            def _worker_attribute(name: str, default=""):
+                try:
+                    return getattr(res, name, default)
+                except Exception:
+                    return default
+
             provenance = {
                 "live_dirty_paths_before": list(live_dirty_before),
                 "live_dirty_paths_after": list(live_dirty_after),
-                "managed_worktree_path": str(getattr(res, "managed_worktree_path", "") or getattr(res, "worktree", "") or ""),
-                "managed_worktree_mode": str(getattr(res, "managed_worktree_mode", "") or ("managed" if getattr(res, "worktree", "") else "unknown")),
-                "worktree_diff_empty": getattr(res, "worktree_diff_empty", None),
+                "managed_worktree_path": str(
+                    _worker_attribute("managed_worktree_path")
+                    or _worker_attribute("worktree")
+                    or ""
+                ),
+                "managed_worktree_mode": str(
+                    _worker_attribute("managed_worktree_mode")
+                    or ("managed" if _worker_attribute("worktree") else "unknown")
+                ),
+                "worktree_diff_empty": _worker_attribute("worktree_diff_empty", None),
             }
             res.live_dirty_paths_before = list(live_dirty_before)
             res.live_dirty_paths_after = list(live_dirty_after)
             res.managed_worktree_path = provenance["managed_worktree_path"]
             res.managed_worktree_mode = provenance["managed_worktree_mode"]
             res.worktree_diff_empty = provenance["worktree_diff_empty"]
+            if self._local_job_cancelled(job_id):
+                # The cancel path already created the terminal record. Enrich it
+                # with facts from the late worker result, but never reopen it,
+                # apply its patch, meter its spend twice, or enqueue a result.
+                self._update_cancelled_local_job_provenance(
+                    job_id,
+                    worker_provenance=provenance,
+                    tokens=(
+                        int(_worker_attribute("tokens_in", 0) or 0)
+                        + int(_worker_attribute("tokens_out", 0) or 0)
+                    ),
+                    est_cost_usd=float(_worker_attribute("est_cost_usd", 0.0) or 0.0),
+                )
+                return
             raw_worker_summary = res.summary or ""
             provenance_text = _worker_provenance_text(provenance)
             if provenance_text:
@@ -612,6 +635,14 @@ class ConversationJobsMixin:
                 "managed_worktree_mode": "unknown",
                 "worktree_diff_empty": None,
             }
+            if self._local_job_cancelled(job_id):
+                # A failure while collecting late facts must not turn a
+                # cancelled job into a failed/completed result or enqueue one.
+                self._update_cancelled_local_job_provenance(
+                    job_id,
+                    worker_provenance=failure_provenance,
+                )
+                return
             failure_text = _worker_provenance_text(failure_provenance)
             failure_summary = f"{failure_text}\nFailed background worker: {e}".strip()
             self._finish_local_job(

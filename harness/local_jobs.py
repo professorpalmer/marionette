@@ -335,6 +335,52 @@ class LocalJobsMixin:
         except Exception:
             pass
 
+    def _update_cancelled_local_job_provenance(
+        self,
+        job_id: str,
+        worker_provenance: Optional[dict] = None,
+        tokens: int = 0,
+        est_cost_usd: float = 0.0,
+    ) -> None:
+        """Persist late worker facts without reopening a cancelled job.
+
+        Cancellation creates the terminal artifact synchronously so the UI can
+        stop spinning. A provider thread may still return measured provenance
+        and spend afterward; this path enriches that existing terminal record
+        while preserving its cancelled status and avoiding a second terminal
+        transition.
+        """
+        import time
+
+        if not isinstance(worker_provenance, dict):
+            worker_provenance = {}
+        measured_tokens = int(tokens or 0)
+        measured_cost = float(est_cost_usd or 0.0)
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if not job or job.get("status") != "cancelled":
+                return
+            if worker_provenance:
+                job["worker_provenance"] = copy.deepcopy(worker_provenance)
+            if measured_tokens > 0:
+                job["tokens"] = measured_tokens
+            if measured_cost > 0:
+                job["est_cost_usd"] = round(measured_cost, 6)
+            job["updated_at"] = time.time()
+            for artifact in job.get("artifacts") or []:
+                if not isinstance(artifact, dict):
+                    continue
+                if artifact.get("id") != f"{job_id}-result":
+                    continue
+                if worker_provenance:
+                    artifact["worker_provenance"] = copy.deepcopy(worker_provenance)
+                if measured_tokens > 0:
+                    artifact["tokens"] = measured_tokens
+                if measured_cost > 0:
+                    artifact["est_cost_usd"] = round(measured_cost, 6)
+                break
+            self._persist_local_jobs_locked()
+
     # Cap persisted history so the on-disk file cannot grow without bound.
     _LOCAL_JOBS_HISTORY_CAP = 200
 
