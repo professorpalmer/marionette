@@ -49,31 +49,63 @@ function isInstallComplete(dir) {
   }
 }
 
-function run(cmd, args, opts = {}) {
-  const res = spawnSync(cmd, args, {
-    encoding: "utf8",
-    stdio: opts.inherit ? "inherit" : "pipe",
-    env: opts.env || process.env,
-    cwd: opts.cwd,
-    shell: opts.shell || false,
-    windowsHide: true,
+// Yield so Electron can paint the bootstrap window and flush progress IPC.
+// Heavy first-run steps used to call spawnSync on the main thread, which froze
+// the UI and made macOS report Marionette as hung (~20s spindump) on DMG launch.
+function yieldEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function reportProgress(onProgress, message, pct) {
+  try { onProgress(message, pct); } catch { /* progress UI must never throw */ }
+  await yieldEventLoop();
+}
+
+// Async child runner — keeps the Electron main process responsive during
+// git/uv/npm work. Prefer this for any step that can take more than a tick.
+function runAsync(cmd, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(cmd, args, {
+        env: opts.env || process.env,
+        cwd: opts.cwd,
+        shell: opts.shell || false,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    if (child.stdout) child.stdout.on("data", (buf) => { stdout += buf; });
+    if (child.stderr) child.stderr.on("data", (buf) => { stderr += buf; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve({ status: 0, stdout, stderr });
+        return;
+      }
+      const detail = (stderr || stdout || "").trim();
+      reject(new Error(
+        `${cmd} ${args.join(" ")} failed (code ${code})` +
+        `${detail ? ": " + detail.slice(0, 500) : ""}`
+      ));
+    });
   });
-  if (res.status !== 0) {
-    const detail = (res.stderr || res.stdout || "").trim();
-    throw new Error(`${cmd} ${args.join(" ")} failed (code ${res.status})${detail ? ": " + detail.slice(0, 500) : ""}`);
-  }
-  return res;
 }
 
 // On Windows, npm is a .cmd batch shim, not an executable. Node (post
 // CVE-2024-27980) refuses to spawn .cmd files without shell:true, and the
 // failed spawn surfaces as status:null -- the "npm ci failed (code null)"
 // first-run error. Route npm through a shell on win32 only.
-function runNpm(args, opts = {}) {
+function runNpmAsync(args, opts = {}) {
   if (process.platform === "win32") {
-    return run("npm.cmd", args, { ...opts, shell: true });
+    return runAsync("npm.cmd", args, { ...opts, shell: true });
   }
-  return run("npm", args, opts);
+  return runAsync("npm", args, opts);
 }
 
 function commandExists(name) {
@@ -196,12 +228,12 @@ async function ensurePortableNode(onProgress) {
     addToPath(nodeDir);
     if (nodeMajor() >= VERSIONS.NODE_MIN_MAJOR) return;
   }
-  onProgress(`Downloading Node v${VERSIONS.NODE} (${arch})...`, 15);
+  await reportProgress(onProgress, `Downloading Node v${VERSIONS.NODE} (${arch})...`, 15);
   const zipPath = path.join(root, zipName);
   await downloadFile(url, zipPath);
   verifySha256(zipPath, expected);
   const extracted = path.join(root, `node-v${VERSIONS.NODE}-win-${arch}`);
-  run("powershell", ["-NoProfile", "-Command", `Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${root}'`], { shell: false });
+  await runAsync("powershell", ["-NoProfile", "-Command", `Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${root}'`], { shell: false });
   if (fs.existsSync(nodeDir)) fs.rmSync(nodeDir, { recursive: true, force: true });
   fs.renameSync(extracted, nodeDir);
   try { fs.unlinkSync(zipPath); } catch {}
@@ -226,83 +258,92 @@ async function ensurePortableGit(onProgress) {
     addToPath(path.join(gitDir, "cmd"));
     if (commandExists("git")) return;
   }
-  onProgress(`Downloading portable git ${VERSIONS.MINGIT}...`, 10);
+  await reportProgress(onProgress, `Downloading portable git ${VERSIONS.MINGIT}...`, 10);
   const zipPath = path.join(root, zipName);
   await downloadFile(url, zipPath);
   verifySha256(zipPath, expected);
   if (fs.existsSync(gitDir)) fs.rmSync(gitDir, { recursive: true, force: true });
-  run("powershell", ["-NoProfile", "-Command", `Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${gitDir}'`], { shell: false });
+  await runAsync("powershell", ["-NoProfile", "-Command", `Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${gitDir}'`], { shell: false });
   try { fs.unlinkSync(zipPath); } catch {}
   addToPath(path.join(gitDir, "cmd"));
   if (!commandExists("git")) throw new Error("Portable git install failed.");
 }
 
-function ensureUv(onProgress) {
+async function ensureUv(onProgress) {
   if (commandExists("uv")) return;
-  onProgress("Installing uv (Python toolchain)...", 20);
+  await reportProgress(onProgress, "Installing uv (Python toolchain)...", 20);
   if (process.platform === "win32") {
-    run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://astral.sh/uv/install.ps1 | iex"], { shell: false });
+    await runAsync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://astral.sh/uv/install.ps1 | iex"], { shell: false });
     addToPath(path.join(os.homedir(), ".local", "bin"));
     addToPath(path.join(os.homedir(), ".cargo", "bin"));
   } else {
-    run("sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], { shell: false });
+    await runAsync("sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], { shell: false });
     addToPath(path.join(os.homedir(), ".local", "bin"));
   }
   if (!commandExists("uv")) throw new Error("uv install failed -- add ~/.local/bin to PATH and relaunch.");
 }
 
-function cloneOrUpdate(dest, repoUrl, branch, onProgress) {
+async function cloneOrUpdate(dest, repoUrl, branch, onProgress) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   if (fs.existsSync(path.join(dest, ".git"))) {
-    onProgress(`Updating checkout (${branch})...`, 30);
-    run("git", ["-C", dest, "fetch", "--no-tags", "origin", branch]);
-    run("git", ["-C", dest, "checkout", branch]);
-    const merge = spawnSync("git", ["-C", dest, "merge", "--ff-only", `origin/${branch}`], { encoding: "utf8", windowsHide: true });
-    if (merge.status !== 0) {
-      onProgress("Local changes present; skipped fast-forward.", 32);
+    await reportProgress(onProgress, `Updating checkout (${branch})...`, 30);
+    await runAsync("git", ["-C", dest, "fetch", "--no-tags", "origin", branch]);
+    await runAsync("git", ["-C", dest, "checkout", branch]);
+    try {
+      await runAsync("git", ["-C", dest, "merge", "--ff-only", `origin/${branch}`]);
+    } catch {
+      await reportProgress(onProgress, "Local changes present; skipped fast-forward.", 32);
     }
   } else {
-    onProgress(`Cloning ${repoUrl}...`, 30);
-    run("git", ["clone", "--branch", branch, repoUrl, dest]);
+    await reportProgress(onProgress, `Cloning ${repoUrl}...`, 30);
+    await runAsync("git", ["clone", "--branch", branch, repoUrl, dest]);
   }
 }
 
-function provisionPython(dest, onProgress) {
-  onProgress("Provisioning Python via uv...", 45);
-  run("uv", ["python", "install"], { cwd: dest });
+async function provisionPython(dest, onProgress) {
+  await reportProgress(onProgress, "Provisioning Python via uv...", 45);
+  await runAsync("uv", ["python", "install"], { cwd: dest });
   if (!fs.existsSync(path.join(dest, ".venv"))) {
-    run("uv", ["venv", ".venv"], { cwd: dest });
+    await runAsync("uv", ["venv", ".venv"], { cwd: dest });
   }
-  onProgress("Installing Marionette + Puppetmaster...", 55);
-  run("uv", ["pip", "install", "--python", ".venv", "-e", "."], { cwd: dest });
+  await reportProgress(onProgress, "Installing Marionette + Puppetmaster...", 55);
+  await runAsync("uv", ["pip", "install", "--python", ".venv", "-e", "."], { cwd: dest });
   const spec = process.env.MARIONETTE_PUPPETMASTER_SPEC || "puppetmaster-ai==1.21.2";
-  run("uv", ["pip", "install", "--python", ".venv", spec], { cwd: dest });
+  await runAsync("uv", ["pip", "install", "--python", ".venv", spec], { cwd: dest });
 }
 
-function buildRenderer(dest, onProgress) {
-  onProgress("Installing node deps + building renderer...", 70);
-  runNpm(["ci"], { cwd: path.join(dest, "webapp"), inherit: true });
-  runNpm(["run", "build"], { cwd: path.join(dest, "webapp"), inherit: true });
+async function buildRenderer(dest, onProgress) {
+  const webapp = path.join(dest, "webapp");
+  // Resume-friendly: an interrupted first launch often leaves node_modules but no
+  // dist/. Re-running a full npm ci on every retry is what made DMG boots look hung.
+  if (!fs.existsSync(path.join(webapp, "node_modules"))) {
+    await reportProgress(onProgress, "Installing node deps...", 70);
+    await runNpmAsync(["ci"], { cwd: webapp });
+  } else {
+    await reportProgress(onProgress, "Node deps present; building renderer...", 75);
+  }
+  await reportProgress(onProgress, "Building renderer...", 85);
+  await runNpmAsync(["run", "build"], { cwd: webapp });
 }
 
 async function runBootstrap(targetDir, onProgress = () => {}) {
   const repoUrl = process.env.MARIONETTE_REPO_URL || DEFAULT_REPO;
   const branch = process.env.MARIONETTE_BRANCH || DEFAULT_BRANCH;
 
-  onProgress("Checking prerequisites...", 5);
+  await reportProgress(onProgress, "Checking prerequisites...", 5);
   // A Finder/Dock-launched app has a minimal PATH; hydrate it with Homebrew and
   // Node version-manager locations so node/git/uv are discoverable (fixes the
   // false "Node too old / not found" on machines with Homebrew Node).
   hydratePath();
   await ensurePortableGit(onProgress);
-  ensureUv(onProgress);
+  await ensureUv(onProgress);
   await ensurePortableNode(onProgress);
 
-  cloneOrUpdate(targetDir, repoUrl, branch, onProgress);
-  provisionPython(targetDir, onProgress);
-  buildRenderer(targetDir, onProgress);
+  await cloneOrUpdate(targetDir, repoUrl, branch, onProgress);
+  await provisionPython(targetDir, onProgress);
+  await buildRenderer(targetDir, onProgress);
 
-  onProgress("Bootstrap complete.", 100);
+  await reportProgress(onProgress, "Bootstrap complete.", 100);
   if (!isInstallComplete(targetDir)) {
     throw new Error("Bootstrap finished but install validation failed.");
   }
@@ -328,4 +369,11 @@ function reinjectPortableTools() {
   } catch { /* best-effort */ }
 }
 
-module.exports = { isInstallComplete, runBootstrap, venvPython, reinjectPortableTools, VERSIONS };
+module.exports = {
+  isInstallComplete,
+  runBootstrap,
+  venvPython,
+  reinjectPortableTools,
+  VERSIONS,
+  runAsync, // exported for event-loop regression tests
+};

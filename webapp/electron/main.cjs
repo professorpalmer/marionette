@@ -1085,6 +1085,7 @@ function createBootstrapWindow() {
     resizable: false,
     minimizable: false,
     maximizable: false,
+    show: false,
     title: "Marionette Setup",
     backgroundColor: "#0f1113",
     webPreferences: { contextIsolation: true, nodeIntegration: false },
@@ -1100,6 +1101,29 @@ function createBootstrapWindow() {
   </body></html>`;
   bootstrapWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
   return bootstrapWin;
+}
+
+// Wait until the setup UI can paint before any first-run work. Previously
+// ensurePackagedCheckout called spawnSync immediately after createBootstrapWindow,
+// so the window never appeared and macOS reported a hang.
+function waitForBootstrapWindow(win) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      try { if (win && !win.isDestroyed()) win.show(); } catch { /* ignore */ }
+      resolve();
+    };
+    try {
+      win.once("ready-to-show", done);
+      win.webContents.once("did-finish-load", done);
+    } catch {
+      done();
+      return;
+    }
+    setTimeout(done, 1500);
+  });
 }
 
 function sendBootstrapProgress(win, msg, pct) {
@@ -1122,6 +1146,9 @@ async function ensurePackagedCheckout() {
     return repoRoot;
   }
   const win = createBootstrapWindow();
+  await waitForBootstrapWindow(win);
+  // One more tick so AppKit can composite the window before git/npm start.
+  await new Promise((r) => setImmediate(r));
   const send = (msg, pct) => sendBootstrapProgress(win, msg, pct);
   try {
     await runBootstrap(repoRoot, send);

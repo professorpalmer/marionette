@@ -41,3 +41,13 @@ test("VERSIONS pins match expected Node minimum", () => {
   assert.ok(bootstrap.VERSIONS.NODE_MIN_MAJOR >= 20);
   assert.match(bootstrap.VERSIONS.NODE, /^\d+\.\d+\.\d+$/);
 });
+
+test("runAsync keeps the event loop free during child lifetime", async () => {
+  // Regression for DMG hang: spawnSync froze Electron's main thread so macOS
+  // reported Marionette as hung and the setup window never painted. If runAsync
+  // were secretly sync, this setTimeout could not fire until after the child.
+  let breathed = false;
+  setTimeout(() => { breathed = true; }, 40);
+  await bootstrap.runAsync(process.execPath, ["-e", "setTimeout(() => {}, 250)"]);
+  assert.equal(breathed, true);
+});
