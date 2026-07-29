@@ -212,6 +212,11 @@ export function workspacesCacheKey(repo: string): string {
   return `workspaces:${repo || "__none__"}`;
 }
 
+/** SWR cache key for jobs scoped to both the selected project and active session. */
+export function jobsCacheKey(projectPath: string, activeSessionId?: string): string {
+  return `jobs:${projectPath || "__none__"}:${activeSessionId || "__none__"}`;
+}
+
 /** True when LeftRail should offer Stop without forcing a view attach. */
 export function shouldOfferBackgroundStop(
   status: "running" | "idle" | "attaching" | "missing" | undefined,
@@ -454,13 +459,11 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return base;
   };
 
-  const codegraphBadgeLabel = (cgStatus: string) => {
+  const codegraphAttentionLabel = (cgStatus?: string) => {
+    if (!cgStatus || cgStatus === "ready" || cgStatus === "none") return "";
     if (cgStatus === "needs_scope") return "scope";
     if (cgStatus === "pending") return "indexing";
-    // Never paint the word UNSUPPORTED for transient/empty-index flash;
-    // confirmed failures surface as "failed".
     if (cgStatus === "unsupported") return "failed";
-    if (cgStatus === "none") return "";
     return cgStatus;
   };
 
@@ -587,11 +590,9 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   const {
     data: jobs = [],
     isValidating: jobsValidating,
-    isTransitioning: jobsTransitioning,
-    isShowingStale: jobsStale,
     revalidate: revalidateJobs,
   } = useStaleWhileRevalidate<Job[]>(
-    `jobs:${selectedProjectPath || "__none__"}`,
+    jobsCacheKey(selectedProjectPath, sessions.find((session) => session.active)?.id),
     () => api.jobs(selectedProjectPath || undefined),
     { enabled: !!selectedProjectPath },
   );
@@ -693,7 +694,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     return () => window.removeEventListener("focus", onFocus);
   }, [workspaceInfo?.codegraph_status, revalidateWorkspace]);
 
-  const handleOpenProject = async (path: string): Promise<boolean> => {
+  const handleOpenProject = async (path: string): Promise<{ ok: boolean; created_session?: boolean }> => {
     setOpening(true);
     try {
       const res = await api.openWorkspace(path);
@@ -713,19 +714,19 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         dispatchProjectSelected(res.repo);
         await Promise.all([revalidateWorkspace(), revalidateWorkspaces(), revalidateSessions()]);
         window.dispatchEvent(new Event("harness-config-changed"));
-        return true;
+        return { ok: true, created_session: res.created_session };
       }
       if ((res as { code?: string }).code === "lease_exhausted") {
         notifySessionActivationBlocked(res);
       } else {
         alert("Failed to open directory: " + (res as any).error);
       }
-      return false;
+      return { ok: false };
     } catch (err: any) {
       if (!notifySessionActivationBlocked(err)) {
         alert("Error opening directory: " + (err?.error || err?.message || err));
       }
-      return false;
+      return { ok: false };
     } finally {
       setOpening(false);
     }
@@ -997,17 +998,21 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       // so the new session lands there instead of the current active root.
       const target = (inProjectPath || selectedProjectPath || "").trim();
       const current = (workspaceInfo?.repo || "").trim();
+      let workspaceCreatedSession = false;
       if (target && (!current || !repoPathsEqual(target, current))) {
         const opened = await handleOpenProject(target);
-        if (!opened) return;
+        if (!opened.ok) return;
+        workspaceCreatedSession = !!opened.created_session;
       } else if (target) {
         setExpandedProjects((prev) => ({ ...prev, [target]: true }));
       }
-      const created = await api.createSession();
-      // Seed an empty warm-cache entry before Conversation's switch effect runs
-      // so it never paints the previous session's transcript under this id.
-      if (created?.id) {
-        writeTranscriptCache(created.id, []);
+      if (!workspaceCreatedSession) {
+        const created = await api.createSession();
+        // Seed an empty warm-cache entry before Conversation's switch effect runs
+        // so it never paints the previous session's transcript under this id.
+        if (created?.id) {
+          writeTranscriptCache(created.id, []);
+        }
       }
       await refreshSessionsRef.current();
     } catch (err) {
@@ -1255,11 +1260,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
     setExpandedProjects((prev) => ({ ...prev, [currentRepo]: true }));
   }, [currentRepo]);
 
-  const selectProject = (projectPath: string) => {
-    setSelectedProjectPath(projectPath);
-    dispatchProjectSelected(projectPath);
-  };
-
   useEffect(() => { void revalidateJobs(); }, [jobsRefresh, revalidateJobs]);
 
   // Poll runner statuses so session rows can show running/idle without opening
@@ -1338,11 +1338,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   const handleProjectRowClick = (projectPath: string, isExpanded: boolean) => {
-    // Expand/collapse + highlight only. Never open the workspace from a row
-    // click -- that used to yank the active dir just to peek at another root's
-    // sessions. Activation is session click (switchSession may cross-repo) or
-    // the explicit Open folder control.
-    selectProject(projectPath);
+    // Browsing a project only changes its expansion. Activation is a separate
+    // path: a session click, explicit Open folder, or New session.
     setExpandedProjects((prev) => ({
       ...prev,
       [projectPath]: !isExpanded,
@@ -1350,30 +1347,38 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
   };
 
   return (
-    <aside ref={railRef} className="bg-panel border-r border-edge flex flex-col h-full overflow-hidden">
+    <aside ref={railRef} className="bg-[#13161a] border-r border-edge/50 flex flex-col h-full overflow-hidden text-[0.8125rem]">
       <div ref={topChromeRef}>
-      {/* Slim draggable bar to clear the macOS traffic lights; no product label
-          (the title bar already names the app, like Cursor/Hermes). */}
-      <div style={{ height: 30, WebkitAppRegion: "drag" } as React.CSSProperties} />
-      
-      <div className="px-3 pb-2 border-b border-edge flex flex-col gap-1.5">
+      {/* Keep the native traffic-light/titlebar area separate from the actions.
+          The same draggable region also preserves window movement on other
+          desktop platforms. */}
+      <div
+        aria-hidden="true"
+        className="h-12 shrink-0"
+        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+      />
+
+      <div className="px-2.5 pb-2 border-b border-edge/50">
         <button
+          type="button"
           onClick={() => { void newSession(); }}
-          className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] font-medium text-txt bg-panel2/60 hover:bg-panel2 border border-edge/60 transition">
-          <SquarePen size={14} className="text-accent" />
-          New session
+          className="w-full h-8 grid grid-cols-[14px_minmax(0,1fr)] items-center gap-x-2 px-2 rounded text-left text-[12.5px] font-medium text-txt hover:bg-panel2/60 transition">
+          <SquarePen size={14} className="text-muted" />
+          <span>New session</span>
         </button>
         <button
+          type="button"
           onClick={handleOpenFolder}
           disabled={opening}
-          className="w-full text-center text-accent text-[11px] font-semibold py-1 hover:bg-accent/10 rounded transition disabled:opacity-50"
+          className="w-full h-8 grid grid-cols-[14px_minmax(0,1fr)] items-center gap-x-2 px-2 text-left text-accent text-[11px] font-medium hover:bg-accent/10 rounded transition disabled:opacity-50"
         >
-          {opening ? "Opening…" : "Open Folder..."}
+          <span aria-hidden="true" />
+          <span>{opening ? "Opening…" : "Open Folder..."}</span>
         </button>
         {sessionActivationNotice && (
           <div
             role="status"
-            className="rounded-md border border-warn/40 bg-warn/10 px-2.5 py-2 text-[11px] leading-snug text-txt"
+            className="rounded border border-warn/30 bg-warn/5 px-2 py-1.5 text-[11px] leading-snug text-txt"
           >
             <div className="flex items-start gap-2">
               <p className="flex-1 min-w-0">{sessionActivationNotice}</p>
@@ -1393,15 +1398,15 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
       <div ref={upperSectionsRef} className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0 ${panelOpacityClass(panelSwitching, sessionsStale || workspaceStale)}`}>
       {/* Projects | Sessions toggle */}
-      <div className="px-3 pt-3 flex items-center gap-1">
+      <div className="px-2.5 pt-2 flex items-center gap-0 border-b border-edge/35">
         <button
           type="button"
           onClick={() => {
             setRailTab("projects");
             try { localStorage.setItem("pmharness.leftRail.tab", "projects"); } catch { /* ignore */ }
           }}
-          className={`flex-1 text-[11px] font-semibold uppercase tracking-wider py-1 rounded transition ${
-            railTab === "projects" ? "bg-panel2 text-txt" : "text-muted hover:text-txt hover:bg-panel2/40"
+          className={`flex-1 h-8 flex items-center justify-center text-center px-2 text-[10px] font-semibold uppercase tracking-[0.12em] border-b transition ${
+            railTab === "projects" ? "border-accent text-txt" : "border-transparent text-muted hover:text-txt"
           }`}
         >
           Projects
@@ -1412,8 +1417,8 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             setRailTab("sessions");
             try { localStorage.setItem("pmharness.leftRail.tab", "sessions"); } catch { /* ignore */ }
           }}
-          className={`flex-1 text-[11px] font-semibold uppercase tracking-wider py-1 rounded transition ${
-            railTab === "sessions" ? "bg-panel2 text-txt" : "text-muted hover:text-txt hover:bg-panel2/40"
+          className={`flex-1 h-8 flex items-center justify-center text-center px-2 text-[10px] font-semibold uppercase tracking-[0.12em] border-b transition ${
+            railTab === "sessions" ? "border-accent text-txt" : "border-transparent text-muted hover:text-txt"
           }`}
         >
           Sessions
@@ -1432,7 +1437,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                 onChange={(e) => setSessionSearchQuery(e.target.value)}
                 placeholder="Search sessions..."
                 aria-label="Search sessions"
-                className="w-full bg-panel border border-edge rounded text-[11px] text-txt
+                className="w-full bg-panel2/40 border border-edge/60 rounded text-[11px] text-txt
                            pl-7 pr-7 py-1.5 outline-none focus:border-accent placeholder:text-faint"
               />
               {sessionSearchQuery.trim() ? (
@@ -1459,7 +1464,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                     type="button"
                     disabled={!!switchingSessionId || opening}
                     onClick={() => { if (!switchingSessionId) void switchSession(row.id); }}
-                    className={`w-full text-left px-2 py-1.5 rounded transition min-w-0 disabled:opacity-60 ${
+                    className={`w-full min-h-8 flex flex-col justify-center text-left px-2 rounded transition min-w-0 disabled:opacity-60 ${
                       switchingSessionId === row.id ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
                     }`}
                     title={row.snippet ? `${row.title}\n${row.snippet}` : row.title}
@@ -1498,7 +1503,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                       type="button"
                       disabled={!!switchingSessionId || opening}
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
-                      className={`w-full text-left px-2 py-1.5 rounded transition min-w-0 disabled:opacity-60 ${
+                      className={`w-full min-h-8 flex flex-col justify-center text-left px-2 rounded transition min-w-0 disabled:opacity-60 ${
                         isActive ? "bg-panel2/60 border-l-2 border-accent" : "hover:bg-panel2/30"
                       }`}
                       title={`${s.title}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
@@ -1526,99 +1531,84 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
       <div ref={projectsSectionRef}>
       <Section title="Projects" headerSpinner={panelSwitching && (sessionsValidating || workspaceValidating)}>
         {projects.length === 0 && !panelSwitching && <Empty>No projects</Empty>}
-        <div className="space-y-1">
+      <div className="space-y-0.5 -mx-2">
           {projects.map((projectPath) => {
             const basename = getWorkspaceBasename(projectPath) || "Untitled Project";
             const isCurrentActive = canSettleSessionsForProject(projectPath, workspaceInfo?.repo);
             const isSelected = repoPathsEqual(projectPath, selectedProjectPath);
-            // Expand is mostly user-driven; open/switch/newSession also expand
-            // the landing root so sessions appear without an extra click.
+            // Expansion is browsing state; activation paths also expand their
+            // landing root so sessions appear without an extra click.
             const isExpanded = !!expandedProjects[projectPath];
-            const browsingOther =
-              isSelected && !!workspaceInfo?.repo && !repoPathsEqual(projectPath, workspaceInfo.repo);
             const projectSessions = projectSessionsFor(projectPath);
             projectSessions.sort((a, b) => b.created - a.created);
             const projectSettled = projectSettledFor(projectPath);
             projectSettled.sort((a, b) => b.created - a.created);
-            const count = projectSessions.length;
             const cgStatus = codegraphStatusFor(projectPath, isCurrentActive);
-            const cgLabel = cgStatus ? codegraphBadgeLabel(cgStatus) : "";
-            const showCgBadge = !!cgLabel && (isCurrentActive || isSelected);
+            const cgLabel = codegraphAttentionLabel(cgStatus);
             const sessionsReady = sessionsResolvedFor(projectPath);
             const sessionsEmptyState = projectSessionsEmptyState(sessionsReady, isSelected);
 
             return (
               <div
                 key={projectPath}
-                className={`rounded transition min-w-0 overflow-hidden ${
-                  browsingOther
-                    ? "bg-panel2/50 border-l-2 border-warn/70"
-                    : isSelected
-                      ? "bg-panel2/50 border-l-2 border-accent"
-                      : "hover:bg-panel2/20"
-                }`}
+                className="min-w-0 overflow-hidden px-2"
               >
                 {/* Project Row */}
                 <div
                   onClick={() => handleProjectRowClick(projectPath, isExpanded)}
                   onContextMenu={(e) => handleProjectContextMenu(e, projectPath)}
-                  className="flex items-center gap-1.5 px-2 py-1.5 cursor-pointer select-none group"
-                  title={browsingOther
-                    ? `${projectPath}\nBrowsing sessions — click a session to open this project`
-                    : projectPath}
+                  className="h-8 flex items-center gap-1.5 px-2 cursor-pointer select-none group hover:bg-panel2/30 rounded-md"
+                  title={projectPath}
                 >
                   {/* Expand Chevron */}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      selectProject(projectPath);
                       setExpandedProjects(prev => ({ ...prev, [projectPath]: !isExpanded }));
                     }}
-                    className="p-0.5 hover:bg-panel2 rounded text-muted hover:text-txt transition-colors flex items-center justify-center"
+                    className="w-5 h-5 p-0 hover:bg-panel2/70 rounded text-faint hover:text-txt transition-colors flex items-center justify-center shrink-0"
                   >
                     {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   </button>
 
                   {/* Folder Icon */}
                   {isCurrentActive && workspaceInfo?.is_git ? (
-                    <FolderGit2 size={13} className="text-accent shrink-0" />
+                    <FolderGit2 size={13} className="text-muted shrink-0" />
                   ) : (
-                    <Folder size={13} className="text-muted shrink-0" />
+                    <Folder size={13} className="text-faint shrink-0" />
                   )}
 
                   {/* Basename */}
-                  <span className={`text-[12.5px] truncate font-medium flex-1 ${isSelected ? "text-txt font-semibold" : "text-muted hover:text-txt"}`}>
+                  <span className={`text-[12px] truncate flex-1 ${isSelected ? "text-txt font-medium" : "text-muted group-hover:text-txt"}`}>
                     {basename}
                   </span>
 
-                  {/* CodeGraph status (inline compact) */}
-                  {showCgBadge && (
-                    <span className={`text-[9px] font-semibold uppercase px-1 rounded shrink-0 ${
-                      cgStatus === "ready"
-                        ? "text-good bg-good/10"
-                        : cgStatus === "indexing" || cgStatus === "pending"
-                          ? "text-warn bg-warn/10 animate-pulse"
-                          : cgStatus === "needs_scope"
-                            ? "text-warn bg-warn/10"
-                            : "text-faint bg-panel2"
-                    }`}>
+                  {/* CodeGraph attention state; ready is intentionally silent. */}
+                  {cgLabel && (
+                    <span
+                      className={`flex items-center gap-1 text-[9px] font-medium uppercase tracking-wide shrink-0 ${
+                        cgStatus === "indexing" || cgStatus === "pending"
+                          ? "text-warn"
+                          : cgStatus === "unsupported" || cgStatus === "error" || cgStatus === "failed"
+                            ? "text-faint"
+                            : "text-warn"
+                      }`}
+                      title={`CodeGraph ${cgLabel}`}
+                      aria-label={`CodeGraph ${cgLabel}`}
+                    >
+                      {cgStatus === "indexing" || cgStatus === "pending"
+                        ? <Loader2 size={10} className="animate-spin" />
+                        : <Circle size={6} fill="currentColor" />}
                       {cgLabel}
-                    </span>
-                  )}
-
-                  {/* Session Count Badge */}
-                  {count > 0 && (
-                    <span className="text-[10px] text-faint px-1.5 py-0.2 rounded bg-panel2 font-mono shrink-0">
-                      {count}
                     </span>
                   )}
                 </div>
 
                 {/* Sessions (Expandable inline) — stale-while-revalidate: keep
-                    gold selection + expansion; fill rows when cache arrives.
+                    active selection + expansion; fill rows when cache arrives.
                     Scoped loading on this row only (not rail-wide dim). */}
                 {isExpanded && (
-                  <div className={`pl-4 pr-1 pb-1.5 space-y-0.5 border-l border-edge/30 ml-3.5 mt-0.5 min-w-0 overflow-hidden ${panelOpacityClass(!sessionsReady && isSelected)}`}>
+                  <div className={`pl-3 pr-1 pb-1 space-y-0.5 mt-0.5 min-w-0 overflow-hidden ${panelOpacityClass(!sessionsReady && isSelected)}`}>
                     {projectSessions.length === 0 ? (
                       sessionsEmptyState === "loading" ? (
                         <div className="text-[11px] text-faint italic px-2 py-1 flex items-center gap-1.5">
@@ -1632,7 +1622,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                             e.stopPropagation();
                             void newSession(projectPath);
                           }}
-                          className="w-full text-left text-[11px] text-accent hover:text-accent/80 px-2 py-1 rounded hover:bg-accent/10 transition"
+                          className="w-full h-7 flex items-center text-left text-[11px] text-accent hover:text-accent/80 px-2 rounded hover:bg-accent/10 transition"
                           title={`Open ${basename} and start a session`}
                         >
                           New session
@@ -1658,23 +1648,13 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                               className="w-full bg-bg border border-accent rounded px-2 py-1 text-[12px] text-txt focus:outline-none"
                             />
                           ) : (
-                            <div className="flex items-center gap-0.5 min-w-0">
-                              <button
-                                onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
-                                disabled={!!switchingSessionId || opening}
-                                title={s.preview ? `${s.title || "Untitled"}\n${s.preview}` : (s.title || "Untitled")}
-                                onDoubleClick={() => {
-                                  setRenamingId(s.id);
-                                  setRenamingTitle(s.title || "Untitled");
-                                }}
-                                onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
-                                className={`flex-1 min-w-0 text-left rounded px-1.5 py-1 flex items-center gap-1.5 text-[12.5px] transition disabled:opacity-60
-                                  ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted hover:text-txt"}
-                                  ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
-                                {switchingSessionId === s.id
-                                  ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
-                                  : <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />}
-                                <span className="flex-1 min-w-0 truncate">{s.title || "Untitled"}</span>
+                            <div className={`group relative flex items-center gap-0.5 min-w-0 min-h-7 rounded-md px-0.5 focus-within:bg-panel2/50 ${
+                              s.active ? "bg-panel2/70" : "hover:bg-panel2/50"
+                            }`}>
+                              <div
+                                className="w-3 shrink-0 flex items-center justify-center self-center"
+                                aria-hidden={!(unreadFinishedIds[s.id] && !s.active && runners[s.id] !== "running") && (!runners[s.id] || runners[s.id] === "missing")}
+                              >
                                 {unreadFinishedIds[s.id] && !s.active && runners[s.id] !== "running" ? (
                                   <span
                                     className="w-1.5 h-1.5 rounded-full shrink-0 bg-good"
@@ -1688,6 +1668,23 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                     onStop={() => { void stopBackgroundSession(s.id); }}
                                   />
                                 )}
+                              </div>
+                              <button
+                                onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
+                                disabled={!!switchingSessionId || opening}
+                                title={s.preview ? `${s.title || "Untitled"}\n${s.preview}` : (s.title || "Untitled")}
+                                onDoubleClick={() => {
+                                  setRenamingId(s.id);
+                                  setRenamingTitle(s.title || "Untitled");
+                                }}
+                                onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
+                                className={`flex-1 min-w-0 h-7 text-left rounded pl-2.5 pr-1.5 flex items-center gap-1.5 text-[12px] transition disabled:opacity-60
+                                  ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
+                                  ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
+                                {switchingSessionId === s.id
+                                  ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                                  : <MessageSquare size={11} className={`shrink-0 ${s.active ? "text-accent" : "text-faint"}`} />}
+                                <span className="flex-1 min-w-0 truncate">{s.title || "Untitled"}</span>
                               </button>
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
@@ -1750,7 +1747,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                               return next;
                             });
                           }}
-                          className="w-full flex items-center gap-1 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-faint font-medium hover:text-muted focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent rounded"
+                          className="w-full h-6 flex items-center gap-1 px-1.5 text-[10px] uppercase tracking-wider text-faint font-medium hover:text-muted focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent rounded"
                           aria-expanded={!!expandedSettled[projectPath]}
                         >
                           {expandedSettled[projectPath]
@@ -1766,7 +1763,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                                   onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                   disabled={!!switchingSessionId || opening}
                                   onContextMenu={(e) => handleContextMenu(e, s, isCurrentActive)}
-                                  className={`flex-1 min-w-0 text-left rounded px-1.5 py-0.5 flex items-center gap-1.5 text-[11px] motion-safe:transition opacity-45 hover:opacity-90 disabled:opacity-40
+                                  className={`flex-1 min-w-0 h-6 text-left rounded px-1.5 flex items-center gap-1.5 text-[11px] motion-safe:transition opacity-45 hover:opacity-90 disabled:opacity-40
                                     ${s.active ? "bg-accent/10 text-accent" : "text-faint hover:bg-panel2/50 hover:text-muted"}
                                     ${switchingSessionId === s.id ? "opacity-70" : ""}`}
                                   title={s.title || "Untitled"}
@@ -1844,7 +1841,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                         setRenamingTitle(s.title || "Untitled");
                       }}
                       onContextMenu={(e) => handleContextMenu(e, s, true)}
-                      className={`w-full text-left rounded px-2 py-1 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
+                      className={`w-full h-7 text-left rounded px-2 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
                         ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted"}
                         ${switchingSessionId === s.id ? "opacity-70" : ""}`}
                     >
@@ -1882,7 +1879,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           <div className="space-y-0.5 overflow-y-auto" style={{ height: branchesHeight }}>
             {workspaces.map((w) => (
               <button key={w.name} onClick={() => switchWs(w.name)}
-                className={`w-full text-left rounded px-2 py-1 mb-0.5 flex items-center gap-2 text-[12px] transition
+                className={`w-full h-7 text-left rounded px-2 mb-0.5 flex items-center gap-2 text-[12px] transition
                   ${w.active ? "bg-accent2/40 text-txt font-semibold" : "hover:bg-panel2/60 text-muted"}`}>
                 {swapping === w.name ? <Loader2 size={11} className="animate-spin" /> : <GitBranch size={11} />}
                 <span className="flex-1 truncate">{w.name}</span>
@@ -1915,7 +1912,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
           session doesn't swallow the left rail. Vertically resizable via the
           grab handle above the header. */}
       <div
-        className={`px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col ${panelOpacityClass(panelSwitching || jobsTransitioning, jobsStale)}`}
+        className="px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col"
         style={sessionJobsCollapsed ? undefined : { height: sessionJobsHeight }}
       >
         {!sessionJobsCollapsed && (
@@ -1932,10 +1929,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             <div className="w-8 h-0.5 rounded-full bg-edge/80 group-hover:bg-muted/80 transition-colors" />
           </div>
         )}
-        <div className={`flex items-center justify-between px-2 mb-1.5 gap-2 min-w-0 shrink-0 ${sessionJobsCollapsed ? "pt-4 mt-0.5" : "pt-1 mt-0"}`}>
+        <div className={`h-7 flex items-center justify-between px-1.5 mb-1 gap-2 min-w-0 shrink-0 ${sessionJobsCollapsed ? "mt-2" : ""}`}>
           <button
             onClick={toggleSessionJobsCollapsed}
-            className="flex items-center gap-1 min-w-0 text-[11px] uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
+            className="h-6 flex items-center gap-1 min-w-0 text-[11px] uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
           >
             {sessionJobsCollapsed ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
             <span className="truncate">Session Jobs</span>
@@ -2006,10 +2003,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                   const arts = (loadedArts || []).filter((a) => a && a.headline);
                   const diff = jobDiffstat(loadedArts || []);
                   return (
-                    <div key={j.id} className="rounded mb-0.5 bg-panel2 border border-edge overflow-hidden min-w-0">
+                    <div key={j.id} className="border-b border-edge/35 overflow-hidden min-w-0">
                       <button
                         onClick={() => toggleJobCard(j)}
-                        className="w-full min-w-0 flex items-center gap-1.5 px-2 py-1.5 text-left hover:bg-panel2/60 transition-colors focus:outline-none"
+                        className="w-full min-w-0 h-7 flex items-center gap-1.5 px-1.5 text-left hover:bg-panel2/50 transition-colors focus:outline-none"
                       >
                         <JobStatusIcon status={st} />
                         <span
@@ -2030,7 +2027,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
                         <ChevronDown size={11} className={`text-faint shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`} />
                       </button>
                       {isOpen && (
-                        <div className="px-2 pb-1.5 pt-1 border-t border-edge/50 space-y-1.5 min-w-0 max-h-48 overflow-y-auto overflow-x-hidden">
+                        <div className="px-1.5 pb-1.5 pt-1 border-t border-edge/35 space-y-1.5 min-w-0 max-h-48 overflow-y-auto overflow-x-hidden">
                           <p className={`text-[12px] leading-snug break-words whitespace-normal ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}>
                             {j.goal}
                           </p>
@@ -2420,9 +2417,9 @@ function Section({ title, action, headerSpinner, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <div className="px-2 pt-4 shrink-0 min-w-0">
-      <div className="flex items-center justify-between px-2 mb-2 mt-0.5">
-        <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted font-semibold">
+    <div className="px-2 pt-3 shrink-0 min-w-0">
+      <div className="flex items-center justify-between px-1.5 mb-1.5 mt-0.5">
+        <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-faint font-semibold">
           {title}
           {headerSpinner && <Loader2 size={10} className="animate-spin text-muted shrink-0" />}
         </span>
@@ -2442,9 +2439,9 @@ const IconBtn = ({ onClick, children, title, disabled }: {
     onClick={onClick}
     title={title}
     disabled={disabled}
-    className="text-muted hover:text-txt p-0.5 rounded hover:bg-panel2 disabled:opacity-50 disabled:pointer-events-none"
+    className="text-faint hover:text-txt p-1 rounded hover:bg-panel2/60 disabled:opacity-50 disabled:pointer-events-none"
   >
     {children}
   </button>
 );
-const Empty = ({ children }: any) => <div className="text-[11px] text-muted italic px-1 py-1">{children}</div>;
+const Empty = ({ children }: any) => <div className="text-[11px] text-faint italic px-1.5 py-1">{children}</div>;

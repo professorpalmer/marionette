@@ -65,6 +65,8 @@ class SessionServices:
     diag: Callable[..., None]
     is_app_install_root: Callable[[str], bool]
     ensure_home_workspace: Callable[[], str]
+    prepare_home_workspace: Callable[[], str]
+    home_workspace_path: Callable[[], str]
     note_boot_repo: Callable[[str], None]
     record_recent_workspace: Callable[..., Any]
     puppetmaster_available: Callable[[], bool]
@@ -493,10 +495,14 @@ def get_sessions_list(qs: dict, svc: SessionServices) -> tuple[int, Any]:
     root = repo_override or (svc.cfg.repo or "")
     if not repo_override and not root:
         # No Open Folder: sidebar lists Home-bound sessions, not everything.
+        # Prepare the bind root for listing but do not re-record Home in recents.
         try:
-            root = svc.ensure_home_workspace()
+            root = svc.prepare_home_workspace()
         except Exception:
-            root = ""
+            try:
+                root = svc.home_workspace_path()
+            except Exception:
+                root = ""
     return 200, svc.sessions.list(
         workspace_root=root,
         state_dir=svc.sessions_state_dir(),

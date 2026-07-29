@@ -44,8 +44,8 @@ def _svc(cfg, tmp_path, *, forget_fn=None):
         clear_active_codegraph=lambda: cleared.__setitem__("n", cleared["n"] + 1),
         get_codegraph_status=lambda r: "ready" if r else "none",
         workspace_json_path=lambda: str(ws_json),
-        ensure_home_workspace=lambda: str(home),
         home_workspace_path=lambda: str(home),
+        prepare_home_workspace=lambda: str(home),
         is_app_install_root=lambda p: False,
         diag=lambda *a: None,
     ), cleared, ws_json, home
@@ -79,14 +79,16 @@ def test_workspace_forget_clears_active(tmp_path):
     assert cleared["n"] == 1
 
 
-def test_get_workspace_includes_home(tmp_path):
+def test_get_workspace_reports_home_without_rerecording(tmp_path):
     cfg = SimpleNamespace(repo="")
     svc, _, ws_json, home = _svc(cfg, tmp_path)
     ws_json.write_text(json.dumps({"recents": []}), encoding="utf-8")
     code, payload = get_workspace(svc)
     assert code == 200
     assert payload["home"] == str(home)
-    assert str(home) in payload["recents"]
+    assert str(home) not in payload["recents"]
+    data = json.loads(ws_json.read_text(encoding="utf-8"))
+    assert str(home) not in data.get("recents", [])
 
 
 def test_workspaces_switch_create_list(tmp_path):
@@ -201,9 +203,50 @@ def test_workspace_open_switches(tmp_path):
     code, payload = post_workspace_open({"path": str(repo)}, svc)
     assert code == 200 and payload["ok"] is True
     assert payload["repo"] == str(repo)
+    assert payload["created_session"] is True
     assert cfg.repo == str(repo)
     assert sessions.active == "s1"
     assert attached["n"] == 1
+
+
+def test_workspace_open_existing_sessions_does_not_create(tmp_path):
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    cfg = SimpleNamespace(repo="", driver="m1")
+
+    class _Sessions:
+        active = "s-old"
+
+        def list(self):
+            return [{"id": "s-old", "created": 1, "repo": str(repo)}]
+
+        def create(self, title="", repo="", branch=""):
+            raise AssertionError("must not create when sessions exist")
+
+        def switch(self, sid):
+            self.active = sid
+
+    sessions = _Sessions()
+    svc, _, _, _ = _svc(cfg, tmp_path)
+    svc.sessions = sessions
+    svc.save_active_transcript = lambda: None
+    svc.note_boot_repo = lambda r: None
+    svc.get_workspace_driver = lambda r: None
+    svc.apply_model_context_window = lambda: None
+    svc.record_recent_workspace = lambda r, as_active=True: []
+    svc.sessions_state_dir = lambda: str(tmp_path)
+    svc.session_visible_for_workspace = lambda s, r, d: True
+    svc.attach_view = lambda sid, defer_cold_build=False: None
+    svc.puppetmaster_available = lambda: False
+    svc.set_codegraph_status = lambda status, reason=None: None
+    svc.index_codegraph_bg = lambda r: None
+    svc.maybe_refresh_codegraph = lambda r: None
+    svc.get_codegraph_status = lambda r: "none"
+
+    code, payload = post_workspace_open({"path": str(repo)}, svc)
+    assert code == 200
+    assert payload["created_session"] is False
+    assert sessions.active == "s-old"
 
 
 def test_workspace_open_lease_exhausted_rolls_back(tmp_path):

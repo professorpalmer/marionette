@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { clearSWRCache, readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, partitionProjectSessions, patchSessionArchivedInCaches, patchSessionSettledInCaches, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
+import { buildProjectsList, canSettleSessionsForProject, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, jobsCacheKey, partitionProjectSessions, patchSessionArchivedInCaches, patchSessionSettledInCaches, projectSessionsEmptyState, purgeSessionFromRootCaches, readSessionSettledFromCaches, SESSION_LEASE_EXHAUSTED_MESSAGE, shouldOfferBackgroundStop, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -113,24 +113,45 @@ describe("LeftRail session list contracts", () => {
     expect(badgeFor("sess-unknown")).toBeNull();
   });
 
-  it("chevron expand-without-activate never opens a workspace", () => {
-    // Mirrors LeftRail chevron + handleProjectRowClick: expand/select only.
+  it("project browsing toggles expansion without changing the active work target", () => {
+    // Mirrors LeftRail row and chevron handlers: browsing changes expansion
+    // only. Activation is reserved for explicit open/session paths.
     let openCalls = 0;
-    const handleOpenProject = () => { openCalls += 1; };
-    const selectProject = (_path: string) => {};
-    const setExpanded = (_path: string, _next: boolean) => {};
+    let selectedProjectPath = "C:\\Projects\\active";
+    let jobsScope = selectedProjectPath;
+    const expandedProjects: Record<string, boolean> = {};
+    const setExpanded = (projectPath: string, next: boolean) => {
+      expandedProjects[projectPath] = next;
+    };
 
+    const onProjectRowClick = (projectPath: string, isExpanded: boolean) => {
+      setExpanded(projectPath, !isExpanded);
+    };
     const onChevronClick = (projectPath: string, isExpanded: boolean) => {
-      // stopPropagation equivalent: never call handleOpenProject.
-      selectProject(projectPath);
       setExpanded(projectPath, !isExpanded);
     };
 
-    onChevronClick("C:\\Projects\\other", false);
+    onProjectRowClick("C:\\Projects\\other", false);
+    expect(expandedProjects["C:\\Projects\\other"]).toBe(true);
+    expect(selectedProjectPath).toBe("C:\\Projects\\active");
+    expect(jobsScope).toBe("C:\\Projects\\active");
+
+    onChevronClick("C:\\Projects\\other", true);
     expect(openCalls).toBe(0);
-    // Explicit open path still works when intentionally invoked.
-    handleOpenProject();
+    expect(expandedProjects["C:\\Projects\\other"]).toBe(false);
+    expect(selectedProjectPath).toBe("C:\\Projects\\active");
+    expect(jobsScope).toBe("C:\\Projects\\active");
+
+    // Explicit activation still changes focus and the jobs scope.
+    const handleOpenProject = (projectPath: string) => {
+      openCalls += 1;
+      selectedProjectPath = projectPath;
+      jobsScope = projectPath;
+    };
+    handleOpenProject("C:\\Projects\\other");
     expect(openCalls).toBe(1);
+    expect(selectedProjectPath).toBe("C:\\Projects\\other");
+    expect(jobsScope).toBe("C:\\Projects\\other");
   });
 
   it("one-shot boot expand opens the active project so session titles are visible", () => {
@@ -203,7 +224,8 @@ describe("LeftRail session list contracts", () => {
     // Mirrors LeftRail newSession(inProjectPath): empty-state "New session"
     // and top-bar New session when selected !== current must openWorkspace
     // first so createSession lands in the selected root, not the active one.
-    // Row click still must not open (yank-on-peek removed).
+    // When workspace/open auto-creates the first session (created_session),
+    // LeftRail must skip the redundant createSession call.
     let openCalls = 0;
     let createCalls = 0;
     let openedPath = "";
@@ -213,6 +235,8 @@ describe("LeftRail session list contracts", () => {
     const handleOpenProject = async (path: string) => {
       openCalls += 1;
       openedPath = path;
+      // Empty project: backend creates basename session on open.
+      return { ok: true, created_session: true };
     };
     const createSession = async () => { createCalls += 1; };
 
@@ -222,10 +246,15 @@ describe("LeftRail session list contracts", () => {
       current: string,
     ) => {
       const target = (inProjectPath || selectedProjectPath || "").trim();
+      let workspaceCreatedSession = false;
       if (target && (!current || !repoPathsEqual(target, current))) {
-        await handleOpenProject(target);
+        const opened = await handleOpenProject(target);
+        if (!opened.ok) return;
+        workspaceCreatedSession = !!opened.created_session;
       }
-      await createSession();
+      if (!workspaceCreatedSession) {
+        await createSession();
+      }
     };
 
     // Row click: expand/select only — never open.
@@ -234,11 +263,11 @@ describe("LeftRail session list contracts", () => {
     handleProjectRowClick();
     expect(rowOpenCalls).toBe(0);
 
-    // Empty-project CTA: open that root, then create.
+    // Empty-project CTA: open that root; skip create when open seeded a session.
     await newSession(emptyProject, emptyProject, currentRepo);
     expect(openCalls).toBe(1);
     expect(openedPath).toBe(emptyProject);
-    expect(createCalls).toBe(1);
+    expect(createCalls).toBe(0);
 
     // Top New session with selected === current: create only.
     openCalls = 0;
@@ -247,10 +276,31 @@ describe("LeftRail session list contracts", () => {
     expect(openCalls).toBe(0);
     expect(createCalls).toBe(1);
 
-    // Top New session with selected !== current: open then create.
+    // Top New session with selected !== current: open then create when open did not seed.
     openCalls = 0;
     createCalls = 0;
-    await newSession(undefined, emptyProject, currentRepo);
+    const handleOpenWithExistingSessions = async (path: string) => {
+      openCalls += 1;
+      openedPath = path;
+      return { ok: true, created_session: false };
+    };
+    const newSessionWithExisting = async (
+      inProjectPath: string | undefined,
+      selectedProjectPath: string,
+      current: string,
+    ) => {
+      const target = (inProjectPath || selectedProjectPath || "").trim();
+      let workspaceCreatedSession = false;
+      if (target && (!current || !repoPathsEqual(target, current))) {
+        const opened = await handleOpenWithExistingSessions(target);
+        if (!opened.ok) return;
+        workspaceCreatedSession = !!opened.created_session;
+      }
+      if (!workspaceCreatedSession) {
+        await createSession();
+      }
+    };
+    await newSessionWithExisting(undefined, emptyProject, currentRepo);
     expect(openCalls).toBe(1);
     expect(openedPath).toBe(emptyProject);
     expect(createCalls).toBe(1);
@@ -301,6 +351,14 @@ describe("LeftRail session list contracts", () => {
       workspacesCacheKey("C:\\Projects\\dugout"),
     );
     expect(workspacesCacheKey("")).toBe("workspaces:__none__");
+  });
+
+  it("jobs SWR key is stable per selected project and confirmed active session", () => {
+    const project = "C:\\Projects\\marionette";
+    expect(jobsCacheKey(project, "session-a")).toBe(jobsCacheKey(project, "session-a"));
+    expect(jobsCacheKey(project, "session-a")).not.toBe(jobsCacheKey(project, "session-b"));
+    expect(jobsCacheKey(project, "session-a")).not.toBe(jobsCacheKey("C:\\Projects\\dugout", "session-a"));
+    expect(jobsCacheKey("", undefined)).toBe("jobs:__none__:__none__");
   });
 
   it("isLeaseExhaustedError requires lease_exhausted code (not bare 409)", () => {

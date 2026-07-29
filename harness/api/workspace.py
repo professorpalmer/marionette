@@ -210,8 +210,8 @@ class WorkspaceServices:
     clear_active_codegraph: Callable[[], None]
     get_codegraph_status: Callable[[Optional[str]], str]
     workspace_json_path: Callable[[], str]
-    ensure_home_workspace: Callable[[], str]
     home_workspace_path: Callable[[], str]
+    prepare_home_workspace: Callable[[], str]
     is_app_install_root: Callable[[str], bool]
     diag: Callable[..., Any]
     # POST /api/workspace/open
@@ -304,6 +304,7 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
 
     # Select/create the target project's session, then attach via registry
     # (do not rebuild in a way that orphans busy runners).
+    created_session = False
     if svc.sessions is not None and svc.session_visible_for_workspace is not None:
         state_dir = svc.sessions_state_dir() if svc.sessions_state_dir else ""
         target_sessions = [
@@ -316,6 +317,7 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
         else:
             basename = os.path.basename(os.path.abspath(target_repo)) or "Workspace"
             svc.sessions.create(title=basename, repo=target_repo, branch=branch)
+            created_session = True
 
         if svc.sessions.active and svc.attach_view is not None:
             try:
@@ -370,6 +372,7 @@ def post_workspace_open(body: dict, svc: WorkspaceServices) -> tuple[int, JsonPa
         "is_git": is_git,
         "codegraph": svc.get_codegraph_status(target_repo),
         "active_session": svc.sessions.active if svc.sessions is not None else None,
+        "created_session": created_session,
     }
 
 
@@ -461,14 +464,12 @@ def get_workspace(svc: WorkspaceServices) -> tuple[int, JsonPayload]:
         and not path_within(r, tmproot, allow_equal=True)
         and not svc.is_app_install_root(r)
     ]
+    # Ensure the durable Home bind root exists for first-run seeding, but do
+    # not re-record it in recents -- forgetting Home must stick across refresh.
     try:
-        home = svc.ensure_home_workspace()
-        if home and os.path.isdir(home) and not any(
-            svc.paths_same_workspace(home, r) for r in recents
-        ):
-            recents = list(recents) + [home]
+        svc.prepare_home_workspace()
     except Exception as e:
-        svc.diag("server.workspace_home_recent", e)
+        svc.diag("server.workspace_home_prepare", e)
     return 200, {
         "repo": repo,
         "branch": branch,

@@ -511,11 +511,12 @@ def _is_home_workspace(path: str) -> bool:
         return False
 
 
-def _ensure_home_workspace() -> str:
-    """Create the Home workspace on demand, seed a minimal AGENTS.md, record it.
+def _prepare_home_workspace() -> str:
+    """Create the Home workspace on disk and seed AGENTS.md when missing.
 
-    Returns the absolute home path. Never raises for normal filesystem errors
-    beyond returning the intended path; callers may still use it as a bind root.
+    Does not write Home into workspace.json recents; use
+    ``_ensure_home_workspace`` when the user explicitly starts a Home-bound
+    session or boot migrates orphan rows into Home.
     """
     home = os.path.abspath(_home_workspace_path())
     try:
@@ -534,6 +535,17 @@ def _ensure_home_workspace() -> str:
                 )
     except Exception as e:
         _diag("server.home_workspace_seed", e)
+    return home
+
+
+def _ensure_home_workspace() -> str:
+    """Prepare Home and record it in workspace.json recents.
+
+    Used when the user explicitly creates a session without Open Folder, not
+    when workspace state is merely read (GET /api/workspace must not re-add
+    Home after the user removed it from Projects).
+    """
+    home = _prepare_home_workspace()
     try:
         _record_recent_workspace(home, as_active=False)
     except Exception as e:
@@ -1399,6 +1411,8 @@ def _session_services():
         diag=_diag,
         is_app_install_root=_is_app_install_root,
         ensure_home_workspace=_ensure_home_workspace,
+        prepare_home_workspace=_prepare_home_workspace,
+        home_workspace_path=_home_workspace_path,
         note_boot_repo=_note_boot_repo,
         record_recent_workspace=_record_recent_workspace,
         puppetmaster_available=_puppetmaster_available,
@@ -1651,8 +1665,8 @@ def _workspace_services():
         clear_active_codegraph=_clear_active_codegraph,
         get_codegraph_status=_get_codegraph_status,
         workspace_json_path=_workspace_json_path,
-        ensure_home_workspace=_ensure_home_workspace,
         home_workspace_path=_home_workspace_path,
+        prepare_home_workspace=_prepare_home_workspace,
         is_app_install_root=_is_app_install_root,
         diag=_diag,
         sessions=_sessions,
@@ -2042,8 +2056,10 @@ def _migrate_orphan_sessions_to_home() -> None:
     under Projects -> Home without creating new session ids.
     """
     try:
-        home = _ensure_home_workspace()
-        _sessions.migrate_empty_roots(home)
+        home = _prepare_home_workspace()
+        moved = _sessions.migrate_empty_roots(home)
+        if moved:
+            _record_recent_workspace(home, as_active=False)
     except Exception as e:
         _diag("server.boot_home_session_migrate", e)
 

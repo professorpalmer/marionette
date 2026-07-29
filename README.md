@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.142, deliberately pre-1.0. Analysis workers see git upstream lag and may read origin tip via read-only git; rides puppetmaster-ai==1.21.2 (analyze-mode git show).
+> Status: v0.9.146, deliberately pre-1.0. Project browsing no longer steals the active workspace, session jobs stay warm across swaps, and the left rail uses a quieter Cursor-class hierarchy; rides puppetmaster-ai==1.21.2.
 
 ## Documentation
 

@@ -1052,7 +1052,7 @@ export const api = {
     postJSON<{ ok: boolean; deleted: string[]; count: number }>("/api/worktrees/prune-edit-branches", {}),
   setWorktreeMax: (max: number) => postJSON<{ ok: boolean }>("/api/worktrees/max", { max }),
 
-  openWorkspace: (path: string) => postJSON<{ ok: boolean; repo: string; branch: string; is_git: boolean; codegraph: "indexing" | "ready" | "unsupported" | "needs_scope" | "none" | "pending"; active_session?: string }>("/api/workspace/open", { path }),
+  openWorkspace: (path: string) => postJSON<{ ok: boolean; repo: string; branch: string; is_git: boolean; codegraph: "indexing" | "ready" | "unsupported" | "needs_scope" | "none" | "pending"; active_session?: string; created_session?: boolean }>("/api/workspace/open", { path }),
   forgetWorkspace: (path: string) => postJSON<{ ok: boolean; recents: string[]; cleared_active?: boolean; repo?: string }>("/api/workspace/forget", { path }),
   getWorkspace: () => getJSON<WorkspaceInfo>("/api/workspace"),
   getWorkspaceFiles: () =>

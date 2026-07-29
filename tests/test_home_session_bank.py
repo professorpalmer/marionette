@@ -42,6 +42,100 @@ def test_home_record_does_not_steal_active_repo(tmp_path, monkeypatch):
         for r in data.get("recents") or []
     )
 
+def test_forget_home_persists_across_get_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    home = srv._ensure_home_workspace()
+    ws_path = srv._workspace_json_path()
+    data = json.loads(open(ws_path, encoding="utf-8").read())
+    assert any(
+        os.path.normcase(os.path.realpath(r)) == os.path.normcase(os.path.realpath(home))
+        for r in data.get("recents") or []
+    )
+
+    srv._forget_recent_workspace(home)
+    data = json.loads(open(ws_path, encoding="utf-8").read())
+    assert not any(
+        os.path.normcase(os.path.realpath(r)) == os.path.normcase(os.path.realpath(home))
+        for r in data.get("recents") or []
+    )
+
+    from harness.api.workspace import WorkspaceServices, get_workspace
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(repo="")
+    svc = WorkspaceServices(
+        cfg=cfg,
+        parse_bool=lambda v: bool(v),
+        ws=SimpleNamespace(),
+        paths_same_workspace=srv._paths_same_workspace,
+        forget_recent_workspace=srv._forget_recent_workspace,
+        clear_active_codegraph=lambda: None,
+        get_codegraph_status=lambda r: "none",
+        workspace_json_path=srv._workspace_json_path,
+        home_workspace_path=srv._home_workspace_path,
+        prepare_home_workspace=srv._prepare_home_workspace,
+        is_app_install_root=srv._is_app_install_root,
+        diag=lambda *a: None,
+    )
+    code, payload = get_workspace(svc)
+    assert code == 200
+    assert payload["home"] == home
+    assert not any(
+        os.path.normcase(os.path.realpath(r)) == os.path.normcase(os.path.realpath(home))
+        for r in payload.get("recents") or []
+    )
+    data = json.loads(open(ws_path, encoding="utf-8").read())
+    assert not any(
+        os.path.normcase(os.path.realpath(r)) == os.path.normcase(os.path.realpath(home))
+        for r in data.get("recents") or []
+    )
+
+
+def test_home_session_create_rerecords_after_forget(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    home = srv._ensure_home_workspace()
+    srv._forget_recent_workspace(home)
+
+    from harness.api.sessions import SessionServices, post_sessions_create
+    from types import SimpleNamespace
+
+    store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    monkeypatch.setattr(srv, "_sessions", store)
+    cfg = SimpleNamespace(repo="", driver="m1", state_dir=str(tmp_path / "state"))
+
+    svc = SessionServices(
+        sessions=store,
+        runners=SimpleNamespace(),
+        cfg=cfg,
+        get_pilot=lambda: SimpleNamespace(load_history=lambda h: None),
+        sessions_state_dir=lambda: str(tmp_path / "state"),
+        save_active_transcript=lambda: None,
+        attach_view=lambda *a, **k: None,
+        sync_pilot_session_id=lambda: None,
+        diag=lambda *a: None,
+        is_app_install_root=lambda p: False,
+        ensure_home_workspace=srv._ensure_home_workspace,
+        prepare_home_workspace=srv._prepare_home_workspace,
+        home_workspace_path=srv._home_workspace_path,
+        note_boot_repo=lambda r: None,
+        record_recent_workspace=srv._record_recent_workspace,
+        puppetmaster_available=lambda: False,
+        index_codegraph_bg=lambda r: None,
+        maybe_refresh_codegraph=lambda r: None,
+        get_codegraph_status=lambda r: "none",
+        lease_exhausted_body=lambda e: {},
+        attach_view_transcript_payload=lambda p, s: {},
+        parse_bool=lambda v: bool(v),
+        set_codegraph_status=lambda *a, **k: None,
+    )
+    code, _payload = post_sessions_create({}, svc)
+    assert code == 200
+    data = json.loads(open(srv._workspace_json_path(), encoding="utf-8").read())
+    assert any(
+        os.path.normcase(os.path.realpath(r)) == os.path.normcase(os.path.realpath(home))
+        for r in data.get("recents") or []
+    )
+
 
 def test_migrate_empty_roots_to_home(tmp_path):
     store = SessionStore(str(tmp_path / "harness_sessions.json"))
