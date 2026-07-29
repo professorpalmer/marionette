@@ -363,7 +363,7 @@ def test_stdio_cancel_unblocks_without_killing_server():
 
         def _call():
             try:
-                c.call_tool("slow", {"seconds": 30}, timeout=10.0)
+                c.call_tool("slow", {"seconds": 5}, timeout=10.0)
             except McpError as e:
                 errors.append(str(e))
 

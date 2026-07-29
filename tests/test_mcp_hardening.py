@@ -121,7 +121,7 @@ def test_hung_stdio_response_does_not_block_concurrent_write():
 
         def _hung_call():
             try:
-                c.call_tool("slow", {"seconds": 30}, timeout=4.0)
+                c.call_tool("slow", {"seconds": 5}, timeout=3.0)
             except McpError as e:
                 hung.append(e)
 

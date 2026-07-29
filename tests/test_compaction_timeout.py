@@ -22,7 +22,9 @@ class _HangPilot:
     base_url = "http://localhost:11434/v1"
 
     def complete(self, prompt, *, system=None):
-        time.sleep(30)
+        # Must exceed the compaction outer wait (~5s) so the timeout path
+        # fires; shorter sleeps let complete() finish first and skip cooldown.
+        time.sleep(6)
         from pmharness.drivers.openai_compat import DriverResponse
         return DriverResponse(text="never", tokens_out=1, latency_ms=1.0)
 

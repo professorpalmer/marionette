@@ -115,7 +115,7 @@ def test_run_shell_pass_fail_timeout(tmp_path):
         kind="shell",
         phase="pre",
         on_fail="warn",
-        cmd="python -c \"import time; time.sleep(5)\"",
+        cmd="python -c \"import time; time.sleep(2)\"",
         timeout_s=1,
     )
     results = run_checks([ok_spec, fail_spec, timeout_spec], repo=repo, phase="pre")

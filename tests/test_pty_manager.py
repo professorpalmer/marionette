@@ -34,17 +34,30 @@ def _wait_until(predicate, timeout=5.0, interval=0.05):
     return False
 
 
+def _wait_any_output(session, *, offset=0, timeout=5.0):
+    """Wait until session has any new output. Returns (data, offset)."""
+    deadline = time.time() + timeout
+    data = b""
+    while time.time() < deadline:
+        data, offset = session.read_since(offset)
+        if data:
+            return data, offset
+        time.sleep(0.05)
+    return data, offset
+
+
 def _wait_output_contains(session, needle, *, offset=0, timeout=5.0):
     """Wait until session output contains needle (bytes or str). Returns (data, offset)."""
     if isinstance(needle, str):
         needle_b = needle.encode("utf-8")
     else:
         needle_b = needle
+    needle_lower = needle_b.lower()
     deadline = time.time() + timeout
     data = b""
     while time.time() < deadline:
         data, offset = session.read_since(offset)
-        if needle_b in data:
+        if needle_lower in data.lower():
             return data, offset
         time.sleep(0.05)
     return data, offset
@@ -427,22 +440,38 @@ def test_conpty_zero_dims_clamped_and_alive():
 
 @pytestmark_win_e2e
 @pytestmark_pty
-def test_conpty_create_write_read_resize_kill():
+def test_conpty_create_write_read_resize_kill(monkeypatch):
+    """Use cmd.exe so GH runner pwsh banners cannot starve the read path."""
+    cmd = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    monkeypatch.setattr(pty_manager, "_windows_shell", lambda: cmd)
+
     m = PtyManager()
     cwd = os.getcwd()
     s = m.create(cwd=cwd, cols=80, rows=24)
-    assert s.id
-    assert _wait_until(s.alive, timeout=5.0)
-    assert s.alive()
+    try:
+        assert s.id
+        assert _wait_until(s.alive, timeout=5.0)
+        assert s.alive()
 
-    s.write("echo hello\r\n")
-    data, _offset = _wait_output_contains(s, b"hello", timeout=10.0)
-    assert b"hello" in data.lower(), "expected 'hello' in ConPTY output"
+        # Writing before the shell paints is the empty-buffer flake seen on
+        # windows-latest / Python 3.9 (assert b'hello' in b'').
+        boot, offset = _wait_any_output(s, timeout=10.0)
+        if not boot:
+            buffered, _ = s.read_since(0)
+            pytest.fail(
+                f"ConPTY produced no shell output before write "
+                f"(alive={s.alive()}, buffer_len={len(buffered)})"
+            )
 
-    s.resize(40, 120)
-    assert s.cols == 120 and s.rows == 40
+        s.write("echo hello\r\n")
+        data, _offset = _wait_output_contains(s, b"hello", offset=offset, timeout=10.0)
+        assert b"hello" in data.lower(), "expected 'hello' in ConPTY output"
 
-    m.kill(s.id)
+        s.resize(40, 120)
+        assert s.cols == 120 and s.rows == 40
+    finally:
+        m.kill(s.id)
+
     assert _wait_until(lambda: not s.alive(), timeout=3.0)
     assert not s.alive()
     assert m.get(s.id) is None
