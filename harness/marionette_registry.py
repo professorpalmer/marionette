@@ -155,11 +155,9 @@ def reconcile_shared_models(path: Optional[str] = None) -> dict[str, Any]:
         raw = str(marionette_models_path())
     report["path"] = raw
     dest = Path(raw)
-    try:
-        dest_is_marionette = dest.resolve() == marionette_models_path().resolve()
-    except Exception:
-        dest_is_marionette = dest.name == MARIONETTE_MODELS_FILENAME
-    if not dest_is_marionette:
+    # Filename gate (not resolve()==home path): Windows Path.home() ignores
+    # $HOME, and tests / alternate state roots still use marionette-models.json.
+    if dest.name != MARIONETTE_MODELS_FILENAME:
         report["skipped"] = True
         report["reason"] = "not marionette registry"
         return report
@@ -167,6 +165,12 @@ def reconcile_shared_models(path: Optional[str] = None) -> dict[str, Any]:
         report["error"] = "missing registry file"
         return report
     shared = shared_puppetmaster_models_path()
+    # When the marionette registry lives under a non-default home (tests, or a
+    # relocated state root), prefer the sibling ~/.puppetmaster next to
+    # .pmharness so reconcile still finds the shared plan/cursor peers.
+    sibling_shared = dest.parent.parent / ".puppetmaster" / "models.json"
+    if sibling_shared.is_file():
+        shared = sibling_shared
     if not shared.is_file():
         report["skipped"] = True
         report["reason"] = "no shared registry"

@@ -530,8 +530,9 @@ def test_reconcile_restores_shared_non_agentic(monkeypatch, tmp_path):
     mh = home / ".pmharness"
     pm.mkdir(parents=True)
     mh.mkdir(parents=True)
+    # Cover Unix ($HOME) and Windows (USERPROFILE) Path.home() roots.
     monkeypatch.setenv("HOME", str(home))
-    # pathlib Path.home() follows HOME on Unix
+    monkeypatch.setenv("USERPROFILE", str(home))
     shared = pm / "models.json"
     dest = mh / "marionette-models.json"
     shared.write_text(json.dumps({
