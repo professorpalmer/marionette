@@ -48,6 +48,7 @@ from .send_loop_actions import execute_turn_actions
 from .send_loop_phases import (
     drain_idle_turn,
     drain_stream_queue,
+    maybe_attach_pilot_session_id,
     promote_trailing_reasoning_to_say,
     meter_pilot_step,
     run_auto_verify,
@@ -955,10 +956,18 @@ class SendLoopMixin:
                             streamed_prose, resp = yield from drain_stream_queue(q)
                             self._streamed_prose = streamed_prose
                         else:
+                            chat_kwargs = {
+                                "tools": tools_schema,
+                                "system": sys_prompt,
+                            }
+                            maybe_attach_pilot_session_id(
+                                chat_kwargs,
+                                self.pilot.chat,
+                                getattr(self, "harness_session_id", None),
+                            )
                             resp = self.pilot.chat(
                                 self._messages_for_provider(),
-                                tools=tools_schema,
-                                system=sys_prompt,
+                                **chat_kwargs,
                             )
                     else:
                         resp = self.pilot.complete(prompt, system=sys_prompt)

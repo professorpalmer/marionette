@@ -102,6 +102,31 @@ def _run_command_artifact_headline(exit_code: int, output: str) -> str:
     return f"Command exited with {exit_code}"
 
 
+def pilot_accepts_session_id(pilot_method: Any) -> bool:
+    """True when the driver method declares session_id or accepts **kwargs."""
+    try:
+        params = inspect.signature(pilot_method).parameters
+    except Exception:
+        return False
+    if "session_id" in params:
+        return True
+    return any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+def maybe_attach_pilot_session_id(
+    kwargs: Dict[str, Any],
+    pilot_method: Any,
+    harness_session_id: Optional[str],
+) -> None:
+    """Attach Marionette chat session id for provider prompt-cache affinity."""
+    sid = (harness_session_id or "").strip()
+    if not sid or not pilot_accepts_session_id(pilot_method):
+        return
+    kwargs["session_id"] = sid
+
+
 def run_stream(
     session: Any,
     q: Any,
@@ -129,6 +154,11 @@ def run_stream(
             kwargs["on_stream_item_done"] = (
                 lambda payload: q.put(("item_done", payload))
             )
+        maybe_attach_pilot_session_id(
+            kwargs,
+            session.pilot.chat_stream,
+            getattr(session, "harness_session_id", None),
+        )
         # Sanitize immediately before dispatch (same seam as sync chat).
         r = session.pilot.chat_stream(
             session._messages_for_provider(),
