@@ -19,7 +19,7 @@
 //     project location"; that is a dev checkout managing its own source, so we
 //     never clobber it with a PyPI wheel.
 
-const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.21.4";
+const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.21.5";
 const PUPPETMASTER_DIST_NAME = "puppetmaster-ai";
 
 // True when `pip show` / `uv pip show` output describes an editable install
@@ -41,7 +41,7 @@ function installedPuppetmasterVersion(pipShowOutput) {
 // Decide whether the updater should upgrade Puppetmaster, given the environment
 // and the current install's `pip show` text. Returns either
 //   { skip: true, reason }                       -- leave the install untouched
-//   { skip: false, spec: "puppetmaster-ai==1.21.4" }     -- install the pinned PyPI release
+//   { skip: false, spec: "puppetmaster-ai==1.21.5" }     -- install the pinned PyPI release
 function planPuppetmasterUpgrade({ specEnv, pipShowOutput, pinnedSpec } = {}) {
   const spec = String(specEnv || "").trim();
   if (spec) {

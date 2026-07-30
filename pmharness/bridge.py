@@ -181,7 +181,8 @@ def _analysis_submit_contract(*, via_tool: bool) -> str:
 
 def _analysis_instruction(goal: str, repo_cwd: str, role: str,
                           *, browser: bool = False,
-                          via_tool: bool = True) -> str:
+                          via_tool: bool = True,
+                          acceptance_criteria: Optional[list] = None) -> str:
     """Build a read-only analysis worker's instruction from the shared goal plus
     the role's lens, so a multi-role swarm fans out into distinct investigations
     rather than N identical passes over the same goal.
@@ -194,6 +195,9 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
     ``via_tool=False`` adapts the submit contract for native ProviderWorker
     analysis (final-message findings summary instead of submit_findings).
 
+    ``acceptance_criteria`` is an optional explicit checklist. When absent,
+    nothing is inferred from goal prose.
+
     ``repo_cwd`` is resolved through ``resolve_effective_repo`` at this last mile
     so a Marionette Home parent (non-git) never appears in the brief when a
     single git child checkout exists.
@@ -203,6 +207,13 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
     repo_cwd = resolve_effective_repo(repo_cwd or "")
     lens = ROLE_LENSES.get(role, "")
     lens_line = f"\n\n{lens}" if lens else ""
+    criteria_block = ""
+    try:
+        from harness.environment_fingerprint import format_acceptance_criteria_block
+        criteria_block = format_acceptance_criteria_block(acceptance_criteria or [])
+    except Exception:
+        criteria_block = ""
+    criteria_line = f"\n\n{criteria_block}" if criteria_block else ""
     git_brief = maybe_git_upstream_brief(repo_cwd)
     git_block = f"\n\n{git_brief}" if git_brief else ""
     worktree_notice = (
@@ -222,7 +233,7 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
             "before you run out of turns."
         )
         return (
-            f"{goal}{lens_line}\n\nYou have a real headless browser. Use the "
+            f"{goal}{lens_line}{criteria_line}\n\nYou have a real headless browser. Use the "
             f"browser tools to complete this: browser_navigate(url) to open a "
             f"page, then browser_snapshot() to list interactable elements with "
             f"@e-style refs, browser_get_text() for the readable page text, and "
@@ -234,7 +245,7 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
             f"{submit}{worktree_notice}\n\n{_STOP_CONDITIONS}"
         )
     return (
-        f"{goal}{lens_line}\n\nAnalyze the REAL codebase at {repo_cwd}. "
+        f"{goal}{lens_line}{criteria_line}\n\nAnalyze the REAL codebase at {repo_cwd}. "
         f"Emit evidenced findings/risks/decisions as artifacts. This is "
         f"a READ-ONLY analysis: do not edit, create, or delete any files."
         f"{git_block}\n\n"
@@ -1170,7 +1181,11 @@ def execute_intent(
                 specs.append(WorkerSpec(
                     role=r,
                     instruction=_analysis_instruction(
-                        intent.goal, repo_cwd, r, browser=_browser),
+                        intent.goal, repo_cwd, r, browser=_browser,
+                        acceptance_criteria=getattr(
+                            intent, "acceptance_criteria", None
+                        ),
+                    ),
                     adapter="agentic",
                     payload=stamp_task_payload(
                         base_payload, session_id=session_id or "", cwd=repo_cwd
@@ -1190,7 +1205,12 @@ def execute_intent(
             for r in roles:
                 specs.append(WorkerSpec(
                     role=r,
-                    instruction=_analysis_instruction(intent.goal, repo_cwd, r),
+                    instruction=_analysis_instruction(
+                        intent.goal, repo_cwd, r,
+                        acceptance_criteria=getattr(
+                            intent, "acceptance_criteria", None
+                        ),
+                    ),
                     adapter="openai",
                     payload=stamp_task_payload({
                         "read_only": True, "no_edit": True, "dry_run": True,

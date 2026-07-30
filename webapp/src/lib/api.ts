@@ -226,10 +226,14 @@ export type Job = {
   source_job_id?: string;
   /** Compact/truncated source validation fingerprint. */
   validation_fingerprint?: string;
+  /** Compact/truncated volatile environment fingerprint. */
+  environment_fingerprint?: string;
   /** Evidence paths invalidated for a partial reverify. */
   invalidated_paths?: string[];
   /** Explicit gate reason (fingerprint_match, subset_invalidated, ...). */
   reuse_reason?: string;
+  /** Optional explicit acceptance criteria preserved from the dispatch. */
+  acceptance_criteria?: string[];
 };
 export type Artifact = {
   id?: string;
@@ -365,8 +369,10 @@ export type SwarmResultData = {
   reuse_status?: "fresh" | "reused" | "partial" | "invalidated" | string;
   source_job_id?: string;
   validation_fingerprint?: string;
+  environment_fingerprint?: string;
   invalidated_paths?: string[];
   reuse_reason?: string;
+  acceptance_criteria?: string[];
 };
 
 export type SwarmResultEvent = {

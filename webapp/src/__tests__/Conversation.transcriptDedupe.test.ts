@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   dedupeDisplayItems,
+  mergeSwarmResultReuse,
   mergeTranscriptItems,
   shouldPreferLocalTranscript,
   transcriptFingerprint,
@@ -341,6 +342,29 @@ describe("transcriptFingerprint", () => {
     expect(transcriptFingerprint(withFp)).not.toBe(transcriptFingerprint(cleared));
   });
 
+  it("changes when environment_fingerprint or acceptance_criteria alone change", () => {
+    const base: Item = {
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: false,
+      files: [],
+      summary: "ok",
+      error: null,
+      reuse_status: "fresh",
+      reuse_reason: "environment_changed",
+      environment_fingerprint: "env-fp-a",
+      acceptance_criteria: ["tests pass"],
+    };
+    const envOnly: Item[] = [{ ...base, environment_fingerprint: "env-fp-b" }];
+    const envCleared: Item[] = [{ ...base, environment_fingerprint: "" }];
+    const criteriaOnly: Item[] = [{ ...base, acceptance_criteria: ["docs updated"] }];
+    const criteriaCleared: Item[] = [{ ...base, acceptance_criteria: [] }];
+    expect(transcriptFingerprint([base])).not.toBe(transcriptFingerprint(envOnly));
+    expect(transcriptFingerprint([base])).not.toBe(transcriptFingerprint(envCleared));
+    expect(transcriptFingerprint([base])).not.toBe(transcriptFingerprint(criteriaOnly));
+    expect(transcriptFingerprint([base])).not.toBe(transcriptFingerprint(criteriaCleared));
+  });
+
   it("changes on remote swarm_pending running-to-terminal-only transition", () => {
     const running: Item[] = [{
       kind: "swarm_pending",
@@ -415,6 +439,136 @@ describe("transcriptResponseToItems", () => {
       kind: "swarm_result",
       reuse_status: "partial",
       invalidated_paths: ["harness/auth.py", "harness/pilot.py"],
+    });
+  });
+
+  it("hydrates environment_fingerprint and acceptance_criteria onto swarm_result", () => {
+    const items = transcriptResponseToItems({
+      display: [{
+        type: "swarm_result",
+        job_id: "local-1",
+        applied: false,
+        files: [],
+        summary: "full swarm after env drift",
+        error: null,
+        reuse_status: "fresh",
+        reuse_reason: "environment_changed",
+        environment_fingerprint: "env-fp-live",
+        acceptance_criteria: ["  keep env stamp  ", "", "tests pass"],
+      }],
+    });
+    expect(items[0]).toMatchObject({
+      kind: "swarm_result",
+      reuse_status: "fresh",
+      reuse_reason: "environment_changed",
+      environment_fingerprint: "env-fp-live",
+      acceptance_criteria: ["keep env stamp", "tests pass"],
+    });
+  });
+
+  it("hydrate+dedupe: later environment_fingerprint/acceptance_criteria clear prior", () => {
+    const items = transcriptResponseToItems({
+      display: [
+        {
+          type: "swarm_result",
+          job_id: "local-1",
+          applied: true,
+          files: [],
+          summary: "reused",
+          error: null,
+          reuse_status: "reused",
+          source_job_id: "local-src",
+          reuse_reason: "fingerprint_match",
+          environment_fingerprint: "env-old",
+          acceptance_criteria: ["old criterion"],
+          validation_fingerprint: "fp-old",
+        },
+        {
+          type: "swarm_result",
+          job_id: "local-1",
+          applied: false,
+          files: [],
+          summary: "fresh after environment_changed",
+          error: null,
+          reuse_status: "fresh",
+          source_job_id: "",
+          reuse_reason: "environment_changed",
+          environment_fingerprint: "",
+          acceptance_criteria: [],
+          validation_fingerprint: "",
+        },
+      ],
+    });
+    expect(items).toHaveLength(1);
+    const row = items[0] as Extract<Item, { kind: "swarm_result" }>;
+    expect(row).toMatchObject({
+      reuse_status: "fresh",
+      reuse_reason: "environment_changed",
+      environment_fingerprint: "",
+      acceptance_criteria: [],
+      validation_fingerprint: "",
+      source_job_id: "",
+    });
+  });
+
+  it("mergeSwarmResultReuse updates and clears environment_fingerprint/criteria", () => {
+    const prev: Extract<Item, { kind: "swarm_result" }> = {
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: true,
+      files: [],
+      summary: "reused",
+      error: null,
+      reuse_status: "reused",
+      source_job_id: "local-src",
+      reuse_reason: "fingerprint_match",
+      environment_fingerprint: "env-old",
+      acceptance_criteria: ["keep"],
+      validation_fingerprint: "fp-old",
+    };
+    const enriched = mergeSwarmResultReuse(prev, {
+      ...prev,
+      environment_fingerprint: "env-new",
+      acceptance_criteria: ["tests pass", "docs ok"],
+    });
+    expect(enriched.environment_fingerprint).toBe("env-new");
+    expect(enriched.acceptance_criteria).toEqual(["tests pass", "docs ok"]);
+
+    // Omitted fields inherit prior provenance.
+    const thin = mergeSwarmResultReuse(enriched, {
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: true,
+      files: [],
+      summary: "thin patch",
+      error: null,
+    });
+    expect(thin.environment_fingerprint).toBe("env-new");
+    expect(thin.acceptance_criteria).toEqual(["tests pass", "docs ok"]);
+    expect(thin.summary).toBe("thin patch");
+
+    // Explicit clears (including fresh environment_changed) replace prior values.
+    const cleared = mergeSwarmResultReuse(enriched, {
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: false,
+      files: [],
+      summary: "fresh",
+      error: null,
+      reuse_status: "fresh",
+      source_job_id: "",
+      reuse_reason: "environment_changed",
+      environment_fingerprint: "",
+      acceptance_criteria: [],
+      validation_fingerprint: "",
+    });
+    expect(cleared).toMatchObject({
+      reuse_status: "fresh",
+      reuse_reason: "environment_changed",
+      environment_fingerprint: "",
+      acceptance_criteria: [],
+      validation_fingerprint: "",
+      source_job_id: "",
     });
   });
 

@@ -122,7 +122,7 @@ export type Item =
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | { kind: "tool_prep"; name: string }
   | SwarmPendingItem
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
   | { kind: "codegraph_context"; symbols: number; query: string }
@@ -137,7 +137,7 @@ export type GroupedItem =
   | { kind: "msg"; msg: Msg }
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | SwarmPendingItem
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
   | { kind: "codegraph_context"; symbols: number; query: string }
@@ -154,7 +154,7 @@ type ActivityItem =
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
   | { kind: "msg"; msg: Msg };
 
 
@@ -1975,7 +1975,9 @@ function SwarmResultCard({ applied, files, summary, error, objective, reuseStatu
   const obj = objective ? (objective.length > 70 ? objective.slice(0, 70) + "..." : objective) : "swarm";
   const reuseLabel = reuseStatusLabel(reuseStatus);
   const pathSummary = formatInvalidatedPaths(invalidatedPaths);
-  const hasBody = !!(summary || (!applied && error) || (applied && files.length > 0) || sourceJobId || reuseReason || pathSummary);
+  // Full-swarm rejection reasons (e.g. environment_changed) must surface even
+  // when the status is merely "fresh" — never drop the gate reason in the UI.
+  const hasBody = !!(summary || (!applied && error) || (applied && files.length > 0) || sourceJobId || reuseReason || pathSummary || reuseLabel);
 
   return (
     <div className={`rounded-md border w-fit max-w-full my-1 overflow-hidden select-none bg-panel/40 ${applied ? "border-good/30" : "border-risk/30"}`}>
@@ -2012,9 +2014,9 @@ function SwarmResultCard({ applied, files, summary, error, objective, reuseStatu
 
       {open && hasBody && (
         <div className="px-2.5 pb-2 pt-1.5 border-t border-edge/30 flex flex-col gap-1.5">
-          {reuseLabel && (
+          {(reuseLabel || reuseReason) && (
             <div className="text-[10px] text-muted font-mono leading-relaxed break-words">
-              validation {reuseLabel}
+              {reuseLabel ? `validation ${reuseLabel}` : "validation"}
               {sourceJobId ? ` from ${sourceJobId}` : ""}
               {reuseReason ? ` (${reuseReason})` : ""}
             </div>

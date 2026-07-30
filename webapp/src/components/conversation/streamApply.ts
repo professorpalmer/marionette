@@ -1445,7 +1445,14 @@ function swarmResultItemFromPayload(
       resObj?.validation_fingerprint !== undefined && resObj?.validation_fingerprint !== null
         ? String(resObj.validation_fingerprint)
         : undefined,
+    environment_fingerprint:
+      resObj?.environment_fingerprint !== undefined && resObj?.environment_fingerprint !== null
+        ? String(resObj.environment_fingerprint)
+        : undefined,
     invalidated_paths: invalidated,
+    acceptance_criteria: Array.isArray(resObj?.acceptance_criteria)
+      ? resObj.acceptance_criteria.map((c: unknown) => String(c || "").trim()).filter(Boolean)
+      : undefined,
   };
 }
 
@@ -1489,13 +1496,16 @@ export function applySwarmResultToItems(
         && merged.source_job_id === it.source_job_id
         && merged.reuse_reason === it.reuse_reason
         && merged.validation_fingerprint === it.validation_fingerprint
+        && merged.environment_fingerprint === it.environment_fingerprint
         && merged.summary === it.summary
         && merged.applied === it.applied
         && merged.error === it.error
         && JSON.stringify(merged.files || [])
           === JSON.stringify(it.files || [])
         && JSON.stringify(merged.invalidated_paths || [])
-          === JSON.stringify(it.invalidated_paths || []);
+          === JSON.stringify(it.invalidated_paths || [])
+        && JSON.stringify(merged.acceptance_criteria || [])
+          === JSON.stringify(it.acceptance_criteria || []);
       if (same) return it;
       changed = true;
       return merged;

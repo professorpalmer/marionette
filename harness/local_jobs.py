@@ -211,7 +211,10 @@ class LocalJobsMixin:
                           source_job_id: str = "",
                           validation_fingerprint: str = "",
                           invalidated_paths: Optional[list] = None,
-                          reuse_reason: str = "") -> None:
+                          reuse_reason: str = "",
+                          environment_fingerprint: str = "",
+                          environment_fingerprint_schema: Optional[int] = None,
+                          acceptance_criteria: Optional[list] = None) -> None:
         """Flip a live local job to its terminal state so the panel stops showing
         a spinner and surfaces the outcome (files touched + a one-line summary).
 
@@ -424,6 +427,30 @@ class LocalJobsMixin:
                         (reuse_reason or "").strip()
                         or str(job.get("reuse_reason") or "").strip()
                     )
+                    stamp_env = (
+                        (environment_fingerprint or "").strip()
+                        or str(job.get("environment_fingerprint") or "").strip()
+                    )
+                    stamp_env_schema = environment_fingerprint_schema
+                    if stamp_env_schema is None:
+                        try:
+                            raw_schema = job.get("environment_fingerprint_schema")
+                            stamp_env_schema = (
+                                int(raw_schema) if raw_schema is not None else None
+                            )
+                        except (TypeError, ValueError):
+                            stamp_env_schema = None
+                    stamp_criteria = (
+                        list(acceptance_criteria)
+                        if acceptance_criteria is not None
+                        else None
+                    )
+                    if stamp_env:
+                        job["environment_fingerprint"] = stamp_env
+                    if stamp_env_schema is not None:
+                        job["environment_fingerprint_schema"] = int(stamp_env_schema)
+                    if stamp_criteria is not None:
+                        job["acceptance_criteria"] = list(stamp_criteria)
                     try:
                         stamp_validation_on_job(
                             job,
@@ -433,6 +460,8 @@ class LocalJobsMixin:
                             invalidated_paths=stamp_paths,
                             reuse_reason=stamp_reason,
                             validation_fingerprint=stamp_fp,
+                            environment_fingerprint=stamp_env,
+                            acceptance_criteria=stamp_criteria,
                         )
                     except Exception as stamp_exc:
                         # Preserve best-effort finish, but persist
@@ -442,7 +471,10 @@ class LocalJobsMixin:
                             mark_validation_stamp_failed(job, stamp_exc)
                         except Exception:
                             pass
-                elif reuse_status or source_job_id or reuse_reason:
+                elif (
+                    reuse_status or source_job_id or reuse_reason
+                    or environment_fingerprint or acceptance_criteria is not None
+                ):
                     if reuse_status:
                         job["reuse_status"] = reuse_status
                     if source_job_id:
@@ -453,6 +485,19 @@ class LocalJobsMixin:
                         job["invalidated_paths"] = list(invalidated_paths)
                     if reuse_reason:
                         job["reuse_reason"] = reuse_reason
+                    if environment_fingerprint:
+                        job["environment_fingerprint"] = (
+                            environment_fingerprint or ""
+                        ).strip()
+                    if environment_fingerprint_schema is not None:
+                        try:
+                            job["environment_fingerprint_schema"] = int(
+                                environment_fingerprint_schema
+                            )
+                        except (TypeError, ValueError):
+                            pass
+                    if acceptance_criteria is not None:
+                        job["acceptance_criteria"] = list(acceptance_criteria)
             except Exception:
                 pass
             # Nested UI must not spin forever after the parent job settles.

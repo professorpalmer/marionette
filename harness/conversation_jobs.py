@@ -633,8 +633,10 @@ class ConversationJobsMixin:
                     "reuse_status",
                     "source_job_id",
                     "validation_fingerprint",
+                    "environment_fingerprint",
                     "invalidated_paths",
                     "reuse_reason",
+                    "acceptance_criteria",
                 ):
                     if stamped.get(_rk) not in (None, "", [], {}):
                         res_dict[_rk] = stamped[_rk]
@@ -804,8 +806,10 @@ class ConversationJobsMixin:
                         "reuse_status",
                         "source_job_id",
                         "validation_fingerprint",
+                        "environment_fingerprint",
                         "invalidated_paths",
                         "reuse_reason",
+                        "acceptance_criteria",
                     ):
                         value = res_job.get(_rk)
                         if value in (None, "", [], {}):

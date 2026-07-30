@@ -215,6 +215,9 @@ class PilotAction:
     # run_swarm: optional registry id or adapter model name pin (fail-closed).
     # Empty means auto-route. Prompt text alone never pins a model.
     model: str = ""
+    # Optional explicit acceptance criteria for swarm/parallel analysis.
+    # Never inferred from goal prose — only an explicit list/string field.
+    acceptance_criteria: list = field(default_factory=list)
     start_line: Optional[int] = None
     limit: Optional[int] = None
 
@@ -544,6 +547,19 @@ def from_wire(
             or ""
         ).strip()
 
+    acceptance_criteria: list = []
+    if kind in ("run_swarm", "run_parallel", "run_implement"):
+        try:
+            from harness.environment_fingerprint import normalize_acceptance_criteria
+            raw_criteria = (
+                raw.get("acceptance_criteria")
+                if "acceptance_criteria" in raw
+                else arguments.get("acceptance_criteria")
+            )
+            acceptance_criteria = normalize_acceptance_criteria(raw_criteria)
+        except Exception:
+            acceptance_criteria = []
+
     resolved_tool = tool or raw.get("tool") or ""
     resolved_tc_id = tool_call_id or raw.get("tool_call_id") or ""
 
@@ -579,6 +595,7 @@ def from_wire(
         direction=(raw.get("direction") or "").strip(),
         repo=str(repo_arg),
         model=str(model),
+        acceptance_criteria=list(acceptance_criteria),
         start_line=_optional_int(raw.get("start_line")),
         limit=_optional_int(raw.get("limit")),
     ).validate()
@@ -989,6 +1006,16 @@ def build_tools_schema(
                                 "auto-route. Prompt text alone does not pin a model."
                             ),
                         },
+                        "acceptance_criteria": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional explicit acceptance criteria for the swarm. "
+                                "Pass only when the user/task supplies a concrete checklist; "
+                                "do not invent criteria from loose goal prose. Omitted means "
+                                "workers get no checklist."
+                            ),
+                        },
                     },
                     "required": ["goal"]
                 }
@@ -1172,7 +1199,16 @@ def build_tools_schema(
                         },
                         "adapter": {"type": "string", "description": "Optional edit engine (default 'agentic' -- standalone keys-only; 'native' for the richer pilot; 'cursor'/'codex'/'claude-code' for external CLIs when installed)"},
                         "mode": {"type": "string", "enum": ["implement", "analysis", "review"], "description": "Worker execution mode: 'implement' (can edit) or 'analysis'/'review' (read-only)"},
-                        "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one. Must be a git work tree."}
+                        "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run this implementation in (defaults to the open workspace). Use when the task edits a repo other than the current one. Must be a git work tree."},
+                        "acceptance_criteria": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional explicit acceptance criteria shared by analysis/review "
+                                "sub-goals. Pass only when the user/task supplies a concrete "
+                                "checklist; do not invent criteria from loose goal prose."
+                            ),
+                        },
                     },
                     "required": ["goals"]
                 }

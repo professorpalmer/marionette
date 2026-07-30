@@ -188,12 +188,22 @@ Yields the same ConvEvent stream. Generator return value is ``None``
 (continue the action loop) or ``"return"`` (close the turn / exit send).
 """
     from .conversation import ConvEvent
+    _acceptance_criteria = list(getattr(act, 'acceptance_criteria', None) or [])
+    if not _acceptance_criteria and isinstance(getattr(act, 'arguments', None), dict):
+        try:
+            from harness.environment_fingerprint import normalize_acceptance_criteria
+            _acceptance_criteria = normalize_acceptance_criteria(
+                act.arguments.get('acceptance_criteria')
+            )
+        except Exception:
+            _acceptance_criteria = []
     intent = DriverIntent(
         action='run_swarm',
         goal=act.goal,
         roles=act.roles or None,
         rationale='pilot',
         model=(act.model or '').strip() or None,
+        acceptance_criteria=_acceptance_criteria or None,
     )
     _sync_local_id = f'local-swarm-{aid}'
     _swarm_repo = resolve_effective_repo(session.config.repo or '') if (session.config.repo or '').strip() else ''
@@ -218,6 +228,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             role='explore',
             cwd=_swarm_repo,
             force_fresh=_force_fresh,
+            acceptance_criteria=_acceptance_criteria,
         )
     except Exception:
         _reuse_decision = None
@@ -254,6 +265,14 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 source_job_id=_reuse_decision.source_job_id,
                 validation_fingerprint=_reuse_decision.validation_fingerprint,
                 reuse_reason=_reuse_decision.reason,
+                environment_fingerprint=getattr(
+                    _reuse_decision, 'environment_fingerprint', None,
+                ) or '',
+                acceptance_criteria=list(
+                    getattr(_reuse_decision, 'acceptance_criteria', None)
+                    or _acceptance_criteria
+                    or []
+                ),
             )
         except Exception as e:
             # Fail closed: never emit a green reused badge without a durable
@@ -315,6 +334,10 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         )
         return None
     _sync_register_role = 'explore'
+    if _reuse_decision is not None and getattr(
+        _reuse_decision, 'acceptance_criteria', None,
+    ):
+        _acceptance_criteria = list(_reuse_decision.acceptance_criteria or [])
     if _reuse_decision is not None and _reuse_decision.outcome == 'narrow_verify':
         # Verifier-only / narrow analysis — do not re-open explore/pipeline-mapper.
         narrow_suffix = _reuse_decision.narrow_goal_suffix or (
@@ -324,12 +347,33 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             _reuse_decision.narrow_roles or ('conflict-auditor',)
         )
         _sync_register_role = _sync_narrow_roles[0] if _sync_narrow_roles else 'conflict-auditor'
+        _narrow_criteria = list(
+            getattr(_reuse_decision, 'acceptance_criteria', None)
+            or _acceptance_criteria
+            or []
+        )
         intent = DriverIntent(
             action='run_swarm',
             goal=f"{act.goal}\n\n{narrow_suffix}",
             roles=_sync_narrow_roles,
             rationale='pilot-narrow-verify',
             model=(act.model or '').strip() or None,
+            acceptance_criteria=_narrow_criteria or None,
+        )
+    elif (
+        _reuse_decision is not None
+        and _reuse_decision.outcome == 'full_swarm'
+        and _acceptance_criteria
+        and list(intent.acceptance_criteria or []) != list(_acceptance_criteria)
+    ):
+        # Preserve prior/explicit criteria into the fresh full-swarm workers.
+        intent = DriverIntent(
+            action='run_swarm',
+            goal=act.goal,
+            roles=act.roles or None,
+            rationale='pilot',
+            model=(act.model or '').strip() or None,
+            acceptance_criteria=list(_acceptance_criteria) or None,
         )
     try:
         session._register_local_job(
@@ -337,22 +381,54 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             cwd=_swarm_repo, engine='agentic',
         )
         session._session_job_ids.append(_sync_local_id)
-        # Pre-stamp narrow_verify lineage so finish/drain keep fingerprint +
-        # invalidated_paths even if the finish caller omits overrides.
-        if _reuse_decision is not None and _reuse_decision.outcome == 'narrow_verify':
+        # Pre-stamp narrow_verify / full_swarm rejection lineage so finish/drain
+        # keep fingerprint + reuse_reason even if the finish caller omits them.
+        if _reuse_decision is not None and _reuse_decision.outcome in (
+            'narrow_verify', 'full_swarm',
+        ):
             try:
                 with session._local_jobs_lock:
                     _nj = session._local_jobs.get(_sync_local_id)
                     if isinstance(_nj, dict):
-                        _nj['reuse_status'] = 'partial'
-                        _nj['source_job_id'] = _reuse_decision.source_job_id
-                        _nj['validation_fingerprint'] = (
-                            _reuse_decision.validation_fingerprint or ''
-                        )
-                        _nj['invalidated_paths'] = list(
-                            _reuse_decision.invalidated_paths or []
-                        )
+                        if _reuse_decision.outcome == 'narrow_verify':
+                            _nj['reuse_status'] = 'partial'
+                            _nj['source_job_id'] = _reuse_decision.source_job_id
+                            _nj['validation_fingerprint'] = (
+                                _reuse_decision.validation_fingerprint or ''
+                            )
+                            _nj['invalidated_paths'] = list(
+                                getattr(_reuse_decision, 'invalidated_paths', None)
+                                or []
+                            )
+                        else:
+                            _nj['reuse_status'] = 'fresh'
+                            if _reuse_decision.source_job_id:
+                                _nj['source_job_id'] = _reuse_decision.source_job_id
+                            if _reuse_decision.validation_fingerprint:
+                                _nj['validation_fingerprint'] = (
+                                    _reuse_decision.validation_fingerprint
+                                )
                         _nj['reuse_reason'] = _reuse_decision.reason
+                        _env_fp = getattr(
+                            _reuse_decision, 'environment_fingerprint', None,
+                        ) or ''
+                        if _env_fp:
+                            _nj['environment_fingerprint'] = _env_fp
+                        _nj['acceptance_criteria'] = list(
+                            getattr(_reuse_decision, 'acceptance_criteria', None)
+                            or _acceptance_criteria
+                            or []
+                        )
+            except Exception:
+                pass
+        else:
+            try:
+                with session._local_jobs_lock:
+                    _nj = session._local_jobs.get(_sync_local_id)
+                    if isinstance(_nj, dict):
+                        _nj['acceptance_criteria'] = list(
+                            _acceptance_criteria or []
+                        )
             except Exception:
                 pass
     except Exception as e:
@@ -490,20 +566,67 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     _finish_invalidated: list = []
     _finish_reuse_reason = ''
     _finish_fingerprint = ''
+    _finish_env_fingerprint = ''
+    _finish_criteria = list(_acceptance_criteria or [])
     if _reuse_decision is not None and _reuse_decision.outcome == 'narrow_verify':
         _finish_reuse_status = 'partial'
         _finish_source_job = _reuse_decision.source_job_id
         _finish_invalidated = list(_reuse_decision.invalidated_paths or [])
         _finish_reuse_reason = _reuse_decision.reason
         _finish_fingerprint = _reuse_decision.validation_fingerprint or ''
+        _finish_env_fingerprint = getattr(
+            _reuse_decision, 'environment_fingerprint', None,
+        ) or ''
+        _finish_criteria = list(
+            getattr(_reuse_decision, 'acceptance_criteria', None)
+            or _finish_criteria
+            or []
+        )
         _badge['reuse_status'] = 'partial'
         _badge['source_job_id'] = _finish_source_job
         _badge['invalidated_paths'] = _finish_invalidated
         _badge['reuse_reason'] = _finish_reuse_reason
         if _finish_fingerprint:
             _badge['validation_fingerprint'] = _finish_fingerprint
+        if _finish_env_fingerprint:
+            _badge['environment_fingerprint'] = _finish_env_fingerprint
+        if _finish_criteria:
+            _badge['acceptance_criteria'] = list(_finish_criteria)
+    elif _reuse_decision is not None and _reuse_decision.outcome == 'full_swarm':
+        # Preserve the gate rejection reason on the fresh terminal job /
+        # transcript / UI (environment_changed, outside_evidence_unproven, …).
+        _finish_reuse_status = 'fresh'
+        _finish_reuse_reason = _reuse_decision.reason or ''
+        _finish_source_job = _reuse_decision.source_job_id or ''
+        _finish_fingerprint = _reuse_decision.validation_fingerprint or ''
+        _finish_env_fingerprint = getattr(
+            _reuse_decision, 'environment_fingerprint', None,
+        ) or ''
+        _finish_criteria = list(
+            getattr(_reuse_decision, 'acceptance_criteria', None)
+            or _finish_criteria
+            or []
+        )
+        _finish_invalidated = list(
+            getattr(_reuse_decision, 'invalidated_paths', None) or []
+        )
+        _badge['reuse_status'] = 'fresh'
+        if _finish_reuse_reason:
+            _badge['reuse_reason'] = _finish_reuse_reason
+        if _finish_source_job:
+            _badge['source_job_id'] = _finish_source_job
+        if _finish_fingerprint:
+            _badge['validation_fingerprint'] = _finish_fingerprint
+        if _finish_env_fingerprint:
+            _badge['environment_fingerprint'] = _finish_env_fingerprint
+        if _finish_invalidated:
+            _badge['invalidated_paths'] = _finish_invalidated
+        if _finish_criteria:
+            _badge['acceptance_criteria'] = list(_finish_criteria)
     elif _swarm_ok:
         _badge['reuse_status'] = 'fresh'
+        if _finish_criteria:
+            _badge['acceptance_criteria'] = list(_finish_criteria)
     try:
         session._finish_local_job(
             _sync_local_id, ok=_swarm_ok, summary=_badge_summary,
@@ -514,6 +637,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             invalidated_paths=_finish_invalidated,
             reuse_reason=_finish_reuse_reason,
             validation_fingerprint=_finish_fingerprint,
+            environment_fingerprint=_finish_env_fingerprint,
+            acceptance_criteria=list(_finish_criteria),
         )
         if _store_jid != _sync_local_id:
             if _store_jid not in session._session_job_ids:
@@ -531,6 +656,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 invalidated_paths=_finish_invalidated,
                 reuse_reason=_finish_reuse_reason,
                 validation_fingerprint=_finish_fingerprint,
+                environment_fingerprint=_finish_env_fingerprint,
+                acceptance_criteria=list(_finish_criteria),
             )
     except Exception:
         pass
@@ -1038,6 +1165,15 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                     from harness import validation_reuse as _reuse_mod
                 except Exception:
                     _reuse_mod = None
+            _parallel_criteria = list(getattr(act, 'acceptance_criteria', None) or [])
+            if not _parallel_criteria and isinstance(getattr(act, 'arguments', None), dict):
+                try:
+                    from harness.environment_fingerprint import normalize_acceptance_criteria
+                    _parallel_criteria = normalize_acceptance_criteria(
+                        act.arguments.get('acceptance_criteria')
+                    )
+                except Exception:
+                    _parallel_criteria = []
             for sub_goal in goals:
                 if not session._claim_objective(sub_goal):
                     skipped_goals.append(sub_goal)
@@ -1051,6 +1187,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                             objective=sub_goal,
                             role=_mode,
                             cwd=effective_repo,
+                            acceptance_criteria=_parallel_criteria,
                         )
                     except Exception:
                         decision = None
@@ -1090,6 +1227,14 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                 validation_fingerprint=decision.validation_fingerprint,
                                 invalidated_paths=list(decision.invalidated_paths or []),
                                 reuse_reason=decision.reason,
+                                environment_fingerprint=getattr(
+                                    decision, 'environment_fingerprint', None,
+                                ) or '',
+                                acceptance_criteria=list(
+                                    getattr(decision, 'acceptance_criteria', None)
+                                    or _parallel_criteria
+                                    or []
+                                ),
                             )
                             session._session_job_ids.append(job_id)
                             job_ids_collected.append(job_id)
@@ -1176,6 +1321,16 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                                             decision.invalidated_paths or []
                                         )
                                         _nj['reuse_reason'] = decision.reason
+                                        _env_fp = getattr(
+                                            decision, 'environment_fingerprint', None,
+                                        ) or ''
+                                        if _env_fp:
+                                            _nj['environment_fingerprint'] = _env_fp
+                                        _nj['acceptance_criteria'] = list(
+                                            getattr(decision, 'acceptance_criteria', None)
+                                            or _parallel_criteria
+                                            or []
+                                        )
                             except Exception:
                                 pass
                             submitted = session._submit_swarm(
@@ -1200,14 +1355,116 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                         job_ids_collected.append(job_id)
                         session._session_job_ids.append(job_id)
                         continue
+                    if (
+                        decision is not None
+                        and decision.outcome == 'full_swarm'
+                        and decision.reason
+                        and decision.reason != 'first_pass'
+                    ):
+                        # Keep the gate rejection reason on the fresh job for
+                        # transcript/UI (environment_changed, etc.).
+                        short = uuid.uuid4().hex[:8]
+                        job_id = f'local-{short}'
+                        worker_goal = sub_goal
+                        _crit = list(
+                            getattr(decision, 'acceptance_criteria', None)
+                            or _parallel_criteria
+                            or []
+                        )
+                        if _crit:
+                            try:
+                                from harness.environment_fingerprint import (
+                                    format_acceptance_criteria_block,
+                                )
+                                _block = format_acceptance_criteria_block(_crit)
+                                if _block and _block not in worker_goal:
+                                    worker_goal = f"{sub_goal}\n\n{_block}"
+                            except Exception:
+                                worker_goal = sub_goal
+                        try:
+                            session._register_local_job(
+                                job_id, sub_goal, role=_mode,
+                                cwd=effective_repo, engine=engine,
+                                model=session.config.driver or '' if engine == 'native' else '',
+                            )
+                            try:
+                                with session._local_jobs_lock:
+                                    _nj = session._local_jobs.get(job_id)
+                                    if isinstance(_nj, dict):
+                                        _nj['reuse_status'] = 'fresh'
+                                        _nj['reuse_reason'] = decision.reason
+                                        if decision.source_job_id:
+                                            _nj['source_job_id'] = decision.source_job_id
+                                        if decision.validation_fingerprint:
+                                            _nj['validation_fingerprint'] = (
+                                                decision.validation_fingerprint
+                                            )
+                                        _env_fp = getattr(
+                                            decision, 'environment_fingerprint', None,
+                                        ) or ''
+                                        if _env_fp:
+                                            _nj['environment_fingerprint'] = _env_fp
+                                        _inv = getattr(
+                                            decision, 'invalidated_paths', None,
+                                        ) or []
+                                        if _inv:
+                                            _nj['invalidated_paths'] = list(_inv)
+                                        _nj['acceptance_criteria'] = list(_crit)
+                            except Exception:
+                                pass
+                            submitted = session._submit_swarm(
+                                session._run_provider_worker_background,
+                                job_id,
+                                worker_goal,
+                                requested_adapter,
+                                effective_repo,
+                                expects_diff,
+                                admission_group=_parallel_admission,
+                                admission_size=len(goals),
+                            )
+                        except Exception:
+                            session._release_objective(sub_goal)
+                            raise
+                        if not submitted:
+                            session._release_objective(sub_goal)
+                            deferred_goals.append(sub_goal)
+                            if session._last_swarm_submit_reason == "resource_pressure":
+                                break
+                            continue
+                        job_ids_collected.append(job_id)
+                        session._session_job_ids.append(job_id)
+                        continue
                 short = uuid.uuid4().hex[:8]
                 job_id = f'local-{short}'
+                worker_goal = sub_goal
+                if _parallel_criteria and _mode in ('analysis', 'review'):
+                    try:
+                        from harness.environment_fingerprint import (
+                            format_acceptance_criteria_block,
+                        )
+                        _block = format_acceptance_criteria_block(_parallel_criteria)
+                        if _block and _block not in worker_goal:
+                            worker_goal = f"{sub_goal}\n\n{_block}"
+                    except Exception:
+                        worker_goal = sub_goal
                 try:
-                    session._register_local_job(job_id, sub_goal, role=_mode, cwd=effective_repo, engine=engine, model=session.config.driver or '' if engine == 'native' else '')
+                    session._register_local_job(
+                        job_id, sub_goal, role=_mode, cwd=effective_repo,
+                        engine=engine,
+                        model=session.config.driver or '' if engine == 'native' else '',
+                    )
+                    if _parallel_criteria and _mode in ('analysis', 'review'):
+                        try:
+                            with session._local_jobs_lock:
+                                _nj = session._local_jobs.get(job_id)
+                                if isinstance(_nj, dict):
+                                    _nj['acceptance_criteria'] = list(_parallel_criteria)
+                        except Exception:
+                            pass
                     submitted = session._submit_swarm(
                         session._run_provider_worker_background,
                         job_id,
-                        sub_goal,
+                        worker_goal,
                         requested_adapter,
                         effective_repo,
                         expects_diff,

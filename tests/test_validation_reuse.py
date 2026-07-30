@@ -20,6 +20,12 @@ from harness.pilot_guards import (
     record_action_execution,
 )
 from harness.send_loop_dispatch import dispatch_parallel_action, dispatch_swarm_action
+from harness.environment_fingerprint import (
+    ENVIRONMENT_FINGERPRINT_SCHEMA,
+    ENVIRONMENT_FINGERPRINT_VERSION,
+    format_acceptance_criteria_block,
+    normalize_acceptance_criteria,
+)
 from harness.validation_reuse import (
     NARROW_VERIFY_ROLES,
     compact_delta_digest,
@@ -30,6 +36,50 @@ from harness.validation_reuse import (
     pm_validation_helpers_available,
     stamp_validation_on_job,
 )
+
+_TEST_ENV_FINGERPRINT = "test-env-fingerprint"
+
+
+@pytest.fixture(autouse=True)
+def _stable_environment_fingerprint(monkeypatch):
+    """Keep source-reuse tests independent of the live host environment.
+
+    Patches the gate matcher + stamp helper, but leaves
+    ``environment_fingerprint.compute_environment_fingerprint`` real so
+    focused probe tests can exercise PATH/browser/MCP material.
+    """
+    stable_payload = {
+        "fingerprint": _TEST_ENV_FINGERPRINT,
+        "schema": ENVIRONMENT_FINGERPRINT_SCHEMA,
+        "version": ENVIRONMENT_FINGERPRINT_VERSION,
+        "complete": True,
+    }
+
+    def _stable_match(candidate, cwd, current_payload=None):
+        from harness.environment_fingerprint import (
+            job_environment_fingerprint,
+            job_environment_fingerprint_schema,
+        )
+        prior = job_environment_fingerprint(candidate)
+        if not prior:
+            return False, "environment_fingerprint_missing", None
+        schema = job_environment_fingerprint_schema(candidate)
+        if schema is None:
+            return False, "environment_fingerprint_schema_missing", None
+        if int(schema) != int(ENVIRONMENT_FINGERPRINT_SCHEMA):
+            return False, "environment_fingerprint_schema_mismatch", None
+        if prior != _TEST_ENV_FINGERPRINT:
+            return False, "environment_changed", dict(stable_payload)
+        return True, "", dict(stable_payload)
+
+    monkeypatch.setattr(
+        "harness.validation_reuse.match_environment_fingerprint",
+        _stable_match,
+    )
+    monkeypatch.setattr(
+        "harness.validation_reuse.compute_environment_fingerprint",
+        lambda cwd, strict=True: (dict(stable_payload), ""),
+    )
 
 
 def _green_job(
@@ -45,6 +95,8 @@ def _green_job(
     complete: bool = True,
     missing_paths: Optional[List[str]] = None,
     scope: Optional[List[str]] = None,
+    environment_fingerprint: str = _TEST_ENV_FINGERPRINT,
+    acceptance_criteria: Optional[List[str]] = None,
 ):
     evid_scope = list(scope) if scope is not None else ["harness/auth.py"]
     validation = {
@@ -55,8 +107,13 @@ def _green_job(
         "head_sha": "deadbeef",
         "complete": complete,
         "missing_paths": list(missing_paths or []),
+        "environment_fingerprint": environment_fingerprint,
+        "environment_fingerprint_schema": ENVIRONMENT_FINGERPRINT_SCHEMA,
+        "environment_fingerprint_version": ENVIRONMENT_FINGERPRINT_VERSION,
     }
-    return {
+    if acceptance_criteria:
+        validation["acceptance_criteria"] = list(acceptance_criteria)
+    job = {
         "id": job_id,
         "goal": goal,
         "status": status,
@@ -66,6 +123,8 @@ def _green_job(
         "created_at": 1.0,
         "updated_at": 2.0,
         "validation_fingerprint": fingerprint,
+        "environment_fingerprint": environment_fingerprint,
+        "environment_fingerprint_schema": ENVIRONMENT_FINGERPRINT_SCHEMA,
         "reuse_status": "fresh",
         "tokens": 100,
         "est_cost_usd": 0.05,
@@ -89,6 +148,9 @@ def _green_job(
             },
         ],
     }
+    if acceptance_criteria:
+        job["acceptance_criteria"] = list(acceptance_criteria)
+    return job
 
 
 def _session_with_jobs(jobs, cwd="/repo"):
@@ -2227,3 +2289,856 @@ def test_stamp_validation_failure_persists_incomplete(monkeypatch, tmp_path):
         "thin_findings",
         "workspace_mismatch",
     )
+
+
+# ---------------------------------------------------------------------------
+# Volatile environment fingerprint + acceptance criteria (quality-control)
+# ---------------------------------------------------------------------------
+
+
+def test_env_fingerprint_unchanged_allows_reuse(monkeypatch):
+    job = _green_job()
+    session = _session_with_jobs([job])
+
+    def fake_invalidate(cwd, candidate):
+        return [], "", {
+            "fingerprint": job["validation_fingerprint"],
+            "source_digest": "digest1",
+        }
+
+    monkeypatch.setattr(
+        "harness.validation_reuse._invalidate_paths_for_candidate",
+        fake_invalidate,
+    )
+    decision = evaluate_reuse_gate(
+        session, objective=job["goal"], role="explore", cwd="/repo",
+    )
+    assert decision.outcome == "reuse"
+    assert decision.reason == "fingerprint_match"
+    assert decision.environment_fingerprint == _TEST_ENV_FINGERPRINT
+
+
+def test_env_fingerprint_path_executable_drift_full_swarm(monkeypatch):
+    # Prior stamped with a different executable-identity fingerprint.
+    job = _green_job(environment_fingerprint="path-old-executable-fp")
+    session = _session_with_jobs([job])
+    decision = evaluate_reuse_gate(
+        session, objective=job["goal"], role="explore", cwd="/repo",
+    )
+    assert decision.outcome == "full_swarm"
+    assert decision.reason == "environment_changed"
+    assert decision.reuse_status == "fresh"
+
+
+def _empty_executable_identity():
+    return {
+        "present": False,
+        "path": "",
+        "size": None,
+        "content_digest": "",
+    }
+
+
+def _stable_probe_stubs(efp, monkeypatch):
+    monkeypatch.setattr(
+        efp, "_mcp_material",
+        lambda cwd: {"files": [], "configured_server_names": []},
+    )
+    monkeypatch.setattr(
+        efp, "_puppetmaster_material",
+        lambda: {
+            "package_version": "1.21.5",
+            "version_error": "",
+            "validation_helpers": True,
+        },
+    )
+    monkeypatch.setattr(
+        efp, "_browser_material",
+        lambda: {
+            "pm_browser_chrome": "",
+            "resolved": _empty_executable_identity(),
+        },
+    )
+
+
+def test_env_fingerprint_path_tool_identity_material(monkeypatch, tmp_path):
+    """Resolved pyright/tsc path+stat identity changes the env fingerprint."""
+    import harness.environment_fingerprint as efp
+
+    py_a = tmp_path / "pyright-a"
+    py_b = tmp_path / "pyright-b"
+    py_a.write_bytes(b"tool-a")
+    py_b.write_bytes(b"tool-b-longer")
+    _stable_probe_stubs(efp, monkeypatch)
+
+    def _tools(path: str):
+        ident = efp._executable_identity(path)
+        empty = _empty_executable_identity()
+        return {
+            "python_available": True,
+            "typescript_available": False,
+            "executables": {
+                "pyright": ident,
+                "pyright-langserver": empty,
+                "tsc": empty,
+            },
+        }
+
+    monkeypatch.setattr(efp, "_tool_resolution_material", lambda cwd: _tools(str(py_a)))
+    fp_a, reason_a = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason_a == ""
+    assert fp_a and fp_a["fingerprint"]
+
+    monkeypatch.setattr(efp, "_tool_resolution_material", lambda cwd: _tools(str(py_b)))
+    fp_b, reason_b = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason_b == ""
+    assert fp_b["fingerprint"] != fp_a["fingerprint"]
+
+
+def test_env_fingerprint_pm_browser_chrome_drift(monkeypatch, tmp_path):
+    """PM_BROWSER_CHROME identity changes the env fingerprint."""
+    import harness.environment_fingerprint as efp
+
+    chrome_a = tmp_path / "ChromeA.app"
+    chrome_b = tmp_path / "ChromeB.app"
+    chrome_a.write_bytes(b"fake-chrome-a")
+    chrome_b.write_bytes(b"fake-chrome-b")
+
+    monkeypatch.setattr(
+        efp, "_tool_resolution_material",
+        lambda cwd: {
+            "python_available": False,
+            "typescript_available": False,
+            "executables": {
+                name: _empty_executable_identity()
+                for name in ("pyright", "pyright-langserver", "tsc")
+            },
+        },
+    )
+    monkeypatch.setattr(
+        efp, "_mcp_material",
+        lambda cwd: {"files": [], "configured_server_names": []},
+    )
+    monkeypatch.setattr(
+        efp, "_puppetmaster_material",
+        lambda: {
+            "package_version": "1.21.5",
+            "version_error": "",
+            "validation_helpers": True,
+        },
+    )
+
+    def _browser_for(path: str):
+        return {
+            "pm_browser_chrome": efp._identity_path(path),
+            "resolved": efp._executable_identity(path),
+        }
+
+    monkeypatch.setattr(efp, "_browser_material", lambda: _browser_for(str(chrome_a)))
+    fp_a, reason_a = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason_a == ""
+    assert fp_a and fp_a["fingerprint"]
+
+    monkeypatch.setattr(efp, "_browser_material", lambda: _browser_for(str(chrome_b)))
+    fp_b, reason_b = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason_b == ""
+    assert fp_b["fingerprint"] != fp_a["fingerprint"]
+
+
+def test_env_fingerprint_mcp_config_drift_secret_safe(monkeypatch, tmp_path):
+    """MCP config content/identity changes fingerprint without exposing secrets."""
+    import harness.environment_fingerprint as efp
+
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(
+        '{"mcpServers":{"demo":{"command":"npx","args":["-y","x"],'
+        '"env":{"TOKEN":"super-secret-token"}}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(efp, "_mcp_config_paths", lambda cwd: [str(cfg)])
+    monkeypatch.setattr(
+        efp, "_tool_resolution_material",
+        lambda cwd: {
+            "python_available": False,
+            "typescript_available": False,
+            "executables": {
+                name: _empty_executable_identity()
+                for name in ("pyright", "pyright-langserver", "tsc")
+            },
+        },
+    )
+    monkeypatch.setattr(
+        efp, "_browser_material",
+        lambda: {
+            "pm_browser_chrome": "",
+            "resolved": _empty_executable_identity(),
+        },
+    )
+    monkeypatch.setattr(
+        efp, "_puppetmaster_material",
+        lambda: {
+            "package_version": "1.21.5",
+            "version_error": "",
+            "validation_helpers": True,
+        },
+    )
+
+    fp1, reason1 = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason1 == ""
+    assert fp1 and fp1["fingerprint"]
+    # Secret value must never appear in the payload.
+    blob = str(fp1)
+    assert "super-secret-token" not in blob
+
+    cfg.write_text(
+        '{"mcpServers":{"demo":{"command":"npx","args":["-y","y"],'
+        '"env":{"TOKEN":"other-secret"}}}}',
+        encoding="utf-8",
+    )
+    fp2, reason2 = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason2 == ""
+    assert fp2["fingerprint"] != fp1["fingerprint"]
+    assert "other-secret" not in str(fp2)
+
+    # Secret-only rotation must NOT change the fingerprint (identity keys only).
+    cfg.write_text(
+        '{"mcpServers":{"demo":{"command":"npx","args":["-y","y"],'
+        '"env":{"TOKEN":"rotated-again"}}}}',
+        encoding="utf-8",
+    )
+    fp3, reason3 = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason3 == ""
+    assert fp3["fingerprint"] == fp2["fingerprint"]
+
+
+def test_env_fingerprint_pm_version_helper_drift(monkeypatch):
+    job = _green_job(environment_fingerprint="pm-version-old-fp")
+    session = _session_with_jobs([job])
+    decision = evaluate_reuse_gate(
+        session, objective=job["goal"], role="explore", cwd="/repo",
+    )
+    assert decision.outcome == "full_swarm"
+    assert decision.reason == "environment_changed"
+
+
+def test_old_candidate_missing_env_fingerprint_full_swarm(monkeypatch):
+    job = _green_job()
+    job.pop("environment_fingerprint", None)
+    job.pop("environment_fingerprint_schema", None)
+    for art in job["artifacts"]:
+        if isinstance(art, dict) and isinstance(art.get("validation"), dict):
+            art["validation"].pop("environment_fingerprint", None)
+            art["validation"].pop("environment_fingerprint_schema", None)
+    session = _session_with_jobs([job])
+
+    def fake_invalidate(cwd, candidate):
+        return [], "", {
+            "fingerprint": job["validation_fingerprint"],
+            "source_digest": "digest1",
+        }
+
+    monkeypatch.setattr(
+        "harness.validation_reuse._invalidate_paths_for_candidate",
+        fake_invalidate,
+    )
+    decision = evaluate_reuse_gate(
+        session, objective=job["goal"], role="explore", cwd="/repo",
+    )
+    assert decision.outcome == "full_swarm"
+    assert decision.reason in (
+        "environment_fingerprint_missing",
+        "environment_fingerprint_schema_missing",
+    )
+
+
+def test_old_candidate_environment_schema_mismatch_full_swarm():
+    job = _green_job()
+    old_schema = ENVIRONMENT_FINGERPRINT_SCHEMA - 1
+    job["environment_fingerprint_schema"] = old_schema
+    for artifact in job["artifacts"]:
+        validation = artifact.get("validation") if isinstance(artifact, dict) else None
+        if isinstance(validation, dict):
+            validation["environment_fingerprint_schema"] = old_schema
+
+    decision = evaluate_reuse_gate(
+        _session_with_jobs([job]),
+        objective=job["goal"],
+        role="explore",
+        cwd="/repo",
+    )
+
+    assert decision.outcome == "full_swarm"
+    assert decision.reason == "environment_fingerprint_schema_mismatch"
+    assert decision.reuse_status == "fresh"
+
+
+def test_env_probe_failure_fail_closed(monkeypatch):
+    job = _green_job()
+    session = _session_with_jobs([job])
+    monkeypatch.setattr(
+        "harness.validation_reuse.match_environment_fingerprint",
+        lambda *a, **k: (False, "environment_probe_failed:OSError", None),
+    )
+    decision = evaluate_reuse_gate(
+        session, objective=job["goal"], role="explore", cwd="/repo",
+    )
+    assert decision.outcome == "full_swarm"
+    assert "environment_probe_failed" in decision.reason
+
+
+def test_source_subset_narrow_verify_still_works_with_stable_env(monkeypatch):
+    job = _green_job()
+    job["artifacts"][0]["validation"]["scope"] = ["harness/auth.py", "harness/pilot.py"]
+    job["artifacts"][1]["body"] += " Also see harness/pilot.py for gate logic."
+    session = _session_with_jobs([job])
+
+    def fake_invalidate(cwd, candidate):
+        return ["harness/auth.py"], "", {
+            "fingerprint": "newfp",
+            "source_digest": "digest2",
+        }
+
+    monkeypatch.setattr(
+        "harness.validation_reuse._invalidate_paths_for_candidate",
+        fake_invalidate,
+    )
+    decision = evaluate_reuse_gate(
+        session, objective=job["goal"], role="explore", cwd="/repo",
+    )
+    assert decision.outcome == "narrow_verify"
+    assert decision.reason == "subset_invalidated"
+    assert decision.environment_fingerprint == _TEST_ENV_FINGERPRINT
+
+
+def test_full_swarm_reason_persists_on_sync_badge(monkeypatch):
+    job = _green_job(goal="audit peel")
+    session = _session_with_jobs([job], cwd="/repo")
+    act = PilotAction(kind="run_swarm", goal="audit peel", roles=["explore"])
+
+    import harness.send_loop_dispatch as dispatch
+    from harness.validation_reuse import ReuseGateDecision
+
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "harness.validation_reuse.evaluate_reuse_gate",
+        lambda *a, **k: ReuseGateDecision(
+            outcome="full_swarm",
+            reason="environment_changed",
+            source_job_id=job["id"],
+            validation_fingerprint="abc123fingerprint",
+            environment_fingerprint="new-env",
+            reuse_status="fresh",
+            acceptance_criteria=["keep criteria"],
+        ),
+    )
+
+    def fake_stream(_session, intent, q):
+        # Criteria must reach the full-swarm worker intent.
+        assert getattr(intent, "acceptance_criteria", None) == ["keep criteria"]
+        result = SimpleNamespace(
+            job_id="job_env1",
+            adapter="agentic",
+            mode="swarm",
+            artifacts=[{
+                "type": "finding",
+                "headline": "Auth middleware missing CSRF check in harness/auth.py:42",
+                "body": (
+                    "Fresh swarm after environment_changed. harness/auth.py:42 "
+                    + ("detail " * 20)
+                ),
+            }],
+            auth_failure="",
+        )
+        q.put(("done", result))
+
+    monkeypatch.setattr(dispatch, "stream_swarm", fake_stream)
+    events = list(
+        dispatch_swarm_action(
+            session, act, "a-env", True,
+            counters={"swarms": 0, "demo_swarms": 0}, turn_findings=[],
+        )
+    )
+    finish_kwargs = session._finish_local_job.call_args.kwargs
+    assert finish_kwargs.get("reuse_reason") == "environment_changed"
+    assert finish_kwargs.get("reuse_status") == "fresh"
+    result_ev = next(e for e in events if e.kind == "swarm_result")
+    badge = result_ev.data["result"]
+    assert badge.get("reuse_reason") == "environment_changed"
+    assert badge.get("reuse_status") == "fresh"
+    assert badge.get("environment_fingerprint") == "new-env"
+    assert badge.get("acceptance_criteria") == ["keep criteria"]
+
+
+def test_acceptance_criteria_preserved_sync_parallel_reuse(monkeypatch):
+    criteria = ["pyright clean on harness/", "browser tools resolve standalone Chrome"]
+    job = _green_job(acceptance_criteria=criteria)
+    session = _session_with_jobs([job])
+
+    def fake_invalidate(cwd, candidate):
+        return [], "", {
+            "fingerprint": job["validation_fingerprint"],
+            "source_digest": "digest1",
+        }
+
+    monkeypatch.setattr(
+        "harness.validation_reuse._invalidate_paths_for_candidate",
+        fake_invalidate,
+    )
+    decision = evaluate_reuse_gate(
+        session,
+        objective=job["goal"],
+        role="explore",
+        cwd="/repo",
+        acceptance_criteria=criteria,
+    )
+    assert decision.outcome == "reuse"
+    assert decision.acceptance_criteria == criteria
+    assert "Acceptance criteria" in decision.digest_text
+    assert criteria[0] in decision.digest_text
+
+    # Intent / normalize helpers stay explicit-only.
+    assert normalize_acceptance_criteria(None) == []
+    assert normalize_acceptance_criteria("loose prose alone") == ["loose prose alone"]
+    block = format_acceptance_criteria_block(criteria)
+    assert "pyright clean" in block
+
+    from pmharness.intent import validate_intent
+    intent = validate_intent({
+        "action": "run_swarm",
+        "goal": "audit",
+        "acceptance_criteria": criteria,
+    })
+    assert intent.acceptance_criteria == criteria
+
+    # Missing field remains None (backward compatible).
+    intent2 = validate_intent({"action": "run_swarm", "goal": "audit"})
+    assert intent2.acceptance_criteria is None
+
+    # Parallel narrow path appends criteria into the verifier suffix.
+    job2 = _green_job(
+        job_id="local-prior-2",
+        goal="audit peel",
+        acceptance_criteria=criteria,
+        scope=["harness/auth.py", "harness/pilot.py"],
+    )
+    job2["artifacts"][1]["body"] += " Also see harness/pilot.py for gate logic."
+    session2 = _session_with_jobs([job2])
+
+    def fake_invalidate2(cwd, candidate):
+        return ["harness/auth.py"], "", {
+            "fingerprint": "newfp",
+            "source_digest": "digest2",
+        }
+
+    monkeypatch.setattr(
+        "harness.validation_reuse._invalidate_paths_for_candidate",
+        fake_invalidate2,
+    )
+    decision2 = evaluate_reuse_gate(
+        session2,
+        objective=job2["goal"],
+        role="explore",
+        cwd="/repo",
+        acceptance_criteria=criteria,
+    )
+    assert decision2.outcome == "narrow_verify"
+    assert "Acceptance criteria" in decision2.narrow_goal_suffix
+    assert criteria[1] in decision2.narrow_goal_suffix
+
+
+def test_stamp_validation_includes_environment_fingerprint(tmp_path, monkeypatch):
+    job = {
+        "id": "local-stamp",
+        "goal": "audit",
+        "role": "explore",
+        "cwd": str(tmp_path),
+        "status": "completed",
+        "artifacts": [{
+            "id": "a1",
+            "type": "finding",
+            "headline": "Auth middleware missing CSRF check in harness/auth.py:42",
+            "body": "detail " * 40 + " harness/auth.py:42",
+        }],
+    }
+    (tmp_path / "harness").mkdir()
+    (tmp_path / "harness" / "auth.py").write_text("x = 1\n", encoding="utf-8")
+    stamp_validation_on_job(
+        job,
+        cwd=str(tmp_path),
+        reuse_status="fresh",
+        acceptance_criteria=["keep env stamp"],
+    )
+    assert job.get("environment_fingerprint") == _TEST_ENV_FINGERPRINT
+    assert job.get("environment_fingerprint_schema") == ENVIRONMENT_FINGERPRINT_SCHEMA
+    assert job.get("acceptance_criteria") == ["keep env stamp"]
+    block = job["artifacts"][0]["validation"]
+    assert block.get("environment_fingerprint") == _TEST_ENV_FINGERPRINT
+    assert block.get("acceptance_criteria") == ["keep env stamp"]
+
+
+def test_executable_identity_touch_stable_byte_sensitive(tmp_path, monkeypatch):
+    """Live probe: touch alone must not drift; byte replacement must."""
+    import os
+    import time
+    import harness.environment_fingerprint as efp
+
+    tool = tmp_path / "pyright"
+    tool.write_bytes(b"tool-bytes-v1")
+    _stable_probe_stubs(efp, monkeypatch)
+
+    def _tools(path: str):
+        empty = _empty_executable_identity()
+        return {
+            "python_available": True,
+            "typescript_available": False,
+            "executables": {
+                "pyright": efp._executable_identity(path),
+                "pyright-langserver": empty,
+                "tsc": empty,
+            },
+        }
+
+    monkeypatch.setattr(efp, "_tool_resolution_material", lambda cwd: _tools(str(tool)))
+    fp1, reason1 = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason1 == ""
+    assert fp1 and fp1["fingerprint"]
+    ident1 = efp._executable_identity(str(tool))
+    assert ident1["present"] is True
+    assert ident1["content_digest"]
+    assert "mtime_ns" not in ident1
+
+    # Touch-only: bump mtime without changing bytes.
+    later = time.time() + 5
+    os.utime(tool, (later, later))
+    fp2, reason2 = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason2 == ""
+    assert fp2["fingerprint"] == fp1["fingerprint"]
+    assert efp._executable_identity(str(tool))["content_digest"] == ident1["content_digest"]
+
+    # Byte replacement (same size) must change the fingerprint.
+    tool.write_bytes(b"tool-bytes-v2")
+    fp3, reason3 = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason3 == ""
+    assert fp3["fingerprint"] != fp1["fingerprint"]
+
+
+def test_executable_identity_large_file_middle_byte_drift_and_touch_stable(
+    tmp_path, monkeypatch,
+):
+    """Head+middle+tail: mid-file-only edits must drift; touch must not."""
+    import os
+    import time
+    import harness.environment_fingerprint as efp
+
+    sample = int(efp._EXEC_SAMPLE_BYTES)
+    # Four segments so the centered middle window is disjoint from head/tail.
+    size = sample * 4
+    payload = bytearray(b"A" * size)
+    tool = tmp_path / "chrome-like.bin"
+    tool.write_bytes(payload)
+    _stable_probe_stubs(efp, monkeypatch)
+
+    def _tools(path: str):
+        empty = _empty_executable_identity()
+        return {
+            "python_available": True,
+            "typescript_available": False,
+            "executables": {
+                "pyright": efp._executable_identity(path),
+                "pyright-langserver": empty,
+                "tsc": empty,
+            },
+        }
+
+    monkeypatch.setattr(efp, "_tool_resolution_material", lambda cwd: _tools(str(tool)))
+    fp1, reason1 = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason1 == ""
+    assert fp1 and fp1["fingerprint"]
+    assert fp1["schema"] == efp.ENVIRONMENT_FINGERPRINT_SCHEMA
+    assert fp1["version"] == efp.ENVIRONMENT_FINGERPRINT_VERSION
+    ident1 = efp._executable_identity(str(tool))
+    assert ident1["present"] is True
+    assert ident1["size"] == size
+    assert ident1["content_digest"]
+
+    # Touch-only must remain stable on large binaries too.
+    later = time.time() + 5
+    os.utime(tool, (later, later))
+    fp_touch, reason_touch = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason_touch == ""
+    assert fp_touch["fingerprint"] == fp1["fingerprint"]
+    assert efp._executable_identity(str(tool))["content_digest"] == ident1["content_digest"]
+
+    # Flip only the centered middle window (outside head and tail samples).
+    mid_start = (size - sample) // 2
+    assert mid_start >= sample
+    assert mid_start + sample <= size - sample
+    payload[mid_start:mid_start + sample] = b"B" * sample
+    tool.write_bytes(payload)
+    fp_mid, reason_mid = efp.compute_environment_fingerprint(str(tmp_path))
+    assert reason_mid == ""
+    assert fp_mid["fingerprint"] != fp1["fingerprint"]
+    assert efp._executable_identity(str(tool))["content_digest"] != ident1["content_digest"]
+    assert efp._executable_identity(str(tool))["size"] == size
+
+
+def test_browser_material_refreshes_standalone_chrome_cache(monkeypatch, tmp_path):
+    """Stamping/matching must refresh a stale standalone_chrome_path cache."""
+    import harness.browser as browser
+    import harness.environment_fingerprint as efp
+
+    chrome_a = tmp_path / "ChromeA"
+    chrome_b = tmp_path / "ChromeB"
+    chrome_a.write_bytes(b"chrome-a")
+    chrome_b.write_bytes(b"chrome-b")
+
+    calls = {"n": 0, "refresh": []}
+
+    def fake_probe(*, refresh: bool = False):
+        calls["n"] += 1
+        calls["refresh"].append(bool(refresh))
+        return str(chrome_b if refresh and calls["n"] > 1 else chrome_a)
+
+    monkeypatch.setattr(browser, "_probe_standalone_chrome", fake_probe)
+    monkeypatch.delenv("PM_BROWSER_CHROME", raising=False)
+
+    material = efp._browser_material()
+    assert material["resolved"]["present"] is True
+    assert calls["n"] >= 1
+    assert calls["refresh"] and all(calls["refresh"])
+    # Second stamp must force refresh=True (another probe).
+    before = calls["n"]
+    material2 = efp._browser_material()
+    assert calls["n"] > before
+    assert material2["resolved"]["path"]
+
+
+def test_mcp_redaction_and_parse_failures_fail_closed(monkeypatch, tmp_path):
+    """Present MCP configs must never collapse to a shared empty digest."""
+    import harness.environment_fingerprint as efp
+
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(efp, "_mcp_config_paths", lambda cwd: [str(cfg)])
+    monkeypatch.setattr(
+        efp, "_tool_resolution_material",
+        lambda cwd: {
+            "python_available": False,
+            "typescript_available": False,
+            "executables": {
+                name: _empty_executable_identity()
+                for name in ("pyright", "pyright-langserver", "tsc")
+            },
+        },
+    )
+    monkeypatch.setattr(
+        efp, "_browser_material",
+        lambda: {"pm_browser_chrome": "", "resolved": _empty_executable_identity()},
+    )
+    monkeypatch.setattr(
+        efp, "_puppetmaster_material",
+        lambda: {
+            "package_version": "1.21.5",
+            "version_error": "",
+            "validation_helpers": True,
+        },
+    )
+
+    fp_bad, reason_bad = efp.compute_environment_fingerprint(str(tmp_path))
+    assert fp_bad is None
+    assert "mcp_config_unreadable" in reason_bad
+
+    # Oversized present config also fails closed.
+    cfg.write_bytes(b"{" + b"x" * (efp._MCP_CONFIG_MAX_BYTES + 10))
+    fp_big, reason_big = efp.compute_environment_fingerprint(str(tmp_path))
+    assert fp_big is None
+    assert "mcp_config_too_large" in reason_big
+
+    # Redaction failure must fail closed — never digest as empty servers.
+    cfg.write_text(
+        '{"mcpServers":{"demo":{"command":"npx","env":{"TOKEN":"secret"}}}}',
+        encoding="utf-8",
+    )
+
+    def boom(value):
+        raise RuntimeError("redact exploded")
+
+    monkeypatch.setattr("harness.mcp_manager.redact_mcp_secrets", boom)
+    fp_redact, reason_redact = efp.compute_environment_fingerprint(str(tmp_path))
+    assert fp_redact is None
+    assert "mcp_redaction_failed" in reason_redact
+
+
+def test_acceptance_criteria_omitted_vs_prior_exact_match(monkeypatch):
+    """Dispatch-omitted criteria must not inherit prior; mismatch fails closed."""
+    criteria = ["pyright clean on harness/"]
+    job = _green_job(acceptance_criteria=criteria)
+    session = _session_with_jobs([job])
+
+    def fake_invalidate(cwd, candidate):
+        return [], "", {
+            "fingerprint": job["validation_fingerprint"],
+            "source_digest": "digest1",
+        }
+
+    monkeypatch.setattr(
+        "harness.validation_reuse._invalidate_paths_for_candidate",
+        fake_invalidate,
+    )
+
+    # Omitted (None / empty) vs prior non-empty → acceptance_criteria_changed.
+    decision_omit = evaluate_reuse_gate(
+        session, objective=job["goal"], role="explore", cwd="/repo",
+    )
+    assert decision_omit.outcome == "full_swarm"
+    assert decision_omit.reason == "acceptance_criteria_changed"
+    assert decision_omit.acceptance_criteria == []
+
+    decision_empty = evaluate_reuse_gate(
+        session,
+        objective=job["goal"],
+        role="explore",
+        cwd="/repo",
+        acceptance_criteria=[],
+    )
+    assert decision_empty.outcome == "full_swarm"
+    assert decision_empty.reason == "acceptance_criteria_changed"
+
+    # Exact match remains reusable.
+    decision_match = evaluate_reuse_gate(
+        session,
+        objective=job["goal"],
+        role="explore",
+        cwd="/repo",
+        acceptance_criteria=criteria,
+    )
+    assert decision_match.outcome == "reuse"
+    assert decision_match.acceptance_criteria == criteria
+
+    # Empty+empty remains reusable.
+    job_empty = _green_job(job_id="local-empty-crit")
+    session_empty = _session_with_jobs([job_empty])
+    monkeypatch.setattr(
+        "harness.validation_reuse._invalidate_paths_for_candidate",
+        lambda cwd, candidate: ([], "", {
+            "fingerprint": job_empty["validation_fingerprint"],
+            "source_digest": "digest1",
+        }),
+    )
+    decision_both_empty = evaluate_reuse_gate(
+        session_empty,
+        objective=job_empty["goal"],
+        role="explore",
+        cwd="/repo",
+        acceptance_criteria=[],
+    )
+    assert decision_both_empty.outcome == "reuse"
+    assert decision_both_empty.acceptance_criteria == []
+
+
+def test_finish_local_job_round_trips_env_and_criteria(tmp_path, monkeypatch):
+    """Sync/parallel reuse finish must persist env fingerprint + criteria."""
+    from harness.local_jobs import LocalJobsMixin
+
+    class _Host(LocalJobsMixin):
+        def __init__(self):
+            self._local_jobs = {}
+            self._local_jobs_lock = threading.RLock()
+            self._local_job_cancels = {}
+            self._local_jobs_path = str(tmp_path / "jobs.json")
+            self.config = SimpleNamespace(repo=str(tmp_path), driver="test-model")
+            self.harness_session_id = "sess-finish"
+
+        def _persist_local_jobs_locked(self):
+            return None
+
+    host = _Host()
+    criteria = ["browser tools resolve standalone Chrome"]
+    job_id = "local-finish-roundtrip"
+    (tmp_path / "harness").mkdir(exist_ok=True)
+    (tmp_path / "harness" / "auth.py").write_text("x = 1\n", encoding="utf-8")
+    host._register_local_job(
+        job_id, "audit peel", role="explore", cwd=str(tmp_path),
+        engine="agentic", skip_routing_preview=True,
+    )
+
+    host._finish_local_job(
+        job_id,
+        ok=True,
+        summary="reused local-prior (fingerprint_match)",
+        status="done",
+        engine="agentic",
+        tokens=0,
+        est_cost_usd=0.0,
+        findings=[{
+            "type": "finding",
+            "headline": "Auth middleware missing CSRF check in harness/auth.py:42",
+            "body": "detail " * 40 + " harness/auth.py:42",
+        }],
+        reuse_status="reused",
+        source_job_id="local-prior",
+        validation_fingerprint="abc123fingerprint",
+        reuse_reason="fingerprint_match",
+        environment_fingerprint=_TEST_ENV_FINGERPRINT,
+        environment_fingerprint_schema=ENVIRONMENT_FINGERPRINT_SCHEMA,
+        acceptance_criteria=criteria,
+    )
+    row = host._local_jobs[job_id]
+    assert row.get("environment_fingerprint") == _TEST_ENV_FINGERPRINT
+    assert row.get("environment_fingerprint_schema") == ENVIRONMENT_FINGERPRINT_SCHEMA
+    assert row.get("acceptance_criteria") == criteria
+    assert row.get("reuse_status") == "reused"
+    # Validation block on terminal artifacts must agree with the job row.
+    arts = [a for a in (row.get("artifacts") or []) if isinstance(a, dict)]
+    stamped = [
+        a for a in arts
+        if isinstance(a.get("validation"), dict)
+        and a["validation"].get("environment_fingerprint")
+    ]
+    assert stamped
+    for art in stamped:
+        assert art["validation"]["environment_fingerprint"] == _TEST_ENV_FINGERPRINT
+        assert art["validation"].get("acceptance_criteria") == criteria
+
+
+def test_dispatch_swarm_reuse_finish_passes_env_and_criteria(monkeypatch):
+    """Sync reuse finish kwargs must carry environment + acceptance criteria."""
+    criteria = ["pyright clean on harness/"]
+    job = _green_job(acceptance_criteria=criteria)
+    session = _session_with_jobs([job], cwd="/repo")
+    act = PilotAction(
+        kind="run_swarm",
+        goal=job["goal"],
+        roles=["explore"],
+        acceptance_criteria=criteria,
+    )
+
+    import harness.send_loop_dispatch as dispatch
+
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
+
+    def fake_invalidate(cwd, candidate):
+        return [], "", {
+            "fingerprint": job["validation_fingerprint"],
+            "source_digest": "digest1",
+        }
+
+    monkeypatch.setattr(
+        "harness.validation_reuse._invalidate_paths_for_candidate",
+        fake_invalidate,
+    )
+    events = list(
+        dispatch_swarm_action(
+            session, act, "a-reuse-env", True,
+            counters={"swarms": 0, "demo_swarms": 0}, turn_findings=[],
+        )
+    )
+    assert session._finish_local_job.called
+    finish_kwargs = session._finish_local_job.call_args.kwargs
+    assert finish_kwargs.get("reuse_status") == "reused"
+    assert finish_kwargs.get("environment_fingerprint") == _TEST_ENV_FINGERPRINT
+    assert finish_kwargs.get("acceptance_criteria") == criteria
+    result_ev = next(e for e in events if e.kind == "swarm_result")
+    badge = result_ev.data["result"]
+    assert badge.get("environment_fingerprint") == _TEST_ENV_FINGERPRINT
+    assert badge.get("acceptance_criteria") == criteria

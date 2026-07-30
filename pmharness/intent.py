@@ -219,6 +219,9 @@ class DriverIntent:
     # Optional worker model pin (registry id or adapter model name). Never
     # inferred from goal prose — only an explicit field. PM-free string only.
     model: Optional[str] = None
+    # Optional explicit acceptance criteria. Never inferred from goal prose;
+    # absent/empty means workers get no invented checklist.
+    acceptance_criteria: Optional[list] = None
     # Free-form, model-supplied; never trusted for control flow, kept for audit.
     raw: Optional[dict] = field(default=None, compare=False, repr=False)
 
@@ -277,6 +280,30 @@ def validate_intent(payload: Any) -> DriverIntent:
     if model_raw is not None:
         model = str(model_raw).strip() or None
 
+    acceptance_criteria = None
+    if "acceptance_criteria" in payload:
+        raw_criteria = payload.get("acceptance_criteria")
+        if raw_criteria is None:
+            acceptance_criteria = None
+        elif isinstance(raw_criteria, str):
+            text = raw_criteria.strip()
+            acceptance_criteria = [text] if text else None
+        elif isinstance(raw_criteria, (list, tuple)):
+            cleaned = []
+            for item in raw_criteria:
+                if not isinstance(item, str):
+                    continue
+                text = item.strip()
+                if text:
+                    cleaned.append(text[:240])
+                if len(cleaned) >= 12:
+                    break
+            acceptance_criteria = cleaned or None
+        else:
+            raise IntentError(
+                "acceptance_criteria must be a list of strings when provided"
+            )
+
     return DriverIntent(
         action=action,
         goal=goal,
@@ -284,6 +311,7 @@ def validate_intent(payload: Any) -> DriverIntent:
         worker_mode=worker_mode,
         rationale=rationale,
         model=model,
+        acceptance_criteria=acceptance_criteria,
         raw=payload if isinstance(payload, dict) else None,
     )
 

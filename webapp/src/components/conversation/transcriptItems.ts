@@ -48,9 +48,15 @@ export function mergeSwarmResultReuse(
     validation_fingerprint: next.validation_fingerprint !== undefined
       ? next.validation_fingerprint
       : prev.validation_fingerprint,
+    environment_fingerprint: next.environment_fingerprint !== undefined
+      ? next.environment_fingerprint
+      : prev.environment_fingerprint,
     invalidated_paths: next.invalidated_paths !== undefined
       ? next.invalidated_paths
       : prev.invalidated_paths,
+    acceptance_criteria: next.acceptance_criteria !== undefined
+      ? next.acceptance_criteria
+      : prev.acceptance_criteria,
   };
 }
 
@@ -373,8 +379,15 @@ export function transcriptResponseToItems(res: {
             m.validation_fingerprint !== undefined && m.validation_fingerprint !== null
               ? String(m.validation_fingerprint)
               : undefined,
+          environment_fingerprint:
+            m.environment_fingerprint !== undefined && m.environment_fingerprint !== null
+              ? String(m.environment_fingerprint)
+              : undefined,
           invalidated_paths: Array.isArray(m.invalidated_paths)
             ? m.invalidated_paths.map((p: unknown) => String(p || "")).filter(Boolean)
+            : undefined,
+          acceptance_criteria: Array.isArray(m.acceptance_criteria)
+            ? m.acceptance_criteria.map((c: unknown) => String(c || "").trim()).filter(Boolean)
             : undefined,
         }];
       } else if (m.type === "command_approval") {
@@ -781,7 +794,10 @@ export function transcriptFingerprint(items: Item[]): string {
       // skipped by busy-poll / reattach fingerprint equality.
       const paths = fingerprintPathList(it.invalidated_paths);
       const files = fingerprintPathList(it.files);
-      fp += `|s:${it.job_id}:${it.applied ? 1 : 0}:${it.reuse_status || ""}:${it.source_job_id || ""}:${it.reuse_reason || ""}:${it.validation_fingerprint || ""}:${it.error || ""}:${files}:${paths}`;
+      const criteria = Array.isArray(it.acceptance_criteria)
+        ? it.acceptance_criteria.join("\u001f")
+        : "";
+      fp += `|s:${it.job_id}:${it.applied ? 1 : 0}:${it.reuse_status || ""}:${it.source_job_id || ""}:${it.reuse_reason || ""}:${it.validation_fingerprint || ""}:${it.environment_fingerprint || ""}:${it.error || ""}:${files}:${paths}:${criteria}`;
     } else if (it.kind === "swarm_pending") {
       // Remote running→terminal (and terminal_job_ids union) must change the
       // fingerprint so prefer-local merge paints the settled pill.

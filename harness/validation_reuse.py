@@ -22,6 +22,16 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+from .environment_fingerprint import (
+    ENVIRONMENT_FINGERPRINT_SCHEMA,
+    ENVIRONMENT_FINGERPRINT_VERSION,
+    compute_environment_fingerprint,
+    format_acceptance_criteria_block,
+    job_environment_fingerprint,
+    job_environment_fingerprint_schema,
+    match_environment_fingerprint,
+    normalize_acceptance_criteria,
+)
 from .local_job_artifacts import (
     ANALYSIS_ARTIFACT_TYPE,
     artifacts_are_complete,
@@ -763,6 +773,7 @@ class ReuseGateDecision:
     reason: str
     source_job_id: str = ""
     validation_fingerprint: str = ""
+    environment_fingerprint: str = ""
     invalidated_paths: list[str] = field(default_factory=list)
     reuse_status: str = ""
     candidate: Optional[dict[str, Any]] = None
@@ -770,19 +781,25 @@ class ReuseGateDecision:
     compact_artifacts: list[dict[str, Any]] = field(default_factory=list)
     narrow_roles: tuple[str, ...] = ()
     narrow_goal_suffix: str = ""
+    acceptance_criteria: list[str] = field(default_factory=list)
 
     def as_provenance(self) -> dict[str, Any]:
+        # Full-swarm rejection reasons (environment_changed, etc.) must remain
+        # visible on the fresh terminal job — never drop to a silent empty
+        # provenance that looks like fingerprint_match.
         out: dict[str, Any] = {
             "reuse_status": self.reuse_status or (
                 "reused" if self.outcome == "reuse"
                 else "partial" if self.outcome == "narrow_verify"
-                else "fresh" if self.outcome == "full_swarm" and self.reason == "first_pass"
+                else "fresh" if self.outcome == "full_swarm"
                 else ""
             ),
             "source_job_id": self.source_job_id,
             "validation_fingerprint": self.validation_fingerprint,
+            "environment_fingerprint": self.environment_fingerprint,
             "invalidated_paths": list(self.invalidated_paths),
             "reuse_reason": self.reason,
+            "acceptance_criteria": list(self.acceptance_criteria),
         }
         return {k: v for k, v in out.items() if v not in ("", None, [])}
 
@@ -839,6 +856,7 @@ def compact_delta_digest(
     invalidated_paths: Optional[Sequence[str]] = None,
     change_summary: str = "",
     reason: str = "",
+    acceptance_criteria: Optional[Sequence[str]] = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Build a bounded pilot digest citing ``artifact://`` ids (no large dumps)."""
     refs: list[dict[str, Any]] = []
@@ -848,6 +866,11 @@ def compact_delta_digest(
     ]
     if reason:
         lines.append(f"reason: {reason}")
+    criteria_block = format_acceptance_criteria_block(
+        normalize_acceptance_criteria(acceptance_criteria)
+    )
+    if criteria_block:
+        lines.append(criteria_block)
     if invalidated_paths:
         shown = ", ".join(list(invalidated_paths)[:12])
         lines.append(f"invalidated_paths: {shown}")
@@ -1015,6 +1038,24 @@ def _invalidate_paths_for_candidate(
     return invalid, "", current
 
 
+def _acceptance_criteria_from_job(job: Mapping[str, Any]) -> list[str]:
+    """Bounded explicit criteria from a prior job (never inferred from goal)."""
+    if not isinstance(job, Mapping):
+        return []
+    direct = normalize_acceptance_criteria(job.get("acceptance_criteria"))
+    if direct:
+        return direct
+    for art in job.get("artifacts") or []:
+        if not isinstance(art, Mapping):
+            continue
+        block = art.get("validation")
+        if isinstance(block, Mapping):
+            found = normalize_acceptance_criteria(block.get("acceptance_criteria"))
+            if found:
+                return found
+    return []
+
+
 def evaluate_reuse_gate(
     session: Any,
     *,
@@ -1022,15 +1063,29 @@ def evaluate_reuse_gate(
     role: Any = "explore",
     cwd: str,
     force_fresh: bool = False,
+    acceptance_criteria: Optional[Sequence[str]] = None,
 ) -> ReuseGateDecision:
     """Deterministic read-before-dispatch gate for analysis swarms / parallel."""
+    criteria = normalize_acceptance_criteria(acceptance_criteria)
     if force_fresh:
-        return ReuseGateDecision(outcome="full_swarm", reason="force_fresh")
+        return ReuseGateDecision(
+            outcome="full_swarm",
+            reason="force_fresh",
+            acceptance_criteria=criteria,
+        )
     obj_key = normalize_objective_key(objective or "")
     if not obj_key:
-        return ReuseGateDecision(outcome="full_swarm", reason="empty_objective")
+        return ReuseGateDecision(
+            outcome="full_swarm",
+            reason="empty_objective",
+            acceptance_criteria=criteria,
+        )
     if analysis_role_class(role) != "analysis":
-        return ReuseGateDecision(outcome="full_swarm", reason="non_analysis_role")
+        return ReuseGateDecision(
+            outcome="full_swarm",
+            reason="non_analysis_role",
+            acceptance_criteria=criteria,
+        )
 
     # Missing/old PM validation helpers must never authorize reuse. Local
     # fingerprint stamping may still run for observability elsewhere.
@@ -1038,11 +1093,16 @@ def evaluate_reuse_gate(
         return ReuseGateDecision(
             outcome="full_swarm",
             reason="pm_validation_helpers_absent",
+            acceptance_criteria=criteria,
         )
 
     workspace_key = normalize_workspace_key(cwd)
     if not workspace_key:
-        return ReuseGateDecision(outcome="full_swarm", reason="workspace_key_missing")
+        return ReuseGateDecision(
+            outcome="full_swarm",
+            reason="workspace_key_missing",
+            acceptance_criteria=criteria,
+        )
 
     candidates = lookup_reusable_candidates(
         session, objective=objective, role=role, cwd=cwd,
@@ -1061,8 +1121,16 @@ def evaluate_reuse_gate(
                 any_prior = True
                 break
         if not any_prior:
-            return ReuseGateDecision(outcome="full_swarm", reason="first_pass")
-        return ReuseGateDecision(outcome="full_swarm", reason="no_reusable_candidate")
+            return ReuseGateDecision(
+                outcome="full_swarm",
+                reason="first_pass",
+                acceptance_criteria=criteria,
+            )
+        return ReuseGateDecision(
+            outcome="full_swarm",
+            reason="no_reusable_candidate",
+            acceptance_criteria=criteria,
+        )
 
     # Ambiguous: multiple distinct fingerprints for the same key.
     fingerprints = {
@@ -1073,11 +1141,59 @@ def evaluate_reuse_gate(
             outcome="full_swarm",
             reason="ambiguous_candidates",
             source_job_id=str(candidates[0].get("id") or ""),
+            acceptance_criteria=criteria,
+        )
+
+    env_fps = {job_environment_fingerprint(c) for c in candidates}
+    if len(env_fps) > 1:
+        return ReuseGateDecision(
+            outcome="full_swarm",
+            reason="ambiguous_environment_fingerprints",
+            source_job_id=str(candidates[0].get("id") or ""),
+            acceptance_criteria=criteria,
         )
 
     candidate = candidates[0]
     source_job_id = str(candidate.get("id") or "")
     prior_fp = job_validation_fingerprint(candidate)
+    # Explicit-only: never inherit prior candidate criteria when dispatch
+    # omitted them. Empty+empty matches; any other mismatch fails closed.
+    prior_criteria = _acceptance_criteria_from_job(candidate)
+    if criteria != prior_criteria:
+        return ReuseGateDecision(
+            outcome="full_swarm",
+            reason="acceptance_criteria_changed",
+            source_job_id=source_job_id,
+            validation_fingerprint=prior_fp,
+            environment_fingerprint=job_environment_fingerprint(candidate),
+            reuse_status="fresh",
+            candidate=dict(candidate),
+            acceptance_criteria=list(criteria),
+        )
+
+    # Volatile environment must match exactly before any source reuse/narrow.
+    # Missing/old stamps and probe failures fail closed — never silent
+    # fingerprint_match after PATH/browser/MCP/PM drift.
+    env_ok, env_reason, env_payload = match_environment_fingerprint(
+        candidate, cwd,
+    )
+    env_fp = ""
+    if isinstance(env_payload, dict):
+        env_fp = str(env_payload.get("fingerprint") or "")
+    if not env_fp:
+        env_fp = job_environment_fingerprint(candidate)
+    if not env_ok:
+        return ReuseGateDecision(
+            outcome="full_swarm",
+            reason=env_reason or "environment_changed",
+            source_job_id=source_job_id,
+            validation_fingerprint=prior_fp,
+            environment_fingerprint=env_fp,
+            reuse_status="fresh",
+            candidate=dict(candidate),
+            acceptance_criteria=criteria,
+        )
+
     invalidated, inv_reason, current = _invalidate_paths_for_candidate(cwd, candidate)
     if inv_reason:
         return ReuseGateDecision(
@@ -1085,7 +1201,10 @@ def evaluate_reuse_gate(
             reason=inv_reason,
             source_job_id=source_job_id,
             validation_fingerprint=prior_fp,
+            environment_fingerprint=env_fp,
+            reuse_status="fresh",
             candidate=dict(candidate),
+            acceptance_criteria=criteria,
         )
     current_fp = str((current or {}).get("fingerprint") or prior_fp)
     if not invalidated:
@@ -1094,16 +1213,19 @@ def evaluate_reuse_gate(
             artifacts=list(candidate.get("artifacts") or []),
             reuse_status="reused",
             reason="fingerprint_match",
+            acceptance_criteria=criteria,
         )
         return ReuseGateDecision(
             outcome="reuse",
             reason="fingerprint_match",
             source_job_id=source_job_id,
             validation_fingerprint=current_fp or prior_fp,
+            environment_fingerprint=env_fp,
             reuse_status="reused",
             candidate=dict(candidate),
             digest_text=digest,
             compact_artifacts=refs,
+            acceptance_criteria=criteria,
         )
 
     # Partial invalidation — verifier-only narrow path.
@@ -1114,6 +1236,9 @@ def evaluate_reuse_gate(
             "do not re-run explore or pipeline-mapper roles. Paths: "
             + ", ".join(invalidated[:20])
         )
+        criteria_block = format_acceptance_criteria_block(criteria)
+        if criteria_block:
+            suffix = f"{suffix}\n\n{criteria_block}"
         digest, refs = compact_delta_digest(
             source_job_id=source_job_id,
             artifacts=list(candidate.get("artifacts") or []),
@@ -1121,12 +1246,14 @@ def evaluate_reuse_gate(
             invalidated_paths=invalidated,
             change_summary=suffix,
             reason="subset_invalidated",
+            acceptance_criteria=criteria,
         )
         return ReuseGateDecision(
             outcome="narrow_verify",
             reason="subset_invalidated",
             source_job_id=source_job_id,
             validation_fingerprint=current_fp or prior_fp,
+            environment_fingerprint=env_fp,
             invalidated_paths=list(invalidated),
             reuse_status="partial",
             candidate=dict(candidate),
@@ -1134,6 +1261,7 @@ def evaluate_reuse_gate(
             compact_artifacts=refs,
             narrow_roles=NARROW_VERIFY_ROLES,
             narrow_goal_suffix=suffix,
+            acceptance_criteria=criteria,
         )
 
     return ReuseGateDecision(
@@ -1141,9 +1269,11 @@ def evaluate_reuse_gate(
         reason="broad_invalidation",
         source_job_id=source_job_id,
         validation_fingerprint=current_fp or prior_fp,
+        environment_fingerprint=env_fp,
         invalidated_paths=list(invalidated),
         reuse_status="invalidated",
         candidate=dict(candidate),
+        acceptance_criteria=criteria,
     )
 
 
@@ -1213,12 +1343,20 @@ def stamp_validation_on_job(
     reuse_reason: str = "",
     fingerprint_payload: Optional[Mapping[str, Any]] = None,
     validation_fingerprint: str = "",
+    environment_fingerprint: str = "",
+    acceptance_criteria: Optional[Sequence[str]] = None,
 ) -> dict[str, Any]:
     """Stamp validation / reuse provenance onto a local job dict (in place)."""
     if not isinstance(job, dict):
         return {}
     scope = evidence_paths_from_job(job)
     payload = dict(fingerprint_payload) if isinstance(fingerprint_payload, Mapping) else None
+    explicit_criteria = acceptance_criteria is not None
+    criteria = normalize_acceptance_criteria(
+        acceptance_criteria
+        if explicit_criteria
+        else job.get("acceptance_criteria")
+    )
     # Reused digests are compact citations — preserve the source fingerprint
     # rather than recomputing from thin headline-only rows.
     override_fp = str(validation_fingerprint or "").strip()
@@ -1247,6 +1385,8 @@ def stamp_validation_on_job(
             job["invalidated_paths"] = list(invalidated_paths)
         if reuse_reason:
             job["reuse_reason"] = reuse_reason
+        if criteria:
+            job["acceptance_criteria"] = list(criteria)
         return job
 
     status = reuse_status if reuse_status in (
@@ -1268,6 +1408,53 @@ def stamp_validation_on_job(
             for a in (job.get("artifacts") or [])
             if isinstance(a, dict) and a.get("id")
         ][:12]
+
+    # Stamp volatile environment fingerprint on complete validations. Preserve
+    # an explicit override (reuse/narrow lineage); otherwise probe current env.
+    # Probe failure fail-closes completeness so the job cannot authorize reuse.
+    override_env = str(
+        environment_fingerprint
+        or job.get("environment_fingerprint")
+        or ""
+    ).strip()
+    env_schema = ENVIRONMENT_FINGERPRINT_SCHEMA
+    env_version = ENVIRONMENT_FINGERPRINT_VERSION
+    if override_env and reuse_status in ("reused", "partial"):
+        env_fp = override_env
+        prior_schema = job_environment_fingerprint_schema(job)
+        if prior_schema is not None:
+            env_schema = int(prior_schema)
+    else:
+        env_payload, env_reason = compute_environment_fingerprint(cwd, strict=True)
+        if isinstance(env_payload, dict) and env_payload.get("fingerprint"):
+            env_fp = str(env_payload.get("fingerprint") or "")
+            try:
+                env_schema = int(env_payload.get("schema") or ENVIRONMENT_FINGERPRINT_SCHEMA)
+            except (TypeError, ValueError):
+                env_schema = ENVIRONMENT_FINGERPRINT_SCHEMA
+            env_version = str(
+                env_payload.get("version") or ENVIRONMENT_FINGERPRINT_VERSION
+            )
+        else:
+            env_fp = ""
+            # Complete source stamp without a usable env fingerprint must not
+            # look reusable — fail closed.
+            if validation.get("complete") is True and status == "fresh":
+                validation["complete"] = False
+                validation["error"] = env_reason or "environment_probe_failed"
+    if env_fp:
+        validation["environment_fingerprint"] = env_fp
+        validation["environment_fingerprint_schema"] = env_schema
+        validation["environment_fingerprint_version"] = env_version
+        job["environment_fingerprint"] = env_fp
+        job["environment_fingerprint_schema"] = env_schema
+        job["environment_fingerprint_version"] = env_version
+    # Persist explicit criteria (including empty) so omitted-vs-prior
+    # matching stays honest on durable reused jobs.
+    if explicit_criteria or criteria:
+        validation["acceptance_criteria"] = list(criteria)
+        job["acceptance_criteria"] = list(criteria)
+
     job["validation_fingerprint"] = str(validation.get("fingerprint") or "")
     job["reuse_status"] = status if status in REUSE_STATUSES else "fresh"
     if source_job_id:
@@ -1305,8 +1492,10 @@ def provenance_fields_from_job(job: Mapping[str, Any]) -> dict[str, Any]:
         "reuse_status",
         "source_job_id",
         "validation_fingerprint",
+        "environment_fingerprint",
         "invalidated_paths",
         "reuse_reason",
+        "acceptance_criteria",
     ):
         value = job.get(key)
         if value in (None, "", [], {}):
@@ -1321,6 +1510,16 @@ def provenance_fields_from_job(job: Mapping[str, Any]) -> dict[str, Any]:
         fp = out["validation_fingerprint"]
         if len(fp) > 16:
             out["validation_fingerprint"] = fp[:16] + "…"
+    if "environment_fingerprint" not in out:
+        env_fp = job_environment_fingerprint(job)
+        if env_fp:
+            out["environment_fingerprint"] = (
+                env_fp[:16] + "…" if len(env_fp) > 16 else env_fp
+            )
+    elif isinstance(out.get("environment_fingerprint"), str):
+        env_fp = out["environment_fingerprint"]
+        if len(env_fp) > 16:
+            out["environment_fingerprint"] = env_fp[:16] + "…"
     return out
 
 
@@ -1338,6 +1537,8 @@ def is_durable_recall_uri(path: str) -> bool:
 
 __all__ = [
     "ANALYSIS_ROLE_CLASS",
+    "ENVIRONMENT_FINGERPRINT_SCHEMA",
+    "ENVIRONMENT_FINGERPRINT_VERSION",
     "GATE_OUTCOMES",
     "NARROW_VERIFY_ROLES",
     "REUSE_STATUSES",
@@ -1346,17 +1547,22 @@ __all__ = [
     "candidate_lookup_key",
     "codegraph_affected_paths",
     "compact_delta_digest",
+    "compute_environment_fingerprint",
     "compute_source_fingerprint",
     "evaluate_reuse_gate",
     "evidence_paths_from_job",
     "extract_evidence_paths",
+    "format_acceptance_criteria_block",
     "git_changed_paths",
     "is_durable_recall_uri",
     "is_reusable_local_job",
     "iter_local_job_candidates",
+    "job_environment_fingerprint",
     "job_validation_fingerprint",
     "lookup_reusable_candidates",
     "mark_validation_stamp_failed",
+    "match_environment_fingerprint",
+    "normalize_acceptance_criteria",
     "normalize_workspace_key",
     "pm_validation_helpers_available",
     "provenance_fields_from_job",

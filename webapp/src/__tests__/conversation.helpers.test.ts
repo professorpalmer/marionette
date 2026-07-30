@@ -1142,6 +1142,95 @@ describe("streamApply module", () => {
     });
   });
 
+  it("swarm_result stream payload keeps environment_fingerprint and acceptance_criteria", () => {
+    let items = appendSwarmPending([], ["local-swarm-a1"], "audit auth");
+    items = applySwarmResultToItems(items, {
+      job_id: "job_envdrift1234",
+      objective: "audit auth",
+      result: {
+        applied: false,
+        files: [],
+        summary: "full swarm",
+        error: null,
+        reuse_status: "fresh",
+        reuse_reason: "environment_changed",
+        environment_fingerprint: "env-fp-stream",
+        acceptance_criteria: ["  keep env stamp  ", "", "tests pass"],
+        validation_fingerprint: "fp-stream",
+      },
+    });
+    expect(items.find((it) => it.kind === "swarm_result")).toMatchObject({
+      kind: "swarm_result",
+      reuse_status: "fresh",
+      reuse_reason: "environment_changed",
+      environment_fingerprint: "env-fp-stream",
+      acceptance_criteria: ["keep env stamp", "tests pass"],
+      validation_fingerprint: "fp-stream",
+    });
+
+    // Corrective SSE: enrich then clear environment provenance in place.
+    const enriched = applySwarmResultToItems(items, {
+      job_id: "job_envdrift1234",
+      objective: "audit auth",
+      result: {
+        applied: true,
+        files: ["a.ts"],
+        summary: "reused",
+        error: null,
+        reuse_status: "reused",
+        source_job_id: "local-src",
+        reuse_reason: "fingerprint_match",
+        environment_fingerprint: "env-fp-enriched",
+        acceptance_criteria: ["docs updated"],
+      },
+    });
+    expect(enriched.find((it) => it.kind === "swarm_result")).toMatchObject({
+      reuse_status: "reused",
+      environment_fingerprint: "env-fp-enriched",
+      acceptance_criteria: ["docs updated"],
+      source_job_id: "local-src",
+    });
+
+    const cleared = applySwarmResultToItems(enriched, {
+      job_id: "job_envdrift1234",
+      objective: "audit auth",
+      result: {
+        applied: false,
+        files: [],
+        summary: "fresh after env drift",
+        error: null,
+        reuse_status: "fresh",
+        source_job_id: "",
+        reuse_reason: "environment_changed",
+        environment_fingerprint: "",
+        acceptance_criteria: [],
+      },
+    });
+    expect(cleared.filter((it) => it.kind === "swarm_result")).toHaveLength(1);
+    expect(cleared.find((it) => it.kind === "swarm_result")).toMatchObject({
+      reuse_status: "fresh",
+      reuse_reason: "environment_changed",
+      environment_fingerprint: "",
+      acceptance_criteria: [],
+      source_job_id: "",
+    });
+
+    // Omitted environment fields inherit; fingerprint must still see prior clear.
+    const omitted = applySwarmResultToItems(cleared, {
+      job_id: "job_envdrift1234",
+      objective: "audit auth",
+      result: {
+        error: "thin findings",
+      },
+    });
+    expect(omitted.find((it) => it.kind === "swarm_result")).toMatchObject({
+      error: "thin findings",
+      reuse_reason: "environment_changed",
+      environment_fingerprint: "",
+      acceptance_criteria: [],
+    });
+  });
+
   it("dedupeDisplayItems collapses hydrate duplicate swarm_pending rows", () => {
     const items: Item[] = [
       {

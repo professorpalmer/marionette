@@ -92,6 +92,25 @@ def test_run_swarm_accepts_model_pin():
     assert i.worker_mode == "subprocess"
 
 
+def test_run_swarm_acceptance_criteria_optional_explicit():
+    bare = validate_intent({"action": "run_swarm", "goal": "audit repo"})
+    assert bare.acceptance_criteria is None
+
+    with_criteria = validate_intent({
+        "action": "run_swarm",
+        "goal": "audit repo",
+        "acceptance_criteria": ["pyright clean", "tsc clean"],
+    })
+    assert with_criteria.acceptance_criteria == ["pyright clean", "tsc clean"]
+
+    with pytest.raises(IntentError):
+        validate_intent({
+            "action": "run_swarm",
+            "goal": "audit repo",
+            "acceptance_criteria": {"not": "a list"},
+        })
+
+
 def test_valid_run_prewalk():
     i = validate_intent({
         "action": "run_prewalk",
