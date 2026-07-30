@@ -13,6 +13,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..mcp_manager import CATALOG
+from .redaction import redact_secret_text
+
+
+def _lifecycle_error(exc: BaseException) -> str:
+    """Mask secrets in MCP start/add/refresh failure text before JSON leaves the API."""
+    return redact_secret_text(str(exc))
 
 
 @dataclass
@@ -60,7 +66,7 @@ def post_mcp_add(body: dict, svc: McpServices) -> tuple[int, dict]:
         tools = svc.mcp.start_server(name)
         return 200, {"ok": True, "tools": len(tools)}
     except Exception as e:
-        return 200, {"ok": False, "error": str(e)}
+        return 200, {"ok": False, "error": _lifecycle_error(e)}
 
 
 def post_mcp_remove(body: dict, svc: McpServices) -> tuple[int, dict]:
@@ -75,7 +81,7 @@ def post_mcp_start(body: dict, svc: McpServices) -> tuple[int, dict]:
         tools = svc.mcp.start_server(body.get("name", ""))
         return 200, {"ok": True, "tools": len(tools)}
     except Exception as e:
-        return 200, {"ok": False, "error": str(e)}
+        return 200, {"ok": False, "error": _lifecycle_error(e)}
 
 
 def post_mcp_stop(body: dict, svc: McpServices) -> tuple[int, dict]:
@@ -90,7 +96,7 @@ def post_mcp_refresh(body: dict, svc: McpServices) -> tuple[int, dict]:
         tools = svc.mcp.refresh_server(body.get("name", ""))
         return 200, {"ok": True, "tools": len(tools)}
     except Exception as e:
-        return 200, {"ok": False, "error": str(e)}
+        return 200, {"ok": False, "error": _lifecycle_error(e)}
 
 
 def post_mcp_call(body: dict, svc: McpServices) -> tuple[int, dict]:
@@ -102,4 +108,5 @@ def post_mcp_call(body: dict, svc: McpServices) -> tuple[int, dict]:
         out = svc.mcp.call(body.get("tool", ""), args or {})
         return 200, {"ok": True, "result": out}
     except Exception as e:
-        return 200, {"ok": False, "error": str(e)}
+        # Same secret-masking as invocation receipts before the error reaches UI.
+        return 200, {"ok": False, "error": redact_secret_text(str(e))}

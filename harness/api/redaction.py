@@ -10,13 +10,16 @@ _SECRET_KV_RE = re.compile(
     r"(?i)((?:api[_-]?key|secret|password|token|bearer|authorization)\s*[=:]\s*)(\S+)"
 )
 # Free-floating provider/API token shapes that show up in exception text.
+# Trailing (?!\w) (not \b) so Basic base64 padding "=" still matches.
 _TOKENISH_RE = re.compile(
     r"(?i)\b("
     r"sk-[A-Za-z0-9_-]{8,}"
     r"|ghp_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
     r"|xox[baprs]-[A-Za-z0-9-]{10,}"
     r"|Bearer\s+[A-Za-z0-9._\-]{12,}"
-    r")\b"
+    r"|Basic\s+[A-Za-z0-9+/=]{8,}"
+    r")(?!\w)"
 )
 
 
@@ -25,6 +28,11 @@ def _redact_string(text: str) -> str:
         return text
     out = _SECRET_KV_RE.sub(rf"\1{_REDACTED}", text)
     return _TOKENISH_RE.sub(_REDACTED, out)
+
+
+def redact_secret_text(text: str) -> str:
+    """Redact obvious secrets from a single string (receipts, error lines)."""
+    return _redact_string(text or "")
 
 
 def redact_api_secrets(value: Any) -> Any:

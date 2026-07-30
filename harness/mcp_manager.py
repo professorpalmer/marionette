@@ -12,6 +12,7 @@ arbitrary user-added entries.
 import json
 import os
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -22,6 +23,42 @@ from .diag import note as _diag
 
 CONFIG_DIR = Path(os.path.expanduser("~/.pmharness"))
 CONFIG_PATH = CONFIG_DIR / "mcp.json"
+
+# Last tool-call receipts (not lifecycle health) live outside the repo under
+# harness state. Never store arguments/results/secrets — only tool, ok, error, at.
+_DEFAULT_INVOCATIONS_PATH = CONFIG_DIR / "state" / "mcp_invocations.json"
+_MAX_INVOCATION_ERROR_CHARS = 200
+
+
+def _invocations_path() -> Path:
+    state_dir = (os.environ.get("HARNESS_STATE_DIR") or "").strip()
+    if state_dir:
+        return Path(state_dir) / "mcp_invocations.json"
+    return _DEFAULT_INVOCATIONS_PATH
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sanitize_lifecycle_error(error: str) -> str:
+    """Secret-redact lifecycle health errors before ``_errors`` / status / manage."""
+    from .api.redaction import redact_secret_text
+
+    return redact_secret_text((error or "").strip().replace("\n", " "))
+
+
+def _sanitize_invocation_error(error: str) -> str:
+    """Bound + secret-redact receipt errors before memory/disk/API/UI.
+
+    Uses the same token/key conventions as ``harness.api.redaction`` so
+    Bearer/basic auth, sk-/ghp_/github_pat shapes, and generic key/token
+    assignments never persist in invocation receipts.
+    """
+    text = _sanitize_lifecycle_error(error)
+    if len(text) > _MAX_INVOCATION_ERROR_CHARS:
+        return text[: _MAX_INVOCATION_ERROR_CHARS - 3].rstrip() + "..."
+    return text
 
 # A small seed catalog of common servers so the UI can offer one-click adds.
 # command/args only; the user supplies env (tokens) when enabling.
@@ -109,6 +146,9 @@ class McpManager:
         # refresh that finishes after a concurrent stop does not resurrect
         # a client the operator just halted.
         self._lifecycle_gen: Dict[str, int] = {}
+        # Per-server last actual tool invocation (separate from lifecycle health).
+        self._last_invocations: Dict[str, dict] = {}
+        self._load_invocations()
 
     # ---- config -------------------------------------------------------------
     def load_config(self) -> Dict[str, dict]:
@@ -150,6 +190,86 @@ class McpManager:
             del data["mcpServers"][name]
             self._write_config(data)
         self.stop_server(name)
+        with self._lock:
+            if name in self._last_invocations:
+                del self._last_invocations[name]
+                self._persist_invocations_unlocked()
+
+    # ---- invocation receipts ------------------------------------------------
+    def _load_invocations(self) -> None:
+        path = _invocations_path()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        servers = data.get("servers") if isinstance(data, dict) else None
+        if not isinstance(servers, dict):
+            return
+        loaded: Dict[str, dict] = {}
+        for name, row in servers.items():
+            if not isinstance(name, str) or not name.strip():
+                continue
+            if not isinstance(row, dict):
+                continue
+            tool = row.get("tool")
+            if not isinstance(tool, str) or not tool.strip():
+                continue
+            ok = bool(row.get("ok"))
+            error = _sanitize_invocation_error(str(row.get("error") or ""))
+            at = row.get("at")
+            if not isinstance(at, str) or not at.strip():
+                continue
+            # Ignore any accidental secret/payload keys; only keep the receipt.
+            loaded[name.strip()] = {
+                "tool": tool.strip(),
+                "ok": ok,
+                "error": error if not ok else "",
+                "at": at.strip(),
+            }
+        with self._lock:
+            self._last_invocations = loaded
+
+    def _persist_invocations_unlocked(self) -> None:
+        """Best-effort write; never raise into the call path."""
+        path = _invocations_path()
+        payload = {"servers": dict(self._last_invocations)}
+        try:
+            os.makedirs(str(path.parent), exist_ok=True)
+            import tempfile
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), prefix="mcp_inv_",
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as f:
+                    json.dump(payload, f, indent=2)
+                os.replace(tmp_path, str(path))
+                if not restrict_to_owner(str(path)):
+                    _diag("secure_files.restrict_failed", msg=str(path))
+            except Exception:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+        except Exception as e:
+            _diag("mcp.invocations_persist", e)
+
+    def _record_invocation(self, server: str, tool: str, *, ok: bool, error: str = "") -> None:
+        server = (server or "").strip()
+        tool = (tool or "").strip()
+        if not server or not tool:
+            return
+        row = {
+            "tool": tool,
+            "ok": bool(ok),
+            "error": "" if ok else _sanitize_invocation_error(error),
+            "at": _utc_now_iso(),
+        }
+        with self._lock:
+            self._last_invocations[server] = row
+            self._persist_invocations_unlocked()
 
     # ---- lifecycle ----------------------------------------------------------
     def start_server(
@@ -203,12 +323,14 @@ class McpManager:
             )
         except McpError as e:
             with self._lock:
-                self._errors[name] = str(e)
+                # Redact before store so status()/GET /api/mcp never echo secrets.
+                self._errors[name] = _sanitize_lifecycle_error(str(e))
             try:
                 client.stop()
             except Exception:
                 pass
             raise
+
         with self._lock:
             required = expect_gen if expect_gen is not None else gen_at_start
             # Concurrent stop/refresh bumped the generation — do not resurrect.
@@ -271,7 +393,7 @@ class McpManager:
                 tools = self.start_server(name)
                 report[name] = len(tools)
             except McpError as e:
-                report[name] = f"error: {e}"
+                report[name] = f"error: {_sanitize_lifecycle_error(str(e))}"
         return report
 
     def manage(
@@ -326,7 +448,7 @@ class McpManager:
                 return {
                     "ok": False,
                     "name": name,
-                    "error": str(e),
+                    "error": _sanitize_lifecycle_error(str(e)),
                     "saved": True,
                     "hint": "Saved to mcp.json but start failed; fix the URL/command and manage_mcp start.",
                 }
@@ -337,7 +459,11 @@ class McpManager:
                 tools = self.start_server(name)
                 return {"ok": True, "name": name, "tools": len(tools)}
             except Exception as e:
-                return {"ok": False, "name": name, "error": str(e)}
+                return {
+                    "ok": False,
+                    "name": name,
+                    "error": _sanitize_lifecycle_error(str(e)),
+                }
         if action == "stop":
             if not name:
                 return {"ok": False, "error": "manage_mcp stop requires name"}
@@ -350,7 +476,11 @@ class McpManager:
                 tools = self.refresh_server(name)
                 return {"ok": True, "name": name, "tools": len(tools), "refreshed": True}
             except Exception as e:
-                return {"ok": False, "name": name, "error": str(e)}
+                return {
+                    "ok": False,
+                    "name": name,
+                    "error": _sanitize_lifecycle_error(str(e)),
+                }
         if action == "remove":
             if not name:
                 return {"ok": False, "error": "manage_mcp remove requires name"}
@@ -378,11 +508,17 @@ class McpManager:
         mismatched the alive-only tools list on GET /api/mcp.
         """
         cfg = self.load_config()
+        with self._lock:
+            clients = dict(self._clients)
+            tools = list(self._tools.values())
+            errors = dict(self._errors)
+            invocations = {k: dict(v) for k, v in self._last_invocations.items()}
         out = []
         for name, server in cfg.items():
-            alive = name in self._clients and self._clients[name].alive
+            client = clients.get(name)
+            alive = client is not None and client.alive
             ntools = (
-                sum(1 for t in self._tools.values() if t.server == name)
+                sum(1 for t in tools if t.server == name)
                 if alive
                 else 0
             )
@@ -391,8 +527,13 @@ class McpManager:
                 "name": name, "command": server.get("command", "") or server.get("url", ""),
                 "transport": "http" if server.get("url") else "stdio",
                 "running": alive, "tools": ntools,
-                "error": self._errors.get(name, ""),
+                "error": errors.get(name, ""),
             }
+            last = invocations.get(name)
+            if last:
+                # Lifecycle health (running/error/tools) stays separate from the
+                # last actual tool call receipt.
+                row["last_invocation"] = last
             if allowed is not None:
                 row["allowed_tools"] = sorted(allowed)
             out.append(row)
@@ -409,22 +550,44 @@ class McpManager:
             )
 
     def call(self, qualified: str, arguments: dict) -> dict:
-        tool = self._tools.get(qualified)
-        if not tool:
-            # allow "server.tool" where server is running but tool not cached
-            if "." in qualified:
-                sv, tn = qualified.split(".", 1)
-                self._reject_if_disallowed(sv, tn)
-                client = self._clients.get(sv)
+        """Invoke a qualified MCP tool and record a per-server last_invocation.
+
+        Receipts capture only ``{tool, ok, error, at}`` — never arguments or
+        results. Lifecycle health (running/error/tool count) is unchanged.
+        """
+        server = ""
+        tool_name = ""
+        cached = self._tools.get(qualified)
+        if cached:
+            server, tool_name = cached.server, cached.name
+        elif isinstance(qualified, str) and "." in qualified:
+            server, tool_name = qualified.split(".", 1)
+
+        try:
+            if cached is not None:
+                self._reject_if_disallowed(cached.server, cached.name)
+                client = self._clients.get(cached.server)
+                if not client or not client.alive:
+                    self.start_server(cached.server)
+                    client = self._clients.get(cached.server)
+                out = client.call_tool(cached.name, arguments)
+                self._record_invocation(cached.server, cached.name, ok=True)
+                return out
+
+            # Allow "server.tool" when the server is running but the tool is not
+            # in the local cache (e.g. freshly advertised tools).
+            if server and tool_name:
+                self._reject_if_disallowed(server, tool_name)
+                client = self._clients.get(server)
                 if client and client.alive:
-                    return client.call_tool(tn, arguments)
+                    out = client.call_tool(tool_name, arguments)
+                    self._record_invocation(server, tool_name, ok=True)
+                    return out
             raise McpError(f"unknown MCP tool '{qualified}'")
-        self._reject_if_disallowed(tool.server, tool.name)
-        client = self._clients.get(tool.server)
-        if not client or not client.alive:
-            self.start_server(tool.server)
-            client = self._clients.get(tool.server)
-        return client.call_tool(tool.name, arguments)
+        except Exception as e:
+            if server and tool_name:
+                self._record_invocation(server, tool_name, ok=False, error=str(e))
+            raise
 
     def discovered_tools(self) -> List[McpTool]:
         """Return tools for currently connected (alive) servers."""

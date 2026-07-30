@@ -75,6 +75,20 @@ export type BedrockStatus = {
   disconnected?: boolean;
 };
 
+/** Optional env probes — missing tools are prerequisites, not product failures. */
+export type EnvironmentReadinessItem = {
+  available: boolean;
+  path?: string | null;
+  remedy?: string;
+};
+
+export type EnvironmentReadiness = {
+  browser: EnvironmentReadinessItem;
+  python_analyzer: EnvironmentReadinessItem;
+  typescript_analyzer: EnvironmentReadinessItem;
+  workspace_root?: string;
+};
+
 export type BedrockCredentials = {
   AWS_BEARER_TOKEN_BEDROCK?: string;
   AWS_ACCESS_KEY_ID?: string;
@@ -1053,6 +1067,13 @@ export const api = {
   mcpStop: (name: string) => postJSON<{ ok: boolean }>("/api/mcp/stop", { name }),
   mcpRefresh: (name: string) =>
     postJSON<{ ok: boolean; tools?: number; error?: string }>("/api/mcp/refresh", { name }),
+  /** Optional browser + analyzer probes (not product failures when missing). */
+  environmentReadiness: (opts?: { refresh?: boolean }) =>
+    getJSON<EnvironmentReadiness>(
+      opts?.refresh
+        ? "/api/environment/readiness?refresh=1"
+        : "/api/environment/readiness",
+    ),
   skills: () => getJSON<any[]>("/api/skills"),
   skillDistill: () => postJSON<{ skill?: any; rules?: any }>("/api/skills/distill", {}),
   wikiIngestPrepared: (pages: any[]) => postJSON<{ ok: boolean; ingested: number }>("/api/wiki/ingest-prepared", { pages }),

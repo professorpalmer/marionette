@@ -99,8 +99,24 @@ def _find_standalone_chrome() -> Optional[str]:
 # or edits PM_BROWSER_CHROME. Cache per configured-executable value with a short
 # TTL: an env change swaps the cache key and is visible immediately, while a
 # fresh install shows up on the next refresh after the TTL.
+# Value shape: cache_key -> (monotonic_ts, resolved_path | None)
 _CHROME_PROBE_TTL_SECONDS = 30.0
 _chrome_probe_cache: dict = {}
+
+
+def _probe_standalone_chrome(*, refresh: bool = False) -> Optional[str]:
+    """Resolve standalone Chrome once; reuse the cached path within the TTL."""
+    if _ENGINE_ERR or _engine is None:
+        return None
+    key = os.environ.get("PM_BROWSER_CHROME", "").strip()
+    now = time.monotonic()
+    cached = _chrome_probe_cache.get(key)
+    if cached is not None and not refresh and (now - cached[0]) < _CHROME_PROBE_TTL_SECONDS:
+        return cached[1]
+    path = _find_standalone_chrome()
+    _chrome_probe_cache.clear()
+    _chrome_probe_cache[key] = (now, path)
+    return path
 
 
 def standalone_browser_available(*, refresh: bool = False) -> bool:
@@ -109,17 +125,18 @@ def standalone_browser_available(*, refresh: bool = False) -> bool:
     Cheap enough to call on every tool-schema refresh. ``refresh=True`` forces a
     re-probe for callers that just changed the browser configuration.
     """
-    if _ENGINE_ERR or _engine is None:
-        return False
-    key = os.environ.get("PM_BROWSER_CHROME", "").strip()
-    now = time.monotonic()
-    cached = _chrome_probe_cache.get(key)
-    if cached is not None and not refresh and (now - cached[0]) < _CHROME_PROBE_TTL_SECONDS:
-        return cached[1]
-    available = _find_standalone_chrome() is not None
-    _chrome_probe_cache.clear()
-    _chrome_probe_cache[key] = (now, available)
-    return available
+    return _probe_standalone_chrome(refresh=refresh) is not None
+
+
+def standalone_chrome_path(*, refresh: bool = False) -> Optional[str]:
+    """Resolved standalone Chrome/Chromium path, or None when unavailable.
+
+    Same Electron-rejection rules and probe cache as
+    ``standalone_browser_available`` — never re-runs ``_find_standalone_chrome``
+    after a cache hit. ``refresh=True`` forces a fresh probe for readiness UI
+    after installs or ``PM_BROWSER_CHROME`` edits.
+    """
+    return _probe_standalone_chrome(refresh=refresh)
 
 
 def _guard() -> Optional[str]:

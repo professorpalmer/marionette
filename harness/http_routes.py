@@ -388,6 +388,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import checkpoints as _ckpt_api
     from .api import codegraph as _cg_api
     from .api import commands as _cmd_api
+    from .api import environment as _env_api
     from .api import files as _files_api
     from .api import git as _git_api
     from .api import hooks as _hooks_api
@@ -561,6 +562,11 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             qs_arg="id"),
         "/api/mcp": get_json(_mcp_api.get_mcp, services=svc.mcp_services),
         "/api/mcp/catalog": get_json(_mcp_api.get_mcp_catalog),
+        "/api/environment/readiness": get_json(
+            _env_api.get_environment_readiness,
+            services=svc.environment_services,
+            qs_arg="refresh",
+        ),
         "/api/commands": get_json(
             _cmd_api.get_commands, services=svc.commands_services, qs_arg="repo"),
         "/api/skills": get_json(

@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "lucide-react";
-import { api, type CodegraphStatus, type WikiGraphData, type WikiStatusData } from "../lib/api";
+import { api, type CodegraphStatus, type EnvironmentReadiness, type WikiGraphData, type WikiStatusData } from "../lib/api";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import McpPane from "./McpPane";
@@ -101,9 +101,32 @@ export default function StatePane({ artifacts }: {
   // MCP defaults open so it fills the State pane dead space under CodeGraph/Wiki.
   const [mcpOpen, setMcpOpen] = useState(() => localStorage.getItem("pmharness.statePane.mcpOpen") !== "0");
   const [mcpSummary, setMcpSummary] = useState({ total: 0, running: 0 });
+  const [envOpen, setEnvOpen] = useState(() => localStorage.getItem("pmharness.statePane.envOpen") === "1");
+  const [envReady, setEnvReady] = useState<EnvironmentReadiness | null>(null);
+  const [envLoading, setEnvLoading] = useState(false);
+  const [envFetchError, setEnvFetchError] = useState("");
   const toggleCg = () => setCgOpen((v) => { localStorage.setItem("pmharness.statePane.cgOpen", v ? "0" : "1"); return !v; });
   const toggleWiki = () => setWikiOpen((v) => { localStorage.setItem("pmharness.statePane.wikiOpen", v ? "0" : "1"); return !v; });
   const toggleMcp = () => setMcpOpen((v) => { localStorage.setItem("pmharness.statePane.mcpOpen", v ? "0" : "1"); return !v; });
+  const toggleEnv = () => setEnvOpen((v) => { localStorage.setItem("pmharness.statePane.envOpen", v ? "0" : "1"); return !v; });
+
+  const refreshEnvReady = useCallback((opts?: { refresh?: boolean }) => {
+    setEnvLoading(true);
+    setEnvFetchError("");
+    // Cached endpoint by default; only the explicit Refresh button passes refresh=true.
+    return api.environmentReadiness(opts?.refresh ? { refresh: true } : undefined)
+      .then((d) => {
+        setEnvReady(d);
+        setEnvFetchError("");
+        return d;
+      })
+      .catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : "Failed to load environment readiness";
+        setEnvFetchError(msg || "Failed to load environment readiness");
+        return null;
+      })
+      .finally(() => setEnvLoading(false));
+  }, []);
 
   useEffect(() => {
     const onProject = (e: Event) => {
@@ -119,6 +142,8 @@ export default function StatePane({ artifacts }: {
       void revalidateCg();
       void revalidateWiki();
       if (wikiOpen && wikiOkForGraph) void revalidateWikiGraph();
+      // Ordinary config/session events reuse the cached readiness payload.
+      void refreshEnvReady();
     };
     window.addEventListener("harness-config-changed", onChange);
     window.addEventListener("harness-new-session", onChange);
@@ -126,7 +151,12 @@ export default function StatePane({ artifacts }: {
       window.removeEventListener("harness-config-changed", onChange);
       window.removeEventListener("harness-new-session", onChange);
     };
-  }, [revalidateCg, revalidateWiki, revalidateWikiGraph, wikiOpen, wikiOkForGraph]);
+  }, [revalidateCg, revalidateWiki, revalidateWikiGraph, wikiOpen, wikiOkForGraph, refreshEnvReady]);
+
+  useEffect(() => {
+    // Mount / project switch: cached probe (no refresh=true).
+    void refreshEnvReady();
+  }, [projectRoot, refreshEnvReady]);
 
   // Open the hosted wiki in the in-app Browser tab so a disconnected user has a
   // one-click path to create (or self-host) their portable LLM wiki. Mirrors the
@@ -420,6 +450,26 @@ export default function StatePane({ artifacts }: {
       : "stopped";
   const mcpMetric = mcpSummary.total > 0
     ? `${mcpSummary.running}/${mcpSummary.total}`
+    : "";
+
+  const envReadyCount = envReady
+    ? [envReady.browser, envReady.python_analyzer, envReady.typescript_analyzer]
+        .filter((x) => x?.available).length
+    : 0;
+  const envDot = !envReady
+    ? "bg-faint"
+    : envReadyCount === 3
+      ? "bg-good"
+      : envReadyCount > 0
+        ? "bg-accent"
+        : "bg-faint";
+  const envWord = !envReady ? "…" : `${envReadyCount}/3 ready`;
+  const envMetric = envReady
+    ? [
+        envReady.browser?.available ? "browser" : null,
+        envReady.python_analyzer?.available ? "py" : null,
+        envReady.typescript_analyzer?.available ? "ts" : null,
+      ].filter(Boolean).join(" · ")
     : "";
 
   const statusDimmed = projectSwitching || cgTransitioning || wikiTransitioning;
@@ -738,6 +788,82 @@ export default function StatePane({ artifacts }: {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+        </div>
+
+        {/* Optional env readiness — missing Chrome/analyzers are prerequisites, not failures. */}
+        <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0">
+          <button
+            onClick={toggleEnv}
+            aria-expanded={envOpen}
+            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors"
+            title={envOpen ? "Hide environment readiness" : "Show environment readiness"}
+          >
+            {envOpen ? <ChevronDown className="w-3 h-3 text-faint shrink-0" /> : <ChevronRight className="w-3 h-3 text-faint shrink-0" />}
+            <span className="uppercase tracking-wider font-semibold text-faint">Environment</span>
+            {envLoading
+              ? <Loader2 className="w-2.5 h-2.5 animate-spin text-accent shrink-0" />
+              : <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${envFetchError ? "bg-risk" : envDot}`} aria-hidden />}
+            <span className="text-muted lowercase">{envFetchError ? "error" : envWord}</span>
+            <span className="flex-1" />
+            {envMetric && <span className="text-faint tabular-nums truncate">{envMetric}</span>}
+          </button>
+          {envOpen && (
+            <div className="px-2.5 pb-2 pt-1 border-t border-edge/30 space-y-2">
+              {envFetchError && (
+                <div
+                  role="alert"
+                  className="text-risk text-[10px] leading-snug bg-risk/10 border border-risk/35 rounded px-2 py-1.5 break-words"
+                >
+                  {envFetchError}
+                </div>
+              )}
+              {!envReady && !envFetchError && (
+                <div role="status" className="text-[9px] text-faint leading-snug">
+                  {envLoading ? "Checking optional tools…" : "No readiness data yet."}
+                </div>
+              )}
+              {envReady && (
+                <>
+                  <div className="text-[9px] text-faint leading-snug">
+                    Optional tools for the active workspace. Missing items are not product failures —
+                    install locally when you need them. Browser tools stay hidden without standalone Chrome.
+                  </div>
+                  {([
+                    ["Browser", envReady.browser, "Standalone Chrome/Chromium (not Electron)"],
+                    ["Python", envReady.python_analyzer, "pyright on PATH or workspace .venv / node_modules"],
+                    ["TypeScript", envReady.typescript_analyzer, "tsc on PATH or workspace node_modules/.bin"],
+                  ] as const).map(([label, item, hint]) => (
+                    <div key={label} className="space-y-0.5">
+                      <div className="flex items-center gap-1.5 text-[10px]">
+                        <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${item?.available ? "bg-good" : "bg-faint"}`} />
+                        <span className="font-medium text-txt">{label}</span>
+                        <span className="text-muted">{item?.available ? "available" : "unavailable"}</span>
+                      </div>
+                      {item?.available && item.path ? (
+                        <div className="text-[9px] text-faint font-mono truncate pl-3" title={item.path}>{item.path}</div>
+                      ) : (
+                        <div className="text-[9px] text-muted leading-snug pl-3">
+                          {item?.remedy || hint}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </>
+              )}
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void refreshEnvReady({ refresh: true })}
+                  disabled={envLoading}
+                  className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center gap-1"
+                  title="Re-probe Chrome and analyzers"
+                >
+                  <RefreshCw className={`w-2.5 h-2.5 ${envLoading ? "animate-spin" : ""}`} />
+                  Refresh
+                </button>
+              </div>
             </div>
           )}
         </div>

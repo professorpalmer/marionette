@@ -1484,6 +1484,14 @@ def _mcp_services():
     return McpServices(mcp=_mcp)
 
 
+def _environment_services():
+    """Build EnvironmentServices from live config (call-time lookup)."""
+    from .api.environment import EnvironmentServices
+    return EnvironmentServices(
+        get_repo=lambda: (_cfg.repo if _cfg else None),
+    )
+
+
 def _skills_services():
     """Build SkillsServices from live server module globals (call-time lookup)."""
     from .api.skills import SkillsServices
@@ -2328,6 +2336,7 @@ def _route_services():
         file_services=_file_services,
         workspace_services=_workspace_services,
         mcp_services=_mcp_services,
+        environment_services=_environment_services,
         skills_services=_skills_services,
         wiki_services=_wiki_services,
         provider_services=_provider_services,

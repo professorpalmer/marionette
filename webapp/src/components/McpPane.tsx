@@ -43,12 +43,29 @@ function saveMcpToolsHeight(height: number): void {
 // MCP server manager: add/start/stop/remove MCP servers and see their tools.
 // Embedded mode lives under State (CodeGraph / Wiki) so the right rail does not
 // need a separate MCP tab.
+type McpLastInvocation = {
+  tool?: string;
+  ok?: boolean;
+  error?: string;
+  at?: string;
+};
+
+function formatLastInvocation(inv: McpLastInvocation | undefined): string {
+  if (!inv || !inv.tool) return "";
+  const when = inv.at ? ` · ${inv.at}` : "";
+  if (inv.ok) return `Last call: ${inv.tool} ok${when}`;
+  const err = (inv.error || "failed").trim();
+  return `Last call: ${inv.tool} failed — ${err}${when}`;
+}
+
 export default function McpPane({ embedded = false }: { embedded?: boolean }) {
   const [servers, setServers] = useState<any[]>([]);
   const [tools, setTools] = useState<any[]>([]);
   const [catalog, setCatalog] = useState<Record<string, any>>({});
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState("");
+  // HTTP 200 {ok:false} from start/refresh/add — distinct from lifecycle error.
+  const [actionError, setActionError] = useState("");
   const [toolsCollapsed, setToolsCollapsed] = useState(loadMcpToolsCollapsed);
   const [toolsHeight, setToolsHeight] = useState(loadMcpToolsHeight);
 
@@ -132,20 +149,59 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
     });
   };
 
-  const start = async (n: string) => { setBusy(n); try { await api.mcpStart(n); await refresh(); } finally { setBusy(""); } };
-  const stop = async (n: string) => { setBusy(n); try { await api.mcpStop(n); await refresh(); } finally { setBusy(""); } };
-  const refreshServer = async (n: string) => {
+  const start = async (n: string) => {
     setBusy(n);
+    setActionError("");
     try {
-      // Force reconnect (stop then start) so Docker/HTTP MCP that came online
-      // after a failed first probe does not require closing the app.
-      await api.mcpRefresh(n);
+      const r = await api.mcpStart(n);
+      // 200 + ok:false is a call-site failure, not a transport error.
+      if (!r.ok) setActionError(r.error || `Failed to start ${n}`);
       await refresh();
+    } catch (e: any) {
+      setActionError(e?.message || `Failed to start ${n}`);
     } finally {
       setBusy("");
     }
   };
-  const remove = async (n: string) => { setBusy(n); try { await api.mcpRemove(n); await refresh(); } finally { setBusy(""); } };
+  const stop = async (n: string) => {
+    setBusy(n);
+    setActionError("");
+    try {
+      await api.mcpStop(n);
+      await refresh();
+    } catch (e: any) {
+      setActionError(e?.message || `Failed to stop ${n}`);
+    } finally {
+      setBusy("");
+    }
+  };
+  const refreshServer = async (n: string) => {
+    setBusy(n);
+    setActionError("");
+    try {
+      // Force reconnect (stop then start) so Docker/HTTP MCP that came online
+      // after a failed first probe does not require closing the app.
+      const r = await api.mcpRefresh(n);
+      if (!r.ok) setActionError(r.error || `Failed to refresh ${n}`);
+      await refresh();
+    } catch (e: any) {
+      setActionError(e?.message || `Failed to refresh ${n}`);
+    } finally {
+      setBusy("");
+    }
+  };
+  const remove = async (n: string) => {
+    setBusy(n);
+    setActionError("");
+    try {
+      await api.mcpRemove(n);
+      await refresh();
+    } catch (e: any) {
+      setActionError(e?.message || `Failed to remove ${n}`);
+    } finally {
+      setBusy("");
+    }
+  };
 
   return (
     <div
@@ -180,6 +236,15 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
         ref={serversRef}
         className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1.5"
       >
+        {actionError && (
+          <div
+            role="alert"
+            className="text-risk text-[10px] leading-snug bg-risk/10 border border-risk/35 rounded px-2 py-1.5 break-words"
+          >
+            Action failed: {actionError}
+          </div>
+        )}
+
         {servers.length === 0 && !adding && (
           <div className={`text-faint text-[11px] text-center px-3 leading-relaxed ${embedded ? "mt-2" : "mt-6"}`}>
             No MCP servers yet. Add github, aws, vercel, a browser controller, or a Docker HTTP URL
@@ -188,7 +253,10 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
           </div>
         )}
 
-        {servers.map((s) => (
+        {servers.map((s) => {
+          const last = s.last_invocation as McpLastInvocation | undefined;
+          const lastLabel = formatLastInvocation(last);
+          return (
           <div key={s.name} className="border border-edge rounded-lg p-2 bg-panel2/40">
             <div className="flex items-center gap-2">
               <span className={`w-1.5 h-1.5 rounded-full ${s.running ? "bg-good" : "bg-faint"}`} />
@@ -215,11 +283,27 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
               <button onClick={() => remove(s.name)} disabled={busy === s.name} title="Remove" className="text-muted hover:text-risk"><Trash2 size={12} /></button>
             </div>
             <div className="text-faint text-[10px] mt-0.5 truncate font-mono">{s.command}</div>
-            {s.error && <div className="text-risk text-[10px] mt-1 break-words">{s.error}</div>}
+            {/* Lifecycle health — separate from last tool invocation. */}
+            {s.error && <div className="text-risk text-[10px] mt-1 break-words">Server: {s.error}</div>}
+            {lastLabel && (
+              <div
+                className={`text-[10px] mt-1 break-words ${last?.ok ? "text-muted" : "text-warn"}`}
+                title="Last actual tool call (not server lifecycle health)"
+              >
+                {lastLabel}
+              </div>
+            )}
           </div>
-        ))}
+          );
+        })}
 
-        {adding && <AddForm catalog={catalog} onDone={() => { setAdding(false); refresh(); }} />}
+        {adding && (
+          <AddForm
+            catalog={catalog}
+            onDone={() => { setAdding(false); setActionError(""); refresh(); }}
+            onActionFailed={(msg) => setActionError(msg)}
+          />
+        )}
       </div>
 
       {tools.length > 0 && (
@@ -290,7 +374,15 @@ export default function McpPane({ embedded = false }: { embedded?: boolean }) {
   );
 }
 
-function AddForm({ catalog, onDone }: { catalog: Record<string, any>; onDone: () => void }) {
+function AddForm({
+  catalog,
+  onDone,
+  onActionFailed,
+}: {
+  catalog: Record<string, any>;
+  onDone: () => void;
+  onActionFailed?: (msg: string) => void;
+}) {
   const [name, setName] = useState("");
   const [command, setCommand] = useState("npx");
   const [argStr, setArgStr] = useState("");
@@ -307,15 +399,24 @@ function AddForm({ catalog, onDone }: { catalog: Record<string, any>; onDone: ()
   };
 
   const submit = async () => {
-    if (url.trim()) {
-      const r = await api.mcpAdd(name.trim(), undefined, undefined, undefined, url.trim());
-      if (r.ok) onDone(); else setErr(r.error || "failed to add");
-    } else {
-      const args = argStr.trim() ? argStr.trim().split(/\s+/) : [];
-      const env: Record<string, string> = {};
-      envStr.split("\n").forEach((l) => { const i = l.indexOf("="); if (i > 0) env[l.slice(0, i).trim()] = l.slice(i + 1).trim(); });
-      const r = await api.mcpAdd(name.trim(), command.trim(), args, env);
-      if (r.ok) onDone(); else setErr(r.error || "failed to add");
+    const fail = (msg: string) => {
+      setErr(msg);
+      onActionFailed?.(msg);
+    };
+    try {
+      if (url.trim()) {
+        const r = await api.mcpAdd(name.trim(), undefined, undefined, undefined, url.trim());
+        // Distinguish HTTP 200 {ok:false} from a successful add.
+        if (r.ok) onDone(); else fail(r.error || "failed to add");
+      } else {
+        const args = argStr.trim() ? argStr.trim().split(/\s+/) : [];
+        const env: Record<string, string> = {};
+        envStr.split("\n").forEach((l) => { const i = l.indexOf("="); if (i > 0) env[l.slice(0, i).trim()] = l.slice(i + 1).trim(); });
+        const r = await api.mcpAdd(name.trim(), command.trim(), args, env);
+        if (r.ok) onDone(); else fail(r.error || "failed to add");
+      }
+    } catch (e: any) {
+      fail(e?.message || "failed to add");
     }
   };
 

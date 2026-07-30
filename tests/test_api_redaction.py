@@ -40,6 +40,21 @@ def test_redact_api_secrets_masks_sk_and_bearer_shapes():
     assert "REDACTED" in out
 
 
+def test_redact_secret_text_masks_github_pat_and_basic_auth():
+    from harness.api.redaction import redact_secret_text
+
+    raw = (
+        "auth Basic dXNlcjpwYXNzd29yZA== and "
+        "github_pat_11AAAAAAAAabcdefghijklmnopqrstuvwxyz and "
+        "ghp_abcdefghijklmnopqrstuv"
+    )
+    out = redact_secret_text(raw)
+    assert "dXNlcjpwYXNzd29yZA==" not in out
+    assert "github_pat_11AAAAAAAAabcdefghijklmnopqrstuvwxyz" not in out
+    assert "ghp_abcdefghijklmnopqrstuv" not in out
+    assert "REDACTED" in out
+
+
 def test_get_skills_redacts_body_in_listing():
     svc = SkillsServices(
         skills=_FakeSkills(),
