@@ -18,6 +18,15 @@ export type CostBreakdownData = {
   /** True when spend is not a full provider receipt. */
   estimated?: boolean;
   tokens_cached?: number;
+  pilot_input_tokens?: number;
+  pilot_cache_read_tokens?: number;
+  pilot_cache_hit_ratio?: number | null;
+  swarm_input_tokens?: number;
+  swarm_cache_read_tokens?: number;
+  swarm_cache_hit_ratio?: number | null;
+  prompt_input_tokens?: number;
+  prompt_cache_read_tokens?: number;
+  prompt_cache_hit_ratio?: number | null;
   cache_savings_usd?: number;
   /** Uncapped catalog/list-price cache value (grows with cached tokens). */
   cache_savings_gross_usd?: number;
@@ -109,6 +118,98 @@ export function spendIsEstimated(data: Pick<CostBreakdownData, "cost_source" | "
   if (data.cost_source === "provider") return false;
   if (data.price_source === "default") return true;
   return true;
+}
+
+/** Honest prompt-cache hit %: cache_read / input only.
+ *
+ * Null when unknown, non-finite, negative, or ``ratio > 1`` (invalid provider
+ * skew — never clamp into 100%). Bare ``0`` stays null so a cold lane does not
+ * paint a green "0% cache" chip; positive ratios only.
+ */
+export function formatCacheHitPercent(ratio: number | null | undefined): string | null {
+  if (typeof ratio !== "number" || !Number.isFinite(ratio) || ratio <= 0 || ratio > 1) {
+    return null;
+  }
+  const pct = ratio * 100;
+  if (pct >= 10) return `${Math.round(pct)}%`;
+  if (pct >= 1) return `${pct.toFixed(1)}%`;
+  return "<1%";
+}
+
+export type CacheHitDisplay = {
+  percent: string | null;
+  label: string;
+  title: string;
+};
+
+function positiveCacheReads(
+  data: Pick<
+    CostBreakdownData,
+    | "prompt_cache_read_tokens"
+    | "pilot_cache_read_tokens"
+    | "swarm_cache_read_tokens"
+    | "tokens_cached"
+  >,
+): number {
+  const candidates = [
+    data.prompt_cache_read_tokens,
+    data.tokens_cached,
+    (typeof data.pilot_cache_read_tokens === "number" ? data.pilot_cache_read_tokens : 0)
+      + (typeof data.swarm_cache_read_tokens === "number" ? data.swarm_cache_read_tokens : 0),
+  ];
+  for (const value of candidates) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  }
+  return 0;
+}
+
+/**
+ * Pick the best labeled cache-hit basis for StatusBar / CostBreakdown.
+ * Prefers combined prompt ratio, then pilot, then swarm. Never invents a
+ * percent from cache÷process-total (output + cold workers). Suppresses a
+ * percent entirely when there are no cache reads (no green 0% chip).
+ */
+export function cacheHitDisplay(
+  data: Pick<
+    CostBreakdownData,
+    | "prompt_cache_hit_ratio"
+    | "pilot_cache_hit_ratio"
+    | "swarm_cache_hit_ratio"
+    | "prompt_cache_read_tokens"
+    | "pilot_cache_read_tokens"
+    | "swarm_cache_read_tokens"
+    | "tokens_cached"
+  >,
+): CacheHitDisplay {
+  const tip =
+    "Prompt-cache hit rate is cache-read ÷ prompt-input tokens for that lane. " +
+    "Cold first turns and independent workers start uncached; this is not " +
+    "cache÷process-total (which includes output). Affinity is only what the provider reported.";
+  const reads = positiveCacheReads(data);
+  if (reads <= 0) {
+    return {
+      percent: null,
+      label: "prompt cache",
+      title: `Cache hit % unavailable — no prompt-cache reads yet. ${tip}`,
+    };
+  }
+  const combined = formatCacheHitPercent(data.prompt_cache_hit_ratio);
+  if (combined != null) {
+    return { percent: combined, label: "prompt cache", title: `Combined pilot+swarm ${tip}` };
+  }
+  const pilot = formatCacheHitPercent(data.pilot_cache_hit_ratio);
+  if (pilot != null) {
+    return { percent: pilot, label: "pilot cache", title: `Pilot lane ${tip}` };
+  }
+  const swarm = formatCacheHitPercent(data.swarm_cache_hit_ratio);
+  if (swarm != null) {
+    return { percent: swarm, label: "swarm cache", title: `Swarm lane ${tip}` };
+  }
+  return {
+    percent: null,
+    label: "prompt cache",
+    title: `Cache hit % unavailable — prompt-input denominator unknown. ${tip}`,
+  };
 }
 
 /** Additive list-price value shown in both footer and receipt.
@@ -359,6 +460,15 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
     typeof data.tokens_cached === "number" && isFinite(data.tokens_cached) && data.tokens_cached > 0
       ? data.tokens_cached
       : 0;
+  const hit = cacheHitDisplay(data);
+  const pilotCached =
+    typeof data.pilot_cache_read_tokens === "number" && isFinite(data.pilot_cache_read_tokens)
+      ? data.pilot_cache_read_tokens
+      : 0;
+  const swarmCached =
+    typeof data.swarm_cache_read_tokens === "number" && isFinite(data.swarm_cache_read_tokens)
+      ? data.swarm_cache_read_tokens
+      : 0;
   const l1Bytes =
     typeof data.memory_layers?.L1?.bytes === "number" && isFinite(data.memory_layers.L1.bytes)
       ? data.memory_layers.L1.bytes
@@ -490,10 +600,22 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         </div>
       ) : null}
 
-      {cached > 0 ? (
-        <div className="flex items-center justify-between mb-1 text-faint">
-          <span>Tokens from cache</span>
-          <span className="tabular-nums">{fmtTokens(cached)}</span>
+      {cached > 0 || hit.percent != null ? (
+        <div
+          className="flex items-center justify-between mb-1 text-faint"
+          title={hit.title}
+        >
+          <span>
+            {hit.percent != null ? `${hit.label} hit` : "Tokens from cache"}
+          </span>
+          <span className="tabular-nums text-right">
+            {hit.percent != null ? hit.percent : ""}
+            {hit.percent != null && cached > 0 ? " · " : ""}
+            {cached > 0 ? `${fmtTokens(cached)} read` : ""}
+            {pilotCached > 0 && swarmCached > 0
+              ? ` (pilot ${fmtTokens(pilotCached)} · swarm ${fmtTokens(swarmCached)})`
+              : ""}
+          </span>
         </div>
       ) : null}
 

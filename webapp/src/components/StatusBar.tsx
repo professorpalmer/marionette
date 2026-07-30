@@ -4,6 +4,7 @@ import { api, type Config, type SessionState, type UsageData } from "../lib/api"
 import { isDesktop } from "../lib/transport";
 import { usePolling } from "../lib/usePolling";
 import CostBreakdown, {
+  cacheHitDisplay,
   delegationSavingsCredited,
   listPriceValueTotal,
   routingSavingsCredited,
@@ -308,6 +309,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
             {(() => {
               const cached = usage.tokens_cached || 0;
               const compacted = usage.tool_output_tokens_saved || 0;
+              const hit = cacheHitDisplay(usage);
               const cacheValue =
                 (typeof usage.cache_savings_gross_usd === "number"
                   ? usage.cache_savings_gross_usd
@@ -320,7 +322,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                   || (usage.swarm_cache_unpriced_tokens || 0) > 0
                 );
               const savedUsd = listPriceValueTotal(usage);
-              if (cached <= 0 && compacted <= 0 && savedUsd <= 0) return null;
+              if (cached <= 0 && compacted <= 0 && savedUsd <= 0 && hit.percent == null) return null;
               const delegationMeasured =
                 usage.delegation_savings_basis === "actual_usage";
               const delegationUsd = delegationSavingsCredited(
@@ -335,6 +337,9 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                 ? delegationUsd
                 : (delegationUsd > 0 ? delegationUsd : routingUsd);
               const detail = [
+                hit.percent != null
+                  ? `${hit.percent} ${hit.label} hit (cache-read÷prompt-input; cold first turns and independent workers start uncached)`
+                  : "",
                 cached > 0
                   ? `${formatTokens(cached)} prompt tokens served from cache${
                       cacheValue > 0 ? ` (~${formatCost(cacheValue)} prompt-cache value)` : ""
@@ -364,12 +369,20 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
               return (
                 <span
                   className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-good/10 border border-good/20 text-good/90"
-                  title={`List-price value from model selection, prompt-cache, and compaction (additive, not overlapping cash refunds): ${detail}`}
+                  title={`${hit.title} List-price value from model selection, prompt-cache, and compaction (additive, not overlapping cash refunds): ${detail}`}
                 >
                   <span className="text-good/60" aria-hidden="true">&#8595;</span>
+                  {hit.percent != null ? (
+                    <span>{hit.percent} {hit.label}</span>
+                  ) : null}
+                  {hit.percent != null && (savedUsd > 0 || cached > 0 || compacted > 0) ? (
+                    <span className="text-good/50" aria-hidden="true">·</span>
+                  ) : null}
                   {savedUsd > 0
                     ? `${swarmCachePartial ? "~" : ""}${formatCost(savedUsd)} saved`
-                    : `${formatTokens(cached + compacted)} saved`}
+                    : (cached > 0 || compacted > 0)
+                      ? `${formatTokens(cached + compacted)} saved`
+                      : null}
                 </span>
               );
             })()}
@@ -405,6 +418,15 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
                       price_source: usage.price_source,
                       estimated: usage.estimated,
                       tokens_cached: usage.tokens_cached,
+                      pilot_input_tokens: usage.pilot_input_tokens,
+                      pilot_cache_read_tokens: usage.pilot_cache_read_tokens,
+                      pilot_cache_hit_ratio: usage.pilot_cache_hit_ratio,
+                      swarm_input_tokens: usage.swarm_input_tokens,
+                      swarm_cache_read_tokens: usage.swarm_cache_read_tokens,
+                      swarm_cache_hit_ratio: usage.swarm_cache_hit_ratio,
+                      prompt_input_tokens: usage.prompt_input_tokens,
+                      prompt_cache_read_tokens: usage.prompt_cache_read_tokens,
+                      prompt_cache_hit_ratio: usage.prompt_cache_hit_ratio,
                       cache_savings_usd: usage.cache_savings_usd,
                       cache_savings_gross_usd: usage.cache_savings_gross_usd,
                       cache_savings_basis: usage.cache_savings_basis,

@@ -49,6 +49,120 @@ def _normalize_price_source(src: Optional[str]) -> str:
     return PRICE_SOURCE_DEFAULT
 
 
+def _cache_hit_ratio(cache_read_tokens: Any, input_tokens: Any) -> Optional[float]:
+    """Prompt-cache hit ratio: ``cache_read / input`` (never cache/total-incl-output).
+
+    Returns ``None`` when the input denominator is unavailable or non-positive so
+    callers omit the field / show unknown — never a misleading 0%. Also returns
+    ``None`` when ``cache_read > input``: that skew is invalid provider/meter
+    data and must not clamp into a perfect 100% hit.
+    """
+    try:
+        if input_tokens is None:
+            return None
+        tin = int(input_tokens)
+        cached = int(cache_read_tokens or 0)
+    except (TypeError, ValueError):
+        return None
+    if tin <= 0:
+        return None
+    if cached < 0:
+        cached = 0
+    if cached > tin:
+        return None
+    return round(float(cached) / float(tin), 6)
+
+
+def _source_owned_cache_lanes(
+    *,
+    pilot_tokens_in: int,
+    pilot_tokens_cached: int,
+    worker_tokens_in: int = 0,
+    worker_tokens_cached: int = 0,
+    swarm_tokens_in: int = 0,
+    swarm_tokens_cached: int = 0,
+) -> dict:
+    """Source-owned pilot/swarm prompt-cache lanes without cross-lane subtraction.
+
+    Pilot meters may include worker-folded cache (``_worker_tokens_cached``).
+    Swarm store jobs are authoritative for their own cache/input. Subtracting
+    ``swarm_cached`` from the pilot counter zeros legitimate pilot cache whenever
+    independent workers exceed the pilot meter — so overlap is removed only via
+    the worker-folded split, never via ``max(0, t_cached - swarm_cached)``.
+
+    Residual local-worker cache (folded into the pilot but not yet on the store)
+    participates in displayed read counts always, and in pilot/prompt ratios only
+    with a matching residual input denominator ``max(0, w_in - s_in)``. When that
+    denominator is unavailable, ratios stay ``None`` rather than advertising a
+    native-only % next to a residual-inflated read count.
+    """
+    t_in = max(0, int(pilot_tokens_in or 0))
+    t_cached = max(0, int(pilot_tokens_cached or 0))
+    w_in = max(0, int(worker_tokens_in or 0))
+    w_cached = max(0, int(worker_tokens_cached or 0))
+    s_in = max(0, int(swarm_tokens_in or 0))
+    s_cached = max(0, int(swarm_tokens_cached or 0))
+
+    pilot_native_input = max(0, t_in - w_in)
+    pilot_native_cache = max(0, t_cached - w_cached)
+    # Worker cache folded into the pilot but not (yet) visible on store jobs.
+    residual_worker_cached = max(0, w_cached - s_cached)
+    residual_worker_input = max(0, w_in - s_in)
+
+    # Displayed non-store lane reads always include residual local workers so
+    # StatusBar/CostBreakdown read counts reconcile with tokens_cached.
+    non_store_cache = pilot_native_cache + residual_worker_cached
+    tokens_cached = non_store_cache + s_cached
+    prompt_cache_read_tokens = tokens_cached
+
+    # Residual cache may join the ratio only with a matching input slice.
+    residual_ratio_ok = residual_worker_cached == 0 or residual_worker_input > 0
+    if residual_ratio_ok:
+        non_store_input = pilot_native_input + residual_worker_input
+        pilot_ratio = _cache_hit_ratio(non_store_cache, non_store_input)
+    else:
+        # Residual reads present without a trustworthy matching denominator —
+        # keep absolute reads, refuse a lane percent.
+        non_store_input = pilot_native_input
+        pilot_ratio = None
+
+    swarm_ratio = _cache_hit_ratio(s_cached, s_in)
+    combined_input = non_store_input + s_in
+    combined_cache = prompt_cache_read_tokens
+    # A lane with positive reads but a null ratio (missing input or cache>input)
+    # must poison the combined percent — never blend invalid slices into one %.
+    non_store_invalid = non_store_cache > 0 and pilot_ratio is None
+    swarm_invalid = s_cached > 0 and swarm_ratio is None
+    # Combined ratio only when residual (if any) has a matching denominator and
+    # both lane denominators are known/complete.
+    if not residual_ratio_ok or non_store_invalid or swarm_invalid:
+        combined_ratio = None
+    elif non_store_input > 0 and s_in > 0:
+        combined_ratio = _cache_hit_ratio(combined_cache, combined_input)
+    elif non_store_input > 0 and s_cached == 0 and s_in == 0:
+        combined_ratio = pilot_ratio
+    elif s_in > 0 and non_store_cache == 0 and non_store_input == 0:
+        combined_ratio = swarm_ratio
+    else:
+        combined_ratio = None
+
+    return {
+        "pilot_input_tokens": int(non_store_input),
+        "pilot_cache_read_tokens": int(non_store_cache),
+        "pilot_cache_hit_ratio": pilot_ratio,
+        "swarm_input_tokens": int(s_in),
+        "swarm_cache_read_tokens": int(s_cached),
+        "swarm_cache_hit_ratio": swarm_ratio,
+        "prompt_input_tokens": int(combined_input),
+        "prompt_cache_read_tokens": int(prompt_cache_read_tokens),
+        "prompt_cache_hit_ratio": combined_ratio,
+        "tokens_cached": int(tokens_cached),
+        # Price pilot-lane savings at residual worker cache too (local-only
+        # workers never appear in swarm store pricing). Matches read count.
+        "pilot_cache_savings_tokens": int(non_store_cache),
+    }
+
+
 def _spend_is_estimated(cost_source: str, price_source: str = "") -> bool:
     """True when the dollar figure is not a full provider receipt.
 

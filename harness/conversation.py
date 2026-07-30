@@ -628,6 +628,10 @@ class ConversationalSession(
         self._worker_cost_usd: float = 0.0
         self._worker_tokens_in: int = 0
         self._worker_tokens_out: int = 0
+        # Worker prompt-cache reads folded into ``_tokens_cached``. /api/usage
+        # subtracts this split (not swarm store totals) so independent swarm
+        # cache never zeros legitimate pilot cache attribution.
+        self._worker_tokens_cached: int = 0
         # Provider-billed pilot spend (OpenRouter ``usage.cost``). When present,
         # /api/usage prefers this over token*catalog estimates for the covered
         # token slice so session spend matches the provider receipt.
@@ -2328,7 +2332,8 @@ class ConversationalSession(
     def _attribute_worker_cost(self, tokens_in: int, tokens_out: int,
                                real_cost_usd: float = 0.0,
                                model_spec: str = "",
-                               count_dollars: bool = True) -> None:
+                               count_dollars: bool = True,
+                               tokens_cached: int = 0) -> None:
         """Record a delegated worker's spend as DOLLARS at the worker's OWN model
         rate (plus a parallel token split), so the session cost is correct even
         when the worker ran on a pricier/cheaper model than the pilot.
@@ -2343,12 +2348,19 @@ class ConversationalSession(
         ``count_dollars=False`` records ONLY the token split. Use it for
         swarm-store jobs, whose dollars /api/usage already computes
         authoritatively from the job's own usage artifacts x the model
-        registry -- adding dollars here too would bill the same job twice."""
+        registry -- adding dollars here too would bill the same job twice.
+
+        ``tokens_cached`` is the worker's prompt-cache read subset (already
+        counted inside ``tokens_in``); it feeds ``_worker_tokens_cached`` so
+        /api/usage can peel worker cache from the pilot meter without
+        subtracting independent swarm-store cache."""
         try:
             ti = int(tokens_in or 0)
             to = int(tokens_out or 0)
+            tc = max(0, int(tokens_cached or 0))
             self._worker_tokens_in += ti
             self._worker_tokens_out += to
+            self._worker_tokens_cached += tc
             cost = float(real_cost_usd or 0.0)
             if count_dollars:
                 if cost <= 0.0:
@@ -2477,7 +2489,9 @@ class ConversationalSession(
         # Attributing dollars here too billed every awaited swarm twice, and at
         # the PILOT's model rate (resolve_price cannot price adapter names like
         # 'agentic'), so cheap-model workers were charged at e.g. opus rates.
-        self._attribute_worker_cost(sum_in, sum_out, count_dollars=False)
+        self._attribute_worker_cost(
+            sum_in, sum_out, count_dollars=False, tokens_cached=sum_cached
+        )
         if sum_cached:
             self._accumulate_session_meters(cache_read_tokens=sum_cached)
         return (sum_in, sum_out, sum_cached)

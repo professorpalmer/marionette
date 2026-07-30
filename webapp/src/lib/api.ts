@@ -260,10 +260,24 @@ export type SwarmLive = {
     estimated?: boolean;
     driver?: string;
     tokens_cached?: number;
+    /** Pilot prompt-input tokens (exclusive of worker-folded split). */
+    pilot_input_tokens?: number;
     /** Pilot-only prompt-cache read tokens (exclusive of swarm store jobs). */
     pilot_cache_read_tokens?: number;
+    /** Pilot cache-read / pilot input. Omitted when input denominator unknown. */
+    pilot_cache_hit_ratio?: number | null;
+    /** Swarm store-job prompt-input tokens (authoritative per-task dedupe). */
+    swarm_input_tokens?: number;
     /** Swarm store-job prompt-cache read tokens (authoritative per-task dedupe). */
     swarm_cache_read_tokens?: number;
+    /** Swarm cache-read / swarm input. Omitted when input denominator unknown. */
+    swarm_cache_hit_ratio?: number | null;
+    /** Combined pilot+swarm prompt-input tokens (no output). */
+    prompt_input_tokens?: number;
+    /** Combined pilot+swarm prompt-cache read tokens. */
+    prompt_cache_read_tokens?: number;
+    /** Combined cache-read / prompt input when both lane denominators are complete. */
+    prompt_cache_hit_ratio?: number | null;
     cache_savings_usd?: number;
     /** Uncapped catalog/list-price cache value (grows with cached tokens). */
     cache_savings_gross_usd?: number;
@@ -486,10 +500,24 @@ export type UsageData = {
     price_in: number;
     price_out: number;
     tokens_cached?: number;
+    /** Pilot prompt-input tokens (exclusive of worker-folded split). */
+    pilot_input_tokens?: number;
     /** Pilot-only prompt-cache read tokens (exclusive of swarm store jobs). */
     pilot_cache_read_tokens?: number;
+    /** Pilot cache-read / pilot input. Omitted/null when input denominator unknown. */
+    pilot_cache_hit_ratio?: number | null;
+    /** Swarm store-job prompt-input tokens (authoritative per-task dedupe). */
+    swarm_input_tokens?: number;
     /** Swarm store-job prompt-cache read tokens (authoritative per-task dedupe). */
     swarm_cache_read_tokens?: number;
+    /** Swarm cache-read / swarm input. Omitted/null when input denominator unknown. */
+    swarm_cache_hit_ratio?: number | null;
+    /** Combined pilot+swarm prompt-input tokens (no output). */
+    prompt_input_tokens?: number;
+    /** Combined pilot+swarm prompt-cache read tokens. */
+    prompt_cache_read_tokens?: number;
+    /** Combined cache-read / prompt input when both lane denominators are complete. */
+    prompt_cache_hit_ratio?: number | null;
     cache_savings_usd?: number;
     /** Uncapped catalog/list-price cache value (grows with cached tokens). */
     cache_savings_gross_usd?: number;

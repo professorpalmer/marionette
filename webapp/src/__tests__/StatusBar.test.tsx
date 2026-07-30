@@ -384,6 +384,95 @@ describe("StatusBar runtime status", () => {
   });
 });
 
+describe("StatusBar prompt-cache hit display", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+    });
+    mockSessions.mockResolvedValue([]);
+  });
+
+  it("shows honest 90%+ prompt-cache hit from warm usage ratios", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 1_500_000,
+        est_cost_usd: 0.50,
+        driver: "xai:grok",
+        price_in: 3,
+        price_out: 15,
+        tokens_cached: 415_700,
+        prompt_cache_hit_ratio: 0.968,
+        prompt_input_tokens: 429_000,
+        prompt_cache_read_tokens: 415_700,
+        cache_savings_usd: 0.10,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    const chip = await screen.findByTitle(/cache-read ÷ prompt-input/i);
+    expect(chip).toHaveTextContent(/97% prompt cache/i);
+  });
+
+  it("does not invent a cache percent when ratio is unknown", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 1_500_000,
+        est_cost_usd: 0.50,
+        driver: "xai:grok",
+        price_in: 3,
+        price_out: 15,
+        tokens_cached: 415_700,
+        prompt_cache_hit_ratio: null,
+        pilot_cache_hit_ratio: null,
+        swarm_cache_hit_ratio: null,
+        cache_savings_usd: 0.10,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/\$0\.10 saved/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/%.*cache/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/prompt cache/i)).not.toBeInTheDocument();
+  });
+
+  it("does not render a green 0% cache chip when cache reads are zero", async () => {
+    mockGetUsage.mockResolvedValue({
+      session: {
+        tokens_used: 10_000,
+        est_cost_usd: 0.05,
+        driver: "xai:grok",
+        price_in: 3,
+        price_out: 15,
+        tokens_cached: 0,
+        prompt_cache_read_tokens: 0,
+        prompt_cache_hit_ratio: 0,
+        pilot_cache_hit_ratio: 0,
+        swarm_cache_hit_ratio: 0,
+        cache_savings_usd: 0,
+      },
+      jobs: [],
+    });
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/10k tok/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/0% .*cache/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/prompt cache/i)).not.toBeInTheDocument();
+  });
+});
+
 describe("StatusBar panel toggle shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();

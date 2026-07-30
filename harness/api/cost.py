@@ -105,10 +105,12 @@ from .cost_accounting import (  # noqa: E402
     PRICE_SOURCE_DEFAULT,
     PRICE_SOURCE_LIVE,
     PRICE_SOURCE_STATIC,
+    _cache_hit_ratio,
     _cache_savings,
     _cache_savings_gross,
     _cache_savings_with_basis,
     _cost_source_label,
+    _source_owned_cache_lanes,
     _job_cost,
     _job_cost_is_unsplit,
     _normalize_price_source,
@@ -144,6 +146,7 @@ from .swarm_cost import (  # noqa: E402
     _swarm_registry,
     _task_swarm_accounting,
     _tokens_cached_swarm,
+    _tokens_in_swarm,
 )
 from .usage_meters import (  # noqa: E402
     _BOOT_METER_ATTRS,

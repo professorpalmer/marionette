@@ -141,6 +141,7 @@ def project_local_job_for_swarm_live(job: dict) -> dict:
         "est_cost_usd": round(_as_float(job.get("est_cost_usd")), 6),
         "cost_provenance": cost_provenance,
         "estimated": estimated,
+        "tokens_in": _as_int(job.get("tokens_in")),
         "tokens_cached": _as_int(job.get("tokens_cached")),
         "routing_saved_usd": routing_saved,
         "routing_savings_basis": routing_basis,

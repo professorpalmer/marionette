@@ -387,6 +387,12 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 job_tokens_cached = int(svc.tokens_cached_swarm(raw_arts) or 0)
             except Exception:
                 job_tokens_cached = 0
+            try:
+                from .swarm_cost import _tokens_in_swarm
+
+                job_tokens_in = int(_tokens_in_swarm(raw_arts) or 0)
+            except Exception:
+                job_tokens_in = 0
             job_model = resolve_job_model(
                 raw_arts,
                 (tasks_by_job.get(jid, []) if tasks_by_job is not None else []),
@@ -451,6 +457,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "est_cost_usd": est_cost_usd,
                 "cost_provenance": job_detail.get("cost_provenance") or "default",
                 "estimated": bool(job_detail.get("estimated", True)),
+                "tokens_in": job_tokens_in,
                 "tokens_cached": job_tokens_cached,
                 "routing_saved_usd": job_routing_saved,
                 "routing_savings_basis": job_routing_basis,
@@ -530,6 +537,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     saw_cache_unknown = False
     live_cache_unpriced_tokens = 0
     swarm_cached = 0
+    swarm_input = 0
     job_tokens_sum = 0
     store_job_cost = 0.0
     try:
@@ -563,6 +571,7 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                     saw_delegation_unknown = True
             job_cached = int(j.get("tokens_cached") or 0)
             swarm_cached += job_cached
+            swarm_input += int(j.get("tokens_in") or 0)
             live_cache_unpriced_tokens += int(
                 j.get("swarm_cache_unpriced_tokens") or 0
             )
@@ -607,7 +616,30 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 tokens_used += int(j.get("tokens") or 0)
         except Exception:
             pass
-        tokens_cached = swarm_cached
+        try:
+            from .cost_accounting import _source_owned_cache_lanes
+
+            cache_lanes = _source_owned_cache_lanes(
+                pilot_tokens_in=0,
+                pilot_tokens_cached=0,
+                swarm_tokens_in=swarm_input,
+                swarm_tokens_cached=swarm_cached,
+            )
+        except Exception:
+            cache_lanes = {
+                "pilot_input_tokens": 0,
+                "pilot_cache_read_tokens": 0,
+                "pilot_cache_hit_ratio": None,
+                "swarm_input_tokens": int(swarm_input),
+                "swarm_cache_read_tokens": int(swarm_cached),
+                "swarm_cache_hit_ratio": None,
+                "prompt_input_tokens": int(swarm_input),
+                "prompt_cache_read_tokens": int(swarm_cached),
+                "prompt_cache_hit_ratio": None,
+                "tokens_cached": int(swarm_cached),
+                "pilot_cache_savings_tokens": 0,
+            }
+        tokens_cached = int(cache_lanes["tokens_cached"])
         pilot_only_cached = 0
         _cache_savings_usd = 0.0
         _cache_savings_gross_usd = 0.0
@@ -617,17 +649,45 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
         # Accurate split: input tokens at price_in, output at price_out, with
         # cached prompt tokens re-billed at the cache-read discount. Falls
         # back to a single-rate estimate if the in/out split isn't tracked.
+        _t_in = int(getattr(pilot, "_tokens_in", 0) or 0)
         _t_cached = int(getattr(pilot, "_tokens_cached", 0) or 0)
         _w_in = int(getattr(pilot, "_worker_tokens_in", 0) or 0)
         _w_out = int(getattr(pilot, "_worker_tokens_out", 0) or 0)
+        _w_cached = int(getattr(pilot, "_worker_tokens_cached", 0) or 0)
         est_session_cost = svc.session_cost_split(pilot, price_in, price_out)
         # Add swarm store-job spend from the scoped job list only.
         # Local provider jobs are already inside _worker_cost_usd.
         est_session_cost += store_job_cost
         # Same token parity as /api/usage: pilot-only + store job tokens.
         tokens_used = max(0, tokens_used - _w_in - _w_out) + job_tokens_sum
-        pilot_only_cached = max(0, _t_cached - min(_t_cached, swarm_cached))
-        tokens_cached = pilot_only_cached + swarm_cached
+        try:
+            from .cost_accounting import _source_owned_cache_lanes
+
+            cache_lanes = _source_owned_cache_lanes(
+                pilot_tokens_in=_t_in,
+                pilot_tokens_cached=_t_cached,
+                worker_tokens_in=_w_in,
+                worker_tokens_cached=_w_cached,
+                swarm_tokens_in=swarm_input,
+                swarm_tokens_cached=swarm_cached,
+            )
+        except Exception:
+            cache_lanes = {
+                "pilot_input_tokens": max(0, _t_in - _w_in),
+                "pilot_cache_read_tokens": max(0, _t_cached - _w_cached),
+                "pilot_cache_hit_ratio": None,
+                "swarm_input_tokens": int(swarm_input),
+                "swarm_cache_read_tokens": int(swarm_cached),
+                "swarm_cache_hit_ratio": None,
+                "prompt_input_tokens": max(0, _t_in - _w_in) + int(swarm_input),
+                "prompt_cache_read_tokens": max(0, _t_cached - _w_cached)
+                + int(swarm_cached),
+                "prompt_cache_hit_ratio": None,
+                "tokens_cached": max(0, _t_cached - _w_cached) + int(swarm_cached),
+                "pilot_cache_savings_tokens": max(0, _t_cached - _w_cached),
+            }
+        pilot_only_cached = int(cache_lanes["pilot_cache_savings_tokens"])
+        tokens_cached = int(cache_lanes["tokens_cached"])
         _provider_cost = float(getattr(pilot, "_provider_cost_usd", 0) or 0.0)
         tool_savings = svc.tool_output_savings_fields(price_in)
         try:
@@ -684,8 +744,21 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
             # UI can show how much input was served near-free -- proof the
             # harness is not token-hungry -- plus the USD it saved.
             "tokens_cached": tokens_cached,
-            "pilot_cache_read_tokens": int(pilot_only_cached),
-            "swarm_cache_read_tokens": int(swarm_cached),
+            "pilot_input_tokens": int(cache_lanes.get("pilot_input_tokens") or 0),
+            "pilot_cache_read_tokens": int(
+                cache_lanes.get("pilot_cache_read_tokens") or 0
+            ),
+            "pilot_cache_hit_ratio": cache_lanes.get("pilot_cache_hit_ratio"),
+            "swarm_input_tokens": int(cache_lanes.get("swarm_input_tokens") or 0),
+            "swarm_cache_read_tokens": int(
+                cache_lanes.get("swarm_cache_read_tokens") or 0
+            ),
+            "swarm_cache_hit_ratio": cache_lanes.get("swarm_cache_hit_ratio"),
+            "prompt_input_tokens": int(cache_lanes.get("prompt_input_tokens") or 0),
+            "prompt_cache_read_tokens": int(
+                cache_lanes.get("prompt_cache_read_tokens") or 0
+            ),
+            "prompt_cache_hit_ratio": cache_lanes.get("prompt_cache_hit_ratio"),
             "cache_savings_usd": round(_cache_savings_usd, 6),
             "cache_savings_gross_usd": round(_cache_savings_gross_usd, 6),
             "cache_savings_basis": _cache_savings_basis,

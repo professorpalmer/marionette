@@ -127,6 +127,7 @@ _BOOT_METER_ATTRS = (
     "_worker_cost_usd",
     "_worker_tokens_in",
     "_worker_tokens_out",
+    "_worker_tokens_cached",
     "_provider_cost_usd",
     "_provider_billed_tokens_in",
     "_provider_billed_tokens_out",
@@ -288,11 +289,28 @@ def _restore_boot_usage() -> bool:
             _COST_EPOCH = stamp
         carry = data.get("carry") or {}
         if isinstance(carry, dict):
+            # Pre-_worker_tokens_cached carries already folded worker cache into
+            # ``_tokens_cached``. Defaulting the missing key to 0 would make
+            # ``_source_owned_cache_lanes`` re-add store-job cache on top
+            # (e.g. 50k+20k→70k). Conservative peel: treat the whole restored
+            # cache meter as worker-overlappable so lane math cannot inflate
+            # tokens_cached above the process total when swarm is re-added.
+            legacy_missing_worker_cached = (
+                "_worker_tokens_cached" not in carry
+                and float(carry.get("_worker_tokens_in", 0.0) or 0.0) > 0
+            )
             for attr in _BOOT_METER_ATTRS:
                 try:
                     _BOOT_METER_CARRY[attr] = float(carry.get(attr, 0.0) or 0.0)
                 except Exception:
                     pass
+            if legacy_missing_worker_cached:
+                try:
+                    _BOOT_METER_CARRY["_worker_tokens_cached"] = float(
+                        _BOOT_METER_CARRY.get("_tokens_cached", 0.0) or 0.0
+                    )
+                except Exception:
+                    _BOOT_METER_CARRY["_worker_tokens_cached"] = 0.0
         try:
             _BOOT_CARRY_COST_USD = float(data.get("carry_cost_usd", 0.0) or 0.0)
         except Exception:

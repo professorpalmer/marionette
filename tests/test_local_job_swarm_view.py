@@ -35,6 +35,7 @@ _STORE_LIVE_KEYS = frozenset({
     "est_cost_usd",
     "cost_provenance",
     "estimated",
+    "tokens_in",
     "tokens_cached",
     "routing_saved_usd",
     "routing_savings_basis",

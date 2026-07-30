@@ -369,7 +369,8 @@ class ConversationJobsMixin:
                         # Worker dollars at the worker's own model rate.
                         self._attribute_worker_cost(
                             _nc_t_in, _nc_t_out,
-                            real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0))
+                            real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
+                            tokens_cached=_nc_t_cached)
                 res_dict = {
                     "job_id": job_id,
                     "applied": False,
@@ -409,7 +410,8 @@ class ConversationJobsMixin:
                     self._tokens_cached += tokens_cached
                     self._attribute_worker_cost(
                         tokens_in, tokens_out,
-                        real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0))
+                        real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
+                        tokens_cached=tokens_cached)
                 summary = res.summary or "Successfully completed analysis task"
                 substantive = True
                 if not expects_diff:
@@ -490,7 +492,8 @@ class ConversationJobsMixin:
                     # result's real cost when present, else derive from rate).
                     self._attribute_worker_cost(
                         tokens_in, tokens_out,
-                        real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0))
+                        real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
+                        tokens_cached=tokens_cached)
 
                 patch_summary = ""
                 if res.files_changed:

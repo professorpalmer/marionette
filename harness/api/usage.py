@@ -97,9 +97,11 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     if cached_usage is not None:
         return 200, cached_usage
     tokens_used = int(boot_meters.get("_tokens_used", 0) or 0)
+    t_in = int(boot_meters.get("_tokens_in", 0) or 0)
     t_cached = int(boot_meters.get("_tokens_cached", 0) or 0)
     w_in = int(boot_meters.get("_worker_tokens_in", 0) or 0)
     w_out = int(boot_meters.get("_worker_tokens_out", 0) or 0)
+    w_cached = int(boot_meters.get("_worker_tokens_cached", 0) or 0)
     # Price each live runner (and carry) via _session_cost_split so
     # worker dollars stay at each worker's own model rate.
     est_session_cost = svc.boot_session_cost(price_in, price_out)
@@ -115,6 +117,7 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     swarm_cache_savings_basis = "unknown"
     swarm_cache_unpriced_tokens = 0
     swarm_cached = 0
+    swarm_input = 0
     try:
         # Same merged, workspace-scoped job set the tracker uses
         # (/api/swarm/live): harness store + per-project CLI store, so
@@ -256,6 +259,12 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
                     swarm_cached += int(svc.tokens_cached_swarm(raw_arts) or 0)
                 except Exception:
                     pass
+                try:
+                    from .swarm_cost import _tokens_in_swarm
+
+                    swarm_input += int(_tokens_in_swarm(raw_arts) or 0)
+                except Exception:
+                    pass
                 jobs_list.append({
                     "job_id": jid,
                     "tokens": tokens,
@@ -328,11 +337,37 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
     pilot_only_tokens = max(0, tokens_used - w_in - w_out)
     job_tokens_sum = sum(int(j.get("tokens") or 0) for j in jobs_list)
     tokens_used = pilot_only_tokens + job_tokens_sum
-    # Cache tokens: subtract overlapping swarm attribution from pilot
-    # meters, then add authoritative store-job cache (avoids double
-    # count when harness workers were folded into _tokens_cached).
-    pilot_only_cached = max(0, t_cached - min(t_cached, swarm_cached))
-    tokens_cached = pilot_only_cached + swarm_cached
+    # Source-owned cache lanes: peel worker-folded cache from the pilot
+    # meter, then add authoritative store-job cache. Never subtract
+    # independent swarm cache from the pilot counter (that zeros
+    # legitimate pilot hits whenever swarm > pilot).
+    try:
+        from .cost_accounting import _source_owned_cache_lanes
+
+        cache_lanes = _source_owned_cache_lanes(
+            pilot_tokens_in=t_in,
+            pilot_tokens_cached=t_cached,
+            worker_tokens_in=w_in,
+            worker_tokens_cached=w_cached,
+            swarm_tokens_in=swarm_input,
+            swarm_tokens_cached=swarm_cached,
+        )
+    except Exception:
+        cache_lanes = {
+            "pilot_input_tokens": max(0, t_in - w_in),
+            "pilot_cache_read_tokens": max(0, t_cached - w_cached),
+            "pilot_cache_hit_ratio": None,
+            "swarm_input_tokens": int(swarm_input),
+            "swarm_cache_read_tokens": int(swarm_cached),
+            "swarm_cache_hit_ratio": None,
+            "prompt_input_tokens": max(0, t_in - w_in) + int(swarm_input),
+            "prompt_cache_read_tokens": max(0, t_cached - w_cached) + int(swarm_cached),
+            "prompt_cache_hit_ratio": None,
+            "tokens_cached": max(0, t_cached - w_cached) + int(swarm_cached),
+            "pilot_cache_savings_tokens": max(0, t_cached - w_cached),
+        }
+    pilot_only_cached = int(cache_lanes["pilot_cache_savings_tokens"])
+    tokens_cached = int(cache_lanes["tokens_cached"])
     usage_cost_source = svc.boot_cost_source()
     # Swarm store dollars are still catalog/usage-priced; do not claim
     # the whole pill is provider-billed when those are folded in.
@@ -385,8 +420,15 @@ def get_usage(repo_override: str, svc: UsageServices) -> tuple[int, JsonPayload]
             # the USD that discount saved vs full input price (pilot-
             # only; store-job cache USD is cache_saved_usd_swarm).
             "tokens_cached": tokens_cached,
-            "pilot_cache_read_tokens": int(pilot_only_cached),
-            "swarm_cache_read_tokens": int(swarm_cached),
+            "pilot_input_tokens": int(cache_lanes["pilot_input_tokens"]),
+            "pilot_cache_read_tokens": int(cache_lanes["pilot_cache_read_tokens"]),
+            "pilot_cache_hit_ratio": cache_lanes["pilot_cache_hit_ratio"],
+            "swarm_input_tokens": int(cache_lanes["swarm_input_tokens"]),
+            "swarm_cache_read_tokens": int(cache_lanes["swarm_cache_read_tokens"]),
+            "swarm_cache_hit_ratio": cache_lanes["swarm_cache_hit_ratio"],
+            "prompt_input_tokens": int(cache_lanes["prompt_input_tokens"]),
+            "prompt_cache_read_tokens": int(cache_lanes["prompt_cache_read_tokens"]),
+            "prompt_cache_hit_ratio": cache_lanes["prompt_cache_hit_ratio"],
             "cache_savings_usd": round(cache_savings_usd, 6),
             "cache_savings_gross_usd": round(cache_savings_gross_usd, 6),
             # catalog = uncapped estimate; capped = limited to provider

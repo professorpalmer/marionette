@@ -1,8 +1,10 @@
 import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CostBreakdown, {
+  cacheHitDisplay,
   compactionAdvicePresentation,
   delegationSavingsCredited,
+  formatCacheHitPercent,
   listPriceValueTotal,
   routingSavingsCredited,
   spendIsEstimated,
@@ -79,7 +81,7 @@ describe("CostBreakdown", () => {
     const cacheRow = screen.getByText("Prompt-cache value").closest("div");
     expect(within(cacheRow!).getByText("~$0.02")).toBeInTheDocument();
     expect(screen.getByText("Tokens from cache")).toBeInTheDocument();
-    expect(screen.getByText("4k")).toBeInTheDocument();
+    expect(screen.getByText(/4k read/)).toBeInTheDocument();
     expect(screen.getByText("Compact tool outputs saved")).toBeInTheDocument();
     expect(screen.getByText("History compaction")).toBeInTheDocument();
     expect(screen.getByText("Offloaded outputs")).toBeInTheDocument();
@@ -574,5 +576,120 @@ describe("CostBreakdown", () => {
     );
     expect(screen.getByText(/warm · ~<1m left/)).toBeInTheDocument();
     expect(screen.queryByText(/~1m left/)).not.toBeInTheDocument();
+  });
+
+  it("shows honest 90%+ prompt-cache hit from warm lane ratios", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1_500_000,
+          est_cost_usd: 0.50,
+          tokens_cached: 415_700,
+          prompt_cache_read_tokens: 415_700,
+          prompt_input_tokens: 429_000,
+          prompt_cache_hit_ratio: 0.968,
+          pilot_cache_read_tokens: 200_000,
+          swarm_cache_read_tokens: 215_700,
+        }}
+      />,
+    );
+    expect(screen.getByText(/prompt cache hit/i)).toBeInTheDocument();
+    expect(screen.getByText(/97%/)).toBeInTheDocument();
+    const row = screen.getByText(/prompt cache hit/i).closest("div");
+    expect(row).toHaveAttribute("title", expect.stringMatching(/cache-read ÷ prompt-input/i));
+    expect(row).toHaveAttribute("title", expect.stringMatching(/not cache÷process-total/i));
+  });
+
+  it("omits misleading cache percent when hit ratio is unknown", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1_500_000,
+          est_cost_usd: 0.50,
+          tokens_cached: 415_700,
+          // Absolute cache reads present, but no input denominator / ratio.
+          prompt_cache_hit_ratio: null,
+          pilot_cache_hit_ratio: null,
+          swarm_cache_hit_ratio: null,
+        }}
+      />,
+    );
+    expect(screen.getByText("Tokens from cache")).toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/prompt cache hit/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("formatCacheHitPercent / cacheHitDisplay", () => {
+  it("formats warm ratios at 90%+", () => {
+    expect(formatCacheHitPercent(0.968)).toBe("97%");
+    expect(formatCacheHitPercent(0.866)).toBe("87%");
+  });
+
+  it("returns null for unknown, zero, or invalid (>1) ratios", () => {
+    expect(formatCacheHitPercent(null)).toBeNull();
+    expect(formatCacheHitPercent(undefined)).toBeNull();
+    expect(formatCacheHitPercent(Number.NaN)).toBeNull();
+    expect(formatCacheHitPercent(0)).toBeNull();
+    expect(formatCacheHitPercent(1.2)).toBeNull();
+  });
+
+  it("prefers combined prompt ratio then lane ratios when reads exist", () => {
+    expect(
+      cacheHitDisplay({
+        prompt_cache_hit_ratio: 0.95,
+        pilot_cache_hit_ratio: 0.9,
+        swarm_cache_hit_ratio: 0.8,
+        tokens_cached: 10_000,
+      }).percent,
+    ).toBe("95%");
+    expect(
+      cacheHitDisplay({
+        prompt_cache_hit_ratio: null,
+        pilot_cache_hit_ratio: 0.968,
+        swarm_cache_hit_ratio: 0.5,
+        pilot_cache_read_tokens: 200_000,
+      }).label,
+    ).toBe("pilot cache");
+    expect(
+      cacheHitDisplay({
+        prompt_cache_hit_ratio: null,
+        pilot_cache_hit_ratio: null,
+        swarm_cache_hit_ratio: null,
+        tokens_cached: 10_000,
+      }).percent,
+    ).toBeNull();
+  });
+
+  it("suppresses a green 0% chip when cache reads are zero", () => {
+    expect(
+      cacheHitDisplay({
+        prompt_cache_hit_ratio: 0,
+        pilot_cache_hit_ratio: 0,
+        swarm_cache_hit_ratio: 0,
+        tokens_cached: 0,
+        prompt_cache_read_tokens: 0,
+      }).percent,
+    ).toBeNull();
+  });
+
+  it("keeps absolute read count reconciliation in the cache row", () => {
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 100_000,
+          est_cost_usd: 0.10,
+          tokens_cached: 70_000,
+          prompt_cache_read_tokens: 70_000,
+          prompt_input_tokens: 100_000,
+          prompt_cache_hit_ratio: 0.7,
+          pilot_cache_read_tokens: 70_000,
+          swarm_cache_read_tokens: 0,
+        }}
+      />,
+    );
+    const row = screen.getByText(/prompt cache hit/i).closest("div");
+    expect(row).toHaveTextContent(/70%/);
+    expect(row).toHaveTextContent(/70k read/i);
   });
 });

@@ -717,9 +717,9 @@ def test_api_usage_tokens_used_is_pilot_only_plus_job_tokens(tmp_path, monkeypat
         )
     )
 
-    # Pilot meters: 15k used of which 5k in + 2k out are worker-attributed;
-    # 40k cached of which 100k swarm would clamp pilot_only_cached to 0.
-    # Use a smaller pilot cache so pilot_only_cached stays positive.
+    # Pilot meters: 15k used of which 5k in + 2k out are worker-attributed.
+    # Pilot has 40k independent cache; swarm store has 100k independent cache.
+    # Source-owned lanes must NOT zero pilot when swarm exceeds the pilot meter.
     old_pilot = server._pilot
     pilot = SimpleNamespace(
         _tokens_used=15_000,
@@ -728,6 +728,7 @@ def test_api_usage_tokens_used_is_pilot_only_plus_job_tokens(tmp_path, monkeypat
         _tokens_cached=40_000,
         _worker_tokens_in=5_000,
         _worker_tokens_out=2_000,
+        _worker_tokens_cached=0,
         _worker_cost_usd=0.0,
         state_dir=str(harness_dir),
         harness_session_id=sid,
@@ -744,10 +745,15 @@ def test_api_usage_tokens_used_is_pilot_only_plus_job_tokens(tmp_path, monkeypat
             "_tokens_cached": 40_000,
             "_worker_tokens_in": 5_000,
             "_worker_tokens_out": 2_000,
+            "_worker_tokens_cached": 0,
             "_worker_cost_usd": 0.0,
         },
     )
     monkeypatch.setattr(server, "_boot_session_cost", lambda price_in, price_out: 0.01)
+    monkeypatch.setattr(
+        "pmharness.registry.resolve_price",
+        lambda driver: (3.0, 15.0),
+    )
 
     httpd, port = _api_server(str(harness_dir))
     try:
@@ -798,12 +804,24 @@ def test_api_usage_tokens_used_is_pilot_only_plus_job_tokens(tmp_path, monkeypat
         pilot_only = max(0, 15_000 - 5_000 - 2_000)
         assert usage["session"]["tokens_used"] == pilot_only + job_tokens
 
-        # swarm_cached=100k > pilot _t_cached=40k -> pilot_only_cached=0
-        # display tokens_cached = 0 + 100_000; cache_savings_usd prices pilot only
-        assert usage["session"]["tokens_cached"] == 100_000
-        assert abs(usage["session"]["cache_savings_usd"] - 0.0) < 1e-9
+        # Independent slices: pilot 40k + swarm 100k (no worker-fold overlap).
+        assert usage["session"]["pilot_cache_read_tokens"] == 40_000
+        assert usage["session"]["swarm_cache_read_tokens"] == 100_000
+        assert usage["session"]["tokens_cached"] == 140_000
+        # 40k pilot @ $3/MTok * 0.9 = 0.108
+        assert abs(usage["session"]["cache_savings_usd"] - 0.108) < 1e-9
         # 100k cached @ $3/MTok * 0.9 = 0.27
         assert abs(usage["session"]["cache_saved_usd_swarm"] - 0.27) < 1e-9
+        # Pilot input = 10k - 5k worker = 5k; cache 40k > input → ratio null
+        # (never clamp impossible provider/meter skew to a perfect 100% hit).
+        assert usage["session"]["pilot_input_tokens"] == 5_000
+        assert usage["session"]["pilot_cache_hit_ratio"] is None
+        assert usage["session"]["prompt_cache_hit_ratio"] is None
+        # Absolute reads still surface when the ratio is refused.
+        assert usage["session"]["prompt_cache_read_tokens"] == 140_000
+        # Swarm input = 200k; ratio = 100k/200k = 0.5
+        assert usage["session"]["swarm_input_tokens"] == 200_000
+        assert abs(usage["session"]["swarm_cache_hit_ratio"] - 0.5) < 1e-9
 
         live = json.loads(
             _api_get(port, f"/api/swarm/live?repo={scoped}", server._TOKEN).read().decode()
@@ -812,6 +830,8 @@ def test_api_usage_tokens_used_is_pilot_only_plus_job_tokens(tmp_path, monkeypat
         # that repo's stamped session spend + store jobs (here: jobs only).
         assert live["session"]["tokens_used"] == job_tokens
         assert live["session"]["tokens_cached"] == 100_000
+        assert live["session"]["pilot_cache_read_tokens"] == 0
+        assert live["session"]["swarm_cache_read_tokens"] == 100_000
         assert abs(live["session"]["cache_savings_usd"] - 0.0) < 1e-9
         assert abs(live["session"]["cache_saved_usd_swarm"] - 0.27) < 1e-9
     finally:
@@ -820,7 +840,7 @@ def test_api_usage_tokens_used_is_pilot_only_plus_job_tokens(tmp_path, monkeypat
 
 
 def test_api_usage_combined_cache_keeps_pilot_only_when_disjoint(tmp_path, monkeypatch):
-    """When pilot cache exceeds swarm attribution, keep the exclusive pilot portion."""
+    """Independent pilot + swarm cache slices add; no cross-lane subtraction."""
     from harness.sessions import SessionStore
 
     repo = tmp_path / "repo"
@@ -852,6 +872,7 @@ def test_api_usage_combined_cache_keeps_pilot_only_when_disjoint(tmp_path, monke
             "_tokens_cached": 50_000,
             "_worker_tokens_in": 0,
             "_worker_tokens_out": 0,
+            "_worker_tokens_cached": 0,
             "_worker_cost_usd": 0.0,
         },
     )
@@ -899,10 +920,12 @@ def test_api_usage_combined_cache_keeps_pilot_only_when_disjoint(tmp_path, monke
         usage = json.loads(
             _api_get(port, f"/api/usage?repo={scoped}", server._TOKEN).read().decode()
         )
-        # pilot_only_cached = 50k - 20k = 30k; display = 30k + 20k = 50k
-        assert usage["session"]["tokens_cached"] == 50_000
-        # 30k @ $3/MTok * 0.9 = 0.081
-        assert abs(usage["session"]["cache_savings_usd"] - 0.081) < 1e-9
+        # Independent: pilot 50k + swarm 20k = 70k (no worker-fold leakage).
+        assert usage["session"]["pilot_cache_read_tokens"] == 50_000
+        assert usage["session"]["swarm_cache_read_tokens"] == 20_000
+        assert usage["session"]["tokens_cached"] == 70_000
+        # 50k @ $3/MTok * 0.9 = 0.135
+        assert abs(usage["session"]["cache_savings_usd"] - 0.135) < 1e-9
         # 20k @ $3/MTok * 0.9 = 0.054
         assert abs(usage["session"]["cache_saved_usd_swarm"] - 0.054) < 1e-9
         job_tokens = int(usage["jobs"][0]["tokens"] or 0)
@@ -1045,12 +1068,15 @@ def test_api_usage_exposes_cache_token_split_reconcilable_with_usd(
         server,
         "_boot_usage_meters",
         lambda: {
-            "_tokens_used": 8_000,
-            "_tokens_in": 6_000,
-            "_tokens_out": 2_000,
+            "_tokens_used": 85_000,
+            # 80k in = 30k pilot-native + 50k worker-folded (matches store job)
+            "_tokens_in": 80_000,
+            "_tokens_out": 5_000,
+            # 50k total cached = 30k pilot-native + 20k worker-folded (also in store)
             "_tokens_cached": 50_000,
-            "_worker_tokens_in": 0,
-            "_worker_tokens_out": 0,
+            "_worker_tokens_in": 50_000,
+            "_worker_tokens_out": 5_000,
+            "_worker_tokens_cached": 20_000,
             "_worker_cost_usd": 0.0,
         },
     )
@@ -1103,8 +1129,144 @@ def test_api_usage_exposes_cache_token_split_reconcilable_with_usd(
         swarm_cached = int(sess["swarm_cache_read_tokens"])
         assert pilot_cached == 30_000
         assert swarm_cached == 20_000
+        # Absolute tokens_cached peels worker overlap once (not pilot+swarm double).
         assert sess["tokens_cached"] == pilot_cached + swarm_cached
         assert abs(sess["cache_savings_usd"] - (pilot_cached / 1_000_000.0) * 3.0 * 0.9) < 1e-9
         assert abs(sess["cache_saved_usd_swarm"] - (swarm_cached / 1_000_000.0) * 3.0 * 0.9) < 1e-9
+        assert sess["pilot_input_tokens"] == 30_000
+        assert abs(sess["pilot_cache_hit_ratio"] - 1.0) < 1e-9
+        assert sess["swarm_input_tokens"] == 50_000
+        assert abs(sess["swarm_cache_hit_ratio"] - 0.4) < 1e-9
+        assert sess["prompt_input_tokens"] == 80_000
+        assert abs(sess["prompt_cache_hit_ratio"] - (50_000 / 80_000)) < 1e-9
     finally:
         httpd.shutdown()
+
+
+def test_cache_hit_ratio_is_cache_read_over_input_never_total():
+    from harness.api.cost_accounting import _cache_hit_ratio
+
+    assert abs(_cache_hit_ratio(96_800, 100_000) - 0.968) < 1e-9
+    assert abs(_cache_hit_ratio(86_600, 100_000) - 0.866) < 1e-9
+    # Invalid provider/meter skew: never clamp into a perfect 100% hit.
+    assert _cache_hit_ratio(120_000, 100_000) is None
+
+
+def test_cache_hit_ratio_unavailable_denominator_is_none_not_zero():
+    from harness.api.cost_accounting import _cache_hit_ratio
+
+    assert _cache_hit_ratio(10_000, 0) is None
+    assert _cache_hit_ratio(10_000, None) is None
+    assert _cache_hit_ratio(0, 0) is None
+
+
+def test_source_owned_lanes_independent_pilot_and_swarm_no_subtraction_leakage():
+    from harness.api.cost_accounting import _source_owned_cache_lanes
+
+    lanes = _source_owned_cache_lanes(
+        pilot_tokens_in=100_000,
+        pilot_tokens_cached=96_800,
+        worker_tokens_in=0,
+        worker_tokens_cached=0,
+        swarm_tokens_in=200_000,
+        swarm_tokens_cached=173_200,
+    )
+    assert lanes["pilot_cache_read_tokens"] == 96_800
+    assert lanes["swarm_cache_read_tokens"] == 173_200
+    assert lanes["tokens_cached"] == 96_800 + 173_200
+    assert lanes["prompt_cache_read_tokens"] == lanes["tokens_cached"]
+    assert abs(lanes["pilot_cache_hit_ratio"] - 0.968) < 1e-9
+    assert abs(lanes["swarm_cache_hit_ratio"] - 0.866) < 1e-9
+    assert abs(lanes["prompt_cache_hit_ratio"] - ((96_800 + 173_200) / 300_000)) < 1e-9
+
+
+def test_source_owned_lanes_worker_fold_does_not_double_count():
+    from harness.api.cost_accounting import _source_owned_cache_lanes
+
+    lanes = _source_owned_cache_lanes(
+        pilot_tokens_in=80_000,
+        pilot_tokens_cached=50_000,
+        worker_tokens_in=50_000,
+        worker_tokens_cached=20_000,
+        swarm_tokens_in=50_000,
+        swarm_tokens_cached=20_000,
+    )
+    assert lanes["pilot_cache_read_tokens"] == 30_000
+    assert lanes["swarm_cache_read_tokens"] == 20_000
+    assert lanes["tokens_cached"] == 50_000
+    assert lanes["prompt_cache_read_tokens"] == lanes["tokens_cached"]
+    assert lanes["pilot_cache_savings_tokens"] == 30_000
+
+
+def test_source_owned_lanes_local_only_residual_workers_in_ratio():
+    """Local workers with empty swarm store must not show native-only % vs full reads."""
+    from harness.api.cost_accounting import _source_owned_cache_lanes
+
+    lanes = _source_owned_cache_lanes(
+        pilot_tokens_in=100_000,
+        pilot_tokens_cached=70_000,
+        worker_tokens_in=80_000,
+        worker_tokens_cached=65_000,
+        swarm_tokens_in=0,
+        swarm_tokens_cached=0,
+    )
+    assert lanes["tokens_cached"] == 70_000
+    assert lanes["pilot_cache_read_tokens"] == 70_000
+    assert lanes["prompt_cache_read_tokens"] == 70_000
+    assert lanes["pilot_cache_savings_tokens"] == 70_000
+    assert lanes["pilot_input_tokens"] == 100_000
+    assert lanes["prompt_input_tokens"] == 100_000
+    assert abs(lanes["pilot_cache_hit_ratio"] - 0.7) < 1e-9
+    assert abs(lanes["prompt_cache_hit_ratio"] - 0.7) < 1e-9
+    assert lanes["swarm_cache_hit_ratio"] is None
+
+
+def test_source_owned_lanes_residual_without_matching_input_nulls_ratio():
+    """Residual cache without max(0,w_in-s_in) must null ratios, not invent a %."""
+    from harness.api.cost_accounting import _source_owned_cache_lanes
+
+    lanes = _source_owned_cache_lanes(
+        pilot_tokens_in=100_000,
+        pilot_tokens_cached=70_000,
+        worker_tokens_in=50_000,
+        worker_tokens_cached=65_000,
+        swarm_tokens_in=50_000,
+        swarm_tokens_cached=20_000,
+    )
+    # Reads still reconcile; ratios refuse the unmatched residual.
+    assert lanes["tokens_cached"] == 70_000
+    assert lanes["prompt_cache_read_tokens"] == 70_000
+    assert lanes["pilot_cache_read_tokens"] == 50_000
+    assert lanes["swarm_cache_read_tokens"] == 20_000
+    assert lanes["pilot_cache_hit_ratio"] is None
+    assert lanes["prompt_cache_hit_ratio"] is None
+    assert abs(lanes["swarm_cache_hit_ratio"] - 0.4) < 1e-9
+
+
+def test_source_owned_lanes_cache_gt_input_nulls_lane_ratio():
+    from harness.api.cost_accounting import _source_owned_cache_lanes
+
+    lanes = _source_owned_cache_lanes(
+        pilot_tokens_in=10_000,
+        pilot_tokens_cached=12_000,
+        worker_tokens_in=0,
+        worker_tokens_cached=0,
+        swarm_tokens_in=0,
+        swarm_tokens_cached=0,
+    )
+    assert lanes["pilot_cache_read_tokens"] == 12_000
+    assert lanes["tokens_cached"] == 12_000
+    assert lanes["prompt_cache_read_tokens"] == 12_000
+    assert lanes["pilot_cache_hit_ratio"] is None
+    assert lanes["prompt_cache_hit_ratio"] is None
+
+
+def test_tokens_in_swarm_dedupes_per_task():
+    arts = [
+        _verification("j1", "t1", "worker-model", 200_000, 10_000, tokens_cached=100_000),
+        _verification("j1", "t1", "worker-model", 200_000, 10_000, tokens_cached=100_000),
+        _verification("j1", "t2", "worker-model", 50_000, 5_000, tokens_cached=40_000),
+    ]
+    from harness.api.swarm_cost import _tokens_in_swarm
+
+    assert _tokens_in_swarm(arts) == 250_000

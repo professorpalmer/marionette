@@ -404,6 +404,37 @@ def _tokens_cached_swarm(raw_arts) -> int:
     return total
 
 
+def _tokens_in_swarm(raw_arts) -> int:
+    """Sum ``tokens_in`` across usage-bearing artifacts (one per task).
+
+    Companion to :func:`_tokens_cached_swarm` so swarm cache-hit ratio uses the
+    same task-deduped prompt-input denominator. Best-effort.
+    """
+    seen_tasks: set = set()
+    total = 0
+    try:
+        for artifact in raw_arts or []:
+            payload = getattr(artifact, "payload", None) or {}
+            if not isinstance(payload, dict):
+                continue
+            if "tokens_in" not in payload and "tokens_out" not in payload:
+                continue
+            task_id = getattr(artifact, "task_id", None)
+            if task_id:
+                if task_id in seen_tasks:
+                    continue
+                seen_tasks.add(task_id)
+            try:
+                tokens_in = int(payload.get("tokens_in") or 0)
+            except (TypeError, ValueError):
+                continue
+            if tokens_in > 0:
+                total += tokens_in
+    except Exception:
+        return 0
+    return total
+
+
 def _cache_saved_usd_swarm_detail(raw_arts, registry: list) -> dict:
     """Store-job swarm prompt-cache savings with honest list-rate ladder.
 

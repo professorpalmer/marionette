@@ -31,10 +31,16 @@ def test_swarm_store_artifacts_add_no_worker_dollars():
     worker actually ran on."""
     s = _session()
     s._add_worker_tokens_from_artifacts([
-        {"task_id": "t1", "tokens_in": 500_000, "tokens_out": 100_000},
+        {
+            "task_id": "t1",
+            "tokens_in": 500_000,
+            "tokens_out": 100_000,
+            "tokens_cached": 40_000,
+        },
     ])
     assert s._worker_tokens_in == 500_000
     assert s._worker_tokens_out == 100_000
+    assert s._worker_tokens_cached == 40_000
     assert s._worker_cost_usd == 0.0
 
 
@@ -42,10 +48,13 @@ def test_attribute_worker_cost_dollars_still_counted_for_local_workers():
     """Local provider workers are NOT in the swarm store, so their dollars must
     keep flowing into _worker_cost_usd (the default path)."""
     s = _session()
-    s._attribute_worker_cost(10_000, 5_000, real_cost_usd=1.25)
+    s._attribute_worker_cost(
+        10_000, 5_000, real_cost_usd=1.25, tokens_cached=2_000
+    )
     assert s._worker_cost_usd == 1.25
     assert s._worker_tokens_in == 10_000
     assert s._worker_tokens_out == 5_000
+    assert s._worker_tokens_cached == 2_000
 
 
 def test_attribute_worker_cost_count_dollars_false_records_split_only():
@@ -54,6 +63,7 @@ def test_attribute_worker_cost_count_dollars_false_records_split_only():
     assert s._worker_cost_usd == 0.0
     assert s._worker_tokens_in == 7
     assert s._worker_tokens_out == 3
+    assert s._worker_tokens_cached == 0
 
 
 def test_job_cost_window_excludes_prior_run_jobs():
