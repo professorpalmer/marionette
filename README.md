@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.149, deliberately pre-1.0. Worker reports now distinguish disposable worktrees from the live checkout, Codex turns keep stable prompt-cache affinity, provider stream stalls surface honestly, and cache savings fail closed on ambiguous prices while marking unpriced portions as partial; rides puppetmaster-ai==1.21.2.
+> Status: v0.9.150, deliberately pre-1.0. Routing and execution provenance are canonical, workspace-local LSP tools are discovered cross-platform, prompt-cache hit rates use prompt input rather than total process tokens, and tool readiness is reported separately from invocation success; rides puppetmaster-ai==1.21.2.
 
 ## Documentation
 
@@ -41,7 +41,7 @@ SSE):
 - **Right -- tools on demand.** Default closed with a slim dock (Swarm, Changes,
   Browser, Terminal, State). State holds CodeGraph, Wiki, and MCP. Open restores
   last width on the chosen tab. Optional Firecrawl: set `FIRECRAWL_API_KEY`, then
-  add Firecrawl from State ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ MCP (catalog entry; not baked into native `web_fetch`).
+  add Firecrawl from State > MCP (catalog entry; not baked into native `web_fetch`).
 - **Left -- workspace.** Projects, git branches/worktrees, sessions (auto-named
   from the first message), and the Puppetmaster job list.
 
