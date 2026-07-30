@@ -458,7 +458,7 @@ class ToolDispatchMixin:
         try:
             from .lsp_code_intelligence import discover_lsp_tools, get_lsp_report
 
-            tools = discover_lsp_tools()
+            tools = discover_lsp_tools(root=root_path)
             text = get_lsp_report(
                 language=language,
                 mode=mode,

@@ -8,6 +8,28 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
+# Bounded workspace search: enough for layouts like webapp/ or packages/foo/,
+# without crawling into dependency trees.
+_MAX_PACKAGE_DEPTH = 4
+_MAX_NODE_BIN_DIRS = 32
+_SKIP_WALK_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "__pycache__",
+        ".codegraph",
+        "results",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        "coverage",
+    }
+)
+
 
 @dataclass(frozen=True)
 class LspDiagnostic:
@@ -45,21 +67,227 @@ class LspToolAvailability:
         return bool(self.typescript_tsc or self.typescript_tsserver or self.typescript_typescript_language_server)
 
 
-def discover_lsp_tools(*, which_fn=None) -> LspToolAvailability:
-    # Keep tool discovery conservative: first-pass diagnostics should use the
-    # simplest, best-supported CLI surface for each language.
+def _bin_name_variants(name: str) -> tuple[str, ...]:
+    """POSIX shim, npm Windows .cmd shim, and .exe — checked on every platform."""
+    return (name, f"{name}.cmd", f"{name}.exe")
+
+
+def _first_existing_binary(directory: str, name: str) -> Optional[str]:
+    if not directory or not os.path.isdir(directory):
+        return None
+    for variant in _bin_name_variants(name):
+        path = os.path.join(directory, variant)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _venv_bin_dirs(root: str) -> list[str]:
+    """Workspace virtualenv bin/Scripts dirs (deterministic order)."""
+    out: list[str] = []
+    for venv_name in (".venv", "venv"):
+        for sub in ("bin", "Scripts"):
+            path = os.path.join(root, venv_name, sub)
+            if os.path.isdir(path):
+                out.append(path)
+    return out
+
+
+def _workspace_package_roots(root: str) -> list[tuple[int, str]]:
+    """Bounded package roots as ``(depth, abs_dir)``, shallowest first.
+
+    Never descends into node_modules (or other skip dirs). A directory is a
+    package root when it contains ``package.json``. Results are ordered by
+    depth then path so shallower packages (e.g. ``webapp/``) win over deeper
+    siblings.
+    """
+    root = os.path.abspath(root)
+    if not os.path.isdir(root):
+        return []
+
+    ranked: list[tuple[int, str]] = []
+    seen: set[str] = set()
+
+    for dirpath, dirnames, _filenames in os.walk(root):
+        rel = os.path.relpath(dirpath, root)
+        depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
+        dirnames[:] = sorted(
+            d for d in dirnames if d not in _SKIP_WALK_DIRS and not d.startswith(".")
+        )
+        if depth >= _MAX_PACKAGE_DEPTH:
+            dirnames.clear()
+            continue
+        if dirpath == root:
+            continue
+        if not os.path.isfile(os.path.join(dirpath, "package.json")):
+            continue
+        abs_dir = os.path.abspath(dirpath)
+        norm = os.path.normcase(abs_dir)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        ranked.append((depth, abs_dir))
+
+    ranked.sort(key=lambda item: (item[0], os.path.normcase(item[1])))
+    return ranked
+
+
+def _workspace_node_bin_dirs(root: str) -> list[str]:
+    """Bounded list of package-root node_modules/.bin directories.
+
+    Never descends into node_modules (or other skip dirs). Considers the
+    workspace root plus nested package.json roots. Results are ordered by
+    package depth, then path, so shallower installs (e.g. webapp/) win over
+    deeper siblings.
+    """
+    root = os.path.abspath(root)
+    if not os.path.isdir(root):
+        return []
+
+    ranked: list[tuple[int, str]] = []
+    seen: set[str] = set()
+
+    def _add(bin_dir: str, depth: int) -> None:
+        if not os.path.isdir(bin_dir):
+            return
+        norm = os.path.normcase(os.path.abspath(bin_dir))
+        if norm in seen:
+            return
+        seen.add(norm)
+        ranked.append((depth, bin_dir))
+
+    _add(os.path.join(root, "node_modules", ".bin"), 0)
+    for depth, package_dir in _workspace_package_roots(root):
+        _add(os.path.join(package_dir, "node_modules", ".bin"), depth)
+
+    ranked.sort(key=lambda item: (item[0], os.path.normcase(item[1])))
+    return [path for _depth, path in ranked[:_MAX_NODE_BIN_DIRS]]
+
+
+def _shallowest_package_tsconfig(root: str) -> Optional[tuple[str, str]]:
+    """Return ``(package_dir, tsconfig_path)`` for the shallowest package tsconfig."""
+    for _depth, package_dir in _workspace_package_roots(root):
+        tsconfig = os.path.join(package_dir, "tsconfig.json")
+        if os.path.isfile(tsconfig):
+            return package_dir, tsconfig
+    return None
+
+
+def _resolve_tool(
+    name: str,
+    *,
+    root: Optional[str],
+    which_fn,
+    search_venv: bool = False,
+    venv_dirs: Optional[list[str]] = None,
+    node_bin_dirs: Optional[list[str]] = None,
+) -> Optional[str]:
+    """Resolve a CLI tool: PATH first, then workspace .venv / node_modules/.bin."""
+    found = _which(name, which_fn=which_fn)
+    if found:
+        return found
+    if not root:
+        return None
+    root = os.path.abspath(root)
+    if search_venv:
+        directories = venv_dirs if venv_dirs is not None else _venv_bin_dirs(root)
+        for directory in directories:
+            hit = _first_existing_binary(directory, name)
+            if hit:
+                return hit
+    directories = node_bin_dirs if node_bin_dirs is not None else _workspace_node_bin_dirs(root)
+    for directory in directories:
+        hit = _first_existing_binary(directory, name)
+        if hit:
+            return hit
+    return None
+
+
+def discover_lsp_tools(*, root: Optional[str] = None, which_fn=None) -> LspToolAvailability:
+    """Discover LSP CLIs on PATH and in common workspace-local install locations.
+
+    Workspace search is stdlib-only, deterministic, and bounded: it never crawls
+    into node_modules trees and never downloads or shells out to install tools.
+    Venv and node_modules/.bin candidates are computed once per call and reused
+    for every tool name (PATH still wins per tool).
+    """
     if which_fn is None:
         which_fn = shutil.which
+    abs_root = os.path.abspath(root) if root else None
+    venv_dirs = _venv_bin_dirs(abs_root) if abs_root else []
+    node_bin_dirs = _workspace_node_bin_dirs(abs_root) if abs_root else []
     return LspToolAvailability(
-        python_pyright=_which("pyright", which_fn=which_fn),
-        python_pyright_langserver=_which("pyright-langserver", which_fn=which_fn),
-        typescript_tsc=_which("tsc", which_fn=which_fn),
-        # `tsserver` is not commonly on PATH, but the request explicitly calls
-        # it out, so surface it if available.
-        typescript_tsserver=_which("tsserver", which_fn=which_fn),
-        # Common alternative when `tsc` is missing.
-        typescript_typescript_language_server=_which("typescript-language-server", which_fn=which_fn),
+        python_pyright=_resolve_tool(
+            "pyright",
+            root=abs_root,
+            which_fn=which_fn,
+            search_venv=True,
+            venv_dirs=venv_dirs,
+            node_bin_dirs=node_bin_dirs,
+        ),
+        python_pyright_langserver=_resolve_tool(
+            "pyright-langserver",
+            root=abs_root,
+            which_fn=which_fn,
+            search_venv=True,
+            venv_dirs=venv_dirs,
+            node_bin_dirs=node_bin_dirs,
+        ),
+        typescript_tsc=_resolve_tool(
+            "tsc",
+            root=abs_root,
+            which_fn=which_fn,
+            node_bin_dirs=node_bin_dirs,
+        ),
+        typescript_tsserver=_resolve_tool(
+            "tsserver",
+            root=abs_root,
+            which_fn=which_fn,
+            node_bin_dirs=node_bin_dirs,
+        ),
+        typescript_typescript_language_server=_resolve_tool(
+            "typescript-language-server",
+            root=abs_root,
+            which_fn=which_fn,
+            node_bin_dirs=node_bin_dirs,
+        ),
     )
+
+
+def _tool_argv(tool_path: str, *args: str) -> list[str]:
+    """Build a shell=False argv list for a discovered tool path.
+
+    Windows npm shims are ``*.cmd``; CreateProcess cannot execute them directly,
+    so invoke via ``cmd.exe /c`` with a list argv (never shell=True).
+    """
+    lower = tool_path.lower()
+    if os.name == "nt" and (lower.endswith(".cmd") or lower.endswith(".bat")):
+        return ["cmd.exe", "/c", tool_path, *args]
+    return [tool_path, *args]
+
+
+def _resolve_tsc_project(*, root: str, tsc_path: str) -> tuple[str, Optional[str]]:
+    """Choose cwd + optional ``-p`` tsconfig for a tsc diagnostics run.
+
+    Explicit workspace-root ``tsconfig.json`` always wins. When the root has
+    none, project selection is independent of where ``tsc`` was resolved
+    (PATH or nested ``node_modules/.bin``): use the shallowest in-root
+    package ``tsconfig.json`` from the same bounded package candidates as
+    tool discovery (cwd = that package directory).
+
+    ``tsc_path`` is accepted for call-site compatibility but ignored.
+    """
+    _ = tsc_path
+    root = os.path.abspath(root)
+    root_tsconfig = os.path.join(root, "tsconfig.json")
+    if os.path.isfile(root_tsconfig):
+        return root, root_tsconfig
+
+    found = _shallowest_package_tsconfig(root)
+    if found:
+        package_dir, tsconfig = found
+        return package_dir, tsconfig
+    return root, None
 
 
 def _run_command_capture(
@@ -336,30 +564,38 @@ def _language_to_probe(language: str) -> tuple[bool, bool]:
 
 
 def get_lsp_status(*, language: str, root: str, tools: Optional[LspToolAvailability] = None) -> str:
-    tools = tools or discover_lsp_tools()
+    tools = tools or discover_lsp_tools(root=root)
     probe_py, probe_ts = _language_to_probe(language)
     lines: list[str] = []
     lines.append("LSP status")
     if probe_py:
-        lines.append(
-            "Python: "
-            + (
+        if tools.python_pyright:
+            py_msg = (
                 "pyright available"
-                if tools.python_pyright
-                else "pyright not found"
-            )
-            + (
                 f" (pyright-langserver: {bool(tools.python_pyright_langserver)})"
-                if tools.python_pyright_langserver or tools.python_pyright
-                else ""
             )
-        )
+        else:
+            py_msg = (
+                "pyright not found on PATH or in workspace "
+                ".venv/bin|Scripts or node_modules/.bin"
+            )
+        lines.append("Python: " + py_msg)
     if probe_ts:
-        lines.append(
-            "TypeScript: "
-            + ("tsc available" if tools.typescript_tsc else "tsc not found")
-            + f" (tsserver: {bool(tools.typescript_tsserver)}, typescript-language-server: {bool(tools.typescript_typescript_language_server)})"
-        )
+        if tools.typescript_tsc:
+            ts_msg = (
+                "tsc available"
+                + f" (tsserver: {bool(tools.typescript_tsserver)}, "
+                f"typescript-language-server: "
+                f"{bool(tools.typescript_typescript_language_server)})"
+            )
+        else:
+            ts_msg = (
+                "tsc not found on PATH or in workspace node_modules/.bin"
+                + f" (tsserver: {bool(tools.typescript_tsserver)}, "
+                f"typescript-language-server: "
+                f"{bool(tools.typescript_typescript_language_server)})"
+            )
+        lines.append("TypeScript: " + ts_msg)
     # Keep it small: only summarize.
     return "\n".join(lines)
 
@@ -383,7 +619,7 @@ def get_lsp_report(
     timeout_s = max(0.1, timeout_ms_int / 1000.0)
 
     root = root or os.getcwd()
-    tools = tools or discover_lsp_tools()
+    tools = tools or discover_lsp_tools(root=root)
     probe_py, probe_ts = _language_to_probe(language)
 
     if mode == "status":
@@ -398,11 +634,14 @@ def get_lsp_report(
     chunks: list[str] = []
     if probe_py:
         if not tools.python_pyright:
-            chunks.append("Python diagnostics: no tool available (pyright not found).")
+            chunks.append(
+                "Python diagnostics: no tool available (pyright not found on "
+                "PATH or in workspace .venv/bin|Scripts or node_modules/.bin)."
+            )
         else:
             chunks.append("Python diagnostics:")
             try:
-                cmd = [tools.python_pyright, "--outputjson", "."]
+                cmd = _tool_argv(tools.python_pyright, "--outputjson", ".")
                 rc, output = _run_command_capture(cmd, cwd=root, timeout_s=timeout_s)
                 py_diags = parse_pyright_diagnostics(output)
                 if not py_diags and output.strip():
@@ -423,15 +662,24 @@ def get_lsp_report(
 
     if probe_ts:
         if not tools.typescript_tsc:
-            chunks.append("TypeScript diagnostics: no tool available (tsc not found).")
+            chunks.append(
+                "TypeScript diagnostics: no tool available (tsc not found on "
+                "PATH or in workspace node_modules/.bin)."
+            )
         else:
             chunks.append("TypeScript diagnostics:")
             try:
-                tsconfig = os.path.join(root, "tsconfig.json")
-                cmd: list[str] = [tools.typescript_tsc, "--noEmit", "--pretty", "false"]
-                if os.path.isfile(tsconfig):
+                tsc_cwd, tsconfig = _resolve_tsc_project(
+                    root=root, tsc_path=tools.typescript_tsc,
+                )
+                cmd = _tool_argv(
+                    tools.typescript_tsc, "--noEmit", "--pretty", "false",
+                )
+                if tsconfig:
                     cmd.extend(["-p", tsconfig])
-                rc, output = _run_command_capture(cmd, cwd=root, timeout_s=timeout_s)
+                rc, output = _run_command_capture(
+                    cmd, cwd=tsc_cwd, timeout_s=timeout_s,
+                )
                 ts_diags = parse_tsc_diagnostics(output)
                 if ts_diags:
                     chunks.append(f"  Parsed {len(ts_diags)} diagnostics.")
