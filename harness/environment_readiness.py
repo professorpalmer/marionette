@@ -34,7 +34,10 @@ def _normalize_workspace(root: Optional[str]) -> str:
     if not raw:
         return ""
     try:
-        return os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
+        # Preserve the filesystem's display casing in the API payload. Windows
+        # cache identity is case-insensitive, but lowercasing the user-facing
+        # workspace path makes an otherwise valid path look rewritten.
+        return os.path.abspath(os.path.expanduser(raw))
     except Exception:
         return raw
 
@@ -55,7 +58,7 @@ def _browser_chrome_cache_key() -> str:
 
 
 def _readiness_cache_key(workspace: str) -> tuple[str, str]:
-    return (workspace, _browser_chrome_cache_key())
+    return (os.path.normcase(workspace), _browser_chrome_cache_key())
 
 
 def browser_remedy(*, available: bool, configured: str = "") -> str:
