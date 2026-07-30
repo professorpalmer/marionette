@@ -831,6 +831,63 @@ describe("streamApply module", () => {
     });
   });
 
+  it("mixed reused+fresh: swarm_result before swarm_pending still settles the pill", () => {
+    // Counterexample: reused terminal result arrives before the multi-job
+    // pending frame; appendSwarmPending must seed terminal_job_ids so the
+    // later fresh result can clear running.
+    let items: Item[] = [];
+    items = applySwarmResultToItems(items, {
+      job_id: "local-reused",
+      objective: "goal A",
+      result: {
+        applied: true,
+        files: [],
+        summary: "reused prior analysis",
+        error: null,
+        reuse_status: "reused",
+        source_job_id: "local-src",
+      },
+    });
+    items = appendSwarmPending(
+      items,
+      ["local-reused", "local-fresh"],
+      "Parallel wave of goals: goal A, goal B",
+    );
+    const pendingAfterSeed = items.filter((it) => it.kind === "swarm_pending");
+    expect(pendingAfterSeed).toHaveLength(1);
+    expect(pendingAfterSeed[0]).toMatchObject({
+      kind: "swarm_pending",
+      status: "running",
+      resolved: false,
+      terminal_job_ids: ["local-reused"],
+    });
+    expect(pendingAfterSeed[0].job_ids).toEqual(["local-fresh", "local-reused"]);
+
+    items = applySwarmResultToItems(items, {
+      job_id: "local-fresh",
+      objective: "goal B",
+      result: {
+        applied: true,
+        files: [],
+        summary: "fresh analysis",
+        error: null,
+        reuse_status: "fresh",
+      },
+    });
+    const pending = items.filter((it) => it.kind === "swarm_pending");
+    const results = items.filter((it) => it.kind === "swarm_result");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      kind: "swarm_pending",
+      status: "done",
+      resolved: true,
+    });
+    expect(pending[0].terminal_job_ids).toEqual(["local-fresh", "local-reused"]);
+    expect(results).toHaveLength(2);
+    expect(results.map((r) => r.job_id).sort()).toEqual(["local-fresh", "local-reused"]);
+    expect(results.some((r) => r.reuse_status === "reused")).toBe(true);
+  });
+
   it("finalizeOrphanSwarmPills ends spinning pills with no live tracker entry", () => {
     const items: Item[] = [
       {
@@ -992,6 +1049,97 @@ describe("streamApply module", () => {
     });
     expect(again).toBe(items);
     expect(again.filter((it) => it.kind === "swarm_result")).toHaveLength(1);
+
+    // Reattach with richer reuse provenance must patch in place, not first-wins.
+    const enriched = applySwarmResultToItems(items, {
+      job_id: "job_deadbeef1234",
+      objective: "audit auth",
+      applied: true,
+      files: ["a.ts"],
+      summary: "done",
+      error: null,
+      result: {
+        applied: true,
+        files: ["a.ts"],
+        summary: "done",
+        error: null,
+        reuse_status: "partial",
+        source_job_id: "local-src",
+        reuse_reason: "subset_invalidated",
+        invalidated_paths: ["harness/auth.py"],
+      },
+    });
+    expect(enriched.filter((it) => it.kind === "swarm_result")).toHaveLength(1);
+    expect(enriched.find((it) => it.kind === "swarm_result")).toMatchObject({
+      reuse_status: "partial",
+      source_job_id: "local-src",
+      invalidated_paths: ["harness/auth.py"],
+    });
+
+    // Later SSE correction: explicit false / fresh / [] must replace prior fields.
+    const corrected = applySwarmResultToItems(enriched, {
+      job_id: "job_deadbeef1234",
+      objective: "audit auth",
+      result: {
+        applied: false,
+        files: ["a.ts"],
+        summary: "corrected",
+        error: "failed",
+        reuse_status: "fresh",
+        source_job_id: "",
+        reuse_reason: "",
+        invalidated_paths: [],
+      },
+    });
+    expect(corrected.filter((it) => it.kind === "swarm_result")).toHaveLength(1);
+    expect(corrected.find((it) => it.kind === "swarm_result")).toMatchObject({
+      applied: false,
+      reuse_status: "fresh",
+      source_job_id: "",
+      invalidated_paths: [],
+      error: "failed",
+    });
+
+    // Error-only SSE correction must patch (not drop) when other fields omitted.
+    const errorOnly = applySwarmResultToItems(corrected, {
+      job_id: "job_deadbeef1234",
+      objective: "audit auth",
+      result: {
+        error: "timeout after retry",
+      },
+    });
+    expect(errorOnly.find((it) => it.kind === "swarm_result")).toMatchObject({
+      error: "timeout after retry",
+      applied: false,
+      reuse_status: "fresh",
+      source_job_id: "",
+      files: ["a.ts"],
+    });
+
+    // Files-only SSE correction; explicit [] clears, omitted files inherit.
+    const filesOnly = applySwarmResultToItems(errorOnly, {
+      job_id: "job_deadbeef1234",
+      objective: "audit auth",
+      result: {
+        files: ["b.ts", "c.ts"],
+      },
+    });
+    expect(filesOnly.find((it) => it.kind === "swarm_result")).toMatchObject({
+      files: ["b.ts", "c.ts"],
+      error: "timeout after retry",
+      applied: false,
+    });
+    const filesCleared = applySwarmResultToItems(filesOnly, {
+      job_id: "job_deadbeef1234",
+      objective: "audit auth",
+      result: {
+        files: [],
+      },
+    });
+    expect(filesCleared.find((it) => it.kind === "swarm_result")).toMatchObject({
+      files: [],
+      error: "timeout after retry",
+    });
   });
 
   it("dedupeDisplayItems collapses hydrate duplicate swarm_pending rows", () => {

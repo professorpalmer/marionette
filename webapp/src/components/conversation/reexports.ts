@@ -13,6 +13,7 @@ export {
   shouldPreferLocalTranscript,
   mergeTranscriptItems,
   transcriptFingerprint,
+  mergeSwarmResultReuse,
 } from "./transcriptItems";
 export {
   finalizeStreamingThinking,

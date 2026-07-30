@@ -57,6 +57,80 @@ describe("dedupeDisplayItems", () => {
     expect(dedupeDisplayItems(items)).toHaveLength(1);
   });
 
+  it("merges richer reuse provenance onto duplicate swarm_result", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_result",
+        job_id: "local-1",
+        applied: true,
+        files: [],
+        summary: "thin",
+        error: null,
+      },
+      {
+        kind: "swarm_result",
+        job_id: "local-1",
+        applied: true,
+        files: [],
+        summary: "reused prior",
+        error: null,
+        reuse_status: "partial",
+        source_job_id: "local-src",
+        reuse_reason: "subset_invalidated",
+        invalidated_paths: ["harness/auth.py", "harness/pilot.py"],
+      },
+    ];
+    const out = dedupeDisplayItems(items);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      kind: "swarm_result",
+      job_id: "local-1",
+      reuse_status: "partial",
+      source_job_id: "local-src",
+      invalidated_paths: ["harness/auth.py", "harness/pilot.py"],
+    });
+  });
+
+  it("hydrate dedupe: later fresh/false/[] corrects prior partial provenance", () => {
+    const items: Item[] = [
+      {
+        kind: "swarm_result",
+        job_id: "local-1",
+        applied: true,
+        files: [],
+        summary: "partial reuse",
+        error: null,
+        reuse_status: "partial",
+        source_job_id: "local-src",
+        reuse_reason: "subset_invalidated",
+        invalidated_paths: ["harness/auth.py"],
+      },
+      {
+        kind: "swarm_result",
+        job_id: "local-1",
+        applied: false,
+        files: [],
+        summary: "corrected fresh failure",
+        error: "swarm findings are thin",
+        reuse_status: "fresh",
+        source_job_id: "",
+        reuse_reason: "",
+        invalidated_paths: [],
+      },
+    ];
+    const out = dedupeDisplayItems(items);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: false,
+      reuse_status: "fresh",
+      source_job_id: "",
+      invalidated_paths: [],
+      error: "swarm findings are thin",
+    });
+  });
+
   it("collapses duplicate swarm_pending rows by normalized job ids", () => {
     const items: Item[] = [
       {
@@ -195,9 +269,279 @@ describe("transcriptFingerprint", () => {
     expect(transcriptFingerprint(a)).toBe(transcriptFingerprint(b));
     expect(transcriptFingerprint(a)).not.toBe(transcriptFingerprint(c));
   });
+
+  it("changes when swarm_result reuse provenance is enriched", () => {
+    const thin: Item[] = [{
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: true,
+      files: [],
+      summary: "ok",
+      error: null,
+    }];
+    const rich: Item[] = [{
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: true,
+      files: [],
+      summary: "ok",
+      error: null,
+      reuse_status: "partial",
+      source_job_id: "local-src",
+      invalidated_paths: ["harness/auth.py"],
+    }];
+    expect(transcriptFingerprint(thin)).not.toBe(transcriptFingerprint(rich));
+  });
+
+  it("changes when swarm_result error or reuse_reason alone changes", () => {
+    const base: Item = {
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: false,
+      files: [],
+      summary: "ok",
+      error: null,
+      reuse_status: "fresh",
+      reuse_reason: "full_swarm",
+      validation_fingerprint: "fp-1",
+    };
+    const errorOnly: Item[] = [{ ...base, error: "boom" }];
+    const reasonOnly: Item[] = [{ ...base, reuse_reason: "fingerprint_match" }];
+    expect(transcriptFingerprint([base])).not.toBe(transcriptFingerprint(errorOnly));
+    expect(transcriptFingerprint([base])).not.toBe(transcriptFingerprint(reasonOnly));
+  });
+
+  it("changes on validation_fingerprint-only clear", () => {
+    const withFp: Item[] = [{
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: true,
+      files: [],
+      summary: "ok",
+      error: null,
+      reuse_status: "reused",
+      source_job_id: "local-src",
+      reuse_reason: "fingerprint_match",
+      validation_fingerprint: "fp-partial",
+      invalidated_paths: [],
+    }];
+    const cleared: Item[] = [{
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: true,
+      files: [],
+      summary: "ok",
+      error: null,
+      reuse_status: "reused",
+      source_job_id: "local-src",
+      reuse_reason: "fingerprint_match",
+      validation_fingerprint: "",
+      invalidated_paths: [],
+    }];
+    expect(transcriptFingerprint(withFp)).not.toBe(transcriptFingerprint(cleared));
+  });
+
+  it("changes on remote swarm_pending running-to-terminal-only transition", () => {
+    const running: Item[] = [{
+      kind: "swarm_pending",
+      job_ids: ["j2", "j1"],
+      objective: "ship",
+      status: "running",
+      resolved: false,
+      terminal_job_ids: [],
+    }];
+    const terminal: Item[] = [{
+      kind: "swarm_pending",
+      job_ids: ["j2", "j1"],
+      objective: "ship",
+      status: "done",
+      resolved: true,
+      terminal_job_ids: ["j1", "j2"],
+    }];
+    expect(transcriptFingerprint(running)).not.toBe(transcriptFingerprint(terminal));
+  });
+
+  it("keeps bounded deterministic ordering for path and job id lists", () => {
+    const a: Item[] = [{
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: true,
+      files: ["b.py", "a.py"],
+      summary: "ok",
+      error: null,
+      invalidated_paths: ["z.py", "a.py"],
+    }, {
+      kind: "swarm_pending",
+      job_ids: ["j2", "j1"],
+      objective: "ship",
+      status: "running",
+      terminal_job_ids: ["j2", "j1"],
+    }];
+    const b: Item[] = [{
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: true,
+      files: ["a.py", "b.py"],
+      summary: "ok",
+      error: null,
+      invalidated_paths: ["a.py", "z.py"],
+    }, {
+      kind: "swarm_pending",
+      job_ids: ["j1", "j2"],
+      objective: "ship",
+      status: "running",
+      terminal_job_ids: ["j1", "j2"],
+    }];
+    expect(transcriptFingerprint(a)).toBe(transcriptFingerprint(b));
+  });
 });
 
 describe("transcriptResponseToItems", () => {
+  it("hydrates invalidated_paths onto swarm_result rows", () => {
+    const items = transcriptResponseToItems({
+      display: [{
+        type: "swarm_result",
+        job_id: "local-1",
+        applied: true,
+        files: [],
+        summary: "partial reuse",
+        error: null,
+        reuse_status: "partial",
+        source_job_id: "local-src",
+        invalidated_paths: ["harness/auth.py", "harness/pilot.py"],
+      }],
+    });
+    expect(items[0]).toMatchObject({
+      kind: "swarm_result",
+      reuse_status: "partial",
+      invalidated_paths: ["harness/auth.py", "harness/pilot.py"],
+    });
+  });
+
+  it("hydrate+dedupe: later fresh/false/[]/empty provenance clears prior partial", () => {
+    // Explicit empty-string source_job_id / reuse_reason must survive hydrate
+    // (not coerce via || undefined) so dedupe merge can clear stale UI provenance.
+    const items = transcriptResponseToItems({
+      display: [
+        {
+          type: "swarm_result",
+          job_id: "local-1",
+          applied: true,
+          files: ["old.ts"],
+          summary: "partial reuse",
+          error: null,
+          reuse_status: "partial",
+          source_job_id: "local-src",
+          reuse_reason: "subset_invalidated",
+          invalidated_paths: ["harness/auth.py"],
+        },
+        {
+          type: "swarm_result",
+          job_id: "local-1",
+          applied: false,
+          files: [],
+          summary: "corrected fresh failure",
+          error: "swarm findings are thin",
+          reuse_status: "fresh",
+          source_job_id: "",
+          reuse_reason: "",
+          invalidated_paths: [],
+        },
+      ],
+    });
+    expect(items).toHaveLength(1);
+    const row = items[0] as Extract<Item, { kind: "swarm_result" }>;
+    expect(row).toMatchObject({
+      kind: "swarm_result",
+      job_id: "local-1",
+      applied: false,
+      reuse_status: "fresh",
+      source_job_id: "",
+      reuse_reason: "",
+      invalidated_paths: [],
+      error: "swarm findings are thin",
+      files: [],
+    });
+    // UI-facing: empty clears must not leave the prior source/reason strings.
+    expect(row.source_job_id).toBe("");
+    expect(row.reuse_reason).toBe("");
+    expect(row.source_job_id || row.reuse_reason).toBeFalsy();
+  });
+
+  it("nullish hydrate: explicit empty reuse_status/validation_fingerprint clear", () => {
+    const items = transcriptResponseToItems({
+      display: [
+        {
+          type: "swarm_result",
+          job_id: "local-1",
+          applied: true,
+          files: [],
+          summary: "partial",
+          error: null,
+          reuse_status: "partial",
+          source_job_id: "local-src",
+          reuse_reason: "subset_invalidated",
+          validation_fingerprint: "fp-partial",
+          invalidated_paths: ["a.py"],
+        },
+        {
+          type: "swarm_result",
+          job_id: "local-1",
+          applied: false,
+          files: [],
+          summary: "cleared",
+          error: "thin",
+          reuse_status: "",
+          source_job_id: "",
+          reuse_reason: "",
+          validation_fingerprint: "",
+          invalidated_paths: [],
+        },
+      ],
+    });
+    expect(items).toHaveLength(1);
+    const row = items[0] as Extract<Item, { kind: "swarm_result" }>;
+    expect(row.reuse_status).toBe("");
+    expect(row.validation_fingerprint).toBe("");
+    expect(row.source_job_id).toBe("");
+    expect(row.invalidated_paths).toEqual([]);
+  });
+
+  it("nullish hydrate: omitted reuse_status/validation_fingerprint inherit via dedupe", () => {
+    const items = transcriptResponseToItems({
+      display: [
+        {
+          type: "swarm_result",
+          job_id: "local-1",
+          applied: true,
+          files: [],
+          summary: "partial",
+          error: null,
+          reuse_status: "partial",
+          source_job_id: "local-src",
+          validation_fingerprint: "fp-keep",
+          invalidated_paths: ["a.py"],
+        },
+        {
+          type: "swarm_result",
+          job_id: "local-1",
+          applied: true,
+          files: [],
+          summary: "later thin patch",
+          error: null,
+          // reuse_status / validation_fingerprint omitted → inherit
+        },
+      ],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      reuse_status: "partial",
+      validation_fingerprint: "fp-keep",
+      source_job_id: "local-src",
+      summary: "later thin patch",
+    });
+  });
+
   it("dedupes repeated display cards from the API payload", () => {
     const items = transcriptResponseToItems({
       display: [
@@ -432,5 +776,98 @@ describe("shouldPreferLocalTranscript / mergeTranscriptItems", () => {
       "card:call-n",
       "msg:assistant:Done.",
     ]);
+  });
+
+  it("prefer-local still corrects remote authoritative swarm_result provenance", () => {
+    // Extra local cards force prefer-local; remote must still correct reuse fields.
+    const local: Item[] = [
+      msg("user", "go"),
+      card("extra-a", "local-only"),
+      card("extra-b", "local-only-2"),
+      {
+        kind: "swarm_result",
+        job_id: "local-1",
+        applied: true,
+        files: [],
+        summary: "partial reuse",
+        error: null,
+        reuse_status: "partial",
+        source_job_id: "local-src",
+        reuse_reason: "subset_invalidated",
+        invalidated_paths: ["harness/auth.py"],
+        validation_fingerprint: "fp-old",
+      },
+    ];
+    const remote: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "swarm_result",
+        job_id: "local-1",
+        applied: false,
+        files: [],
+        summary: "corrected fresh failure",
+        error: "swarm findings are thin",
+        reuse_status: "fresh",
+        source_job_id: "",
+        reuse_reason: "",
+        invalidated_paths: [],
+        validation_fingerprint: "",
+      },
+    ];
+    expect(shouldPreferLocalTranscript(local, remote)).toBe(true);
+    const merged = mergeTranscriptItems(local, remote);
+    expect(merged.filter((i) => i.kind === "card")).toHaveLength(2);
+    const result = merged.find((i) => i.kind === "swarm_result") as Extract<
+      Item,
+      { kind: "swarm_result" }
+    >;
+    expect(result).toMatchObject({
+      job_id: "local-1",
+      applied: false,
+      reuse_status: "fresh",
+      source_job_id: "",
+      reuse_reason: "",
+      invalidated_paths: [],
+      validation_fingerprint: "",
+      error: "swarm findings are thin",
+    });
+  });
+
+  it("prefer-local terminalizes remote authoritative swarm_pending by identity", () => {
+    const local: Item[] = [
+      msg("user", "go"),
+      card("extra-1", "x"),
+      card("extra-2", "y"),
+      {
+        kind: "swarm_pending",
+        job_ids: ["a", "b"],
+        objective: "wave",
+        status: "running",
+        resolved: false,
+        terminal_job_ids: [],
+      },
+    ];
+    const remote: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "swarm_pending",
+        job_ids: ["b", "a"],
+        objective: "wave",
+        status: "failed",
+        resolved: true,
+        terminal_job_ids: ["a", "b"],
+      },
+    ];
+    expect(shouldPreferLocalTranscript(local, remote)).toBe(true);
+    const merged = mergeTranscriptItems(local, remote);
+    expect(merged.filter((i) => i.kind === "card")).toHaveLength(2);
+    const pending = merged.filter((i) => i.kind === "swarm_pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      job_ids: ["a", "b"],
+      status: "failed",
+      resolved: true,
+      terminal_job_ids: ["a", "b"],
+    });
   });
 });

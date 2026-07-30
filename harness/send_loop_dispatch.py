@@ -203,9 +203,158 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         yield ConvEvent('action_result', {'id': aid, 'error': _non_git})
         session._append_action_result(act, aid, f'(swarm {aid} failed: {_non_git})', is_native)
         return None
+    # Read-before-dispatch validation reuse gate (deterministic; no adapter spend
+    # on a clean fingerprint match).
+    _reuse_decision = None
     try:
-        session._register_local_job(_sync_local_id, act.goal, role='explore', cwd=_swarm_repo, engine='agentic')
+        from harness.validation_reuse import evaluate_reuse_gate
+        _force_fresh = bool(
+            (getattr(act, 'arguments', None) or {}).get('force_fresh')
+            if isinstance(getattr(act, 'arguments', None), dict) else False
+        )
+        _reuse_decision = evaluate_reuse_gate(
+            session,
+            objective=act.goal or '',
+            role='explore',
+            cwd=_swarm_repo,
+            force_fresh=_force_fresh,
+        )
+    except Exception:
+        _reuse_decision = None
+    if _reuse_decision is not None and _reuse_decision.outcome == 'reuse':
+        _prov = _reuse_decision.as_provenance()
+        _reuse_registered = False
+        try:
+            session._register_local_job(
+                _sync_local_id, act.goal, role='explore', cwd=_swarm_repo,
+                engine='agentic', skip_routing_preview=True,
+            )
+            _reuse_registered = True
+            session._session_job_ids.append(_sync_local_id)
+            session._finish_local_job(
+                _sync_local_id,
+                ok=True,
+                summary=(
+                    f"reused {_reuse_decision.source_job_id} "
+                    f"({_reuse_decision.reason})"
+                )[:200],
+                status='done',
+                engine='agentic',
+                tokens=0,
+                est_cost_usd=0.0,
+                findings=[
+                    {
+                        'type': a.get('type') or 'finding',
+                        'headline': a.get('headline') or a.get('uri') or '',
+                        'id': a.get('id'),
+                    }
+                    for a in (_reuse_decision.compact_artifacts or [])
+                ],
+                reuse_status='reused',
+                source_job_id=_reuse_decision.source_job_id,
+                validation_fingerprint=_reuse_decision.validation_fingerprint,
+                reuse_reason=_reuse_decision.reason,
+            )
+        except Exception as e:
+            # Fail closed: never emit a green reused badge without a durable
+            # stamped local job (mirrors non-reuse register failure).
+            # If register succeeded but finish failed, settle/drop the orphan
+            # so no live spinner remains.
+            if _reuse_registered:
+                try:
+                    session._fail_or_drop_local_job(
+                        _sync_local_id,
+                        summary=f'tracker finish failed: {e}',
+                    )
+                except Exception:
+                    pass
+            err = f'tracker register/finish failed: {e}'
+            yield ConvEvent('action_result', {'id': aid, 'error': err})
+            session._append_action_result(
+                act, aid, f'(swarm {aid} failed: {err})', is_native,
+            )
+            return None
+        _badge = {
+            'job_id': _sync_local_id,
+            'applied': True,
+            'files': [],
+            'summary': f"reused prior analysis from {_reuse_decision.source_job_id}",
+            'error': None,
+            'objective': act.goal,
+            'adapter': 'reuse',
+            **_prov,
+        }
+        yield ConvEvent('action_result', {
+            'id': aid,
+            'job_id': _sync_local_id,
+            'num': len(_reuse_decision.compact_artifacts or []),
+            'types': sorted({
+                str(a.get('type') or 'finding')
+                for a in (_reuse_decision.compact_artifacts or [])
+            }),
+            'artifacts': list(_reuse_decision.compact_artifacts or [])[:12],
+            'adapter': 'reuse',
+            'mode': 'reuse',
+            'auth_failure': '',
+            'error': None,
+            **_prov,
+        })
+        session._display_transcript.append({'type': 'swarm_result', **_badge})
+        yield ConvEvent('swarm_result', {
+            'job_id': _badge['job_id'],
+            'objective': act.goal,
+            'result': _badge,
+        })
+        digest = _reuse_decision.digest_text or (
+            f"REUSED {_reuse_decision.source_job_id} ({_reuse_decision.reason})"
+        )
+        session._append_action_result(
+            act, aid,
+            f"(swarm {aid} reused prior validation; zero new execution spend)\n{digest}",
+            is_native,
+        )
+        return None
+    _sync_register_role = 'explore'
+    if _reuse_decision is not None and _reuse_decision.outcome == 'narrow_verify':
+        # Verifier-only / narrow analysis — do not re-open explore/pipeline-mapper.
+        narrow_suffix = _reuse_decision.narrow_goal_suffix or (
+            'Re-verify invalidated paths only; do not re-run explore/pipeline-mapper.'
+        )
+        _sync_narrow_roles = list(
+            _reuse_decision.narrow_roles or ('conflict-auditor',)
+        )
+        _sync_register_role = _sync_narrow_roles[0] if _sync_narrow_roles else 'conflict-auditor'
+        intent = DriverIntent(
+            action='run_swarm',
+            goal=f"{act.goal}\n\n{narrow_suffix}",
+            roles=_sync_narrow_roles,
+            rationale='pilot-narrow-verify',
+            model=(act.model or '').strip() or None,
+        )
+    try:
+        session._register_local_job(
+            _sync_local_id, act.goal, role=_sync_register_role,
+            cwd=_swarm_repo, engine='agentic',
+        )
         session._session_job_ids.append(_sync_local_id)
+        # Pre-stamp narrow_verify lineage so finish/drain keep fingerprint +
+        # invalidated_paths even if the finish caller omits overrides.
+        if _reuse_decision is not None and _reuse_decision.outcome == 'narrow_verify':
+            try:
+                with session._local_jobs_lock:
+                    _nj = session._local_jobs.get(_sync_local_id)
+                    if isinstance(_nj, dict):
+                        _nj['reuse_status'] = 'partial'
+                        _nj['source_job_id'] = _reuse_decision.source_job_id
+                        _nj['validation_fingerprint'] = (
+                            _reuse_decision.validation_fingerprint or ''
+                        )
+                        _nj['invalidated_paths'] = list(
+                            _reuse_decision.invalidated_paths or []
+                        )
+                        _nj['reuse_reason'] = _reuse_decision.reason
+            except Exception:
+                pass
     except Exception as e:
         err = f'tracker register failed: {e}'
         yield ConvEvent('action_result', {'id': aid, 'error': err})
@@ -336,13 +485,53 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     # Substantive surfaced findings only: the sidecar must not carry plumbing or
     # refused-demo rows into artifact:// reads.
     _job_findings = _substantive[:20]
+    _finish_reuse_status = 'fresh'
+    _finish_source_job = ''
+    _finish_invalidated: list = []
+    _finish_reuse_reason = ''
+    _finish_fingerprint = ''
+    if _reuse_decision is not None and _reuse_decision.outcome == 'narrow_verify':
+        _finish_reuse_status = 'partial'
+        _finish_source_job = _reuse_decision.source_job_id
+        _finish_invalidated = list(_reuse_decision.invalidated_paths or [])
+        _finish_reuse_reason = _reuse_decision.reason
+        _finish_fingerprint = _reuse_decision.validation_fingerprint or ''
+        _badge['reuse_status'] = 'partial'
+        _badge['source_job_id'] = _finish_source_job
+        _badge['invalidated_paths'] = _finish_invalidated
+        _badge['reuse_reason'] = _finish_reuse_reason
+        if _finish_fingerprint:
+            _badge['validation_fingerprint'] = _finish_fingerprint
+    elif _swarm_ok:
+        _badge['reuse_status'] = 'fresh'
     try:
-        session._finish_local_job(_sync_local_id, ok=_swarm_ok, summary=_badge_summary, status='done' if _swarm_ok else 'failed', engine=_job_engine, findings=_job_findings)
+        session._finish_local_job(
+            _sync_local_id, ok=_swarm_ok, summary=_badge_summary,
+            status='done' if _swarm_ok else 'failed', engine=_job_engine,
+            findings=_job_findings,
+            reuse_status=_finish_reuse_status if _swarm_ok else '',
+            source_job_id=_finish_source_job,
+            invalidated_paths=_finish_invalidated,
+            reuse_reason=_finish_reuse_reason,
+            validation_fingerprint=_finish_fingerprint,
+        )
         if _store_jid != _sync_local_id:
             if _store_jid not in session._session_job_ids:
                 session._session_job_ids.append(_store_jid)
-            session._register_local_job(_store_jid, act.goal, role='explore', cwd=_swarm_repo, engine=_job_engine)
-            session._finish_local_job(_store_jid, ok=_swarm_ok, summary=_badge_summary, status='done' if _swarm_ok else 'failed', engine=_job_engine, findings=_job_findings)
+            session._register_local_job(
+                _store_jid, act.goal, role=_sync_register_role,
+                cwd=_swarm_repo, engine=_job_engine,
+            )
+            session._finish_local_job(
+                _store_jid, ok=_swarm_ok, summary=_badge_summary,
+                status='done' if _swarm_ok else 'failed', engine=_job_engine,
+                findings=_job_findings,
+                reuse_status=_finish_reuse_status if _swarm_ok else '',
+                source_job_id=_finish_source_job,
+                invalidated_paths=_finish_invalidated,
+                reuse_reason=_finish_reuse_reason,
+                validation_fingerprint=_finish_fingerprint,
+            )
     except Exception:
         pass
     session._display_transcript.append({'type': 'swarm_result', **_badge})
@@ -837,11 +1026,180 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             job_ids_collected = []
             skipped_goals = []
             deferred_goals = []
+            reused_goals = []
+            # Buffer reused terminal results until after swarm_pending so the
+            # multi-job pill exists before sibling swarm_result frames arrive.
+            # Frontend also seeds terminal_job_ids on out-of-order/reattach.
+            buffered_reuse_events = []
             _parallel_admission = f"parallel-{aid}"
+            _reuse_mod = None
+            if _mode in ('analysis', 'review'):
+                try:
+                    from harness import validation_reuse as _reuse_mod
+                except Exception:
+                    _reuse_mod = None
             for sub_goal in goals:
                 if not session._claim_objective(sub_goal):
                     skipped_goals.append(sub_goal)
                     continue
+                # Analysis/review: skip adapter dispatch when a matching green
+                # prior job is still valid for this objective.
+                if _reuse_mod is not None and _mode in ('analysis', 'review'):
+                    try:
+                        decision = _reuse_mod.evaluate_reuse_gate(
+                            session,
+                            objective=sub_goal,
+                            role=_mode,
+                            cwd=effective_repo,
+                        )
+                    except Exception:
+                        decision = None
+                    if decision is not None and decision.outcome == 'reuse':
+                        short = uuid.uuid4().hex[:8]
+                        job_id = f'local-{short}'
+                        _reuse_registered = False
+                        try:
+                            session._register_local_job(
+                                job_id, sub_goal, role=_mode, cwd=effective_repo,
+                                engine=engine,
+                                model=session.config.driver or '' if engine == 'native' else '',
+                                skip_routing_preview=True,
+                            )
+                            _reuse_registered = True
+                            session._finish_local_job(
+                                job_id,
+                                ok=True,
+                                summary=(
+                                    f"reused {decision.source_job_id} "
+                                    f"({decision.reason})"
+                                )[:200],
+                                status='done',
+                                engine=engine,
+                                tokens=0,
+                                est_cost_usd=0.0,
+                                findings=[
+                                    {
+                                        'type': a.get('type') or 'finding',
+                                        'headline': a.get('headline') or a.get('uri') or '',
+                                        'id': a.get('id'),
+                                    }
+                                    for a in (decision.compact_artifacts or [])
+                                ],
+                                reuse_status='reused',
+                                source_job_id=decision.source_job_id,
+                                validation_fingerprint=decision.validation_fingerprint,
+                                invalidated_paths=list(decision.invalidated_paths or []),
+                                reuse_reason=decision.reason,
+                            )
+                            session._session_job_ids.append(job_id)
+                            job_ids_collected.append(job_id)
+                            reused_goals.append((sub_goal, decision))
+                            # Terminal swarm_result before assistant_done so
+                            # pending pills settle and SwarmResultCard paints.
+                            # Yield after swarm_pending (buffered below).
+                            _prov = decision.as_provenance()
+                            _badge = {
+                                'job_id': job_id,
+                                'applied': True,
+                                'files': [],
+                                'summary': (
+                                    f"reused prior analysis from "
+                                    f"{decision.source_job_id}"
+                                ),
+                                'error': None,
+                                'objective': sub_goal,
+                                'adapter': 'reuse',
+                                **_prov,
+                            }
+                            session._display_transcript.append(
+                                {'type': 'swarm_result', **_badge}
+                            )
+                            buffered_reuse_events.append(ConvEvent('swarm_result', {
+                                'job_id': job_id,
+                                'objective': sub_goal,
+                                'result': _badge,
+                            }))
+                        except Exception as e:
+                            # Fail closed: do not buffer/yield a green reused
+                            # swarm_result when the durable tracker write fails.
+                            # Settle/drop an already-registered orphan so the
+                            # panel does not keep a live spinner.
+                            if _reuse_registered:
+                                try:
+                                    session._fail_or_drop_local_job(
+                                        job_id,
+                                        summary=f'tracker finish failed: {e}',
+                                    )
+                                except Exception:
+                                    pass
+                            session._release_objective(sub_goal)
+                            err = f'tracker register/finish failed: {e}'
+                            yield ConvEvent('action_result', {'id': aid, 'error': err})
+                            session._append_action_result(
+                                act, aid,
+                                f'(run_parallel {aid} failed: {err})',
+                                is_native, ok=False,
+                            )
+                            return None
+                        continue
+                    if decision is not None and decision.outcome == 'narrow_verify':
+                        # Narrow the worker goal; force verifier-only roles.
+                        sub_goal = (
+                            f"{sub_goal}\n\n{decision.narrow_goal_suffix}"
+                            if decision.narrow_goal_suffix else sub_goal
+                        )
+                        narrow_role = (
+                            list(decision.narrow_roles)[0]
+                            if decision.narrow_roles
+                            else 'conflict-auditor'
+                        )
+                        short = uuid.uuid4().hex[:8]
+                        job_id = f'local-{short}'
+                        try:
+                            session._register_local_job(
+                                job_id, sub_goal, role=narrow_role,
+                                cwd=effective_repo, engine=engine,
+                                model=session.config.driver or '' if engine == 'native' else '',
+                            )
+                            # Pre-stamp partial reuse so background finish/drain
+                            # keep invalidated_paths + source lineage.
+                            try:
+                                with session._local_jobs_lock:
+                                    _nj = session._local_jobs.get(job_id)
+                                    if isinstance(_nj, dict):
+                                        _nj['reuse_status'] = 'partial'
+                                        _nj['source_job_id'] = decision.source_job_id
+                                        _nj['validation_fingerprint'] = (
+                                            decision.validation_fingerprint or ''
+                                        )
+                                        _nj['invalidated_paths'] = list(
+                                            decision.invalidated_paths or []
+                                        )
+                                        _nj['reuse_reason'] = decision.reason
+                            except Exception:
+                                pass
+                            submitted = session._submit_swarm(
+                                session._run_provider_worker_background,
+                                job_id,
+                                sub_goal,
+                                requested_adapter,
+                                effective_repo,
+                                expects_diff,
+                                admission_group=_parallel_admission,
+                                admission_size=len(goals),
+                            )
+                        except Exception:
+                            session._release_objective(sub_goal)
+                            raise
+                        if not submitted:
+                            session._release_objective(sub_goal)
+                            deferred_goals.append(sub_goal)
+                            if session._last_swarm_submit_reason == "resource_pressure":
+                                break
+                            continue
+                        job_ids_collected.append(job_id)
+                        session._session_job_ids.append(job_id)
+                        continue
                 short = uuid.uuid4().hex[:8]
                 job_id = f'local-{short}'
                 try:
@@ -881,8 +1239,34 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 session._append_action_result(act, aid, f'(run_parallel {aid} skipped -- all {len(goals)} objectives already in flight)', is_native)
                 return None
             yield ConvEvent('swarm_pending', {'job_ids': job_ids_collected, 'objective': f"Parallel wave of goals: {', '.join(goals)}"})
-            yield ConvEvent('action_result', {'id': aid, 'job_id': ','.join(job_ids_collected), 'status': 'pending', 'message': f"Dispatched parallel background swarm jobs: {', '.join(job_ids_collected)}"})
-            session._append_action_result(act, aid, f"(run_parallel {aid} dispatched {len(job_ids_collected)} jobs in background: {', '.join(job_ids_collected)})", is_native)
+            for _reuse_ev in buffered_reuse_events:
+                yield _reuse_ev
+            _reuse_note = ''
+            if reused_goals:
+                _reuse_note = (
+                    f"; reused {len(reused_goals)} prior validation(s) with zero new spend: "
+                    + ', '.join(
+                        f"{g[:40]}→{d.source_job_id}" for g, d in reused_goals[:4]
+                    )
+                )
+            yield ConvEvent('action_result', {
+                'id': aid,
+                'job_id': ','.join(job_ids_collected),
+                'status': 'pending' if len(reused_goals) < len(job_ids_collected) else 'reused',
+                'message': (
+                    f"Dispatched parallel background swarm jobs: "
+                    f"{', '.join(job_ids_collected)}{_reuse_note}"
+                ),
+                'reuse_status': 'reused' if reused_goals and len(reused_goals) == len(job_ids_collected) else (
+                    'partial' if reused_goals else 'fresh'
+                ),
+            })
+            session._append_action_result(
+                act, aid,
+                f"(run_parallel {aid} dispatched {len(job_ids_collected)} jobs"
+                f"{_reuse_note}: {', '.join(job_ids_collected)})",
+                is_native,
+            )
             yield from session._answer_remaining_tool_calls(turn_actions, action_idx, is_native, action_seq)
             yield ConvEvent('assistant_done', {'turns': step + 1, 'swarms': swarms + len(job_ids_collected)})
             return 'return'

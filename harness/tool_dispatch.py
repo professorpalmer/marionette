@@ -300,9 +300,23 @@ class ToolDispatchMixin:
         # the model's tool output as noise. The passthrough runs under the
         # interpreter driving the backend and auto-rebuilds the native binding,
         # giving clean, fast results.
-        kind = act.arguments.get("kind") or "search"
-        subcommand = "context" if kind == "context" else "query"
-        cmd = _puppetmaster_cmd("codegraph", subcommand, act.query)
+        kind = (act.arguments.get("kind") or "search").strip().lower()
+        if kind == "context":
+            subcommand = "context"
+            cmd = _puppetmaster_cmd("codegraph", subcommand, act.query)
+        elif kind == "affected":
+            # Cross-platform argv via _puppetmaster_cmd; query may be a single
+            # path or whitespace-separated path list.
+            files = [
+                part for part in re.split(r"[\s,]+", (act.query or "").strip())
+                if part
+            ]
+            if not files:
+                return False, "invalid_arguments", "search_codegraph kind=affected requires one or more file paths in query"
+            cmd = _puppetmaster_cmd("codegraph", "affected", "-q", *files)
+        else:
+            subcommand = "query"
+            cmd = _puppetmaster_cmd("codegraph", subcommand, act.query)
 
         try:
             p = subprocess.run(

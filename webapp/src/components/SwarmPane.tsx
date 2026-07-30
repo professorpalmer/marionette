@@ -1047,6 +1047,33 @@ export default function SwarmPane() {
                   external
                 </span>
               )}
+              {j.reuse_status && ["reused", "partial", "invalidated", "fresh"].includes(
+                String(j.reuse_status).toLowerCase(),
+              ) && (
+                <span
+                  className="text-[9px] text-muted bg-panel2/60 border border-edge/50 px-1.5 py-0.5 rounded font-mono"
+                  title={
+                    (Array.isArray(j.invalidated_paths) && j.invalidated_paths.length
+                      ? `invalidated: ${j.invalidated_paths.slice(0, 6).join(", ")}${j.invalidated_paths.length > 6 ? ` (+${j.invalidated_paths.length - 6} more)` : ""}`
+                      : "")
+                    || j.reuse_reason
+                    || (j.source_job_id ? `Source job ${j.source_job_id}` : "Validation reuse status")
+                  }
+                >
+                  {String(j.reuse_status).toLowerCase() === "partial"
+                    ? "partially reverified"
+                    : String(j.reuse_status).toLowerCase()}
+                </span>
+              )}
+              {Array.isArray(j.invalidated_paths) && j.invalidated_paths.length > 0 && (
+                <span
+                  className="text-[9px] text-faint font-mono truncate max-w-[40%]"
+                  title={j.invalidated_paths.join(", ")}
+                >
+                  {j.invalidated_paths.slice(0, 2).join(", ")}
+                  {j.invalidated_paths.length > 2 ? ` +${j.invalidated_paths.length - 2}` : ""}
+                </span>
+              )}
               {!jobAccountingOwned(j) && (
                 <span
                   className="text-[9px] text-faint bg-panel2/40 border border-edge/40 px-1.5 py-0.5 rounded"

@@ -220,6 +220,16 @@ export type Job = {
   artifacts_complete?: boolean;
   // Server-computed before slim: all workers failed/blocked with no real work.
   dead_run_failure?: string | null;
+  /** Validation reuse: fresh | reused | partial | invalidated (optional/backcompat). */
+  reuse_status?: "fresh" | "reused" | "partial" | "invalidated" | string;
+  /** Prior job whose findings were reused or partially reverified. */
+  source_job_id?: string;
+  /** Compact/truncated source validation fingerprint. */
+  validation_fingerprint?: string;
+  /** Evidence paths invalidated for a partial reverify. */
+  invalidated_paths?: string[];
+  /** Explicit gate reason (fingerprint_match, subset_invalidated, ...). */
+  reuse_reason?: string;
 };
 export type Artifact = {
   id?: string;
@@ -257,6 +267,9 @@ export type Artifact = {
     task_id?: string;
     terminal_artifact_id?: string;
   };
+  reuse_status?: "fresh" | "reused" | "partial" | "invalidated" | string;
+  source_job_id?: string;
+  validation_fingerprint?: string;
 };
 // Job.artifacts is a count in /api/jobs but a full list in /swarm/live; this
 // narrows to the embedded list (empty when the payload only carried a count).
@@ -349,6 +362,11 @@ export type SwarmResultData = {
   summary: string;
   error: string | null;
   objective?: string;
+  reuse_status?: "fresh" | "reused" | "partial" | "invalidated" | string;
+  source_job_id?: string;
+  validation_fingerprint?: string;
+  invalidated_paths?: string[];
+  reuse_reason?: string;
 };
 
 export type SwarmResultEvent = {

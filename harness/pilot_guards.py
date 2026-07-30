@@ -50,8 +50,11 @@ STAGNATION_STREAK_CAP = int(os.environ.get("HARNESS_STAGNATION_STREAK_CAP", "3")
 FAILED_OBJECTIVE_RESUME_CAP = int(os.environ.get("HARNESS_FAILED_OBJECTIVE_RESUME_CAP", "2"))
 
 # Puppetmaster / structural tools — never blocked by the delegate gate.
+# search_state is exempt so durable recall (job:// / artifact:// / spill://)
+# stays available before a broad redispatch without counting as exploration.
 DELEGATION_EXEMPT_KINDS = frozenset({
     "search_codegraph",
+    "search_state",
     "query_wiki",
     "run_swarm",
     "run_implement",
@@ -482,8 +485,30 @@ def is_native_exploration(kind: str, act: Any) -> bool:
     return False
 
 
+def _is_durable_recall_read(act: Any) -> bool:
+    """True when read_file targets artifact:// / job:// / spill:// (etc.)."""
+    path = getattr(act, "path", None) or ""
+    if not path and isinstance(getattr(act, "arguments", None), dict):
+        path = act.arguments.get("path") or ""
+    try:
+        from harness.validation_reuse import is_durable_recall_uri
+        return is_durable_recall_uri(str(path or ""))
+    except Exception:
+        text = str(path or "").strip().lower()
+        return text.startswith((
+            "artifact://", "job://", "spill://", "agent://", "conflict://",
+        ))
+
+
 def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any) -> bool:
     if not state.broad_intent:
+        return False
+
+    # Durable recall is never swarm-gated: search_state and read_file of
+    # artifact:// / job:// / spill:// must stay available before redispatch.
+    if kind == "search_state":
+        return False
+    if kind == "read_file" and _is_durable_recall_read(act):
         return False
 
     # After a swarm/implement/parallel dispatch on a broad turn: still allow
@@ -534,7 +559,9 @@ def _swarm_gate_suppress_message(kind: str, *, swarm_dispatched: bool = False) -
         f"audit/review/sweep task and you have not dispatched run_swarm/run_parallel/"
         f"run_implement yet. STOP exploring. Your ONLY allowed next tools are "
         f"run_swarm, run_implement, or run_parallel (search_codegraph remains available "
-        f"for narrow symbol lookups). Dispatch run_swarm with MULTIPLE roles "
+        f"for narrow symbol lookups; search_state and read_file of artifact:// / "
+        f"job:// / spill:// remain available for durable recall before redispatch). "
+        f"Dispatch run_swarm with MULTIPLE roles "
         f"({roles}) and auto-routed models so parallel workers map the space. The "
         f"durable artifact store makes every swarm cheaper on follow-up turns "
         f"(artifact recall is zero-token). After dispatch, search_codegraph and "
@@ -820,7 +847,9 @@ def record_action_execution(state: TurnGuardState, kind: str, act: Any) -> None:
     elif is_native_exploration(kind, act):
         state.exploration_count += 1
 
-    if kind == "read_file":
+    if kind == "read_file" and not _is_durable_recall_read(act):
+        # Durable artifact:// / job:// / spill:// reads do not consume the
+        # pre-dispatch read allowance — they are validation-reuse recall.
         state.read_file_count += 1
 
     if state.iteration_budget is not None:

@@ -122,7 +122,7 @@ export type Item =
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | { kind: "tool_prep"; name: string }
   | SwarmPendingItem
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
   | { kind: "codegraph_context"; symbols: number; query: string }
@@ -137,7 +137,7 @@ export type GroupedItem =
   | { kind: "msg"; msg: Msg }
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | SwarmPendingItem
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "compaction"; before_tokens: number; after_tokens: number }
   | { kind: "codegraph_context"; symbols: number; query: string }
@@ -154,7 +154,7 @@ type ActivityItem =
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
-  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string }
+  | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string }
   | { kind: "msg"; msg: Msg };
 
 
@@ -642,6 +642,10 @@ export const TranscriptList = memo(function TranscriptList({
           summary={it.summary}
           error={it.error}
           objective={it.objective}
+          reuseStatus={it.reuse_status}
+          sourceJobId={it.source_job_id}
+          reuseReason={it.reuse_reason}
+          invalidatedPaths={it.invalidated_paths}
         />
       );
     } else if (it.kind === "checkpoint") {
@@ -1097,6 +1101,10 @@ function ActivityGroup({
           summary={it.summary}
           error={it.error}
           objective={it.objective}
+          reuseStatus={it.reuse_status}
+          sourceJobId={it.source_job_id}
+          reuseReason={it.reuse_reason}
+          invalidatedPaths={it.invalidated_paths}
         />
       );
     }
@@ -1932,16 +1940,42 @@ const KV = ({ k, v, linkKind }: { k: string; v: string; linkKind?: "file" | "url
 // file count) that stays collapsed by default; the full summary, file chips,
 // and any error live behind a click. Status color is confined to the icon,
 // label, and border so the body text stays readable instead of tinted.
-function SwarmResultCard({ applied, files, summary, error, objective }: {
+function reuseStatusLabel(status?: string): string | null {
+  const s = (status || "").trim().toLowerCase();
+  if (s === "reused") return "reused";
+  if (s === "partial") return "partially reverified";
+  if (s === "invalidated") return "invalidated";
+  if (s === "fresh") return "fresh";
+  return null;
+}
+
+/** Bounded relative-path summary for partial reuse honesty (no secrets). */
+function formatInvalidatedPaths(paths?: string[], limit = 6): string {
+  const clean = (paths || [])
+    .map((p) => String(p || "").replace(/\\/g, "/").trim())
+    .filter(Boolean)
+    .slice(0, limit);
+  if (!clean.length) return "";
+  const more = (paths || []).length - clean.length;
+  return more > 0 ? `${clean.join(", ")} (+${more} more)` : clean.join(", ");
+}
+
+function SwarmResultCard({ applied, files, summary, error, objective, reuseStatus, sourceJobId, reuseReason, invalidatedPaths }: {
   applied: boolean;
   files: string[];
   summary: string;
   error: string | null;
   objective?: string;
+  reuseStatus?: string;
+  sourceJobId?: string;
+  reuseReason?: string;
+  invalidatedPaths?: string[];
 }) {
   const [open, setOpen] = useState(false);
   const obj = objective ? (objective.length > 70 ? objective.slice(0, 70) + "..." : objective) : "swarm";
-  const hasBody = !!(summary || (!applied && error) || (applied && files.length > 0));
+  const reuseLabel = reuseStatusLabel(reuseStatus);
+  const pathSummary = formatInvalidatedPaths(invalidatedPaths);
+  const hasBody = !!(summary || (!applied && error) || (applied && files.length > 0) || sourceJobId || reuseReason || pathSummary);
 
   return (
     <div className={`rounded-md border w-fit max-w-full my-1 overflow-hidden select-none bg-panel/40 ${applied ? "border-good/30" : "border-risk/30"}`}>
@@ -1956,6 +1990,14 @@ function SwarmResultCard({ applied, files, summary, error, objective }: {
         <span className={`font-medium shrink-0 ${applied ? "text-good" : "text-risk"}`}>
           {applied ? "swarm done" : "swarm failed"}
         </span>
+        {reuseLabel && (
+          <span
+            className="text-[9px] font-mono text-muted bg-panel2/70 border border-edge/50 px-1.5 py-0.5 rounded shrink-0"
+            title={pathSummary || reuseReason || sourceJobId || reuseLabel}
+          >
+            {reuseLabel}
+          </span>
+        )}
         <span className="text-muted truncate">{obj}</span>
         <span className="flex-1 min-w-[8px]" />
         {applied
@@ -1970,6 +2012,18 @@ function SwarmResultCard({ applied, files, summary, error, objective }: {
 
       {open && hasBody && (
         <div className="px-2.5 pb-2 pt-1.5 border-t border-edge/30 flex flex-col gap-1.5">
+          {reuseLabel && (
+            <div className="text-[10px] text-muted font-mono leading-relaxed break-words">
+              validation {reuseLabel}
+              {sourceJobId ? ` from ${sourceJobId}` : ""}
+              {reuseReason ? ` (${reuseReason})` : ""}
+            </div>
+          )}
+          {pathSummary && (
+            <div className="text-[10px] text-muted font-mono leading-relaxed break-words">
+              invalidated paths: {pathSummary}
+            </div>
+          )}
           {applied && files.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {files.map((f) => (

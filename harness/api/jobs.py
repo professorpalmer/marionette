@@ -480,6 +480,16 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 "accounting_owned": bool(j.get("accounting_owned")),
                 **savings_fields,
             }
+            # Optional validation-reuse provenance (absent on legacy rows).
+            for _rk in (
+                "reuse_status",
+                "source_job_id",
+                "validation_fingerprint",
+                "invalidated_paths",
+                "reuse_reason",
+            ):
+                if j.get(_rk) not in (None, "", [], {}):
+                    row[_rk] = j.get(_rk)
             if dead_run:
                 row["dead_run_failure"] = dead_run
             res_jobs.append(apply_job_economics_policy(row))

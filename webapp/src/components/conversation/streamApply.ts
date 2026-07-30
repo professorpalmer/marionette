@@ -15,7 +15,10 @@ import {
 import {
   findStreamingBubbleIdx,
 } from "./streamBubbles";
-import { deduplicateConsecutiveAssistantMessages } from "./transcriptItems";
+import {
+  deduplicateConsecutiveAssistantMessages,
+  mergeSwarmResultReuse,
+} from "./transcriptItems";
 import {
   findCanonicalSwarmPendingIndex,
   isSwarmPendingTerminal,
@@ -1125,9 +1128,55 @@ export function workspaceRootFromActionResult(
 }
 
 /**
+ * Job ids from ``jobIds`` that already have a swarm_result row in ``items``.
+ * Used when swarm_result(reused) arrives before swarm_pending for mixed waves.
+ */
+function terminalJobIdsCoveredByResults(
+  items: Item[],
+  jobIds: readonly string[],
+): string[] {
+  const want = new Set(normalizeSwarmJobIds(jobIds));
+  if (want.size === 0) return [];
+  const covered: string[] = [];
+  for (const it of items) {
+    if (it.kind !== "swarm_result") continue;
+    if (want.has(it.job_id)) covered.push(it.job_id);
+  }
+  return normalizeSwarmJobIds(covered);
+}
+
+function pendingStatusFromCoveredResults(
+  items: Item[],
+  jobIds: readonly string[],
+  terminalJobIds: readonly string[],
+): { status: SwarmPendingStatus; resolved: boolean; terminal_job_ids: string[] } {
+  const ids = normalizeSwarmJobIds(jobIds);
+  const terminals = normalizeSwarmJobIds(terminalJobIds);
+  const allTerminal = ids.length > 0 && ids.every((id) => terminals.includes(id));
+  if (!allTerminal) {
+    return { status: "running", resolved: false, terminal_job_ids: terminals };
+  }
+  const anyFailed = items.some(
+    (it) =>
+      it.kind === "swarm_result"
+      && ids.includes(it.job_id)
+      && swarmResultLooksFailed(it),
+  );
+  return {
+    status: anyFailed ? "failed" : "done",
+    resolved: true,
+    terminal_job_ids: terminals,
+  };
+}
+
+/**
  * Upsert a swarm lifecycle pill by canonical job-id identity. Replay / SSE
  * echoes update the existing row in place and never resurrect running over a
  * terminal status (done / failed / ended).
+ *
+ * Out-of-order / reattach: when a reused ``swarm_result`` arrived before this
+ * pending frame, seed ``terminal_job_ids`` from existing result rows so a later
+ * fresh sibling can flip the multi-job pill to terminal.
  */
 export function appendSwarmPending(
   items: Item[],
@@ -1147,7 +1196,29 @@ export function appendSwarmPending(
   );
   if (existingIdx >= 0 && items[existingIdx].kind === "swarm_pending") {
     const existing = items[existingIdx] as SwarmPendingItem;
-    const merged = mergeSwarmPendingReplay(existing, normalizedIds, obj);
+    const mergeIds = normalizeSwarmJobIds([...existing.job_ids, ...normalizedIds]);
+    const seeded = terminalJobIdsCoveredByResults(items, mergeIds);
+    const seededExisting: SwarmPendingItem = {
+      ...existing,
+      terminal_job_ids: normalizeSwarmJobIds([
+        ...(existing.terminal_job_ids || []),
+        ...seeded,
+      ]),
+    };
+    let merged = mergeSwarmPendingReplay(seededExisting, normalizedIds, obj);
+    const covered = pendingStatusFromCoveredResults(
+      items,
+      merged.job_ids,
+      [
+        ...(merged.terminal_job_ids || []),
+        ...seeded,
+      ],
+    );
+    if (!isSwarmPendingTerminal(merged) && covered.resolved) {
+      merged = withPendingTerminal(merged, covered.status as "done" | "failed", covered.terminal_job_ids);
+    } else {
+      merged = { ...merged, terminal_job_ids: covered.terminal_job_ids };
+    }
     if (
       merged.status === existing.status
       && merged.resolved === existing.resolved
@@ -1166,15 +1237,21 @@ export function appendSwarmPending(
     return updated;
   }
 
+  const seededTerminal = terminalJobIdsCoveredByResults(items, normalizedIds);
+  const covered = pendingStatusFromCoveredResults(
+    items,
+    normalizedIds,
+    seededTerminal,
+  );
   return [
     ...items,
     {
       kind: "swarm_pending" as const,
       job_ids: normalizedIds,
       objective: obj,
-      resolved: false,
-      status: "running" as const,
-      terminal_job_ids: [],
+      resolved: covered.resolved,
+      status: covered.status,
+      terminal_job_ids: covered.terminal_job_ids,
     },
   ];
 }
@@ -1332,6 +1409,46 @@ function findSwarmPendingForResult(
   return aliasIdx;
 }
 
+function swarmResultItemFromPayload(
+  jobId: string,
+  resObj: any,
+  objective: string,
+): Extract<Item, { kind: "swarm_result" }> {
+  const invalidated = Array.isArray(resObj?.invalidated_paths)
+    ? resObj.invalidated_paths.map((p: unknown) => String(p || "")).filter(Boolean)
+    : undefined;
+  // Explicit wire fields (including [] / null / "") are authoritative; absent
+  // fields stay undefined so mergeSwarmResultReuse can inherit prior values.
+  const hasFiles = Array.isArray(resObj?.files);
+  const hasError = resObj != null && Object.prototype.hasOwnProperty.call(resObj, "error");
+  const hasApplied = resObj != null && Object.prototype.hasOwnProperty.call(resObj, "applied");
+  return {
+    kind: "swarm_result" as const,
+    job_id: jobId,
+    applied: hasApplied ? !!resObj.applied : (undefined as unknown as boolean),
+    files: hasFiles ? resObj.files : (undefined as unknown as string[]),
+    summary: resObj?.summary || "",
+    error: hasError ? (resObj.error ?? null) : (undefined as unknown as null),
+    objective,
+    // Preserve explicit empty-string / present fields so corrections can clear
+    // prior provenance; omit only when the wire field is absent.
+    reuse_status: resObj?.reuse_status !== undefined && resObj?.reuse_status !== null
+      ? String(resObj.reuse_status)
+      : undefined,
+    source_job_id: resObj?.source_job_id !== undefined && resObj?.source_job_id !== null
+      ? String(resObj.source_job_id)
+      : undefined,
+    reuse_reason: resObj?.reuse_reason !== undefined && resObj?.reuse_reason !== null
+      ? String(resObj.reuse_reason)
+      : undefined,
+    validation_fingerprint:
+      resObj?.validation_fingerprint !== undefined && resObj?.validation_fingerprint !== null
+        ? String(resObj.validation_fingerprint)
+        : undefined,
+    invalidated_paths: invalidated,
+  };
+}
+
 export function applySwarmResultToItems(
   items: Item[],
   d: {
@@ -1360,10 +1477,35 @@ export function applySwarmResultToItems(
       ? (items[pendingIdx] as SwarmPendingItem)
       : null;
   const finalObjective = d.objective || pendingItem?.objective || "";
+  const incomingResult = swarmResultItemFromPayload(jobId, resObj, finalObjective);
+
+  const patchExistingResult = (rows: Item[]): Item[] => {
+    let changed = false;
+    const next = rows.map((it) => {
+      if (it.kind !== "swarm_result" || it.job_id !== jobId) return it;
+      const merged = mergeSwarmResultReuse(it, incomingResult);
+      const same =
+        merged.reuse_status === it.reuse_status
+        && merged.source_job_id === it.source_job_id
+        && merged.reuse_reason === it.reuse_reason
+        && merged.validation_fingerprint === it.validation_fingerprint
+        && merged.summary === it.summary
+        && merged.applied === it.applied
+        && merged.error === it.error
+        && JSON.stringify(merged.files || [])
+          === JSON.stringify(it.files || [])
+        && JSON.stringify(merged.invalidated_paths || [])
+          === JSON.stringify(it.invalidated_paths || []);
+      if (same) return it;
+      changed = true;
+      return merged;
+    });
+    return changed ? next : rows;
+  };
 
   // Idempotent across poll/SSE/rehydrate even when session-switch clears the
   // processed-job ref: terminal pill + existing result row → still reconcile
-  // matching investigation cards (spinner settle) then no-op the pill/result.
+  // matching investigation cards (spinner settle), then merge richer reuse.
   if (
     alreadyHasResult
     && pendingItem
@@ -1378,10 +1520,12 @@ export function applySwarmResultToItems(
       )
     )
   ) {
-    return reconcileTerminalJobCards(
-      items,
-      jobId,
-      terminalOutcomeFromSwarmResult(resObj),
+    return patchExistingResult(
+      reconcileTerminalJobCards(
+        items,
+        jobId,
+        terminalOutcomeFromSwarmResult(resObj),
+      ),
     );
   }
 
@@ -1393,9 +1537,13 @@ export function applySwarmResultToItems(
       : item.job_ids.length === 1
         ? item.job_ids
         : [jobId];
+    // Union prior terminal credits, this result, and any sibling swarm_result
+    // rows already in the transcript (out-of-order reused-before-pending).
+    const siblingResultIds = terminalJobIdsCoveredByResults(items, item.job_ids);
     const terminalJobIds = normalizeSwarmJobIds([
       ...(item.terminal_job_ids || []),
       ...creditedIds,
+      ...siblingResultIds,
     ]);
     const allTerminal = item.job_ids.every((id) => terminalJobIds.includes(id));
     if (!allTerminal) {
@@ -1428,23 +1576,22 @@ export function applySwarmResultToItems(
   const outcome = terminalOutcomeFromSwarmResult(resObj);
   const reconciled = reconcileTerminalJobCards(updated, jobId, outcome);
 
-  if (
-    alreadyHasResult
-    || reconciled.some((it) => it.kind === "swarm_result" && it.job_id === jobId)
-  ) {
-    return reconciled;
+  if (alreadyHasResult) {
+    return patchExistingResult(reconciled);
+  }
+  if (reconciled.some((it) => it.kind === "swarm_result" && it.job_id === jobId)) {
+    return patchExistingResult(reconciled);
   }
 
+  // First insert: coerce absent wire fields to durable defaults (merge path
+  // above keeps undefined so prior values can inherit).
   return [
     ...reconciled,
     {
-      kind: "swarm_result" as const,
-      job_id: jobId,
-      applied: resObj.applied,
-      files: resObj.files || [],
-      summary: resObj.summary || "",
-      error: resObj.error || null,
-      objective: finalObjective,
+      ...incomingResult,
+      applied: incomingResult.applied ?? false,
+      files: incomingResult.files ?? [],
+      error: incomingResult.error !== undefined ? incomingResult.error : null,
     },
   ];
 }

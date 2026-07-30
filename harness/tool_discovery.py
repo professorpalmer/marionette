@@ -56,6 +56,7 @@ def _core_always() -> Set[str]:
 _PILOT_EXTRAS: Set[str] = {
     "search_codegraph",
     "search_files",
+    "search_state",
     "memory",
     "manage_mcp",
     "open_project",

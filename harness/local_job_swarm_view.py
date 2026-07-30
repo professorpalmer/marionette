@@ -183,6 +183,21 @@ def project_local_job_for_swarm_live(job: dict) -> dict:
         if job.get(key) is not None:
             row[key] = job.get(key)
 
+    # Optional validation-reuse provenance (back-compat: omit when absent).
+    try:
+        from harness.validation_reuse import provenance_fields_from_job
+        row.update(provenance_fields_from_job(job))
+    except Exception:
+        for key in (
+            "reuse_status",
+            "source_job_id",
+            "validation_fingerprint",
+            "invalidated_paths",
+            "reuse_reason",
+        ):
+            if job.get(key) not in (None, "", [], {}):
+                row[key] = job.get(key)
+
     return row
 
 

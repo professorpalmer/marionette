@@ -86,7 +86,8 @@ class LocalJobsMixin:
     """
 
     def _register_local_job(self, job_id: str, goal: str, role: str = "implement",
-                            cwd: str = "", engine: str = "", model: str = "") -> None:
+                            cwd: str = "", engine: str = "", model: str = "",
+                            *, skip_routing_preview: bool = False) -> None:
         """Record a dispatched in-process edit worker so it appears in the swarm
         panel while it runs (the panel otherwise only sees Puppetmaster store
         jobs). Shaped like a store job: a single synthesized worker task carries
@@ -99,7 +100,9 @@ class LocalJobsMixin:
 
         For agentic jobs with no model yet, dry-run the router and stamp a
         ROUTING artifact + estimate so the tracker shows model/cost mid-flight
-        instead of a bare ``agentic`` badge.
+        instead of a bare ``agentic`` badge. Zero-work full reuse passes
+        ``skip_routing_preview=True`` so preview economics are never stamped
+        or exported for a job that performs no adapter work.
         """
         import time
         from harness.job_scoping import job_label_for_session
@@ -120,7 +123,7 @@ class LocalJobsMixin:
         routing_saved = 0.0
         routing_basis = ""
         preview: dict = {}
-        if engine_label == "agentic" and not model_id:
+        if engine_label == "agentic" and not model_id and not skip_routing_preview:
             try:
                 from harness.local_job_routing import preview_agentic_route
                 preview = preview_agentic_route(goal, role=role or "implement")
@@ -203,7 +206,12 @@ class LocalJobsMixin:
                           engine: str = "", model: str = "",
                           findings: Optional[list] = None,
                           diff: str = "",
-                          worker_provenance: Optional[dict] = None) -> None:
+                          worker_provenance: Optional[dict] = None,
+                          reuse_status: str = "",
+                          source_job_id: str = "",
+                          validation_fingerprint: str = "",
+                          invalidated_paths: Optional[list] = None,
+                          reuse_reason: str = "") -> None:
         """Flip a live local job to its terminal state so the panel stops showing
         a spinner and surfaces the outcome (files touched + a one-line summary).
 
@@ -253,12 +261,25 @@ class LocalJobsMixin:
                     job["model"] = envelope_model_id(eng, mid)
                 elif eng:
                     job["model"] = eng
+            # Zero-work full reuse: force durable economics to zero and drop
+            # any register-time preview leftovers (defense in depth when
+            # skip_routing_preview was not set). Narrow_verify (partial) that
+            # actually executes may retain measured costs below.
+            zero_work_reuse = (reuse_status or "").strip().lower() == "reused"
+            if zero_work_reuse:
+                tokens = 0
+                est_cost_usd = 0.0
+                job["tokens"] = 0
+                job["est_cost_usd"] = 0.0
+                job.pop("routing_saved_usd", None)
+                job.pop("routing_savings_basis", None)
+                job.pop("routing_tokens_compared", None)
             if tokens:
                 job["tokens"] = tokens
             real_cost = float(est_cost_usd or 0.0)
             cost_unsplit = False
             price_source = "default"
-            if not real_cost and tokens:
+            if not real_cost and tokens and not zero_work_reuse:
                 # Provider-worker jobs only carry a combined token total (no
                 # in/out split). Price at the output rate so output-heavy runs
                 # are not systematically under-priced — and mark estimated so
@@ -308,21 +329,24 @@ class LocalJobsMixin:
             # Realized spend stays on job["est_cost_usd"] — never overwrite
             # ROUTING.est_cost_usd with provider receipts. Selected model and
             # rejected[] are reconciled so the final card cannot contradict itself.
+            # Zero-work full reuse drops ROUTING cards entirely — no phantom
+            # preview spend / routing-savings export surface.
             keep_routing = []
-            for art in (job.get("artifacts") or []):
-                if not isinstance(art, dict):
-                    continue
-                if (art.get("type") or "").strip().upper() != "ROUTING":
-                    continue
-                updated = dict(art)
-                updated["id"] = routing_artifact_id(job_id)
-                if model_id:
-                    updated = _reconcile_routing_artifact(updated, model_id)
-                # Preserve attested policy; default balanced for router stamps.
-                if not (updated.get("policy") or "").strip():
-                    if updated.get("created_by") == "router":
-                        updated["policy"] = "balanced"
-                keep_routing.append(updated)
+            if not zero_work_reuse:
+                for art in (job.get("artifacts") or []):
+                    if not isinstance(art, dict):
+                        continue
+                    if (art.get("type") or "").strip().upper() != "ROUTING":
+                        continue
+                    updated = dict(art)
+                    updated["id"] = routing_artifact_id(job_id)
+                    if model_id:
+                        updated = _reconcile_routing_artifact(updated, model_id)
+                    # Preserve attested policy; default balanced for router stamps.
+                    if not (updated.get("policy") or "").strip():
+                        if updated.get("created_by") == "router":
+                            updated["policy"] = "balanced"
+                    keep_routing.append(updated)
             terminal_art: dict = {
                 "id": terminal_artifact_id(job_id),
                 "type": terminal_artifact_type(
@@ -361,6 +385,76 @@ class LocalJobsMixin:
                 + [terminal_art]
                 + normalize_finding_artifacts(job_id, signal_findings)
             )
+            # Stamp source validation fingerprints on terminal analysis /
+            # review / explore jobs so later dispatch can reuse green findings.
+            try:
+                from harness.validation_reuse import (
+                    analysis_role_class,
+                    mark_validation_stamp_failed,
+                    stamp_validation_on_job,
+                )
+                role_name = str(job.get("role") or "")
+                if (
+                    ok
+                    and not cancelled
+                    and analysis_role_class(role_name) == "analysis"
+                ):
+                    stamp_cwd = str(job.get("cwd") or self.config.repo or "")
+                    # Preserve pre-stamped narrow_verify / reuse provenance when
+                    # the finish caller does not override (background drain).
+                    stamp_status = (
+                        (reuse_status or "").strip()
+                        or str(job.get("reuse_status") or "").strip()
+                        or "fresh"
+                    )
+                    stamp_source = (
+                        (source_job_id or "").strip()
+                        or str(job.get("source_job_id") or "").strip()
+                    )
+                    stamp_fp = (
+                        (validation_fingerprint or "").strip()
+                        or str(job.get("validation_fingerprint") or "").strip()
+                    )
+                    stamp_paths = list(
+                        invalidated_paths
+                        if invalidated_paths is not None
+                        else (job.get("invalidated_paths") or [])
+                    )
+                    stamp_reason = (
+                        (reuse_reason or "").strip()
+                        or str(job.get("reuse_reason") or "").strip()
+                    )
+                    try:
+                        stamp_validation_on_job(
+                            job,
+                            cwd=stamp_cwd,
+                            reuse_status=stamp_status,
+                            source_job_id=stamp_source,
+                            invalidated_paths=stamp_paths,
+                            reuse_reason=stamp_reason,
+                            validation_fingerprint=stamp_fp,
+                        )
+                    except Exception as stamp_exc:
+                        # Preserve best-effort finish, but persist
+                        # complete=false/error so the job cannot silently
+                        # look like a reusable source.
+                        try:
+                            mark_validation_stamp_failed(job, stamp_exc)
+                        except Exception:
+                            pass
+                elif reuse_status or source_job_id or reuse_reason:
+                    if reuse_status:
+                        job["reuse_status"] = reuse_status
+                    if source_job_id:
+                        job["source_job_id"] = source_job_id
+                    if validation_fingerprint:
+                        job["validation_fingerprint"] = validation_fingerprint
+                    if invalidated_paths:
+                        job["invalidated_paths"] = list(invalidated_paths)
+                    if reuse_reason:
+                        job["reuse_reason"] = reuse_reason
+            except Exception:
+                pass
             # Nested UI must not spin forever after the parent job settles.
             settle_reason = (
                 "cancelled" if cancelled
@@ -387,6 +481,46 @@ class LocalJobsMixin:
             from harness.observability_export import export_local_job_terminal
 
             export_local_job_terminal(**export_job)
+        except Exception:
+            pass
+
+    def _fail_or_drop_local_job(self, job_id: str, summary: str = "") -> None:
+        """Best-effort settle a registered job after finish failure.
+
+        When register succeeded but finish raised, the row would otherwise
+        remain ``running`` (live spinner / orphan). Try a failed finish; if
+        that also cannot terminalize, remove the row from the local store.
+        """
+        jid = str(job_id or "").strip()
+        if not jid:
+            return
+        try:
+            with self._local_jobs_lock:
+                job = self._local_jobs.get(jid)
+                if not isinstance(job, dict):
+                    return
+                if str(job.get("status") or "") in _TERMINAL_LOCAL_JOB_STATUSES:
+                    return
+        except Exception:
+            return
+        try:
+            self._finish_local_job(
+                jid,
+                ok=False,
+                summary=(summary or "tracker finish failed")[:200],
+                status="failed",
+            )
+        except Exception:
+            pass
+        try:
+            with self._local_jobs_lock:
+                job = self._local_jobs.get(jid)
+                if isinstance(job, dict) and (
+                    str(job.get("status") or "") not in _TERMINAL_LOCAL_JOB_STATUSES
+                ):
+                    self._local_jobs.pop(jid, None)
+                    self._local_job_cancels.pop(jid, None)
+                    self._persist_local_jobs_locked()
         except Exception:
             pass
 

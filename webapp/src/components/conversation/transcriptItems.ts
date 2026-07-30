@@ -1,7 +1,9 @@
 import type { Item, Msg } from "../TranscriptList";
 import {
   mergeSwarmPendingItems,
+  normalizeSwarmJobIds,
   swarmPendingIdentityKey,
+  swarmPendingStatusOf,
 } from "./swarmPendingIdentity";
 import {
   boundActionField,
@@ -19,6 +21,38 @@ const COMMAND_HASH_HEX = /^[0-9a-f]{64}$/;
 
 const TURN_CONTEXT_MARKER = "[context for this turn]";
 const CODEGRAPH_INJECTION_PREFIX = "CODEGRAPH HAS ALREADY BEEN QUERIED";
+
+type SwarmResultItem = Extract<Item, { kind: "swarm_result" }>;
+
+/**
+ * Latest-authoritative merge for swarm_result reuse provenance.
+ * Explicit next fields (including applied=false, reuse_status='fresh',
+ * invalidated_paths=[]) replace prior values; only undefined next fields
+ * inherit prior provenance.
+ */
+export function mergeSwarmResultReuse(
+  prev: SwarmResultItem,
+  next: SwarmResultItem,
+): SwarmResultItem {
+  return {
+    ...prev,
+    ...next,
+    applied: typeof next.applied === "boolean" ? next.applied : prev.applied,
+    files: next.files !== undefined ? (next.files || []) : (prev.files || []),
+    summary: next.summary || prev.summary,
+    error: next.error !== undefined ? next.error : prev.error,
+    objective: next.objective || prev.objective,
+    reuse_status: next.reuse_status !== undefined ? next.reuse_status : prev.reuse_status,
+    source_job_id: next.source_job_id !== undefined ? next.source_job_id : prev.source_job_id,
+    reuse_reason: next.reuse_reason !== undefined ? next.reuse_reason : prev.reuse_reason,
+    validation_fingerprint: next.validation_fingerprint !== undefined
+      ? next.validation_fingerprint
+      : prev.validation_fingerprint,
+    invalidated_paths: next.invalidated_paths !== undefined
+      ? next.invalidated_paths
+      : prev.invalidated_paths,
+  };
+}
 
 /**
  * Strip append-only turn-context trailers from user-visible message text.
@@ -207,7 +241,16 @@ export function dedupeDisplayItems(items: Item[]): Item[] {
     }
     if (item.kind === "swarm_result" && item.job_id) {
       const id = String(item.job_id);
-      if (swarmIndexById.has(id)) continue;
+      const prevIdx = swarmIndexById.get(id);
+      if (prevIdx != null) {
+        const prev = out[prevIdx];
+        if (prev.kind === "swarm_result") {
+          // Replace/merge with richer reuse provenance instead of first-wins.
+          // Later row is authoritative; merge only fills undefined next fields.
+          out[prevIdx] = mergeSwarmResultReuse(prev, item);
+        }
+        continue;
+      }
       swarmIndexById.set(id, out.length);
       out.push(item);
       continue;
@@ -314,7 +357,25 @@ export function transcriptResponseToItems(res: {
           files: Array.isArray(m.files) ? m.files : [],
           summary: m.summary || "",
           error: m.error || null,
-          objective: m.objective || ""
+          objective: m.objective || "",
+          // Explicit empty string is an authoritative clear; only absent/null
+          // means "field not present" (merge may inherit prior provenance).
+          reuse_status: m.reuse_status !== undefined && m.reuse_status !== null
+            ? String(m.reuse_status)
+            : undefined,
+          source_job_id: m.source_job_id !== undefined && m.source_job_id !== null
+            ? String(m.source_job_id)
+            : undefined,
+          reuse_reason: m.reuse_reason !== undefined && m.reuse_reason !== null
+            ? String(m.reuse_reason)
+            : undefined,
+          validation_fingerprint:
+            m.validation_fingerprint !== undefined && m.validation_fingerprint !== null
+              ? String(m.validation_fingerprint)
+              : undefined,
+          invalidated_paths: Array.isArray(m.invalidated_paths)
+            ? m.invalidated_paths.map((p: unknown) => String(p || "")).filter(Boolean)
+            : undefined,
         }];
       } else if (m.type === "command_approval") {
         // Reject empty/malformed hashes so hydrate cannot create colliding
@@ -546,7 +607,9 @@ function insertIndexForRemoteCard(
 /**
  * Merge a disk/API transcript into the live feed without dropping in-flight
  * cards. Prefer remote message text when ids match; keep local-only cards
- * and still-pending command approval cards.
+ * and still-pending command approval cards. When local cards win the prefer
+ * path, remote swarm_result / swarm_pending rows still reconcile by stable
+ * identity (latest-explicit reuse merge + terminal pending merge).
  */
 export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
   if (!shouldPreferLocalTranscript(local, remote)) {
@@ -635,8 +698,71 @@ export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
     localIds.add(remId);
     if (remCall) localCallIds.add(remCall);
   }
+
+  // Prefer-local keeps extra tool cards, but remote swarm_result / swarm_pending
+  // rows remain authoritative by stable identity (job_id / normalized job ids).
+  const remoteResultsById = new Map<string, SwarmResultItem>();
+  for (const it of remote) {
+    if (it.kind === "swarm_result" && it.job_id) {
+      remoteResultsById.set(String(it.job_id), it);
+    }
+  }
+  const withResults = withSlots.map((it) => {
+    if (it.kind !== "swarm_result" || !it.job_id) return it;
+    const rem = remoteResultsById.get(String(it.job_id));
+    if (!rem) return it;
+    return mergeSwarmResultReuse(it, rem);
+  });
+  const localResultIds = new Set(
+    withResults
+      .filter((it): it is SwarmResultItem => it.kind === "swarm_result" && !!it.job_id)
+      .map((it) => String(it.job_id)),
+  );
+  for (const rem of remote) {
+    if (rem.kind !== "swarm_result" || !rem.job_id) continue;
+    const id = String(rem.job_id);
+    if (localResultIds.has(id)) continue;
+    withResults.push(rem);
+    localResultIds.add(id);
+  }
+
+  type SwarmPendingRow = Extract<Item, { kind: "swarm_pending" }>;
+  const remotePendingByKey = new Map<string, SwarmPendingRow>();
+  for (const it of remote) {
+    if (it.kind !== "swarm_pending") continue;
+    const key = swarmPendingIdentityKey(it.job_ids);
+    if (key) remotePendingByKey.set(key, it);
+  }
+  const withPending = withResults.map((it) => {
+    if (it.kind !== "swarm_pending") return it;
+    const key = swarmPendingIdentityKey(it.job_ids);
+    if (!key) return it;
+    const rem = remotePendingByKey.get(key);
+    if (!rem) return it;
+    return mergeSwarmPendingItems(it, rem);
+  });
+  const localPendingKeys = new Set<string>();
+  for (const it of withPending) {
+    if (it.kind !== "swarm_pending") continue;
+    const key = swarmPendingIdentityKey(it.job_ids);
+    if (key) localPendingKeys.add(key);
+  }
+  for (const rem of remote) {
+    if (rem.kind !== "swarm_pending") continue;
+    const key = swarmPendingIdentityKey(rem.job_ids);
+    if (!key || localPendingKeys.has(key)) continue;
+    withPending.push(rem);
+    localPendingKeys.add(key);
+  }
+
   // Harden against poll/SSE interleave leaving duplicate tool-call ids in local.
-  return dedupeDisplayItems(appendMissingPendingApprovals(withSlots, local));
+  return dedupeDisplayItems(appendMissingPendingApprovals(withPending, local));
+}
+
+/** Bound path/id lists so fingerprints stay cheap and order-stable. */
+function fingerprintPathList(paths: readonly string[] | undefined, limit = 8): string {
+  if (!Array.isArray(paths) || paths.length === 0) return "";
+  return [...paths].map(String).sort().slice(0, limit).join(",");
 }
 
 /** Cheap content fingerprint so busy-poll refresh can skip identical payloads. */
@@ -650,7 +776,19 @@ export function transcriptFingerprint(items: Item[]): string {
       const r = it.card.result;
       fp += `|c:${it.card.id}:${it.card.running ? 1 : 0}:${r ? 1 : 0}`;
     } else if (it.kind === "swarm_result") {
-      fp += `|s:${it.job_id}:${it.applied ? 1 : 0}`;
+      // Include every reuse/correction field merge+hydrate must paint so a
+      // validation_fingerprint-only clear (or error/reason update) cannot be
+      // skipped by busy-poll / reattach fingerprint equality.
+      const paths = fingerprintPathList(it.invalidated_paths);
+      const files = fingerprintPathList(it.files);
+      fp += `|s:${it.job_id}:${it.applied ? 1 : 0}:${it.reuse_status || ""}:${it.source_job_id || ""}:${it.reuse_reason || ""}:${it.validation_fingerprint || ""}:${it.error || ""}:${files}:${paths}`;
+    } else if (it.kind === "swarm_pending") {
+      // Remote running→terminal (and terminal_job_ids union) must change the
+      // fingerprint so prefer-local merge paints the settled pill.
+      const status = swarmPendingStatusOf(it);
+      const ids = normalizeSwarmJobIds(it.job_ids || []).slice(0, 16).join(",");
+      const terminals = normalizeSwarmJobIds(it.terminal_job_ids || []).slice(0, 16).join(",");
+      fp += `|sp:${ids}:${status}:${status === "running" ? 1 : 0}:${terminals}`;
     } else if (it.kind === "command_approval") {
       fp += `|ca:${it.commandHash}:${it.status}`;
     } else if (it.kind === "thinking") {

@@ -625,6 +625,21 @@ class ConversationJobsMixin:
                 diff=(getattr(res, "patch", "") or ""),
                 worker_provenance=provenance,
             )
+            # Copy reuse provenance from the stamped local job onto the queued
+            # result so drain/SSE hydrate stay honest after reload.
+            try:
+                stamped = (getattr(self, "_local_jobs", {}) or {}).get(job_id) or {}
+                for _rk in (
+                    "reuse_status",
+                    "source_job_id",
+                    "validation_fingerprint",
+                    "invalidated_paths",
+                    "reuse_reason",
+                ):
+                    if stamped.get(_rk) not in (None, "", [], {}):
+                        res_dict[_rk] = stamped[_rk]
+            except Exception:
+                pass
             self._swarm_results.put({
                 "job_id": job_id,
                 "objective": objective,
@@ -779,6 +794,26 @@ class ConversationJobsMixin:
                     worker_provenance = res_job.get("worker_provenance") or {}
                     if worker_provenance:
                         display_result["worker_provenance"] = worker_provenance
+                    # Prefer fields already on the result; fall back to stamped
+                    # local job so transcript hydrate keeps reuse provenance.
+                    try:
+                        stamped = (getattr(self, "_local_jobs", {}) or {}).get(job_id) or {}
+                    except Exception:
+                        stamped = {}
+                    for _rk in (
+                        "reuse_status",
+                        "source_job_id",
+                        "validation_fingerprint",
+                        "invalidated_paths",
+                        "reuse_reason",
+                    ):
+                        value = res_job.get(_rk)
+                        if value in (None, "", [], {}):
+                            value = stamped.get(_rk) if isinstance(stamped, dict) else None
+                        if value not in (None, "", [], {}):
+                            display_result[_rk] = value
+                            if isinstance(res_job, dict) and res_job.get(_rk) in (None, "", [], {}):
+                                res_job[_rk] = value
                     self._display_transcript.append(display_result)
                     # Nested actions are progressive via /api/swarm/live; mirror
                     # onto display cards only here under _busy for reload durability.
