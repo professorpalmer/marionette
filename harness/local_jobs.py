@@ -33,9 +33,48 @@ from .job_actions import (
     snapshot_actions,
     upsert_action_row,
 )
+from .model_identity import (
+    collapse_engine_prefixes,
+    envelope_model_id,
+    filter_rejected_excluding_selected,
+    model_ids_equal,
+    price_lookup_id,
+)
+from .provenance_sanitize import sanitize_clean_tree_claims
 
 # Job statuses that must never accept a fresh status=running nested row.
 _TERMINAL_LOCAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+
+def _reconcile_routing_artifact(art: dict, selected_model: str) -> dict:
+    """Make a final ROUTING card agree with the realized selected model.
+
+    Rewrites model/headline, drops the selected id from rejected[], and clears
+    stale winner/rejection prose when the finish-time model differs from the
+    preflight preview pick.
+    """
+    updated = dict(art)
+    selected = collapse_engine_prefixes(selected_model) or (selected_model or "").strip()
+    if not selected:
+        return updated
+    preview = str(updated.get("model") or "").strip()
+    model_changed = bool(preview) and not model_ids_equal(preview, selected)
+    updated["model"] = selected
+    updated["headline"] = f"Routed to {selected}"
+    also = []
+    adapter_name = str(updated.get("adapter_model_name") or "").strip()
+    if adapter_name:
+        also.append(adapter_name)
+    updated["rejected"] = filter_rejected_excluding_selected(
+        updated.get("rejected"), selected, also_exclude=also,
+    )
+    if model_changed:
+        # Preview winner/rejection prose belongs to the old pick — do not leave
+        # "chose flash because cheaper than pro" under a pro-selected card.
+        updated["detail"] = ""
+        if "reason" in updated:
+            updated["reason"] = ""
+    return updated
 
 
 class LocalJobsMixin:
@@ -73,7 +112,7 @@ class LocalJobsMixin:
             # (Marionette pilot / ProviderWorker) without stamping the openrouter
             # pilot slug as the adapter -- that lied when the run was agentic.
             engine_label = "native"
-        model_id = (model or "").strip()
+        model_id = collapse_engine_prefixes((model or "").strip()) or (model or "").strip()
         if not model_id and engine_label == "native":
             model_id = (self.config.driver or "").strip()
         routing_arts: list = []
@@ -87,7 +126,9 @@ class LocalJobsMixin:
                 preview = preview_agentic_route(goal, role=role or "implement")
             except Exception:
                 preview = {}
-            model_id = (preview.get("model_id") or "").strip()
+            model_id = collapse_engine_prefixes(
+                (preview.get("model_id") or "").strip()
+            ) or (preview.get("model_id") or "").strip()
             est_cost = float(preview.get("est_cost_usd") or 0.0)
             routing_saved = float(preview.get("routing_saved_usd") or 0.0)
             routing_basis = str(preview.get("routing_savings_basis") or "")
@@ -98,7 +139,7 @@ class LocalJobsMixin:
                 # Explicit id at creation: artifact://local-*/<id> must survive
                 # the headline/model rewrite _finish_local_job performs later.
                 routing_arts.append({**art, "id": routing_artifact_id(job_id)})
-        display_model = f"{engine_label}/{model_id}" if model_id else engine_label
+        display_model = envelope_model_id(engine_label, model_id) if model_id else engine_label
         task_role = f"{role} ({engine_label})" if role else f"implement ({engine_label})"
         with self._local_jobs_lock:
             self._local_job_cancels[job_id] = threading.Event()
@@ -198,7 +239,7 @@ class LocalJobsMixin:
             job["status"] = terminal
             job["updated_at"] = time.time()
             engine_label = (engine or "").strip().lower()
-            model_id = (model or "").strip()
+            model_id = collapse_engine_prefixes((model or "").strip()) or (model or "").strip()
             if engine_label in ("agentic", "native"):
                 job["adapter"] = engine_label
                 if job.get("tasks"):
@@ -209,7 +250,7 @@ class LocalJobsMixin:
                 eng = engine_label or (job.get("adapter") or "").strip() or "native"
                 mid = model_id
                 if mid:
-                    job["model"] = f"{eng}/{mid}"
+                    job["model"] = envelope_model_id(eng, mid)
                 elif eng:
                     job["model"] = eng
             if tokens:
@@ -226,13 +267,9 @@ class LocalJobsMixin:
                 try:
                     from pmharness.registry import resolve_price_with_source
                     from harness.server import _job_cost, _normalize_price_source
-                    price_spec = model_id or (job.get("model") or "")
-                    # Strip engine/ prefix if present (e.g. agentic/z-ai/...).
-                    if "/" in price_spec and price_spec.split("/", 1)[0] in (
-                        "agentic", "native",
-                    ):
-                        price_spec = price_spec.split("/", 1)[1]
-                    price_spec = price_spec or self.config.driver
+                    price_spec = price_lookup_id(
+                        model_id or (job.get("model") or "")
+                    ) or self.config.driver
                     price_in, price_out, _src = resolve_price_with_source(price_spec)
                     price_source = _normalize_price_source(_src)
                     real_cost = _job_cost(0, 0, tokens, price_in, price_out)
@@ -255,16 +292,22 @@ class LocalJobsMixin:
                 job["tasks"][0]["status"] = terminal
             if isinstance(worker_provenance, dict):
                 job["worker_provenance"] = copy.deepcopy(worker_provenance)
-            if cancelled and not summary:
+            summary_text = summary or ""
+            if isinstance(worker_provenance, dict):
+                summary_text = sanitize_clean_tree_claims(
+                    summary_text, provenance=worker_provenance,
+                )
+            if cancelled and not summary_text:
                 headline = "Cancelled by user"
             else:
-                headline = (summary or "").strip().splitlines()[0] if summary else (
+                headline = summary_text.strip().splitlines()[0] if summary_text else (
                     "Patch applied" if ok else "Worker failed")
             if files:
                 headline = f"{headline} ({len(files)} file{'s' if len(files) != 1 else ''})"
             # Keep any pre-stamped ROUTING card (immutable preflight estimate).
             # Realized spend stays on job["est_cost_usd"] — never overwrite
-            # ROUTING.est_cost_usd with provider receipts.
+            # ROUTING.est_cost_usd with provider receipts. Selected model and
+            # rejected[] are reconciled so the final card cannot contradict itself.
             keep_routing = []
             for art in (job.get("artifacts") or []):
                 if not isinstance(art, dict):
@@ -274,8 +317,7 @@ class LocalJobsMixin:
                 updated = dict(art)
                 updated["id"] = routing_artifact_id(job_id)
                 if model_id:
-                    updated["model"] = model_id
-                    updated["headline"] = f"Routed to {model_id}"
+                    updated = _reconcile_routing_artifact(updated, model_id)
                 # Preserve attested policy; default balanced for router stamps.
                 if not (updated.get("policy") or "").strip():
                     if updated.get("created_by") == "router":
@@ -301,10 +343,23 @@ class LocalJobsMixin:
                 "cost_provenance": job.get("cost_provenance"),
                 "worker_provenance": copy.deepcopy(job.get("worker_provenance") or {}),
             })
+            signal_findings = findings
+            if isinstance(worker_provenance, dict) and isinstance(findings, list):
+                signal_findings = []
+                for row in findings:
+                    if not isinstance(row, dict):
+                        continue
+                    cleaned = dict(row)
+                    for field in ("headline", "claim", "body", "detail"):
+                        if field in cleaned and isinstance(cleaned[field], str):
+                            cleaned[field] = sanitize_clean_tree_claims(
+                                cleaned[field], provenance=worker_provenance,
+                            )
+                    signal_findings.append(cleaned)
             job["artifacts"] = (
                 keep_routing
                 + [terminal_art]
-                + normalize_finding_artifacts(job_id, findings)
+                + normalize_finding_artifacts(job_id, signal_findings)
             )
             # Nested UI must not spin forever after the parent job settles.
             settle_reason = (

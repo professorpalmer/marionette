@@ -17,6 +17,11 @@ balanced router pick).
 import os
 from typing import Any, Optional
 
+from harness.model_identity import (
+    collapse_engine_prefixes,
+    filter_rejected_excluding_selected,
+)
+
 
 def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, Any]:
     """Best-effort dry-run of the agentic implement router.
@@ -40,6 +45,7 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
     provider = (os.environ.get("HARNESS_IMPLEMENT_PROVIDER", "") or "").strip().lower()
     pinned_model = (os.environ.get("HARNESS_IMPLEMENT_MODEL", "") or "").strip()
     if provider and pinned_model:
+        pinned_model = collapse_engine_prefixes(pinned_model) or pinned_model
         return {
             "model_id": pinned_model,
             "est_cost_usd": 0.0,
@@ -119,6 +125,7 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
         model_id = str(getattr(decision.model, "id", "") or "")
     except Exception:
         model_id = ""
+    model_id = collapse_engine_prefixes(model_id) or model_id
     if not model_id:
         return {}
 
@@ -127,17 +134,24 @@ def preview_agentic_route(goal: str, *, role: str = "implement") -> dict[str, An
     tokens_out = int(getattr(decision, "estimated_tokens_out", 0) or 0)
     reason = str(getattr(decision, "reason", "") or "")
     baseline = float(getattr(decision, "baseline_cost_usd", 0.0) or 0.0)
-    baseline_model_id = str(getattr(decision, "baseline_model_id", "") or "")
+    baseline_model_id = collapse_engine_prefixes(
+        str(getattr(decision, "baseline_model_id", "") or "")
+    ) or str(getattr(decision, "baseline_model_id", "") or "")
     policy = str(getattr(decision, "policy", "") or "balanced")
     rejected: list[dict[str, str]] = []
     for spec, why in getattr(decision, "rejected", []) or []:
         try:
+            mid = collapse_engine_prefixes(
+                str(getattr(spec, "id", "") or spec)
+            ) or str(getattr(spec, "id", "") or spec)
             rejected.append({
-                "model": str(getattr(spec, "id", "") or spec),
+                "model": mid,
                 "reason": str(why or ""),
             })
         except Exception:
             continue
+    # Invariant: selected model is never also listed as rejected.
+    rejected = filter_rejected_excluding_selected(rejected, model_id)
 
     routing_saved = max(0.0, baseline - est) if baseline > 0 else 0.0
     return {
@@ -180,14 +194,16 @@ def _routing_artifact(
     baseline_model_id: str = "",
 ) -> dict[str, Any]:
     """UI-shaped ROUTING row (same fields DurableState.format_artifacts emits)."""
+    canonical = collapse_engine_prefixes(model_id) or (model_id or "").strip()
+    clean_rejected = filter_rejected_excluding_selected(rejected, canonical)
     row: dict[str, Any] = {
         "type": "ROUTING",
-        "headline": f"Routed to {model_id}",
+        "headline": f"Routed to {canonical}",
         "created_by": "router",
-        "model": model_id,
+        "model": canonical,
         "est_cost_usd": round(float(est_cost_usd or 0.0), 6),
         "role": (role or "implement").strip() or "implement",
-        "rejected": list(rejected or []),
+        "rejected": clean_rejected,
         "detail": reason or "",
         # Attested policy so SwarmPane basis labels survive reload.
         "policy": (policy or "").strip() or "balanced",

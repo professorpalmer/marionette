@@ -20,7 +20,11 @@ from harness.internal_uri import (
     InternalUriError,
     resolve_internal_uri,
 )
-from harness.local_job_artifacts import artifacts_are_complete, terminal_artifact_type
+from harness.local_job_artifacts import (
+    artifacts_are_complete,
+    resolve_execution_provenance,
+    terminal_artifact_type,
+)
 from harness.local_job_swarm_view import project_local_job_for_swarm_live
 from harness.local_jobs import LocalJobsMixin
 from puppetmaster.models import AgentRun, Artifact, ArtifactType, Task
@@ -139,7 +143,7 @@ def test_real_structured_findings_survive_to_artifact_reads(session):
                              cwd=repo, engine="agentic")
     sess._finish_local_job(
         "local-findings", ok=True, summary="2 findings",
-        engine="agentic", model="kimi-k3", tokens=9000,
+        engine="agentic", model="kimi-k3", tokens=9000, est_cost_usd=0.42,
         findings=[
             {"type": "finding", "headline": "keys.py ignores the legacy keyfile"},
             {"type": "risk", "headline": "platform.json split-brain disables toggles"},
@@ -151,12 +155,101 @@ def test_real_structured_findings_survive_to_artifact_reads(session):
     job = sess._local_jobs["local-findings"]
     assert _artifact_types(job) == ["analysis", "finding", "risk", "verification"]
 
+    finding = next(a for a in job["artifacts"] if a["type"] == "finding")
+    assert finding["execution_ref"] == {
+        "job_id": "local-findings",
+        "terminal_artifact_id": "local-findings-result",
+    }
+    assert "tokens" not in finding
+    assert "est_cost_usd" not in finding
+
     ctx = _ctx(state_dir, repo)
     for artifact in job["artifacts"]:
         uri = f"artifact://local-findings/{artifact['id']}"  # explicit stable ids
         data = json.loads(resolve_internal_uri(uri, ctx).content)
         assert data["headline"] == artifact["headline"]
         assert data["job_id"] == "local-findings"
+
+    finding_uri = f"artifact://local-findings/{finding['id']}"
+    finding_data = json.loads(resolve_internal_uri(finding_uri, ctx).content)
+    assert finding_data["execution_ref"]["job_id"] == "local-findings"
+    # Resolved display provenance joins the terminal/job meters without
+    # promoting spend onto the finding row itself.
+    assert finding_data.get("tokens") in (None, 0)
+    assert finding_data.get("est_cost_usd") in (None, 0, 0.0)
+    assert finding_data["execution"]["tokens"] == 9000
+    assert finding_data["execution"]["model"] == "agentic/kimi-k3"
+    assert finding_data["execution"]["est_cost_usd"] == 0.42
+
+
+def test_forged_routing_terminal_artifact_id_cannot_supply_spend(session):
+    """A same-job ROUTING id must not hydrate execution model/tokens/cost."""
+    sess, state_dir, repo = session
+    sess._register_local_job(
+        "local-forge", "audit keys", role="analysis", cwd=repo, engine="agentic",
+    )
+    # Seed a ROUTING card the way preview_agentic_route would, then poison it
+    # with forged spend so a naive id join would lie about model/tokens/cost.
+    with sess._local_jobs_lock:
+        sess._local_jobs["local-forge"]["artifacts"] = [{
+            "id": "local-forge-routing",
+            "type": "ROUTING",
+            "headline": "Routed to forged/evil-model",
+            "model": "forged/evil-model",
+            "tokens": 1,
+            "est_cost_usd": 99.0,
+            "adapter": "forged",
+            "created_by": "router",
+        }]
+        sess._persist_local_jobs_locked()
+    sess._finish_local_job(
+        "local-forge", ok=True, summary="real finding summary",
+        engine="agentic", model="kimi-k3", tokens=9000, est_cost_usd=0.42,
+        findings=[{"type": "finding", "headline": "keys.py ignores legacy"}],
+    )
+    job = sess._local_jobs["local-forge"]
+    # Re-poison after finish (finish may rewrite ROUTING.model to selected).
+    with sess._local_jobs_lock:
+        for art in job["artifacts"]:
+            if str(art.get("type") or "").upper() == "ROUTING":
+                art["model"] = "forged/evil-model"
+                art["tokens"] = 1
+                art["est_cost_usd"] = 99.0
+                art["adapter"] = "forged"
+                break
+        sess._persist_local_jobs_locked()
+
+    finding = next(a for a in job["artifacts"] if a["type"] == "finding")
+    forged = dict(finding)
+    forged["execution_ref"] = {
+        "job_id": "local-forge",
+        "terminal_artifact_id": "local-forge-routing",
+    }
+
+    resolved = resolve_execution_provenance(forged, job)
+    assert resolved["model"] == "agentic/kimi-k3"
+    assert resolved["tokens"] == 9000
+    assert resolved["est_cost_usd"] == 0.42
+    assert resolved["model"] != "forged/evil-model"
+    assert resolved["tokens"] != 1
+    assert resolved["est_cost_usd"] != 99.0
+
+    # artifact:// path must also refuse the forged ROUTING pointer.
+    ctx = _ctx(state_dir, repo)
+    with sess._local_jobs_lock:
+        for art in job["artifacts"]:
+            if art.get("type") == "finding":
+                art["execution_ref"] = forged["execution_ref"]
+                break
+        sess._persist_local_jobs_locked()
+    finding_data = json.loads(
+        resolve_internal_uri(
+            f"artifact://local-forge/{finding['id']}", ctx,
+        ).content,
+    )
+    assert finding_data["execution"]["model"] == "agentic/kimi-k3"
+    assert finding_data["execution"]["tokens"] == 9000
+    assert finding_data["execution"]["est_cost_usd"] == 0.42
 
 
 def test_provenance_is_preserved_on_the_terminal_artifact(session):

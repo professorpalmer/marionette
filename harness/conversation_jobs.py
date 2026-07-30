@@ -337,6 +337,13 @@ class ConversationJobsMixin:
                 )
                 return
             raw_worker_summary = res.summary or ""
+            try:
+                from harness.provenance_sanitize import sanitize_clean_tree_claims
+                res.summary = sanitize_clean_tree_claims(
+                    raw_worker_summary, provenance=provenance,
+                )
+            except Exception:
+                pass
             provenance_text = _worker_provenance_text(provenance)
             if provenance_text:
                 res.summary = f"{provenance_text}\n{res.summary}".strip()

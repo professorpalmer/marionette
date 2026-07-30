@@ -237,6 +237,12 @@ export type Artifact = {
   // whose every worker fast-failed as a failed run, not a green "done".
   result?: string;
   failure?: string;
+  /** Lightweight parent-job pointer for finding/risk/decision (no spend fields). */
+  execution_ref?: {
+    job_id: string;
+    task_id?: string;
+    terminal_artifact_id?: string;
+  };
 };
 // Job.artifacts is a count in /api/jobs but a full list in /swarm/live; this
 // narrows to the embedded list (empty when the payload only carried a count).

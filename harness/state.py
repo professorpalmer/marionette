@@ -14,10 +14,18 @@ from puppetmaster.store_factory import create_store
 from .diag import note as _diag
 
 
-def _normalize_rejected(rejected: Any) -> Optional[list]:
+def _normalize_rejected(
+    rejected: Any,
+    *,
+    selected_model: Any = None,
+) -> Optional[list]:
     """Router rejected-alternatives entries are {"id", "reason"}; the GUI renders
     {"model", "reason"}. Map "id" -> "model" so the model name shows. Tolerant of
-    already-normalized entries and non-list inputs."""
+    already-normalized entries and non-list inputs.
+
+    When ``selected_model`` is provided, drop identity-equal rows so the final
+    ROUTING card cannot list its winner among rejected candidates.
+    """
     if not isinstance(rejected, list):
         return rejected
     out = []
@@ -29,6 +37,13 @@ def _normalize_rejected(rejected: Any) -> Optional[list]:
             })
         else:
             out.append({"model": str(r), "reason": ""})
+    selected = str(selected_model or "").strip()
+    if selected:
+        try:
+            from harness.model_identity import filter_rejected_excluding_selected
+            return filter_rejected_excluding_selected(out, selected)
+        except Exception:
+            pass
     return out
 
 
@@ -213,15 +228,18 @@ class DurableState:
                         headline = f"Patch: {shown}{more}"
                 except Exception:
                     files, diffstat = None, None
-            out.append({
+            art_type = str(getattr(a, "type", ""))
+            task_id = getattr(a, "task_id", "") or None
+            job_id = getattr(a, "job_id", "") or None
+            row = {
                 "id": getattr(a, "id", ""),
-                "type": str(getattr(a, "type", "")),
+                "type": art_type,
                 "headline": str(headline)[:300],
                 "confidence": getattr(a, "confidence", None),
                 "created_by": getattr(a, "created_by", ""),
                 # Surface task_id so the GUI can group ROUTING duplicates
                 # (router + router-fallback per task) into one display row.
-                "task_id": getattr(a, "task_id", "") or None,
+                "task_id": task_id,
                 # Puppetmaster's router stamps the chosen model under "model_id"
                 # (to_artifact_payload); the older keys are kept as fallbacks so
                 # non-router artifacts still resolve a model when they carry one.
@@ -240,8 +258,15 @@ class DurableState:
                 "adapter_model_name": payload.get("adapter_model_name"),
                 # Rejected alternatives arrive as {"id", "reason"}; normalize to the
                 # {"model", "reason"} shape the GUI renders so the model name shows
-                # instead of "undefined".
-                "rejected": _normalize_rejected(payload.get("rejected")),
+                # instead of "undefined". Filter out the selected model under
+                # identity equality so the ledger cannot contradict the winner.
+                "rejected": _normalize_rejected(
+                    payload.get("rejected"),
+                    selected_model=(
+                        payload.get("model_id") or payload.get("model")
+                        or payload.get("model_chosen") or payload.get("driver")
+                    ),
+                ),
                 "detail": payload.get("reason") or payload.get("detail"),
                 # Verification verdicts. "result" is failed/blocked/pass;
                 # "failure" is the machine class (no_model, billing_or_quota).
@@ -253,7 +278,23 @@ class DurableState:
                 # cheaply test truthiness before rendering a diffstat row.
                 "files": files,
                 "diffstat": diffstat,
-            })
+            }
+            # Lightweight parent-execution pointer for signal rows. Prefer an
+            # explicit payload stamp; otherwise synthesize from job/task ids so
+            # legacy store rows still resolve without copying spend fields.
+            kind = art_type.strip().lower()
+            if kind in ("finding", "risk", "decision"):
+                ref = payload.get("execution_ref")
+                if not isinstance(ref, dict):
+                    ref = {}
+                if job_id or ref.get("job_id"):
+                    from harness.local_job_artifacts import execution_ref_for
+                    row["execution_ref"] = execution_ref_for(
+                        str(ref.get("job_id") or job_id or ""),
+                        task_id=ref.get("task_id") or task_id,
+                        terminal_artifact_id=ref.get("terminal_artifact_id"),
+                    )
+            out.append(row)
         return out
 
     def job_artifacts(self, job_id: str) -> list:

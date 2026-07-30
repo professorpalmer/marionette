@@ -526,6 +526,28 @@ def _resolve_artifact(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Int
             data = dict(_sanitize_local_value(artifact))
             data["id"] = artifact_id
             data["job_id"] = job_id
+            # Join parent execution provenance for finding/risk/decision without
+            # copying spend onto the child (usage aggregators read job meters).
+            kind = str(data.get("type") or "").strip().lower()
+            if kind in ("finding", "risk", "decision"):
+                try:
+                    from harness.local_job_artifacts import (
+                        execution_ref_for,
+                        resolve_execution_provenance,
+                    )
+                    if not isinstance(data.get("execution_ref"), dict):
+                        data["execution_ref"] = execution_ref_for(
+                            job_id,
+                            task_id=data.get("task_id"),
+                            default_local_terminal=True,
+                        )
+                    resolved = resolve_execution_provenance(data, job)
+                    if resolved:
+                        # Display-only sibling; never promotes tokens/cost onto
+                        # the finding row itself.
+                        data["execution"] = resolved
+                except Exception:
+                    pass
             url = f"artifact://{parsed.path}"
             if len(parts) == 2:
                 return _json_resource(url, data)

@@ -49,15 +49,24 @@ _ROUTING_FINAL_RANK = {
 
 
 def _normalize_model_id_for_price(model_id: str) -> str:
-    """Normalize picker / stamped ids for pmharness live/catalog lookup."""
-    mid = (model_id or "").strip()
+    """Normalize picker / stamped ids for pmharness live/catalog lookup.
+
+    Uses the canonical identity helper so ``agentic/agentic/...`` collapses
+    before price lookup (single-prefix strip left double-prefixed badges wrong).
+    """
+    try:
+        from harness.model_identity import price_lookup_id
+
+        mid = price_lookup_id(model_id)
+    except Exception:
+        mid = (model_id or "").strip()
+        lower = mid.lower()
+        for prefix in ("agentic/", "native/"):
+            while lower.startswith(prefix):
+                mid = mid[len(prefix) :]
+                lower = mid.lower()
     if not mid:
         return ""
-    lower = mid.lower()
-    for prefix in ("agentic/", "native/"):
-        if lower.startswith(prefix):
-            mid = mid[len(prefix) :]
-            break
     if mid.startswith("cursor/") and not mid.startswith("cursor-cli:"):
         return "cursor-cli:" + mid[len("cursor/") :]
     return mid

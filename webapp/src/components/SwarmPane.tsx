@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2, CheckCircle2, XCircle, Circle, ChevronDown, ChevronRight, Cpu, Activity, Network, X } from "lucide-react";
 import { api, jobArtifactList, type SwarmLive, type Job, type Artifact, type Task } from "../lib/api";
+import { displayModelId } from "../lib/modelIdentity";
 import { lastSelectedProjectRoot, panelOpacityClass, useProjectSwitching } from "../lib/panelTransition";
 import { useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 
@@ -898,13 +899,12 @@ export default function SwarmPane() {
     const adapter = j.adapter || tasks[0]?.adapter || "";
     // Explicit pins keep the full registry id (agentic/meta/...) on the
     // collapsed summary so Sol-style attribution is visible without expanding.
-    // Auto-routed rows still strip the engine prefix for scannability.
-    const displayModel = (() => {
-      const raw = (routerModel || "").trim();
-      if (!raw) return adapter;
-      if (attestedPolicy === "explicit_pin") return raw;
-      return raw.replace(/^(?:agentic|native)\//i, "").trim() || adapter;
-    })();
+    // Auto-routed rows strip every engine prefix (idempotent) for scannability
+    // so agentic/agentic/... never badges as agentic/<provider>/...
+    const displayModel = displayModelId(routerModel || "", {
+      policy: attestedPolicy,
+      adapterFallback: adapter,
+    });
     const terminal = isTerminal(j);
     const savings = jobSavings(j);
 

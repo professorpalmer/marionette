@@ -206,9 +206,12 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
     git_brief = maybe_git_upstream_brief(repo_cwd)
     git_block = f"\n\n{git_brief}" if git_brief else ""
     worktree_notice = (
-        "\n\nYour git status describes a disposable managed worker worktree, "
-        "not the user's live checkout. Do not claim the user's checkout is clean "
-        "or dirty from this worktree's status."
+        "\n\nExecution provenance (provider, model, tokens, cost, routing) comes "
+        "from the Marionette job envelope, not from repository source files. "
+        "Your git status describes a disposable managed worker worktree, "
+        "not the user's live checkout. Only describe this disposable worktree's "
+        "diff status; do not claim the user's checkout is clean or dirty from "
+        "this worktree's status."
     )
     submit = _analysis_submit_contract(via_tool=via_tool)
     if browser:
