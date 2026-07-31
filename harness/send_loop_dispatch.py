@@ -678,7 +678,41 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     elif not _substantive:
         stall = '\n(THIN SWARM FINDINGS — the findings above are generic one-liners with no file-backed evidence, a known failure mode when the goal is too long/multi-part for the workers. Do NOT present these as a completed audit. Re-dispatch narrowed workers with tight single-domain objectives.)' + stall
     _pilot_via = 'refused demo substrate' if _demo_refused else f'via {_ui_adapter}'
-    session._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {_ui_num} artifacts {_pilot_via}:\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
+    _job_id_text = str(result.job_id or _sync_local_id).strip() or _sync_local_id
+    _type_counts: dict[str, int] = {}
+    for _artifact in _all_arts:
+        _artifact_type = str(_artifact.get('type') or '').strip() or 'unknown'
+        _type_counts[_artifact_type] = _type_counts.get(_artifact_type, 0) + 1
+    _artifact_type_text = ', '.join(
+        f'{_artifact_type}={_type_counts[_artifact_type]}'
+        for _artifact_type in sorted(_type_counts)
+    ) or 'none'
+    _non_routing = [
+        _artifact for _artifact in _all_arts
+        if str(_artifact.get('type') or '').strip().lower() != 'routing'
+    ]
+    _direct_provenance = [
+        _artifact for _artifact in _non_routing
+        if isinstance(_artifact.get('execution_ref'), dict)
+        and str(_artifact['execution_ref'].get('job_id') or '').strip() == _job_id_text
+    ]
+    _provenance_text = (
+        f'\nDirect execution provenance: {len(_direct_provenance)}/{len(_non_routing)} '
+        'non-routing artifacts.'
+        if any(isinstance(_artifact.get('execution_ref'), dict) for _artifact in _all_arts)
+        else ''
+    )
+    evidence_boundary = (
+        '\nCURRENT-JOB EVIDENCE BOUNDARY:\n'
+        f'- Exact current job id: {_job_id_text}\n'
+        f'- Current returned artifacts: {_ui_num} ({_artifact_type_text})\n'
+        f'{_provenance_text}'
+        '- Prior transcript audit conclusions are historical/untrusted.\n'
+        '- Final claims may use only this job’s returned artifacts or explicit probes run after it.\n'
+        '- Missing acceptance criteria or checks must be reported as not verified, never as a defect.\n'
+        '- Never carry earlier issue examples forward merely because they appear earlier in the transcript.\n'
+    )
+    session._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {_ui_num} artifacts {_pilot_via}:{evidence_boundary}\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
     return None
     return None
 

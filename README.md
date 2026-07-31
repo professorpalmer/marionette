@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.152, deliberately pre-1.0. Volatile environment fingerprints invalidate stale browser/LSP/MCP/PM findings; explicit acceptance criteria are reuse identity; Puppetmaster 1.21.5 reconciles contradictory artifacts with per-artifact provenance (rides puppetmaster-ai==1.21.5).
+> Status: v0.9.153, deliberately pre-1.0. Swarm results now carry a strict current-job evidence boundary, while terminal swarm pills stay at the end of one continuous investigation fold instead of splitting the tool chain (rides puppetmaster-ai==1.21.5).
 
 ## Documentation
 

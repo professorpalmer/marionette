@@ -154,6 +154,7 @@ type ActivityItem =
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string }
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
+  | SwarmPendingItem
   | { kind: "swarm_result"; job_id: string; applied: boolean; files: string[]; summary: string; error: string | null; objective?: string; reuse_status?: string; source_job_id?: string; reuse_reason?: string; invalidated_paths?: string[]; validation_fingerprint?: string; environment_fingerprint?: string; acceptance_criteria?: string[] }
   | { kind: "msg"; msg: Msg };
 
@@ -243,17 +244,25 @@ export function collectIntermediateAssistantItems(
   return intermediateItems;
 }
 
-function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
+export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
   // Mental model: a turn is [user msg] + sticky pre-tool bubbles +
   // [investigation fold: thinking / tools / post-tool micro-narration] +
   // [final answer]. Surfaces do not reclassify after first paint.
   const grouped: GroupedItem[] = [];
   let currentGroup: ActivityItem[] = [];
+  let terminalSwarmItems: ActivityItem[] = [];
+  const resultJobIds = new Set(
+    items
+      .filter((item): item is Extract<Item, { kind: "swarm_result" }> => item.kind === "swarm_result")
+      .map((item) => item.job_id),
+  );
 
   const flush = () => {
-    if (currentGroup.length > 0) {
-      grouped.push({ kind: "activity_group", items: currentGroup });
+    const activityItems = [...currentGroup, ...terminalSwarmItems];
+    if (activityItems.length > 0) {
+      grouped.push({ kind: "activity_group", items: activityItems });
       currentGroup = [];
+      terminalSwarmItems = [];
     }
   };
 
@@ -272,14 +281,32 @@ function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): Groupe
         flush();
         grouped.push(item);
       }
-    } else if (item.kind === "swarm_result" || item.kind === "checkpoint") {
+    } else if (item.kind === "swarm_result") {
       // These are emitted by tool execution, so they belong inside the same
       // collapsed investigation as the action card that produced them. Rendering
       // them as standalone chips made the transcript vertically noisy.
+      // Keep terminal detail after any later tool rows in this investigation.
+      terminalSwarmItems.push(item);
+    } else if (item.kind === "checkpoint") {
       currentGroup.push(item);
+    } else if (item.kind === "swarm_pending") {
+      const status = item.status || (item.resolved ? "done" : "running");
+      if (status === "running") {
+        flush();
+        grouped.push(item);
+        continue;
+      }
+      const uncoveredJobIds = (item.job_ids || []).filter((jobId) => !resultJobIds.has(jobId));
+      if (uncoveredJobIds.length === 0) continue;
+      // Terminal lifecycle metadata is part of the investigation, but is
+      // deferred so it cannot interrupt the chronological tool chain.
+      terminalSwarmItems.push(
+        uncoveredJobIds.length === item.job_ids.length
+          ? item
+          : { ...item, job_ids: uncoveredJobIds },
+      );
     } else if (
-      item.kind === "swarm_pending"
-      || item.kind === "compaction"
+      item.kind === "compaction"
       || item.kind === "command_blocked"
       || item.kind === "command_approval"
       || item.kind === "auto_status"
@@ -1026,7 +1053,8 @@ function ActivityGroup({
   // "0 steps" box -- suppress it. But folded intermediate narration OR a reasoning
   // trace must still show (collapsed), so reasoning never silently vanishes from
   // the step list the way it used to.
-  if (actionCount === 0 && narrationMsgs.length === 0 && thinkingItems.length === 0 && checkpointItems.length === 0 && swarmResults.length === 0) {
+  const swarmPendingItems = items.filter((it) => it.kind === "swarm_pending");
+  if (actionCount === 0 && narrationMsgs.length === 0 && thinkingItems.length === 0 && checkpointItems.length === 0 && swarmResults.length === 0 && swarmPendingItems.length === 0) {
     return null;
   }
 
@@ -1108,6 +1136,25 @@ function ActivityGroup({
         />
       );
     }
+    if (it.kind === "swarm_pending") {
+      const objText = it.objective || "";
+      const truncatedObj = objText.length > 60 ? objText.slice(0, 60) + "..." : objText;
+      const jobIdsStr = (it.job_ids || []).join(", ");
+      const pillStatus = it.status || (it.resolved ? "done" : "running");
+      const label = pillStatus === "failed"
+        ? "swarm failed"
+        : pillStatus === "ended"
+          ? "swarm ended"
+          : pillStatus === "done"
+            ? "swarm done"
+            : "swarm running";
+      return (
+        <div key={`swarm-pending-${jobIdsStr}-${idx}`} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/20 border border-edge/30 text-[11px] text-faint w-fit my-1 select-none">
+          {pillStatus === "running" ? <Loader2 size={11} className="animate-spin text-accent" /> : <span className="w-1.5 h-1.5 rounded-full bg-faint/40" />}
+          <span>{label}: {truncatedObj} ({jobIdsStr})</span>
+        </div>
+      );
+    }
     return null;
   };
 
@@ -1124,6 +1171,7 @@ function ActivityGroup({
     && thinkingItems.length === 0
     && checkpointItems.length === 0
     && swarmResults.length === 0
+    && swarmPendingItems.length === 0
   ) {
     return (
       <div className="flex flex-col gap-0.5 pl-3 border-l-2 border-edge/40 my-1 w-full">

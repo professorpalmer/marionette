@@ -281,3 +281,38 @@ def test_substantive_findings_still_report_applied(monkeypatch):
     badge = next(e for e in events if e.kind == "swarm_result").data["result"]
     assert badge["applied"] is True
     assert badge["summary"] == "1 findings via agentic (2 artifacts)"
+
+
+def test_pilot_result_is_bounded_to_current_job_evidence(monkeypatch):
+    current_job = "job-current"
+    result = SimpleNamespace(
+        job_id=current_job,
+        adapter="agentic",
+        mode="swarm",
+        num_artifacts=3,
+        artifact_types=["finding", "routing", "verification"],
+        artifacts=[
+            {
+                "type": "finding",
+                "headline": "harness/router.py:10 contains the current finding",
+                "body": "The current evidence is specific and file-backed.",
+                "execution_ref": {"job_id": current_job},
+            },
+            {"type": "routing", "headline": "route"},
+            {"type": "verification", "headline": "checked", "execution_ref": {"job_id": current_job}},
+        ],
+        auth_failure="",
+        summary="one finding",
+    )
+
+    session, _events = _run_dispatch(monkeypatch, result)
+    text = _pilot_text(session)
+
+    assert f"Exact current job id: {current_job}" in text
+    assert "Current returned artifacts: 3 (finding=1, routing=1, verification=1)" in text
+    assert "Direct execution provenance: 2/2 non-routing artifacts." in text
+    assert "historical/untrusted" in text
+    assert "only this job’s returned artifacts or explicit probes run after it" in text
+    assert "not verified, never as a defect" in text
+    assert "Never carry earlier issue examples forward" in text
+    assert "blend prior findings" not in text

@@ -10,6 +10,7 @@ import {
 } from "../components/Conversation";
 import {
   activityGroupStableId,
+  groupAgentActivity,
   liveActivityGroupIndex,
 } from "../components/TranscriptList";
 import type { GroupedItem, Item } from "../components/TranscriptList";
@@ -198,6 +199,48 @@ describe("upsertStreamingThinking preserves durable id", () => {
     expect(thinking[0].text).toBe("The source confirms both");
     expect(thinking[0].stream_id).toBe("rs_1");
     expect(thinking[0].id).toBeTruthy();
+  });
+});
+
+describe("swarm terminal rows stay at the end of one investigation", () => {
+  it("keeps later tool rows chronological and suppresses a duplicate terminal pill", () => {
+    const items: Item[] = [
+      {
+        kind: "card",
+        card: { id: "before", goal: "inspect", running: false, open: false },
+      },
+      {
+        kind: "swarm_pending",
+        job_ids: ["job-1"],
+        objective: "investigate",
+        status: "done",
+      },
+      {
+        kind: "swarm_result",
+        job_id: "job-1",
+        applied: true,
+        files: [],
+        summary: "complete",
+        error: null,
+      },
+      { kind: "thinking", id: "later-thought", text: "Checking the next result." },
+      {
+        kind: "card",
+        card: { id: "after", goal: "verify", running: false, open: false },
+      },
+    ];
+
+    const [group] = groupAgentActivity(items, new Set());
+
+    expect(group.kind).toBe("activity_group");
+    if (group.kind !== "activity_group") return;
+    expect(group.items.map((item) => item.kind)).toEqual([
+      "card",
+      "thinking",
+      "card",
+      "swarm_result",
+    ]);
+    expect(group.items.filter((item) => item.kind === "swarm_pending")).toHaveLength(0);
   });
 });
 
