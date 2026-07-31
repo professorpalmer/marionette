@@ -56,6 +56,94 @@ def _worker_provenance_text(provenance: dict) -> str:
     )
 
 
+def _background_evidence_boundary(
+    session: object,
+    job_id: str,
+    res_job: dict,
+    stamped: dict,
+) -> str:
+    """Current-run evidence contract for a job that finished in the background.
+
+    A background result lands turns after its dispatch, so without this the
+    pilot reads it next to stale conclusions with nothing marking which run
+    produced what. Same contract as the synchronous digest; best-effort because
+    the drain must never raise on the chat hot path.
+    """
+    try:
+        from .swarm_run_facts import (
+            attribute_stored_execution_refs,
+            build_swarm_run_facts,
+            normalize_execution_refs,
+            render_evidence_boundary,
+        )
+
+        artifacts = _background_artifacts(res_job, stamped)
+        criteria = res_job.get("acceptance_criteria")
+        if not criteria and isinstance(stamped, dict):
+            criteria = stamped.get("acceptance_criteria")
+        subject_cwd = ""
+        if isinstance(stamped, dict):
+            subject_cwd = str(stamped.get("cwd") or "")
+        if not subject_cwd:
+            subject_cwd = str(getattr(getattr(session, "config", None), "repo", "") or "")
+        return render_evidence_boundary(build_swarm_run_facts(
+            job_id=job_id,
+            job_status=str(
+                res_job.get("status")
+                or (stamped.get("status") if isinstance(stamped, dict) else "")
+                or ""
+            ),
+            subject_cwd=subject_cwd,
+            state_root=str(getattr(session, "state_dir", "") or ""),
+            artifacts=normalize_execution_refs(
+                attribute_stored_execution_refs(artifacts, job_id),
+                job_id,
+            ),
+            acceptance_criteria=list(criteria or []),
+        ))
+    except Exception as exc:
+        job = str(job_id or "").strip() or "unknown"
+        subject_cwd = ""
+        if isinstance(stamped, dict):
+            subject_cwd = str(stamped.get("cwd") or "")
+        if not subject_cwd:
+            subject_cwd = str(getattr(getattr(session, "config", None), "repo", "") or "")
+        return (
+            "\n"
+            "CURRENT-JOB EVIDENCE BOUNDARY:\n"
+            f"- Exact current job id: {job}\n"
+            f"- Subject cwd (read-only audit target): {subject_cwd or 'unknown'}\n"
+            "- Evidence boundary construction failed; treat every criterion as not verified.\n"
+            f"- Boundary error: {exc.__class__.__name__}\n"
+            "- Acceptance criteria: none settled (boundary unavailable)\n"
+            "- Prior transcript audit conclusions are historical/untrusted.\n"
+            "- Final claims may use only this job's returned artifacts or explicit "
+            "probes run after it.\n"
+        )
+
+
+def _background_artifacts(res_job: dict, stamped: dict) -> list:
+    """The rows a finished background job actually produced.
+
+    The queued result usually carries only ``ar_list`` — raw worker rows with no
+    ``execution_ref`` — while the settled local job has fully attributed rows,
+    because ``_finish_local_job`` runs before the result is enqueued and stamps
+    a terminal artifact plus normalized findings. Preferring the attributed
+    sources is what keeps a completed run from reporting a misleading ``0/0``;
+    the raw list is a last resort so counts stay honest rather than empty.
+    """
+    stamped_rows = stamped if isinstance(stamped, dict) else {}
+    for candidate in (
+        stamped_rows.get("artifacts"),
+        stamped_rows.get("findings"),
+        res_job.get("artifacts"),
+        res_job.get("ar_list"),
+    ):
+        if isinstance(candidate, list) and candidate:
+            return candidate
+    return []
+
+
 class ConversationJobsMixin:
     """Mixin holding swarm job await/apply/drain helpers.
 
@@ -741,6 +829,14 @@ class ConversationJobsMixin:
                         self._swarm_results.task_done()
                         continue
 
+                    # Stamped local job carries the subject cwd / criteria the
+                    # dispatch recorded; needed for both the evidence boundary
+                    # and the reuse fields folded onto the display card below.
+                    try:
+                        stamped = (getattr(self, "_local_jobs", {}) or {}).get(job_id) or {}
+                    except Exception:
+                        stamped = {}
+
                     # Append a labeled follow-up assistant message to self._history (SINGLE-WRITER held via _busy lock!)
                     applied = res_job["applied"]
                     applied_files = res_job["files"]
@@ -778,6 +874,11 @@ class ConversationJobsMixin:
                             msg_content += f"; patch failed to apply: {res_job.get('apply_msg')}"
                         display_error = res_job.get("error") or None
 
+                    boundary = _background_evidence_boundary(
+                        self, job_id, res_job, stamped,
+                    )
+                    if boundary:
+                        msg_content = f"{msg_content}\n{boundary}"
                     self._history.append({"role": "assistant", "content": msg_content})
 
                     # Persist the outcome to the display transcript so the green/red
@@ -798,10 +899,6 @@ class ConversationJobsMixin:
                         display_result["worker_provenance"] = worker_provenance
                     # Prefer fields already on the result; fall back to stamped
                     # local job so transcript hydrate keeps reuse provenance.
-                    try:
-                        stamped = (getattr(self, "_local_jobs", {}) or {}).get(job_id) or {}
-                    except Exception:
-                        stamped = {}
                     for _rk in (
                         "reuse_status",
                         "source_job_id",

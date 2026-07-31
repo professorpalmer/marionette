@@ -207,10 +207,11 @@ class PilotAction:
     ref: str = ""
     text: str = ""
     direction: str = ""
-    # run_implement / run_parallel: optional absolute path to a DIFFERENT git
-    # repository to run the dispatch in (defaults to the open workspace when
-    # empty). Threaded to the worker via a per-dispatch HarnessConfig copy so
-    # the existing edit engines transparently target it.
+    # run_implement / run_parallel / run_swarm: optional absolute path to a
+    # DIFFERENT git repository (defaults to the open workspace when empty).
+    # Edit dispatches thread it to the worker via a per-dispatch HarnessConfig
+    # copy; run_swarm uses it as the read-only audit subject, never as a write
+    # surface for the pilot's own tools.
     repo: str = ""
     # run_swarm: optional registry id or adapter model name pin (fail-closed).
     # Empty means auto-route. Prompt text alone never pins a model.
@@ -527,7 +528,7 @@ def from_wire(
         memory_category = raw.get("category") or raw.get("memory_category") or "general"
 
     repo_arg = ""
-    if kind in ("run_implement", "run_parallel"):
+    if kind in ("run_implement", "run_parallel", "run_swarm"):
         # Native tool calls often nest repo under arguments={...}; top-level
         # raw keys win when both are present. Dropping the nested form made
         # explicit C:\...\marionette\marionette fall back to the Home parent.
@@ -1014,6 +1015,16 @@ def build_tools_schema(
                                 "Pass only when the user/task supplies a concrete checklist; "
                                 "do not invent criteria from loose goal prose. Omitted means "
                                 "workers get no checklist."
+                            ),
+                        },
+                        "repo": {
+                            "type": "string",
+                            "description": (
+                                "Optional absolute path to a DIFFERENT git repository to "
+                                "audit as the read-only subject of this swarm (defaults to "
+                                "the open workspace). Must be a git work tree. Workers read "
+                                "that subject; your own writes, edits, and commands stay in "
+                                "the open session workspace."
                             ),
                         },
                     },
@@ -1812,7 +1823,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `write_file`: write/create a file atomically. Requires `path` and `content`. Use ONLY to create brand-new files.
 - `run_command`: run a terminal shell command. Requires `command`.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
-- `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. When the user names a specific swarm model, pass `model` (registry id or adapter name); omit `model` for auto-route. Prompt text alone does not pin a model.
+- `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. When the user names a specific swarm model, pass `model` (registry id or adapter name); omit `model` for auto-route. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
 - `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Default engine is standalone `agentic` (routes directly through your provider keys, no external CLI); pass `adapter` only to force a specific engine. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports).
 - `run_parallel`: dispatch multiple Puppetmaster workers concurrently. Requires `goals` as a JSON array of 2-8 independent goal strings (example: ["Add unit tests for auth.py", "Document the API routes in README"]), optional `adapter`, optional `mode`.
 - `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.

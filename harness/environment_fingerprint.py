@@ -612,11 +612,16 @@ def normalize_acceptance_criteria(
 
 
 def format_acceptance_criteria_block(criteria: Sequence[str]) -> str:
-    """Prompt/digest block for explicit criteria (empty when none supplied)."""
+    """Puppetmaster-parseable criteria block (empty when none supplied).
+
+    Uses the canonical ``Acceptance criteria:`` header so PM workers and
+    ``parse_acceptance_criteria_block`` can read it. Anti-invention wording
+    lives separately in the current-dispatch evidence rule, not here.
+    """
     clean = normalize_acceptance_criteria(list(criteria or ()))
     if not clean:
         return ""
-    lines = ["Acceptance criteria (explicit; do not invent extras):"]
+    lines = ["Acceptance criteria:"]
     for item in clean:
         lines.append(f"- {item}")
     return "\n".join(lines)

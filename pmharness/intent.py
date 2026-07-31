@@ -222,6 +222,10 @@ class DriverIntent:
     # Optional explicit acceptance criteria. Never inferred from goal prose;
     # absent/empty means workers get no invented checklist.
     acceptance_criteria: Optional[list] = None
+    # Optional validated subject root the workers analyze. Empty means the open
+    # workspace. Read-only for the pilot: it pins worker cwd and brief, never
+    # the session's own write surface.
+    repo: Optional[str] = None
     # Free-form, model-supplied; never trusted for control flow, kept for audit.
     raw: Optional[dict] = field(default=None, compare=False, repr=False)
 
@@ -304,6 +308,8 @@ def validate_intent(payload: Any) -> DriverIntent:
                 "acceptance_criteria must be a list of strings when provided"
             )
 
+    subject_repo = str(payload.get("repo") or "").strip() or None
+
     return DriverIntent(
         action=action,
         goal=goal,
@@ -312,6 +318,7 @@ def validate_intent(payload: Any) -> DriverIntent:
         rationale=rationale,
         model=model,
         acceptance_criteria=acceptance_criteria,
+        repo=subject_repo,
         raw=payload if isinstance(payload, dict) else None,
     )
 

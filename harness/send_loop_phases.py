@@ -232,10 +232,18 @@ def stream_swarm(
     intent: Any,
     delta_q: Any,
 ) -> None:
-    """Background target: execute_intent with on_delta → delta_q (delta/done/error)."""
+    """Background target: execute_intent with on_delta → delta_q (delta/done/error).
+
+    The intent's validated subject repo wins over the session workspace so an
+    explicit ``run_swarm(repo=...)`` audit reads that checkout instead of the
+    open project. Passed per call, never via the process-global env pointer.
+    """
     try:
         from .repo_resolve import resolve_effective_repo
-        _raw_repo = (session.config.repo or "").strip()
+        _raw_repo = (
+            (getattr(intent, "repo", None) or "").strip()
+            or (session.config.repo or "").strip()
+        )
         _cwd = resolve_effective_repo(_raw_repo) if _raw_repo else None
         r = execute_intent(
             intent,

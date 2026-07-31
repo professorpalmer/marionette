@@ -537,7 +537,16 @@ class ConversationalSession(
         if active:
             skills_block = "\n\n".join(
                 f"## Skill: {s.name}\n{s.description}\n{s.body}" for s in active)
-            system = (system + "\n\n# Learned skills (apply when relevant)\n"
+            # Skills are distilled from PAST runs. Framed as bare knowledge they
+            # get replayed as present-tense findings ("the router still drops
+            # alternatives") with no dispatch behind them, so say plainly that
+            # they are method, not evidence.
+            system = (system + "\n\n# Learned skills (METHOD ONLY -- how to "
+                      "approach work, distilled from earlier sessions). These "
+                      "are never evidence about the current code and never "
+                      "current findings: re-verify anything you intend to "
+                      "claim against this session's own tool results, and "
+                      "report what you could not check as not verified.\n"
                       + skills_block)
         # standing conventions (always-on, terse) -- distinct from task skills
         self._rules = RuleStore()
@@ -549,7 +558,15 @@ class ConversationalSession(
         self._memory = MemoryStore()
         mem_block = self._memory.render_block()
         if mem_block:
-            system = system + "\n\n" + mem_block
+            system = (
+                system
+                + "\n\n# Durable memory (CONTEXT ONLY -- prior user/project "
+                "facts and preferences). It is never current execution evidence "
+                "or a current finding. Re-verify code, runtime, version, and "
+                "environment claims with this session's tools; report anything "
+                "unobserved as not verified.\n"
+                + mem_block
+            )
         # workspace rules (auto-loaded from repository if available)
         ws_rules = load_workspace_rules(config.repo)
         if ws_rules:

@@ -13,6 +13,7 @@ what we want: deterministic, key-free ground truth so we measure the driver
 model, not worker quality (a separate question).
 """
 
+import copy
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -224,6 +225,18 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
         "diff status; do not claim the user's checkout is clean or dirty from "
         "this worktree's status."
     )
+    current_dispatch_notice = (
+        "\n\nCURRENT-DISPATCH EVIDENCE RULE: active skills, distilled memory, and "
+        "conclusions from any prior transcript or audit are METHODOLOGY AND "
+        "CONTEXT ONLY -- never current findings, and never proof that an issue "
+        "exists now. Every claim you submit must be supported by evidence from "
+        "the subject code or checks you inspect in THIS dispatch (cite path:line "
+        "or command evidence), then mapped to any explicit acceptance criterion "
+        "above. A criterion states what to prove; it is not proof by itself. "
+        "If you cannot run or observe a check here, "
+        "report it as not_verified with what is missing; do not report it as a "
+        "defect, and do not restate a remembered issue as if you just found it."
+    )
     submit = _analysis_submit_contract(via_tool=via_tool)
     if browser:
         submit_tail = (
@@ -242,7 +255,7 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
             f"do not submit credentials or perform destructive actions on the "
             f"site. Emit what each browser tool returned as evidenced findings, "
             f"{submit_tail}{git_block}\n\n"
-            f"{submit}{worktree_notice}\n\n{_STOP_CONDITIONS}"
+            f"{submit}{worktree_notice}{current_dispatch_notice}\n\n{_STOP_CONDITIONS}"
         )
     return (
         f"{goal}{lens_line}{criteria_line}\n\nAnalyze the REAL codebase at {repo_cwd}. "
@@ -254,7 +267,7 @@ def _analysis_instruction(goal: str, repo_cwd: str, role: str,
         # calling submit_findings -- surfacing as a "completed without
         # structured findings" degrade. Tell the worker to budget explicitly
         # and always submit what it has rather than exhausting its turns.
-        f"{submit}{worktree_notice}\n\n{_STOP_CONDITIONS}"
+        f"{submit}{worktree_notice}{current_dispatch_notice}\n\n{_STOP_CONDITIONS}"
     )
 
 
@@ -425,7 +438,7 @@ def _compact_artifact(a: Any) -> dict:
             headline = f"{str(headline).rstrip('. ')}. {mitigation}"
             body = str(headline) if not body else body
             empty_headline = False
-    return {
+    compact = {
         "type": str(getattr(a, "type", "")),
         "headline": str(headline)[:240],
         "body": body,
@@ -436,6 +449,134 @@ def _compact_artifact(a: Any) -> dict:
         # for a weak-model / bad-prompt degrade.
         "failure": failure,
     }
+    compact.update(_artifact_provenance(a, payload))
+    return compact
+
+
+# Bounds on the provenance carried alongside a compact artifact. The point of
+# compaction is that a follow-up driver turn stays cheap, so identity travels
+# but bulk does not.
+_MAX_EVIDENCE_LOCI = 8
+_MAX_LOCUS_CHARS = 240
+_MAX_ID_CHARS = 128
+_MAX_CRITERIA = 12
+
+# The only execution-provenance fields that survive compaction. Spend numbers
+# are deliberately absent: the job envelope owns tokens/cost, and copying them
+# onto every child row is how a run grew fabricated per-artifact receipts.
+_SANITIZED_PROVENANCE_FIELDS = (
+    "adapter",
+    "model",
+    "adapter_model_name",
+    "router_model_id",
+    "usage_known",
+    "cost_known",
+)
+
+
+def _bounded_text_list(values: Any, *, limit: int, width: int) -> list:
+    out = []
+    for value in values or ():
+        text = str(value or "").strip()
+        if not text:
+            continue
+        out.append(text[:width])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _bounded_criteria_records(values: Any, *, limit: int, width: int) -> list:
+    """Preserve explicit string citations and structured status dicts, bounded."""
+    out: list = []
+    for value in values or ():
+        if isinstance(value, dict):
+            criterion = str(value.get("criterion") or value.get("text") or "").strip()
+            if not criterion:
+                continue
+            row: dict[str, Any] = {"criterion": criterion[:width]}
+            status = str(value.get("status") or "").strip().lower()
+            if status:
+                row["status"] = status[:32]
+            evidence = value.get("evidence")
+            if evidence is not None and str(evidence).strip():
+                row["evidence"] = str(evidence).strip()[:width]
+            out.append(row)
+        elif isinstance(value, str):
+            text = value.strip()
+            if text:
+                out.append(text[:width])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _intent_acceptance_criteria(intent: DriverIntent) -> list[str]:
+    from harness.environment_fingerprint import normalize_acceptance_criteria
+    return normalize_acceptance_criteria(getattr(intent, "acceptance_criteria", None) or [])
+
+
+def _payload_with_acceptance_criteria(payload: dict, criteria: Optional[list]) -> dict:
+    from harness.environment_fingerprint import normalize_acceptance_criteria
+    clean = normalize_acceptance_criteria(list(criteria or ()))
+    if not clean:
+        return payload
+    stamped = dict(payload)
+    stamped["acceptance_criteria"] = clean
+    return stamped
+
+
+def _artifact_provenance(a: Any, payload: dict) -> dict:
+    """Identity, evidence loci, and sanitized provenance for one artifact.
+
+    A compact row that drops ``execution_ref`` reads as unattributed forever
+    after — the acceptance-criteria and provenance counters treat it as "not
+    from this job" and honestly report 0/N for a run that in fact produced
+    everything. The Puppetmaster ``Artifact`` already knows its ``job_id`` /
+    ``task_id``, so carry them through instead of reconstructing (or guessing)
+    them downstream.
+    """
+    job_id = str(getattr(a, "job_id", "") or "").strip()[:_MAX_ID_CHARS]
+    task_id = str(getattr(a, "task_id", "") or "").strip()[:_MAX_ID_CHARS]
+    out: dict = {
+        "id": str(getattr(a, "id", "") or "").strip()[:_MAX_ID_CHARS],
+        "job_id": job_id,
+        "task_id": task_id,
+    }
+    evidence = _bounded_text_list(
+        getattr(a, "evidence", None),
+        limit=_MAX_EVIDENCE_LOCI,
+        width=_MAX_LOCUS_CHARS,
+    )
+    if evidence:
+        out["evidence"] = evidence
+        out["evidence_locus"] = evidence[0]
+    # Only an explicit worker-supplied checklist travels; nothing is inferred
+    # from goal prose here or anywhere downstream.
+    criteria = _bounded_criteria_records(
+        payload.get("acceptance_criteria")
+        if isinstance(payload.get("acceptance_criteria"), (list, tuple))
+        else (),
+        limit=_MAX_CRITERIA,
+        width=_MAX_LOCUS_CHARS,
+    )
+    if criteria:
+        out["acceptance_criteria"] = criteria
+    raw_provenance = payload.get("execution_provenance")
+    if isinstance(raw_provenance, dict):
+        sanitized = {
+            field: raw_provenance[field]
+            for field in _SANITIZED_PROVENANCE_FIELDS
+            if raw_provenance.get(field) not in (None, "")
+        }
+        if sanitized:
+            out["execution_provenance"] = sanitized
+    if job_id:
+        ref = {"job_id": job_id}
+        if task_id:
+            ref["task_id"] = task_id
+        out["execution_ref"] = ref
+    return out
 
 
 _SIGNAL_TYPES = frozenset({"finding", "risk", "decision"})
@@ -690,6 +831,26 @@ def _is_auth_failure_tag(failure: object, headline: object = "") -> bool:
     return False
 
 
+def _inherited_provenance(source: dict) -> dict:
+    """Attribution a derived row copies from the compact artifact it restates.
+
+    ``id`` is suffixed rather than reused so the derived row is addressable
+    without colliding with its source.
+    """
+    out: dict = {}
+    for key in (
+        "job_id", "task_id", "evidence", "evidence_locus",
+        "acceptance_criteria", "execution_provenance", "execution_ref",
+    ):
+        value = source.get(key)
+        if value not in (None, "", [], {}):
+            out[key] = copy.deepcopy(value) if isinstance(value, (dict, list)) else value
+    source_id = str(source.get("id") or "").strip()
+    if source_id:
+        out["id"] = f"{source_id}:promoted"
+    return out
+
+
 def _promote_degraded_prose(compact: list) -> list:
     """Rescue a swarm whose worker analyzed in PROSE instead of calling
     submit_findings. When the agentic adapter's worker produces no structured
@@ -756,7 +917,7 @@ def _promote_degraded_prose(compact: list) -> list:
                 continue
             if _looks_like_reasoning_fragment(body):
                 continue
-            promoted.append({
+            row = {
                 "type": "finding",
                 # headline stays clipped for display, but the full body is carried
                 # verbatim so the pilot/digest can render the real analysis.
@@ -766,7 +927,12 @@ def _promote_degraded_prose(compact: list) -> list:
                 "confidence": a.get("confidence"),
                 "failure": None,
                 "promoted_from": "verification",
-            })
+            }
+            # The promotion is a re-read of THIS job's own verification artifact,
+            # so it inherits that row's attribution. Dropping it would make the
+            # rescued analysis read as unattributed evidence.
+            row.update(_inherited_provenance(a))
+            promoted.append(row)
         return promoted
     except Exception:
         return compact
@@ -967,10 +1133,14 @@ def _execute_prewalk(
     )
     # Stamp session/cwd on each payload the same way swarm workers do, so
     # job scoping and /api/swarm/live attribution stay consistent.
+    criteria = _intent_acceptance_criteria(intent)
+    from harness.environment_fingerprint import normalize_acceptance_criteria
     for spec in specs:
         payload = dict(getattr(spec, "payload", None) or {})
         if "token_budget" not in payload:
             payload["token_budget"] = worker_token_budget()
+        if criteria and not normalize_acceptance_criteria(payload.get("acceptance_criteria")):
+            payload["acceptance_criteria"] = list(criteria)
         stamped = stamp_task_payload(
             payload, session_id=session_id or "", cwd=repo_cwd or ""
         )
@@ -1026,10 +1196,14 @@ def execute_intent(
     delta bus. The bus registration is guarded so an older bundled puppetmaster
     without streaming support simply runs blocking, as before.
 
-    ``cwd`` / ``repo`` (aliases) pin the analysis workspace for this call.
-    Prefer these over the live ``HARNESS_REPO`` env so a mid-turn workspace
-    switch cannot retarget a busy runner's swarm. When set, ``HARNESS_REPO``
-    is temporarily aligned for the duration of the call and restored after.
+    ``cwd`` / ``repo`` (aliases, else ``intent.repo``) pin the analysis
+    workspace for this call, and every worker/prewalk spec below receives that
+    path explicitly. Prefer them over the live ``HARNESS_REPO`` env so a
+    mid-turn workspace switch cannot retarget a busy runner's swarm. This call
+    never writes ``HARNESS_REPO``: the env is process-global, so aligning it
+    per dispatch let a second concurrent swarm on a different subject observe
+    (and restore) the wrong pointer. The env is read only as the fallback for
+    callers that supply no explicit repo at all.
     """
     if intent.action not in ("run_swarm", "run_prewalk"):
         return None
@@ -1049,28 +1223,13 @@ def execute_intent(
     # Explicit per-runner cwd wins over the process-wide HARNESS_REPO view pointer.
     # Resolve at this seam so callers that forget resolve_effective_repo still
     # pin workers to the git checkout (Marionette Home parent → single child).
-    # Also rewrite HARNESS_REPO for the call when the env alone points at a
-    # non-git parent with exactly one git child, so adapters that read the env
-    # cannot bypass the pin.
     from harness.repo_resolve import resolve_effective_repo
-    explicit_cwd = (cwd or repo or "").strip()
+    explicit_cwd = (cwd or repo or getattr(intent, "repo", None) or "").strip()
     if explicit_cwd:
-        explicit_cwd = resolve_effective_repo(explicit_cwd)
-    prev_harness_repo = _os.environ.get("HARNESS_REPO")
-    env_patched = False
-    if explicit_cwd:
-        _os.environ["HARNESS_REPO"] = explicit_cwd
-        env_patched = True
-        repo_cwd = explicit_cwd
+        repo_cwd = resolve_effective_repo(explicit_cwd)
     else:
-        env_repo = (prev_harness_repo or "").strip()
-        if env_repo:
-            repo_cwd = resolve_effective_repo(env_repo)
-            if repo_cwd != env_repo:
-                _os.environ["HARNESS_REPO"] = repo_cwd
-                env_patched = True
-        else:
-            repo_cwd = ""
+        env_repo = (_os.environ.get("HARNESS_REPO") or "").strip()
+        repo_cwd = resolve_effective_repo(env_repo) if env_repo else ""
 
     try:
         if intent.action == "run_prewalk":
@@ -1178,6 +1337,9 @@ def execute_intent(
                 }
                 if pin_fields:
                     base_payload.update(pin_fields)
+                base_payload = _payload_with_acceptance_criteria(
+                    base_payload, getattr(intent, "acceptance_criteria", None),
+                )
                 specs.append(WorkerSpec(
                     role=r,
                     instruction=_analysis_instruction(
@@ -1203,6 +1365,18 @@ def execute_intent(
             roles = intent.roles or infer_roles(intent.goal)
             specs = []
             for r in roles:
+                openai_payload = _payload_with_acceptance_criteria({
+                    "read_only": True, "no_edit": True, "dry_run": True,
+                    "cwd": repo_cwd, "prompt": intent.goal,
+                    "auto_route": False,
+                    "max_turns": _analyze_max_turns(),
+                    "token_budget": worker_token_budget(),
+                    # Route analysis through OpenRouter (funded, open models) by
+                    # default; the OpenAI adapter speaks the OpenAI-compatible
+                    # schema so base_url + key + an open model just works. Falls
+                    # back to native OpenAI only if HARNESS_ANALYSIS_REACH=openai.
+                    **_analysis_provider_payload(),
+                }, getattr(intent, "acceptance_criteria", None))
                 specs.append(WorkerSpec(
                     role=r,
                     instruction=_analysis_instruction(
@@ -1212,18 +1386,9 @@ def execute_intent(
                         ),
                     ),
                     adapter="openai",
-                    payload=stamp_task_payload({
-                        "read_only": True, "no_edit": True, "dry_run": True,
-                        "cwd": repo_cwd, "prompt": intent.goal,
-                        "auto_route": False,
-                        "max_turns": _analyze_max_turns(),
-                        "token_budget": worker_token_budget(),
-                        # Route analysis through OpenRouter (funded, open models) by
-                        # default; the OpenAI adapter speaks the OpenAI-compatible
-                        # schema so base_url + key + an open model just works. Falls
-                        # back to native OpenAI only if HARNESS_ANALYSIS_REACH=openai.
-                        **_analysis_provider_payload(),
-                    }, session_id=session_id or "", cwd=repo_cwd),
+                    payload=stamp_task_payload(
+                        openai_payload, session_id=session_id or "", cwd=repo_cwd
+                    ),
                 ))
             # inline: the analysis worker runs in-process so the env-based key
             # wiring propagates reliably, and it yields richer multi-artifact output.
@@ -1288,8 +1453,3 @@ def execute_intent(
         )
     finally:
         _clear_delta_sink()
-        if env_patched:
-            if prev_harness_repo is None:
-                _os.environ.pop("HARNESS_REPO", None)
-            else:
-                _os.environ["HARNESS_REPO"] = prev_harness_repo

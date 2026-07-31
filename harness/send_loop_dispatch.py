@@ -20,6 +20,12 @@ from pmharness.intent import DriverIntent
 from ._exec import _puppetmaster_available, _puppetmaster_cmd
 from .repo_resolve import resolve_effective_repo
 from .send_loop_phases import read_stdout_thread, stream_swarm
+from .swarm_run_facts import (
+    build_swarm_run_facts,
+    digest_line,
+    normalize_execution_refs,
+    render_evidence_boundary,
+)
 
 DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
     "run_swarm", "run_implement", "run_parallel", "route_task", "memory",
@@ -197,6 +203,22 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             )
         except Exception:
             _acceptance_criteria = []
+    _sync_local_id = f'local-swarm-{aid}'
+    # An explicit subject repo audits a DIFFERENT checkout read-only. It fails
+    # closed on a non-git/missing path (same contract as run_implement) and
+    # never becomes the pilot's own write surface — session.config.repo, and
+    # therefore every write/edit/command tool, stays on the open workspace.
+    _subject_repo = (getattr(act, 'repo', '') or '').strip()
+    if _subject_repo:
+        _subject_abs, _subject_err = session._validate_target_repo(_subject_repo)
+        if _subject_err:
+            error_msg = f'run_swarm: subject repo {_subject_repo} is not a valid git repository'
+            yield ConvEvent('action_result', {'id': aid, 'error': error_msg})
+            session._append_action_result(act, aid, f'(swarm {aid} failed: {error_msg})', is_native)
+            return None
+        _swarm_repo = resolve_effective_repo(_subject_abs)
+    else:
+        _swarm_repo = resolve_effective_repo(session.config.repo or '') if (session.config.repo or '').strip() else ''
     intent = DriverIntent(
         action='run_swarm',
         goal=act.goal,
@@ -204,9 +226,8 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         rationale='pilot',
         model=(act.model or '').strip() or None,
         acceptance_criteria=_acceptance_criteria or None,
+        repo=_swarm_repo or None,
     )
-    _sync_local_id = f'local-swarm-{aid}'
-    _swarm_repo = resolve_effective_repo(session.config.repo or '') if (session.config.repo or '').strip() else ''
     _non_git = _non_git_workspace_error(_swarm_repo)
     if _non_git:
         # action_start already emitted by execute_turn_actions for run_swarm
@@ -359,6 +380,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             rationale='pilot-narrow-verify',
             model=(act.model or '').strip() or None,
             acceptance_criteria=_narrow_criteria or None,
+            repo=_swarm_repo or None,
         )
     elif (
         _reuse_decision is not None
@@ -374,6 +396,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             rationale='pilot',
             model=(act.model or '').strip() or None,
             acceptance_criteria=list(_acceptance_criteria) or None,
+            repo=_swarm_repo or None,
         )
     try:
         session._register_local_job(
@@ -497,6 +520,11 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     # Strip demo artifacts entirely so placeholder headlines never reach the
     # transcript card or pilot digest.
     _all_arts = [] if _demo_refused else list(result.artifacts)
+    # Stamp run identity + first evidence locus BEFORE anything reads the
+    # artifacts, so every digest line, sidecar row, and UI card names the job
+    # that produced it (parent attribution is left exactly as it arrived).
+    _job_id_text = str(getattr(result, 'job_id', '') or _sync_local_id).strip() or _sync_local_id
+    _all_arts = normalize_execution_refs(_all_arts, _job_id_text)
     # Reasoning-only fragments must never appear as finding/risk/decision
     # headlines in the digest (same submit contract as swarm workers).
     try:
@@ -665,7 +693,9 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     yield ConvEvent('swarm_result', {'job_id': _badge['job_id'], 'objective': act.goal, 'result': _badge})
     # Only surfaced artifacts become turn findings; a refused demo contributes none.
     turn_findings.extend((a for a in _all_arts if a.get('type') != 'verification'))
-    digest = '\n'.join((f"  - [{a['type']}] {a['headline']}" for a in digest_arts)) or '  (no artifacts)'
+    digest = '\n'.join(
+        digest_line(a, _job_id_text) for a in digest_arts
+    ) or '  (no artifacts)'
     if auth_failure and not _has_signal and auth_failure not in digest:
         digest = f"  - [auth] {auth_failure}\n{digest}"
     stall = ''
@@ -678,42 +708,15 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     elif not _substantive:
         stall = '\n(THIN SWARM FINDINGS — the findings above are generic one-liners with no file-backed evidence, a known failure mode when the goal is too long/multi-part for the workers. Do NOT present these as a completed audit. Re-dispatch narrowed workers with tight single-domain objectives.)' + stall
     _pilot_via = 'refused demo substrate' if _demo_refused else f'via {_ui_adapter}'
-    _job_id_text = str(result.job_id or _sync_local_id).strip() or _sync_local_id
-    _type_counts: dict[str, int] = {}
-    for _artifact in _all_arts:
-        _artifact_type = str(_artifact.get('type') or '').strip() or 'unknown'
-        _type_counts[_artifact_type] = _type_counts.get(_artifact_type, 0) + 1
-    _artifact_type_text = ', '.join(
-        f'{_artifact_type}={_type_counts[_artifact_type]}'
-        for _artifact_type in sorted(_type_counts)
-    ) or 'none'
-    _non_routing = [
-        _artifact for _artifact in _all_arts
-        if str(_artifact.get('type') or '').strip().lower() != 'routing'
-    ]
-    _direct_provenance = [
-        _artifact for _artifact in _non_routing
-        if isinstance(_artifact.get('execution_ref'), dict)
-        and str(_artifact['execution_ref'].get('job_id') or '').strip() == _job_id_text
-    ]
-    _provenance_text = (
-        f'\nDirect execution provenance: {len(_direct_provenance)}/{len(_non_routing)} '
-        'non-routing artifacts.'
-        if any(isinstance(_artifact.get('execution_ref'), dict) for _artifact in _all_arts)
-        else ''
-    )
-    evidence_boundary = (
-        '\nCURRENT-JOB EVIDENCE BOUNDARY:\n'
-        f'- Exact current job id: {_job_id_text}\n'
-        f'- Current returned artifacts: {_ui_num} ({_artifact_type_text})\n'
-        f'{_provenance_text}'
-        '- Prior transcript audit conclusions are historical/untrusted.\n'
-        '- Final claims may use only this job’s returned artifacts or explicit probes run after it.\n'
-        '- Missing acceptance criteria or checks must be reported as not verified, never as a defect.\n'
-        '- Never carry earlier issue examples forward merely because they appear earlier in the transcript.\n'
-    )
+    evidence_boundary = render_evidence_boundary(build_swarm_run_facts(
+        job_id=_job_id_text,
+        job_status=str(getattr(result, 'status', '') or ''),
+        subject_cwd=_swarm_repo,
+        state_root=getattr(session, 'state_dir', '') or '',
+        artifacts=_all_arts,
+        acceptance_criteria=_finish_criteria,
+    ))
     session._append_action_result(act, aid, f"(swarm {aid} '{act.goal}' returned {_ui_num} artifacts {_pilot_via}:{evidence_boundary}\n{digest}\nExplain these findings to the user and either run a narrowed follow-up swarm or finish with no actions.){stall}", is_native)
-    return None
     return None
 
 def dispatch_implement_action(session, act, aid, is_native, *, turn_actions, action_idx, action_seq, step, swarms) -> Iterator[Any]:
