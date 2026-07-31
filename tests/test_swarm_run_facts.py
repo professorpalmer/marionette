@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from harness.pilot import PilotAction
+from harness.repo_resolve import resolve_effective_repo
 from harness.send_loop_dispatch import dispatch_swarm_action
 from harness.swarm_run_facts import (
     CLASSIFICATION_POLICY,
@@ -39,6 +40,9 @@ from harness.swarm_run_facts import (
 )
 
 CURRENT_JOB = "job-current"
+
+_EXPLICIT_SUBJECT_REPO = "/repo/subject"
+_RESOLVED_SUBJECT_REPO = resolve_effective_repo(_EXPLICIT_SUBJECT_REPO)
 
 
 @pytest.fixture(autouse=True)
@@ -726,7 +730,7 @@ class TestSynchronousBoundary:
             lambda session, intent, q: q.put(("done", result)),
         )
         session = SimpleNamespace(
-            config=SimpleNamespace(repo="/repo/subject"),
+            config=SimpleNamespace(repo=_EXPLICIT_SUBJECT_REPO),
             state_dir="/state/root",
             _session_job_ids=[],
             _register_local_job=MagicMock(),
@@ -756,7 +760,7 @@ class TestSynchronousBoundary:
         }])
 
         assert f"Exact current job id: {CURRENT_JOB}" in text
-        assert "Subject cwd (read-only audit target): /repo/subject" in text
+        assert f"Subject cwd (read-only audit target): {_RESOLVED_SUBJECT_REPO}" in text
         assert "Resolved state root: /state/root" in text
         assert "Direct execution provenance: 1/1 non-routing artifacts." in text
         assert f"job={CURRENT_JOB}, locus=harness/router.py:88, provenance=direct" in text

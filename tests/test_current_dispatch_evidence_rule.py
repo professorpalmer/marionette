@@ -16,7 +16,11 @@ from types import SimpleNamespace
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
+from harness.repo_resolve import resolve_effective_repo
 from pmharness.bridge import _analysis_instruction
+
+_EXPLICIT_SUBJECT_REPO = "/repo/subject"
+_RESOLVED_SUBJECT_REPO = resolve_effective_repo(_EXPLICIT_SUBJECT_REPO)
 
 
 def _system_prompt(session) -> str:
@@ -26,7 +30,7 @@ def _system_prompt(session) -> str:
 class TestWorkerInstruction:
     def _instruction(self, **kwargs):
         return _analysis_instruction(
-            "audit the router", "/repo/subject", "explore", **kwargs,
+            "audit the router", _EXPLICIT_SUBJECT_REPO, "explore", **kwargs,
         )
 
     def test_names_skills_memory_and_prior_transcripts_as_context_only(self):
@@ -57,7 +61,7 @@ class TestWorkerInstruction:
     def test_the_rule_does_not_displace_the_submit_contract(self):
         text = self._instruction()
         assert "READ-ONLY" in text
-        assert "/repo/subject" in text
+        assert _RESOLVED_SUBJECT_REPO in text
 
     def test_emits_pm_parseable_acceptance_criteria_block(self):
         text = self._instruction(acceptance_criteria=["pyright is clean"])

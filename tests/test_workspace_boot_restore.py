@@ -8,9 +8,88 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import threading
+import time
+import urllib.request
+from contextlib import contextmanager
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 
 import pytest
+
+_HTTP_TIMEOUT = 15.0 if sys.platform == "win32" else 5.0
+_JOIN_TIMEOUT = 5.0
+_READY_TIMEOUT = 5.0
+_STRESS_ROUNDS = 8 if sys.platform == "win32" else 12
+_SERVE_THREAD_NAME = "test-workspace-boot-restore-httpd"
+
+
+class _TestThreadingHTTPServer(ThreadingHTTPServer):
+    """Request-handler threads must not outlive teardown (Windows CI flake)."""
+
+    daemon_threads = True
+
+
+def _wait_server_ready(port: int, token: str) -> None:
+    """Block until the accept loop answers a side-effect-light GET."""
+    deadline = time.monotonic() + _READY_TIMEOUT
+    last_err: Optional[Exception] = None
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/config",
+                headers={"X-Harness-Token": token},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                if resp.status == 200:
+                    return
+        except Exception as exc:
+            last_err = exc
+            time.sleep(0.05)
+    raise RuntimeError(
+        f"workspace boot restore test server not ready on 127.0.0.1:{port}: {last_err!r}"
+    )
+
+
+@contextmanager
+def _workspace_http_server():
+    """Start Handler on an ephemeral port; always shutdown + close + join."""
+    import harness.server as srv
+
+    httpd = _TestThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(
+        target=httpd.serve_forever,
+        name=_SERVE_THREAD_NAME,
+        daemon=True,
+    )
+    thread.start()
+    try:
+        _wait_server_ready(port, srv._TOKEN)
+        yield srv, port
+    finally:
+        try:
+            httpd.shutdown()
+        finally:
+            try:
+                httpd.server_close()
+            except OSError:
+                pass
+            thread.join(timeout=_JOIN_TIMEOUT)
+
+
+def _post_session_switch(port: int, token: str, session_id: str) -> dict:
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/sessions/switch",
+        data=json.dumps({"id": session_id}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-Harness-Token": token},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
 @pytest.fixture
@@ -310,9 +389,6 @@ def test_app_install_roots_include_running_harness_checkout(monkeypatch):
 
 def test_session_switch_does_not_repoint_to_app_install_root(tmp_path, monkeypatch):
     """Stale app-checkout sessions must not yank the live workspace back."""
-    import json as _json
-    import threading
-    from http.server import ThreadingHTTPServer
     import harness.server as srv
 
     user = tmp_path / "user-proj"
@@ -336,27 +412,51 @@ def test_session_switch_does_not_repoint_to_app_install_root(tmp_path, monkeypat
     srv._sessions._active = "user1"
     srv._sessions._save()
 
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
-    port = httpd.server_address[1]
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
-    try:
-        import urllib.request
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/sessions/switch",
-            data=_json.dumps({"id": "app1"}).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Harness-Token": srv._TOKEN,
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            body = _json.loads(resp.read().decode())
+    with _workspace_http_server() as (srv, port):
+        body = _post_session_switch(port, srv._TOKEN, "app1")
         assert body.get("ok") is True
         assert srv._sessions.active == "app1"
         # Workspace must stay on the user project.
         assert srv._cfg.repo == str(user)
         assert body.get("repo") == str(user)
-    finally:
-        httpd.shutdown()
+
+
+def test_session_switch_http_server_lifecycle_stress_no_leaks(tmp_path, monkeypatch):
+    """Repeated start/switch/teardown must not leak serve threads (Windows CI)."""
+    import harness.server as srv
+
+    user = tmp_path / "user-proj"
+    user.mkdir()
+    app = tmp_path / "app-checkout"
+    app.mkdir()
+    monkeypatch.setenv("MARIONETTE_APP_ROOT", str(app))
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(srv, "_puppetmaster_available", lambda: False)
+    monkeypatch.setattr(srv, "_index_codegraph_bg", lambda repo: None)
+
+    for round_idx in range(_STRESS_ROUNDS):
+        srv._cfg.repo = str(user)
+        os.environ["HARNESS_REPO"] = str(user)
+        srv._sessions.path = str(tmp_path / "harness_sessions.json")
+        srv._sessions._sessions = [
+            {"id": "user1", "title": "User", "created": 1.0,
+             "repo": str(user), "workspace_root": str(user), "archived": False},
+            {"id": "app1", "title": "App audit", "created": 2.0,
+             "repo": str(app), "workspace_root": str(app), "archived": False},
+        ]
+        srv._sessions._active = "user1"
+        srv._sessions._save()
+
+        with _workspace_http_server() as (srv, port):
+            body = _post_session_switch(port, srv._TOKEN, "app1")
+            assert body.get("ok") is True, f"switch failed on stress round {round_idx}"
+            assert srv._cfg.repo == str(user)
+
+        leftover = [
+            t
+            for t in threading.enumerate()
+            if t.name == _SERVE_THREAD_NAME and t.is_alive()
+        ]
+        assert not leftover, (
+            f"serve thread leaked after stress round {round_idx}: {leftover!r}"
+        )
