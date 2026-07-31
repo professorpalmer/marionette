@@ -36,6 +36,17 @@ def test_resolve_price_falls_back_to_default(monkeypatch):
     assert (pin, pout) == (0.5, 2.0)
 
 
+def test_resolve_price_unknown_explicit_openrouter_slug_has_no_defaults(monkeypatch):
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    slug = "deepseek/deepseek-v4-unknown"
+    assert reg.resolve_price(slug) == (None, None)
+    assert reg.resolve_price(f"openrouter:{slug}") == (None, None)
+    pin, pout, src = reg.resolve_price_with_source(slug)
+    assert (pin, pout) == (None, None)
+    assert src == "unknown"
+
+
 def test_resolve_price_with_source_uses_resolve_price_seam(monkeypatch):
     """Provenance wrapper must not bypass the resolve_price monkeypatch seam."""
     monkeypatch.setattr(reg, "_PRICE_MEM", {})

@@ -94,6 +94,94 @@ def test_provider_models_falls_back_to_curated_on_fetch_failure(monkeypatch):
     assert merged == list(p.pilot_models)
 
 
+def test_openrouter_empty_payload_sets_fetch_error(monkeypatch):
+    p = prov.get_provider("openrouter")
+    monkeypatch.setattr(mf, "_get", lambda url, headers: {"data": []})
+    assert mf._fetch_provider_models(p, "key") == []
+    assert mf.last_fetch_error("openrouter") is not None
+    assert "empty" in mf.last_fetch_error("openrouter").lower()
+
+
+def test_openrouter_empty_payload_status_is_error_not_normal_empty(monkeypatch, tmp_path):
+    p = prov.get_provider("openrouter")
+    cache = tmp_path / "provider_models_cache.json"
+    monkeypatch.setattr(mf, "_cache_path", lambda: str(cache))
+    monkeypatch.setattr(mf, "_get", lambda url, headers: {"data": []})
+    mf._RECORD_MEM.clear()
+    mf._MEM.clear()
+    mf._LAST_ERROR.clear()
+    assert mf.fetch_model_records(p, "key", force=True) == []
+    status = mf.fetch_status("openrouter")
+    assert status["status"] == "error"
+    assert status["error"] is not None
+
+
+def test_openrouter_stale_records_marked_stale_on_fetch_error(monkeypatch, tmp_path):
+    p = prov.get_provider("openrouter")
+    cache = tmp_path / "provider_models_cache.json"
+    monkeypatch.setattr(mf, "_cache_path", lambda: str(cache))
+    payload = {
+        "data": [{
+            "id": "deepseek/deepseek-v4-flash-0731",
+            "context_length": 1_000_000,
+            "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+        }],
+    }
+    monkeypatch.setattr(mf, "_get", lambda url, headers: payload)
+    mf._RECORD_MEM.clear()
+    mf._MEM.clear()
+    mf._LAST_ERROR.clear()
+    mf.fetch_model_records(p, "key", force=True)
+    monkeypatch.setattr(mf, "_get", lambda url, headers: (_ for _ in ()).throw(RuntimeError("offline")))
+    records = mf.fetch_model_records(p, "key", force=True)
+    assert records and records[0]["source"] == "stale-live"
+    status = mf.fetch_status("openrouter")
+    assert status["status"] == "stale"
+    assert status["error"] is not None
+
+
+def test_openrouter_keyed_failure_does_not_merge_curated(monkeypatch):
+    p = prov.get_provider("openrouter")
+    monkeypatch.setattr(p.__class__, "key", lambda self: "fake-key")
+    monkeypatch.setattr(mf, "fetch_models", lambda provider, key, **kw: [])
+    assert mv.provider_models(p) == []
+
+
+def test_openrouter_records_preserve_metadata_and_cache_round_trip(tmp_path, monkeypatch):
+    p = prov.get_provider("openrouter")
+    payload = {
+        "data": [{
+            "id": "deepseek/deepseek-v4-flash-0731",
+            "name": "DeepSeek V4 Flash",
+            "description": "fast model",
+            "canonical_slug": "deepseek/deepseek-v4-flash-0731",
+            "context_length": 1_000_000,
+            "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+            "architecture": {"modality": "text->text"},
+            "modalities": ["text"],
+            "supported_parameters": ["tools"],
+        }],
+    }
+    cache = tmp_path / "provider_models_cache.json"
+    monkeypatch.setattr(mf, "_cache_path", lambda: str(cache))
+    monkeypatch.setattr(mf, "_get", lambda url, headers: payload)
+    mf._RECORD_MEM.clear()
+    mf._MEM.clear()
+    records = mf.fetch_model_records(p, "key", force=True)
+    assert records[0]["context_length"] == 1_000_000
+    assert records[0]["pricing"] == {"prompt": 1.0, "completion": 2.0}
+    mf._RECORD_MEM.clear()
+    mf._MEM.clear()
+    cached = mf.fetch_model_records(p, "key")
+    assert cached[0]["canonical_slug"] == "deepseek/deepseek-v4-flash-0731"
+    assert mf.model_metadata("openrouter", "deepseek/deepseek-v4-flash-0731") == cached[0]
+    import pmharness.registry as reg
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
+    assert reg.context_window("deepseek/deepseek-v4-flash-0731") == 1_000_000
+    assert reg.price("deepseek/deepseek-v4-flash-0731") == (1.0, 2.0)
+
+
 def test_provider_models_no_key_returns_curated(monkeypatch):
     p = prov.get_provider("xai")
     monkeypatch.setattr(p.__class__, "key", lambda self: None)

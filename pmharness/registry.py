@@ -92,6 +92,8 @@ def resolve_price(name: str, default_in: float = 0.5, default_out: float = 2.0) 
     """price() with a numeric fallback, for the cost estimator UI."""
     pin, pout, _src = price_with_source(name)
     if pin is None or pout is None:
+        if _is_explicit_openrouter_slug(name):
+            return (None, None)
         return (default_in, default_out)
     return (pin, pout)
 
@@ -115,6 +117,8 @@ def resolve_price_with_source(
         pin, pout = resolve_price(name, default_in, default_out)
     raw_in, raw_out, src = price_with_source(name)
     if raw_in is None or raw_out is None:
+        if _is_explicit_openrouter_slug(name):
+            return (None, None, "unknown")
         return (pin, pout, "default")
     return (pin, pout, src or "live")
 
@@ -158,6 +162,39 @@ def _cw_norm(slug: str) -> str:
     if "/" in s:
         s = s.split("/", 1)[1]
     return _re.sub(r"[^a-z0-9]", "", s)
+
+
+def _explicit_openrouter_slug(name: str) -> str:
+    value = str(name or "").strip()
+    if value.lower().startswith("openrouter:"):
+        return value.split(":", 1)[1].strip()
+    if "/" in value and ":" not in value:
+        namespace = value.split("/", 1)[0].strip().lower()
+        if namespace in {
+            "agentic",
+            "claude-code",
+            "codex",
+            "cursor",
+            "cursor-agent",
+            "cursor-cli",
+            "hermes",
+            "openai-codex",
+            "unknown",
+        }:
+            return ""
+        return value
+    return ""
+
+
+def _cached_openrouter_metadata(name: str) -> dict | None:
+    slug = _explicit_openrouter_slug(name)
+    if not slug:
+        return None
+    try:
+        from harness.model_fetch import model_metadata
+        return model_metadata("openrouter", slug)
+    except Exception:
+        return None
 
 
 # Live OpenRouter PRICE map {slug: (price_in_per_Mtok, price_out_per_Mtok)},
@@ -328,11 +365,21 @@ def _resolve_live_price(name: str):
     _live_windows()  # ensure the fetch ran (populates _PRICE_MEM as a side effect)
     live = _PRICE_MEM
     if not live:
+        metadata = _cached_openrouter_metadata(name)
+        pricing = (metadata or {}).get("pricing") or {}
+        if _explicit_openrouter_slug(name) and "prompt" in pricing and "completion" in pricing:
+            return (float(pricing["prompt"]), float(pricing["completion"]))
         return None
     candidates = _live_price_candidates(name)
     for c in candidates:
         if c in live:
             return live[c]
+    if _explicit_openrouter_slug(name):
+        metadata = _cached_openrouter_metadata(name)
+        pricing = (metadata or {}).get("pricing") or {}
+        if "prompt" in pricing and "completion" in pricing:
+            return (float(pricing["prompt"]), float(pricing["completion"]))
+        return None
     # Fuzzy normalized match, shortest slug wins (base model over -fast/-image).
     targets = {_cw_norm(c) for c in candidates if c}
     best = None
@@ -448,6 +495,10 @@ def _resolve_live_window(name: str) -> int:
     spec, a bare slug, or a native model id). 0 if no live match."""
     live = _live_windows()
     if not live:
+        metadata = _cached_openrouter_metadata(name)
+        context = (metadata or {}).get("context_length")
+        if _explicit_openrouter_slug(name) and isinstance(context, int) and context > 0:
+            return context
         return 0
     # Build candidate slugs to try as EXACT keys first.
     candidates = []
@@ -466,6 +517,12 @@ def _resolve_live_window(name: str) -> int:
     for c in candidates:
         if c in live:
             return int(live[c])
+    if _explicit_openrouter_slug(name):
+        metadata = _cached_openrouter_metadata(name)
+        context = (metadata or {}).get("context_length")
+        if isinstance(context, int) and context > 0:
+            return context
+        return 0
     # Fuzzy: normalized-equality, preferring the shortest matching id so a base
     # model wins over '-fast' / '-image' / '-codex' variants.
     targets = {_cw_norm(c) for c in candidates if c}
@@ -549,6 +606,45 @@ def _static_window(name: str) -> int:
     return best
 
 
+def _is_explicit_openrouter_slug(name: str) -> bool:
+    """Identify a caller-supplied OpenRouter slug, without family heuristics."""
+    return bool(_explicit_openrouter_slug(name))
+
+
+def metadata_source(name: str) -> str:
+    """Return metadata provenance: live, stale-live, catalog, or unknown."""
+    try:
+        if _resolve_live_window(name) > 0:
+            return "live"
+    except Exception:
+        pass
+    if _is_explicit_openrouter_slug(name):
+        try:
+            from harness.model_fetch import model_metadata
+            slug = str(name).split(":", 1)[-1]
+            if model_metadata("openrouter", slug):
+                return "stale-live"
+        except Exception:
+            pass
+        return "unknown"
+    try:
+        if _entry(name).get("context_window"):
+            return "catalog"
+    except Exception:
+        pass
+    return "unknown"
+
+
+def apply_context_window(name: str, *, default: int = _CW_FLOOR) -> int:
+    """Resolve the active driver's context budget; fail closed for explicit OpenRouter slugs."""
+    if _is_explicit_openrouter_slug(name) and metadata_source(name) == "unknown":
+        raise ValueError(f"OpenRouter metadata unavailable for {name!r}")
+    window = context_window(name, default=default)
+    if _is_explicit_openrouter_slug(name) and window <= 0:
+        raise ValueError(f"OpenRouter context window unavailable for {name!r}")
+    return window
+
+
 def context_window(name: str, default: int = _CW_FLOOR) -> int:
     """The model's real input context window (tokens). Resolves in order:
     live OpenRouter /models map (cached) -> catalog `context_window` ->
@@ -568,6 +664,10 @@ def context_window(name: str, default: int = _CW_FLOOR) -> int:
             return int(w)
     except Exception:
         pass
+    if _is_explicit_openrouter_slug(name):
+        # A new OpenRouter slug is not allowed to inherit a misleading static
+        # family value or generic floor while its live metadata is unavailable.
+        return 0
     try:
         static = _static_window(name)
         if static > 0:

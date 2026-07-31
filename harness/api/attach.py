@@ -320,18 +320,24 @@ def rebuild_pilot_and_session(svc: AttachServices) -> None:
             if callable(locked) and locked():
                 raise RuntimeError("pilot busy -- finish or stop the current turn before rebuilding")
 
-    prev_driver = svc.cfg.driver
-    svc.apply_model_context_window()
+    attempted_driver = svc.cfg.driver
+    running_driver = getattr(getattr(svc.get_pilot(), "config", None), "driver", None)
+    if not isinstance(running_driver, str) or not running_driver.strip():
+        running_driver = attempted_driver
     try:
+        svc.apply_model_context_window()
         # Tracker Session may share the view config; the runner gets a frozen copy.
         new_session = Session(svc.cfg)
         new_pilot = ConversationalSession(svc.runner_config_snapshot())
     except Exception as e:
         # Roll back to the last driver that built successfully.
-        svc.cfg.driver = prev_driver
-        svc.apply_model_context_window()
+        svc.cfg.driver = running_driver
+        try:
+            svc.apply_model_context_window()
+        except Exception as rollback_err:
+            svc.diag("server.rebuild_context_rollback", rollback_err)
         raise RuntimeError(
-            f"could not load model {prev_driver!r}: {e}. Reverted to the "
+            f"could not load model {attempted_driver!r}: {e}. Reverted to the "
             f"previous pilot."
         ) from e
     # Keep the tracker/jobs reads pointed at the store the pilot writes to (see

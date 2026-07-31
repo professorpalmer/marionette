@@ -1811,11 +1811,8 @@ def _apply_model_context_window():
     always wins (so a deliberate cap is never silently widened)."""
     if "HARNESS_MAX_CONTEXT_TOKENS" in os.environ:
         return
-    try:
-        from pmharness.registry import context_window
-        _cfg.max_context_tokens = context_window(_cfg.driver, default=200000)
-    except Exception as e:
-        _diag("server.apply_model_context_window", e)
+    from pmharness.registry import apply_context_window
+    _cfg.max_context_tokens = apply_context_window(_cfg.driver, default=200000)
 
 
 def _attach_services():
@@ -1923,10 +1920,19 @@ def _perform_pilot_swap(model: str) -> None:
                 release(reason="session_switch")
         except Exception:
             pass
-        _cfg.driver = model
-        _apply_model_context_window()
-        # Frozen per-runner config; meters already in carry -- start clean.
-        _pilot = ConversationalSession(_runner_config_snapshot())
+        prev_driver = _cfg.driver
+        try:
+            _cfg.driver = model
+            _apply_model_context_window()
+            # Frozen per-runner config; meters already in carry -- start clean.
+            _pilot = ConversationalSession(_runner_config_snapshot())
+        except Exception:
+            _cfg.driver = prev_driver
+            try:
+                _apply_model_context_window()
+            except Exception as e:
+                _diag("server.pilot_swap_context_rollback", e)
+            raise
         if old_history is not None:
             _pilot._history = old_history
         _pilot._auto_distill = old_auto_distill

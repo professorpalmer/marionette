@@ -70,6 +70,24 @@ def test_live_fetch_failure_degrades_gracefully(monkeypatch):
     assert reg.context_window("totally-unknown-xyz") == 200000
 
 
+def test_apply_context_window_fails_closed_for_unknown_openrouter_slug(monkeypatch):
+    import pmharness.registry as reg
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    slug = "deepseek/deepseek-v4-unknown"
+    with pytest.raises(ValueError, match="metadata unavailable"):
+        reg.apply_context_window(slug)
+    with pytest.raises(ValueError, match="metadata unavailable"):
+        reg.apply_context_window(f"openrouter:{slug}")
+
+
+def test_unknown_explicit_openrouter_slug_is_unavailable(monkeypatch):
+    import pmharness.registry as reg
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    assert reg.context_window("openrouter:deepseek/deepseek-v4-unknown") == 0
+    assert reg.context_window("deepseek/deepseek-v4-unknown") == 0
+    assert reg.metadata_source("deepseek/deepseek-v4-unknown") == "unknown"
+
+
 def test_never_raises_on_garbage(monkeypatch):
     import pmharness.registry as reg
     assert reg.context_window("") == 200000

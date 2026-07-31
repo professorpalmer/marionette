@@ -3,12 +3,13 @@
 The curated ``pilot_models`` tuples in providers.py are a hardcoded fallback that
 drifts (Anthropic ships 9 models but the list shows 3; OpenAI ships gpt-5.6
 Sol/Terra/Luna while static fallbacks may still list 5.5/5.4). This module
-fetches each KEYED provider's REAL model catalog
-from its own listing endpoint, caches it on disk with a TTL, and merges it with the
-curated fallback so the picker reflects what the account can actually use.
+fetches each KEYED provider's REAL model catalog from its own listing endpoint
+and caches it on disk with a TTL. OpenRouter records remain rich because its
+live catalog is authoritative; other providers can still use curated fallback
+behavior in their callers.
 
 Stdlib-only (urllib, json). Every fetch degrades gracefully: any network/auth/parse
-failure falls back to the cached list, then to the curated pilot_models. Never raises.
+failure falls back to the cached list, then returns an empty live result. Never raises.
 """
 from __future__ import annotations
 
@@ -16,13 +17,14 @@ import json
 import os
 import time
 import urllib.request
-from typing import Optional
+from typing import Any, Optional
 
 from .diag import note as _diag
 
 _CACHE_TTL = int(os.environ.get("PMHARNESS_MODELS_CACHE_TTL", "86400"))  # 24h
 _FETCH_TIMEOUT = 6
 _MEM: dict[str, list[str]] = {}
+_RECORD_MEM: dict[str, list[dict[str, Any]]] = {}
 _MEM_AT: dict[str, float] = {}
 # Last failure reason per provider, so an empty picker can explain WHY (bad key
 # vs network vs schema change) instead of looking like the account has no models.
@@ -47,6 +49,7 @@ def invalidate_models_cache(provider_name: Optional[str] = None) -> None:
     try:
         if provider_name:
             _MEM.pop(provider_name, None)
+            _RECORD_MEM.pop(provider_name, None)
             _MEM_AT.pop(provider_name, None)
             _LAST_ERROR.pop(provider_name, None)
             disk = _read_cache()
@@ -55,6 +58,7 @@ def invalidate_models_cache(provider_name: Optional[str] = None) -> None:
                 _write_cache(disk)
             return
         _MEM.clear()
+        _RECORD_MEM.clear()
         _MEM_AT.clear()
         _LAST_ERROR.clear()
         _write_cache({})
@@ -138,7 +142,56 @@ def _fetch_codex_oauth_models(access_token: str) -> list[str]:
     return ids
 
 
-def _fetch_provider_models(provider, key: str) -> list[str]:
+def _normalize_openrouter_record(
+    item: dict[str, Any], *, source: str, pricing_per_mtok: bool = False
+) -> dict[str, Any] | None:
+    model_id = item.get("id")
+    if not isinstance(model_id, str) or not model_id.strip():
+        return None
+    record: dict[str, Any] = {
+        "id": model_id.strip(),
+        "source": source,
+        "status": "available",
+    }
+    for field in (
+        "name", "description", "canonical_slug", "context_length",
+        "architecture", "modalities", "supported_parameters",
+    ):
+        if field in item and item[field] is not None:
+            record[field] = item[field]
+    pricing = item.get("pricing")
+    if isinstance(pricing, dict):
+        normalized = {}
+        for key in ("prompt", "completion"):
+            try:
+                value = float(pricing[key])
+                normalized[key] = value if pricing_per_mtok else value * 1_000_000
+            except (KeyError, TypeError, ValueError):
+                pass
+        if normalized:
+            record["pricing"] = normalized
+    return record
+
+
+def _cached_records(entry: Any) -> list[dict[str, Any]]:
+    if not isinstance(entry, dict) or not isinstance(entry.get("models"), list):
+        return []
+    records = []
+    for item in entry["models"]:
+        if isinstance(item, str):
+            item = {"id": item}
+        if isinstance(item, dict):
+            record = _normalize_openrouter_record(
+                item,
+                source="stale-live",
+                pricing_per_mtok=bool(item.get("source") or item.get("status")),
+            )
+            if record:
+                records.append(record)
+    return records
+
+
+def _fetch_provider_models(provider, key: str) -> list[Any]:
     """Hit the provider's native model-listing endpoint. Returns bare model ids
     (no provider prefix). Empty list on any failure, with the failure REASON
     recorded (diagnostics log + _LAST_ERROR) so the empty list is explainable."""
@@ -156,7 +209,24 @@ def _fetch_provider_models(provider, key: str) -> list[str]:
                 "https://openrouter.ai/api/v1/models",
                 {"Authorization": f"Bearer {key}", "User-Agent": "pm-harness"},
             )
-            return [m["id"] for m in data.get("data", []) if m.get("id")]
+            items = data.get("data") if isinstance(data, dict) else None
+            if not isinstance(items, list) or not items:
+                _LAST_ERROR[name] = (
+                    "OpenRouter /models returned an empty or unusable catalog"
+                )
+                return []
+            records = [
+                record
+                for item in items
+                if isinstance(item, dict)
+                for record in [_normalize_openrouter_record(item, source="live")]
+                if record
+            ]
+            if not records:
+                _LAST_ERROR[name] = (
+                    "OpenRouter /models returned an empty or unusable catalog"
+                )
+            return records
         if name in ("openai", "deepseek", "zai", "xai", "nvidia"):
             # OpenAI-compatible /models listing.
             base = provider.base_url.rstrip("/")
@@ -216,36 +286,82 @@ def _is_chat_model(model_id: str) -> bool:
     return not any(marker in m for marker in _NON_CHAT_MARKERS)
 
 
-def fetch_models(provider, key: str, *, force: bool = False) -> list[str]:
-    """Live model ids for a keyed provider, memoized in-process and cached on
-    disk with a TTL. Returns [] on total failure (caller merges with curated)."""
+def fetch_model_records(provider, key: str, *, force: bool = False) -> list[dict[str, Any]]:
+    """Return normalized live records, using stale records only when needed."""
     name = provider.name
     if os.environ.get("PMHARNESS_LIVE_MODELS", "1") == "0":
         return []
     now = time.time()
-    if not force and name in _MEM and (time.monotonic() - _MEM_AT.get(name, 0)) < _CACHE_TTL:
-        return _MEM[name]
+    if not force and name in _RECORD_MEM and (
+        time.monotonic() - _MEM_AT.get(name, 0)
+    ) < _CACHE_TTL:
+        return _RECORD_MEM[name]
     disk = _read_cache()
     entry = disk.get(name)
-    if not force and isinstance(entry, dict):
-        fetched_at = entry.get("fetched_at", 0)
-        models = entry.get("models")
-        if isinstance(models, list) and (now - fetched_at) < _CACHE_TTL:
-            _MEM[name] = models
+    if not force:
+        cached = _cached_records(entry)
+        if cached and (now - entry.get("fetched_at", 0)) < _CACHE_TTL:
+            _RECORD_MEM[name] = cached
+            _MEM[name] = [record["id"] for record in cached]
             _MEM_AT[name] = time.monotonic()
-            return models
-    fresh = _fetch_provider_models(provider, key)
-    # Keep only chat/pilot-capable models (drop image/video/audio/embedding/etc).
-    fresh = [m for m in fresh if _is_chat_model(m)]
+            return cached
+    raw = _fetch_provider_models(provider, key)
+    if name == "openrouter":
+        fresh = [
+            record for record in raw
+            if isinstance(record, dict) and _is_chat_model(record["id"])
+        ]
+    else:
+        fresh = [
+            {"id": model_id, "source": "live", "status": "available"}
+            for model_id in raw if isinstance(model_id, str) and _is_chat_model(model_id)
+        ]
     if fresh:
         disk[name] = {"fetched_at": now, "models": fresh}
         _write_cache(disk)
-        _MEM[name] = fresh
+        _RECORD_MEM[name] = fresh
+        _MEM[name] = [record["id"] for record in fresh]
         _MEM_AT[name] = time.monotonic()
         return fresh
-    # Fetch failed -> stale disk cache if present, else empty.
-    if isinstance(entry, dict) and isinstance(entry.get("models"), list):
-        _MEM[name] = entry["models"]
+    stale = _cached_records(entry)
+    if stale:
+        _RECORD_MEM[name] = stale
+        _MEM[name] = [record["id"] for record in stale]
         _MEM_AT[name] = time.monotonic()
-        return entry["models"]
+        return stale
     return []
+
+
+def model_metadata(provider_name: str, slug: str) -> dict[str, Any] | None:
+    """Resolve an exact cached/live provider slug; never fuzzy-matches."""
+    target = (slug or "").strip()
+    for record in _RECORD_MEM.get(provider_name, []):
+        if record.get("id") == target or record.get("canonical_slug") == target:
+            return record
+    for record in _cached_records(_read_cache().get(provider_name)):
+        if record.get("id") == target or record.get("canonical_slug") == target:
+            return record
+    return None
+
+
+def fetch_status(provider_name: str) -> dict[str, str | None]:
+    """Expose the last live-fetch outcome without exposing credentials."""
+    records = _RECORD_MEM.get(provider_name) or []
+    err = _LAST_ERROR.get(provider_name)
+    if err:
+        if records:
+            source = records[0].get("source", "stale-live")
+            status = "stale" if source == "stale-live" else "error"
+            return {"source": source, "status": status, "error": err}
+        return {"source": "error", "status": "error", "error": err}
+    if records:
+        source = records[0].get("source", "live")
+        status = "available" if source == "live" else "stale"
+        return {"source": source, "status": status, "error": None}
+    return {"source": "empty", "status": "empty", "error": None}
+
+
+def fetch_models(provider, key: str, *, force: bool = False) -> list[str]:
+    """Live model ids for a keyed provider, memoized in-process and cached on
+    disk with a TTL. Returns [] on total failure (caller merges with curated)."""
+    return [record["id"] for record in fetch_model_records(provider, key, force=force)]

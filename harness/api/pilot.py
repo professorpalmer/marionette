@@ -43,9 +43,18 @@ def swap_pilot(model: str, svc: PilotServices) -> tuple[int, JsonPayload]:
     )
     if busy:
         # Stage preference only -- do not touch the live pilot object.
-        svc.cfg.driver = model
-        svc.apply_model_context_window()
-        svc.save_workspace_driver(svc.cfg.repo, model)
+        prev_driver = svc.cfg.driver
+        try:
+            svc.cfg.driver = model
+            svc.apply_model_context_window()
+            svc.save_workspace_driver(svc.cfg.repo, model)
+        except Exception as e:
+            svc.cfg.driver = prev_driver
+            try:
+                svc.apply_model_context_window()
+            except Exception:
+                pass
+            return 500, {"error": str(e)}
         return 200, {"ok": True, "driver": model, "deferred": True}
     try:
         svc.perform_pilot_swap(model)

@@ -109,7 +109,7 @@ def get_providers() -> tuple[int, list]:
 
 
 def post_providers_probe(body: dict) -> tuple[int, dict]:
-    """POST /api/providers/probe — live model list or static fallback."""
+    """POST /api/providers/probe — live model list with explicit failures."""
     pname = body.get("provider", "")
     p = get_provider(pname)
     if not p:
@@ -120,6 +120,14 @@ def post_providers_probe(body: dict) -> tuple[int, dict]:
     try:
         return 200, probe_provider(p, key)
     except Exception as e:
+        if p.name == "openrouter":
+            return 200, {
+                "provider": p.name,
+                "models": [],
+                "source": "error",
+                "status": "error",
+                "error": str(e),
+            }
         return 200, {
             "provider": p.name,
             "models": [{"id": m} for m in p.pilot_models],

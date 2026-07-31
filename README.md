@@ -10,7 +10,7 @@ Internal-first research rig and daily-driver app. stdlib-only backend (urllib +
 sqlite); Puppetmaster is the one real dependency, installed editable from a local
 checkout.
 
-> Status: v0.9.154, deliberately pre-1.0. Swarm dispatches can target a separate subject checkout for read-only audits, and every completed run carries deterministic current-job evidence with structured acceptance-criterion verification (rides puppetmaster-ai==1.21.6).
+> Status: v0.9.155, deliberately pre-1.0. Swarm dispatches can target a separate subject checkout for read-only audits, and every completed run carries deterministic current-job evidence with structured acceptance-criterion verification (rides puppetmaster-ai==1.21.6).
 
 ## Documentation
 

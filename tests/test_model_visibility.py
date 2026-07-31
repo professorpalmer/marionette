@@ -54,6 +54,7 @@ def test_catalog_marks_enabled(mv, monkeypatch):
     import harness.providers as prov
     # Force a provider to look available regardless of env keys.
     monkeypatch.setattr(prov, "available_providers", lambda: [prov.get_provider("openrouter")])
+    monkeypatch.setattr(prov.get_provider("openrouter").__class__, "key", lambda self: None)
     spec = "openrouter:" + prov.get_provider("openrouter").pilot_models[0]
     mv.set_enabled([spec])
     cat = mv.catalog(available_only=True)
@@ -66,6 +67,7 @@ def test_catalog_marks_enabled(mv, monkeypatch):
 def test_enabled_pilots_filters_to_available(mv, monkeypatch):
     import harness.providers as prov
     monkeypatch.setattr(prov, "available_providers", lambda: [prov.get_provider("openrouter")])
+    monkeypatch.setattr(prov.get_provider("openrouter").__class__, "key", lambda self: None)
     or_model = prov.get_provider("openrouter").pilot_models[0]
     # Enable one available spec and one for a provider with no key.
     mv.set_enabled([f"openrouter:{or_model}", "anthropic:claude-opus-4-8"])

@@ -91,6 +91,41 @@ def probe_provider(p: Provider, key: Optional[str]) -> dict:
             ),
         }
 
+    if p.name == "openrouter":
+        if not key:
+            return {
+                "provider": p.name,
+                "models": [],
+                "source": "unavailable",
+                "status": "missing_key",
+                "error": "No API key configured for OpenRouter.",
+            }
+        from .model_fetch import fetch_model_records, fetch_status
+        records = fetch_model_records(p, key, force=True)
+        status = fetch_status(p.name)
+        if not records:
+            return {
+                "provider": p.name,
+                "models": [],
+                "source": status["source"],
+                "status": status["status"],
+                "error": status["error"] or "OpenRouter model catalog was empty.",
+            }
+        if status["status"] in ("error", "stale"):
+            return {
+                "provider": p.name,
+                "models": [{"id": r["id"], **r} for r in records],
+                "source": status["source"],
+                "status": status["status"],
+                "error": status["error"],
+            }
+        return {
+            "provider": p.name,
+            "models": [{"id": r["id"], **r} for r in records],
+            "source": status.get("source", "live"),
+            "status": status.get("status", "available"),
+        }
+
     if not key:
         return {
             "provider": p.name,
@@ -168,6 +203,10 @@ def get_valid_models_for_provider(p: Provider) -> list[str]:
         probe_res = probe_provider(p, key)
         if probe_res.get("source") == "live":
             return [m["id"] for m in probe_res["models"]]
+        if p.name == "openrouter":
+            return []
+    if p.name == "openrouter":
+        return []
     return list(p.pilot_models)
 
 # Roles base score definition and resolution

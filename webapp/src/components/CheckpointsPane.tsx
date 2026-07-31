@@ -217,10 +217,10 @@ export default function CheckpointsPane() {
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-panel text-txt text-xs">
+    <div className="flex flex-col h-full min-h-0 bg-[#13161a] text-txt text-xs">
       {/* Header + inline manual-snapshot: one compact row to save vertical space
           in a split pane (was a separate header + form section). */}
-      <div className="px-2 py-1.5 border-b border-edge flex items-center gap-1.5 bg-panel2/15 shrink-0">
+      <div className="px-2 py-1.5 border-b border-edge/50 flex items-center gap-1.5 bg-panel2/20 shrink-0">
         <History size={12} className="text-accent shrink-0" />
         <form onSubmit={handleCreateSnapshot} className="flex items-center gap-1 flex-1 min-w-0">
           <input
@@ -230,7 +230,7 @@ export default function CheckpointsPane() {
             onChange={(e) => setSnapshotLabel(e.target.value)}
             disabled={isCreatingSnapshot}
             title="Auto-snapshots are taken before agent edits and swarm patches. Restores are fully undoable."
-            className="flex-1 min-w-0 px-1.5 py-0.5 bg-panel2 border border-edge rounded text-txt placeholder-faint focus:outline-none focus:border-accent/50 text-[11px]"
+            className="flex-1 min-w-0 px-1.5 py-0.5 bg-panel2/40 border border-edge/60 rounded text-txt placeholder-faint focus:outline-none focus:border-accent/50 text-[11px]"
           />
           <button
             type="submit"
@@ -281,13 +281,13 @@ export default function CheckpointsPane() {
             return (
               <div
                 key={cp.id}
-                className="px-1.5 py-1 bg-panel2 hover:bg-edge/20 border border-edge/60 rounded flex flex-col gap-0.5 transition-colors"
+                className="px-1.5 py-1 bg-panel2/30 hover:bg-panel2/50 border border-edge/60 rounded flex flex-col gap-0.5 transition-colors"
               >
                 <div className="flex items-center justify-between gap-1.5 min-w-0">
                   <div className="font-medium text-txt truncate leading-snug flex-1 min-w-0 text-[11px]" title={cp.label}>
                     {cp.label}
                   </div>
-                  <span className="px-1 py-px text-[8px] uppercase font-semibold tracking-wide bg-panel border border-edge/80 rounded text-faint shrink-0 select-none">
+                  <span className="px-1 py-px text-[8px] uppercase font-semibold tracking-wide bg-panel2/30 border border-edge/60 rounded text-faint shrink-0 select-none">
                     {formatTrigger(cp.trigger)}
                   </span>
                 </div>
@@ -301,7 +301,7 @@ export default function CheckpointsPane() {
                   <button
                     onClick={() => toggleDiff(cp.id)}
                     title={expandedDiffs[cp.id] ? "Hide diff" : "View diff"}
-                    className="py-0.5 px-1.5 bg-panel border border-edge/80 hover:bg-edge/40 rounded font-medium text-muted hover:text-txt transition-colors text-[10px] flex items-center gap-1 shrink-0"
+                    className="py-0.5 px-1.5 bg-panel2/30 border border-edge/60 hover:bg-panel2/50 rounded font-medium text-muted hover:text-txt transition-colors text-[10px] flex items-center gap-1 shrink-0"
                   >
                     {expandedDiffs[cp.id] ? <EyeOff size={10} /> : <Eye size={10} />}
                     <span>Diff</span>
@@ -377,7 +377,7 @@ export default function CheckpointsPane() {
                                 <div className="text-[9px] uppercase tracking-wider text-faint font-semibold">
                                   Unified Diff
                                 </div>
-                                <div className="p-1.5 bg-panel border border-edge/80 rounded max-h-[180px] overflow-auto font-mono text-[10px] leading-relaxed text-muted scrollbar-thin">
+                                <div className="p-1.5 bg-panel2/30 border border-edge/60 rounded max-h-[180px] overflow-auto font-mono text-[10px] leading-relaxed text-muted scrollbar-thin">
                                   {diff.diff.split("\n").map((line, lineIdx) => {
                                     let lineClass = "text-muted/80";
                                     if (line.startsWith("+") && !line.startsWith("+++")) {

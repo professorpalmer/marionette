@@ -102,16 +102,16 @@ export default function RightDock({
       className="pointer-events-none absolute right-4 top-[3.75rem] bottom-10 z-20 flex flex-col items-center select-none"
       aria-label="Side panel shortcuts"
     >
-      {/* Floating pill — transparent so the chat gradient reads through. */}
+      {/* Floating dock — a quiet charcoal surface keeps shortcuts legible. */}
       <div
         className="pointer-events-auto flex flex-col items-center gap-0.5 rounded-2xl px-1 py-1.5
-          bg-panel/35 backdrop-blur-md border border-edge/30 shadow-[0_4px_16px_rgba(0,0,0,0.22)]"
+          bg-[#13161a]/90 backdrop-blur-md border border-edge/50 shadow-[0_4px_18px_rgba(0,0,0,0.3)]"
       >
         <button
           type="button"
           onClick={onExpand}
           title="Open side panel (Ctrl/Cmd+J)"
-          className="flex h-7 w-7 items-center justify-center rounded-xl text-muted hover:text-txt hover:bg-panel2/50 transition-colors"
+          className="flex h-7 w-7 items-center justify-center rounded-xl text-faint hover:text-muted hover:bg-panel2/50 transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
         >
           <PanelRight size={15} strokeWidth={1.75} />
         </button>
@@ -124,7 +124,7 @@ export default function RightDock({
             type="button"
             onClick={() => onOpenTab(link.tab)}
             title={link.title}
-            className="relative flex h-7 w-7 items-center justify-center rounded-xl text-muted hover:text-txt hover:bg-panel2/50 transition-colors"
+            className="relative flex h-7 w-7 items-center justify-center rounded-xl text-faint hover:text-muted hover:bg-panel2/50 transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
           >
             {link.icon}
             {link.id === "swarm" && swarmRunning > 0 && (
@@ -147,7 +147,7 @@ export default function RightDock({
           type="button"
           onClick={() => onOpenTab("settings")}
           title="Settings (Ctrl/Cmd+Shift+J)"
-          className="flex h-7 w-7 items-center justify-center rounded-xl text-muted hover:text-txt hover:bg-panel2/50 transition-colors"
+          className="flex h-7 w-7 items-center justify-center rounded-xl text-faint hover:text-muted hover:bg-panel2/50 transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
         >
           <Settings size={15} strokeWidth={1.75} />
         </button>

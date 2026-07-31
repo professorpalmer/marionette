@@ -583,7 +583,7 @@ function WorkerProgress({ tasks }: { tasks: Task[] }) {
   const failedPct = Math.round((failed / total) * 100);
   return (
     <div className="flex items-center gap-2">
-      <div className="flex-1 h-1.5 bg-panel2 border border-edge/50 rounded-full overflow-hidden flex">
+      <div className="flex-1 h-1.5 bg-panel2/40 border border-edge/50 rounded-full overflow-hidden flex">
         {donePct > 0 && (
           <div className="h-full bg-good transition-all duration-500" style={{ width: `${donePct}%` }} />
         )}
@@ -922,7 +922,7 @@ export default function SwarmPane() {
         // collapsed and clipped its own findings instead of pushing the list into
         // overflow. Pinning shrink-0 keeps the card at full content height so the
         // list actually scrolls.
-        className={`shrink-0 rounded-md border bg-panel2/30 flex flex-col overflow-hidden transition-colors ${
+        className={`shrink-0 rounded-md border bg-panel2/20 flex flex-col overflow-hidden transition-colors ${
           st === "in_progress"
             ? "border-accent/30"
             : st === "completed"
@@ -941,7 +941,7 @@ export default function SwarmPane() {
           tabIndex={0}
           onClick={toggle}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
-          className="w-full flex flex-col gap-0 p-2 hover:bg-panel2/50 text-left transition-colors select-none cursor-pointer focus:outline-none"
+          className="w-full flex flex-col gap-0 p-2 hover:bg-panel2/35 text-left transition-colors select-none cursor-pointer focus:outline-none"
         >
           <div className="flex items-center justify-between w-full">
             <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -1032,16 +1032,16 @@ export default function SwarmPane() {
                 </span>
               )}
               {workerCount > 0 && (
-                <span className="text-[9px] text-muted bg-panel2/60 px-1.5 py-0.5 rounded tabular-nums">
+                <span className="text-[9px] text-muted bg-panel2/40 px-1.5 py-0.5 rounded tabular-nums">
                   {workerCount} worker{workerCount > 1 ? "s" : ""}
                 </span>
               )}
               {adapter && adapter.toLowerCase() !== displayModel.toLowerCase() && (
-                <span className="text-[9px] text-faint bg-panel2/40 px-1.5 py-0.5 rounded lowercase">{adapter}</span>
+                <span className="text-[9px] text-faint bg-panel2/30 px-1.5 py-0.5 rounded lowercase">{adapter}</span>
               )}
               {j.source === "cli" && (
                 <span
-                  className="text-[9px] text-muted bg-panel2/60 border border-edge/50 px-1.5 py-0.5 rounded"
+                  className="text-[9px] text-muted bg-panel2/40 border border-edge/50 px-1.5 py-0.5 rounded"
                   title="Started outside Marionette (Cursor MCP or terminal Puppetmaster) for this workspace"
                 >
                   external
@@ -1051,7 +1051,7 @@ export default function SwarmPane() {
                 String(j.reuse_status).toLowerCase(),
               ) && (
                 <span
-                  className="text-[9px] text-muted bg-panel2/60 border border-edge/50 px-1.5 py-0.5 rounded font-mono"
+                  className="text-[9px] text-muted bg-panel2/40 border border-edge/50 px-1.5 py-0.5 rounded font-mono"
                   title={
                     (Array.isArray(j.invalidated_paths) && j.invalidated_paths.length
                       ? `invalidated: ${j.invalidated_paths.slice(0, 6).join(", ")}${j.invalidated_paths.length > 6 ? ` (+${j.invalidated_paths.length - 6} more)` : ""}`
@@ -1076,7 +1076,7 @@ export default function SwarmPane() {
               )}
               {!jobAccountingOwned(j) && (
                 <span
-                  className="text-[9px] text-faint bg-panel2/40 border border-edge/40 px-1.5 py-0.5 rounded"
+                  className="text-[9px] text-faint bg-panel2/30 border border-edge/40 px-1.5 py-0.5 rounded"
                   title="Visible for cancellation only — does not affect Marionette session cost or savings"
                 >
                   visibility only
@@ -1148,7 +1148,7 @@ export default function SwarmPane() {
                     .filter((v, i, arr) => arr.indexOf(v) === i)
                     .join(" · ");
                   return (
-                    <div key={key} className="p-2 bg-panel rounded border border-edge/45 text-[10px] flex flex-col gap-1.5">
+                    <div key={key} className="p-2 bg-panel2/30 rounded border border-edge/50 text-[10px] flex flex-col gap-1.5">
                       <div className="flex items-center justify-between text-muted gap-2">
                         <span className="flex items-center gap-1.5 min-w-0 flex-wrap">
                           <Cpu size={11} className="text-accent shrink-0" />
@@ -1198,7 +1198,7 @@ export default function SwarmPane() {
                                 <Tooltip
                                   key={ridx}
                                   label={rej.reason}
-                                  className="font-mono text-[8.5px] text-faint bg-panel2/50 border border-edge/30 px-1.5 py-0.5 rounded cursor-default"
+                                  className="font-mono text-[8.5px] text-faint bg-panel2/30 border border-edge/40 px-1.5 py-0.5 rounded cursor-default"
                                 >
                                   {rej.model}
                                 </Tooltip>
@@ -1219,7 +1219,7 @@ export default function SwarmPane() {
                 price. Synthesize a cost/model line from the job fields so every
                 job surfaces its spend, matching multi-worker swarms. */}
             {routingArts.length === 0 && ((j.est_cost_usd ?? 0) > 0 || (j.tokens ?? 0) > 0) && (
-              <div className="p-2 bg-panel rounded border border-edge/45 text-[10px] flex items-center justify-between text-muted">
+              <div className="p-2 bg-panel2/30 rounded border border-edge/50 text-[10px] flex items-center justify-between text-muted">
                 <span className="flex items-center gap-1.5 truncate max-w-[72%]">
                   <Cpu size={11} className="text-accent shrink-0" />
                   <span className="text-txt font-mono font-medium truncate" title={displayModel}>
@@ -1258,7 +1258,7 @@ export default function SwarmPane() {
                         tabIndex={hasInstruction ? 0 : undefined}
                         onClick={hasInstruction ? () => toggleTask(task.id) : undefined}
                         onKeyDown={hasInstruction ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTask(task.id); } } : undefined}
-                        className={`p-1.5 rounded bg-panel/25 border border-edge/20 flex items-start gap-2 text-[10px] ${hasInstruction ? "cursor-pointer hover:bg-panel/45 focus:outline-none" : ""}`}
+                        className={`p-1.5 rounded bg-panel2/20 border border-edge/40 flex items-start gap-2 text-[10px] ${hasInstruction ? "cursor-pointer hover:bg-panel2/35 focus:outline-none" : ""}`}
                       >
                         <span className="mt-0.5 shrink-0">
                           {ts === "running" ? <Loader2 size={10} className="animate-spin text-accent" />
@@ -1295,7 +1295,7 @@ export default function SwarmPane() {
                                 ts === "running" ? "text-accent bg-accent/10"
                                   : ts === "done" ? "text-good bg-good/10"
                                   : ts === "fail" ? "text-risk bg-risk/10"
-                                  : "text-muted bg-panel"
+                                  : "text-muted bg-panel2/30"
                               }`}>{task.status}</span>
                             </span>
                           </div>
@@ -1334,7 +1334,7 @@ export default function SwarmPane() {
                   Findings ({countLabel})
                 </button>
                 {sectionOpen && (
-                <div className="pr-1 flex flex-col gap-1 border border-edge/20 rounded p-1.5 bg-panel/30">
+                <div className="pr-1 flex flex-col gap-1 border border-edge/40 rounded p-1.5 bg-panel2/20">
                   {findingRows.map(({ art, count }, idx: number) => {
                     const fid = art.id || `f${idx}`;
                     const fExpanded = !!expandedFindings[fid];
@@ -1383,7 +1383,7 @@ export default function SwarmPane() {
                         )}
                       </div>
                       {fExpanded && detailStr && (
-                        <div className="mt-1 ml-4 text-[9px] text-muted whitespace-pre-wrap break-words bg-panel/40 border border-edge/20 rounded p-1.5 font-mono max-h-72 overflow-auto">
+                        <div className="mt-1 ml-4 text-[9px] text-muted whitespace-pre-wrap break-words bg-panel2/30 border border-edge/40 rounded p-1.5 font-mono max-h-72 overflow-auto">
                           {detailStr}
                         </div>
                       )}
@@ -1416,10 +1416,10 @@ export default function SwarmPane() {
   const panelDimmed = projectSwitching || isTransitioning;
 
   return (
-    <div className={`flex flex-col h-full overflow-hidden bg-panel ${panelOpacityClass(panelDimmed, isShowingStale)}`}>
+    <div className={`flex flex-col h-full overflow-hidden bg-[#13161a] ${panelOpacityClass(panelDimmed, isShowingStale)}`}>
       {/* Persistent header: the tracker always announces itself, with live
           aggregate counts, so it reads as a dashboard even at rest. */}
-      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-edge/60 select-none">
+      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-edge/50 bg-panel2/20 select-none">
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold">
           <span className="relative inline-flex">
             <Network size={11} className={anyRunning ? "text-accent" : "text-faint/70"} />

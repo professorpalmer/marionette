@@ -63,23 +63,26 @@ def test_get_providers_requires_token(test_server):
     assert "api_mode" in p0
 
 
-def test_providers_probe_no_key_static_fallback(test_server):
+def test_providers_probe_no_key_is_explicit_failure(test_server, monkeypatch):
     httpd, port, srv = test_server
+    import harness.registry_wizard as wizard
+    monkeypatch.setattr(wizard, "get_provider_key", lambda provider: None)
     # Unauthenticated -> 403
     with pytest.raises(urllib.error.HTTPError) as exc:
         _post(port, "/api/providers/probe", {"provider": "openrouter"}, {"Content-Type": "application/json"})
     assert exc.value.code == 403
 
-    # Authenticated, no key set -> returns 200 with source: static and clean error
+    # Authenticated, no key set -> returns 200 with no misleading static models.
     resp = _post(port, "/api/providers/probe", {"provider": "openrouter"},
                  {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN})
     assert resp.status == 200
     data = json.loads(resp.read().decode())
     assert data["provider"] == "openrouter"
-    assert data["source"] == "static"
+    assert data["source"] == "unavailable"
+    assert data["status"] == "missing_key"
     assert "error" in data
     assert isinstance(data["models"], list)
-    assert len(data["models"]) > 0
+    assert data["models"] == []
 
 
 def test_registry_get_set_roundtrip(test_server, tmp_path):

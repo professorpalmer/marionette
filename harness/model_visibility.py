@@ -93,18 +93,24 @@ def toggle(spec: str, on: bool) -> list:
 def provider_models(p, *, force: bool = False) -> list:
     """All selectable model ids for a provider: its LIVE catalog (fetched from
     the provider's own listing endpoint when a key is present) merged with the
-    curated pilot_models fallback. Curated entries come first (they are the
-    vetted pilot-capable picks), then any additional live models, de-duplicated.
-    Falls back to curated-only when the provider has no key or the fetch fails."""
+    curated pilot_models fallback for providers that support it. OpenRouter's
+    keyed catalog is authoritative and therefore never gains curated entries
+    after an empty or failed live fetch."""
     curated = list(p.pilot_models)
     live = []
+    keyed = False
     try:
         key = p.key()
         if key:
+            keyed = True
             from .model_fetch import fetch_models
             live = fetch_models(p, key, force=force)
     except Exception:
         live = []
+    # OpenRouter is an authoritative remote catalog. Once keyed, an empty or
+    # failed response must not be disguised with the curated static list.
+    if p.name == "openrouter" and keyed:
+        return list(dict.fromkeys(m for m in live if m))
     seen = set()
     merged = []
     # For plan providers with a large live catalog (Cursor CLI), prefer live
@@ -125,8 +131,8 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
         {provider, provider_display, model, spec, available, enabled}
 
     spec is the 'provider:model' string the picker uses. When available_only is
-    True, only providers with a present key are included. Each available
-    provider's models are its LIVE catalog merged with the curated fallback.
+    True, only providers with a present key are included. Non-OpenRouter
+    providers retain their curated fallback; keyed OpenRouter uses live data.
     """
     from . import providers as prov
     enabled = set(get_enabled())
@@ -139,8 +145,14 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
         # Live-merged list for keyed providers; curated-only for unkeyed ones
         # (so a not-yet-keyed provider still shows its vetted picks).
         models = provider_models(p, force=force) if is_avail else list(p.pilot_models)
+        from .model_fetch import fetch_status, model_metadata
+        status = fetch_status(p.name) if is_avail else {
+            "source": "curated", "status": "unavailable", "error": None,
+        }
         for m in models:
             spec = f"{p.name}:{m}"
+            metadata = model_metadata(p.name, m) if p.name == "openrouter" else None
+            pricing = (metadata or {}).get("pricing") or {}
             out.append({
                 "provider": p.name,
                 "provider_display": p.display_name,
@@ -148,6 +160,14 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
                 "spec": spec,
                 "available": is_avail,
                 "enabled": spec in enabled,
+                "context_window": (metadata or {}).get("context_length"),
+                "pricing": pricing,
+                "price_in": pricing.get("prompt"),
+                "price_out": pricing.get("completion"),
+                "source": (metadata or {}).get("source", status.get("source")),
+                "status": status.get("status"),
+                "provider_metadata": metadata or {},
+                "error": status.get("error"),
             })
     return out
 

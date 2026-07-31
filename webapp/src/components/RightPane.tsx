@@ -418,7 +418,7 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
   };
 
   return (
-    <aside ref={asideRef} className="bg-panel border-l border-edge flex flex-col h-full overflow-hidden min-w-0">
+    <aside ref={asideRef} className="bg-[#13161a] border-l border-edge/50 flex flex-col h-full overflow-hidden min-w-0">
       <div ref={containerRef} className={`flex-1 flex overflow-hidden min-h-0 ${splitState.isSplit && splitState.direction === "horizontal" ? "flex-col" : "flex-row"}`}>
         {/* Primary Pane */}
         <div
@@ -426,7 +426,7 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
           style={splitState.isSplit ? (splitState.direction === "horizontal" ? { height: `${splitState.percent}%` } : { width: `${splitState.percent}%` }) : { flex: 1 }}
         >
           {/* Primary Tab Bar */}
-          <div className="flex flex-nowrap border-b border-edge overflow-x-auto scrollbar-none select-none">
+          <div className="flex flex-nowrap border-b border-edge/50 overflow-x-auto scrollbar-none select-none">
             {tabOrder.filter(t => t !== PINNED_LAST).map((tabName, idx, arr) => {
               const config = TAB_CONFIG[tabName];
               const prev = idx > 0 ? arr[idx - 1] : null;
@@ -466,12 +466,12 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
             />
 
             {/* Split controls */}
-            <div className="flex items-center px-1 border-l border-edge bg-panel2/35 gap-0.5 shrink-0 select-none">
+            <div className="flex items-center px-1 border-l border-edge bg-panel2/20 gap-0.5 shrink-0 select-none">
               {!splitState.isSplit ? (
                 <button
                   onClick={() => updateSplitState({ isSplit: true, secondaryTab: splitState.primaryTab })}
                   title="Split Pane"
-                  className="p-1.5 text-faint hover:text-txt hover:bg-edge/40 rounded transition-colors"
+                  className="p-1.5 text-faint hover:text-muted hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
                 >
                   <Split size={12} />
                 </button>
@@ -480,14 +480,14 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
                   <button
                     onClick={() => updateSplitState(prev => ({ ...prev, direction: prev.direction === "horizontal" ? "vertical" : "horizontal" }))}
                     title={splitState.direction === "horizontal" ? "Split Vertically" : "Split Horizontally"}
-                    className="p-1.5 text-faint hover:text-txt hover:bg-edge/40 rounded transition-colors"
+                    className="p-1.5 text-faint hover:text-muted hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
                   >
                     {splitState.direction === "horizontal" ? <Columns size={12} /> : <Rows size={12} />}
                   </button>
                   <button
                     onClick={() => updateSplitState({ isSplit: false })}
                     title="Close Split"
-                    className="p-1.5 text-faint hover:text-risk hover:bg-edge/40 rounded transition-colors"
+                    className="p-1.5 text-faint hover:text-risk hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
                   >
                     <X size={12} />
                   </button>
@@ -521,7 +521,7 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
             style={splitState.direction === "horizontal" ? { height: `${100 - splitState.percent}%` } : { width: `${100 - splitState.percent}%` }}
           >
             {/* Secondary Tab Bar */}
-            <div className="flex flex-nowrap border-b border-edge overflow-x-auto scrollbar-none select-none">
+            <div className="flex flex-nowrap border-b border-edge/50 overflow-x-auto scrollbar-none select-none">
               {tabOrder.filter(t => t !== PINNED_LAST).map((tabName, idx, arr) => {
                 const config = TAB_CONFIG[tabName];
                 const prev = idx > 0 ? arr[idx - 1] : null;
@@ -560,18 +560,18 @@ export default function RightPane({ artifacts, onOpenWizard, onCollapse, initial
               />
 
               {/* Split controls for Secondary Pane */}
-              <div className="flex items-center px-1 border-l border-edge bg-panel2/35 gap-0.5 shrink-0 select-none">
+              <div className="flex items-center px-1 border-l border-edge bg-panel2/20 gap-0.5 shrink-0 select-none">
                 <button
                   onClick={() => updateSplitState(prev => ({ ...prev, direction: prev.direction === "horizontal" ? "vertical" : "horizontal" }))}
                   title={splitState.direction === "horizontal" ? "Split Vertically" : "Split Horizontally"}
-                  className="p-1.5 text-faint hover:text-txt hover:bg-edge/40 rounded transition-colors"
+                  className="p-1.5 text-faint hover:text-muted hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
                 >
                   {splitState.direction === "horizontal" ? <Columns size={12} /> : <Rows size={12} />}
                 </button>
                 <button
                   onClick={() => updateSplitState({ isSplit: false })}
                   title="Close Split"
-                  className="p-1.5 text-faint hover:text-risk hover:bg-edge/40 rounded transition-colors"
+                  className="p-1.5 text-faint hover:text-risk hover:bg-panel2/60 rounded transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
                 >
                   <X size={12} />
                 </button>
@@ -597,7 +597,7 @@ function PanelCollapseBtn({ onCollapse }: { onCollapse: () => void }) {
       title="Close side panel (Ctrl/Cmd+J)"
       aria-label="Close side panel"
       data-testid="panel-collapse-btn"
-      className="p-1.5 text-faint hover:text-txt hover:bg-edge/40 rounded transition-colors shrink-0"
+      className="p-1.5 text-faint hover:text-muted hover:bg-panel2/60 rounded transition-colors shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
     >
       <PanelRightClose size={12} />
     </button>
@@ -640,8 +640,8 @@ function TabBtn({ active, onClick, icon, label, showLabel, draggable, onDragStar
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDragEnd={onDragEnd}
-      className={`flex-1 min-w-0 overflow-hidden flex items-center justify-center gap-1 py-2 px-1 text-[10px] uppercase tracking-wider font-medium transition whitespace-nowrap
-        ${active ? "text-txt border-b-[1.5px] border-accent bg-panel2/10" : "text-faint hover:text-muted hover:bg-panel2/5"} ${className || ""}`}
+      className={`flex-1 min-w-0 overflow-hidden flex items-center justify-center gap-1 py-2 px-1 text-[10px] uppercase tracking-wider font-medium transition whitespace-nowrap focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent
+        ${active ? "text-txt border-b-[1.5px] border-accent bg-panel2/60" : "text-faint hover:text-muted hover:bg-panel2/30"} ${className || ""}`}
     >
       <span className="flex-shrink-0 flex items-center justify-center relative">
         {icon}

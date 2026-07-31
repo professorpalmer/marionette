@@ -664,6 +664,14 @@ export type ModelCatalogEntry = {
   spec: string;
   available: boolean;
   enabled: boolean;
+  context_window?: number | null;
+  pricing?: { prompt?: number; completion?: number } | null;
+  price_in?: number | null;
+  price_out?: number | null;
+  source?: string | null;
+  status?: string | null;
+  provider_metadata?: Record<string, unknown> | null;
+  error?: string | null;
 };
 
 export type ModelCatalogResponse = {
