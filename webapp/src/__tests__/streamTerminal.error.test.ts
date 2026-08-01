@@ -8,7 +8,9 @@
 import { describe, expect, it } from "vitest";
 import {
   STREAM_ABORT_MESSAGE,
+  shouldRefreshBusyChrome,
   streamErrorText,
+  streamOnDoneDecision,
 } from "../components/conversation/streamTerminal";
 
 const SECRET = "deadbeefcafe1234deadbeefcafe1234";
@@ -64,5 +66,20 @@ describe("streamErrorText", () => {
     ]) {
       expect(streamErrorText(err as any)).not.toContain(SECRET);
     }
+  });
+});
+
+describe("Wave 5 stream terminal chrome gates", () => {
+  it("treats stream EOF without assistant_done as an honest abort", () => {
+    expect(streamOnDoneDecision({ turnSettled: false, userStopped: false }).kind).toBe(
+      "abort_error",
+    );
+    expect(streamOnDoneDecision({ turnSettled: true, userStopped: false }).kind).toBe("done");
+  });
+
+  it("blocks busy-chrome refresh after settle or Stop", () => {
+    expect(shouldRefreshBusyChrome({ turnSettled: false })).toBe(true);
+    expect(shouldRefreshBusyChrome({ turnSettled: true })).toBe(false);
+    expect(shouldRefreshBusyChrome({ turnSettled: false, userStopped: true })).toBe(false);
   });
 });

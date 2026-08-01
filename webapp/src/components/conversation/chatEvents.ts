@@ -160,5 +160,21 @@ export function chatFrameToStreamEvent(frame: {
   return { kind: frame.kind, data: frame.data };
 }
 
+/**
+ * Wave 4 generation + session fence for mid-turn reattach.
+ * Late frames from a prior stream generation or a switched session must not
+ * merge into the active transcript (no cross-session / stale updates).
+ */
+export function shouldApplyReattachFrame(opts: {
+  streamGen: number;
+  reattachGen: number;
+  cachedSessionId: string | null | undefined;
+  reattachSid: string;
+}): boolean {
+  if (opts.streamGen !== opts.reattachGen) return false;
+  if (!opts.reattachSid) return false;
+  return opts.cachedSessionId === opts.reattachSid;
+}
+
 /** Bounded interval for mid-turn chatEvents reattach while detached-busy. */
 export const CHAT_EVENTS_POLL_MS = 1000;

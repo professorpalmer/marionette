@@ -11,9 +11,13 @@ import {
   shouldArmChatEventsFromRunners,
   shouldPollChatEvents,
   shouldRetryRingAfterReplayMiss,
+  shouldApplyReattachFrame,
   createChatEventsReattach,
   mergeTranscriptItems,
   appendActionStartCard,
+  applyActionResultCard,
+  isDurableTerminalActionResult,
+  isUpgradeableActionResult,
 } from "../components/Conversation";
 import { api } from "../lib/api";
 import type { Item } from "../components/TranscriptList";
@@ -582,5 +586,265 @@ describe("detached-busy mid-tool-batch reattach", () => {
     ).toBe(true);
     const card = items.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
     expect(card.card.result?.duration_ms).toBe(4);
+  });
+});
+
+describe("Wave 4 command-job reattach fences", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("treats pending receipts as upgradeable and terminal receipts as durable", () => {
+    expect(isUpgradeableActionResult({ status: "pending", job_id: "local-cmd-1" })).toBe(true);
+    expect(isDurableTerminalActionResult({ status: "pending", job_id: "local-cmd-1" })).toBe(false);
+    expect(isDurableTerminalActionResult({
+      status: "completed",
+      job_id: "local-cmd-1",
+      terminal_receipt: { status: "completed", summary: "exit 0" },
+    })).toBe(true);
+    expect(isUpgradeableActionResult({
+      status: "completed",
+      terminal_receipt: { status: "completed" },
+    })).toBe(false);
+  });
+
+  it("keeps the first durable terminal action_result (duplicate frames)", () => {
+    const running: Item[] = [{
+      kind: "card",
+      card: {
+        id: "a-cmd",
+        goal: "echo hi",
+        cwd: null,
+        kind: "run_command",
+        running: true,
+        open: false,
+      },
+    }];
+    const first = applyActionResultCard(running, {
+      id: "a-cmd",
+      kind: "run_command",
+      status: "completed",
+      job_id: "local-cmd-1",
+      message: "first wins",
+      terminal_receipt: { status: "completed", summary: "exit 0 · first" },
+    });
+    const dup = applyActionResultCard(first, {
+      id: "a-cmd",
+      kind: "run_command",
+      status: "failed",
+      job_id: "local-cmd-1",
+      message: "late overwrite",
+      error: "nope",
+      terminal_receipt: { status: "failed", summary: "late" },
+    });
+    const card = dup.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(card.card.running).toBe(false);
+    expect(card.card.result?.message).toBe("first wins");
+    expect(card.card.result?.status).toBe("completed");
+    expect((card.card.result as any)?.terminal_receipt?.summary).toBe("exit 0 · first");
+  });
+
+  it("upgrades a pending background receipt to the later terminal body", () => {
+    const pending: Item[] = [{
+      kind: "card",
+      card: {
+        id: "a-bg",
+        goal: "echo bg",
+        cwd: null,
+        kind: "run_command",
+        running: false,
+        open: false,
+        result: {
+          status: "pending",
+          job_id: "local-cmd-bg",
+          message: "registered",
+        },
+      },
+    }];
+    const next = applyActionResultCard(pending, {
+      id: "a-bg",
+      kind: "run_command",
+      status: "completed",
+      job_id: "local-cmd-bg",
+      message: "done",
+      terminal_receipt: { status: "completed", summary: "exit 0" },
+    });
+    const card = next.find((i) => i.kind === "card") as Extract<Item, { kind: "card" }>;
+    expect(card.card.result?.status).toBe("completed");
+    expect(card.card.result?.message).toBe("done");
+  });
+
+  it("fences session-switch isolation for reattach frames", () => {
+    expect(shouldApplyReattachFrame({
+      streamGen: 2,
+      reattachGen: 2,
+      cachedSessionId: "sess-a",
+      reattachSid: "sess-a",
+    })).toBe(true);
+    expect(shouldApplyReattachFrame({
+      streamGen: 3,
+      reattachGen: 2,
+      cachedSessionId: "sess-a",
+      reattachSid: "sess-a",
+    })).toBe(false);
+    expect(shouldApplyReattachFrame({
+      streamGen: 2,
+      reattachGen: 2,
+      cachedSessionId: "sess-b",
+      reattachSid: "sess-a",
+    })).toBe(false);
+  });
+
+  it("drops late ring frames after a session switch (no cross-session merge)", async () => {
+    const applied: Array<{ kind: string; id?: string }> = [];
+    const cachedSessionIdRef = { current: "sess-a" as string | null };
+    const streamGenRef = { current: 1 };
+
+    vi.spyOn(api, "chatEvents").mockImplementation(async () => {
+      // Session switch lands while the request is in flight.
+      cachedSessionIdRef.current = "sess-b";
+      streamGenRef.current = 2;
+      return {
+        ok: true,
+        missed: false,
+        available: true,
+        generation: 1,
+        cursor: 4,
+        events: [
+          {
+            cursor: 3,
+            kind: "action_result",
+            data: {
+              id: "a-stale",
+              status: "completed",
+              job_id: "local-cmd-stale",
+              message: "must not apply",
+            },
+          },
+          {
+            cursor: 4,
+            kind: "assistant_done",
+            data: {},
+          },
+        ],
+      } as any;
+    });
+
+    const { pullChatEvents } = createChatEventsReattach({
+      cancelled: () => false,
+      loadGen: 1,
+      transcriptLoadGenRef: { current: 1 },
+      streamGenRef,
+      reattachGen: 1,
+      reattachSid: "sess-a",
+      cachedSessionIdRef,
+      localStreamActiveRef: { current: false },
+      userStoppedRef: { current: false },
+      lastAppliedCursorRef: { current: 0 },
+      ringGenerationRef: { current: 1 as number | undefined },
+      detachedBusyRef: { current: true },
+      runnerBusyPollGenRef: { current: 0 },
+      itemsRef: { current: [] },
+      transcriptFpRef: { current: "" },
+      chatEventsPollTimerRef: { current: null },
+      applyStreamEventRef: {
+        current: (ev) => {
+          applied.push({ kind: ev.kind, id: ev.data?.id });
+        },
+      },
+      flushTypewriterRef: { current: () => {} },
+      maybeRunQueuedResumeRef: { current: () => {} },
+      maybeDrainQueueRef: { current: () => {} },
+      clearChatEventsPoll: () => {},
+      setItems: () => {},
+      setTranscriptStale: () => {},
+      setTurnOpen: () => {},
+      setStatus: () => {},
+    });
+
+    const keep = await pullChatEvents();
+    expect(keep).toBe(false);
+    expect(applied).toEqual([]);
+  });
+
+  it("applies retained action_result frames once after stream loss (idempotent)", async () => {
+    let items: Item[] = [{
+      kind: "card",
+      card: {
+        id: "a-cmd",
+        goal: "echo hi",
+        cwd: null,
+        kind: "run_command",
+        running: true,
+        open: false,
+      },
+    }];
+    const itemsRef = { current: items };
+    const frame = {
+      cursor: 8,
+      kind: "action_result",
+      data: {
+        id: "a-cmd",
+        kind: "run_command",
+        status: "completed",
+        job_id: "local-cmd-1",
+        message: "ok",
+        terminal_receipt: { status: "completed", summary: "exit 0" },
+      },
+    };
+
+    vi.spyOn(api, "chatEvents")
+      .mockResolvedValueOnce({
+        ok: true,
+        missed: false,
+        available: true,
+        generation: 1,
+        cursor: 8,
+        events: [frame, frame],
+      } as any);
+
+    const { pullChatEvents } = createChatEventsReattach({
+      cancelled: () => false,
+      loadGen: 1,
+      transcriptLoadGenRef: { current: 1 },
+      streamGenRef: { current: 1 },
+      reattachGen: 1,
+      reattachSid: "sess-dup",
+      cachedSessionIdRef: { current: "sess-dup" },
+      localStreamActiveRef: { current: false },
+      userStoppedRef: { current: false },
+      lastAppliedCursorRef: { current: 0 },
+      ringGenerationRef: { current: 1 as number | undefined },
+      detachedBusyRef: { current: true },
+      runnerBusyPollGenRef: { current: 0 },
+      itemsRef,
+      transcriptFpRef: { current: "" },
+      chatEventsPollTimerRef: { current: null },
+      applyStreamEventRef: {
+        current: (ev) => {
+          if (ev.kind === "action_result") {
+            items = applyActionResultCard(items, ev.data || {});
+            itemsRef.current = items;
+          }
+        },
+      },
+      flushTypewriterRef: { current: () => {} },
+      maybeRunQueuedResumeRef: { current: () => {} },
+      maybeDrainQueueRef: { current: () => {} },
+      clearChatEventsPoll: () => {},
+      setItems: (next) => {
+        items = typeof next === "function" ? next(items) : next;
+        itemsRef.current = items;
+      },
+      setTranscriptStale: () => {},
+      setTurnOpen: () => {},
+      setStatus: () => {},
+    });
+
+    await pullChatEvents();
+    const cards = items.filter((i) => i.kind === "card");
+    expect(cards).toHaveLength(1);
+    expect(cards[0].kind === "card" && cards[0].card.result?.status).toBe("completed");
+    expect(cards[0].kind === "card" && cards[0].card.result?.message).toBe("ok");
   });
 });

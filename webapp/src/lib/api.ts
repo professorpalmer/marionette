@@ -234,6 +234,76 @@ export type Job = {
   reuse_reason?: string;
   /** Optional explicit acceptance criteria preserved from the dispatch. */
   acceptance_criteria?: string[];
+  /** Background run_command / command-batch jobs (never a provider-swarm role). */
+  job_kind?: "run_command" | "run_command_batch" | string;
+  /** Pilot action id that registered this background command job. */
+  action_id?: string;
+  /** Secret-free sha256 fingerprint of the command string. */
+  command_fingerprint?: string;
+  /** Redacted/bounded command text safe for display. */
+  command_preview?: string;
+  /** Wall-clock start (seconds) when the command job was registered. */
+  started_at?: number | string | null;
+  /** Parent command-batch id when this row is a batch child. */
+  batch_id?: string;
+  /** Index within the parent command batch. */
+  batch_index?: number;
+  /** Aggregate batch: durable child job ids. */
+  child_job_ids?: string[];
+  /** Aggregate batch: secret-free child projections. */
+  children?: Array<{
+    job_id?: string;
+    index?: number;
+    command_fingerprint?: string;
+    command_preview?: string;
+    status?: string;
+    exit_code?: number;
+    terminal_receipt?: {
+      status?: string;
+      summary?: string;
+      exit_code?: number;
+      finished_at?: number;
+    } | null;
+  }>;
+  child_count?: number;
+  max_concurrency?: number;
+  mixed_terminal?: boolean;
+  /** Durable terminal receipt once the command settles. */
+  terminal_receipt?: {
+    status?: string;
+    run_status?: string;
+    exit_code?: number;
+    summary?: string;
+    finished_at?: number;
+    output_chars?: number;
+    spill_uri?: string;
+    output_spilled?: boolean;
+    child_statuses?: Record<string, number>;
+    mixed_terminal?: boolean;
+    child_job_ids?: string[];
+    recovery?: string;
+    had_launch_checkpoint?: boolean;
+  } | null;
+  /**
+   * Wave 4 launch fact persisted before the child process can start.
+   * Secret-free (fingerprint / action ids only).
+   */
+  launch_checkpoint?: {
+    at?: number;
+    phase?: string;
+    running_at?: number;
+    action_id?: string;
+    command_fingerprint?: string;
+    batch_id?: string;
+  } | null;
+  /** Restart/reattach recovery classification for command jobs. */
+  recovery_state?: string;
+  /** spill:// URI when stdout exceeded the inline capture budget. */
+  spill_uri?: string;
+  /** Bounded stdout preview when spilled or truncated. */
+  output_preview?: string;
+  /** Process exit code when known. */
+  exit_code?: number;
 };
 export type Artifact = {
   id?: string;

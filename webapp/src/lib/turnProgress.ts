@@ -203,11 +203,31 @@ export function resolveCardCliInput(card: CardInputSource): string {
   return "";
 }
 
+/** True when a card is owned by a durable dispatch job (command / batch / swarm). */
+export function cardHasDurableJob(card: {
+  result?: {
+    job_id?: string | null;
+    status?: string | null;
+    terminal_receipt?: unknown;
+  } | null;
+}): boolean {
+  const jobId = String(card.result?.job_id || "").trim();
+  if (jobId) return true;
+  return Boolean(
+    card.result
+    && typeof card.result === "object"
+    && (card.result as { terminal_receipt?: unknown }).terminal_receipt,
+  );
+}
+
 function resultLooksTerminal(result: {
   job_id?: string | null;
   status?: string | null;
+  terminal_receipt?: unknown;
 } | null | undefined): boolean {
   if (!result) return false;
+  // Explicit terminal receipt always settles the card spinner.
+  if ((result as { terminal_receipt?: unknown }).terminal_receipt) return true;
   const jobId = String(result.job_id || "").trim();
   if (!jobId) return true; // non-dispatch tool outcome (read/search/…)
   const s = String(result.status || "").trim().toLowerCase();
@@ -215,10 +235,14 @@ function resultLooksTerminal(result: {
     s === "complete"
     || s === "completed"
     || s === "done"
+    || s === "ok"
+    || s === "success"
     || s === "failed"
     || s === "error"
     || s === "cancelled"
     || s === "canceled"
+    || s === "timeout"
+    || s === "truncated"
     || s === "interrupted"
     || s === "stalled"
   );
@@ -231,7 +255,11 @@ function resultLooksTerminal(result: {
  */
 export function cardEffectivelyRunning(card: {
   running?: boolean;
-  result?: { job_id?: string | null; status?: string | null } | null;
+  result?: {
+    job_id?: string | null;
+    status?: string | null;
+    terminal_receipt?: unknown;
+  } | null;
   actions?: Array<{ status?: string }>;
 }): boolean {
   const settled = resultLooksTerminal(card.result);
@@ -549,8 +577,10 @@ export function deriveBusyProgress(
   }
 
   // T3: honesty before first token / tool — do not pretend we are "thinking".
+  // Provider-idle wait hints are for genuine silent periods only. A live
+  // command/tool card means we are executing, not waiting on the provider.
   const hint = (opts?.waitHint || "").trim();
-  if (hint) {
+  if (hint && !running) {
     const model = shortPilotModelLabel(opts?.modelLabel || "");
     const who = model ? `Waiting on ${model}` : "Waiting on provider";
     let waiting = elapsed ? `${who}… · ${elapsed}` : `${who}…`;
@@ -649,6 +679,9 @@ export function investigatingHeadline(
  * True when the current turn's activity fold is actively investigating.
  * Includes gaps between tool steps when the agent loop is still open
  * (``agentLoopOpen``) so Investigating / Stop / Steer do not blink idle.
+ *
+ * Durable background command/batch/swarm jobs remain visible as cards after
+ * the pilot closes, but must not keep Investigating / Stop / Steer pinned.
  */
 export function turnHasLiveInvestigation(
   items: TurnItem[],
@@ -657,7 +690,10 @@ export function turnHasLiveInvestigation(
   for (const it of itemsInCurrentTurn(items)) {
     if (it.kind === "card") {
       const card = (it as { card: TurnCard }).card;
-      if (card && cardEffectivelyRunning(card)) return true;
+      if (card && cardEffectivelyRunning(card)) {
+        if (!agentLoopOpen && cardHasDurableJob(card)) continue;
+        return true;
+      }
     }
     if (it.kind === "tool_prep") return true;
     if (
@@ -674,17 +710,20 @@ export function turnHasLiveInvestigation(
 }
 
 /**
- * True when some transcript chrome already visibly signals work in the current
- * turn: a running tool card / tool_prep (Investigating spinner), a streaming
+ * True when some transcript chrome already visibly signals foreground work in
+ * the current turn: a running non-durable tool card / tool_prep, a streaming
  * thinking row, or a streaming assistant bubble.
+ *
+ * Durable background jobs are pollable card UI — they must not hold Stop/Steer
+ * after the pilot runner has gone idle.
  */
 export function turnHasVisibleBusySurface(items: TurnItem[]): boolean {
   for (const it of itemsInCurrentTurn(items)) {
-    if (
-      it.kind === "card"
-      && cardEffectivelyRunning((it as { card: TurnCard }).card || {})
-    ) {
-      return true;
+    if (it.kind === "card") {
+      const card = (it as { card: TurnCard }).card || ({} as TurnCard);
+      if (cardEffectivelyRunning(card) && !cardHasDurableJob(card)) {
+        return true;
+      }
     }
     if (it.kind === "tool_prep") return true;
     if (it.kind === "thinking" && (it as { streaming?: boolean }).streaming === true) {

@@ -292,8 +292,9 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
     } else if (item.kind === "swarm_pending") {
       const status = item.status || (item.resolved ? "done" : "running");
       if (status === "running") {
-        flush();
-        grouped.push(item);
+        // Keep the live swarm pill inside the current Investigating fold with
+        // surrounding tool cards / reasoning — do not flush it top-level.
+        currentGroup.push(item);
         continue;
       }
       const uncoveredJobIds = (item.job_ids || []).filter((jobId) => !resultJobIds.has(jobId));
@@ -986,12 +987,18 @@ function ActivityGroup({
   // Tool-bearing investigations start OPEN (Cursor/Hermes: see every write /
   // run as it happens). Pure Thought/reasoning stays collapsed. Seed from the
   // module map so a remount does not yank an explicit toggle mid-stream.
+  const swarmPendingItems = items.filter((it) => it.kind === "swarm_pending");
+  const swarmPendingRunning = swarmPendingItems.some((it) => {
+    const status = it.status || (it.resolved ? "done" : "running");
+    return status === "running";
+  });
+
   const [open, setOpen] = useState(() => {
     if (__activityOpen.has(groupId)) return Boolean(__activityOpen.get(groupId));
     // Live tool-bearing folds start open; sealed history stays collapsed so a
     // remount / regroup at turn-end cannot re-expand every prior Investigating.
     if (!loopOpen) return false;
-    return items.some((it) => it.kind === "card");
+    return items.some((it) => it.kind === "card") || swarmPendingRunning;
   });
   const toggleOpen = () => {
     setOpen((v) => {
@@ -1033,10 +1040,12 @@ function ActivityGroup({
   // Cursor CLI often streams reasoning before any tool_call event — treat
   // live thinking + open loop as Investigating so the fold is not blank until
   // tools flush at the end of the agent subprocess.
+  // A running swarm_pending is itself live investigation chrome.
   const investigating =
     anyRunning
     || liveThinking
-    || (loopOpen && (actionCount > 0 || thinkingItems.length > 0));
+    || swarmPendingRunning
+    || (loopOpen && (actionCount > 0 || thinkingItems.length > 0 || swarmPendingItems.length > 0));
 
   // Auto-open while tools/reasoning are live ONLY when the user has never
   // toggled this group. A prior remount reset autoOpenedRef and re-forced open
@@ -1053,7 +1062,6 @@ function ActivityGroup({
   // "0 steps" box -- suppress it. But folded intermediate narration OR a reasoning
   // trace must still show (collapsed), so reasoning never silently vanishes from
   // the step list the way it used to.
-  const swarmPendingItems = items.filter((it) => it.kind === "swarm_pending");
   if (actionCount === 0 && narrationMsgs.length === 0 && thinkingItems.length === 0 && checkpointItems.length === 0 && swarmResults.length === 0 && swarmPendingItems.length === 0) {
     return null;
   }
@@ -1198,12 +1206,14 @@ function ActivityGroup({
         ) : (
           <>
             <span className="text-txt/70 font-medium tracking-tight">
-              {swarmResults.length > 0 ? "Swarm" : "Thought"}
+              {(swarmResults.length > 0 || swarmPendingItems.length > 0) ? "Swarm" : "Thought"}
             </span>
             <span className="text-faint truncate max-w-[46ch] normal-case">
               {swarmResults.length > 0
                 ? `${swarmResults.length} result${swarmResults.length === 1 ? "" : "s"}`
-                : narrationPreview}
+                : swarmPendingItems.length > 0
+                  ? (swarmPendingRunning ? "running" : `${swarmPendingItems.length} pending`)
+                  : narrationPreview}
             </span>
           </>
         )}

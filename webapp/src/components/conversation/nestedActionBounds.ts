@@ -11,10 +11,18 @@ export const MAX_ACTION_ID_CHARS = 128;
 
 const TERMINAL_JOB_STATUSES = new Set([
   "completed",
+  "complete",
   "failed",
   "cancelled",
   "canceled",
   "done",
+  "ok",
+  "success",
+  "error",
+  "timeout",
+  "truncated",
+  "interrupted",
+  "stalled",
 ]);
 
 export function isTerminalJobStatus(status: string | undefined | null): boolean {

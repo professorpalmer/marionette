@@ -14,6 +14,7 @@ import {
   nextAppliedCursor,
   ringGenerationAfterReplayMiss,
   shouldAdvanceReplayCursor,
+  shouldApplyReattachFrame,
   shouldHydrateTranscriptOnReplayMiss,
   shouldPollChatEvents,
   shouldRetryRingAfterReplayMiss,
@@ -115,8 +116,14 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
   const pullChatEvents = async (missRetried = false): Promise<boolean> => {
     if (cancelled()) return false;
     if (loadGen !== transcriptLoadGenRef.current) return false;
-    if (streamGenRef.current !== reattachGen) return false;
-    if (cachedSessionIdRef.current !== reattachSid) return false;
+    if (!shouldApplyReattachFrame({
+      streamGen: streamGenRef.current,
+      reattachGen,
+      cachedSessionId: cachedSessionIdRef.current,
+      reattachSid,
+    })) {
+      return false;
+    }
     if (localStreamActiveRef.current || userStoppedRef.current) return false;
     try {
       const replay = await api.chatEvents({
@@ -128,8 +135,14 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       });
       if (cancelled()) return false;
       if (loadGen !== transcriptLoadGenRef.current) return false;
-      if (streamGenRef.current !== reattachGen) return false;
-      if (cachedSessionIdRef.current !== reattachSid) return false;
+      if (!shouldApplyReattachFrame({
+        streamGen: streamGenRef.current,
+        reattachGen,
+        cachedSessionId: cachedSessionIdRef.current,
+        reattachSid,
+      })) {
+        return false;
+      }
       if (localStreamActiveRef.current || userStoppedRef.current) return false;
 
       if (isChatEventReplayMiss(replay)) {
@@ -170,8 +183,14 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       let sawTerminal = false;
       const frames = Array.isArray(replay.events) ? replay.events : [];
       for (const frame of frames) {
-        if (streamGenRef.current !== reattachGen) return false;
-        if (cachedSessionIdRef.current !== reattachSid) return false;
+        if (!shouldApplyReattachFrame({
+          streamGen: streamGenRef.current,
+          reattachGen,
+          cachedSessionId: cachedSessionIdRef.current,
+          reattachSid,
+        })) {
+          return false;
+        }
         applyStreamEventRef.current(chatFrameToStreamEvent(frame));
         if (isTerminalStreamKind(frame.kind)) sawTerminal = true;
       }

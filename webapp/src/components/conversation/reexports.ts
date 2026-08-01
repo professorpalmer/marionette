@@ -39,6 +39,7 @@ export {
   shouldHydrateTranscriptOnReplayMiss,
   cursorAfterReplayMiss,
   shouldRetryRingAfterReplayMiss,
+  shouldApplyReattachFrame,
   chatFrameToStreamEvent,
 } from "./chatEvents";
 export {
@@ -92,6 +93,8 @@ export {
   finalizePilotMessage,
   appendActionStartCard,
   applyActionResultCard,
+  isDurableTerminalActionResult,
+  isUpgradeableActionResult,
   mergeJobActionsIntoItems,
   foldSwarmLiveJobsAfterReload,
   shouldApplySwarmLiveMerge,
@@ -200,6 +203,7 @@ export {
   streamErrorText,
   streamOnDoneDecision,
   streamOnErrorDecision,
+  shouldRefreshBusyChrome,
 } from "./streamTerminal";
 export { default as TranscriptEmptyState } from "./TranscriptEmptyState";
 export { createChatEventsReattach } from "./chatEventsReattach";

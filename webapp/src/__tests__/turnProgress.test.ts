@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   aggregateExplorationSummary,
   cardEffectivelyRunning,
+  cardHasDurableJob,
   deriveBusyProgress,
   formatBusyElapsed,
   investigatingHeadline,
@@ -860,6 +861,40 @@ describe("tool card CLI input + stale running", () => {
         result: { job_id: "j1", status: "complete" },
       }),
     ).toBe(false);
+    expect(
+      cardEffectivelyRunning({
+        running: true,
+        result: { job_id: "j1", status: "timeout" },
+      }),
+    ).toBe(false);
+    expect(
+      cardEffectivelyRunning({
+        running: true,
+        result: { job_id: "j1", status: "ok" },
+      }),
+    ).toBe(false);
+    expect(cardHasDurableJob({ result: { job_id: "j1", status: "pending" } })).toBe(true);
+  });
+
+  it("does not pin live investigation chrome on durable jobs after pilot closes", () => {
+    const items: Item[] = [
+      msg("user", "go"),
+      {
+        kind: "card",
+        card: {
+          id: "bg",
+          goal: "pytest",
+          cwd: null,
+          kind: "run_command",
+          running: true,
+          open: false,
+          result: { job_id: "local-cmd-1", status: "pending" },
+        },
+      },
+    ];
+    expect(turnHasLiveInvestigation(items, true)).toBe(true);
+    expect(turnHasLiveInvestigation(items, false)).toBe(false);
+    expect(turnHasVisibleBusySurface(items)).toBe(false);
   });
 
   it("deriveBusyProgress ignores stale running after result", () => {

@@ -1645,6 +1645,7 @@ export default function Conversation({
          if (doneDec.kind === "abort_error") {
            turnSettledRef.current = true;
            setTurnOpen(false);
+           setWaitHint(null);
            setStatus("error");
            setItems((p) => [...p, {
              kind: "msg",
@@ -1655,6 +1656,7 @@ export default function Conversation({
            }]);
          } else {
            setTurnOpen(false);
+           setWaitHint(null);
            setStatus("done");
          }
          cancelRef.current = null;
@@ -1674,6 +1676,7 @@ export default function Conversation({
          if (errDec.kind === "abort_error") {
            turnSettledRef.current = true;
            setTurnOpen(false);
+           setWaitHint(null);
            setItems((p) => [...p, {
              kind: "msg",
              msg: {
@@ -1688,6 +1691,7 @@ export default function Conversation({
            // EventSource often fires onerror when the stream closes after a
            // normal assistant_done -- do not paint a false error over success.
            setTurnOpen(false);
+           setWaitHint(null);
            setStatus((prev) => (prev === "error" ? prev : "done"));
          }
          cancelRef.current = null;
@@ -1965,6 +1969,7 @@ export default function Conversation({
     localStreamActiveRef.current = false;
     flushTypewriter();
     setTurnOpen(false);
+    setWaitHint(null);
     setStatus("idle");
     setCompactingStatus(null);
     const liveIds = pendingJobIdsRef.current.filter(

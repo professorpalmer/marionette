@@ -81,3 +81,18 @@ export function streamOnErrorDecision(opts: {
   if (!opts.userStopped) return { kind: "preserve_error_or_done" };
   return { kind: "noop" };
 }
+
+/**
+ * Whether a mid-turn stream event may refresh busy chrome (thinking /
+ * executing / streaming). After an authoritative terminal (assistant_done /
+ * error / auto_halt / Stop), late command/batch receipts must update cards
+ * without reopening Stop/Steer or a permanent thinking pill.
+ */
+export function shouldRefreshBusyChrome(opts: {
+  turnSettled: boolean;
+  userStopped?: boolean;
+}): boolean {
+  if (opts.turnSettled) return false;
+  if (opts.userStopped) return false;
+  return true;
+}

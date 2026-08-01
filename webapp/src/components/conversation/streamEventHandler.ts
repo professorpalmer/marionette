@@ -46,6 +46,7 @@ import {
   sealedAssistantCoversDelta,
 } from "./streamBubbles";
 import { turnHasLiveInvestigation } from "../../lib/turnProgress";
+import { shouldRefreshBusyChrome } from "./streamTerminal";
 
 export type StreamEvent = { kind: string; data?: any };
 
@@ -114,6 +115,10 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
   } = deps;
 
   const clearWaitHintOnProgress = () => setWaitHint(null);
+  const refreshBusyChrome = () =>
+    shouldRefreshBusyChrome({
+      turnSettled: turnSettledRef.current,
+    });
 
   return (ev: StreamEvent) => {
     const d = ev.data || {};
@@ -167,6 +172,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     } else if (ev.kind === "notice" && noticeShowsWaitHint(d.kind)) {
       // wait / stagnation / resume_cap notices are user-visible chrome; other
       // notice kinds stay silent unless they omit kind (legacy wait path).
+      // After the pilot has closed, a late wait notice must not resurrect the
+      // permanent "Waiting on provider" footer.
+      if (!refreshBusyChrome()) return;
       const hint = truncateWaitHint(d.message || "");
       if (hint) setWaitHint(hint);
     } else if (ev.kind === "thinking") {
@@ -181,9 +189,11 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       const { painting, chunk } = shouldPaintThinking(d);
       if (!painting) return;
       clearWaitHintOnProgress();
-      setStatus((prev) =>
-        prev === "streaming" || prev === "executing" ? prev : "thinking"
-      );
+      if (refreshBusyChrome()) {
+        setStatus((prev) =>
+          prev === "streaming" || prev === "executing" ? prev : "thinking"
+        );
+      }
       const streamId = d.stream_id != null ? String(d.stream_id) : "";
       if (d.delta && chunk) {
         setItems((p) =>
@@ -207,9 +217,11 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       if (!name && !callId) return;
       clearWaitHintOnProgress();
       setCompactingStatus(null);
-      setStatus((prev) =>
-        prev === "streaming" || prev === "executing" ? prev : "thinking"
-      );
+      if (refreshBusyChrome()) {
+        setStatus((prev) =>
+          prev === "streaming" || prev === "executing" ? prev : "thinking"
+        );
+      }
       // Flush buffered typewriter text into the open bubble BEFORE sealing so
       // pre-tool narration stays above the tool card (never orphans after it).
       flushTypewriter();
@@ -224,7 +236,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     } else if (ev.kind === "message_delta") {
       clearWaitHintOnProgress();
       setCompactingStatus(null);
-      setStatus("streaming");
+      if (refreshBusyChrome()) setStatus("streaming");
       // Ensure a streaming bubble exists. When the turn already has tool
       // cards (Cursor CLI / investigation), paint deltas instantly — the
       // typewriter over an open Investigating fold reads as chat "loading
@@ -306,14 +318,14 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       if (d.kind === "text" && d.text) {
         clearWaitHintOnProgress();
         setCompactingStatus(null);
-        setStatus("streaming");
+        if (refreshBusyChrome()) setStatus("streaming");
         setItems((p) => ensureWorkerStreamingBubble(p, { isPlan: planTurnRef.current }));
         typeBufRef.current += (d.text || "");
         startTypewriter();
       }
     } else if (ev.kind === "message") {
       setCompactingStatus(null);
-      setStatus("thinking");
+      if (refreshBusyChrome()) setStatus("thinking");
       // Drain any queued typed text before finalizing, so the bubble is whole.
       flushTypewriter();
       setItems((p0) => finalizePilotMessage(p0, d.text, {
@@ -325,7 +337,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     } else if (ev.kind === "action_start") {
       clearWaitHintOnProgress();
       setCompactingStatus(null);
-      setStatus("executing");
+      if (refreshBusyChrome()) setStatus("executing");
       // Flush typewriter before seal inside appendActionStartCard so buffered
       // prose cannot land after the tool card.
       flushTypewriter();
@@ -337,7 +349,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     } else if (ev.kind === "action_result") {
       clearWaitHintOnProgress();
       setCompactingStatus(null);
-      setStatus("thinking");
+      // Late command/batch terminal receipts after assistant_done must update
+      // cards without reopening thinking / Stop / Steer chrome.
+      if (refreshBusyChrome()) setStatus("thinking");
       // The swarm is done: its structured artifacts/summary land below. Drop
       // the ephemeral worker-stream PREVIEW entirely -- do not convert it into
       // a trailing "reasoning" row (that duplicated the answer and burned
@@ -390,7 +404,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       });
     } else if (ev.kind === "auto_status") {
       // Progress receipt only — keep turnOpen sticky until auto_halt / Stop.
-      setStatus("executing");
+      if (refreshBusyChrome()) setStatus("executing");
       setItems((p) => appendAutoStatus(p, d.cycle || 0, d.snapshot));
     } else if (ev.kind === "distilled") {
       // Only surface self-learning when it produced something WORTH the user's
@@ -406,6 +420,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     } else if (ev.kind === "auto_halt") {
       turnSettledRef.current = true;
       setTurnOpen(false);
+      setWaitHint(null);
       setStatus("done");
       setItems((p) => appendAutoHalt(p, d.reason || "", d.snapshot));
     } else if (ev.kind === "swarm_pending") {

@@ -242,6 +242,33 @@ describe("swarm terminal rows stay at the end of one investigation", () => {
     ]);
     expect(group.items.filter((item) => item.kind === "swarm_pending")).toHaveLength(0);
   });
+
+  it("keeps a live swarm pill inside the active investigation fold", () => {
+    const items: Item[] = [
+      {
+        kind: "card",
+        card: { id: "dispatch", goal: "dispatch audit", running: false, open: false },
+      },
+      {
+        kind: "swarm_pending",
+        job_ids: ["job-live"],
+        objective: "audit current checkout",
+        status: "running",
+      },
+      { kind: "thinking", id: "after-dispatch", text: "Waiting for the workers." },
+    ];
+
+    const grouped = groupAgentActivity(items, new Set());
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].kind).toBe("activity_group");
+    if (grouped[0].kind !== "activity_group") return;
+    expect(grouped[0].items.map((item) => item.kind)).toEqual([
+      "card",
+      "swarm_pending",
+      "thinking",
+    ]);
+  });
 });
 
 describe("createApplyStreamEvent Sol reasoning coalescing", () => {

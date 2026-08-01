@@ -146,6 +146,67 @@ function shouldOpenActionResultCard(
   return false;
 }
 
+/**
+ * Action-result bodies may carry durable command/batch fields (terminal_receipt)
+ * that are not yet on the narrow Card.result display type. Keep the fence
+ * helpers open to that wire shape without widening TranscriptList Card.
+ */
+export type ActionResultBody = {
+  job_id?: string | null;
+  status?: string | null;
+  error?: string | null;
+  terminal_receipt?: unknown;
+  [key: string]: unknown;
+} | null | undefined;
+
+/**
+ * Wave 4: pending/registered/running receipts may upgrade to a later terminal
+ * body. Settled terminal results (first durable outcome) must not be overwritten
+ * by duplicate SSE frames or late worker callbacks.
+ */
+export function isUpgradeableActionResult(result: ActionResultBody): boolean {
+  if (result == null || typeof result !== "object") return false;
+  const status = String(result.status || "").trim().toLowerCase();
+  if (status === "pending" || status === "registered" || status === "running") {
+    return true;
+  }
+  // Explicit terminal_receipt means the body already settled.
+  if (result.terminal_receipt) {
+    return false;
+  }
+  return false;
+}
+
+export function isDurableTerminalActionResult(result: ActionResultBody): boolean {
+  if (result == null || typeof result !== "object") return false;
+  if (isUpgradeableActionResult(result)) return false;
+  // Command-job / batch receipts: first terminal_receipt wins.
+  if (result.terminal_receipt) return true;
+  const status = String(result.status || "").trim().toLowerCase();
+  if (
+    status === "ok"
+    || status === "completed"
+    || status === "failed"
+    || status === "cancelled"
+    || status === "canceled"
+    || status === "timeout"
+    || status === "truncated"
+    || status === "error"
+    || status === "success"
+  ) {
+    return true;
+  }
+  // Background command cards stamp job_id even before terminal_receipt lands;
+  // once non-pending, treat as durable so late/duplicate frames cannot reopen.
+  if (result.job_id && status !== "") {
+    return true;
+  }
+  if (result.error) return true;
+  // Classic read/search cards without an explicit status keep prior merge
+  // behavior (allow a richer late body) — Wave 4 fences target command jobs.
+  return false;
+}
+
 export function applyActionResultCard(
   items: Item[],
   d: {
@@ -195,6 +256,24 @@ export function applyActionResultCard(
   if (matchIdx >= 0) {
     const prev = sealed[matchIdx];
     if (prev.kind !== "card") return sealed;
+    // First durable terminal wins — duplicate/late frames settle nested rows
+    // only and must not reopen or overwrite the stored receipt.
+    if (
+      !prev.card.running
+      && prev.card.result != null
+      && isDurableTerminalActionResult(prev.card.result)
+      && !isUpgradeableActionResult(prev.card.result)
+    ) {
+      const settledActions = settleNestedRunning(prev.card.actions, outcome);
+      if (settledActions === prev.card.actions) return sealed;
+      return sealed.map((it, i) => {
+        if (i !== matchIdx || it.kind !== "card") return it;
+        return {
+          kind: "card" as const,
+          card: { ...it.card, running: false, actions: settledActions },
+        };
+      });
+    }
     const settledActions = settleNestedRunning(prev.card.actions, outcome);
     const keepOpen = shouldOpenActionResultCard(d, prev.card.kind);
     return sealed.map((it, i) => {
@@ -360,18 +439,16 @@ export function reconcileOrphanInvestigationCards(
     const isPrep =
       typeof card.id === "string" && card.id.startsWith("tool-prep:");
     const orphanPending = card.running && !hasResult && !jobId;
-    const resultStatus = String(card.result?.status || "").trim().toLowerCase();
+    const hasTerminalReceipt = Boolean(
+      card.result
+      && typeof card.result === "object"
+      && (card.result as { terminal_receipt?: unknown }).terminal_receipt,
+    );
+    // Non-dispatch cards (no job_id) settle once any result body lands.
+    // Dispatch cards settle on durable terminal statuses / receipts only.
     const resultTerminal =
       !jobId
-      || resultStatus === "complete"
-      || resultStatus === "completed"
-      || resultStatus === "done"
-      || resultStatus === "failed"
-      || resultStatus === "error"
-      || resultStatus === "cancelled"
-      || resultStatus === "canceled"
-      || resultStatus === "interrupted"
-      || resultStatus === "stalled"
+      || hasTerminalReceipt
       || isTerminalJobStatus(card.result?.status);
 
     // Provisional tool_prep shells (especially name-only Codex hints like
