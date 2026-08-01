@@ -51,6 +51,7 @@ ActionKind = Literal[
     "edit_file",
     "hash_edit",
     "run_command",
+    "run_command_batch",
     "list_dir",
     "web_search",
     "web_fetch",
@@ -93,6 +94,16 @@ def _optional_int(value: Any) -> Any:
         return int(value)
     except (TypeError, ValueError):
         return value
+
+
+def _coerce_explicit_bool(value: Any) -> bool:
+    """True only for explicit truthy wire values (never duration/heuristic)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 1
+    text = str(value or "").strip().lower()
+    return text in ("1", "true", "yes", "on")
 
 
 def _as_str_list(value: Any) -> list:
@@ -194,6 +205,8 @@ class PilotAction:
     url: str = ""
     tool_call_id: str = ""
     goals: list = field(default_factory=list)  # run_parallel: list of goals
+    # run_command_batch only: explicit list of shell commands (1..6).
+    commands: list = field(default_factory=list)
     adapter: str = ""           # run_implement / run_parallel: optional adapter name
     mode: str = ""              # run_parallel: "implement" or "analysis" / "review"
     instruction: str = ""       # route_task: instruction text
@@ -221,6 +234,11 @@ class PilotAction:
     acceptance_criteria: list = field(default_factory=list)
     start_line: Optional[int] = None
     limit: Optional[int] = None
+    # run_command only: explicit opt-in durable background execution.
+    # Never inferred from duration, command text, or timeout — False by default.
+    background: bool = False
+    # run_command_batch only: optional concurrency bound (0 = host default).
+    max_concurrency: int = 0
 
     def validate(self) -> "PilotAction":
         if self.kind not in VALID_ACTION_KINDS:
@@ -308,6 +326,24 @@ class PilotAction:
                 raise PilotError("hash_edit action requires a non-empty 'ops' list")
         if self.kind == "run_command" and not (self.command or "").strip():
             raise PilotError("run_command action requires a 'command'")
+        if self.background and self.kind != "run_command":
+            raise PilotError("background=true is only valid on run_command")
+        if self.kind == "run_command_batch":
+            from harness.command_batches import (
+                MAX_COMMAND_BATCH_SIZE,
+                normalize_batch_commands,
+            )
+            try:
+                normalized = normalize_batch_commands(self.commands)
+            except ValueError as exc:
+                raise PilotError(str(exc)) from exc
+            self.commands = normalized
+            if self.max_concurrency < 0:
+                raise PilotError("run_command_batch max_concurrency must be >= 0")
+            if self.max_concurrency > MAX_COMMAND_BATCH_SIZE:
+                raise PilotError(
+                    f"run_command_batch max_concurrency must be <= {MAX_COMMAND_BATCH_SIZE}"
+                )
         if self.kind == "web_search" and not (self.query or "").strip():
             raise PilotError("web_search action requires a 'query'")
         if self.kind == "web_fetch" and not (self.url or "").strip():
@@ -447,6 +483,33 @@ def from_wire(
         new_str = raw.get("content") or raw.get("text") or ""
 
     command = raw.get("command") or raw.get("cmd") or raw.get("shell") or ""
+    # Explicit opt-in only — never inferred from timeout/duration/command text.
+    background = False
+    if kind == "run_command":
+        if "background" in raw:
+            background = _coerce_explicit_bool(raw.get("background"))
+        elif "background" in arguments:
+            background = _coerce_explicit_bool(arguments.get("background"))
+        elif str(raw.get("mode") or arguments.get("mode") or "").strip().lower() == "background":
+            background = True
+    commands: list = []
+    max_concurrency = 0
+    if kind == "run_command_batch":
+        commands_raw = (
+            raw["commands"] if "commands" in raw else arguments.get("commands")
+        )
+        if isinstance(commands_raw, str):
+            commands = [commands_raw]
+        elif isinstance(commands_raw, (list, tuple)):
+            commands = [str(c) for c in commands_raw]
+        else:
+            commands = []
+        raw_conc = raw.get("max_concurrency", arguments.get("max_concurrency"))
+        if raw_conc is not None and raw_conc != "":
+            try:
+                max_concurrency = int(raw_conc)
+            except (TypeError, ValueError):
+                max_concurrency = 0
     query = raw.get("query") or ""
     url = raw.get("url") or ""
     instruction = (
@@ -582,6 +645,7 @@ def from_wire(
         url=str(url),
         tool_call_id=str(resolved_tc_id),
         goals=goals,
+        commands=list(commands),
         adapter=str(adapter),
         mode=str(mode),
         instruction=str(instruction),
@@ -599,6 +663,8 @@ def from_wire(
         acceptance_criteria=list(acceptance_criteria),
         start_line=_optional_int(raw.get("start_line")),
         limit=_optional_int(raw.get("limit")),
+        background=bool(background),
+        max_concurrency=int(max_concurrency or 0),
     ).validate()
 
 
@@ -863,15 +929,69 @@ def build_tools_schema(
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "run a terminal shell command. Requires `command`.",
+            "description": (
+                "run a terminal shell command. Requires `command`. "
+                "Default is foreground (synchronous). Set background=true only "
+                "when you explicitly want a durable background job that returns "
+                "a pending receipt immediately; never rely on duration alone."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "The terminal shell command to execute"}
+                    "command": {
+                        "type": "string",
+                        "description": "The terminal shell command to execute",
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": (
+                            "Opt-in durable background execution. When true, "
+                            "registers a local command job before launch and "
+                            "returns a pending receipt with job_id. Default false."
+                        ),
+                    },
                 },
                 "required": ["command"]
             }
         }
+    })
+
+    # 3b. run_command_batch (Wave 3 — explicit validation batch supervisor)
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "run_command_batch",
+            "description": (
+                "Run 1-6 shell commands as an explicit durable command batch. "
+                "Each command gets its own child job and terminal receipt; the "
+                "aggregate references children but does not own their truth. "
+                "Returns a pending batch receipt without holding the turn. "
+                "Not a provider swarm — do not use run_parallel for shell batches."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "commands": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 6,
+                        "description": (
+                            "Explicit list of 1-6 shell command strings to run "
+                            "under the command-batch supervisor."
+                        ),
+                    },
+                    "max_concurrency": {
+                        "type": "integer",
+                        "description": (
+                            "Optional bound on concurrent child processes "
+                            "(defaults to session max_workers, capped at 6)."
+                        ),
+                    },
+                },
+                "required": ["commands"],
+            },
+        },
     })
 
     # 4. list_dir

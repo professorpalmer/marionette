@@ -15,8 +15,11 @@ from harness.local_job_artifacts import artifacts_are_complete
 
 _TERMINAL_STATUSES = frozenset({
     "completed", "failed", "cancelled", "complete", "done",
+    "timeout", "truncated",
 })
-_RUNNING_STATUSES = frozenset({"running", "in_progress", "pending", "started"})
+_RUNNING_STATUSES = frozenset({
+    "running", "in_progress", "pending", "started", "registered",
+})
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -182,6 +185,31 @@ def project_local_job_for_swarm_live(job: dict) -> dict:
     for key in ("session_id", "cwd", "label"):
         if job.get(key) is not None:
             row[key] = job.get(key)
+
+    # Background run_command / command-batch jobs: project fingerprint/receipt
+    # fields without reclassifying them as provider-swarm workers.
+    try:
+        from harness.command_jobs import project_command_job_fields
+        from harness.command_batches import project_command_batch_fields
+
+        batch_fields = project_command_batch_fields(job)
+        if batch_fields:
+            row.update(batch_fields)
+            row["adapter"] = str(job.get("adapter") or "command_batch")
+            row["role"] = str(job.get("role") or "command_batch")
+        else:
+            cmd_fields = project_command_job_fields(job)
+            if cmd_fields:
+                row.update(cmd_fields)
+                # Keep adapter/role as command — never rewrite to agentic/native.
+                row["adapter"] = str(job.get("adapter") or "command")
+                row["role"] = str(job.get("role") or "command")
+                if job.get("batch_id"):
+                    row["batch_id"] = str(job.get("batch_id"))
+                if job.get("batch_index") is not None:
+                    row["batch_index"] = int(job.get("batch_index"))
+    except Exception:
+        pass
 
     # Optional validation-reuse provenance (back-compat: omit when absent).
     try:

@@ -19,7 +19,30 @@ from .sse import StreamEventDict, _sse_ring_begin, sse_pump, sse_write
 # Event kinds that mean a tool result / action completion has just been appended
 # to _history -- checkpoint immediately (ignoring throttle) when we see one so a
 # crash right after an action never loses that appended chunk of the transcript.
+# Wave 4: action_result also covers background command pending receipts (job_id)
+# so launch identity survives a crash before the child process settles.
 CHECKPOINT_KINDS = frozenset({"action_result", "swarm_result"})
+
+
+def should_force_transcript_checkpoint(ev: Any) -> bool:
+    """True when the transcript must flush immediately (Wave 4 reattach).
+
+    Command-job pending/terminal ``action_result`` frames carry durable
+    ``job_id`` identity; losing them across a crash breaks restart recovery.
+    Background ``action_start`` frames with a job_id are treated the same.
+    """
+    kind = getattr(ev, "kind", None) or ""
+    if kind in CHECKPOINT_KINDS:
+        return True
+    if kind != "action_start":
+        return False
+    data = getattr(ev, "data", None) or {}
+    if not isinstance(data, dict):
+        return False
+    if data.get("job_id"):
+        return True
+    mode = str(data.get("mode") or "").strip().lower()
+    return mode == "background"
 
 
 def _encode_run_sse_frame(ev: Any) -> bytes:
@@ -178,9 +201,10 @@ def stream_auto(handler: Any, objective: str, svc: StreamServices) -> Any:
     def _maybe_checkpoint(ev):
         nonlocal last_ckpt
         # Incremental checkpoint: flush immediately after an appended action
-        # result, else on a 2s throttle, so a crash mid governor-loop can't
-        # lose the last chunk of transcript before _finalize_turn runs.
-        if ev.kind in CHECKPOINT_KINDS:
+        # result (incl. command-job pending receipts), else on a 2s throttle,
+        # so a crash mid governor-loop can't lose the last chunk of transcript
+        # before _finalize_turn runs.
+        if should_force_transcript_checkpoint(ev):
             svc.checkpoint_transcript(ctx)
             last_ckpt = time.monotonic()
         elif time.monotonic() - last_ckpt >= 2.0:
@@ -372,9 +396,10 @@ def stream_chat(
     def _maybe_checkpoint(ev):
         nonlocal last_ckpt
         # Incremental checkpoint: flush the transcript immediately when an
-        # action result was just appended to history, else on a 2s throttle
-        # so a mid-turn crash can't lose the last chunk of transcript.
-        if ev.kind in CHECKPOINT_KINDS:
+        # action result (incl. durable command-job pending receipt) was just
+        # appended to history, else on a 2s throttle so a mid-turn crash
+        # can't lose the last chunk of transcript.
+        if should_force_transcript_checkpoint(ev):
             svc.checkpoint_transcript(ctx)
             last_ckpt = time.monotonic()
         elif time.monotonic() - last_ckpt >= 2.0:

@@ -49,6 +49,7 @@ STREAM_IDLE_NOTICE_MESSAGE = "Provider still working — stream idle"
 LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "open_project", "relocate_session", "session_bank",
     "write_file", "edit_file", "hash_edit", "run_command",
+    "run_command_batch",
     "search_tools", "search_state",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -64,6 +65,7 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
 PLAN_SKIP_KINDS: frozenset[str] = frozenset({
     "run_implement", "run_parallel",
     "write_file", "edit_file", "hash_edit", "run_command",
+    "run_command_batch",
     "call_mcp", "manage_mcp", "memory",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -92,18 +94,30 @@ def _truncate_run_command_ui_output(
     return text[:head_len] + marker + text[-tail_len:]
 
 
-def _run_command_artifact_headline(exit_code: int, output: str) -> str:
-    """Compact card headline: prefer ``exit N · <first line>`` when output exists."""
+def _run_command_artifact_headline(
+    exit_code: int, output: str, status: str = "ok",
+) -> str:
+    """Compact card headline: prefer ``exit N · <first line>`` when output exists.
+
+    Non-ok statuses (cancelled/timeout/truncated/error) lead so a cancelled or
+    timed-out command cannot be mistaken for a successful validation.
+    """
     first_line = ""
     for line in (output or "").splitlines():
         stripped = line.strip()
         if stripped:
             first_line = stripped
             break
+    if status and status not in ("ok", "success"):
+        prefix = status
+    else:
+        prefix = f"exit {exit_code}"
     if first_line:
         if len(first_line) > 80:
             first_line = first_line[:77] + "..."
-        return f"exit {exit_code} · {first_line}"
+        return f"{prefix} · {first_line}"
+    if status and status not in ("ok", "success"):
+        return f"Command {status} (exit {exit_code})"
     return f"Command exited with {exit_code}"
 
 
@@ -291,6 +305,9 @@ def action_display_goal(act: PilotAction) -> Any:
         act_goal = act.path or "(workspace root)"
     elif act.kind == "run_command":
         act_goal = act.command
+    elif act.kind == "run_command_batch":
+        cmds = list(getattr(act, "commands", None) or [])
+        act_goal = f"command batch ({len(cmds)} commands)"
     elif act.kind == "lsp":
         _a = act.arguments or {}
         act_goal = _a.get("mode") or "lsp"
@@ -1608,6 +1625,68 @@ def dispatch_local_action(
             })
             session._append_action_result(act, aid, f"(run_command {aid} failed: {error_msg})", is_native)
             return
+        # Wave 2: explicit background mode returns a durable pending receipt
+        # and never holds the turn on run_cancellable. Opt-in only.
+        from harness.command_jobs import (
+            is_background_run_command,
+            secret_free_command_preview,
+            start_background_run_command,
+        )
+        if is_background_run_command(act):
+            try:
+                receipt = start_background_run_command(session, act, aid)
+            except Exception as exc:
+                yield ConvEvent("action_result", {
+                    "id": aid,
+                    "error": str(exc),
+                    "kind": "run_command",
+                    "command": secret_free_command_preview(command),
+                    "status": "error",
+                })
+                session._append_action_result(
+                    act, aid, f"(run_command {aid} background failed: {exc})",
+                    is_native, ok=False,
+                )
+                return
+            result = {
+                "id": aid,
+                "kind": "run_command",
+                "status": receipt.get("status") or "pending",
+                "job_id": receipt.get("job_id"),
+                "session_id": receipt.get("session_id"),
+                "action_id": receipt.get("action_id") or aid,
+                "command_fingerprint": receipt.get("command_fingerprint"),
+                "command_preview": receipt.get("command_preview"),
+                "cwd": receipt.get("cwd"),
+                "started_at": receipt.get("started_at"),
+                "terminal_receipt": receipt.get("terminal_receipt"),
+                "message": receipt.get("message") or "",
+                "goal": receipt.get("command_preview") or "",
+                "num": 1,
+                "types": ["command"],
+                "adapter": "command",
+                "mode": "background",
+                "source": receipt.get("source") or "harness",
+                "accounting_owned": bool(receipt.get("accounting_owned", True)),
+                "accounting_scope": receipt.get("accounting_scope") or "marionette",
+                "artifacts": [{
+                    "type": "command",
+                    "headline": (
+                        f"background pending · job {receipt.get('job_id')}"
+                    ),
+                }],
+            }
+            yield ConvEvent("action_result", result)
+            session._append_action_result(
+                act,
+                aid,
+                (
+                    f"(run_command '{secret_free_command_preview(command)}' "
+                    f"dispatched in background: job {receipt.get('job_id')})"
+                ),
+                is_native,
+            )
+            return
         # FULL-AUTO safety + cancellable execution live in
         # ToolDispatchMixin._do_run_command; yield/append stay here.
         ok, status, val = session._do_run_command(act)
@@ -1644,16 +1723,60 @@ def dispatch_local_action(
                     "message": block_msg,
                 })
                 session._append_action_result(act, aid, f"(run_command {aid} {block_msg})", is_native)
-            else:
-                yield ConvEvent("action_result", {
-                    "id": aid, "error": val, "kind": "run_command", "command": command,
-                })
-                session._append_action_result(act, aid, f"(run_command {aid} failed: {val})", is_native)
+                return
+            # cancelled / timeout / error: preserve partial output + exit_code.
+            if status in ("cancelled", "timeout", "error") and isinstance(val, dict):
+                output = val.get("output") or ""
+                try:
+                    exit_code = int(val.get("exit_code"))
+                except (TypeError, ValueError):
+                    exit_code = -1
+                run_status = str(val.get("status") or status)
+                ui_output = _truncate_run_command_ui_output(output)
+                headline = _run_command_artifact_headline(
+                    exit_code, ui_output, status=run_status,
+                )
+                result = {
+                    "id": aid,
+                    "kind": "run_command",
+                    "goal": command,
+                    "command": command,
+                    "exit_code": exit_code,
+                    "output": ui_output,
+                    "status": run_status,
+                    "num": 1,
+                    "types": ["command"],
+                    "adapter": "local",
+                    "mode": "tool",
+                    "artifacts": [{"type": "command", "headline": headline}],
+                }
+                # timeout/error also set error so cards stay expanded; cancelled
+                # relies on status so the UI can map it to an interrupted outcome.
+                if run_status in ("timeout", "error"):
+                    result["error"] = run_status
+                yield ConvEvent("action_result", result)
+                session._append_action_result(
+                    act,
+                    aid,
+                    f"(run_command '{command}' {run_status} with exit code {exit_code})\n{output}",
+                    is_native,
+                    ok=False,
+                )
+                return
+            yield ConvEvent("action_result", {
+                "id": aid, "error": val, "kind": "run_command", "command": command,
+            })
+            session._append_action_result(act, aid, f"(run_command {aid} failed: {val})", is_native)
             return
         output = val["output"]
         exit_code = val["exit_code"]
+        run_status = str(val.get("status") or "ok")
+        if run_status in ("success", ""):
+            run_status = "ok"
         ui_output = _truncate_run_command_ui_output(output)
-        headline = _run_command_artifact_headline(exit_code, ui_output)
+        headline = _run_command_artifact_headline(
+            exit_code, ui_output, status=run_status,
+        )
         yield ConvEvent("action_result", {
             "id": aid,
             "kind": "run_command",
@@ -1661,13 +1784,109 @@ def dispatch_local_action(
             "command": command,
             "exit_code": exit_code,
             "output": ui_output,
+            "status": run_status,
             "num": 1,
             "types": ["command"],
             "adapter": "local",
             "mode": "tool",
             "artifacts": [{"type": "command", "headline": headline}],
         })
-        session._append_action_result(act, aid, f"(run_command '{command}' completed with exit code {exit_code})\n{output}", is_native)
+        if run_status == "ok":
+            hist = (
+                f"(run_command '{command}' completed with exit code {exit_code})\n"
+                f"{output}"
+            )
+        else:
+            # e.g. truncated: still a finished process, but not a clean ok.
+            hist = (
+                f"(run_command '{command}' {run_status} with exit code {exit_code})\n"
+                f"{output}"
+            )
+        session._append_action_result(act, aid, hist, is_native)
+        return
+    # ---- run_command_batch branch (Wave 3) -------------------------
+    if act.kind == "run_command_batch":
+        from harness.command_batches import (
+            COMMAND_BATCH_ADAPTER,
+            COMMAND_BATCH_KIND,
+            start_command_batch,
+        )
+        if not session.config.repo:
+            error_msg = "No workspace directory (config.repo) is open."
+            yield ConvEvent("action_result", {
+                "id": aid,
+                "error": error_msg,
+                "kind": COMMAND_BATCH_KIND,
+            })
+            session._append_action_result(
+                act, aid, f"(run_command_batch {aid} failed: {error_msg})",
+                is_native, ok=False,
+            )
+            return
+        try:
+            receipt = start_command_batch(
+                session,
+                list(getattr(act, "commands", None) or []),
+                aid,
+                max_concurrency=int(getattr(act, "max_concurrency", 0) or 0) or None,
+            )
+        except Exception as exc:
+            yield ConvEvent("action_result", {
+                "id": aid,
+                "error": str(exc),
+                "kind": COMMAND_BATCH_KIND,
+                "status": "error",
+            })
+            session._append_action_result(
+                act, aid, f"(run_command_batch {aid} failed: {exc})",
+                is_native, ok=False,
+            )
+            return
+        result = {
+            "id": aid,
+            "kind": COMMAND_BATCH_KIND,
+            "status": receipt.get("status") or "pending",
+            "job_id": receipt.get("job_id") or receipt.get("batch_id"),
+            "batch_id": receipt.get("batch_id") or receipt.get("job_id"),
+            "session_id": receipt.get("session_id"),
+            "action_id": receipt.get("action_id") or aid,
+            "child_job_ids": receipt.get("child_job_ids") or [],
+            "children": receipt.get("children") or [],
+            "child_count": receipt.get("child_count") or 0,
+            "max_concurrency": receipt.get("max_concurrency") or 0,
+            "mixed_terminal": bool(receipt.get("mixed_terminal")),
+            "cwd": receipt.get("cwd"),
+            "started_at": receipt.get("started_at"),
+            "terminal_receipt": receipt.get("terminal_receipt"),
+            "message": receipt.get("message") or "",
+            "goal": f"command batch ({receipt.get('child_count') or 0} commands)",
+            "num": int(receipt.get("child_count") or 0) or 1,
+            "types": ["command_batch"],
+            "adapter": COMMAND_BATCH_ADAPTER,
+            "role": COMMAND_BATCH_ADAPTER,
+            "mode": "batch",
+            "source": receipt.get("source") or "harness",
+            "accounting_owned": bool(receipt.get("accounting_owned", True)),
+            "accounting_scope": receipt.get("accounting_scope") or "marionette",
+            "replayed": bool(receipt.get("replayed")),
+            "artifacts": [{
+                "type": "command_batch",
+                "headline": (
+                    f"batch pending · job {receipt.get('job_id')} · "
+                    f"{receipt.get('child_count') or 0} children"
+                ),
+            }],
+        }
+        yield ConvEvent("action_result", result)
+        session._append_action_result(
+            act,
+            aid,
+            (
+                f"(run_command_batch dispatched: job {receipt.get('job_id')} "
+                f"children={receipt.get('child_count') or 0})"
+            ),
+            is_native,
+        )
         return
     # ---- search_tools branch ---------------------------------------
     if act.kind == "search_tools":

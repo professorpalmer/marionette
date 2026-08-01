@@ -1095,7 +1095,11 @@ def test_dispatch_local_action_run_command_action_result_includes_ui_output():
     session = SimpleNamespace(
         config=SimpleNamespace(repo="/repo"),
         _do_run_command=MagicMock(
-            return_value=(True, "success", {"output": long_output, "exit_code": 1}),
+            return_value=(
+                True,
+                "success",
+                {"output": long_output, "exit_code": 1, "status": "ok"},
+            ),
         ),
         _append_action_result=MagicMock(),
     )
@@ -1106,6 +1110,7 @@ def test_dispatch_local_action_run_command_action_result_includes_ui_output():
     assert data["command"] == "pytest -q"
     assert data["goal"] == "pytest -q"
     assert data["exit_code"] == 1
+    assert data["status"] == "ok"
     assert data["output"] == _truncate_run_command_ui_output(long_output)
     assert len(data["output"]) <= _RUN_COMMAND_UI_OUTPUT_CAP + 120  # marker room
     assert "line-head" in data["output"]
@@ -1132,6 +1137,86 @@ def test_dispatch_local_action_run_command_failure_includes_command():
     assert events[0].data["error"] == "spawn failed"
     assert events[0].data["command"] == "echo boom"
     assert events[0].data["kind"] == "run_command"
+
+
+def test_dispatch_local_action_run_command_cancelled_preserves_partial_output():
+    """Wave 1: cancelled must not flatten into ordinary completed success."""
+    act = PilotAction(kind="run_command", command="pytest -q")
+    partial = "collected 12 items\n\n[interrupted by user]"
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        _do_run_command=MagicMock(
+            return_value=(
+                False,
+                "cancelled",
+                {"output": partial, "exit_code": 130, "status": "cancelled"},
+            ),
+        ),
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "a-cancel", True, []))
+    assert len(events) == 1
+    data = events[0].data
+    assert data["status"] == "cancelled"
+    assert data["exit_code"] == 130
+    assert data["output"] == partial
+    assert data["command"] == "pytest -q"
+    assert "error" not in data
+    assert data["artifacts"][0]["headline"].startswith("cancelled")
+    hist = session._append_action_result.call_args[0][2]
+    assert "cancelled with exit code 130" in hist
+    assert "collected 12 items" in hist
+    assert session._append_action_result.call_args.kwargs.get("ok") is False
+
+
+def test_dispatch_local_action_run_command_timeout_surfaces_status():
+    act = PilotAction(kind="run_command", command="sleep 30")
+    partial = "still running\n\n[TimeoutExpired after 1 seconds]"
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        _do_run_command=MagicMock(
+            return_value=(
+                False,
+                "timeout",
+                {"output": partial, "exit_code": -1, "status": "timeout"},
+            ),
+        ),
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "a-timeout", True, []))
+    data = events[0].data
+    assert data["status"] == "timeout"
+    assert data["error"] == "timeout"
+    assert data["exit_code"] == -1
+    assert "still running" in data["output"]
+    assert data["artifacts"][0]["headline"].startswith("timeout")
+    hist = session._append_action_result.call_args[0][2]
+    assert "timeout with exit code -1" in hist
+
+
+def test_dispatch_local_action_run_command_truncated_marks_status():
+    act = PilotAction(kind="run_command", command="yes")
+    capped = "HEAD\n\n[output truncated at 2 MiB cap]"
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo"),
+        _do_run_command=MagicMock(
+            return_value=(
+                True,
+                "success",
+                {"output": capped, "exit_code": -1, "status": "truncated"},
+            ),
+        ),
+        _append_action_result=MagicMock(),
+    )
+    events = list(dispatch_local_action(session, act, "a-trunc", True, []))
+    data = events[0].data
+    assert data["status"] == "truncated"
+    assert data["exit_code"] == -1
+    assert "HEAD" in data["output"]
+    assert data["artifacts"][0]["headline"].startswith("truncated")
+    hist = session._append_action_result.call_args[0][2]
+    assert "truncated with exit code -1" in hist
+    assert "completed with exit code" not in hist
 
 
 def test_dispatch_local_action_call_mcp_unavailable():

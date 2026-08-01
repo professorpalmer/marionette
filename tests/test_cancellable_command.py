@@ -139,6 +139,29 @@ def test_bad_command_does_not_raise():
     assert status in ("ok", "error")
 
 
+def test_output_cap_marks_truncated_and_preserves_prefix(monkeypatch):
+    """Wave 1: runaway stdout must surface status=truncated with partial output,
+    never a silent ok that looks like a successful validation dump."""
+    import harness.command_policy as cp
+
+    monkeypatch.setattr(cp, "MAX_CAPTURED_OUTPUT", 2048)
+    # Print enough bytes to trip the cap; portable across shells.
+    body = (
+        "import sys;"
+        "sys.stdout.write('HEADMARK' + ('Z' * 8000));"
+        "sys.stdout.flush()"
+    )
+    out, code, status = run_cancellable(
+        f'"{sys.executable}" -c "{body}"',
+        timeout=10,
+    )
+    assert status == "truncated"
+    assert code == -1
+    assert out.startswith("HEADMARK")
+    assert "truncated" in out.lower()
+    assert len(out) <= 2048 + 80  # cap + marker room
+
+
 def test_run_cancellable_off_mode_unchanged(monkeypatch):
     """Default HARNESS_OS_SANDBOX=off preserves direct Popen path."""
     monkeypatch.delenv("HARNESS_OS_SANDBOX", raising=False)

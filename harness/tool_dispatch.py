@@ -673,9 +673,13 @@ class ToolDispatchMixin:
     def _do_run_command(self, act: PilotAction) -> tuple[bool, str, Any]:
         """Screen (full-auto) and execute a run_command action.
 
-        On success returns ``(True, "success", {"output", "exit_code"})``.
-        On full-auto danger block returns
-        ``(False, "blocked", {"message", "category", "reason", "matched"})``.
+        Still synchronous (foreground). ``run_cancellable`` status is preserved:
+
+        - ``ok`` / ``truncated`` → ``(True, "success", {output, exit_code, status})``
+        - ``cancelled`` / ``timeout`` / ``error`` →
+          ``(False, <status>, {output, exit_code, status})`` with partial output kept
+        - full-auto danger block →
+          ``(False, "blocked", {message, category, reason, matched})``
         """
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
@@ -716,13 +720,26 @@ class ToolDispatchMixin:
             # in after consume must survive for its own retry.
 
         cmd_timeout = resolve_timeout()
-        output, exit_code, _run_status = run_cancellable(
+        output, exit_code, run_status = run_cancellable(
             act.command,
             cwd=self.config.repo,
             timeout=cmd_timeout,
             cancel_event=getattr(self, "_cancel", None),
         )
+        # Normalize legacy aliases used by older mocks / callers.
+        if run_status in ("success", None, ""):
+            run_status = "ok"
         max_cap = 50 * 1024
         if len(output) > max_cap:
             output = output[:max_cap] + "\n\n... (output truncated to 50KB) ..."
-        return True, "success", {"output": output, "exit_code": exit_code}
+        payload = {
+            "output": output,
+            "exit_code": exit_code,
+            "status": run_status,
+        }
+        # Terminal failures stay on the sync path but must not look like success.
+        # truncated keeps ok=True so callers still get the capped output while
+        # status remains distinct from a clean ok.
+        if run_status in ("cancelled", "timeout", "error"):
+            return False, run_status, payload
+        return True, "success", payload

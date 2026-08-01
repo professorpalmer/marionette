@@ -383,6 +383,17 @@ def normalize_action_args(kind: str, act: Any) -> str:
         payload["limit"] = _norm_optional_int(args.get("limit") if "limit" in args else getattr(act, "limit", None))
     elif kind == "run_command":
         payload["command"] = _norm_whitespace(getattr(act, "command", "") or "")
+    elif kind == "run_command_batch":
+        # Fingerprint commands — never put raw shell text into the guard key.
+        try:
+            from harness.command_jobs import command_fingerprint
+            cmds = getattr(act, "commands", None) or []
+            payload["command_fingerprints"] = [
+                command_fingerprint(str(c)) for c in cmds if str(c or "").strip()
+            ]
+        except Exception:
+            payload["command_fingerprints"] = []
+        payload["max_concurrency"] = int(getattr(act, "max_concurrency", 0) or 0)
     elif kind in ("search_files", "search_codegraph", "search_state", "search_tools", "web_search"):
         payload["query"] = _norm_whitespace(getattr(act, "query", "") or args.get("query", "") or "")
         if kind == "search_files":

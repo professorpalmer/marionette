@@ -43,7 +43,10 @@ from .model_identity import (
 from .provenance_sanitize import sanitize_clean_tree_claims
 
 # Job statuses that must never accept a fresh status=running nested row.
-_TERMINAL_LOCAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
+# Includes command-job terminals (timeout/truncated) from Wave 2 durability.
+_TERMINAL_LOCAL_JOB_STATUSES = frozenset({
+    "completed", "failed", "cancelled", "timeout", "truncated",
+})
 
 
 def _reconcile_routing_artifact(art: dict, selected_model: str) -> dict:
@@ -84,6 +87,501 @@ class LocalJobsMixin:
     methods read/write via `self`. This mixin defines no __init__ and no
     instance state of its own.
     """
+
+    def _register_command_job(
+        self,
+        job_id: str,
+        *,
+        command: str,
+        action_id: str,
+        command_fingerprint: str = "",
+        command_preview: str = "",
+        cwd: str = "",
+        batch_id: str = "",
+        batch_index: Optional[int] = None,
+    ) -> dict:
+        """Persist a durable background ``run_command`` row *before* launch.
+
+        Status starts as ``registered`` (contract durable_job_states). Stamped
+        ``accounting_owned=True``, ``accounting_scope='marionette'``,
+        ``source='harness'``. Role/adapter are ``command`` so projections never
+        misclassify the row as a provider-swarm worker.
+        """
+        import time
+        from harness.command_jobs import (
+            COMMAND_JOB_ADAPTER,
+            COMMAND_JOB_KIND,
+            COMMAND_JOB_ROLE,
+            command_fingerprint as _fingerprint,
+            secret_free_command_preview,
+        )
+        from harness.job_scoping import ACCOUNTING_SCOPE_MARIONETTE, job_label_for_session
+
+        effective_cwd = cwd or self.config.repo or ""
+        session_id = self.harness_session_id or ""
+        fp = (command_fingerprint or "").strip() or _fingerprint(command or "")
+        preview = (command_preview or "").strip() or secret_free_command_preview(
+            command or ""
+        )
+        now = time.time()
+        with self._local_jobs_lock:
+            self._local_job_cancels[job_id] = threading.Event()
+            row = {
+                "id": job_id,
+                "goal": preview,
+                "status": "registered",
+                "role": COMMAND_JOB_ROLE,
+                "adapter": COMMAND_JOB_ADAPTER,
+                "model": COMMAND_JOB_ADAPTER,
+                "job_kind": COMMAND_JOB_KIND,
+                "session_id": session_id,
+                "action_id": str(action_id or ""),
+                "command_fingerprint": fp,
+                "command_preview": preview,
+                # Never persist the raw command string (may contain secrets).
+                "cwd": effective_cwd,
+                "label": job_label_for_session(session_id),
+                "created_at": now,
+                "started_at": now,
+                "updated_at": now,
+                "task_count": 1,
+                "tokens": 0,
+                "est_cost_usd": 0.0,
+                "artifacts": [],
+                "tasks": [{
+                    "id": f"{job_id}-w0",
+                    "role": COMMAND_JOB_ROLE,
+                    "instruction": preview,
+                    "status": "registered",
+                    "adapter": COMMAND_JOB_ADAPTER,
+                }],
+                "actions": [],
+                "source": "harness",
+                "accounting_owned": True,
+                "accounting_scope": ACCOUNTING_SCOPE_MARIONETTE,
+                "terminal_receipt": None,
+                "output": "",
+                "output_preview": "",
+                "output_chars": 0,
+            }
+            if batch_id:
+                row["batch_id"] = str(batch_id)
+            if batch_index is not None:
+                row["batch_index"] = int(batch_index)
+            self._local_jobs[job_id] = row
+            self._persist_local_jobs_locked()
+            return copy.deepcopy(row)
+
+    def _register_command_batch_job(
+        self,
+        batch_id: str,
+        *,
+        action_id: str,
+        children: list,
+        child_job_ids: list,
+        cwd: str = "",
+        max_concurrency: int = 1,
+    ) -> dict:
+        """Persist an aggregate command-batch row that references durable children.
+
+        The aggregate never owns child stdout/exit truth — children keep their
+        own terminal receipts. Role/adapter are ``command_batch`` so this is
+        never projected as a provider-swarm worker.
+        """
+        import time
+        from harness.command_batches import (
+            COMMAND_BATCH_ADAPTER,
+            COMMAND_BATCH_KIND,
+            COMMAND_BATCH_ROLE,
+        )
+        from harness.job_scoping import ACCOUNTING_SCOPE_MARIONETTE, job_label_for_session
+
+        effective_cwd = cwd or self.config.repo or ""
+        session_id = self.harness_session_id or ""
+        child_meta = [dict(c) for c in (children or []) if isinstance(c, dict)]
+        ids = [str(x) for x in (child_job_ids or []) if str(x)]
+        now = time.time()
+        preview = f"command batch ({len(ids)} commands)"
+        with self._local_jobs_lock:
+            self._local_job_cancels[batch_id] = threading.Event()
+            row = {
+                "id": batch_id,
+                "goal": preview,
+                "status": "registered",
+                "role": COMMAND_BATCH_ROLE,
+                "adapter": COMMAND_BATCH_ADAPTER,
+                "model": COMMAND_BATCH_ADAPTER,
+                "job_kind": COMMAND_BATCH_KIND,
+                "session_id": session_id,
+                "action_id": str(action_id or ""),
+                "cwd": effective_cwd,
+                "label": job_label_for_session(session_id),
+                "created_at": now,
+                "started_at": now,
+                "updated_at": now,
+                "task_count": len(ids),
+                "tokens": 0,
+                "est_cost_usd": 0.0,
+                "artifacts": [],
+                "tasks": [{
+                    "id": f"{batch_id}-w0",
+                    "role": COMMAND_BATCH_ROLE,
+                    "instruction": preview,
+                    "status": "registered",
+                    "adapter": COMMAND_BATCH_ADAPTER,
+                }],
+                "actions": [],
+                "source": "harness",
+                "accounting_owned": True,
+                "accounting_scope": ACCOUNTING_SCOPE_MARIONETTE,
+                "terminal_receipt": None,
+                "children": child_meta,
+                "child_job_ids": ids,
+                "child_count": len(ids),
+                "max_concurrency": max(1, int(max_concurrency or 1)),
+                "mixed_terminal": False,
+            }
+            self._local_jobs[batch_id] = row
+            self._persist_local_jobs_locked()
+            return copy.deepcopy(row)
+
+    def _mark_command_batch_running(self, batch_id: str) -> None:
+        """Flip aggregate batch status to ``running`` once the supervisor starts."""
+        import time
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(batch_id)
+            if not job:
+                return
+            if job.get("status") in _TERMINAL_LOCAL_JOB_STATUSES:
+                return
+            job["status"] = "running"
+            job["updated_at"] = time.time()
+            if job.get("tasks"):
+                try:
+                    job["tasks"][0]["status"] = "running"
+                except Exception:
+                    pass
+            self._persist_local_jobs_locked()
+
+    def _update_command_batch_children(
+        self,
+        batch_id: str,
+        *,
+        children: list,
+        child_job_ids: list,
+        max_concurrency: Optional[int] = None,
+    ) -> None:
+        """Replace aggregate child references after an idempotent replay."""
+        import time
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(batch_id)
+            if not job:
+                return
+            job["children"] = [dict(c) for c in (children or []) if isinstance(c, dict)]
+            job["child_job_ids"] = [str(x) for x in (child_job_ids or []) if str(x)]
+            job["child_count"] = len(job["child_job_ids"])
+            job["task_count"] = job["child_count"]
+            if max_concurrency is not None:
+                job["max_concurrency"] = max(1, int(max_concurrency))
+            job["updated_at"] = time.time()
+            if job.get("status") in _TERMINAL_LOCAL_JOB_STATUSES:
+                # Replay may reopen work; clear aggregate terminal until sync.
+                job["status"] = "running"
+                job["terminal_receipt"] = None
+                job["mixed_terminal"] = False
+            self._persist_local_jobs_locked()
+
+    def _sync_command_batch_from_children(
+        self,
+        batch_id: str,
+        *,
+        parent_cancelled: bool = False,
+    ) -> None:
+        """Refresh aggregate status from durable child rows (children own truth)."""
+        import time
+        from harness.command_jobs import COMMAND_TERMINAL_STATES
+
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(batch_id)
+            if not job:
+                return
+            child_ids = [str(x) for x in (job.get("child_job_ids") or [])]
+            children_meta = [
+                dict(c) for c in (job.get("children") or []) if isinstance(c, dict)
+            ]
+            by_id = {str(c.get("job_id") or ""): c for c in children_meta}
+            statuses: list[str] = []
+            for cid in child_ids:
+                child = self._local_jobs.get(cid) or {}
+                st = str(child.get("status") or "registered")
+                statuses.append(st)
+                meta = by_id.get(cid)
+                if meta is None:
+                    meta = {
+                        "job_id": cid,
+                        "command_fingerprint": str(child.get("command_fingerprint") or ""),
+                        "command_preview": str(child.get("command_preview") or ""),
+                    }
+                    children_meta.append(meta)
+                    by_id[cid] = meta
+                meta["status"] = st
+                if child.get("terminal_receipt") is not None:
+                    meta["terminal_receipt"] = copy.deepcopy(child.get("terminal_receipt"))
+                if child.get("exit_code") is not None:
+                    meta["exit_code"] = child.get("exit_code")
+            job["children"] = children_meta
+            job["updated_at"] = time.time()
+
+            all_terminal = bool(statuses) and all(
+                s in COMMAND_TERMINAL_STATES for s in statuses
+            )
+            unique_terminal = {s for s in statuses if s in COMMAND_TERMINAL_STATES}
+            mixed = all_terminal and len(unique_terminal) > 1
+            job["mixed_terminal"] = mixed
+
+            if not statuses:
+                aggregate = "failed"
+            elif not all_terminal:
+                if any(s == "running" for s in statuses):
+                    aggregate = "running"
+                elif parent_cancelled:
+                    aggregate = "cancelled"
+                else:
+                    aggregate = "running" if any(
+                        s == "registered" for s in statuses
+                    ) else str(job.get("status") or "running")
+            else:
+                if any(s in ("failed", "timeout", "truncated") for s in statuses):
+                    aggregate = "failed"
+                elif any(s == "cancelled" for s in statuses) or parent_cancelled:
+                    aggregate = "cancelled"
+                else:
+                    aggregate = "completed"
+
+            # Parent cancel must not rewrite completed siblings — only the
+            # aggregate summary / non-terminal children are affected.
+            if parent_cancelled and not all_terminal:
+                aggregate = "cancelled"
+
+            job["status"] = aggregate
+            if job.get("tasks"):
+                try:
+                    job["tasks"][0]["status"] = aggregate
+                except Exception:
+                    pass
+
+            counts: dict[str, int] = {}
+            for s in statuses:
+                counts[s] = counts.get(s, 0) + 1
+            summary_parts = [f"{n} {name}" for name, n in sorted(counts.items())]
+            summary = (
+                f"batch {aggregate}: " + ", ".join(summary_parts)
+                if summary_parts
+                else f"batch {aggregate}"
+            )
+            if all_terminal or parent_cancelled:
+                job["terminal_receipt"] = {
+                    "status": aggregate,
+                    "summary": summary,
+                    "finished_at": job["updated_at"],
+                    "child_statuses": dict(counts),
+                    "mixed_terminal": mixed,
+                    "child_job_ids": list(child_ids),
+                }
+                job["artifacts"] = [{
+                    "type": "command_batch",
+                    "headline": summary[:240],
+                }]
+            self._persist_local_jobs_locked()
+
+    def _checkpoint_command_job_launch(self, job_id: str) -> bool:
+        """Persist a launch checkpoint *before* the child process can start.
+
+        Returns True when launch may proceed. False when the job is missing,
+        already terminal, or already has a terminal receipt (late/duplicate
+        launch must not reopen settled work). Idempotent: a second call on a
+        non-terminal row keeps the original checkpoint and still returns True.
+        """
+        import time
+
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if not job:
+                return False
+            if job.get("status") in _TERMINAL_LOCAL_JOB_STATUSES:
+                return False
+            if job.get("terminal_receipt") is not None:
+                return False
+            if isinstance(job.get("launch_checkpoint"), dict):
+                return True
+            now = time.time()
+            job["launch_checkpoint"] = {
+                "at": now,
+                "phase": "pre_launch",
+                "session_id": str(job.get("session_id") or ""),
+                "action_id": str(job.get("action_id") or ""),
+                "command_fingerprint": str(job.get("command_fingerprint") or ""),
+                "batch_id": str(job.get("batch_id") or ""),
+            }
+            job["updated_at"] = now
+            self._persist_local_jobs_locked()
+            return True
+
+    def _mark_command_job_running(self, job_id: str) -> None:
+        """Flip a registered command job to ``running`` once the process starts."""
+        import time
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if not job:
+                return
+            if job.get("status") in _TERMINAL_LOCAL_JOB_STATUSES:
+                return
+            if job.get("terminal_receipt") is not None:
+                return
+            now = time.time()
+            job["status"] = "running"
+            job["updated_at"] = now
+            prior_ckpt = job.get("launch_checkpoint")
+            if isinstance(prior_ckpt, dict):
+                ckpt = dict(prior_ckpt)
+                ckpt["phase"] = "running"
+                ckpt["running_at"] = now
+                job["launch_checkpoint"] = ckpt
+            else:
+                # Launch should have checkpointed first; stamp a recovery fact
+                # so restart healing still knows the child had begun.
+                job["launch_checkpoint"] = {
+                    "at": now,
+                    "phase": "running",
+                    "running_at": now,
+                    "session_id": str(job.get("session_id") or ""),
+                    "action_id": str(job.get("action_id") or ""),
+                    "command_fingerprint": str(job.get("command_fingerprint") or ""),
+                    "batch_id": str(job.get("batch_id") or ""),
+                    "inferred": True,
+                }
+            if job.get("tasks"):
+                try:
+                    job["tasks"][0]["status"] = "running"
+                except Exception:
+                    pass
+            self._persist_local_jobs_locked()
+
+    def _finish_command_job(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        summary: str = "",
+        exit_code: int = -1,
+        output: str = "",
+        spill_uri: str = "",
+        spill_path: str = "",
+        output_chars: int = 0,
+        output_preview: str = "",
+        run_status: str = "",
+    ) -> bool:
+        """Persist exactly one terminal command-job receipt (first write wins).
+
+        Duplicate terminal callbacks and late worker results must not reopen or
+        overwrite a settled child. Returns True when this call recorded the
+        receipt; False when the job was missing or already terminal.
+        """
+        import time
+        from harness.command_jobs import COMMAND_TERMINAL_STATES
+        from harness.local_job_artifacts import (
+            ERROR_ARTIFACT_TYPE,
+            ANALYSIS_ARTIFACT_TYPE,
+            stamp_provenance,
+            terminal_artifact_id,
+        )
+
+        terminal = str(status or "failed").strip().lower()
+        if terminal not in COMMAND_TERMINAL_STATES:
+            terminal = "failed" if terminal != "ok" else "completed"
+        if terminal == "ok":
+            terminal = "completed"
+
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if not job:
+                return False
+            # First durable terminal receipt wins — never overwrite or reopen.
+            if job.get("terminal_receipt") is not None:
+                return False
+            if job.get("status") in _TERMINAL_LOCAL_JOB_STATUSES:
+                return False
+            # Do not reopen a user-cancelled row as a later timeout/etc.
+            if job.get("status") == "cancelled" and terminal != "cancelled":
+                terminal = "cancelled"
+            job["status"] = terminal
+            job["updated_at"] = time.time()
+            job["exit_code"] = int(exit_code)
+            job["run_status"] = str(run_status or terminal)
+            inline = output if isinstance(output, str) else str(output or "")
+            preview = (output_preview or "").strip() or inline[:4096]
+            job["output"] = inline if not spill_uri else ""
+            job["output_preview"] = preview
+            job["output_chars"] = int(output_chars or len(inline))
+            if spill_uri:
+                job["spill_uri"] = spill_uri
+            if spill_path:
+                job["spill_path"] = spill_path
+            if job.get("tasks"):
+                try:
+                    job["tasks"][0]["status"] = terminal
+                except Exception:
+                    pass
+            headline = (summary or f"Command {terminal}").strip().splitlines()[0][:240]
+            art_type = (
+                ANALYSIS_ARTIFACT_TYPE
+                if terminal == "completed"
+                else ERROR_ARTIFACT_TYPE
+            )
+            terminal_art = stamp_provenance(
+                {
+                    "id": terminal_artifact_id(job_id),
+                    "type": art_type,
+                    "headline": headline,
+                },
+                {
+                    "adapter": job.get("adapter"),
+                    "model": job.get("model"),
+                    "result": terminal,
+                },
+            )
+            job["artifacts"] = [terminal_art]
+            job["terminal_receipt"] = {
+                "status": terminal,
+                "run_status": str(run_status or terminal),
+                "exit_code": int(exit_code),
+                "summary": headline,
+                "finished_at": job["updated_at"],
+                "output_chars": job["output_chars"],
+                "spill_uri": spill_uri or "",
+                "output_spilled": bool(spill_uri),
+            }
+            parent_batch_id = str(job.get("batch_id") or "")
+            self._persist_local_jobs_locked()
+        # Refresh aggregate after releasing the lock (children own truth).
+        if parent_batch_id:
+            try:
+                self._sync_command_batch_from_children(parent_batch_id)
+            except Exception:
+                pass
+        return True
+
+    def get_local_job(self, job_id: str) -> Optional[dict]:
+        """Deep-copy one local job by id (restart-safe after ``_load_local_jobs``)."""
+        if not job_id:
+            return None
+        with self._local_jobs_lock:
+            job = self._local_jobs.get(job_id)
+            if not isinstance(job, dict):
+                return None
+            snap = copy.deepcopy(job)
+            snap["actions"] = snapshot_actions(snap.get("actions"))
+            return snap
 
     def _register_local_job(self, job_id: str, goal: str, role: str = "implement",
                             cwd: str = "", engine: str = "", model: str = "",
@@ -658,7 +1156,13 @@ class LocalJobsMixin:
         is stale -- its thread died with the old process -- so we flip it to
         'cancelled' with an 'Interrupted by backend restart' note instead of
         leaving a permanently-spinning ghost in the panel. Reloaded jobs are kept
-        in history but get NO live cancel Event (nothing to cancel)."""
+        in history but get NO live cancel Event (nothing to cancel).
+
+        Wave 4: command/batch rows with an existing terminal receipt keep that
+        durable outcome (never rerun or overwrite solely because the process
+        restarted). Unfinished command children heal from launch-checkpoint
+        facts into an honest cancelled terminal.
+        """
         import json
         try:
             with open(self._local_jobs_path, "r", encoding="utf-8") as f:
@@ -678,7 +1182,43 @@ class LocalJobsMixin:
                 jid = job.get("id")
                 if not jid:
                     continue
-                if job.get("status") == "running":
+                is_command_job = (
+                    job.get("job_kind") == "run_command"
+                    or job.get("role") == "command"
+                )
+                is_command_batch = (
+                    job.get("job_kind") == "run_command_batch"
+                    or job.get("role") == "command_batch"
+                )
+                # Durable terminal receipt is authoritative — never reopen.
+                prior_receipt = job.get("terminal_receipt")
+                receipt_status = (
+                    str(prior_receipt.get("status") or "").strip()
+                    if isinstance(prior_receipt, dict)
+                    else ""
+                )
+                has_durable_terminal = (
+                    (is_command_job or is_command_batch)
+                    and receipt_status in _TERMINAL_LOCAL_JOB_STATUSES
+                )
+                if has_durable_terminal:
+                    job["status"] = receipt_status
+                    if job.get("tasks"):
+                        try:
+                            job["tasks"][0]["status"] = receipt_status
+                        except Exception:
+                            pass
+                    # Fall through to action settle; do not heal-overwrite.
+                elif job.get("status") in ("running", "registered"):
+                    # running *and* registered-but-not-started rows are stale
+                    # after process death — heal to cancelled so the panel
+                    # never spins. Launch-checkpoint distinguishes "never
+                    # started" from "started then lost the process".
+                    had_launch = isinstance(job.get("launch_checkpoint"), dict)
+                    if is_command_job and not had_launch and job.get("status") == "registered":
+                        summary = "Cancelled before launch (backend restart)"
+                    else:
+                        summary = "Interrupted by backend restart"
                     job["status"] = "cancelled"
                     job["updated_at"] = job.get("updated_at") or job.get("created_at")
                     if job.get("tasks"):
@@ -695,8 +1235,42 @@ class LocalJobsMixin:
                     ]
                     job["artifacts"] = keep_routing + [{
                         "type": "error",
-                        "headline": "Interrupted by backend restart",
+                        "headline": summary,
                     }]
+                    if is_command_job:
+                        job["terminal_receipt"] = {
+                            "status": "cancelled",
+                            "summary": summary,
+                            "exit_code": -1,
+                            "finished_at": job.get("updated_at"),
+                            "recovery": "terminal_after_restart",
+                            "had_launch_checkpoint": had_launch,
+                        }
+                    if is_command_batch:
+                        job["terminal_receipt"] = {
+                            "status": "cancelled",
+                            "summary": summary,
+                            "finished_at": job.get("updated_at"),
+                            "child_job_ids": list(job.get("child_job_ids") or []),
+                            "mixed_terminal": bool(job.get("mixed_terminal")),
+                            "recovery": "terminal_after_restart",
+                        }
+                elif (
+                    job.get("status") in _TERMINAL_LOCAL_JOB_STATUSES
+                    and (is_command_job or is_command_batch)
+                    and not has_durable_terminal
+                ):
+                    # Terminal status without a receipt — synthesize one so
+                    # reattach always sees exactly one durable outcome.
+                    job["terminal_receipt"] = {
+                        "status": str(job.get("status")),
+                        "summary": f"Command {job.get('status')} (rehydrated)",
+                        "exit_code": int(job["exit_code"])
+                        if job.get("exit_code") is not None
+                        else -1,
+                        "finished_at": job.get("updated_at") or job.get("created_at"),
+                        "recovery": "receipt_synthesized_on_restart",
+                    }
                 # Re-sanitize persisted actions (drop tampered keys) and settle
                 # any nested rows left running when the prior process died.
                 job["actions"] = settle_running_actions(
@@ -708,22 +1282,67 @@ class LocalJobsMixin:
             self._persist_local_jobs_locked()
 
     def cancel_local_job(self, job_id: str) -> bool:
-        """Cooperatively cancel a running local (provider-worker) job. Sets the
-        per-job cancel Event (best-effort: a Python thread cannot be force-killed,
-        so the underlying provider call may still run to completion) and flips the
-        job to a terminal 'cancelled' state immediately so the UI stops spinning.
-        Returns True if the job existed and was running, False otherwise."""
+        """Cooperatively cancel a running local (provider-worker) job.
+
+        Sets the per-job cancel Event (best-effort: a Python thread cannot be
+        force-killed). Provider-swarm workers and *unlaunched* command jobs are
+        terminalized immediately. Launch-checkpointed command jobs record the
+        cancel request only — the worker owns the single terminal receipt so
+        partial stdout from ``run_cancellable`` is preserved (first-terminal-wins
+        must not discard it with an empty early cancel).
+
+        Returns True if the job existed and was not already terminal.
+        """
         with self._local_jobs_lock:
             job = self._local_jobs.get(job_id)
             if job is None:
                 return False
-            already_terminal = job.get("status") in ("completed", "failed", "cancelled")
+            already_terminal = job.get("status") in _TERMINAL_LOCAL_JOB_STATUSES
+            is_command_batch = (
+                job.get("job_kind") == "run_command_batch"
+                or job.get("role") == "command_batch"
+            )
+            is_command_job = (
+                job.get("job_kind") == "run_command"
+                or job.get("role") == "command"
+            )
+            batch_id = str(job.get("batch_id") or "") if is_command_job else ""
+            has_launch_checkpoint = (
+                is_command_job
+                and isinstance(job.get("launch_checkpoint"), dict)
+            )
             ev = self._local_job_cancels.get(job_id)
             if ev is not None:
                 ev.set()
             if already_terminal:
                 return False
-            job["status"] = "cancelled"
+            if is_command_batch:
+                # Aggregate cancel is handled below without wiping siblings.
+                pass
+            elif not is_command_job:
+                job["status"] = "cancelled"
+        if is_command_batch:
+            from harness.command_batches import cancel_command_batch
+            return cancel_command_batch(self, job_id)
+        if is_command_job:
+            if has_launch_checkpoint:
+                # Cooperative cancel: leave status non-terminal until the
+                # worker returns partial output and finishes once.
+                if batch_id:
+                    self._sync_command_batch_from_children(batch_id)
+                return True
+            # Registered without launch checkpoint — honest stop-before-start.
+            self._finish_command_job(
+                job_id,
+                status="cancelled",
+                summary="Cancelled by user",
+                exit_code=-1,
+                output="",
+            )
+            # Child cancel must not discard sibling truth — only refresh parent.
+            if batch_id:
+                self._sync_command_batch_from_children(batch_id)
+            return True
         # _finish_local_job re-acquires the lock and persists.
         self._finish_local_job(job_id, ok=False, summary="Cancelled by user",
                                status="cancelled")

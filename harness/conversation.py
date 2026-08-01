@@ -845,9 +845,12 @@ class ConversationalSession(
         self._compaction_fail_until: float = 0.0
         # Latest compaction attempt diagnostic (reason code for manual compact API).
         self._last_compaction_attempt: dict = {"reason": "below_trigger"}
-        # Reload any persisted provider-worker history from a prior process so the
-        # swarm panel keeps its history across a backend restart. Stale 'running'
-        # jobs (whose thread died with the old process) are marked interrupted.
+        # Reload any persisted provider-worker / command-job history from a
+        # prior process so the swarm panel keeps its history across a backend
+        # restart. Wave 4: unfinished command children heal from launch-
+        # checkpoint facts into an honest terminal; rows with a durable
+        # terminal receipt are never reopened or rerun solely because SSE
+        # disappeared. Stale provider 'running' jobs are marked interrupted.
         self._load_local_jobs()
         # Reload any persisted prompt queue from a prior process so queued
         # prompts survive a backend restart. Tolerates a missing/corrupt file.
