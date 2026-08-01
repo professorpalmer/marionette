@@ -88,6 +88,58 @@ def test_unknown_explicit_openrouter_slug_is_unavailable(monkeypatch):
     assert reg.metadata_source("deepseek/deepseek-v4-unknown") == "unknown"
 
 
+def test_native_slash_id_is_not_explicit_openrouter(monkeypatch):
+    import pmharness.registry as reg
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    assert reg._explicit_openrouter_slug("native/qwen3-coder-30b") == ""
+    # Ordinary floor / static path — not the OR zero-window fail-closed path.
+    assert reg.context_window("native/totally-unknown-xyz") == 200000
+    assert reg.metadata_source("native/totally-unknown-xyz") == "unknown"
+
+
+def test_id_only_openrouter_metadata_does_not_use_static_128k(monkeypatch):
+    """deepseek/deepseek-v4-flash-0731 id-only cache must not inherit deepseekv4=128K."""
+    import pmharness.registry as reg
+
+    slug = "deepseek/deepseek-v4-flash-0731"
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
+    monkeypatch.setattr(
+        reg,
+        "_cached_openrouter_metadata",
+        lambda name: {"id": slug, "source": "stale-live"},
+    )
+    monkeypatch.setattr(reg, "_try_refresh_openrouter_rich_metadata", lambda name: None)
+
+    assert reg._static_window(slug) == 128000  # family table still exists…
+    assert reg.context_window(slug) == 0       # …but explicit OR must not use it
+    assert reg.metadata_source(slug) == "unknown"
+    with pytest.raises(ValueError, match="metadata unavailable"):
+        reg.apply_context_window(slug)
+
+
+def test_id_only_openrouter_metadata_refresh_unlocks_rich_window(monkeypatch):
+    import pmharness.registry as reg
+
+    slug = "deepseek/deepseek-v4-flash-0731"
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
+    state = {"rich": False}
+
+    def _meta(name):
+        if state["rich"]:
+            return {"id": slug, "source": "live", "context_length": 1_000_000}
+        return {"id": slug, "source": "stale-live"}
+
+    def _refresh(name):
+        state["rich"] = True
+        return _meta(name)
+
+    monkeypatch.setattr(reg, "_cached_openrouter_metadata", _meta)
+    monkeypatch.setattr(reg, "_try_refresh_openrouter_rich_metadata", _refresh)
+    assert reg.apply_context_window(f"openrouter:{slug}") == 1_000_000
+
+
 def test_never_raises_on_garbage(monkeypatch):
     import pmharness.registry as reg
     assert reg.context_window("") == 200000

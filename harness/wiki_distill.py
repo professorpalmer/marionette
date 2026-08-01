@@ -98,7 +98,9 @@ class WikiDistillMixin:
                 self._turn_economy.record_wiki_grounding(
                     len(wiki_section),
                     len(hits),
-                    price_in=price_in,
+                    # Unknown explicit OpenRouter rates stay unpriced (None),
+                    # never coerced into a fabricated $/MTok.
+                    price_in=None if price_in is None else price_in,
                 )
             except Exception:
                 pass
@@ -116,6 +118,8 @@ class WikiDistillMixin:
             from pmharness.registry import resolve_price
 
             price_in, _ = resolve_price(self.config.driver)
+            if price_in is None:
+                price_in = 0.0
             return self._turn_economy.wiki_grounding_fields(price_in)
         except Exception:
             return {

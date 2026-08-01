@@ -247,6 +247,60 @@ def _apply_op(lines: list[str], op: HashEditOp) -> None:
             lines[insert_at:insert_at] = new_lines
 
 
+def _overlap_errors(ops: list[HashEditOp]) -> list[str]:
+    """Detect overlapping replace/delete ranges and insert positions.
+
+    Deterministic: reports every pairwise conflict using original op indices.
+    Adjacent non-overlapping ranges (e.g. 1-2 and 3-4) are allowed.
+    """
+    errors: list[str] = []
+    ranges: list[tuple[int, int, int]] = []  # start, end, op_index
+    inserts: list[tuple[int, int]] = []  # after_line, op_index
+
+    for i, op in enumerate(ops):
+        if op.op in ("replace", "delete"):
+            start = int(op.start_line or 0)
+            end = int(op.end_line or start)
+            if end < start:
+                end = start
+            ranges.append((start, end, i))
+        elif op.op == "insert":
+            inserts.append((int(op.after_line), i))
+
+    for a in range(len(ranges)):
+        s1, e1, i1 = ranges[a]
+        for b in range(a + 1, len(ranges)):
+            s2, e2, i2 = ranges[b]
+            if s1 <= e2 and s2 <= e1:
+                errors.append(
+                    f"op[{i1}] and op[{i2}]: overlapping {ops[i1].op}/{ops[i2].op} "
+                    f"ranges {s1}-{e1} and {s2}-{e2}"
+                )
+
+    seen_inserts: dict[int, int] = {}
+    for after, i in inserts:
+        prev = seen_inserts.get(after)
+        if prev is not None:
+            errors.append(
+                f"op[{prev}] and op[{i}]: overlapping insert positions "
+                f"after_line={after}"
+            )
+        else:
+            seen_inserts[after] = i
+
+    for after, i in inserts:
+        for start, end, j in ranges:
+            # Insert after line L anchors on line L; conflicts if that line is
+            # inside a replace/delete range.
+            if after >= start and after <= end:
+                errors.append(
+                    f"op[{i}] and op[{j}]: insert after_line={after} overlaps "
+                    f"{ops[j].op} range {start}-{end}"
+                )
+
+    return errors
+
+
 def apply_hash_edits(
     original_text: str,
     ops: list[HashEditOp],
@@ -254,7 +308,8 @@ def apply_hash_edits(
     """Validate all ops against ``original_text``, then apply in memory.
 
     Returns (new_text, result). On failure ``new_text`` is the unchanged
-    original and nothing should be written.
+    original and nothing should be written. Overlapping replace/delete ranges
+    and insert positions are rejected before any mutation.
     """
     eol = detect_eol_style(original_text)
     lines = split_lines(normalize_newlines(original_text))
@@ -267,6 +322,9 @@ def apply_hash_edits(
             errors.append(f"op[{i}]: {err}")
             if "stale anchor" in err and op.anchor:
                 stale.append(op.anchor)
+
+    if not errors:
+        errors.extend(_overlap_errors(ops))
 
     if errors:
         return original_text, ApplyResult(

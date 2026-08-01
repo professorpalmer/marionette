@@ -47,6 +47,30 @@ def test_resolve_price_unknown_explicit_openrouter_slug_has_no_defaults(monkeypa
     assert src == "unknown"
 
 
+def test_explicit_openrouter_slug_identity_matrix(monkeypatch):
+    """provider:model / native slash ids must not be treated as OR slugs."""
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+
+    assert reg._explicit_openrouter_slug("openrouter:deepseek/deepseek-v4-flash") == (
+        "deepseek/deepseek-v4-flash"
+    )
+    assert reg._explicit_openrouter_slug("deepseek/deepseek-v4-flash") == (
+        "deepseek/deepseek-v4-flash"
+    )
+    assert reg._explicit_openrouter_slug("anthropic:claude-opus-4-8") == ""
+    assert reg._explicit_openrouter_slug("cursor-cli:composer-2.5") == ""
+    assert reg._explicit_openrouter_slug("native/qwen3-coder-30b") == ""
+    assert reg._explicit_openrouter_slug("agentic/deepseek/deepseek-v4-pro") == ""
+    assert reg._is_explicit_openrouter_slug("native/qwen3-coder-30b") is False
+
+    # Native slash ids keep ordinary default pricing (not OR fail-closed).
+    pin, pout = reg.resolve_price("native/totally-unknown-xyz")
+    assert (pin, pout) == (0.5, 2.0)
+    # Unknown bare OR slug still fails closed.
+    assert reg.resolve_price("acme/definitely-not-a-real-model-xyz") == (None, None)
+
+
 def test_resolve_price_with_source_uses_resolve_price_seam(monkeypatch):
     """Provenance wrapper must not bypass the resolve_price monkeypatch seam."""
     monkeypatch.setattr(reg, "_PRICE_MEM", {})

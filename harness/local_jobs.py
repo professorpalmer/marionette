@@ -295,19 +295,27 @@ class LocalJobsMixin:
                         model_id or (job.get("model") or "")
                     ) or self.config.driver
                     price_in, price_out, _src = resolve_price_with_source(price_spec)
-                    price_source = _normalize_price_source(_src)
-                    real_cost = _job_cost(0, 0, tokens, price_in, price_out)
-                    cost_unsplit = True
+                    if price_in is None or price_out is None:
+                        # Explicit OpenRouter unknown: fail closed at $0.
+                        real_cost = 0.0
+                        price_source = "unknown"
+                    else:
+                        price_source = _normalize_price_source(_src)
+                        real_cost = _job_cost(0, 0, tokens, price_in, price_out)
+                        cost_unsplit = True
                 except Exception:
                     real_cost = 0.0
             if real_cost:
                 job["est_cost_usd"] = round(real_cost, 6)
-            if cost_unsplit or (tokens and not est_cost_usd):
-                # Unsplit catalog/default totals are estimates, never receipts.
+            if cost_unsplit or (tokens and not est_cost_usd) or price_source == "unknown":
+                # Unsplit catalog/default/unknown totals are estimates, never receipts.
                 job["estimated"] = True
                 job["cost_provenance"] = (
                     "static" if price_source == "static"
-                    else ("live" if price_source == "live" else "default")
+                    else (
+                        "live" if price_source == "live"
+                        else ("unknown" if price_source == "unknown" else "default")
+                    )
                 )
             elif real_cost and est_cost_usd:
                 job["estimated"] = False

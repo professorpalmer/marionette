@@ -1866,6 +1866,8 @@ class ConversationalSession(
             from pmharness.registry import resolve_price
 
             price_in, _ = resolve_price(self.config.driver)
+            if price_in is None:
+                price_in = 0.0
             # Empty harness session id => unscoped summarize (prior behavior).
             return self._turn_economy.tool_output_savings_fields(
                 price_in,
@@ -2392,7 +2394,14 @@ class ConversationalSession(
                             price_in, price_out = resolve_price(getattr(self.config, "driver", ""))
                         except Exception:
                             price_in, price_out = 0.0, 0.0
-                    cost = (ti * float(price_in) + to * float(price_out)) / 1_000_000.0
+                    # Explicit OpenRouter unknown → (None, None): fail closed
+                    # with $0 rather than TypeError or fabricated defaults.
+                    if price_in is None or price_out is None:
+                        cost = 0.0
+                    else:
+                        cost = (
+                            ti * float(price_in) + to * float(price_out)
+                        ) / 1_000_000.0
                 self._worker_cost_usd += max(0.0, cost)
             else:
                 cost = 0.0

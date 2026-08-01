@@ -235,12 +235,33 @@ def test_session_cost_split_includes_write_premium():
 
 
 def test_normalize_price_source_maps_registry_labels():
+    from harness.api.cost_accounting import PRICE_SOURCE_UNKNOWN
+
     assert _normalize_price_source("live") == "live"
     assert _normalize_price_source("live_alias") == "live"
     assert _normalize_price_source("catalog") == "static"
     assert _normalize_price_source("static") == "static"
+    assert _normalize_price_source("unknown") == PRICE_SOURCE_UNKNOWN
     assert _normalize_price_source(None) == "default"
     assert _normalize_price_source("") == "default"
+
+
+def test_resolve_active_prices_unknown_explicit_openrouter_fails_closed(monkeypatch):
+    """(None, None) from resolve_price must not become float(None) or 0.5/2.0."""
+    import harness.api.cost as cost_mod
+    import pmharness.registry as reg
+    from harness.api.cost_accounting import PRICE_SOURCE_UNKNOWN
+
+    class _Cfg:
+        driver = "openrouter:acme/definitely-not-a-real-model-xyz"
+
+    monkeypatch.setattr(cost_mod, "_cfg", lambda: _Cfg())
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
+    monkeypatch.setattr(reg, "_live_windows", lambda: {})
+    pin, pout, src = _resolve_active_prices_with_source()
+    assert (pin, pout) == (0.0, 0.0)
+    assert src == PRICE_SOURCE_UNKNOWN
+    assert _spend_is_estimated("estimated", src) is True
 
 
 def test_resolve_active_prices_with_source_surfaces_default(monkeypatch):

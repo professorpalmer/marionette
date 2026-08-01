@@ -164,26 +164,49 @@ def _cw_norm(slug: str) -> str:
     return _re.sub(r"[^a-z0-9]", "", s)
 
 
+# Leading namespaces that are native engine/adapter identity, never bare
+# OpenRouter slugs. Keep in sync with harness.model_identity.ENGINE_LABELS
+# plus CLI/adapter lanes that may appear as ``lane/model`` specs.
+_NATIVE_SLASH_NAMESPACES = frozenset({
+    "agentic",
+    "native",
+    "claude-code",
+    "codex",
+    "cursor",
+    "cursor-agent",
+    "cursor-cli",
+    "hermes",
+    "openai-codex",
+    "unknown",
+})
+
+
 def _explicit_openrouter_slug(name: str) -> str:
+    """Return a caller-supplied OpenRouter slug, or ``\"\"`` when not explicit.
+
+    Explicit forms:
+      - ``openrouter:<slug>`` (including ``openrouter:vendor/model``)
+      - bare ``vendor/model`` OpenRouter ids (no provider colon prefix)
+
+    Not explicit (ordinary resolution / defaults apply):
+      - ``provider:model`` specs (``anthropic:claude-…``, ``cursor-cli:…``)
+      - native slash ids under engine/adapter namespaces (``native/…``,
+        ``agentic/…``, ``cursor-cli/…``, …)
+    """
     value = str(name or "").strip()
+    if not value:
+        return ""
     if value.lower().startswith("openrouter:"):
         return value.split(":", 1)[1].strip()
-    if "/" in value and ":" not in value:
-        namespace = value.split("/", 1)[0].strip().lower()
-        if namespace in {
-            "agentic",
-            "claude-code",
-            "codex",
-            "cursor",
-            "cursor-agent",
-            "cursor-cli",
-            "hermes",
-            "openai-codex",
-            "unknown",
-        }:
-            return ""
-        return value
-    return ""
+    # Other provider:model specs are never bare OpenRouter slugs.
+    if ":" in value:
+        return ""
+    if "/" not in value:
+        return ""
+    namespace = value.split("/", 1)[0].strip().lower()
+    if namespace in _NATIVE_SLASH_NAMESPACES:
+        return ""
+    return value
 
 
 def _cached_openrouter_metadata(name: str) -> dict | None:
@@ -193,6 +216,51 @@ def _cached_openrouter_metadata(name: str) -> dict | None:
     try:
         from harness.model_fetch import model_metadata
         return model_metadata("openrouter", slug)
+    except Exception:
+        return None
+
+
+def _rich_openrouter_context(metadata: dict | None) -> int:
+    """Positive context_length from a rich OpenRouter record, else 0."""
+    if not isinstance(metadata, dict):
+        return 0
+    context = metadata.get("context_length")
+    if isinstance(context, int) and context > 0:
+        return context
+    return 0
+
+
+def _try_refresh_openrouter_rich_metadata(name: str) -> dict | None:
+    """Force one OpenRouter catalog refresh when cached metadata is id-only.
+
+    Uses the existing ``fetch_model_records(..., force=True)`` seam when a key
+    is present. Never invents a static family window; returns the refreshed
+    record or ``None`` when refresh is unavailable / still incomplete.
+    Honors ``PMHARNESS_LIVE_MODELS=0`` / ``PMHARNESS_OR_LIVE_WINDOWS=0`` so
+    hermetic tests never hit the network.
+    """
+    if _os.environ.get("PMHARNESS_LIVE_MODELS", "1") == "0":
+        return None
+    if _os.environ.get("PMHARNESS_OR_LIVE_WINDOWS", "1") == "0":
+        return None
+    slug = _explicit_openrouter_slug(name)
+    if not slug:
+        return None
+    try:
+        from harness import providers as prov
+        from harness.model_fetch import fetch_model_records, model_metadata
+
+        provider = prov.get_provider("openrouter")
+        if provider is None:
+            return None
+        key = provider.key() if hasattr(provider, "key") else None
+        if not key:
+            return None
+        fetch_model_records(provider, key, force=True)
+        meta = model_metadata("openrouter", slug)
+        if _rich_openrouter_context(meta) > 0:
+            return meta
+        return None
     except Exception:
         return None
 
@@ -612,7 +680,12 @@ def _is_explicit_openrouter_slug(name: str) -> bool:
 
 
 def metadata_source(name: str) -> str:
-    """Return metadata provenance: live, stale-live, catalog, or unknown."""
+    """Return metadata provenance: live, stale-live, catalog, or unknown.
+
+    Id-only OpenRouter cache rows (slug present, no ``context_length``) are
+    treated as ``unknown`` — they must not claim stale-live richness or unlock
+    an unsafe static family fallback.
+    """
     try:
         if _resolve_live_window(name) > 0:
             return "live"
@@ -620,9 +693,8 @@ def metadata_source(name: str) -> str:
         pass
     if _is_explicit_openrouter_slug(name):
         try:
-            from harness.model_fetch import model_metadata
-            slug = str(name).split(":", 1)[-1]
-            if model_metadata("openrouter", slug):
+            meta = _cached_openrouter_metadata(name)
+            if _rich_openrouter_context(meta) > 0:
                 return "stale-live"
         except Exception:
             pass
@@ -636,12 +708,23 @@ def metadata_source(name: str) -> str:
 
 
 def apply_context_window(name: str, *, default: int = _CW_FLOOR) -> int:
-    """Resolve the active driver's context budget; fail closed for explicit OpenRouter slugs."""
+    """Resolve the active driver's context budget; fail closed for explicit OpenRouter slugs.
+
+    When cached OpenRouter metadata is missing or id-only, attempt one rich
+    catalog refresh via the existing model-fetch seam before failing closed.
+    Never substitutes a generic static family window (e.g. 128K) for an
+    explicit OpenRouter slug.
+    """
     if _is_explicit_openrouter_slug(name) and metadata_source(name) == "unknown":
-        raise ValueError(f"OpenRouter metadata unavailable for {name!r}")
+        _try_refresh_openrouter_rich_metadata(name)
+        if metadata_source(name) == "unknown":
+            raise ValueError(f"OpenRouter metadata unavailable for {name!r}")
     window = context_window(name, default=default)
     if _is_explicit_openrouter_slug(name) and window <= 0:
-        raise ValueError(f"OpenRouter context window unavailable for {name!r}")
+        _try_refresh_openrouter_rich_metadata(name)
+        window = context_window(name, default=default)
+        if window <= 0:
+            raise ValueError(f"OpenRouter context window unavailable for {name!r}")
     return window
 
 

@@ -731,6 +731,12 @@ def meter_pilot_step(
             _price_in, _price_out = 0.0, 0.0
         _price_src = "default"
         session._price_source = _price_src
+    # Explicit OpenRouter unknown rates: keep provenance, price catalog path
+    # at $0 (provider billed path below still wins when present).
+    if _price_in is None or _price_out is None:
+        _price_in, _price_out = 0.0, 0.0
+        if not session._price_source:
+            session._price_source = "unknown"
     # Prefer provider-billed USD (OpenRouter usage.cost) when the
     # driver surfaced it. Otherwise price this step with the same
     # cache-aware formula /api/usage uses -- never full-price the

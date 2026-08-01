@@ -130,6 +130,97 @@ def test_no_partial_writes(tmp_path):
     assert fpath.read_text(encoding="utf-8") == original
 
 
+def test_overlapping_replace_ranges_rejected_without_partial_write(tmp_path):
+    fpath = tmp_path / "overlap.txt"
+    fpath.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+    lines = _lines(str(fpath))
+    original = fpath.read_text(encoding="utf-8")
+
+    ops = [
+        HashEditOp(
+            op="replace",
+            anchor=compute_range_hash(lines, 1, 3),
+            start_line=1,
+            end_line=3,
+            text="A\nB\nC",
+        ),
+        HashEditOp(
+            op="replace",
+            anchor=compute_range_hash(lines, 2, 4),
+            start_line=2,
+            end_line=4,
+            text="X\nY\nZ",
+        ),
+    ]
+    new_text, result = apply_hash_edits(original, ops)
+    assert not result.ok
+    assert "overlapping" in result.message
+    assert new_text == original
+    assert fpath.read_text(encoding="utf-8") == original
+
+    file_result = apply_hash_edits_to_file(str(fpath), ops)
+    assert not file_result.ok
+    assert fpath.read_text(encoding="utf-8") == original
+
+
+def test_overlapping_insert_positions_rejected():
+    original = "one\ntwo\nthree\n"
+    ops = [
+        HashEditOp(op="insert", after_line=1, text="A"),
+        HashEditOp(op="insert", after_line=1, text="B"),
+    ]
+    new_text, result = apply_hash_edits(original, ops)
+    assert not result.ok
+    assert "overlapping insert" in result.message
+    assert new_text == original
+
+
+def test_insert_inside_replace_range_rejected():
+    original = "one\ntwo\nthree\n"
+    lines = split_lines(original)
+    ops = [
+        HashEditOp(
+            op="replace",
+            anchor=compute_range_hash(lines, 1, 3),
+            start_line=1,
+            end_line=3,
+            text="ALL",
+        ),
+        HashEditOp(op="insert", after_line=2, text="mid"),
+    ]
+    new_text, result = apply_hash_edits(original, ops)
+    assert not result.ok
+    assert "overlaps" in result.message
+    assert new_text == original
+
+
+def test_adjacent_non_overlapping_multi_hunk_still_applies():
+    """Valid multi-hunk (adjacent ranges + distinct insert) must still succeed."""
+    original = "one\ntwo\nthree\nfour\n"
+    lines = split_lines(original)
+    ops = [
+        HashEditOp(
+            op="replace",
+            anchor=compute_range_hash(lines, 1, 1),
+            start_line=1,
+            end_line=1,
+            text="ONE",
+        ),
+        HashEditOp(
+            op="replace",
+            anchor=compute_range_hash(lines, 2, 2),
+            start_line=2,
+            end_line=2,
+            text="TWO",
+        ),
+        HashEditOp(op="insert", after_line=3, text="mid"),
+    ]
+    new_text, result = apply_hash_edits(original, ops)
+    assert result.ok
+    assert result.applied_ops == 3
+    assert new_text == "ONE\nTWO\nthree\nmid\nfour\n"
+
+
 def test_read_file_anchors_when_enabled(tmp_path):
     from harness.config import HarnessConfig
     from harness.conversation import ConversationalSession

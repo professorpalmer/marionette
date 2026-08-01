@@ -13,8 +13,8 @@ export type CostBreakdownData = {
   tokens_used: number;
   est_cost_usd: number;
   cost_source?: "provider" | "estimated" | "mixed" | "plan_estimated";
-  /** live | static | default — how display rates were resolved. */
-  price_source?: "live" | "static" | "default";
+  /** live | static | default | unknown — how display rates were resolved. */
+  price_source?: "live" | "static" | "default" | "unknown";
   /** True when spend is not a full provider receipt. */
   estimated?: boolean;
   tokens_cached?: number;
@@ -116,7 +116,7 @@ export function delegationSavingsCredited(
 export function spendIsEstimated(data: Pick<CostBreakdownData, "cost_source" | "estimated" | "price_source">): boolean {
   if (typeof data.estimated === "boolean") return data.estimated;
   if (data.cost_source === "provider") return false;
-  if (data.price_source === "default") return true;
+  if (data.price_source === "default" || data.price_source === "unknown") return true;
   return true;
 }
 
@@ -335,7 +335,9 @@ export default function CostBreakdown({ data }: { data: CostBreakdownData }) {
         ? "Plan spend (est.)"
         : data.price_source === "default"
           ? "Estimated spend (default rates)"
-          : "Estimated spend";
+          : data.price_source === "unknown"
+            ? "Spend (rates unavailable)"
+            : "Estimated spend";
   const spendPrefix = estimated ? "~" : "";
   const pilotCacheGross =
     typeof data.cache_savings_gross_usd === "number" && isFinite(data.cache_savings_gross_usd)

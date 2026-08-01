@@ -286,7 +286,7 @@ export type SwarmLive = {
     est_cost_usd: number;
     cost_source?: "provider" | "estimated" | "mixed" | "plan_estimated";
     /** live | static | default — how display rates were resolved. */
-    price_source?: "live" | "static" | "default";
+    price_source?: "live" | "static" | "default" | "unknown";
     /** True when spend is not a full provider receipt. */
     estimated?: boolean;
     driver?: string;
@@ -531,7 +531,7 @@ export type UsageData = {
     /** provider = billed usage.cost; estimated = token*catalog; mixed = both; plan_estimated = subscription credits (no API receipt). */
     cost_source?: "provider" | "estimated" | "mixed" | "plan_estimated";
     /** live = OpenRouter rates; static = eval catalog; default = hardcoded 0.5/2.0. */
-    price_source?: "live" | "static" | "default";
+    price_source?: "live" | "static" | "default" | "unknown";
     /** True when spend is not a full provider receipt (or rates defaulted). */
     estimated?: boolean;
     driver: string;

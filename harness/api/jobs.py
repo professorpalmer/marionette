@@ -163,13 +163,17 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     res_jobs: list = []
     try:
         from pmharness.registry import resolve_price, price_with_source
-        from .cost_accounting import _normalize_price_source
+        from .cost_accounting import PRICE_SOURCE_UNKNOWN, _normalize_price_source
 
         price_in, price_out = resolve_price(svc.cfg.driver)
         raw_in, raw_out, _price_src = price_with_source(svc.cfg.driver)
-        price_source = _normalize_price_source(
-            None if raw_in is None or raw_out is None else _price_src
-        )
+        if price_in is None or price_out is None:
+            # Explicit OpenRouter unknown: fail closed (no fabricated dollars).
+            price_in, price_out, price_source = 0.0, 0.0, PRICE_SOURCE_UNKNOWN
+        else:
+            price_source = _normalize_price_source(
+                None if raw_in is None or raw_out is None else _price_src
+            )
     except Exception as exc:
         try:
             from .cost_accounting import _log_price_fallback

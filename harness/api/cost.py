@@ -105,6 +105,7 @@ from .cost_accounting import (  # noqa: E402
     PRICE_SOURCE_DEFAULT,
     PRICE_SOURCE_LIVE,
     PRICE_SOURCE_STATIC,
+    PRICE_SOURCE_UNKNOWN,
     _cache_hit_ratio,
     _cache_savings,
     _cache_savings_gross,

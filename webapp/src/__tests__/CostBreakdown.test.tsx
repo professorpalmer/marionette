@@ -379,6 +379,23 @@ describe("CostBreakdown", () => {
     expect(screen.getByText("~$0.05")).toBeInTheDocument();
   });
 
+  it("labels unknown OpenRouter rates without fabricating spend copy", () => {
+    expect(spendIsEstimated({ cost_source: "estimated", price_source: "unknown" })).toBe(true);
+    render(
+      <CostBreakdown
+        data={{
+          tokens_used: 1000,
+          est_cost_usd: 0.01,
+          cost_source: "estimated",
+          price_source: "unknown",
+          estimated: true,
+        }}
+      />,
+    );
+    expect(screen.getByText("Spend (rates unavailable)")).toBeInTheDocument();
+    expect(screen.getByText("~$0.01")).toBeInTheDocument();
+  });
+
   it("prefers uncapped gross cache value over reconciled/capped", () => {
     render(
       <CostBreakdown

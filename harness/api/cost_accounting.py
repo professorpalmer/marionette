@@ -22,10 +22,13 @@ CACHE_WRITE_MULTIPLIER = CACHE_WRITE_5M_MULTIPLIER
 
 # Wire values for price/cost provenance (backward-compatible additions).
 # live = OpenRouter /models rates; static = eval catalog; default = hardcoded
-# 0.5/2.0 fallback; provider = billed usage.cost (cost_source, not price ladder).
+# 0.5/2.0 fallback; unknown = explicit OpenRouter slug with no published rate
+# (fail closed — never fabricate dollars); provider = billed usage.cost
+# (cost_source, not price ladder).
 PRICE_SOURCE_LIVE = "live"
 PRICE_SOURCE_STATIC = "static"
 PRICE_SOURCE_DEFAULT = "default"
+PRICE_SOURCE_UNKNOWN = "unknown"
 CACHE_SAVINGS_CATALOG = "catalog"
 CACHE_SAVINGS_CAPPED = "capped"
 CACHE_SAVINGS_UNKNOWN = "unknown"
@@ -35,7 +38,8 @@ def _normalize_price_source(src: Optional[str]) -> str:
     """Map registry source labels onto the public wire vocabulary.
 
     ``live_alias`` collapses to ``live``; ``catalog`` becomes ``static``.
-    Unresolved / missing → ``default``.
+    Explicit OpenRouter ``unknown`` is preserved (distinct from ordinary
+    ``default``). Other unresolved / missing → ``default``.
     """
     if not src:
         return PRICE_SOURCE_DEFAULT
@@ -46,6 +50,8 @@ def _normalize_price_source(src: Optional[str]) -> str:
         return PRICE_SOURCE_STATIC
     if key == "default":
         return PRICE_SOURCE_DEFAULT
+    if key == "unknown":
+        return PRICE_SOURCE_UNKNOWN
     return PRICE_SOURCE_DEFAULT
 
 
@@ -167,13 +173,14 @@ def _spend_is_estimated(cost_source: str, price_source: str = "") -> bool:
     """True when the dollar figure is not a full provider receipt.
 
     Provider-billed spend stays non-estimated even if display rates fell back
-    to defaults (those rates are unused for the billed total). Default rates
-    with a catalog/estimate path always mark the amount estimated.
+    to defaults (those rates are unused for the billed total). Default or
+    unknown rates with a catalog/estimate path always mark the amount estimated.
     """
     src = (cost_source or "").strip().lower()
     if src == "provider":
         return False
-    if (price_source or "").strip().lower() == PRICE_SOURCE_DEFAULT:
+    price_src = (price_source or "").strip().lower()
+    if price_src in (PRICE_SOURCE_DEFAULT, PRICE_SOURCE_UNKNOWN):
         return True
     return src != "provider"
 
@@ -423,7 +430,12 @@ def _log_price_fallback(where: str, err: BaseException) -> None:
 
 
 def _resolve_active_prices_with_source() -> tuple:
-    """Per-Mtok (price_in, price_out, price_source) for the active driver."""
+    """Per-Mtok (price_in, price_out, price_source) for the active driver.
+
+    Explicit OpenRouter slugs with no published rate fail closed as
+    ``(0.0, 0.0, unknown)`` — never ``float(None)`` and never the ordinary
+    0.5/2.0 default ladder.
+    """
     from .cost import _cfg
 
     try:
@@ -431,6 +443,8 @@ def _resolve_active_prices_with_source() -> tuple:
 
         price_in, price_out = resolve_price(_cfg().driver)
         raw_in, raw_out, src = price_with_source(_cfg().driver)
+        if price_in is None or price_out is None:
+            return 0.0, 0.0, PRICE_SOURCE_UNKNOWN
         return (
             float(price_in),
             float(price_out),
@@ -461,6 +475,8 @@ def _resolve_prices_for_runner_with_source(runner: Any) -> tuple:
 
             price_in, price_out = resolve_price(driver)
             raw_in, raw_out, src = price_with_source(driver)
+            if price_in is None or price_out is None:
+                return 0.0, 0.0, PRICE_SOURCE_UNKNOWN
             return (
                 float(price_in),
                 float(price_out),

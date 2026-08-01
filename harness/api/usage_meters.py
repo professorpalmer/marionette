@@ -674,6 +674,8 @@ def _job_savings_fields(job_id: str) -> dict:
             from pmharness.registry import resolve_price
 
             price_in, _ = resolve_price(_cfg().driver)
+            if price_in is None:
+                price_in = 0.0
         except Exception:
             price_in = 0.0
         cli_dir = None

@@ -536,7 +536,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const {
     data: workspaceInfo,
-    isValidating: workspaceValidating,
     isTransitioning: workspaceTransitioning,
     isShowingStale: workspaceStale,
     revalidate: revalidateWorkspace,
@@ -569,7 +568,6 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
 
   const {
     data: sessions = [],
-    isValidating: sessionsValidating,
     isTransitioning: sessionsTransitioning,
     isShowingStale: sessionsStale,
     revalidate: revalidateSessions,
@@ -1526,10 +1524,10 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
         </>
       )}
 
-      {/* PROJECTS SECTION */}
+      {/* PROJECTS SECTION — tabs already label the pane; no redundant heading. */}
       {railTab === "projects" && (
       <div ref={projectsSectionRef}>
-      <Section title="Projects" headerSpinner={panelSwitching && (sessionsValidating || workspaceValidating)}>
+      <div className="px-2 pt-3 shrink-0 min-w-0">
         {projects.length === 0 && !panelSwitching && <Empty>No projects</Empty>}
       <div className="space-y-0.5 -mx-2">
           {projects.map((projectPath) => {
@@ -1796,7 +1794,7 @@ export default function LeftRail({ jobsRefresh, onSessionChange }: {
             );
           })}
         </div>
-      </Section>
+      </div>
       </div>
       )}
 
