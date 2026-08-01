@@ -342,10 +342,12 @@ class LocalJobsMixin:
             if not statuses:
                 aggregate = "failed"
             elif not all_terminal:
+                # Children own truth: parent cancel must not mark the aggregate
+                # terminal (or write a durable receipt) while any child is still
+                # running/registered. Stay running/cancelling-equivalent until
+                # every child reaches a terminal command state.
                 if any(s == "running" for s in statuses):
                     aggregate = "running"
-                elif parent_cancelled:
-                    aggregate = "cancelled"
                 else:
                     aggregate = "running" if any(
                         s == "registered" for s in statuses
@@ -357,11 +359,6 @@ class LocalJobsMixin:
                     aggregate = "cancelled"
                 else:
                     aggregate = "completed"
-
-            # Parent cancel must not rewrite completed siblings — only the
-            # aggregate summary / non-terminal children are affected.
-            if parent_cancelled and not all_terminal:
-                aggregate = "cancelled"
 
             job["status"] = aggregate
             if job.get("tasks"):
@@ -379,7 +376,8 @@ class LocalJobsMixin:
                 if summary_parts
                 else f"batch {aggregate}"
             )
-            if all_terminal or parent_cancelled:
+            # Durable terminal receipt only after every child is terminal.
+            if all_terminal:
                 job["terminal_receipt"] = {
                     "status": aggregate,
                     "summary": summary,

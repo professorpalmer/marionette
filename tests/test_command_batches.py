@@ -410,6 +410,15 @@ def test_checkpointed_batch_child_cancel_keeps_partial_output(session):
             assert sibling["terminal_receipt"]["status"] == "cancelled"
             assert (sibling.get("output") or "") == ""
 
+        # Parent cancel must not durable-terminalize the aggregate while any
+        # child is still open (CI race: premature terminal_receipt / cancelled).
+        mid_batch = lookup_command_batch(sess, batch_id)
+        assert mid_batch is not None
+        assert mid_batch.get("terminal_receipt") is None
+        assert mid_batch["status"] not in (
+            "completed", "failed", "cancelled", "timeout", "truncated",
+        )
+
         release.set()
         first = _wait_child_terminal(sess, first_id)
         batch = _wait_batch_terminal(sess, batch_id)
@@ -417,6 +426,8 @@ def test_checkpointed_batch_child_cancel_keeps_partial_output(session):
     assert first["status"] == "cancelled"
     assert "batch-partial" in (first.get("output") or "")
     assert batch["status"] == "cancelled"
+    assert batch.get("terminal_receipt") is not None
+    assert batch["terminal_receipt"]["status"] == "cancelled"
 
 
 def test_projection_is_command_batch_not_provider_swarm(session):
