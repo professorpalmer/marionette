@@ -23,8 +23,10 @@ MIT License text: https://github.com/NousResearch/hermes-agent (LICENSE).
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
+
+from . import opencode_go as _opencode_go
 
 
 @dataclass(frozen=True)
@@ -275,6 +277,18 @@ PROVIDERS = (
         api_mode="chat_completions", display_name="NVIDIA NIM",
         pilot_models=("qwen/qwen3-coder-480b", "deepseek-ai/deepseek-v3.1"),
     ),
+    # OpenCode Go: one subscription key, a flat model namespace, and a wire
+    # protocol that changes per model -- see harness.opencode_go for the
+    # endpoint table and the curated fallback catalog. Listed after the direct
+    # vendors so a bare 'glm-5.2' / 'deepseek-v4-flash' still resolves to the
+    # vendor's own API when the user has that key too.
+    Provider(
+        name="opencode-go", aliases=("opencode_go", "opencode-go-sub"),
+        env_vars=(_opencode_go.API_KEY_ENV,),
+        base_url=_opencode_go.BASE_URL,
+        api_mode="opencode_go", display_name="OpenCode Go",
+        pilot_models=_opencode_go.CURATED_MODELS,
+    ),
     # AWS Bedrock: auth is multi-env (bearer OR access-key pair + region).
     # Interactive pilot uses BedrockDriver (puppetmaster.bedrock.bedrock_chat);
     # Marionette stores credentials and injects AWS_* / BEDROCK_* into the env.
@@ -467,6 +481,18 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         return _finalize_driver(
             AnthropicDriver(name=spec, model=model, base_url=burl,
                             api_key_env=key_env, max_tokens=max_tokens)
+        )
+    if provider.api_mode == "opencode_go":
+        # Go's protocol is per model, not per provider: the driver (and the
+        # output ceiling) come from the endpoint table, not this profile.
+        return _finalize_driver(
+            _opencode_go.build_driver(
+                spec=spec,
+                model=model,
+                api_key_env=key_env or _opencode_go.API_KEY_ENV,
+                max_tokens=max_tokens,
+                base_url=provider.base_url,
+            )
         )
     if provider.api_mode == "bedrock":
         from pmharness.drivers.bedrock import BedrockDriver

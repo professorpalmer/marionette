@@ -41,6 +41,7 @@ class OpenAICompatDriver:
         max_tokens: int = 1500,
         timeout: int = 90,
         extra_headers: dict | None = None,
+        extra_body: dict | None = None,
         enable_reasoning: bool = False,
         session_id: str | None = None,
     ) -> None:
@@ -52,6 +53,9 @@ class OpenAICompatDriver:
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.extra_headers = extra_headers or {}
+        # Provider-specific request fields (e.g. an OpenCode Go model's native
+        # `thinking` / `reasoning_effort` dialect) merged into every request.
+        self.extra_body = extra_body or {}
         self.enable_reasoning = enable_reasoning
         self.session_id = session_id
         # Set by _key() when a credential-pool entry is selected.
@@ -122,10 +126,16 @@ class OpenAICompatDriver:
         system: str | None = None,
         session_id: str | None = None,
     ) -> dict:
-        """Stamp explicit cache_control (Claude/Qwen) and OpenRouter session_id.
+        """Stamp provider extras, explicit cache_control (Claude/Qwen), and the
+        OpenRouter session_id.
 
         Best-effort: never raises; automatic-cache models are left untouched.
         """
+        for field, value in self.extra_body.items():
+            # Conversation shape and streaming are the caller's; extras only add
+            # provider-dialect knobs on top.
+            if field not in ("model", "messages", "stream", "tools", "tool_choice"):
+                body[field] = value
         try:
             if "openrouter.ai" in (self.base_url or "").lower():
                 # Ask OpenRouter for prompt_tokens_details (cached / cache_write).

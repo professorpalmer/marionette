@@ -282,7 +282,7 @@ def post_auth_pools_add(body: dict, svc: ProviderServices) -> tuple[int, dict]:
     try:
         if pname in (
             "openrouter", "openai", "anthropic", "xai", "google",
-            "groq", "deepseek", "mistral", "cursor",
+            "groq", "deepseek", "mistral", "cursor", "opencode-go",
         ):
             set_api_key(pname, key)
     except Exception as e:

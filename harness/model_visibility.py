@@ -113,9 +113,10 @@ def provider_models(p, *, force: bool = False) -> list:
         return list(dict.fromkeys(m for m in live if m))
     seen = set()
     merged = []
-    # For plan providers with a large live catalog (Cursor CLI), prefer live
-    # order so Composer/Grok/etc. aren't buried under stale curated aliases.
-    if getattr(p, "api_mode", "") == "cursor_cli" and live:
+    # Plan/subscription catalogs (Cursor CLI, OpenCode Go) rotate faster than
+    # the curated fallback, so a successful live listing leads and curated only
+    # backfills. An empty or failed listing still leaves curated in place.
+    if getattr(p, "api_mode", "") in ("cursor_cli", "opencode_go") and live:
         ordered = list(live) + [m for m in curated if m not in set(live)]
     else:
         ordered = list(curated) + list(live)

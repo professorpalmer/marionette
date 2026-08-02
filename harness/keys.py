@@ -682,6 +682,7 @@ _PERSISTABLE_ENV_PROVIDERS = (
     "deepseek",
     "zai",
     "xai",
+    "opencode-go",
     "cursor",
     "google",
     "groq",

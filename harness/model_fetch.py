@@ -191,6 +191,41 @@ def _cached_records(entry: Any) -> list[dict[str, Any]]:
     return records
 
 
+def _flat_catalog_ids(data: Any) -> list[str]:
+    """Model ids from a listing payload, whichever envelope it arrived in.
+
+    Resellers are inconsistent here: OpenAI-style ``{"data": [{"id": ...}]}``,
+    a ``{"models": ...}`` wrapper, a bare list, and an id-keyed object are all
+    in the wild, and an unrecognized envelope has to read as "no catalog" so
+    the caller falls back to curated rather than crashing.
+    """
+    items: Any = data
+    if isinstance(items, dict):
+        for envelope in ("data", "models"):
+            if envelope in items:
+                items = items[envelope]
+                break
+    if isinstance(items, dict):
+        items = [
+            {"id": key, **value} if isinstance(value, dict) else {"id": key}
+            for key, value in items.items()
+        ]
+    if not isinstance(items, list):
+        return []
+    out = []
+    for item in items:
+        if isinstance(item, str):
+            model_id = item
+        elif isinstance(item, dict):
+            model_id = item.get("id") or item.get("name") or ""
+        else:
+            continue
+        model_id = str(model_id).strip()
+        if model_id:
+            out.append(model_id)
+    return out
+
+
 def _fetch_provider_models(provider, key: str) -> list[Any]:
     """Hit the provider's native model-listing endpoint. Returns bare model ids
     (no provider prefix). Empty list on any failure, with the failure REASON
@@ -227,6 +262,28 @@ def _fetch_provider_models(provider, key: str) -> list[Any]:
                     "OpenRouter /models returned an empty or unusable catalog"
                 )
             return records
+        if name == "opencode-go" or getattr(provider, "api_mode", "") == "opencode_go":
+            from .opencode_go import (
+                driver_base_url,
+                is_retired_deepseek_go_model,
+                normalize_model_id,
+            )
+
+            data = _get(
+                driver_base_url(provider.base_url) + "/models",
+                {"Authorization": f"Bearer {key}", "User-Agent": "pm-harness"},
+            )
+            ids = [
+                bare
+                for m in _flat_catalog_ids(data)
+                for bare in [normalize_model_id(m)]
+                if bare and not is_retired_deepseek_go_model(bare)
+            ]
+            if not ids:
+                _LAST_ERROR[name] = (
+                    "OpenCode Go /models returned an empty or unusable catalog"
+                )
+            return ids
         if name in ("openai", "deepseek", "zai", "xai", "nvidia"):
             # OpenAI-compatible /models listing.
             base = provider.base_url.rstrip("/")

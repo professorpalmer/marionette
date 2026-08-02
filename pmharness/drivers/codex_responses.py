@@ -714,6 +714,7 @@ class CodexResponsesDriver:
         api_key_env: str = "OPENAI_CODEX_TOKEN",
         max_tokens: int = 4096,
         timeout: int = 120,
+        chatgpt_backend: bool = True,
     ) -> None:
         self.name = name
         self.model = model
@@ -721,6 +722,11 @@ class CodexResponsesDriver:
         self.api_key_env = api_key_env
         self.max_tokens = max_tokens
         self.timeout = timeout
+        # ChatGPT's Codex backend needs Cloudflare/originator headers and
+        # accepts its own session/thread identity fields. A plain OpenAI
+        # Responses host (e.g. OpenCode Go's /v1/responses) rejects those
+        # extras as unknown parameters, so they are opt-out per host.
+        self.chatgpt_backend = chatgpt_backend
         self._pool_provider: Optional[str] = None
         self._pool_entry_id: Optional[str] = None
 
@@ -765,6 +771,17 @@ class CodexResponsesDriver:
         except Exception:
             pass
         return None
+
+    def _request_headers(self, access_token: str) -> Dict[str, str]:
+        """Auth + transport headers for this host's Responses endpoint."""
+        if self.chatgpt_backend:
+            return _codex_cloudflare_headers(access_token, streaming=True)
+        return {
+            "User-Agent": "pm-harness",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "text/event-stream",
+        }
 
     def _build_body(
         self,
@@ -833,7 +850,11 @@ class CodexResponsesDriver:
                     body.pop("prompt_cache_key", None)
             except Exception:
                 pass
-        client_metadata = _codex_client_metadata(body.get("prompt_cache_key"))
+        client_metadata = (
+            _codex_client_metadata(body.get("prompt_cache_key"))
+            if self.chatgpt_backend
+            else {}
+        )
         if client_metadata:
             body["client_metadata"] = client_metadata
         else:
@@ -853,8 +874,11 @@ class CodexResponsesDriver:
         """POST once (with reasoning-strip / pool rotate). Returns (raw, err_resp, data)."""
         for attempt in range(3):
             token = self._key()
-            headers = _codex_cloudflare_headers(token, streaming=True)
-            headers.update(_codex_session_affinity_headers(body.get("prompt_cache_key")))
+            headers = self._request_headers(token)
+            if self.chatgpt_backend:
+                headers.update(
+                    _codex_session_affinity_headers(body.get("prompt_cache_key"))
+                )
             try:
                 req = urllib.request.Request(
                     f"{self.base_url}/responses",

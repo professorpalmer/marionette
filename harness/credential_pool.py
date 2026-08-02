@@ -63,6 +63,7 @@ API_KEY_PROVIDERS = frozenset({
     "groq",
     "deepseek",
     "mistral",
+    "opencode-go",
 })
 
 _PLAN_LIMIT_MARKERS = (
@@ -576,6 +577,7 @@ _ENV_TO_PROVIDER = {
     "GROQ_API_KEY": "groq",
     "DEEPSEEK_API_KEY": "deepseek",
     "MISTRAL_API_KEY": "mistral",
+    "OPENCODE_GO_API_KEY": "opencode-go",
 }
 
 # Extra pools that also satisfy a driver env (OAuth sibling ids).
@@ -594,6 +596,7 @@ _PROVIDER_TO_ENV = {
     "openai": "OPENAI_API_KEY",
     "cursor": "CURSOR_API_KEY",
     "xai": "XAI_API_KEY",
+    "opencode-go": "OPENCODE_GO_API_KEY",
 }
 
 # Additional env vars to mirror so classic pilots see OAuth tokens.
