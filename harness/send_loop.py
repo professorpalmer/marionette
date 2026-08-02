@@ -970,7 +970,16 @@ class SendLoopMixin:
                                 **chat_kwargs,
                             )
                     else:
-                        resp = self.pilot.complete(prompt, system=sys_prompt)
+                        # Same affinity helper as chat — only when complete()
+                        # declares session_id. Compaction summarizers call
+                        # complete() directly without this attach.
+                        complete_kwargs: dict = {"system": sys_prompt}
+                        maybe_attach_pilot_session_id(
+                            complete_kwargs,
+                            self.pilot.complete,
+                            getattr(self, "harness_session_id", None),
+                        )
+                        resp = self.pilot.complete(prompt, **complete_kwargs)
                 except Exception as e:
                     # Humanize + redact — never stream raw exception/provider
                     # bodies (may contain URL tokens or key fragments).

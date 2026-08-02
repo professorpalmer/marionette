@@ -759,6 +759,11 @@ def test_meter_pilot_step_accumulates_tokens_and_provider_cost(monkeypatch):
     assert session._tokens_cache_write == 5
     assert session._last_prompt_tokens == 100
     assert session._provider_cost_usd == 0.0123
+    assert session._provider_billed_tokens_in == 100
+    assert session._tokens_in_measured == 100
+    assert getattr(session, "_tokens_in_estimated", 0) == 0
+    assert session._last_tokens_in_basis == "provider"
+    assert resp.meta["tokens_in_basis"] == "provider"
     assert meters["estimated_cost_usd"] == 0.0123
     assert meters["input_tokens"] == 100
     assert meters["output_tokens"] == 10
@@ -860,6 +865,288 @@ def test_meter_pilot_step_estimates_tokens_in_from_prompt():
     meter_pilot_step(session, resp, prompt=prompt)
     assert session._tokens_in == 25
     assert session._last_prompt_tokens == 25
+    assert session._tokens_in_estimated == 25
+    assert getattr(session, "_tokens_in_measured", 0) == 0
+    assert session._last_tokens_in_basis == "estimated"
+    assert resp.meta["tokens_in_basis"] == "estimated"
+    assert meters["input_tokens"] == 25
+
+
+def test_meter_pilot_step_provider_cost_without_input_keeps_billed_in_clean():
+    """Provider USD without input usage must not fabricate billed-in tokens."""
+    meters = {}
+    session = SimpleNamespace(
+        _tokens_used=0,
+        _tokens_out=0,
+        _turn_output_tokens=0,
+        _tokens_in=0,
+        _last_prompt_tokens=0,
+        _tokens_cached=0,
+        _tokens_cache_write=0,
+        _tokens_cache_write_5m=0,
+        _tokens_cache_write_1h=0,
+        _plan_billing=False,
+        _price_source="",
+        _provider_cost_usd=0.0,
+        _provider_billed_tokens_in=0,
+        _provider_billed_tokens_out=0,
+        _provider_billed_tokens_cached=0,
+        _provider_billed_tokens_cache_write=0,
+        _provider_billed_tokens_cache_write_5m=0,
+        _provider_billed_tokens_cache_write_1h=0,
+        config=SimpleNamespace(driver="openrouter/test"),
+        _accumulate_session_meters=lambda **kw: meters.update(kw),
+    )
+    prompt = "w" * 80  # fallback tokens_in = 20
+    resp = SimpleNamespace(
+        tokens_out=7,
+        tokens_in=0,
+        meta={
+            "provider_cost_usd": 0.05,
+            "cache_read_tokens": 12,
+            "cache_write_tokens": 3,
+        },
+    )
+    meter_pilot_step(session, resp, prompt=prompt)
+
+    # Effective totals still use the prompt-length fallback.
+    assert session._tokens_in == 20
+    assert session._tokens_out == 7
+    assert session._tokens_used == 27
+    assert session._last_prompt_tokens == 20
+    assert session._tokens_cached == 12
+    assert session._tokens_cache_write == 3
+    assert session._last_tokens_in_basis == "estimated"
+    assert resp.meta["tokens_in_basis"] == "estimated"
+    assert session._tokens_in_estimated == 20
+    assert getattr(session, "_tokens_in_measured", 0) == 0
+
+    # Provider receipt retained; fabricated input excluded from billed-in.
+    assert session._provider_cost_usd == 0.05
+    assert session._provider_billed_tokens_in == 0
+    assert session._provider_billed_tokens_out == 7
+    assert session._provider_billed_tokens_cached == 12
+    assert session._provider_billed_tokens_cache_write == 3
+    assert meters["estimated_cost_usd"] == 0.05
+    assert meters["input_tokens"] == 20
+
+
+def test_meter_pilot_step_cumulative_measured_and_estimated_counters():
+    meters = {}
+    session = SimpleNamespace(
+        _tokens_used=0,
+        _tokens_out=0,
+        _turn_output_tokens=0,
+        _tokens_in=0,
+        _last_prompt_tokens=0,
+        _tokens_cached=0,
+        _tokens_cache_write=0,
+        _tokens_cache_write_5m=0,
+        _tokens_cache_write_1h=0,
+        _plan_billing=False,
+        _price_source="",
+        _provider_cost_usd=0.0,
+        _provider_billed_tokens_in=0,
+        _provider_billed_tokens_out=0,
+        _provider_billed_tokens_cached=0,
+        _provider_billed_tokens_cache_write=0,
+        _provider_billed_tokens_cache_write_5m=0,
+        _provider_billed_tokens_cache_write_1h=0,
+        config=SimpleNamespace(driver="openai/gpt-test"),
+        _accumulate_session_meters=lambda **kw: meters.update(kw),
+    )
+    measured = SimpleNamespace(tokens_out=2, tokens_in=40, meta={})
+    meter_pilot_step(session, measured, prompt="ignored")
+    estimated = SimpleNamespace(tokens_out=3, tokens_in=0, meta={})
+    meter_pilot_step(session, estimated, prompt="z" * 120)  # fallback 30
+
+    assert session._tokens_in == 70
+    assert session._tokens_in_measured == 40
+    assert session._tokens_in_estimated == 30
+    assert session._last_tokens_in_basis == "estimated"
+    assert estimated.meta["tokens_in_basis"] == "estimated"
+    assert measured.meta["tokens_in_basis"] == "provider"
+
+
+def _meter_session(*, driver: str = "anthropic/claude-test") -> SimpleNamespace:
+    meters: dict = {}
+    session = SimpleNamespace(
+        _tokens_used=0,
+        _tokens_out=0,
+        _turn_output_tokens=0,
+        _tokens_in=0,
+        _last_prompt_tokens=0,
+        _tokens_cached=0,
+        _tokens_cache_write=0,
+        _tokens_cache_write_5m=0,
+        _tokens_cache_write_1h=0,
+        _last_cache_write_ttl_basis="",
+        _plan_billing=False,
+        _price_source="",
+        _provider_cost_usd=0.0,
+        _provider_billed_tokens_in=0,
+        _provider_billed_tokens_out=0,
+        _provider_billed_tokens_cached=0,
+        _provider_billed_tokens_cache_write=0,
+        _provider_billed_tokens_cache_write_5m=0,
+        _provider_billed_tokens_cache_write_1h=0,
+        config=SimpleNamespace(driver=driver),
+        _accumulate_session_meters=lambda **kw: meters.update(kw),
+        meters=meters,
+    )
+    return session
+
+
+def test_meter_pilot_step_inferred_ttl_not_measured(monkeypatch):
+    """Inferred Anthropic TTL must not populate measured 5m/1h counters.
+
+    Aggregate cache_write stays measured; fallback cost uses the
+    undifferentiated write multiplier (not the inferred 1h premium).
+    """
+    session = _meter_session()
+    uncached, write, read, tout = 100, 80, 10, 20
+    full_in = uncached + write + read
+    resp = SimpleNamespace(
+        tokens_out=tout,
+        tokens_in=full_in,
+        meta={
+            "cache_read_tokens": read,
+            "cache_write_tokens": write,
+            "cache_write_5m_tokens": 0,
+            "cache_write_1h_tokens": write,  # inferred local split
+            "cache_write_ttl_basis": "inferred",
+            "cache_write_basis": "provider",
+            "cache_read_basis": "provider",
+        },
+    )
+    monkeypatch.setattr(
+        "pmharness.registry.resolve_price_with_source",
+        lambda _name: (1.0, 5.0, "catalog"),
+        raising=False,
+    )
+    from harness.api.cost_accounting import (
+        CACHE_WRITE_1H_MULTIPLIER,
+        CACHE_WRITE_MULTIPLIER,
+        _session_cost,
+    )
+
+    monkeypatch.setattr(
+        "harness.server._session_cost",
+        _session_cost,
+        raising=False,
+    )
+    meter_pilot_step(session, resp, prompt="hi")
+
+    assert session._tokens_cache_write == write
+    assert session._tokens_cache_write_5m == 0
+    assert session._tokens_cache_write_1h == 0
+    assert session._provider_billed_tokens_cache_write_5m == 0
+    assert session._provider_billed_tokens_cache_write_1h == 0
+    assert session._last_cache_write_ttl_basis == "inferred"
+
+    expected = _session_cost(
+        full_in, tout, read, 1.0, 5.0, cache_write=write,
+    )
+    dishonest_1h = _session_cost(
+        full_in, tout, read, 1.0, 5.0,
+        cache_write=write, cache_write_1h=write,
+    )
+    assert session.meters["estimated_cost_usd"] == expected
+    assert expected < dishonest_1h
+    # Sanity: undifferentiated multiplier is cheaper than claiming 1h.
+    assert CACHE_WRITE_MULTIPLIER < CACHE_WRITE_1H_MULTIPLIER
+
+
+def test_meter_pilot_step_provider_ttl_is_measured(monkeypatch):
+    """Provider-reported Anthropic TTL splits populate measured counters."""
+    session = _meter_session()
+    uncached, write_5m, write_1h, read, tout = 50, 15, 25, 5, 10
+    write = write_5m + write_1h
+    full_in = uncached + write + read
+    resp = SimpleNamespace(
+        tokens_out=tout,
+        tokens_in=full_in,
+        meta={
+            "cache_read_tokens": read,
+            "cache_write_tokens": write,
+            "cache_write_5m_tokens": write_5m,
+            "cache_write_1h_tokens": write_1h,
+            "cache_write_ttl_basis": "provider",
+            "provider_cost_usd": 0.42,
+        },
+    )
+    meter_pilot_step(session, resp, prompt="hi")
+
+    assert session._tokens_cache_write == write
+    assert session._tokens_cache_write_5m == write_5m
+    assert session._tokens_cache_write_1h == write_1h
+    assert session._provider_cost_usd == 0.42
+    assert session._provider_billed_tokens_cache_write == write
+    assert session._provider_billed_tokens_cache_write_5m == write_5m
+    assert session._provider_billed_tokens_cache_write_1h == write_1h
+    assert session._last_cache_write_ttl_basis == "provider"
+    assert session.meters["estimated_cost_usd"] == 0.42
+
+
+def test_meter_pilot_step_inferred_ttl_provider_cost_skips_ttl_buckets():
+    """provider_cost_usd wins; inferred TTL still must not enter billed buckets."""
+    session = _meter_session()
+    write = 80
+    resp = SimpleNamespace(
+        tokens_out=20,
+        tokens_in=190,
+        meta={
+            "cache_read_tokens": 10,
+            "cache_write_tokens": write,
+            "cache_write_5m_tokens": 0,
+            "cache_write_1h_tokens": write,
+            "cache_write_ttl_basis": "inferred",
+            "provider_cost_usd": 0.99,
+        },
+    )
+    meter_pilot_step(session, resp, prompt="hi")
+    assert session._provider_cost_usd == 0.99
+    assert session._tokens_cache_write == write
+    assert session._provider_billed_tokens_cache_write == write
+    assert session._tokens_cache_write_5m == 0
+    assert session._tokens_cache_write_1h == 0
+    assert session._provider_billed_tokens_cache_write_5m == 0
+    assert session._provider_billed_tokens_cache_write_1h == 0
+    assert session.meters["estimated_cost_usd"] == 0.99
+
+
+def test_meter_pilot_step_missing_ttl_basis_keeps_provider_shaped_buckets(monkeypatch):
+    """Drivers without TTL provenance (Bedrock-shaped) keep existing buckets."""
+    session = _meter_session(driver="bedrock/claude-test")
+    write = 40
+    resp = SimpleNamespace(
+        tokens_out=5,
+        tokens_in=150,
+        meta={
+            "cache_read_tokens": 90,
+            "cache_write_tokens": write,
+            "cache_write_5m_tokens": write,
+            "cache_write_1h_tokens": 0,
+            # no cache_write_ttl_basis
+        },
+    )
+    monkeypatch.setattr(
+        "pmharness.registry.resolve_price_with_source",
+        lambda _name: (1.0, 5.0, "catalog"),
+        raising=False,
+    )
+    from harness.api.cost_accounting import _session_cost
+
+    monkeypatch.setattr(
+        "harness.server._session_cost",
+        _session_cost,
+        raising=False,
+    )
+    meter_pilot_step(session, resp, prompt="hi")
+    assert session._tokens_cache_write == write
+    assert session._tokens_cache_write_5m == write
+    assert session._tokens_cache_write_1h == 0
+    assert session._last_cache_write_ttl_basis == ""
 
 
 def test_drain_idle_turn_delivers_steers_and_continues():

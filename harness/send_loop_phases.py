@@ -680,15 +680,49 @@ def meter_pilot_step(
     Mechanical lift of the post-stream accounting block from
     ``_send_locked_inner`` — same counters, same provider-billed preference,
     same ``_session_cost`` fallback. Mutates ``session`` in place.
+
+    Anthropic may stamp ``meta.cache_write_ttl_basis`` as ``provider``,
+    ``inferred``, or ``absent``. Aggregate ``cache_write_tokens`` are always
+    measured when the provider reported them; 5m/1h TTL buckets are measured
+    only for ``provider`` splits (or when a non-Anthropic driver omits TTL
+    provenance and already emits provider-shaped buckets). Inferred TTL never
+    enters measured session/provider TTL counters; fallback cost estimation
+    then charges the aggregate write at the undifferentiated write multiplier.
     """
     # real token metering: prompt + completion (drivers report tokens_out;
     # estimate tokens_in from prompt length when not provided).
+    # Preserve the effective total / fallback for compaction + UI meters, but
+    # label whether tokens_in came from the provider or the prompt heuristic
+    # so estimated input never masquerades as measured.
     _t_out = int(getattr(resp, "tokens_out", 0) or 0)
-    _t_in = int(getattr(resp, "tokens_in", 0) or len(prompt) // 4)
+    try:
+        _reported_in = int(getattr(resp, "tokens_in", 0) or 0)
+    except (TypeError, ValueError):
+        _reported_in = 0
+    _tokens_in_basis = "provider" if _reported_in > 0 else "estimated"
+    _t_in = _reported_in if _reported_in > 0 else int(len(prompt) // 4)
     session._tokens_used += _t_out + _t_in
     session._tokens_out += _t_out
     session._turn_output_tokens += _t_out
     session._tokens_in += _t_in
+    session._last_tokens_in_basis = _tokens_in_basis
+    # Lazy cumulative provenance splits — lightweight test sessions omit these.
+    if _tokens_in_basis == "provider":
+        session._tokens_in_measured = (
+            int(getattr(session, "_tokens_in_measured", 0) or 0) + _t_in
+        )
+    else:
+        session._tokens_in_estimated = (
+            int(getattr(session, "_tokens_in_estimated", 0) or 0) + _t_in
+        )
+    try:
+        _resp_meta = getattr(resp, "meta", None)
+        if not isinstance(_resp_meta, dict):
+            _resp_meta = {}
+            resp.meta = _resp_meta
+        _resp_meta["tokens_in_basis"] = _tokens_in_basis
+    except Exception:
+        pass
     # Remember this turn's REAL prompt size so the live context
     # estimate (compaction trigger + composer % meter) can prefer
     # the driver's actual number over the chars//4 heuristic.
@@ -704,16 +738,29 @@ def meter_pilot_step(
     # Cache read/write credit: drivers report prompt-prefix cache
     # hits (and Anthropic/Bedrock writes) in meta. Reads save; writes
     # cost a premium -- both feed the same _session_cost formula.
+    # TTL bucket provenance: only provider-reported (or provenance-absent
+    # provider-shaped) 5m/1h splits count as measured; inferred Anthropic
+    # splits stay out of measured-looking counters.
     try:
         _meta = getattr(resp, "meta", None) or {}
         _cache_delta = int(_meta.get("cache_read_tokens", 0) or 0)
         _write_delta = int(_meta.get("cache_write_tokens", 0) or 0)
-        _write_5m = int(_meta.get("cache_write_5m_tokens", 0) or 0)
-        _write_1h = int(_meta.get("cache_write_1h_tokens", 0) or 0)
+        _write_5m_raw = int(_meta.get("cache_write_5m_tokens", 0) or 0)
+        _write_1h_raw = int(_meta.get("cache_write_1h_tokens", 0) or 0)
+        _ttl_basis = str(_meta.get("cache_write_ttl_basis") or "").strip().lower()
+        if _ttl_basis == "inferred":
+            _write_5m = 0
+            _write_1h = 0
+        else:
+            # "provider", "absent", or missing (Bedrock/Cursor-shaped).
+            _write_5m = _write_5m_raw
+            _write_1h = _write_1h_raw
         session._tokens_cached += _cache_delta
         session._tokens_cache_write += _write_delta
         session._tokens_cache_write_5m += _write_5m
         session._tokens_cache_write_1h += _write_1h
+        # Additive telemetry only — empty when the driver omitted provenance.
+        session._last_cache_write_ttl_basis = _ttl_basis
     except Exception:
         _meta = {}
         _cache_delta = 0
@@ -766,7 +813,11 @@ def meter_pilot_step(
             if _cand == _cand and _cand >= 0.0:
                 _pilot_cost = _cand
                 session._provider_cost_usd += _cand
-                session._provider_billed_tokens_in += _t_in
+                # Only provider-reported input belongs in the billed-in
+                # denominator. Prompt-length fallback must not inflate it when
+                # usage.cost arrived without input tokens.
+                if _tokens_in_basis == "provider":
+                    session._provider_billed_tokens_in += _t_in
                 session._provider_billed_tokens_out += _t_out
                 session._provider_billed_tokens_cached += _cache_delta
                 session._provider_billed_tokens_cache_write += _write_delta
@@ -777,6 +828,9 @@ def meter_pilot_step(
     if _pilot_cost is None:
         try:
             from harness.server import _session_cost
+            # When TTL basis is inferred, _write_5m/_write_1h are already
+            # zeroed above so aggregate cache_write bills at the
+            # undifferentiated write multiplier — never as provider TTL fact.
             _pilot_cost = float(
                 _session_cost(
                     _t_in, _t_out, _cache_delta, _price_in, _price_out,

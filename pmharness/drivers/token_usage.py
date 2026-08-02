@@ -263,23 +263,33 @@ def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float], int, int]:
     cached = _as_int(
         usage.get("cache_read_tokens")
         or usage.get("cache_read_input_tokens")
+        or usage.get("cached_input_tokens")
         or usage.get("cacheReadTokens")
+        or usage.get("cachedInputTokens")
+        or usage.get("cacheReadInputTokens")
+        or usage.get("cacheReadInputTokenCount")
         or usage.get("cached_tokens")
         or usage.get("cachedTokens")
         or usage.get("tokens_cached")
     )
     if cached <= 0:
-        # OpenAI-style: prompt_tokens_details.cached_tokens
+        # OpenAI / Codex Responses: prompt_tokens_details or input_tokens_details
         details = (
             usage.get("prompt_tokens_details")
             or usage.get("input_tokens_details")
             or usage.get("promptTokensDetails")
+            or usage.get("inputTokensDetails")
         )
         if isinstance(details, dict):
             cached = _as_int(
                 details.get("cached_tokens")
                 or details.get("cache_read_tokens")
+                or details.get("cached_input_tokens")
                 or details.get("cachedTokens")
+                or details.get("cacheReadTokens")
+                or details.get("cachedInputTokens")
+                or details.get("cacheReadInputTokens")
+                or details.get("cacheReadInputTokenCount")
             )
     if cached <= 0:
         inp = usage.get("input") or usage.get("prompt")
@@ -287,26 +297,38 @@ def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float], int, int]:
             cached = _as_int(
                 inp.get("cached_tokens")
                 or inp.get("cache_read_tokens")
+                or inp.get("cached_input_tokens")
                 or inp.get("cacheReadTokens")
+                or inp.get("cachedInputTokens")
+                or inp.get("cacheReadInputTokens")
+                or inp.get("cacheReadInputTokenCount")
             )
     cache_write = _as_int(
         usage.get("cache_write_tokens")
         or usage.get("cache_creation_input_tokens")
         or usage.get("cacheWriteTokens")
+        or usage.get("cacheWriteInputTokens")
+        or usage.get("cacheWriteInputTokenCount")
         or usage.get("cache_write_input_tokens")
         or usage.get("tokens_cache_write")
+        or usage.get("cache_creation_tokens")
     )
     if cache_write <= 0:
         details = (
             usage.get("prompt_tokens_details")
             or usage.get("input_tokens_details")
             or usage.get("promptTokensDetails")
+            or usage.get("inputTokensDetails")
         )
         if isinstance(details, dict):
             cache_write = _as_int(
                 details.get("cache_write_tokens")
                 or details.get("cache_creation_input_tokens")
                 or details.get("cacheWriteTokens")
+                or details.get("cacheWriteInputTokens")
+                or details.get("cacheWriteInputTokenCount")
+                or details.get("cache_creation_tokens")
+                or details.get("cacheCreationTokens")
             )
     if cache_write <= 0:
         inp = usage.get("input") or usage.get("prompt")
@@ -315,6 +337,9 @@ def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float], int, int]:
                 inp.get("cache_write_tokens")
                 or inp.get("cache_creation_input_tokens")
                 or inp.get("cacheWriteTokens")
+                or inp.get("cacheWriteInputTokens")
+                or inp.get("cacheWriteInputTokenCount")
+                or inp.get("cache_creation_tokens")
             )
     tin, cached, cache_write = expand_uncached_prompt_tokens(tin, cached, cache_write)
     return tin, tout, cost, cached, cache_write

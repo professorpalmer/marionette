@@ -439,6 +439,25 @@ def test_system_keeps_codegraph_addendum_only():
     assert "more noise" not in out
 
 
+def test_system_preserves_cache_matrix_fair_protocol_blocks():
+    from pmharness.drivers.cursor_cli import _system_for_cursor_agent
+
+    fair = (
+        "You are Marionette cache-matrix bench pilot.\n"
+        "Stable marker: marionette_cache_matrix_stable_v1\n"
+        "\n\n"
+        "# Tool manifest (schema only; native loop differs)\n"
+        '[{"type":"function","function":{"name":"cache_matrix_noop"}}]\n'
+        "\n\n"
+        "You are in Marionette Plan mode. Click Autopilot.\n"
+    )
+    out = _system_for_cursor_agent(fair)
+    assert "marionette_cache_matrix_stable_v1" in out
+    assert "# Tool manifest (schema only; native loop differs)" in out
+    assert "cache_matrix_noop" in out
+    assert "Click Autopilot" not in out
+
+
 def test_driver_drops_cursor_native_tool_calls(monkeypatch, tmp_path):
     """readToolCall/grepToolCall stay internal — not Marionette native tools."""
     fake_bin = tmp_path / "agent.exe"
@@ -665,3 +684,481 @@ def test_consume_stream_json_tool_event_order_preserves_call_id():
     assert hints[1]["id"] == "c-order"
     assert hints[1]["status"] == "completed"
     assert out.get("error") is None
+
+
+def _stream_with_session(native_chat_id: str, text: str = "ok") -> str:
+    return "\n".join([
+        json.dumps({
+            "type": "system",
+            "subtype": "init",
+            "session_id": native_chat_id,
+            "model": "composer-2.5",
+        }),
+        json.dumps({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+            "timestamp_ms": 1,
+        }),
+        json.dumps({
+            "type": "result",
+            "is_error": False,
+            "result": text,
+            "session_id": native_chat_id,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }),
+        "",
+    ])
+
+
+def _install_fake_agent(monkeypatch, tmp_path, streams):
+    """Patch Popen to return successive FakeProc streams; capture cmd argv."""
+    fake_bin = tmp_path / "agent"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    captured = {"cmds": []}
+    queue = list(streams)
+
+    class FakeProc:
+        def __init__(self, stream: str):
+            self.returncode = 0
+            self.stdout = io.StringIO(stream)
+            self.stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmds"].append(list(cmd))
+        if not queue:
+            raise AssertionError("unexpected extra agent spawn")
+        return FakeProc(queue.pop(0))
+
+    monkeypatch.setattr("pmharness.drivers.cursor_cli.subprocess.Popen", fake_popen)
+    driver = CursorCliDriver(
+        name="cursor-cli:m",
+        model="composer-2.5",
+        agent_binary=str(fake_bin),
+        cwd=str(tmp_path),
+    )
+    return driver, captured
+
+
+def test_first_call_command_shape_has_no_resume(monkeypatch, tmp_path):
+    d, captured = _install_fake_agent(
+        monkeypatch, tmp_path, [_stream_with_session("native-chat-1")],
+    )
+    resp = d.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+        session_id="marionette-sess-a",
+    )
+    assert resp.error is None
+    cmd = captured["cmds"][0]
+    assert "--resume" not in cmd
+    assert "--continue" not in cmd
+    assert "marionette-sess-a" not in cmd
+    assert d._native_chat_id == "native-chat-1"
+
+
+def test_second_call_resumes_with_native_chat_id(monkeypatch, tmp_path):
+    d, captured = _install_fake_agent(
+        monkeypatch,
+        tmp_path,
+        [
+            _stream_with_session("native-chat-1", "one"),
+            _stream_with_session("native-chat-1", "two"),
+        ],
+    )
+    marionette_id = "marionette-sess-a"
+    d.chat_stream(
+        [{"role": "user", "content": "turn1"}],
+        on_delta=lambda _t: None,
+        session_id=marionette_id,
+    )
+    resp = d.chat_stream(
+        [{"role": "user", "content": "turn2"}],
+        on_delta=lambda _t: None,
+        session_id=marionette_id,
+    )
+    assert resp.error is None
+    second = captured["cmds"][1]
+    assert "--resume" in second
+    resume_idx = second.index("--resume")
+    assert second[resume_idx + 1] == "native-chat-1"
+    assert marionette_id not in second
+    assert "--continue" not in second
+    assert resp.meta.get("cursor_cli_resume") == "native-chat-1"
+
+
+def test_resumed_prompt_contains_only_current_turn(monkeypatch, tmp_path):
+    """On --resume, argv prompt is the new turn only — not prior history/system."""
+    from pmharness.drivers.cursor_cli import _current_turn_prompt
+
+    d, captured = _install_fake_agent(
+        monkeypatch,
+        tmp_path,
+        [
+            _stream_with_session("native-chat-1", "one"),
+            _stream_with_session("native-chat-1", "two"),
+        ],
+    )
+    marionette_id = "marionette-sess-resume-prompt"
+    prior_turn = "PRIOR_TURN_UNIQUE_MARKER_AAA"
+    new_turn = "NEW_TURN_UNIQUE_MARKER_BBB"
+    system = (
+        "CODEGRAPH HAS ALREADY BEEN QUERIED\n"
+        "SYSTEM_PREFIX_UNIQUE_MARKER_CCC\n"
+        "some graph evidence"
+    )
+    d.chat_stream(
+        [{"role": "user", "content": prior_turn}],
+        on_delta=lambda _t: None,
+        system=system,
+        session_id=marionette_id,
+    )
+    resp = d.chat_stream(
+        [
+            {"role": "user", "content": prior_turn},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": new_turn},
+        ],
+        on_delta=lambda _t: None,
+        system=system,
+        session_id=marionette_id,
+    )
+    assert resp.error is None
+    first_prompt = captured["cmds"][0][-1]
+    second_prompt = captured["cmds"][1][-1]
+    assert "--resume" not in captured["cmds"][0]
+    assert "--resume" in captured["cmds"][1]
+
+    # Cold call still packs system + history for native chat seeding.
+    assert prior_turn in first_prompt
+    assert "SYSTEM_PREFIX_UNIQUE_MARKER_CCC" in first_prompt
+    assert "System:" in first_prompt
+
+    # Resumed call: new turn only — no prior turn, system prefix, or role packing.
+    assert new_turn in second_prompt
+    assert prior_turn not in second_prompt
+    assert "SYSTEM_PREFIX_UNIQUE_MARKER_CCC" not in second_prompt
+    assert "System:" not in second_prompt
+    assert "User:" not in second_prompt
+    # Empty / unexpected history must not raise.
+    assert _current_turn_prompt([]) == "hello"
+    assert _current_turn_prompt([{"role": "assistant", "content": "only-asst"}]) == "hello"
+    assert _current_turn_prompt([{"role": "user", "content": ""}]) == "hello"
+    assert _current_turn_prompt([None, "bad", {"role": "user", "content": new_turn}]) == new_turn
+
+
+def test_session_switch_resets_native_chat_id(monkeypatch, tmp_path):
+    d, captured = _install_fake_agent(
+        monkeypatch,
+        tmp_path,
+        [
+            _stream_with_session("native-a", "a"),
+            _stream_with_session("native-b", "b"),
+        ],
+    )
+    d.chat(
+        [{"role": "user", "content": "in-a"}],
+        session_id="sess-a",
+    )
+    assert d._native_chat_id == "native-a"
+    resp = d.chat(
+        [{"role": "user", "content": "in-b"}],
+        session_id="sess-b",
+    )
+    assert resp.error is None
+    # New Marionette session must not resume the prior native chat.
+    assert "--resume" not in captured["cmds"][1]
+    assert d._native_chat_id == "native-b"
+    assert "sess-a" not in captured["cmds"][1]
+    assert "sess-b" not in captured["cmds"][1]
+
+
+def test_never_passes_marionette_session_id_to_resume(monkeypatch, tmp_path):
+    marionette_id = "harness-uuid-should-never-resume"
+    d, captured = _install_fake_agent(
+        monkeypatch,
+        tmp_path,
+        [
+            _stream_with_session("cursor-native-xyz"),
+            _stream_with_session("cursor-native-xyz"),
+        ],
+    )
+    d.complete("first", session_id=marionette_id)
+    d.complete("second", session_id=marionette_id)
+    for cmd in captured["cmds"]:
+        assert marionette_id not in cmd
+    resume_idx = captured["cmds"][1].index("--resume")
+    assert captured["cmds"][1][resume_idx + 1] == "cursor-native-xyz"
+
+
+def test_parsed_session_id_persists_on_driver(monkeypatch, tmp_path):
+    d, _captured = _install_fake_agent(
+        monkeypatch, tmp_path, [_stream_with_session("persist-me")],
+    )
+    assert d._native_chat_id is None
+    resp = d.chat_stream(
+        [{"role": "user", "content": "hi"}],
+        on_delta=lambda _t: None,
+        session_id="sess-persist",
+    )
+    assert resp.error is None
+    assert d._native_chat_id == "persist-me"
+    assert resp.meta.get("session_id") == "persist-me"
+    assert resp.meta.get("cursor_native_chat_id") == "persist-me"
+
+
+def test_oneshot_without_session_does_not_resume(monkeypatch, tmp_path):
+    d, captured = _install_fake_agent(
+        monkeypatch,
+        tmp_path,
+        [
+            _stream_with_session("native-kept"),
+            _stream_with_session("native-oneshot"),
+        ],
+    )
+    d.chat_stream(
+        [{"role": "user", "content": "bound"}],
+        on_delta=lambda _t: None,
+        session_id="sess-bound",
+    )
+    assert d._native_chat_id == "native-kept"
+    # One-shot: no session_id → no --resume; prior binding left intact.
+    resp = d.complete("oneshot")
+    assert resp.error is None
+    assert "--resume" not in captured["cmds"][1]
+    assert d._native_chat_id == "native-kept"
+
+
+def test_model_change_resets_native_chat_id(monkeypatch, tmp_path):
+    d, captured = _install_fake_agent(
+        monkeypatch,
+        tmp_path,
+        [
+            _stream_with_session("native-m1"),
+            _stream_with_session("native-m2"),
+        ],
+    )
+    d.chat([{"role": "user", "content": "a"}], session_id="sess-m")
+    d.model = "composer-2.5-fast"
+    d.chat([{"role": "user", "content": "b"}], session_id="sess-m")
+    assert "--resume" not in captured["cmds"][1]
+    assert d._native_chat_id == "native-m2"
+
+
+def test_resume_failure_fails_clearly_and_clears_native(monkeypatch, tmp_path):
+    fake_bin = tmp_path / "agent"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    ok_stream = _stream_with_session("native-ok")
+    fail_stream = "\n".join([
+        json.dumps({
+            "type": "result",
+            "is_error": True,
+            "result": "Failed to resume session: chat not found",
+            "session_id": "",
+        }),
+        "",
+    ])
+    captured = {"cmds": []}
+
+    class OkProc:
+        returncode = 0
+        stdout = io.StringIO(ok_stream)
+        stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    class FailProc:
+        returncode = 1
+        stdout = io.StringIO(fail_stream)
+        stderr = io.StringIO("chat not found\n")
+
+        def wait(self, timeout=None):
+            return 1
+
+        def kill(self):
+            pass
+
+    procs = [OkProc(), FailProc()]
+
+    def sequenced_popen(cmd, **kwargs):
+        captured["cmds"].append(list(cmd))
+        return procs.pop(0)
+
+    monkeypatch.setattr(
+        "pmharness.drivers.cursor_cli.subprocess.Popen", sequenced_popen,
+    )
+    d = CursorCliDriver(
+        name="cursor-cli:m",
+        model="composer-2.5",
+        agent_binary=str(fake_bin),
+        cwd=str(tmp_path),
+    )
+    d.chat([{"role": "user", "content": "hi"}], session_id="sess-r")
+    assert d._native_chat_id == "native-ok"
+    resp = d.chat([{"role": "user", "content": "again"}], session_id="sess-r")
+    assert resp.error
+    assert "failed to resume" in resp.error.lower()
+    assert "native-ok" in resp.error
+    assert d._native_chat_id is None
+    # Must not silently retry a fresh turn without --resume.
+    assert len(captured["cmds"]) == 2
+    assert "--resume" in captured["cmds"][1]
+
+
+def test_resume_noisy_stderr_markers_do_not_fail_successful_turn(
+    monkeypatch, tmp_path,
+):
+    """Stderr resume-marker noise must not discard a successful --resume turn."""
+    fake_bin = tmp_path / "agent"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    ok_stream = _stream_with_session("native-ok")
+    resume_ok_stream = _stream_with_session("native-ok", text="still good")
+    captured = {"cmds": []}
+
+    class OkProc:
+        returncode = 0
+        stdout = io.StringIO(ok_stream)
+        stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    class NoisySuccessProc:
+        returncode = 0
+        stdout = io.StringIO(resume_ok_stream)
+        # Warning-shaped noise that matches resume markers but is not a failure.
+        stderr = io.StringIO(
+            "warn: session not found in secondary index (ignored)\n"
+        )
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    procs = [OkProc(), NoisySuccessProc()]
+
+    def sequenced_popen(cmd, **kwargs):
+        captured["cmds"].append(list(cmd))
+        return procs.pop(0)
+
+    monkeypatch.setattr(
+        "pmharness.drivers.cursor_cli.subprocess.Popen", sequenced_popen,
+    )
+    d = CursorCliDriver(
+        name="cursor-cli:m",
+        model="composer-2.5",
+        agent_binary=str(fake_bin),
+        cwd=str(tmp_path),
+    )
+    d.chat([{"role": "user", "content": "hi"}], session_id="sess-noise")
+    assert d._native_chat_id == "native-ok"
+    resp = d.chat(
+        [{"role": "user", "content": "again"}], session_id="sess-noise",
+    )
+    assert not resp.error
+    assert resp.text == "still good"
+    assert d._native_chat_id == "native-ok"
+    assert len(captured["cmds"]) == 2
+    assert "--resume" in captured["cmds"][1]
+    resume_idx = captured["cmds"][1].index("--resume")
+    assert captured["cmds"][1][resume_idx + 1] == "native-ok"
+
+
+def test_driver_meta_preserves_explicit_zero_cache_and_served_model(
+    monkeypatch, tmp_path,
+):
+    """Absent cache evidence stays absent; explicit zeros and served model kept."""
+    fake_bin = tmp_path / "agent"
+    fake_bin.write_text("x", encoding="utf-8")
+
+    def _stream(usage, model="composer-2.5-served"):
+        return "\n".join([
+            json.dumps({
+                "type": "system",
+                "subtype": "init",
+                "session_id": "native-1",
+                "model": model,
+            }),
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "hi"}],
+                },
+            }),
+            json.dumps({
+                "type": "result",
+                "is_error": False,
+                "result": "hi",
+                "session_id": "native-1",
+                "usage": usage,
+            }),
+            "",
+        ])
+
+    class FakeProc:
+        def __init__(self, stream):
+            self.returncode = 0
+            self.stdout = io.StringIO(stream)
+            self.stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    # Explicit zeros must survive into meta.
+    monkeypatch.setattr(
+        "pmharness.drivers.cursor_cli.subprocess.Popen",
+        lambda *a, **k: FakeProc(
+            _stream({
+                "inputTokens": 10,
+                "outputTokens": 1,
+                "cacheReadTokens": 0,
+                "cacheWriteInputTokens": 0,
+            })
+        ),
+    )
+    d = CursorCliDriver(
+        name="cursor-cli:m",
+        model="composer-2.5",
+        agent_binary=str(fake_bin),
+    )
+    resp = d.chat([{"role": "user", "content": "hi"}])
+    assert resp.meta.get("served_model") == "composer-2.5-served"
+    assert resp.meta.get("raw_usage") is not None
+    assert resp.meta["cache_read_tokens"] == 0
+    assert resp.meta["cache_write_tokens"] == 0
+
+    # Absent cache fields → omit keys (null evidence), keep raw_usage.
+    monkeypatch.setattr(
+        "pmharness.drivers.cursor_cli.subprocess.Popen",
+        lambda *a, **k: FakeProc(
+            _stream({"inputTokens": 10, "outputTokens": 1})
+        ),
+    )
+    d2 = CursorCliDriver(
+        name="cursor-cli:m",
+        model="composer-2.5",
+        agent_binary=str(fake_bin),
+    )
+    resp2 = d2.chat([{"role": "user", "content": "hi"}])
+    assert "cache_read_tokens" not in resp2.meta
+    assert "cache_write_tokens" not in resp2.meta
+    assert resp2.meta.get("raw_usage") == {"inputTokens": 10, "outputTokens": 1}
+    assert resp2.meta.get("served_model") == "composer-2.5-served"

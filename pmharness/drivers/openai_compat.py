@@ -144,21 +144,11 @@ class OpenAICompatDriver:
 
     @staticmethod
     def _cache_fields_from_usage(usage: dict) -> tuple[int, int]:
-        """Return (cache_read_tokens, cache_write_tokens) from an OpenAI-style usage blob."""
-        usage = usage or {}
-        details = usage.get("prompt_tokens_details") or {}
-        cached = int(
-            details.get("cached_tokens")
-            or usage.get("cache_read_input_tokens")
-            or 0
-        )
-        written = int(
-            details.get("cache_write_tokens")
-            or details.get("cache_write")
-            or usage.get("cache_creation_input_tokens")
-            or 0
-        )
-        return cached, written
+        """Return (cache_read_tokens, cache_write_tokens) via shared normalization."""
+        from .token_usage import coerce_token_usage_record
+
+        detail = coerce_token_usage_record(usage or {})
+        return int(detail.cache_read), int(detail.cache_write)
 
     @staticmethod
     def _cost_from_usage(usage: dict):
@@ -180,23 +170,98 @@ class OpenAICompatDriver:
             return None
         return val
 
+    @staticmethod
+    def _usage_reports_cache_read(usage: dict) -> bool:
+        """True when the provider usage blob explicitly carries a cache-read field."""
+        if not isinstance(usage, dict):
+            return False
+        keys = (
+            "cache_read_tokens",
+            "cache_read_input_tokens",
+            "cached_input_tokens",
+            "cacheReadTokens",
+            "cachedInputTokens",
+            "cacheReadInputTokens",
+            "cacheReadInputTokenCount",
+            "cached_tokens",
+            "cachedTokens",
+            "tokens_cached",
+        )
+        if any(k in usage for k in keys):
+            return True
+        for nest_key in (
+            "prompt_tokens_details",
+            "input_tokens_details",
+            "promptTokensDetails",
+            "inputTokensDetails",
+        ):
+            nest = usage.get(nest_key)
+            if isinstance(nest, dict) and OpenAICompatDriver._usage_reports_cache_read(nest):
+                return True
+        return False
+
+    @staticmethod
+    def _usage_reports_cache_write(usage: dict) -> bool:
+        """True when the provider usage blob explicitly carries a cache-write field."""
+        if not isinstance(usage, dict):
+            return False
+        keys = (
+            "cache_write_tokens",
+            "cache_creation_input_tokens",
+            "cacheWriteTokens",
+            "cacheWriteInputTokens",
+            "cacheWriteInputTokenCount",
+            "cache_write_input_tokens",
+            "tokens_cache_write",
+            "cache_creation_tokens",
+            "cacheCreationTokens",
+        )
+        if any(k in usage for k in keys):
+            return True
+        for nest_key in (
+            "prompt_tokens_details",
+            "input_tokens_details",
+            "promptTokensDetails",
+            "inputTokensDetails",
+        ):
+            nest = usage.get(nest_key)
+            if isinstance(nest, dict) and OpenAICompatDriver._usage_reports_cache_write(nest):
+                return True
+        return False
+
     @classmethod
     def _usage_meta(cls, usage: dict) -> dict:
-        """Shared cache + billed-cost fields for DriverResponse.meta."""
+        """Shared cache + billed-cost fields for DriverResponse.meta.
+
+        Omits cache_read_tokens/cache_write_tokens when the provider usage
+        blob has no corresponding field. Explicit provider zeros are kept.
+        """
         from .token_usage import attach_modality_fields, coerce_token_usage_record
 
         usage = usage or {}
-        cached_tokens, cache_write_tokens = cls._cache_fields_from_usage(usage)
+        detail = coerce_token_usage_record(usage)
         meta = {
-            "cache_read_tokens": cached_tokens,
-            "cache_write_tokens": cache_write_tokens,
             "raw_usage": usage,
         }
+        if cls._usage_reports_cache_read(usage):
+            meta["cache_read_tokens"] = int(detail.cache_read)
+        if cls._usage_reports_cache_write(usage):
+            meta["cache_write_tokens"] = int(detail.cache_write)
         cost = cls._cost_from_usage(usage)
         if cost is not None:
             meta["provider_cost_usd"] = cost
-        attach_modality_fields(meta, coerce_token_usage_record(usage))
+        attach_modality_fields(meta, detail)
         return meta
+
+    @staticmethod
+    def _served_model_from_payload(payload: dict) -> str | None:
+        """Return non-empty response ``model`` when the provider reports one."""
+        if not isinstance(payload, dict):
+            return None
+        model = payload.get("model")
+        if isinstance(model, str) and model.strip():
+            return model.strip()
+        return None
 
     def complete(
         self,
@@ -279,10 +344,16 @@ class OpenAICompatDriver:
             meta["raw_finish"] = (
                 raw["choices"][0].get("finish_reason") if raw.get("choices") else None
             )
+            served = self._served_model_from_payload(raw if isinstance(raw, dict) else {})
+            if served:
+                meta["served_model"] = served
+            from .token_usage import coerce_token_usage_record
+
+            usage_detail = coerce_token_usage_record(usage)
             return DriverResponse(
                 text=text,
-                tokens_in=int(usage.get("prompt_tokens", 0) or 0),
-                tokens_out=int(usage.get("completion_tokens", 0) or 0),
+                tokens_in=int(usage_detail.tokens_in),
+                tokens_out=int(usage_detail.tokens_out),
                 latency_ms=latency,
                 model=self.name,
                 meta=meta,
@@ -437,10 +508,16 @@ class OpenAICompatDriver:
                 "reasoning": reasoning,
                 "finish_reason": finish_reason,
             })
+            served = self._served_model_from_payload(raw if isinstance(raw, dict) else {})
+            if served:
+                meta["served_model"] = served
+            from .token_usage import coerce_token_usage_record
+
+            usage_detail = coerce_token_usage_record(usage)
             return DriverResponse(
                 text=pure_text,
-                tokens_in=int(usage.get("prompt_tokens", 0) or 0),
-                tokens_out=int(usage.get("completion_tokens", 0) or 0),
+                tokens_in=int(usage_detail.tokens_in),
+                tokens_out=int(usage_detail.tokens_out),
                 latency_ms=latency,
                 model=self.name,
                 meta=meta,
@@ -502,7 +579,11 @@ class OpenAICompatDriver:
             tokens_out = 0
             cached_tokens = 0
             cache_write_tokens = 0
+            stream_has_cache_read = False
+            stream_has_cache_write = False
             provider_cost_usd = None
+            stream_raw_usage = None
+            served_model = None
             stream_started = False
             # Hermes-style: suppress <think>/<reasoning> tags that split across
             # SSE deltas so visible on_delta never leaks mid-stream reasoning.
@@ -524,14 +605,25 @@ class OpenAICompatDriver:
                             except Exception:
                                 continue
 
+                            chunk_served = self._served_model_from_payload(chunk)
+                            if chunk_served:
+                                served_model = chunk_served
+
                             # Process token usage if present
                             chunk_usage = chunk.get("usage")
                             if chunk_usage:
-                                tokens_in = int(chunk_usage.get("prompt_tokens", 0) or 0)
-                                tokens_out = int(chunk_usage.get("completion_tokens", 0) or 0)
-                                cached_tokens, cache_write_tokens = self._cache_fields_from_usage(
-                                    chunk_usage
-                                )
+                                from .token_usage import coerce_token_usage_record
+
+                                usage_detail = coerce_token_usage_record(chunk_usage)
+                                tokens_in = int(usage_detail.tokens_in)
+                                tokens_out = int(usage_detail.tokens_out)
+                                if self._usage_reports_cache_read(chunk_usage):
+                                    stream_has_cache_read = True
+                                    cached_tokens = int(usage_detail.cache_read)
+                                if self._usage_reports_cache_write(chunk_usage):
+                                    stream_has_cache_write = True
+                                    cache_write_tokens = int(usage_detail.cache_write)
+                                stream_raw_usage = chunk_usage
                                 step_cost = self._cost_from_usage(chunk_usage)
                                 if step_cost is not None:
                                     provider_cost_usd = step_cost
@@ -666,11 +758,17 @@ class OpenAICompatDriver:
                 "reasoning": reasoning,
                 "finish_reason": finish_reason,
                 "stream_started": stream_started,
-                "cache_read_tokens": cached_tokens,
-                "cache_write_tokens": cache_write_tokens,
             }
+            if stream_has_cache_read:
+                meta["cache_read_tokens"] = cached_tokens
+            if stream_has_cache_write:
+                meta["cache_write_tokens"] = cache_write_tokens
+            if stream_raw_usage is not None:
+                meta["raw_usage"] = stream_raw_usage
             if provider_cost_usd is not None:
                 meta["provider_cost_usd"] = provider_cost_usd
+            if served_model:
+                meta["served_model"] = served_model
             return DriverResponse(
                 text=pure_text,
                 tokens_in=tokens_in,

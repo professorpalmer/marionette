@@ -633,8 +633,11 @@ class ConversationalSession(
         self._tokens_cached: int = 0  # cumulative prompt tokens served from cache
         # Cache-write tokens (Anthropic/Bedrock); billed at a premium vs input.
         self._tokens_cache_write: int = 0
+        # Measured TTL buckets only — inferred Anthropic splits stay at 0 here.
         self._tokens_cache_write_5m: int = 0
         self._tokens_cache_write_1h: int = 0
+        # Last turn's cache_write_ttl_basis (provider|inferred|absent|"").
+        self._last_cache_write_ttl_basis: str = ""
         # Delegated-worker cost tracked as DOLLARS at each worker's OWN model
         # rate, plus a parallel token split, so the session cost is not computed
         # by repricing worker tokens at the (possibly much cheaper) pilot rate.

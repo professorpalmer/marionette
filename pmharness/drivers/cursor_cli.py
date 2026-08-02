@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from .base import SYSTEM_PROMPT, DriverResponse
 
@@ -638,8 +638,79 @@ def _message_text(msg: dict) -> str:
     return str(content)
 
 
+def _is_cache_matrix_system_block(block: str) -> bool:
+    """True for dedicated cache-matrix fair-protocol system blocks."""
+    if "marionette_cache_matrix_stable_v1" in block:
+        return True
+    head = block.lstrip()
+    return head.startswith("# Tool manifest (schema only; native loop differs)")
+
+
+def _cursor_usage_reports_cache_read(usage: Any) -> bool:
+    """True when Cursor usage explicitly carries a cache-read field."""
+    if not isinstance(usage, dict):
+        return False
+    keys = (
+        "cache_read_tokens",
+        "cache_read_input_tokens",
+        "cached_input_tokens",
+        "cacheReadTokens",
+        "cachedInputTokens",
+        "cacheReadInputTokens",
+        "cacheReadInputTokenCount",
+        "cached_tokens",
+        "cachedTokens",
+        "tokens_cached",
+    )
+    if any(k in usage for k in keys):
+        return True
+    for nest_key in (
+        "prompt_tokens_details",
+        "input_tokens_details",
+        "promptTokensDetails",
+        "inputTokensDetails",
+    ):
+        nest = usage.get(nest_key)
+        if isinstance(nest, dict) and _cursor_usage_reports_cache_read(nest):
+            return True
+    return False
+
+
+def _cursor_usage_reports_cache_write(usage: Any) -> bool:
+    """True when Cursor usage explicitly carries a cache-write field."""
+    if not isinstance(usage, dict):
+        return False
+    keys = (
+        "cache_write_tokens",
+        "cache_creation_input_tokens",
+        "cacheWriteTokens",
+        "cacheWriteInputTokens",
+        "cacheWriteInputTokenCount",
+        "cache_write_input_tokens",
+        "tokens_cache_write",
+        "cache_creation_tokens",
+        "cacheCreationTokens",
+    )
+    if any(k in usage for k in keys):
+        return True
+    for nest_key in (
+        "prompt_tokens_details",
+        "input_tokens_details",
+        "promptTokensDetails",
+        "inputTokensDetails",
+    ):
+        nest = usage.get(nest_key)
+        if isinstance(nest, dict) and _cursor_usage_reports_cache_write(nest):
+            return True
+    return False
+
+
 def _system_for_cursor_agent(system: Optional[str]) -> str:
-    """Kernel system + optional precomputed CodeGraph/Wiki blocks only."""
+    """Kernel system + CodeGraph/Wiki / cache-matrix fair-protocol blocks.
+
+    Strips arbitrary pilot skills/noise while preserving kernel behavior and
+    the dedicated cache-matrix stable prefix + tool-manifest blocks.
+    """
     parts: list[str] = [_CURSOR_CLI_KERNEL_SYSTEM.strip()]
     if not system:
         return parts[0]
@@ -654,6 +725,7 @@ def _system_for_cursor_agent(system: Optional[str]) -> str:
             or "CODEGRAPH CONTEXT" in head
             or b.lstrip().startswith("## CodeGraph")
             or b.lstrip().startswith("## Wiki")
+            or _is_cache_matrix_system_block(b)
         ):
             if len(b) > 8_000:
                 b = b[:8_000] + "\n…[truncated]"
@@ -719,6 +791,60 @@ def _messages_to_prompt(
     return "\n\n".join(parts).strip() or "hello"
 
 
+def _current_turn_prompt(messages: list) -> str:
+    """Prompt for ``--resume``: only the newest user turn.
+
+    Native Cursor chat already holds the system prefix and prior turns.
+    Re-packing Marionette history on resume duplicates context and corrupts
+    cache/usage comparisons. Empty or unexpected message shapes return a
+    safe placeholder — never raise.
+    """
+    try:
+        for msg in reversed(messages or []):
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "user")
+            if role != "user":
+                continue
+            text = _message_text(msg).strip()
+            if not text or _is_poison_history_message(role, text):
+                continue
+            return text
+    except Exception:
+        return "hello"
+    return "hello"
+
+
+# Markers Cursor Agent / our wrappers emit when --resume cannot bind a chat.
+_RESUME_FAILURE_MARKERS = (
+    "failed to resume",
+    "unable to resume",
+    "cannot resume",
+    "could not resume",
+    "resume failed",
+    "session not found",
+    "chat not found",
+    "no such session",
+    "no such chat",
+    "unknown session",
+    "unknown chat",
+    "invalid session",
+    "invalid chat",
+    "chat id not found",
+    "session id not found",
+)
+
+
+def _normalize_harness_session_id(session_id: Optional[str]) -> Optional[str]:
+    sid = (session_id or "").strip()
+    return sid or None
+
+
+def _looks_like_resume_failure(text: str) -> bool:
+    lower = (text or "").lower()
+    return any(marker in lower for marker in _RESUME_FAILURE_MARKERS)
+
+
 class CursorCliDriver:
     """Pilot driver backed by the Cursor Agent CLI subprocess."""
 
@@ -746,6 +872,13 @@ class CursorCliDriver:
         self.mode = resolve_cursor_execution_mode(explicit=mode)
         self.agent_binary = agent_binary
         self.cwd = cwd
+        # Marionette harness session id (never passed to --resume).
+        self._harness_session_id: Optional[str] = None
+        # Cursor Agent chat/session id from stream-json (native resume target).
+        self._native_chat_id: Optional[str] = None
+        # Workspace/model snapshot that the native chat id is valid for.
+        self._bound_workspace: Optional[str] = None
+        self._bound_model: Optional[str] = None
 
     def apply_host_mode(self, *, plan: bool = False) -> str:
         """Align CLI ``--mode`` with the current Marionette Plan/Autopilot turn."""
@@ -772,7 +905,53 @@ class CursorCliDriver:
         except OSError:
             return raw
 
-    def _build_cmd(self, prompt: str) -> list[str]:
+    def _clear_native_chat(self) -> None:
+        self._native_chat_id = None
+
+    def _prepare_session_resume(self, session_id: Optional[str]) -> Optional[str]:
+        """Bind Marionette session state; return native chat id for ``--resume``.
+
+        One-shot calls (no harness session_id) never resume and leave prior
+        bindings untouched. Marionette ids are never returned for argv.
+        """
+        harness_sid = _normalize_harness_session_id(session_id)
+        if harness_sid is None:
+            return None
+
+        workspace = self._workspace()
+        model = self.model
+        if (
+            harness_sid != self._harness_session_id
+            or workspace != self._bound_workspace
+            or model != self._bound_model
+        ):
+            self._clear_native_chat()
+
+        self._harness_session_id = harness_sid
+        self._bound_workspace = workspace
+        self._bound_model = model
+        return self._native_chat_id
+
+    def _remember_native_chat(
+        self,
+        *,
+        harness_session_id: Optional[str],
+        native_chat_id: Optional[str],
+    ) -> None:
+        harness_sid = _normalize_harness_session_id(harness_session_id)
+        native = (native_chat_id or "").strip()
+        if not harness_sid or not native:
+            return
+        if harness_sid != self._harness_session_id:
+            return
+        self._native_chat_id = native
+
+    def _build_cmd(
+        self,
+        prompt: str,
+        *,
+        resume_chat_id: Optional[str] = None,
+    ) -> list[str]:
         exec_prefix = resolve_agent_exec(self._binary())
         if not exec_prefix:
             raise RuntimeError(f"Cursor Agent CLI not found. {INSTALL_HINT}")
@@ -794,6 +973,10 @@ class CursorCliDriver:
             cmd.extend(["--workspace", workspace])
         if self.mode:
             cmd.extend(["--mode", self.mode])
+        # Only the Cursor-native chat id — never Marionette harness session_id.
+        # Do not use --continue (speculative / wrong chat).
+        if resume_chat_id:
+            cmd.extend(["--resume", resume_chat_id])
         cmd.append(prompt)
         return cmd
 
@@ -803,6 +986,7 @@ class CursorCliDriver:
         *,
         tools: list | None = None,
         system: str | None = None,
+        session_id: str | None = None,
         on_delta: Callable[[str], None] | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
         on_tool_hint: Callable[[str], None] | None = None,
@@ -812,7 +996,14 @@ class CursorCliDriver:
         # parse_tool_calls — that produced INVALID TOOL CALL spam in the UI.
         _ = tools
         t0 = time.time()
-        prompt = _messages_to_prompt(messages, system, lean=True)
+        harness_sid = _normalize_harness_session_id(session_id)
+        resume_chat_id = self._prepare_session_resume(session_id)
+        # --resume restores native chat memory; send only the new turn.
+        # First/one-shot calls (no resume id) still pack full lean history.
+        if resume_chat_id:
+            prompt = _current_turn_prompt(messages)
+        else:
+            prompt = _messages_to_prompt(messages, system, lean=True)
         prompt_file: Optional[str] = None
         # Agent CLI does not read prompts from stdin. With node+index.js spawn,
         # moderate prompts fit on argv; only oversized packs spill to a file.
@@ -821,7 +1012,7 @@ class CursorCliDriver:
             argv_prompt = prompt
             if use_file:
                 argv_prompt, prompt_file = _prompt_via_temp_file(prompt)
-            cmd = self._build_cmd(argv_prompt)
+            cmd = self._build_cmd(argv_prompt, resume_chat_id=resume_chat_id)
         except RuntimeError as e:
             return DriverResponse(
                 text="", model=self.name, error=str(e),
@@ -895,6 +1086,7 @@ class CursorCliDriver:
                             for tc in (parsed.get("tool_calls") or [])
                             if isinstance(tc, dict)
                         ],
+                        "cursor_cli_resume": resume_chat_id or "",
                     },
                 )
 
@@ -907,7 +1099,8 @@ class CursorCliDriver:
 
             latency = (time.time() - t0) * 1000.0
             from .token_usage import attach_modality_fields, coerce_token_usage_record
-            usage_detail = coerce_token_usage_record(parsed.get("usage"), parsed)
+            usage_blob = parsed.get("usage")
+            usage_detail = coerce_token_usage_record(usage_blob, parsed)
             tokens_in, tokens_out, provider_cost, cache_read, cache_write = (
                 usage_detail.as_tuple()
             )
@@ -915,6 +1108,32 @@ class CursorCliDriver:
             err = parsed.get("error")
             if proc.returncode not in (0, None) and not err and not parsed.get("text"):
                 err = stderr.strip() or f"agent exited with code {proc.returncode}"
+
+            # Resume/session failures must not silently become a fresh chat
+            # (or get retried without --resume, which would duplicate a turn).
+            # Marker text in stderr alone is not enough — only fail closed when
+            # the parsed payload or exit status already shows --resume failed.
+            # A successful exit with usable text/session must survive noisy
+            # warnings that merely mention phrases like "session not found".
+            concrete_resume_failure = bool(err) or proc.returncode not in (0, None)
+            if (
+                resume_chat_id
+                and concrete_resume_failure
+                and _looks_like_resume_failure(f"{err or ''}\n{stderr}")
+            ):
+                self._clear_native_chat()
+                detail = (err or stderr or "session/resume error").strip()
+                err = (
+                    f"Cursor Agent failed to resume chat {resume_chat_id}: "
+                    f"{detail}"
+                )
+
+            native_from_stream = str(parsed.get("session_id") or "").strip()
+            if not err and native_from_stream:
+                self._remember_native_chat(
+                    harness_session_id=harness_sid,
+                    native_chat_id=native_from_stream,
+                )
 
             internal_names = [
                 (tc.get("function") or {}).get("name")
@@ -926,9 +1145,11 @@ class CursorCliDriver:
                 # Returning them as OpenAI tool_calls makes Marionette try
                 # readToolCall/grepToolCall as native verbs → INVALID TOOL CALL spam.
                 "tool_calls": [],
-                "session_id": parsed.get("session_id") or "",
+                "session_id": native_from_stream or parsed.get("session_id") or "",
                 "cursor_cli": True,
                 "cursor_cli_internal_tools": [n for n in internal_names if n],
+                "cursor_cli_resume": resume_chat_id or "",
+                "cursor_native_chat_id": self._native_chat_id or "",
                 "pool_rotate": False,
                 "prompt_via_file": bool(prompt_file),
                 "host_tools_ignored": True,
@@ -937,10 +1158,16 @@ class CursorCliDriver:
             }
             if provider_cost is not None:
                 meta["provider_cost_usd"] = provider_cost
-            if cache_read > 0:
-                meta["cache_read_tokens"] = cache_read
-            if cache_write > 0:
-                meta["cache_write_tokens"] = cache_write
+            served = parsed.get("model")
+            if isinstance(served, str) and served.strip():
+                meta["served_model"] = served.strip()
+            if isinstance(usage_blob, dict) and usage_blob:
+                meta["raw_usage"] = usage_blob
+            # Preserve explicit zeros only when usage actually reports the field.
+            if _cursor_usage_reports_cache_read(usage_blob):
+                meta["cache_read_tokens"] = int(cache_read)
+            if _cursor_usage_reports_cache_write(usage_blob):
+                meta["cache_write_tokens"] = int(cache_write)
             attach_modality_fields(meta, usage_detail)
 
             return DriverResponse(
@@ -959,10 +1186,17 @@ class CursorCliDriver:
                 except OSError:
                     pass
 
-    def complete(self, task_prompt: str, *, system: str = SYSTEM_PROMPT) -> DriverResponse:
+    def complete(
+        self,
+        task_prompt: str,
+        *,
+        system: str = SYSTEM_PROMPT,
+        session_id: str | None = None,
+    ) -> DriverResponse:
         return self._run_stream(
             [{"role": "user", "content": task_prompt}],
             system=system,
+            session_id=session_id,
         )
 
     def chat(
@@ -973,8 +1207,9 @@ class CursorCliDriver:
         system: str | None = None,
         session_id: str | None = None,
     ) -> DriverResponse:
-        _ = session_id
-        return self._run_stream(messages, tools=tools, system=system)
+        return self._run_stream(
+            messages, tools=tools, system=system, session_id=session_id,
+        )
 
     def chat_stream(
         self,
@@ -987,11 +1222,11 @@ class CursorCliDriver:
         on_reasoning_delta: Callable[[str], None] | None = None,
         on_tool_hint: Callable[[str], None] | None = None,
     ) -> DriverResponse:
-        _ = session_id
         return self._run_stream(
             messages,
             tools=tools,
             system=system,
+            session_id=session_id,
             on_delta=on_delta,
             on_reasoning_delta=on_reasoning_delta,
             on_tool_hint=on_tool_hint,

@@ -157,28 +157,23 @@ def _converse_stream_url(base_url: str, model_id: str) -> str:
 
 
 def _usage_from_converse_usage(usage: Optional[dict]) -> dict:
-    """Fold Converse usage into the same shape ``_assistant_turn_from_converse`` uses."""
+    """Fold Converse usage into the same shape ``_assistant_turn_from_converse`` uses.
+
+    Uses the shared token-usage seam so Bedrock camelCase aliases
+    (``cacheReadInputTokens`` / ``cacheReadInputTokenCount`` /
+    ``cacheWriteInputTokens``) stay aligned with OpenAI-compat metering.
+    Preserves the provider blob under ``raw_usage``.
+    """
     usage = usage or {}
-    uncached_in = int(usage.get("inputTokens") or usage.get("input_tokens") or 0)
-    cache_read = int(
-        usage.get("cacheReadInputTokens")
-        or usage.get("cacheReadInputTokenCount")
-        or 0
-    )
-    cache_write = int(
-        usage.get("cacheWriteInputTokens")
-        or usage.get("cacheWriteInputTokenCount")
-        or 0
-    )
-    prompt_tokens = uncached_in + cache_read + cache_write
-    completion_tokens = int(
-        usage.get("outputTokens") or usage.get("output_tokens") or 0
-    )
+    from .token_usage import coerce_token_usage_record
+
+    detail = coerce_token_usage_record(usage)
     return {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "cached_tokens": cache_read,
-        "cache_write_tokens": cache_write,
+        "prompt_tokens": int(detail.tokens_in),
+        "completion_tokens": int(detail.tokens_out),
+        "cached_tokens": int(detail.cache_read),
+        "cache_write_tokens": int(detail.cache_write),
+        "raw_usage": usage,
     }
 
 
@@ -324,12 +319,16 @@ class BedrockDriver:
 
         reasoning = extract_reasoning({"content": text})
         pure_text = strip_think_blocks(text)
-        tokens_in = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-        tokens_out = int(
-            usage.get("completion_tokens") or usage.get("output_tokens") or 0
-        )
-        cache_read = int(usage.get("cached_tokens") or 0)
-        cache_write = int(usage.get("cache_write_tokens") or 0)
+        from .token_usage import coerce_token_usage_record
+
+        # Shared seam covers both normalized Puppetmaster usage and raw
+        # Converse camelCase (cacheReadInputTokens / cacheReadInputTokenCount).
+        detail = coerce_token_usage_record(usage)
+        tokens_in = int(detail.tokens_in)
+        tokens_out = int(detail.tokens_out)
+        cache_read = int(detail.cache_read)
+        cache_write = int(detail.cache_write)
+        raw_usage = usage.get("raw_usage") if isinstance(usage.get("raw_usage"), dict) else usage
 
         return DriverResponse(
             text=pure_text,
@@ -346,6 +345,7 @@ class BedrockDriver:
                 # Bedrock Converse does not split 5m/1h; bill writes at 1.25x.
                 "cache_write_5m_tokens": cache_write,
                 "cache_write_1h_tokens": 0,
+                "raw_usage": raw_usage,
             },
         )
 
@@ -611,6 +611,7 @@ class BedrockDriver:
         tokens_out = 0
         cache_read = 0
         cache_write = 0
+        stream_raw_usage: Optional[dict] = None
         stop_reason = ""
         stream_started = False
 
@@ -703,6 +704,8 @@ class BedrockDriver:
                     tokens_out = int(usage_fields["completion_tokens"] or tokens_out)
                     cache_read = int(usage_fields["cached_tokens"] or cache_read)
                     cache_write = int(usage_fields["cache_write_tokens"] or cache_write)
+                    if isinstance(usage_fields.get("raw_usage"), dict):
+                        stream_raw_usage = usage_fields["raw_usage"]
 
                 elif event_type in (
                     "internalServerException",
@@ -738,22 +741,25 @@ class BedrockDriver:
         reasoning = extract_reasoning(message_obj)
         pure_text = strip_think_blocks(full_text)
 
+        meta = {
+            "tool_calls": tool_calls,
+            "reasoning": reasoning,
+            "finish_reason": stop_reason,
+            "cache_write_tokens": cache_write,
+            "cache_read_tokens": cache_read,
+            "cache_write_5m_tokens": cache_write,
+            "cache_write_1h_tokens": 0,
+            "stream_started": stream_started,
+        }
+        if stream_raw_usage is not None:
+            meta["raw_usage"] = stream_raw_usage
         return DriverResponse(
             text=pure_text,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             latency_ms=latency,
             model=self.name,
-            meta={
-                "tool_calls": tool_calls,
-                "reasoning": reasoning,
-                "finish_reason": stop_reason,
-                "cache_write_tokens": cache_write,
-                "cache_read_tokens": cache_read,
-                "cache_write_5m_tokens": cache_write,
-                "cache_write_1h_tokens": 0,
-                "stream_started": stream_started,
-            },
+            meta=meta,
         )
 
     def chat_stream(

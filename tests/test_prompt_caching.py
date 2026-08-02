@@ -216,10 +216,10 @@ def test_openai_compat_prompt_caching_missing(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
 
     resp_complete = driver.complete("Hello", system="system prompt")
-    assert resp_complete.meta.get("cache_read_tokens") == 0
+    assert "cache_read_tokens" not in resp_complete.meta
 
     resp_chat = driver.chat(messages=[{"role": "user", "content": "Hello"}], system="system prompt")
-    assert resp_chat.meta.get("cache_read_tokens") == 0
+    assert "cache_read_tokens" not in resp_chat.meta
 
 
 def test_openai_compat_chat_stream_prompt_caching(monkeypatch):

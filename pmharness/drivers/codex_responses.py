@@ -16,6 +16,7 @@ import base64
 import json
 import os
 import time
+import uuid
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -72,6 +73,69 @@ def _codex_cloudflare_headers(access_token: str, *, streaming: bool = True) -> D
     except Exception:
         pass
     return headers
+
+
+def _codex_session_cache_key(prompt_cache_key: Any) -> Optional[str]:
+    """Normalize the durable Codex prompt-cache / session identity."""
+    if not isinstance(prompt_cache_key, str):
+        return None
+    key = prompt_cache_key.strip()
+    return key or None
+
+
+def _codex_logical_thread_id(prompt_cache_key: Any) -> Optional[str]:
+    """Logical thread identity for one Marionette chat.
+
+    Native Codex separates prompt-cache session identity (``prompt_cache_key`` /
+    ``session_id``) from logical thread identity (``thread_id`` /
+    ``x-client-request-id``). Derive a deterministic UUID5 from the durable
+    cache key so the thread id is distinct from session id, stable across
+    repeated POSTs for the same Marionette chat, and different across chats.
+    """
+    key = _codex_session_cache_key(prompt_cache_key)
+    if not key:
+        return None
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"marionette:codex-thread:{key}"))
+
+
+def _codex_session_affinity_headers(prompt_cache_key: Any) -> Dict[str, str]:
+    """Mirror native Codex Responses session routing when cache key is set.
+
+    Native wire (codex-api ``responses.rs`` / ``headers.rs``):
+      - ``session-id`` ← session identity
+      - ``thread-id`` ← logical thread identity
+      - ``x-client-request-id`` ← logical thread identity (stable, not per-POST)
+
+    Marionette keeps ``session-id`` equal to the durable ``prompt_cache_key`` and
+    stamps ``thread-id`` / ``x-client-request-id`` with the derived logical
+    thread UUID for that chat.
+    """
+    session_key = _codex_session_cache_key(prompt_cache_key)
+    thread_id = _codex_logical_thread_id(prompt_cache_key)
+    if not session_key or not thread_id:
+        return {}
+    return {
+        "session-id": session_key,
+        "thread-id": thread_id,
+        # Native Codex stamps x-client-request-id with thread_id, not a fresh UUID.
+        "x-client-request-id": thread_id,
+    }
+
+
+def _codex_client_metadata(prompt_cache_key: Any) -> Dict[str, str]:
+    """Build native Codex body identity metadata for one Marionette chat.
+
+    One Marionette chat → durable prompt-cache ``session_id`` plus a distinct
+    deterministic logical ``thread_id`` derived from that key.
+    """
+    session_key = _codex_session_cache_key(prompt_cache_key)
+    thread_id = _codex_logical_thread_id(prompt_cache_key)
+    if not session_key or not thread_id:
+        return {}
+    return {
+        "session_id": session_key,
+        "thread_id": thread_id,
+    }
 
 
 def _messages_to_responses_input(messages: List[dict]) -> List[dict]:
@@ -736,8 +800,41 @@ class CodexResponsesDriver:
             body["tools"] = resp_tools
             body["tool_choice"] = "auto"
             body["parallel_tool_calls"] = True
-        if session_id:
-            body["prompt_cache_key"] = session_id
+        # Durable UUID prompt_cache_key + capability-gated GPT-5.6 explicit
+        # breakpoint at the end of the stable instructions/tools prefix.
+        # See pmharness.drivers.prompt_cache.apply_codex_responses_prompt_cache.
+        try:
+            from .prompt_cache import apply_codex_responses_prompt_cache
+
+            apply_codex_responses_prompt_cache(
+                body,
+                model=self.model,
+                session_id=session_id,
+                base_url=self.base_url,
+            )
+        except Exception:
+            # Keep the same durable key as the primary path — never fall
+            # back to the raw Marionette session id (that splits the cache).
+            # Honor the global kill switch even on the exception path.
+            try:
+                from .prompt_cache import (
+                    durable_codex_prompt_cache_key,
+                    prompt_cache_enabled,
+                )
+
+                if prompt_cache_enabled():
+                    key = durable_codex_prompt_cache_key(session_id)
+                    if key:
+                        body["prompt_cache_key"] = key
+                else:
+                    body.pop("prompt_cache_key", None)
+            except Exception:
+                pass
+        client_metadata = _codex_client_metadata(body.get("prompt_cache_key"))
+        if client_metadata:
+            body["client_metadata"] = client_metadata
+        else:
+            body.pop("client_metadata", None)
         return body
 
     def _one_stream_attempt(
@@ -754,6 +851,7 @@ class CodexResponsesDriver:
         for attempt in range(3):
             token = self._key()
             headers = _codex_cloudflare_headers(token, streaming=True)
+            headers.update(_codex_session_affinity_headers(body.get("prompt_cache_key")))
             try:
                 req = urllib.request.Request(
                     f"{self.base_url}/responses",
@@ -781,6 +879,32 @@ class CodexResponsesDriver:
                     body.pop("reasoning", None)
                     data = json.dumps(body).encode("utf-8")
                     continue
+                # ChatGPT Codex may reject public OpenAI GPT-5.6 breakpoint
+                # fields while still accepting prompt_cache_key. Strip the
+                # extensions and retry once without inventing cache hits.
+                # Only strip when the error names those fields — unrelated
+                # HTTP 400s must surface unchanged.
+                if attempt < 2 and e.code == 400:
+                    try:
+                        from .prompt_cache import (
+                            body_has_codex_prompt_cache_extensions,
+                            codex_prompt_cache_unsupported_error,
+                            mark_codex_prompt_cache_breakpoint_unsupported,
+                            strip_codex_prompt_cache_extensions,
+                        )
+
+                        if (
+                            body_has_codex_prompt_cache_extensions(body)
+                            and codex_prompt_cache_unsupported_error(detail)
+                        ):
+                            strip_codex_prompt_cache_extensions(body)
+                            mark_codex_prompt_cache_breakpoint_unsupported(
+                                self.base_url, self.model,
+                            )
+                            data = json.dumps(body).encode("utf-8")
+                            continue
+                    except Exception:
+                        pass
                 if attempt == 0:
                     nxt = self._pool_rotate_on_http_error(e.code, detail)
                     if nxt:
@@ -834,6 +958,7 @@ class CodexResponsesDriver:
             )
         usage = raw.get("usage") or {}
         tin, tout = _usage_ints(usage)
+        from .openai_compat import OpenAICompatDriver
         from .token_usage import attach_modality_fields, coerce_token_usage_record
 
         usage_detail = coerce_token_usage_record(usage)
@@ -847,9 +972,11 @@ class CodexResponsesDriver:
             "incomplete_retries": incomplete_retries,
         }
         attach_modality_fields(meta, usage_detail)
-        if usage_detail.cache_read > 0:
+        # Match OpenAI-compat: keep explicit provider zeros; omit absent fields.
+        # Never infer cache hits or writes from totals alone.
+        if OpenAICompatDriver._usage_reports_cache_read(usage):
             meta["cache_read_tokens"] = int(usage_detail.cache_read)
-        if usage_detail.cache_write > 0:
+        if OpenAICompatDriver._usage_reports_cache_write(usage):
             meta["cache_write_tokens"] = int(usage_detail.cache_write)
         reason = _incomplete_reason(raw)
         if reason:
@@ -881,13 +1008,139 @@ class CodexResponsesDriver:
         # Enforce stream even if a caller mutated the body.
         body = dict(body)
         body["stream"] = True
+        try:
+            from .prompt_cache import codex_request_cache_snapshot
+
+            initial_request_cache = codex_request_cache_snapshot(body)
+        except Exception:
+            initial_request_cache = {
+                "prompt_cache_key_present": False,
+                "prompt_cache_key": None,
+                "prompt_cache_options": None,
+                "explicit_breakpoint": False,
+            }
         data = json.dumps(body).encode("utf-8")
+
+        def _attach_request_cache_diagnostics(resp: DriverResponse) -> DriverResponse:
+            """Stamp sanitized initial/final cache wire state onto meta/receipt."""
+            try:
+                from .prompt_cache import codex_request_cache_snapshot
+
+                final_request_cache = codex_request_cache_snapshot(body)
+            except Exception:
+                final_request_cache = {
+                    "prompt_cache_key_present": False,
+                    "prompt_cache_key": None,
+                    "prompt_cache_options": None,
+                    "explicit_breakpoint": False,
+                }
+            meta = resp.meta if isinstance(resp.meta, dict) else {}
+            existing = meta.get("prompt_cache")
+            pc = dict(existing) if isinstance(existing, dict) else {}
+            pc["initial"] = initial_request_cache
+            pc["final"] = final_request_cache
+            meta["prompt_cache"] = pc
+            key = final_request_cache.get("prompt_cache_key")
+            if isinstance(key, str) and key:
+                meta["prompt_cache_key"] = key
+            resp.meta = meta
+            return resp
 
         def _call() -> DriverResponse:
             t0 = time.time()
             nonlocal data, body
             length_parts: List[str] = []
             incomplete_retries = 0
+            # Provider-reported usage across incomplete/length continuations.
+            # Sum only what the backend returned — never invent cache hits.
+            # Presence flags preserve explicit zeros vs absent fields.
+            acc_tin = 0
+            acc_tout = 0
+            acc_cache_read = 0
+            acc_cache_write = 0
+            have_cache_read = False
+            have_cache_write = False
+            acc_cost = 0.0
+            have_cost = False
+
+            def _accumulate_attempt(resp: DriverResponse) -> None:
+                nonlocal acc_tin, acc_tout, acc_cache_read, acc_cache_write
+                nonlocal have_cache_read, have_cache_write
+                nonlocal acc_cost, have_cost
+                acc_tin += int(resp.tokens_in or 0)
+                acc_tout += int(resp.tokens_out or 0)
+                meta = resp.meta or {}
+                if "cache_read_tokens" in meta:
+                    have_cache_read = True
+                    acc_cache_read += int(meta.get("cache_read_tokens") or 0)
+                if "cache_write_tokens" in meta:
+                    have_cache_write = True
+                    acc_cache_write += int(meta.get("cache_write_tokens") or 0)
+                cost = meta.get("provider_cost_usd")
+                if cost is not None:
+                    try:
+                        acc_cost += float(cost)
+                        have_cost = True
+                    except (TypeError, ValueError):
+                        pass
+
+            def _final_meta(base: dict, *, retries: Optional[int] = None) -> dict:
+                meta = dict(base or {})
+                meta["incomplete_retries"] = (
+                    incomplete_retries if retries is None else int(retries)
+                )
+                if have_cache_read:
+                    meta["cache_read_tokens"] = acc_cache_read
+                else:
+                    meta.pop("cache_read_tokens", None)
+                if have_cache_write:
+                    meta["cache_write_tokens"] = acc_cache_write
+                else:
+                    meta.pop("cache_write_tokens", None)
+                if have_cost:
+                    meta["provider_cost_usd"] = acc_cost
+                return meta
+
+            def _has_continuation_progress() -> bool:
+                # Prior incomplete/length attempts already contributed usage
+                # or partial text — a later failure must not drop that.
+                return (
+                    incomplete_retries > 0
+                    or bool(length_parts)
+                    or acc_tin > 0
+                    or acc_tout > 0
+                    or have_cache_read
+                    or have_cache_write
+                    or have_cost
+                )
+
+            def _error_preserving_progress(
+                *,
+                error: str,
+                latency_ms: float,
+                base_meta: Optional[dict] = None,
+            ) -> DriverResponse:
+                meta = {
+                    "api_mode": "codex_responses",
+                    "billing": "plan",
+                    "requested_model": self.model,
+                    # Prevent with_retry from replaying a body already mutated
+                    # with continuation nudges as if it were the original turn.
+                    "stream_started": True,
+                }
+                if base_meta:
+                    for key in ("finish_reason", "incomplete_reason", "served_model"):
+                        if key in base_meta and base_meta[key] is not None:
+                            meta[key] = base_meta[key]
+                return DriverResponse(
+                    text="".join(length_parts),
+                    tokens_in=acc_tin,
+                    tokens_out=acc_tout,
+                    model=self.name,
+                    error=error,
+                    latency_ms=latency_ms,
+                    meta=_final_meta(meta),
+                )
 
             while True:
                 raw, err_resp, data = self._one_stream_attempt(
@@ -899,54 +1152,92 @@ class CodexResponsesDriver:
                     t0=t0,
                 )
                 if err_resp is not None:
-                    return err_resp
+                    if _has_continuation_progress():
+                        return _attach_request_cache_diagnostics(
+                            _error_preserving_progress(
+                                error=err_resp.error or "stream error",
+                                latency_ms=err_resp.latency_ms
+                                or (time.time() - t0) * 1000.0,
+                                base_meta=err_resp.meta,
+                            )
+                        )
+                    return _attach_request_cache_diagnostics(err_resp)
                 if raw is None:
-                    return DriverResponse(
-                        text="", model=self.name, error="empty response",
-                        latency_ms=(time.time() - t0) * 1000.0,
+                    if _has_continuation_progress():
+                        return _attach_request_cache_diagnostics(
+                            _error_preserving_progress(
+                                error="empty response",
+                                latency_ms=(time.time() - t0) * 1000.0,
+                            )
+                        )
+                    return _attach_request_cache_diagnostics(
+                        DriverResponse(
+                            text="", model=self.name, error="empty response",
+                            latency_ms=(time.time() - t0) * 1000.0,
+                        )
                     )
                 resp = self._response_from_raw(
                     raw, t0=t0, incomplete_retries=incomplete_retries,
                 )
                 if resp.error:
-                    return resp
+                    # Do not accumulate this attempt — its usage was never a
+                    # successful provider turn — but keep prior sums/text.
+                    if _has_continuation_progress():
+                        return _attach_request_cache_diagnostics(
+                            _error_preserving_progress(
+                                error=resp.error,
+                                latency_ms=resp.latency_ms
+                                or (time.time() - t0) * 1000.0,
+                                base_meta=resp.meta,
+                            )
+                        )
+                    return _attach_request_cache_diagnostics(resp)
+                _accumulate_attempt(resp)
                 text = resp.text or ""
                 tool_calls = (resp.meta or {}).get("tool_calls") or []
                 finish = str((resp.meta or {}).get("finish_reason") or "")
                 kind = _codex_continuation_kind(finish, text, tool_calls)
                 if kind is None:
                     final_text = "".join(length_parts) + text if length_parts else text
-                    if final_text == text:
-                        return resp
-                    meta = dict(resp.meta or {})
-                    return DriverResponse(
-                        text=final_text,
-                        tokens_in=resp.tokens_in,
-                        tokens_out=resp.tokens_out,
-                        latency_ms=resp.latency_ms,
-                        model=self.name,
-                        meta=meta,
+                    if incomplete_retries == 0 and final_text == text:
+                        return _attach_request_cache_diagnostics(resp)
+                    return _attach_request_cache_diagnostics(
+                        DriverResponse(
+                            text=final_text,
+                            tokens_in=acc_tin,
+                            tokens_out=acc_tout,
+                            latency_ms=resp.latency_ms,
+                            model=self.name,
+                            meta=_final_meta(resp.meta or {}),
+                        )
                     )
 
                 incomplete_retries += 1
                 if kind == "length" and text.strip():
                     length_parts.append(text)
                 if incomplete_retries > _CODEX_MAX_INCOMPLETE_RETRIES:
-                    return DriverResponse(
-                        text="".join(length_parts),
-                        model=self.name,
-                        error=(
-                            "Codex response remained incomplete after "
-                            f"{_CODEX_MAX_INCOMPLETE_RETRIES} continuation attempts"
-                        ),
-                        latency_ms=(time.time() - t0) * 1000.0,
-                        meta={
-                            "api_mode": "codex_responses",
-                            "finish_reason": "incomplete",
-                            "billing": "plan",
-                            "incomplete_retries": incomplete_retries - 1,
-                            "requested_model": self.model,
-                        },
+                    # Report completed continuation attempts (MAX), not the
+                    # post-increment sentinel that tripped exhaustion.
+                    completed_retries = incomplete_retries - 1
+                    meta = {
+                        "api_mode": "codex_responses",
+                        "finish_reason": "incomplete",
+                        "billing": "plan",
+                        "requested_model": self.model,
+                    }
+                    return _attach_request_cache_diagnostics(
+                        DriverResponse(
+                            text="".join(length_parts),
+                            tokens_in=acc_tin,
+                            tokens_out=acc_tout,
+                            model=self.name,
+                            error=(
+                                "Codex response remained incomplete after "
+                                f"{_CODEX_MAX_INCOMPLETE_RETRIES} continuation attempts"
+                            ),
+                            latency_ms=(time.time() - t0) * 1000.0,
+                            meta=_final_meta(meta, retries=completed_retries),
+                        )
                     )
 
                 nudge = (
@@ -985,10 +1276,20 @@ class CodexResponsesDriver:
 
         return with_retry(_call)
 
-    def complete(self, task_prompt: str, *, system: str = SYSTEM_PROMPT) -> DriverResponse:
+    def complete(
+        self,
+        task_prompt: str,
+        *,
+        system: str = SYSTEM_PROMPT,
+        session_id: str | None = None,
+    ) -> DriverResponse:
+        # Optional session_id preserves prompt-cache affinity for callers that
+        # represent the same pilot chat. Compaction / synthetic summarizers
+        # must omit it — their system prefix differs from the main session.
         body = self._build_body(
             [{"role": "user", "content": task_prompt}],
             system=system,
+            session_id=session_id,
         )
         return self._post_stream(body)
 

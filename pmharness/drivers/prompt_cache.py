@@ -12,12 +12,36 @@ whitespace system or tool envelopes never consume one of the ≤4 Anthropic
 breakpoints; history markers walk back via ``history_cache_carriers`` to
 messages that can actually carry a content-part marker (OpenAI-compat and
 native AnthropicDriver both call it — no parallel marker logic).
+
+GPT-5.6+ Codex Responses explicit caching also lives here: durable
+``prompt_cache_key`` identity, capability-gated ``prompt_cache_options`` +
+``prompt_cache_breakpoint`` at the end of the stable instructions/tools
+prefix (never on changing user/tool tails). ChatGPT Codex may reject the
+public OpenAI breakpoint fields — callers strip and retry on 400.
 """
 
 import hashlib
 import os
+import re
 import time
+import uuid
 from typing import Any, Dict, Optional, Tuple
+
+# Stable sentinel developer message that carries the GPT-5.6 explicit
+# breakpoint. Identical every turn so it does not bust the cached prefix.
+# Placed ahead of conversation history; stripped on Codex 400 fallback.
+CODEX_CACHE_BOUNDARY_TEXT = "marionette_stable_prefix_v1"
+
+_GPT56_OR_LATER_RE = re.compile(
+    r"(?:^|[./:])gpt-(?:5\.(?:[6-9]|\d{2,})|[6-9])\b",
+    re.IGNORECASE,
+)
+
+# Process-local memory: ChatGPT Codex backends that rejected GPT-5.6
+# prompt_cache_options / breakpoint. Keyed by base_url|model so a rejection
+# on one host/model does not disable breakpoints elsewhere. Cleared only by
+# process exit (or tests via clear_codex_prompt_cache_breakpoint_memory).
+_CODEX_BREAKPOINT_UNSUPPORTED: Dict[str, bool] = {}
 
 
 # Known OpenRouter / Alibaba slugs that need explicit ephemeral cache_control.
@@ -56,6 +80,10 @@ def prompt_cache_ttl_ms_for_driver(driver: str) -> Optional[int]:
         or "openai" in d
         or "codex" in d
     ):
+        # GPT-5.6+ prompt_cache_options.ttl floor is 30m; older OpenAI/Codex
+        # families keep the historic ~5m warm window.
+        if supports_gpt56_explicit_prompt_cache(d):
+            return 30 * 60 * 1000
         return 5 * 60 * 1000
     return None
 
@@ -393,3 +421,310 @@ def maybe_attach_openrouter_session_id(
             body["session_id"] = sid
     except Exception:
         return
+
+
+def supports_gpt56_explicit_prompt_cache(model: str | None) -> bool:
+    """True for GPT-5.6+ families that accept prompt_cache_options/breakpoint."""
+    m = (model or "").strip().lower().replace("_", "-")
+    if not m:
+        return False
+    return bool(_GPT56_OR_LATER_RE.search(m))
+
+
+def codex_prompt_cache_breakpoint_enabled(model: str | None) -> bool:
+    """Opt-in/capability gate for Codex GPT-5.6 explicit breakpoints.
+
+    ``HARNESS_CODEX_PROMPT_CACHE_BREAKPOINT``:
+      auto (default) — on only for GPT-5.6+ when ``HARNESS_PROMPT_CACHE`` is on
+      on|1|true|yes  — force on (still requires global prompt-cache enable)
+      off|0|false|no — force off
+    """
+    if not prompt_cache_enabled():
+        return False
+    raw = (os.environ.get("HARNESS_CODEX_PROMPT_CACHE_BREAKPOINT") or "auto").strip().lower()
+    if raw in ("0", "false", "off", "no"):
+        return False
+    if raw in ("1", "true", "on", "yes"):
+        return True
+    return supports_gpt56_explicit_prompt_cache(model)
+
+
+def durable_codex_prompt_cache_key(session_id: str | None) -> str | None:
+    """Provider-friendly durable UUID cache key for one Marionette chat session.
+
+    Native Codex routes on a conversation UUID. Marionette session ids are
+    short hex slices of uuid4; map them to a stable UUID5 so the wire key is
+    UUID-shaped, identical across pilot steps/turns, and distinct per chat.
+    Already-valid UUID session ids pass through unchanged. Never raises.
+    """
+    try:
+        sid = (session_id or "").strip()
+        if not sid:
+            return None
+        try:
+            return str(uuid.UUID(sid))
+        except ValueError:
+            pass
+        # 32-char hex without hyphens is a valid UUID wire form.
+        if re.fullmatch(r"[0-9a-fA-F]{32}", sid):
+            return str(uuid.UUID(hex=sid))
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"marionette:codex-cache:{sid}"))
+    except Exception:
+        return None
+
+
+def _codex_breakpoint_memory_key(
+    base_url: str | None, model: str | None,
+) -> str:
+    return f"{(base_url or '').rstrip('/').lower()}|{(model or '').strip().lower()}"
+
+
+def mark_codex_prompt_cache_breakpoint_unsupported(
+    base_url: str | None, model: str | None,
+) -> None:
+    """Remember that this Codex host/model rejected GPT-5.6 cache extensions."""
+    try:
+        _CODEX_BREAKPOINT_UNSUPPORTED[
+            _codex_breakpoint_memory_key(base_url, model)
+        ] = True
+    except Exception:
+        return
+
+
+def codex_prompt_cache_breakpoint_known_unsupported(
+    base_url: str | None, model: str | None,
+) -> bool:
+    """True when a prior 400 taught us this host/model rejects breakpoints."""
+    try:
+        return bool(
+            _CODEX_BREAKPOINT_UNSUPPORTED.get(
+                _codex_breakpoint_memory_key(base_url, model)
+            )
+        )
+    except Exception:
+        return False
+
+
+def clear_codex_prompt_cache_breakpoint_memory() -> None:
+    """Test helper: reset process-local unsupported-breakpoint memory."""
+    _CODEX_BREAKPOINT_UNSUPPORTED.clear()
+
+
+def _is_codex_cache_boundary_item(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("type") not in (None, "message"):
+        return False
+    if str(item.get("role") or "") != "developer":
+        return False
+    content = item.get("content")
+    if not isinstance(content, list) or not content:
+        return False
+    first = content[0]
+    return (
+        isinstance(first, dict)
+        and first.get("type") == "input_text"
+        and str(first.get("text") or "") == CODEX_CACHE_BOUNDARY_TEXT
+    )
+
+
+def strip_codex_prompt_cache_extensions(body: dict) -> None:
+    """Remove GPT-5.6 breakpoint fields Codex backends may reject.
+
+    Keeps ``prompt_cache_key`` (already accepted by ChatGPT Codex). Best-effort.
+    """
+    if not isinstance(body, dict):
+        return
+    body.pop("prompt_cache_options", None)
+    inp = body.get("input")
+    if not isinstance(inp, list):
+        return
+    kept: list = []
+    for item in inp:
+        if _is_codex_cache_boundary_item(item):
+            continue
+        if isinstance(item, dict):
+            content = item.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        part.pop("prompt_cache_breakpoint", None)
+            item.pop("prompt_cache_breakpoint", None)
+        kept.append(item)
+    body["input"] = kept
+
+
+def codex_request_cache_snapshot(body: Any) -> Dict[str, Any]:
+    """Sanitized Codex request cache fields for receipts (no prompt/auth text)."""
+    snap: Dict[str, Any] = {
+        "prompt_cache_key_present": False,
+        "prompt_cache_key": None,
+        "prompt_cache_options": None,
+        "explicit_breakpoint": False,
+    }
+    if not isinstance(body, dict):
+        return snap
+    key = body.get("prompt_cache_key")
+    if isinstance(key, str) and key.strip():
+        snap["prompt_cache_key_present"] = True
+        snap["prompt_cache_key"] = key.strip()
+    options = body.get("prompt_cache_options")
+    if isinstance(options, dict):
+        # Keep only known wire fields — never echo arbitrary nested content.
+        cleaned: Dict[str, Any] = {}
+        mode = options.get("mode")
+        ttl = options.get("ttl")
+        if isinstance(mode, str):
+            cleaned["mode"] = mode
+        if isinstance(ttl, str):
+            cleaned["ttl"] = ttl
+        snap["prompt_cache_options"] = cleaned if cleaned else {}
+    # Explicit breakpoint presence only — do not copy boundary / prompt text.
+    inp = body.get("input")
+    if not isinstance(inp, list):
+        return snap
+    for item in inp:
+        if _is_codex_cache_boundary_item(item):
+            snap["explicit_breakpoint"] = True
+            break
+        if not isinstance(item, dict):
+            continue
+        if item.get("prompt_cache_breakpoint") is not None:
+            snap["explicit_breakpoint"] = True
+            break
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("prompt_cache_breakpoint") is not None:
+                snap["explicit_breakpoint"] = True
+                break
+        if snap["explicit_breakpoint"]:
+            break
+    return snap
+
+
+def apply_codex_responses_prompt_cache(
+    body: dict,
+    *,
+    model: str | None = None,
+    session_id: str | None = None,
+    base_url: str | None = None,
+) -> Dict[str, Any]:
+    """Stamp Codex Responses prompt-cache key + optional GPT-5.6 breakpoint.
+
+    Stable boundary: developer sentinel at the head of ``input`` with
+    ``prompt_cache_breakpoint``, after top-level ``instructions`` + ``tools``
+    (the genuinely stable Marionette prefix). Conversation / tool-call tails
+    stay after the marker so they can change without invalidating the prefix.
+
+    ``prompt_cache_options.mode=explicit`` disables the GPT-5.6 implicit
+    latest-message breakpoint that was causing 0 ``cached_tokens`` despite a
+    locally stable append-only prefix.
+
+    ``HARNESS_PROMPT_CACHE=0`` is a global kill switch: no ``prompt_cache_key``,
+    options, or developer breakpoint are stamped, and any stale markers are
+    removed (``reason=cache_disabled``).
+
+    When a prior HTTP 400 taught us this ``base_url``/``model`` rejects the
+    extensions, only ``prompt_cache_key`` is stamped (no repeat 400s).
+
+    Returns a small diagnostic dict. Never raises.
+    """
+    detail: Dict[str, Any] = {
+        "prompt_cache_key": None,
+        "breakpoint": False,
+        "reason": "ok",
+    }
+    try:
+        if not isinstance(body, dict):
+            detail["reason"] = "bad_body"
+            return detail
+
+        # Always clear prior breakpoint stamps before (re)applying.
+        strip_codex_prompt_cache_extensions(body)
+
+        if not prompt_cache_enabled():
+            body.pop("prompt_cache_key", None)
+            detail["reason"] = "cache_disabled"
+            return detail
+
+        key = durable_codex_prompt_cache_key(session_id)
+        if key:
+            body["prompt_cache_key"] = key
+            detail["prompt_cache_key"] = key
+        elif "prompt_cache_key" in body and not session_id:
+            # Caller cleared session — do not leave a stale key.
+            body.pop("prompt_cache_key", None)
+
+        model_id = model if model is not None else body.get("model")
+        model_str = model_id if isinstance(model_id, str) else None
+        if not codex_prompt_cache_breakpoint_enabled(model_str):
+            detail["reason"] = "breakpoint_disabled"
+            return detail
+        if codex_prompt_cache_breakpoint_known_unsupported(base_url, model_str):
+            detail["reason"] = "breakpoint_unsupported_cached"
+            return detail
+
+        body["prompt_cache_options"] = {"mode": "explicit", "ttl": "30m"}
+        boundary = {
+            "type": "message",
+            "role": "developer",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": CODEX_CACHE_BOUNDARY_TEXT,
+                    "prompt_cache_breakpoint": {"mode": "explicit"},
+                }
+            ],
+        }
+        inp = list(body.get("input") or [])
+        body["input"] = [boundary, *inp]
+        detail["breakpoint"] = True
+        detail["reason"] = "explicit_breakpoint"
+        return detail
+    except Exception:
+        detail["reason"] = "error"
+        return detail
+
+
+def codex_prompt_cache_unsupported_error(detail: str) -> bool:
+    """True when an HTTP 400 body indicates GPT-5.6 cache fields were rejected."""
+    low = (detail or "").lower()
+    if not low:
+        return False
+    needles = (
+        "prompt_cache_options",
+        "prompt_cache_breakpoint",
+        "prompt cache options",
+        "prompt cache breakpoint",
+        "unknown parameter: 'prompt_cache_options'",
+        "unknown parameter: 'prompt_cache_breakpoint'",
+        "unsupported parameter: 'prompt_cache_options'",
+        "unsupported parameter: 'prompt_cache_breakpoint'",
+    )
+    return any(n in low for n in needles)
+
+
+def body_has_codex_prompt_cache_extensions(body: dict) -> bool:
+    """True when the body still carries strip-able GPT-5.6 cache extensions."""
+    if not isinstance(body, dict):
+        return False
+    if isinstance(body.get("prompt_cache_options"), dict):
+        return True
+    inp = body.get("input")
+    if not isinstance(inp, list):
+        return False
+    for item in inp:
+        if _is_codex_cache_boundary_item(item):
+            return True
+        if not isinstance(item, dict):
+            continue
+        if item.get("prompt_cache_breakpoint") is not None:
+            return True
+        content = item.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("prompt_cache_breakpoint") is not None:
+                    return True
+    return False
