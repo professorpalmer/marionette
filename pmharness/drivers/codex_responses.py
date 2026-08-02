@@ -428,6 +428,7 @@ def _consume_codex_sse(
     """
     collected_items: List[dict] = []
     text_deltas: List[str] = []
+    reasoning_deltas: List[str] = []
     has_tool_calls = False
     phase_by_item_id: Dict[str, str] = {}
     phase_by_output_index: Dict[int, str] = {}
@@ -582,6 +583,7 @@ def _consume_codex_sse(
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = event.get("delta") or ""
             if isinstance(reasoning_text, str) and reasoning_text:
+                reasoning_deltas.append(reasoning_text)
                 item_id = event.get("item_id") or event.get("id")
                 out_idx = event.get("output_index")
                 sid, channel, oi_int = _resolve_channel(
@@ -689,6 +691,7 @@ def _consume_codex_sse(
         "status": terminal_status,
         "output": output,
         "output_text": assembled_text,
+        "reasoning": "".join(reasoning_deltas),
         "usage": terminal_usage if isinstance(terminal_usage, dict) else {},
         "error": err_msg,
         "model": terminal_model,
@@ -971,6 +974,9 @@ class CodexResponsesDriver:
             "requested_model": self.model,
             "incomplete_retries": incomplete_retries,
         }
+        reasoning = raw.get("reasoning")
+        if isinstance(reasoning, str) and reasoning.strip():
+            meta["reasoning"] = reasoning
         attach_modality_fields(meta, usage_detail)
         # Match OpenAI-compat: keep explicit provider zeros; omit absent fields.
         # Never infer cache hits or writes from totals alone.

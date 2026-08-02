@@ -58,7 +58,8 @@ def execute_turn_actions(
 ) -> Iterator[Any]:
     """Execute one pilot turn's action list (peeled from ``_send_locked_inner``).
 
-    Mutates ``counters`` in place for ``action_seq`` / ``swarms`` / ``demo_swarms``.
+    Mutates ``counters`` in place for action sequencing, completed swarms, and
+    attempted synchronous swarms.
     Yields the same ConvEvent stream as the former inline block.
 
     Generator return value is ``(disposition, turn_changed_files)`` where
@@ -71,6 +72,7 @@ def execute_turn_actions(
     action_seq = counters["action_seq"]
     swarms = counters["swarms"]
     demo_swarms = counters["demo_swarms"]
+    synchronous_swarms = int(counters.get("synchronous_swarms", 0) or 0)
 
     # Per-operation cwd for action cards — resolve Home → git child without
     # mutating boot-restorable config.repo.
@@ -151,6 +153,7 @@ def execute_turn_actions(
                 counters["action_seq"] = action_seq
                 counters["swarms"] = swarms
                 counters["demo_swarms"] = demo_swarms
+                counters["synchronous_swarms"] = synchronous_swarms
                 return ("return", turn_changed_files)
             yield from session._check_and_inject_steer()
             if session._steer_pending:
@@ -172,6 +175,7 @@ def execute_turn_actions(
             counters["action_seq"] = action_seq
             counters["swarms"] = swarms
             counters["demo_swarms"] = demo_swarms
+            counters["synchronous_swarms"] = synchronous_swarms
             return ("return", turn_changed_files)
         action_seq += 1
         # Prefer the provider's stable tool_call_id so tool_prep:{callId}
@@ -374,6 +378,7 @@ def execute_turn_actions(
             disposition = None
             try:
                 if act.kind == "run_swarm":
+                    synchronous_swarms += 1
                     _counters = {"swarms": swarms, "demo_swarms": demo_swarms}
                     disposition = yield from dispatch_swarm_action(
                         session, act, aid, is_native,
@@ -427,6 +432,7 @@ def execute_turn_actions(
                 counters["action_seq"] = action_seq
                 counters["swarms"] = swarms
                 counters["demo_swarms"] = demo_swarms
+                counters["synchronous_swarms"] = synchronous_swarms
                 return ("return", turn_changed_files)
             continue
 
@@ -438,4 +444,5 @@ def execute_turn_actions(
     counters["action_seq"] = action_seq
     counters["swarms"] = swarms
     counters["demo_swarms"] = demo_swarms
+    counters["synchronous_swarms"] = synchronous_swarms
     return (None, turn_changed_files)

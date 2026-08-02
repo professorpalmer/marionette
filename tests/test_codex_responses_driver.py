@@ -182,6 +182,38 @@ def test_consume_sse_assembles_text_and_usage():
     assert text == "hello"
 
 
+def test_chat_preserves_reasoning_only_response_for_terminal_synthesis(pool_dir, monkeypatch):
+    cp.add_oauth_entry(
+        "openai-codex",
+        access_token="eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjMSJ9fQ.",
+        label="codex-1",
+    )
+    driver = CodexResponsesDriver(name="codex", model="gpt-5.5")
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            return iter([
+                b'data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_1"}}\n',
+                b'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"The audit found one issue."}\n',
+                b'data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"rs_1"}}\n',
+                b'data: {"type":"response.completed","response":{"status":"completed","usage":{}}}\n',
+            ])
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: _Resp())
+
+    response = driver.chat([{"role": "user", "content": "summarize"}])
+
+    assert response.error is None
+    assert response.text == ""
+    assert response.meta["reasoning"] == "The audit found one issue."
+
+
 def test_consume_sse_routes_commentary_to_progress():
     """Commentary is visible progress — never the reasoning/thinking stream."""
     reasoning = []

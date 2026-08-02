@@ -58,6 +58,45 @@ from .text_clean import clean_say
 from .tool_dispatch import _strip_ansi, is_safe_path
 
 
+POST_SWARM_SYNTHESIS_NUDGE = (
+    "(system) The synchronous swarm has completed. "
+    "Summarize its completed findings for the user now. "
+    "Do not call tools, make plans, or emit progress updates; "
+    "return only a concise user-facing synthesis."
+)
+POST_SWARM_SYNTHESIS_FALLBACK = (
+    "The completed swarm did not return a user-facing synthesis. "
+    "Its findings are available in the swarm result above."
+)
+
+
+def post_swarm_synthesis_decision(
+    *,
+    synchronous_swarms: int,
+    step_emitted_user_prose: bool,
+    nudge_sent: bool,
+) -> str:
+    """Choose whether a completed synchronous swarm needs one final synthesis."""
+    if not synchronous_swarms or step_emitted_user_prose:
+        return "none"
+    return "fallback" if nudge_sent else "nudge"
+
+
+def _synthesis_only_turn(
+    active: bool, turn: Any, tool_calls: list,
+) -> tuple[Any, list]:
+    """Strip provider tool calls from the hidden synthesis retry."""
+    if not active:
+        return turn, tool_calls
+    turn.actions = []
+    return turn, []
+
+
+def _build_step_tools(synthesis_nudge_active: bool, build_tools: Any) -> list:
+    """Hide visible tools during the tool-free synthesis retry."""
+    return [] if synthesis_nudge_active else build_tools()
+
+
 class SendLoopMixin:
     """Mixin holding send-loop orchestration for ConversationalSession.
 
@@ -761,10 +800,13 @@ class SendLoopMixin:
                     self._history.append({"role": "user", "content": cg_context})
 
         swarms = 0
+        synchronous_swarms = 0
         action_seq = 0
         demo_swarms = 0  # count swarms that returned the demo substrate
         turn_findings: list = []   # accumulate real findings for wiki ingest
         turn_prose: list = []      # accumulate pilot prose for the digest
+        post_swarm_nudge_sent = False
+        post_swarm_nudge_active = False
 
         consecutive_non_productive = 0
         # AUTO-VERIFY LOOP: after a turn that edited files, run a fast, scoped
@@ -820,6 +862,9 @@ class SendLoopMixin:
             self._steer_pending = False
 
             # 1. Ask the pilot for its next conversational turn.
+            step_emitted_user_prose = False
+            synthesis_nudge_active = post_swarm_nudge_active
+            post_swarm_nudge_active = False
             base_sys = self._history[0]["content"]
             cg_section = ""
             # Skip the per-turn CodeGraph context build for no_delegation worker sessions:
@@ -931,7 +976,7 @@ class SendLoopMixin:
                         except Exception:
                             pass
                     if hasattr(self.pilot, "chat"):
-                        tools_schema = self._build_visible_tools_schema()
+                        tools_schema = _build_step_tools(synthesis_nudge_active, self._build_visible_tools_schema)
 
                         is_interactive = not getattr(self.config, "no_delegation", False)
                         # Gate on an EXPLICIT capability flag (is True) + a callable chat_stream.
@@ -955,6 +1000,7 @@ class SendLoopMixin:
 
                             streamed_prose, resp = yield from drain_stream_queue(q)
                             self._streamed_prose = streamed_prose
+                            step_emitted_user_prose = bool(streamed_prose.strip())
                         else:
                             chat_kwargs = {
                                 "tools": tools_schema,
@@ -1075,11 +1121,19 @@ class SendLoopMixin:
                 try:
                     turn = parse_pilot_turn(resp.text)
                 except PilotError as e:
-                    # one lenient retry: tell the pilot to fix its envelope
-                    self._history.append({"role": "user",
-                        "content": f"(system) Your last reply was not valid. {e}. "
-                                   f"Reply with the JSON envelope {{\"say\":...,\"actions\":[...]}}."})
-                    continue
+                    if synthesis_nudge_active:
+                        from .pilot import PilotTurn
+                        turn = PilotTurn(say="", actions=[])
+                    else:
+                        # One lenient retry: tell the pilot to fix its envelope.
+                        self._history.append({"role": "user",
+                            "content": f"(system) Your last reply was not valid. {e}. "
+                                       f"Reply with the JSON envelope {{\"say\":...,\"actions\":[...]}}."})
+                        continue
+
+            turn, tool_calls = _synthesis_only_turn(
+                synthesis_nudge_active, turn, tool_calls,
+            )
 
             # 2. Emit the pilot's prose to the user.
             # Do not emit a post-answer "thinking"/reasoning ConvEvent — live
@@ -1107,6 +1161,7 @@ class SendLoopMixin:
             if _promoted_say:
                 _promoted_say = clean_say(_promoted_say) or _promoted_say
             if cleaned_say_text:
+                step_emitted_user_prose = True
                 # If this prose was already streamed token-by-token, flag it so the
                 # frontend finalizes the existing streaming bubble in place instead
                 # of treating it as a brand-new message (which would re-dump it).
@@ -1115,6 +1170,7 @@ class SendLoopMixin:
                 turn_prose.append(cleaned_say_text)
                 self._display_transcript.append({"type": "message", "role": "assistant", "text": cleaned_say_text})
             if _promoted_say and _promoted_say.strip() != (cleaned_say_text or "").strip():
+                step_emitted_user_prose = True
                 yield ConvEvent("message", {
                     "role": "assistant",
                     "text": _promoted_say,
@@ -1146,7 +1202,11 @@ class SendLoopMixin:
             else:
                 self._history.append({"role": "assistant", "content": _history_text or "(acting)"})
 
-            if self._turn_budget_exhausted():
+            if self._turn_budget_exhausted() and not (
+                synchronous_swarms
+                and not step_emitted_user_prose
+                and not turn.has_actions
+            ):
                 # Close the turn for the UI before wiki ingest (network I/O).
                 yield ConvEvent("assistant_done", {
                     "turns": step + 1,
@@ -1248,6 +1308,36 @@ class SendLoopMixin:
             # piggyback inside _check_and_inject_steer); together they guarantee
             # any enqueued steer is eventually delivered and never stranded.
             if not turn.has_actions:
+                synthesis_decision = post_swarm_synthesis_decision(
+                    synchronous_swarms=synchronous_swarms,
+                    step_emitted_user_prose=step_emitted_user_prose,
+                    nudge_sent=post_swarm_nudge_sent,
+                )
+                if synthesis_decision == "nudge":
+                    post_swarm_nudge_sent = True
+                    post_swarm_nudge_active = True
+                    self._history.append({
+                        "role": "user",
+                        "content": POST_SWARM_SYNTHESIS_NUDGE,
+                    })
+                    continue
+
+                if synthesis_decision == "fallback":
+                    fallback = POST_SWARM_SYNTHESIS_FALLBACK
+                    if self._history and self._history[-1].get("role") == "assistant":
+                        self._history[-1]["content"] = fallback
+                    else:
+                        self._history.append({"role": "assistant", "content": fallback})
+                    yield ConvEvent("message", {
+                        "role": "assistant",
+                        "text": fallback,
+                    })
+                    turn_prose.append(fallback)
+                    self._display_transcript.append({
+                        "type": "message",
+                        "role": "assistant",
+                        "text": fallback,
+                    })
                 disposition, user_message = yield from drain_idle_turn(
                     self,
                     user_message=user_message,
@@ -1267,6 +1357,7 @@ class SendLoopMixin:
                 "action_seq": action_seq,
                 "swarms": swarms,
                 "demo_swarms": demo_swarms,
+                "synchronous_swarms": synchronous_swarms,
             }
             _action_disposition, turn_changed_files = yield from execute_turn_actions(
                 self,
@@ -1281,6 +1372,7 @@ class SendLoopMixin:
             action_seq = _action_counters["action_seq"]
             swarms = _action_counters["swarms"]
             demo_swarms = _action_counters["demo_swarms"]
+            synchronous_swarms = _action_counters["synchronous_swarms"]
             if _action_disposition == "return":
                 # Cancel mid-spree: heal unanswered tool_calls before exit so
                 # the next send/resume/export never sees a dangling tool_use.

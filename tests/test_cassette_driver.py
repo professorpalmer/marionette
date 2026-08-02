@@ -25,6 +25,7 @@ class _CountingStub:
             tokens_out=5,
             latency_ms=1.0,
             model=self.model,
+            meta={"reasoning": "cached thought"},
         )
 
     def chat(self, messages, *, tools=None, system=None) -> DriverResponse:
@@ -59,6 +60,7 @@ def test_record_then_replay_is_identical_and_inner_called_once(monkeypatch, tmp_
     assert second.tokens_in == first.tokens_in
     assert second.tokens_out == first.tokens_out
     assert second.latency_ms == 0.0
+    assert second.meta == first.meta
 
 
 def test_replay_miss_raises_with_hash(monkeypatch, tmp_path):

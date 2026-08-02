@@ -559,6 +559,7 @@ class AnthropicDriver:
 
         t0 = time.time()
         full_text_pieces = []
+        reasoning_pieces = []
         # tool_use blocks assembled by content-block index.
         tool_blocks: dict = {}
         usage_fields = _anthropic_usage_fields({})
@@ -608,8 +609,10 @@ class AnthropicDriver:
                                 on_delta(piece)
                         elif dtype == "thinking_delta":
                             piece = delta.get("thinking") or ""
-                            if piece and on_reasoning_delta is not None:
-                                on_reasoning_delta(piece)
+                            if piece:
+                                reasoning_pieces.append(piece)
+                                if on_reasoning_delta is not None:
+                                    on_reasoning_delta(piece)
                         elif dtype == "input_json_delta":
                             # Streamed tool-call arguments (partial JSON).
                             if idx in tool_blocks:
@@ -731,7 +734,9 @@ class AnthropicDriver:
                 "function": {"name": tb["name"], "arguments": args},
             })
 
-        reasoning = extract_reasoning({"content": full_text})
+        reasoning = "".join(reasoning_pieces)
+        if not reasoning:
+            reasoning = extract_reasoning({"content": full_text})
         pure_text = strip_think_blocks(full_text)
 
         meta = _anthropic_cache_meta(usage_fields)

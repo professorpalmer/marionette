@@ -182,6 +182,8 @@ class CassetteDriver:
                 "tokens_in": response.tokens_in,
                 "tokens_out": response.tokens_out,
                 "model": response.model or getattr(self._inner, "name", ""),
+                "error": response.error,
+                "meta": response.meta,
             },
         }
         scrubbed, fields = _scrub_interaction(interaction)
@@ -203,6 +205,8 @@ class CassetteDriver:
             tokens_out=int(resp.get("tokens_out") or 0),
             latency_ms=0.0,
             model=str(resp.get("model") or getattr(self._inner, "name", "")),
+            error=str(resp["error"]) if resp.get("error") else None,
+            meta=deepcopy(resp.get("meta")) if isinstance(resp.get("meta"), dict) else {},
         )
 
     def complete(self, task_prompt: str, *, system: str = SYSTEM_PROMPT) -> DriverResponse:

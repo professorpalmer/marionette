@@ -50,6 +50,34 @@ def test_chat_stream_emits_text_deltas(monkeypatch):
     assert resp.tokens_out == 5
 
 
+def test_chat_stream_preserves_thinking_metadata(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    d = AnthropicDriver("anthropic:claude-opus-4-8", "claude-opus-4-8")
+    reasoning = []
+    events = [
+        ("message_start", {"type": "message_start", "message": {"usage": {}}}),
+        ("content_block_delta", {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "Reviewing results."},
+        }),
+        ("message_delta", {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 2},
+        }),
+    ]
+
+    with patch("urllib.request.urlopen", return_value=_sse(events)):
+        resp = d.chat_stream(
+            [{"role": "user", "content": "summarize"}],
+            on_reasoning_delta=reasoning.append,
+        )
+
+    assert reasoning == ["Reviewing results."]
+    assert resp.meta["reasoning"] == "Reviewing results."
+
+
 def test_chat_stream_assembles_tool_calls(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     d = AnthropicDriver("anthropic:claude-opus-4-8", "claude-opus-4-8")

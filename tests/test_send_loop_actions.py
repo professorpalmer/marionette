@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import harness.send_loop_actions as send_loop_actions
 from harness.pilot import PilotAction, PilotTurn
 from harness.send_loop import SendLoopMixin
 from harness.send_loop_actions import execute_turn_actions
@@ -263,3 +264,42 @@ def test_execute_turn_actions_no_delegation_blocks_swarm():
     assert disposition is None
     result = next(e for e in events if e.kind == "action_result")
     assert "delegation is disabled" in result.data.get("error", "")
+
+
+def test_execute_turn_actions_counts_attempted_synchronous_swarm(monkeypatch):
+    act = PilotAction(kind="run_swarm", goal="reuse the audit")
+    turn = PilotTurn(say="", thinking="", actions=[act])
+    session = SimpleNamespace(
+        _turn_guard_state=None,
+        _cancel=threading.Event(),
+        _steer_pending=False,
+        _history=[],
+        _pending_advisor_warnings=[],
+        _append_action_result=MagicMock(),
+        _check_and_inject_steer=MagicMock(return_value=iter(())),
+        _turn_economy=SimpleNamespace(enforce_tool_batch=lambda msgs: None),
+        config=SimpleNamespace(repo="/tmp/r", swarm_adapter="local", no_delegation=False),
+        pilot=MagicMock(),
+    )
+
+    def fake_dispatch(*args, **kwargs):
+        if False:
+            yield None
+        return None
+
+    monkeypatch.setattr(send_loop_actions, "dispatch_swarm_action", fake_dispatch)
+    counters = {"action_seq": 0, "swarms": 0, "demo_swarms": 0}
+
+    list(execute_turn_actions(
+        session,
+        turn=turn,
+        user_message="reuse it",
+        is_native=True,
+        plan=False,
+        counters=counters,
+        step=0,
+        turn_findings=[],
+    ))
+
+    assert counters["swarms"] == 0
+    assert counters["synchronous_swarms"] == 1
