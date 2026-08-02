@@ -130,4 +130,13 @@ describe("toSafeSettingsSnapshot", () => {
     expect(stored!).not.toContain("raw-key-value");
     expect(stored!).toContain("cursor");
   });
+
+  it("includes pilotToolBudget in safe snapshot fields", () => {
+    const raw = { ...sampleSettings, pilotToolBudget: "25" };
+    const safe = toSafeSettingsSnapshot(raw);
+    expect(safe.pilotToolBudget).toBe("25");
+    writeSettingsSnapshot(raw);
+    const stored = JSON.parse(localStorage.getItem(SETTINGS_SNAPSHOT_KEY)!);
+    expect(stored.settings.pilotToolBudget).toBe("25");
+  });
 });

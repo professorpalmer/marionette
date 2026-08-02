@@ -172,6 +172,18 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
                 _set_env_setting("HARNESS_MAX_PILOT_STEPS", str(max(1, int(raw))))
             except (ValueError, TypeError):
                 return 400, {"error": "Invalid maxPilotSteps"}
+    if "pilotToolBudget" in body:
+        raw = str(body["pilotToolBudget"]).strip().lower()
+        if raw in ("0", "off", "none", "unlimited"):
+            _set_env_setting("HARNESS_PILOT_TOOL_BUDGET", "0")
+        else:
+            try:
+                cap = int(raw)
+                if cap < 1:
+                    return 400, {"error": "Invalid pilotToolBudget"}
+                _set_env_setting("HARNESS_PILOT_TOOL_BUDGET", str(cap))
+            except (ValueError, TypeError):
+                return 400, {"error": "Invalid pilotToolBudget"}
     if "workerTokenBudget" in body:
         raw = str(body["workerTokenBudget"]).strip().lower()
         try:

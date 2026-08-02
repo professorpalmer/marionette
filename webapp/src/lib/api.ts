@@ -48,6 +48,7 @@ export type Settings = {
   hash_edit_enabled?: boolean;
   commandTimeout?: string;
   maxPilotSteps?: string;
+  pilotToolBudget?: string;
   workerTokenBudget?: string;
   reasoning_effort?: ReasoningEffort;
   wiki_auto?: boolean;

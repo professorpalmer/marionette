@@ -33,6 +33,7 @@ export function toSafeSettingsSnapshot(s: Settings): Settings {
     hash_edit_enabled: s.hash_edit_enabled,
     commandTimeout: s.commandTimeout,
     maxPilotSteps: s.maxPilotSteps,
+    pilotToolBudget: s.pilotToolBudget,
     workerTokenBudget: s.workerTokenBudget,
     reasoning_effort: s.reasoning_effort,
     wiki_auto: s.wiki_auto,
@@ -1282,7 +1283,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
-        {gate("safety", "full-auto safety command guard timeout max investigation steps") && settings && (<>
+        {gate("safety", "full-auto safety command guard timeout max investigation steps per-turn tool-call cap iteration budget guard") && settings && (<>
         {/* Full-Auto Safety: command guard + timeout */}
         <div className="space-y-1.5">
           <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
@@ -1340,9 +1341,29 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             />
           </div>
           <p className="text-[10px] text-muted">
-            Per-message ceiling on pilot investigation/tool-call steps. Use 0 or "unlimited"
-            for true autopilot (loop until done, the budget governor halts, or you stop it).
-            Applies on the next turn -- no restart needed.
+            Send-loop step ceiling per user message (model rounds through the tool loop).
+            Use 0 or "unlimited" for unbounded autopilot until the pilot finishes, the budget
+            governor halts, or you stop it. Distinct from Budget (Steps) and Per-turn tool-call
+            cap below. Applies on the next turn — no restart needed.
+          </p>
+          <div className="flex items-center gap-2 pt-1">
+            <label className="text-[11px] text-muted shrink-0">Per-turn tool-call cap</label>
+            <input
+              type="text"
+              defaultValue={settings.pilotToolBudget || "25"}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (v !== (settings.pilotToolBudget || "25")) update({ pilotToolBudget: v });
+              }}
+              disabled={saving}
+              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
+              placeholder="25"
+            />
+          </div>
+          <p className="text-[10px] text-muted">
+            Iteration-budget guard: hard cap on native tool calls within one pilot turn.
+            Loop breaker, swarm gate, and delegate gate stay active when set to 0 or "unlimited"
+            (only this cap is disabled). Applies on the next turn — no restart needed.
           </p>
           <div className="flex items-center gap-2 pt-1">
             <label className="text-[11px] text-muted shrink-0">Worker run token ceiling</label>

@@ -2817,6 +2817,9 @@ def _get_settings_dict():
         "hash_edit_enabled": hash_edit_enabled(),
         "commandTimeout": (os.environ.get("HARNESS_COMMAND_TIMEOUT", "").strip() or "120"),
         "maxPilotSteps": (os.environ.get("HARNESS_MAX_PILOT_STEPS", "").strip() or "40"),
+        "pilotToolBudget": (
+            os.environ.get("HARNESS_PILOT_TOOL_BUDGET", "").strip() or "25"
+        ),
         "workerTokenBudget": (
             os.environ.get("HARNESS_WORKER_TOKEN_BUDGET", "").strip() or "250000"
         ),
