@@ -51,6 +51,8 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     actionEvent?: string;
   } | null>(null);
   const [sessionState, setSessionState] = useState<SessionState | null>(null);
+  // Dedup runtime-stale notes across the 5-minute focus throttle and 30-minute polls.
+  const lastRuntimeNoteRef = useRef<string | null>(null);
 
   // Transient toast (e.g. a refused model switch). Auto-dismisses; never blocks.
   // detail may be a string or { message, actionLabel?, actionEvent? } for Undo.
@@ -96,7 +98,14 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
       lastCheck = now;
       ipc.updates.check()
         .then((res: any) => {
-          if (!cancelled && res && res.available) {
+          if (cancelled || !res) return;
+          // Informational only: a stale Puppetmaster runtime is not an actionable
+          // app update, but users deserve an honest one-line explanation once.
+          if (res.runtimeStale && res.runtimeNote && res.runtimeNote !== lastRuntimeNoteRef.current) {
+            lastRuntimeNoteRef.current = res.runtimeNote;
+            window.dispatchEvent(new CustomEvent("harness-toast", { detail: res.runtimeNote }));
+          }
+          if (res.available || res.downloaded) {
             setUpdate({ behind: res.behind || 0, branch: res.branch || "main", version: res.current || "" });
           }
         })
@@ -111,7 +120,7 @@ export default function StatusBar({ config, leftOpen, rightOpen, onToggleLeft, o
     // for the next renderer poll tick.
     const offAvailable = ipc.updates.onAvailable
       ? ipc.updates.onAvailable((res: any) => {
-          if (!cancelled && res && res.available) {
+          if (!cancelled && res && (res.available || res.downloaded)) {
             setUpdate({ behind: res.behind || 0, branch: res.branch || "main", version: res.current || "" });
           }
         })

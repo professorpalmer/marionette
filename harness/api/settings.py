@@ -47,6 +47,7 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
         reasoning_effort = current_reasoning_effort()
     except Exception:
         reasoning_effort = "low"
+    identity = _backend_source_identity()
     return 200, {
         "driver": cfg.driver,
         "reach": cfg.reach,
@@ -59,7 +60,39 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
         "agentic_ready": agentic_ready,
         "preflight": session.preflight(),
         "reasoning_effort": reasoning_effort,
+        "package_version": identity.get("package_version", ""),
+        "checkout_sha": identity.get("checkout_sha", ""),
+        "app_root": identity.get("app_root", ""),
     }
+
+
+def _backend_source_identity() -> dict:
+    """Identity of the checkout this backend was started from.
+
+    Exposed on ``/api/config`` so Electron can refuse to adopt a live process
+    whose source no longer matches the current tree after an update.
+    """
+    out = {"package_version": "", "checkout_sha": "", "app_root": ""}
+    try:
+        from harness import __version__
+        out["package_version"] = str(__version__ or "").strip()
+    except Exception:
+        pass
+    app_root = (os.environ.get("MARIONETTE_APP_ROOT") or "").strip()
+    out["app_root"] = app_root
+    if not app_root:
+        return out
+    try:
+        import subprocess
+        sha = subprocess.check_output(
+            ["git", "-C", app_root, "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        ).decode("utf-8", "replace").strip()
+        out["checkout_sha"] = sha
+    except Exception:
+        pass
+    return out
 
 
 def get_settings(svc: SettingsServices) -> tuple[int, JsonPayload]:

@@ -82,7 +82,24 @@ jobs:
           APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           npm ci
-          npm run dist -- --${{ matrix.platform }}
+          # --publish never: emit installers + latest*.yml / blockmap locally.
+          # Artifact upload to GitHub Releases is the dedicated `publish` job
+          # (avoids matrix races). publish: in electron-builder.yml is still
+          # required so the updater feed files are generated.
+          npm run dist -- --${{ matrix.platform }} --publish never
+
+      - name: Require electron-updater feed metadata
+        shell: bash
+        run: |
+          shopt -s nullglob
+          feeds=(webapp/release/latest*.yml)
+          if [ ${#feeds[@]} -eq 0 ]; then
+            echo "electron-builder did not emit latest*.yml (required by packaged updater)" >&2
+            ls -la webapp/release || true
+            exit 1
+          fi
+          printf 'updater feeds:\n'
+          printf '  %s\n' "${feeds[@]}"
 
       # Stage installers as Actions artifacts. Do NOT call the Releases API from
       # the matrix â€” three parallel softprops uploads race and flake hard when
@@ -98,7 +115,7 @@ jobs:
             webapp/release/*.AppImage
             webapp/release/*.blockmap
             webapp/release/latest*.yml
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
 
   publish:

@@ -19,6 +19,8 @@
 //     project location"; that is a dev checkout managing its own source, so we
 //     never clobber it with a PyPI wheel.
 
+const path = require("node:path");
+
 const DEFAULT_PUPPETMASTER_SPEC = "puppetmaster-ai==1.21.9";
 const PUPPETMASTER_DIST_NAME = "puppetmaster-ai";
 
@@ -58,6 +60,36 @@ function planPuppetmasterUpgrade({ specEnv, pipShowOutput, pinnedSpec } = {}) {
   return { skip: false, spec: DEFAULT_PUPPETMASTER_SPEC, have: have || "", want };
 }
 
+/**
+ * Resolve the Puppetmaster pin from the CHECKOUT's update-pm.cjs when present.
+ * A packaged shell's own require("./update-pm.cjs") is frozen in app.asar; the
+ * checkout's copy moves with `git pull`, so it is authoritative (otherwise PM
+ * stays stuck on the shell's build-time pin, e.g. 1.21.6 after the tree moved
+ * to 1.21.9).
+ *
+ * @returns {{ pinnedSpec: string, distName: string, planPuppetmasterUpgrade: Function }}
+ */
+function resolveCheckoutPin(repoRoot) {
+  try {
+    const checkoutPinPath = path.join(repoRoot, "webapp", "electron", "update-pm.cjs");
+    // Clear cache so a just-pulled pin is visible without relaunching Electron.
+    try { delete require.cache[require.resolve(checkoutPinPath)]; } catch { /* first load */ }
+    const checkoutPm = require(checkoutPinPath);
+    if (checkoutPm && checkoutPm.DEFAULT_PUPPETMASTER_SPEC) {
+      return {
+        pinnedSpec: checkoutPm.DEFAULT_PUPPETMASTER_SPEC,
+        distName: checkoutPm.PUPPETMASTER_DIST_NAME || PUPPETMASTER_DIST_NAME,
+        planPuppetmasterUpgrade: checkoutPm.planPuppetmasterUpgrade || planPuppetmasterUpgrade,
+      };
+    }
+  } catch { /* fall through to this module's (packaged) pin */ }
+  return {
+    pinnedSpec: DEFAULT_PUPPETMASTER_SPEC,
+    distName: PUPPETMASTER_DIST_NAME,
+    planPuppetmasterUpgrade,
+  };
+}
+
 module.exports = {
   DEFAULT_PUPPETMASTER_SPEC,
   PUPPETMASTER_DIST_NAME,
@@ -65,4 +97,5 @@ module.exports = {
   pinnedVersionFromSpec,
   installedPuppetmasterVersion,
   planPuppetmasterUpgrade,
+  resolveCheckoutPin,
 };

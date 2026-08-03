@@ -310,6 +310,16 @@ test("describeMainProcessUpdate: packaged installs need the latest installer", (
   assert.match(verdict.note, /installer|latest Marionette release/i);
 });
 
+test("describeMainProcessUpdate: packaged shell skew alone also requires installer", () => {
+  const verdict = bridge.describeMainProcessUpdate({
+    mainProcessChanged: false,
+    isPackaged: true,
+    shellSkew: true,
+  });
+  assert.equal(verdict.installerUpdateRequired, true);
+  assert.match(verdict.note, /app shell|installer/i);
+});
+
 test("describeMainProcessUpdate: source-run relaunch loads the new shell (no installer)", () => {
   const verdict = bridge.describeMainProcessUpdate({ mainProcessChanged: true, isPackaged: false });
   assert.equal(verdict.installerUpdateRequired, false);

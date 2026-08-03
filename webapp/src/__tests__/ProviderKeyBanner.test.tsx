@@ -1,14 +1,17 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import ProviderKeyBanner from "../components/ProviderKeyBanner";
+import { TITLEBAR_TRAFFIC_PAD_PX } from "../lib/titlebarSafe";
 
 describe("ProviderKeyBanner", () => {
-  it("clears macOS traffic lights with titlebar inset padding", () => {
+  it("clears macOS traffic lights with fixed px titlebar inset padding", () => {
+    document.documentElement.style.fontSize = "11.5px";
     render(<ProviderKeyBanner onAddKey={vi.fn()} />);
     const banner = screen.getByTestId("provider-key-banner");
-    expect(banner.className).toMatch(/\bpl-24\b/);
+    expect(banner.className).not.toMatch(/\bpl-24\b/);
     expect(banner.className).toMatch(/\bpr-4\b/);
     expect(banner.className).not.toMatch(/\bpx-4\b/);
+    expect((banner as HTMLElement).style.paddingLeft).toBe(`${TITLEBAR_TRAFFIC_PAD_PX}px`);
     expect(screen.getByText(/Add a provider key to run real analysis/i)).toBeTruthy();
   });
 

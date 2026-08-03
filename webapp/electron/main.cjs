@@ -20,11 +20,20 @@ const { readLiveUpdateMarker } = require("./update-marker.cjs");
 const { isInstallComplete, runBootstrap, reinjectPortableTools } = require("./bootstrap.cjs");
 const { buildUpdaterEnv, windowsShellEnv } = require("./update-env.cjs");
 const {
+  ensurePuppetmasterRuntime,
+  describeRuntimeParity,
+} = require("./puppetmaster-runtime.cjs");
+const {
   isExactOriginAuthenticatedApiRequest,
   probeActiveLoopbackAliasesForPort,
 } = require("./resource-auth.cjs");
 const { wireStreamResponse, sanitizedStreamConnError } = require("./stream-bridge.cjs");
 const { waitForAuthenticatedBackend } = require("./backend-probe.cjs");
+const {
+  currentBackendIdentity,
+  decideBackendReuse,
+  buildBackendMarkerPayload,
+} = require("./backend-identity.cjs");
 
 // Must run before any git/npm/uv child spawns: on Windows the portable tools
 // installed by first-run bootstrap are only on PATH in-memory, per process.
@@ -644,6 +653,34 @@ function unlinkMarkerIfOwned(owned = backendOwned) {
   unlinkMarker();
 }
 
+/**
+ * Best-effort stop of a marker-pointed backend that failed the identity /
+ * auth reuse handshake. Only signals the recorded pid (and its POSIX process
+ * group); never clears another install's SQLite by force-wiping state.
+ */
+async function replaceStaleBackendProcess(marker) {
+  const pid = marker && marker.pid != null ? Number(marker.pid) : NaN;
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  try {
+    if (process.platform === "win32") {
+      const { spawnSync } = require("node:child_process");
+      spawnSync("taskkill", ["/pid", String(pid), "/T"], { windowsHide: true, timeout: 3000 });
+      await new Promise((r) => setTimeout(r, 400));
+      spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, timeout: 5000 });
+    } else {
+      try { process.kill(-pid, "SIGTERM"); } catch {
+        try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
+      }
+      await new Promise((r) => setTimeout(r, 400));
+      try { process.kill(-pid, "SIGKILL"); } catch {
+        try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+      }
+    }
+  } catch (err) {
+    logMain(`[backend] stale process cleanup failed: ${err && err.message ? err.message : err}`);
+  }
+}
+
 function consumeIntentionalRestartSignal() {
   const raw = readPmHarnessStateFile(INTENTIONAL_RESTART_SIGNAL);
   const intentional = isFreshIntentionalRestartSignal(raw);
@@ -664,27 +701,61 @@ function startBackend() {
 
 async function _startBackendOnce() {
   // 1. Try to reuse an existing healthy backend -- but only one the candidate
-  // token from disk actually AUTHENTICATES against. An unauthenticated
-  // liveness probe used to adopt any answering process, so a stale backend
-  // holding an old token (update relaunch / crash survivor) was "reused" and
-  // every renderer request 403'd. A token mismatch now falls through to a
-  // fresh spawn instead.
+  // token from disk actually AUTHENTICATES against AND whose source identity
+  // matches the current checkout. An unauthenticated liveness probe used to
+  // adopt any answering process, so a stale backend holding an OLD token
+  // (update relaunch / crash survivor) was "reused" and every renderer request
+  // 403'd. After a source update, an authenticated-but-old backend (pre-update
+  // code on the marker port) must also be replaced -- marker/version mismatch
+  // falls through to a fresh spawn instead of adopting stale agentic_ready etc.
+  const expectedIdentity = currentBackendIdentity({
+    repoRoot: resolveRepoRoot(),
+    appVersion: app.getVersion(),
+  });
   try {
     const raw = readPmHarnessStateFile("backend.json");
-    const m = raw ? JSON.parse(raw) : null;
-    if (m && m.port) {
-      const candidateToken = (readPmHarnessStateFile("token") || "").trim();
-      await waitForAuthenticatedBackend({ port: m.port, token: candidateToken, timeoutMs: 2000 });
-      backendPort = m.port;
+    const candidateToken = (readPmHarnessStateFile("token") || "").trim();
+    let authenticated = false;
+    let probeErr = null;
+    const preview = (() => {
+      try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+    })();
+    if (preview && preview.port) {
+      try {
+        await waitForAuthenticatedBackend({
+          port: preview.port,
+          token: candidateToken,
+          timeoutMs: 2000,
+        });
+        authenticated = true;
+      } catch (err) {
+        probeErr = err;
+      }
+    }
+    const verdict = decideBackendReuse({
+      markerRaw: raw,
+      expectedIdentity,
+      authenticated,
+    });
+    if (verdict.action === "reuse" && verdict.marker) {
+      backendPort = verdict.marker.port;
       backend = null; // not ours to kill
       backendOwned = false;
-      // Adopt the running backend's token (minted by whichever main spawned it,
-      // and just proven valid by the probe) so our renderer/IPC authenticate
-      // against IT rather than our own unused freshly-minted token.
       if (candidateToken) harnessToken = candidateToken;
-      console.log(`[backend] reusing existing backend on ${backendPort}`);
+      console.log(`[backend] reusing existing backend on ${backendPort} (identity match)`);
       void refreshAllowedLoopbackAliases();
       return;
+    }
+    if (verdict.action === "replace" && verdict.marker) {
+      logMain(
+        `[backend] marker reuse rejected (${verdict.reason}`
+        + (probeErr && probeErr.message ? `; ${probeErr.message}` : "")
+        + `); replacing stale process on port ${verdict.marker.port}`
+      );
+      await replaceStaleBackendProcess(verdict.marker);
+      unlinkMarker();
+    } else if (probeErr) {
+      logMain(`[backend] marker reuse rejected: ${probeErr && probeErr.message ? probeErr.message : probeErr}`);
     }
   } catch (probeErr) {
     logMain(`[backend] marker reuse rejected: ${probeErr && probeErr.message ? probeErr.message : probeErr}`);
@@ -841,7 +912,20 @@ async function _startBackendOnce() {
   backend.stdout.on("data", (d) => { _dbg(`[out] ${d}`); process.stdout.write(`[backend] ${d}`); });
   backend.stderr.on("data", (d) => { _dbg(`[err] ${d}`); process.stderr.write(`[backend] ${d}`); });
   await waitForBackend(backendPort);
-  try { fs.writeFileSync(markerPath(), JSON.stringify({ port: backendPort, pid: backend.pid, at: Date.now() })); } catch {}
+  try {
+    const identity = currentBackendIdentity({
+      repoRoot,
+      appVersion: app.getVersion(),
+    });
+    fs.writeFileSync(
+      markerPath(),
+      JSON.stringify(buildBackendMarkerPayload({
+        port: backendPort,
+        pid: backend.pid,
+        identity,
+      })),
+    );
+  } catch {}
   void refreshAllowedLoopbackAliases();
 }
 
@@ -1069,18 +1153,44 @@ ipcMain.on("harness:stream", (event, channelId, apiPath) => {
 const { registerFsBridge } = require("./fs-bridge.cjs");
 const { registerGitBridge } = require("./git-bridge.cjs");
 const { registerUpdateBridge } = require("./update-bridge.cjs");
+const { registerPackagedUpdater } = require("./packaged-updater.cjs");
 registerFsBridge(ipcMain);
 registerGitBridge(ipcMain);
-// One delivery model (StatusBar's update pill): Marionette always runs from a
-// git checkout, so an update is `git pull` + rebuild the source in place, then
-// relaunch. There is no signed bundle to swap.
+const packagedUpdater = registerPackagedUpdater(ipcMain, app, {
+  broadcast: (channel, payload) => {
+    try {
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w.isDestroyed()) w.webContents.send(channel, payload);
+      }
+    } catch { /* window gone */ }
+  },
+  log: (line) => {
+    try {
+      fs.appendFileSync(
+        path.join(os.homedir(), ".pmharness", "update.log"),
+        `${new Date().toISOString()} [packaged] ${line}\n`,
+      );
+    } catch { /* ignore */ }
+  },
+});
+// Source checkout: git pull + rebuild. Packaged shell: electron-updater against
+// GitHub Releases (latest*.yml). Both share updates:* IPC so the banner/pill
+// stay single-sourced. Packaged installs never claim completion via relaunch of
+// a stale app.asar when the shell still needs the installer.
+// Result of the startup Puppetmaster parity check (see ensurePackagedCheckout).
+// A "stale" result rides along on updates:check so the banner can tell the user
+// their runtime is behind instead of the app pretending everything is current.
+let packagedRuntimeParity = null;
+
 registerUpdateBridge(ipcMain, app, shell, {
   getRepoRoot: resolveRepoRoot,
+  getRuntimeParity: () => packagedRuntimeParity,
   // A Finder/Dock launch gets a stripped launchd PATH, so npm/uv are not found
   // and the rebuild spawns with ENOENT ("spawn npm ENOENT") -- the source pulls
   // but the app never rebuilds. Hand the updater the user's real login-shell env
   // (same recovery the backend uses) so its child tools resolve like a terminal.
   getEnv: () => (isDev ? process.env : buildUpdaterEnv({ processEnv: process.env, shellEnv: loginShellEnv() })),
+  packagedUpdater,
   relaunch: () => {
     Promise.resolve(cleanupBackend())
       .catch(() => {})
@@ -1153,6 +1263,22 @@ function sendBootstrapProgress(win, msg, pct) {
   } catch { /* window gone */ }
 }
 
+// A complete checkout can still hold a Puppetmaster older than the pin its
+// source tree now asks for -- a signed shell update moves the pin without
+// touching the venv, and a git update whose deps step failed leaves the same
+// skew. Reconcile before the backend spawns, and remember a stale outcome so
+// the update UI can say so rather than silently running the old runtime.
+async function ensurePuppetmasterParity(repoRoot) {
+  const result = await ensurePuppetmasterRuntime({
+    repoRoot,
+    env: buildUpdaterEnv({ processEnv: process.env, shellEnv: loginShellEnv() }),
+    onProgress: (msg) => sendBootstrapProgress(bootstrapWin, msg, 95),
+  });
+  packagedRuntimeParity = result;
+  logMain(`[runtime] ${describeRuntimeParity(result)}`);
+  return result;
+}
+
 async function ensurePackagedCheckout() {
   if (!isPackaged) return resolveRepoRoot();
   const repoRoot = packagedRepoRoot();
@@ -1160,6 +1286,7 @@ async function ensurePackagedCheckout() {
   // uses packagedRepoRoot() when HARNESS_REPO is unset; HARNESS_REPO is reserved
   // for the user's open project (restored from workspace.json by the backend).
   if (isInstallComplete(repoRoot)) {
+    await ensurePuppetmasterParity(repoRoot);
     return repoRoot;
   }
   const win = createBootstrapWindow();

@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StatusBar, { deriveFooterRuntimeStatus } from "../components/StatusBar";
 import { api } from "../lib/api";
 
@@ -491,5 +491,57 @@ describe("StatusBar panel toggle shortcuts", () => {
 
     expect(screen.getByTitle("Toggle sessions panel (Ctrl/Cmd+B)")).toBeInTheDocument();
     expect(screen.getByTitle("Toggle right panel (Ctrl/Cmd+J)")).toBeInTheDocument();
+  });
+});
+
+describe("StatusBar runtime stale toast", () => {
+  const runtimeNote =
+    "Puppetmaster is at 1.20.10 but this Marionette needs 1.21.9 -- offline. Reconnect and update to finish.";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockGetUsage.mockResolvedValue({ session: emptyUsageSession, jobs: [] });
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: {},
+    });
+    mockSessions.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    delete (window as any).harnessIPC;
+  });
+
+  it("surfaces runtimeNote once as a toast without showing the update pill", async () => {
+    const check = vi
+      .fn()
+      .mockResolvedValue({ runtimeStale: true, runtimeNote, available: false });
+    (window as any).harnessIPC = {
+      updates: { check, onAvailable: null, onProgress: vi.fn(() => () => {}) },
+    };
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => expect(check).toHaveBeenCalled());
+    await waitFor(() => {
+      expect(screen.getByText(runtimeNote)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/^update/)).not.toBeInTheDocument();
+  });
+
+  it("does not toast when runtimeStale is absent", async () => {
+    const check = vi.fn().mockResolvedValue({ available: false });
+    (window as any).harnessIPC = {
+      updates: { check, onAvailable: null, onProgress: vi.fn(() => () => {}) },
+    };
+
+    render(<StatusBar {...statusBarProps} />);
+
+    await waitFor(() => {
+      expect(check).toHaveBeenCalled();
+    });
+    expect(screen.queryByText(/Puppetmaster is at/i)).not.toBeInTheDocument();
   });
 });

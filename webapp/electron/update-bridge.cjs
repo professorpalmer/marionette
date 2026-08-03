@@ -25,12 +25,15 @@ const { chooseFetchRemote } = require("./update-remote.cjs");
 const { resolveBehindCount, shouldCountCommits } = require("./update-count.cjs");
 const { overallPercent } = require("./update-steps.cjs");
 const { runRebuildWithRetry } = require("./update-rebuild.cjs");
-const {
-  planPuppetmasterUpgrade,
-  DEFAULT_PUPPETMASTER_SPEC,
-  PUPPETMASTER_DIST_NAME,
-} = require("./update-pm.cjs");
+const { resolveCheckoutPin: resolvePuppetmasterPin } = require("./update-pm.cjs");
+const { runtimeParityFields } = require("./puppetmaster-runtime.cjs");
 const marker = require("./update-marker.cjs");
+const {
+  mergeUpdateAvailability,
+  shouldRelaunchAfterSourceUpdate,
+  readCheckoutPackageVersion,
+  shellBehindCheckout,
+} = require("./packaged-updater.cjs");
 
 const DEFAULT_BRANCH = process.env.PMHARNESS_UPDATE_BRANCH || "main";
 const REPO_HTML_URL = "https://github.com/professorpalmer/marionette";
@@ -148,21 +151,25 @@ function updateChangesElectronMain(changedFiles) {
  * relaunch re-reads webapp/electron from disk, so relaunch is sufficient
  * (but an in-place backend/renderer refresh alone is not).
  */
-function describeMainProcessUpdate({ mainProcessChanged, isPackaged }) {
-  if (!mainProcessChanged) return { installerUpdateRequired: false };
-  if (isPackaged) {
+function describeMainProcessUpdate({ mainProcessChanged, isPackaged, shellSkew = false }) {
+  if (!mainProcessChanged && !shellSkew) return { installerUpdateRequired: false };
+  if (isPackaged && (mainProcessChanged || shellSkew)) {
     return {
       installerUpdateRequired: true,
       note:
         "This update also changes the Marionette app shell, which the installed " +
-        "app cannot refresh in place. Install the latest Marionette release to " +
-        "finish updating; until then a compatibility layer keeps the current app working.",
+        "app cannot refresh in place. Installing the latest Marionette release " +
+        "finishes the update; until then the source checkout is current but the " +
+        "packaged shell is still waiting on the installer.",
     };
   }
-  return {
-    installerUpdateRequired: false,
-    note: "This update changes the app shell; the full app relaunch will load it.",
-  };
+  if (mainProcessChanged) {
+    return {
+      installerUpdateRequired: false,
+      note: "This update changes the app shell; the full app relaunch will load it.",
+    };
+  }
+  return { installerUpdateRequired: false };
 }
 
 async function recoverInterruptedMerge(repoRoot) {
@@ -459,18 +466,21 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
     // version is installed, which made the updater look like a no-op and left
     // app venvs stuck on stale Puppetmaster (1.20.10 after a 1.21.1 pin bump).
     progress("deps", "Checking Puppetmaster", 0.85);
+    // Prefer the checkout's pin (post-pull) over the packaged shell's frozen pin.
+    const pmPin = resolvePuppetmasterPin(repoRoot);
     const pmShow = hasUv
-      ? await execCapture("uv", ["pip", "show", "--python", py, PUPPETMASTER_DIST_NAME], { env: childEnv })
-      : await execCapture(py, ["-m", "pip", "show", PUPPETMASTER_DIST_NAME], { env: childEnv });
-    const pmPlan = planPuppetmasterUpgrade({
+      ? await execCapture("uv", ["pip", "show", "--python", py, pmPin.distName], { env: childEnv })
+      : await execCapture(py, ["-m", "pip", "show", pmPin.distName], { env: childEnv });
+    const pmPlan = pmPin.planPuppetmasterUpgrade({
       specEnv: process.env.MARIONETTE_PUPPETMASTER_SPEC,
       pipShowOutput: pmShow.out,
-      pinnedSpec: DEFAULT_PUPPETMASTER_SPEC,
+      pinnedSpec: pmPin.pinnedSpec,
     });
     appendUpdateLog(
       `[deps] Puppetmaster plan: skip=${pmPlan.skip}`
       + (pmPlan.reason ? ` reason=${pmPlan.reason}` : "")
       + (pmPlan.have || pmPlan.want ? ` have=${pmPlan.have || "?"} want=${pmPlan.want || "?"}` : "")
+      + ` pin=${pmPin.pinnedSpec}`
     );
     if (pmPlan.skip) {
       progress("deps", "Puppetmaster: " + pmPlan.reason + ", leaving as-is", 0.9);
@@ -520,7 +530,9 @@ async function applyUpdate({ repoRoot, branch = DEFAULT_BRANCH, strategy = "ff",
 }
 
 // Register IPC. `opts.getRepoRoot()` returns the checkout path; `opts.relaunch()`
-// tears down the backend and re-execs the app.
+// tears down the backend and re-execs the app. Packaged installs also get
+// `opts.packagedUpdater` (electron-updater) so shell skew is resolved via a
+// signed installer instead of a false-success relaunch of the frozen asar.
 function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   const getRepoRoot = opts.getRepoRoot || (() => path.join(os.homedir(), "pm-harness"));
   const relaunch = opts.relaunch || (() => { app.relaunch(); app.exit(0); });
@@ -528,6 +540,10 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   // a Finder/Dock launch with a stripped launchd PATH can still find them. Omit
   // to inherit process.env (dev/CLI runs already have a full env).
   const getEnv = opts.getEnv || (() => process.env);
+  const packagedUpdater = opts.packagedUpdater || null;
+  // Startup Puppetmaster parity result (puppetmaster-runtime.cjs). A stale
+  // runtime is an update the user still owes, so the check payload carries it.
+  const getRuntimeParity = opts.getRuntimeParity || (() => null);
   // Broadcast to every window: the update watcher is a main-process concern, so
   // it must not depend on which renderer happened to invoke something last.
   const broadcast = opts.broadcast || ((channel, payload) => {
@@ -542,8 +558,25 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
 
   const doCheck = async () => {
     const currentVersion = app.getVersion();
-    const res = await checkForUpdate({ repoRoot: getRepoRoot(), currentVersion, env: getEnv() });
-    return { current: currentVersion, ...res };
+    const repoRoot = getRepoRoot();
+    const checkoutVersion = readCheckoutPackageVersion(repoRoot);
+    const gitRes = await checkForUpdate({ repoRoot, currentVersion, env: getEnv() });
+    let packagedRes = null;
+    if (packagedUpdater && packagedUpdater.enabled) {
+      try {
+        packagedRes = await packagedUpdater.check();
+      } catch (err) {
+        appendUpdateLog(`[packaged] check failed: ${err && err.message ? err.message : err}`);
+      }
+    }
+    const merged = mergeUpdateAvailability({
+      gitResult: gitRes,
+      packagedResult: packagedRes,
+      isPackaged: !!(app && app.isPackaged),
+      shellVersion: currentVersion,
+      checkoutVersion,
+    });
+    return { current: currentVersion, ...merged, ...runtimeParityFields(getRuntimeParity()) };
   };
 
   // PUSH model: the main process owns the update watcher and notifies every
@@ -584,24 +617,95 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
         if (event.sender && !event.sender.isDestroyed()) event.sender.send("updates:progress", payload);
       } catch { void 0; }
     };
+    const isPackaged = !!(app && app.isPackaged);
     try {
+      // Packaged shell with a downloaded/available installer: prefer installing
+      // the signed release before (or instead of) claiming a source-only update.
+      const shellVersion = app.getVersion();
+      const checkoutVersion = readCheckoutPackageVersion(getRepoRoot());
+      const skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
+      const packagedReady = !!(packagedUpdater && packagedUpdater.enabled && (
+        packagedUpdater.isDownloaded() || skew
+      ));
+      // When the shell is behind OR a packaged update was already downloaded,
+      // finish via electron-updater. Source-only apply never "completes" a
+      // packaged shell update by relaunching the old asar.
+      if (packagedUpdater && packagedUpdater.enabled && (packagedReady || skew)) {
+        const installed = await packagedUpdater.downloadAndInstall();
+        if (installed.ok) {
+          emit({
+            stage: "install",
+            message: "Installing app shell update — Marionette will relaunch",
+            percent: 100,
+          });
+          return {
+            ok: true,
+            installerUpdateRequired: true,
+            packagedInstallPending: true,
+            note: "Installing the packaged Marionette shell update.",
+          };
+        }
+        // Fall through to source update when the feed is unreachable but the
+        // checkout can still advance; the UI keeps installerUpdateRequired set.
+        appendUpdateLog(`[packaged] install deferred: ${installed.error || "unknown"}`);
+      }
+
       const result = await applyUpdate({ repoRoot: getRepoRoot(), strategy, env: getEnv() }, emit);
       if (result.ok) {
-        // A pulled range that touched webapp/electron/** cannot be applied by
-        // an in-place refresh: the relaunch below is a TRUE app process restart
-        // (source-run loads the new shell), and packaged installs additionally
-        // need the latest installer -- say so instead of claiming done.
         const shellVerdict = describeMainProcessUpdate({
           mainProcessChanged: !!result.mainProcessChanged,
-          isPackaged: !!(app && app.isPackaged),
+          isPackaged,
+          shellSkew: skew,
         });
         Object.assign(result, shellVerdict);
-        if (shellVerdict.installerUpdateRequired) {
+
+        // After a source update on a packaged install that still needs a shell
+        // replace, try electron-updater before any relaunch. Never claim done.
+        if (shellVerdict.installerUpdateRequired && packagedUpdater && packagedUpdater.enabled) {
           appendUpdateLog(`[apply] ${shellVerdict.note}`);
-          emit({ stage: "done", message: shellVerdict.note, percent: 100 });
+          emit({ stage: "done", message: shellVerdict.note, percent: 95 });
+          try {
+            const packaged = await packagedUpdater.downloadAndInstall();
+            if (packaged.ok) {
+              Object.assign(result, {
+                packagedInstallPending: true,
+                note: packaged.note || shellVerdict.note,
+              });
+              emit({
+                stage: "install",
+                message: "Installing app shell update — Marionette will relaunch",
+                percent: 100,
+              });
+              return result;
+            }
+            appendUpdateLog(`[packaged] post-source install failed: ${packaged.error || "unknown"}`);
+          } catch (err) {
+            appendUpdateLog(`[packaged] post-source install error: ${err && err.message ? err.message : err}`);
+          }
+          // Feed unavailable: keep the window alive with a clear installer ask.
+          emit({
+            stage: "error",
+            message:
+              shellVerdict.note ||
+              "Source updated, but the packaged app shell still needs the latest installer.",
+          });
+          result.ok = false;
+          result.code = "installer_required";
+          result.error =
+            shellVerdict.note ||
+            "Source updated, but install the latest Marionette release to finish the app shell update.";
+          return result;
         }
-        // Give the renderer a beat to paint the final "relaunching" state.
-        setTimeout(() => { try { relaunch(); } catch { void 0; } }, 400);
+
+        if (shouldRelaunchAfterSourceUpdate({
+          ok: result.ok,
+          isPackaged,
+          installerUpdateRequired: !!shellVerdict.installerUpdateRequired,
+          packagedInstallPending: !!result.packagedInstallPending,
+        })) {
+          // Give the renderer a beat to paint the final "relaunching" state.
+          setTimeout(() => { try { relaunch(); } catch { void 0; } }, 400);
+        }
       }
       return result;
     } finally {
@@ -612,6 +716,12 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
   // Open the repo (or its commits) in the default browser.
   ipcMain.handle("updates:openRepo", async (_e, sub) => {
     const target = sub === "commits" ? `${REPO_HTML_URL}/commits/${DEFAULT_BRANCH}` : REPO_HTML_URL;
+    try { await shell.openExternal(target); return true; } catch { return false; }
+  });
+
+  // Releases page for manual installer download when packaged feed cannot run.
+  ipcMain.handle("updates:openReleases", async () => {
+    const target = `${REPO_HTML_URL}/releases/latest`;
     try { await shell.openExternal(target); return true; } catch { return false; }
   });
 }
@@ -627,4 +737,5 @@ module.exports = {
   isElectronMainProcessFile,
   updateChangesElectronMain,
   describeMainProcessUpdate,
+  resolvePuppetmasterPin,
 };

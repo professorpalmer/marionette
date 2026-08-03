@@ -9,6 +9,15 @@ files:
   - electron/**/*
   - "!electron/**/*.test.cjs"
   - node_modules/**/*
+# Generate latest*.yml (+ blockmap) metadata so electron-updater can find
+# GitHub Release assets. Publish itself is done by .github/workflows/release.yml
+# via `gh release upload`; electron-builder still needs this block to emit the
+# feed files under webapp/release/ during `npm run dist`.
+publish:
+  provider: github
+  owner: professorpalmer
+  repo: marionette
+  releaseType: release
 protocols:
   - name: Marionette
     schemes:
@@ -24,6 +33,7 @@ mac:
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  # zip is required for Squirrel.Mac / latest-mac.yml generation.
 win:
   icon: build/icon.ico
   target:

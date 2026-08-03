@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { KeyRound, X } from "lucide-react";
+import { TITLEBAR_TRAFFIC_PAD_PX } from "../lib/titlebarSafe";
 
 // Keyless-state nudge. Marionette ships on the 'agentic' engine -- edits and
 // swarms route directly through the user's own provider keys, with Puppetmaster
@@ -15,12 +16,12 @@ export default function ProviderKeyBanner({ onAddKey }: { onAddKey: () => void }
   if (dismissed) return null;
 
   return (
-    // pl-24 clears the macOS traffic-light window controls (hiddenInset titlebar),
-    // matching UpdateBanner. Keep the message visible — never collapse this strip
-    // under the native chrome.
+    // Fixed px paddingLeft clears macOS traffic lights (hiddenInset). Rem-based
+    // Tailwind pl-24 shrinks with the responsive root font-size on resize.
     <div
       data-testid="provider-key-banner"
-      className="flex items-center gap-2.5 pl-24 pr-4 py-1.5 bg-accent/10 border-b border-accent/25 text-[11.5px] text-txt select-none shrink-0"
+      className="flex items-center gap-2.5 pr-4 py-1.5 bg-accent/10 border-b border-accent/25 text-[11.5px] text-txt select-none shrink-0"
+      style={{ paddingLeft: TITLEBAR_TRAFFIC_PAD_PX }}
     >
       <KeyRound size={13} className="text-accent shrink-0" />
       <span className="font-medium">Add a provider key to run real analysis.</span>

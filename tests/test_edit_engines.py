@@ -237,16 +237,70 @@ def test_pilot_keys_ready_with_opencode_go_when_openrouter_disconnected(monkeypa
         hkeys.unmark_disconnected("openrouter")
 
 
+def test_pilot_keys_ready_stored_opencode_go_and_codex_oauth(monkeypatch, tmp_path):
+    """Exact production state: OpenRouter disconnected, state keys for OpenCode Go
+    + ChatGPT Codex OAuth — ProviderKeyBanner must stay hidden.
+
+    Stored keys (keys.json) must count the same as ``/api/providers`` has_key,
+    even when the matching env vars are unset.
+    """
+    import json
+    from harness import keys as hkeys
+
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    for k in (
+        "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "OPENAI_CODEX_TOKEN",
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr("puppetmaster.providers.available_providers", lambda: [])
+
+    import importlib
+    importlib.reload(hkeys)
+    # Write keys.json directly -- avoid set_api_key which mutates os.environ and
+    # can leak into later tests via monkeypatch delenv undo.
+    keys_path = tmp_path / "keys.json"
+    keys_path.write_text(json.dumps({
+        "opencode-go": "sk-go-stored-key",
+        "openai-codex": "codex-oauth-stored-token-abcdef",
+    }), encoding="utf-8")
+    hkeys.mark_disconnected("openrouter")
+    try:
+        from harness.api.providers import get_providers
+        _code, rows = get_providers()
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["opencode-go"]["has_key"] is True
+        assert by_name["openai-codex"]["has_key"] is True
+        assert by_name["openrouter"]["has_key"] is False
+        assert by_name["openrouter"]["disconnected"] is True
+        # Banner stays hidden when agentic_ready is true (gate for ProviderKeyBanner
+        # is `agentic_ready === false`).
+        assert pilot_keys_ready() is True
+    finally:
+        hkeys.unmark_disconnected("openrouter")
+
+
 def test_pilot_keys_ready_false_when_truly_keyless(monkeypatch, tmp_path):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
     monkeypatch.setattr("puppetmaster.providers.available_providers", lambda: [])
     for k in (
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-        "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "AWS_BEARER_TOKEN_BEDROCK",
-        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+        "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "OPENAI_CODEX_TOKEN",
+        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
-    monkeypatch.setattr("harness.providers.available_providers", lambda: [])
+    # Host machines may have Cursor CLI / OAuth pools; force the authoritative
+    # providers path closed so the keyless banner regression stays hermetic.
+    monkeypatch.setattr(
+        "harness.registry_wizard.get_provider_key", lambda _p: None, raising=False
+    )
+    monkeypatch.setattr(
+        "harness.keys.get_api_key_status",
+        lambda _name: {"has_key": False, "masked": ""},
+        raising=False,
+    )
+    monkeypatch.setattr("harness.keys.get_disconnected", lambda: set(), raising=False)
     assert pilot_keys_ready() is False
 
 

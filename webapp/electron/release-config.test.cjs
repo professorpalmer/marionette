@@ -24,3 +24,24 @@ test("mac release uses electron-builder notarization exactly once", () => {
   assert.equal(pkg.devDependencies?.["@electron/notarize"], undefined);
   assert.ok(pkg.devDependencies?.["electron-builder"]);
 });
+
+test("release config publishes GitHub updater metadata for electron-updater", () => {
+  const config = fs.readFileSync(
+    path.join(webappDir, "electron-builder.yml"),
+    "utf8",
+  );
+  const pkg = JSON.parse(
+    fs.readFileSync(path.join(webappDir, "package.json"), "utf8"),
+  );
+
+  assert.match(config, /^\s*publish\s*:/m);
+  assert.match(config, /^\s*provider\s*:\s*github\s*$/m);
+  assert.match(config, /^\s*owner\s*:\s*professorpalmer\s*$/m);
+  assert.match(config, /^\s*repo\s*:\s*marionette\s*$/m);
+  // mac zip target is required so electron-builder emits latest-mac.yml.
+  assert.match(config, /target:\s*zip/);
+  assert.ok(
+    pkg.dependencies?.["electron-updater"] || pkg.devDependencies?.["electron-updater"],
+    "electron-updater must be a package dependency for packaged installs",
+  );
+});

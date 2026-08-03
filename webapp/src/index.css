@@ -51,6 +51,29 @@ body {
 /* subtle focus ring for inputs/buttons (cleaner than default) */
 :focus-visible { outline: none; }
 
+/*
+ * macOS hiddenInset traffic-light clearance.
+ * Tailwind pl-20/pl-24 are rem-based, and the responsive root font-size above
+ * shrinks rem as the window narrows — so traffic-light clearance used to collapse
+ * on resize and obscure UpdateBanner / ProviderKeyBanner / Settings. These classes
+ * use fixed px so root font changes cannot reduce the inset.
+ */
+:root {
+  --titlebar-traffic-pad: 78px;
+  --titlebar-traffic-pad-sm: 72px;
+  --titlebar-chrome-pad-x: 24px;
+}
+.titlebar-traffic-pad {
+  padding-left: var(--titlebar-traffic-pad);
+}
+.titlebar-traffic-pad-sm {
+  padding-left: var(--titlebar-traffic-pad-sm);
+}
+.titlebar-chrome-pad {
+  padding-left: var(--titlebar-chrome-pad-x);
+  padding-right: var(--titlebar-chrome-pad-x);
+}
+
 .scrollbar-none {
   scrollbar-width: none;
 }

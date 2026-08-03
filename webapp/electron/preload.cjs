@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld("harnessIPC", {
     check: () => ipcRenderer.invoke("updates:check"),
     apply: (opts) => ipcRenderer.invoke("updates:apply", opts),
     openRepo: (sub) => ipcRenderer.invoke("updates:openRepo", sub),
+    openReleases: () => ipcRenderer.invoke("updates:openReleases"),
     onProgress: (cb) => {
       const handler = (_e, payload) => cb(payload);
       ipcRenderer.on("updates:progress", handler);

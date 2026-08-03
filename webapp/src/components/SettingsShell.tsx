@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { X, Cpu, SlidersHorizontal, ShieldCheck, Zap, Bell, Wrench, Info } from "lucide-react";
 import ModelsSettingsPage from "./ModelsSettingsPage";
 import SettingsPane, { type SettingsSection } from "./SettingsPane";
+import { TITLEBAR_TRAFFIC_PAD_SM_PX } from "../lib/titlebarSafe";
 
 type PageId = "models" | SettingsSection | "about";
 
@@ -75,8 +76,12 @@ export default function SettingsShell({
 
   return (
     <div className="fixed inset-0 z-50 bg-bg flex flex-col">
-      {/* top bar -- pl-20 clears the macOS traffic lights so the title is not obscured */}
-      <div className="flex items-center justify-between pl-20 pr-4 h-11 border-b border-edge/40 shrink-0">
+      {/* top bar -- fixed px pad clears macOS traffic lights (not rem) */}
+      <div
+        data-testid="settings-shell-titlebar"
+        className="flex items-center justify-between pr-4 h-11 border-b border-edge/40 shrink-0"
+        style={{ paddingLeft: TITLEBAR_TRAFFIC_PAD_SM_PX }}
+      >
         <span className="text-[13px] font-semibold text-txt">Settings</span>
         <button
           onClick={onClose}

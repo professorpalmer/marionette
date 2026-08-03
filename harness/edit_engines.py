@@ -181,11 +181,23 @@ def pilot_keys_ready() -> bool:
     than :func:`agentic_available`: a keyed OpenCode Go or Codex OAuth pilot is
     enough to dismiss the keyless nudge, without claiming Puppetmaster agentic
     workers can run on those providers.
+
+    Authoritative semantics match ``GET /api/providers`` ``has_key``: stored keys,
+    env keys, and credential-pool OAuth (ChatGPT Codex) all count, and explicit
+    disconnects hide a provider even when its key remains on disk / in the shell.
     """
     try:
-        from harness.providers import available_providers
+        from harness.registry_wizard import PROVIDERS, get_provider_key
+        from harness.keys import get_api_key_status, get_disconnected
 
-        return bool(available_providers())
+        disconnected = get_disconnected()
+        for p in PROVIDERS:
+            if p.name in disconnected:
+                continue
+            status = get_api_key_status(p.name)
+            if (get_provider_key(p) is not None) or status.get("has_key"):
+                return True
+        return False
     except Exception as exc:
         _diag("edit_engines.pilot_keys_ready", exc)
         if agentic_available():
@@ -199,6 +211,7 @@ def pilot_keys_ready() -> bool:
                 "GOOGLE_API_KEY",
                 "OPENROUTER_API_KEY",
                 "OPENCODE_GO_API_KEY",
+                "OPENAI_CODEX_TOKEN",
                 "AWS_BEARER_TOKEN_BEDROCK",
             )
         ) or (

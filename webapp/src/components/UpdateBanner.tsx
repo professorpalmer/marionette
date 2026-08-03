@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpCircle, RefreshCw, X } from "lucide-react";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
+import { TITLEBAR_TRAFFIC_PAD_PX } from "../lib/titlebarSafe";
 
 // The loud counterpart to the StatusBar's small "update" pill. When the tracked
 // branch has moved ahead of this checkout, this slides a prominent bar across the
@@ -195,6 +196,13 @@ export default function UpdateBanner() {
             ipc.updates.openRepo?.("commits").catch?.(() => {});
             return;
           }
+          if (r.code === "installer_required") {
+            recover(r.error || "Install the latest Marionette release to finish updating the app shell.");
+            ipc.updates.openReleases?.().catch?.(() => {
+              ipc.updates.openRepo?.().catch?.(() => {});
+            });
+            return;
+          }
           recover(`Update failed: ${r.error || "no update available"}`);
         }
       })
@@ -220,14 +228,15 @@ export default function UpdateBanner() {
   const versionLabel = latest ? (latest.startsWith("v") ? latest : `v${latest}`) : "A new version";
 
   return (
-    // pl-24 clears the macOS traffic-light window controls with a comfortable
-    // margin (this banner is the topmost strip, so nothing else reserves that
-    // corner). Deliberately NOT a drag region: Electron intermittently swallows
-    // clicks on no-drag children inside a drag parent, which made "Restart now"
-    // flash its active state without ever firing. A working button beats a
-    // draggable transient strip.
+    // Fixed px titlebar-traffic-pad clears macOS traffic lights. Rem-based pl-24
+    // collapsed under the responsive root font-size when the window resized.
+    // Deliberately NOT a drag region: Electron intermittently swallows clicks on
+    // no-drag children inside a drag parent, which made "Restart now" flash its
+    // active state without ever firing.
     <div
-      className="flex items-center gap-3 pl-24 pr-4 py-2 bg-accent/10 border-b border-accent/30 text-[12px] text-txt select-none shrink-0"
+      data-testid="update-banner"
+      className="flex items-center gap-3 pr-4 py-2 bg-accent/10 border-b border-accent/30 text-[12px] text-txt select-none shrink-0"
+      style={{ paddingLeft: TITLEBAR_TRAFFIC_PAD_PX }}
     >
       <ArrowUpCircle size={15} className="text-accent shrink-0" />
       {applying ? (
