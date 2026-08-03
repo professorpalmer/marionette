@@ -75,3 +75,29 @@ def test_headline_is_capped_at_240_chars():
     a = _FakeArtifact(payload={"report": long})
     c = _compact_artifact(a)
     assert len(c["headline"]) == 240
+
+
+def test_empty_unstructured_prefers_stdout_over_plumbing_summary():
+    """Plumbing summary must not hide parked stdout analysis from promote."""
+    from pmharness.bridge import _promote_degraded_prose
+
+    analysis = (
+        "harness/worker.py:483 coerce_unlabeled_analysis_prose wraps unlabeled "
+        "substantive prose as FINDING so Mode-Scoped audits stop failing empty."
+    )
+    a = _FakeArtifact(
+        type_="verification",
+        payload={
+            "summary": "Agentic worker completed without structured findings",
+            "stdout": analysis,
+            "failure": "empty_or_unstructured_agentic_result",
+        },
+    )
+    c = _compact_artifact(a)
+    assert "without structured findings" not in (c.get("headline") or "").lower()
+    assert "harness/worker.py:483" in (c.get("body") or c.get("headline") or "")
+    out = _promote_degraded_prose([c])
+    findings = [row for row in out if row.get("type") == "finding"]
+    assert findings, "stdout analysis behind plumbing summary must promote"
+    assert "harness/worker.py:483" in findings[0]["body"]
+    assert findings[0]["body"].startswith("FINDING: ")

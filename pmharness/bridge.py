@@ -433,6 +433,9 @@ def _compact_artifact(a: Any) -> dict:
     """Reduce a Puppetmaster Artifact to a small dict suitable for feeding back
     to a driver model on a follow-up turn without blowing context."""
     payload = getattr(a, "payload", {}) or {}
+    failure = str(payload.get("failure") or "") or None
+    fail_l = (failure or "").strip().lower()
+    art_type = str(getattr(a, "type", "") or "").lower()
     # Priority-ordered keys where a real finding's text may live. Broadened so a
     # worker that put its analysis under a non-canonical key (report, message,
     # etc.) is never surfaced as an empty headline and silently dropped.
@@ -444,6 +447,20 @@ def _compact_artifact(a: Any) -> dict:
         # artifact's stdout; read it so that text can be promoted to a finding.
         "stdout",
     )
+    # empty_or_unstructured agentic verification often has a plumbing `summary`
+    # ("completed without structured findings") AND the real audit in `stdout`.
+    # Prefer stdout first so promote/rescue sees the analysis, not the meta phrase.
+    if (
+        art_type == "verification"
+        and fail_l == "empty_or_unstructured_agentic_result"
+    ):
+        _headline_keys = (
+            "claim", "decision", "risk", "check",
+            "stdout",
+            "summary", "change",
+            "report", "mitigation", "why", "result", "observation",
+            "note", "detail", "message", "text", "body", "content",
+        )
     headline = ""
     for _k in _headline_keys:
         _v = payload.get(_k)
@@ -468,16 +485,34 @@ def _compact_artifact(a: Any) -> dict:
     # text so downstream (finding promotion, digest) can surface the real
     # analysis without breaking existing consumers that only read `headline`.
     body = str(headline) if (isinstance(headline, str) and headline.strip()) else ""
+    stdout_text = payload.get("stdout")
+    if (
+        art_type == "verification"
+        and fail_l == "empty_or_unstructured_agentic_result"
+        and isinstance(stdout_text, str)
+        and stdout_text.strip()
+    ):
+        # Even if a non-plumbing key won the headline, keep stdout as body when
+        # it is the longer parked analysis (promote reads body first).
+        if len(stdout_text.strip()) >= len(body):
+            body = stdout_text.strip()
+        head_l = str(headline or "").lower()
+        if (
+            "without structured findings" in head_l
+            or "no structured findings" in head_l
+            or "never called any tool" in head_l
+        ):
+            headline = stdout_text
+            empty_headline = False
+            body = stdout_text.strip()
     if empty_headline and payload:
         headline = str(getattr(a, "type", "") or "artifact")
-    failure = str(payload.get("failure") or "") or None
     # Never let a truncated reasoning fragment become the digest/patch headline.
     # Keep the full body for diagnosis, but label the headline honestly when the
     # worker failed the submit contract (or only produced mid-thought prose).
     # Leave genuinely empty headlines alone (empty_headline stays True).
-    fail_l = (failure or "").strip().lower()
     headline_text = str(headline or "").strip()
-    if headline_text and str(getattr(a, "type", "") or "").lower() in (
+    if headline_text and art_type in (
         "verification", "finding", "risk", "decision", "patch",
     ):
         is_no_structure = (
