@@ -395,6 +395,10 @@ class AnthropicDriver:
             "Content-Type": "application/json",
             "anthropic-version": self.version,
         }
+        if "opencode.ai" in self.base_url.lower():
+            # OpenCode Go's relay rejects urllib's default user agent at its
+            # edge before the request reaches model or credential validation.
+            headers["User-Agent"] = "Marionette"
         # OAuth / setup tokens need Bearer + beta; API keys use x-api-key.
         try:
             from harness.oauth_anthropic import is_anthropic_oauth_token

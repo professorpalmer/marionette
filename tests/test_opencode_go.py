@@ -129,6 +129,12 @@ def test_mimo_pro_output_ceiling_is_clamped_to_what_xiaomi_serves():
     assert go.max_tokens_for_model("kimi-k3", 262144) == 262144
 
 
+def test_kimi_models_use_the_temperature_the_go_relay_accepts():
+    assert go.temperature_for_model("kimi-k3") == 1.0
+    assert go.temperature_for_model("opencode-go/kimi-k2.7-code") == 1.0
+    assert go.temperature_for_model("deepseek-v4-flash") == 0.0
+
+
 @pytest.mark.parametrize("effort,expected", [
     ("none", {}),
     ("low", {"reasoning_effort": "high"}),
@@ -211,6 +217,7 @@ def test_build_pilot_routes_chat_completions_models():
     assert driver.base_url == go.BASE_URL
     assert driver.model == "deepseek-v4-flash"
     assert driver.api_key_env == "OPENCODE_GO_API_KEY"
+    assert driver.extra_headers["User-Agent"] == go.USER_AGENT
 
 
 def test_build_pilot_routes_anthropic_messages_models():
@@ -221,6 +228,7 @@ def test_build_pilot_routes_anthropic_messages_models():
     # AnthropicDriver appends /messages, so the base keeps its /v1 segment.
     assert driver.base_url == go.BASE_URL
     assert driver.model == "minimax-m3"
+    assert driver._headers()["User-Agent"] == go.USER_AGENT
 
 
 def test_build_pilot_routes_openai_responses_models():

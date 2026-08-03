@@ -30,6 +30,7 @@ from typing import Optional
 PROVIDER_NAME = "opencode-go"
 API_KEY_ENV = "OPENCODE_GO_API_KEY"
 BASE_URL = "https://opencode.ai/zen/go/v1"
+USER_AGENT = "Marionette"
 
 CHAT_COMPLETIONS = "chat_completions"
 ANTHROPIC_MESSAGES = "anthropic_messages"
@@ -142,6 +143,18 @@ def max_tokens_for_model(model: Optional[str], requested: Optional[int]) -> int:
     return min(int(requested), cap)
 
 
+def temperature_for_model(model: Optional[str], requested: float = 0.0) -> float:
+    """Temperature accepted by the Go relay for *model*.
+
+    Kimi's Go endpoints currently accept only ``1``; sending Marionette's
+    normal deterministic ``0`` is rejected as ``invalid temperature``.
+    """
+    bare = normalize_model_id(model).lower()
+    if bare.startswith("kimi-"):
+        return 1.0
+    return float(requested)
+
+
 def _is_glm_5_2(bare: str) -> bool:
     """GLM-5.2 across the alias spellings config files carry."""
     return any(token in bare for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
@@ -248,5 +261,7 @@ def build_driver(
     return OpenAICompatDriver(
         name=spec, model=bare, base_url=url,
         api_key_env=api_key_env, max_tokens=ceiling,
+        temperature=temperature_for_model(bare),
         extra_body=reasoning_body_extras(bare),
+        extra_headers={"User-Agent": USER_AGENT},
     )

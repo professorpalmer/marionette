@@ -50,6 +50,22 @@ def test_opencode_go_upstream_block_preserves_detail():
     assert "sk-" not in out.lower()
 
 
+def test_opencode_go_region_error_explains_opt_in_instead_of_bad_key():
+    s = _s()
+    raw = (
+        'HTTP 403: {"type":"error","error":{"type":"RegionError","message":'
+        '"The latest version of this model is only available hosted in China '
+        'and requires explicit opt in: '
+        'https://opencode.ai/workspace/wrk_example/go"}}'
+    )
+    out = s._humanize_pilot_error(raw)
+    assert "workspace region" in out.lower()
+    assert "api key is valid" in out.lower()
+    assert "opt in" in out.lower()
+    assert "https://opencode.ai/workspace/wrk_example/go" in out
+    assert "authentication failed" not in out.lower()
+
+
 def test_rate_limit_is_explained():
     s = _s()
     out = s._humanize_pilot_error("HTTP 429: rate limit exceeded")

@@ -2310,6 +2310,24 @@ class ConversationalSession(
         except Exception:
             pass
 
+        # OpenCode Go uses HTTP 403 for workspace policy failures as well as
+        # credential failures. A region-restricted model returns a provider
+        # opt-in URL, so calling this an API-key rejection sends the user to
+        # Settings when the actual fix is to opt in or choose another model.
+        if (
+            "regionerror" in low
+            or "only available hosted in china" in low
+            or "requires explicit opt in" in low
+        ):
+            opt_in_match = _re.search(r"https://opencode\.ai/[^\s\"'}]+", s)
+            opt_in_url = opt_in_match.group(0).rstrip(".,)") if opt_in_match else ""
+            opt_in = f" OpenCode Go opt-in: {opt_in_url}" if opt_in_url else ""
+            return (
+                "pilot: OpenCode Go rejected this model for your workspace "
+                "region; your API key is valid. Opt in to the model or switch "
+                "to another OpenCode Go model." + opt_in
+            )
+
         if cls is not None:
             EC = _ec.ErrorClass
             if cls == EC.AUTH:
