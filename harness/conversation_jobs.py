@@ -29,8 +29,12 @@ from ._exec import _puppetmaster_cmd
 _WORKER_PROVENANCE_PATH_CAP = 12
 
 
-def _worker_provenance_text(provenance: dict) -> str:
-    """Render measured worker/live-tree facts for pilot-facing text."""
+def _worker_provenance_text(provenance: dict, *, expects_diff: bool = True) -> str:
+    """Render measured worker/live-tree facts for pilot-facing text.
+
+    Analysis (expects_diff=False) leaving the disposable worktree unchanged is
+    expected for read-only jobs — never word that as a failure cue.
+    """
     if not isinstance(provenance, dict) or not provenance:
         return ""
     before = list(provenance.get("live_dirty_paths_before") or [])
@@ -39,7 +43,13 @@ def _worker_provenance_text(provenance: dict) -> str:
     path = str(provenance.get("managed_worktree_path") or "")
     diff_empty = provenance.get("worktree_diff_empty")
     if diff_empty is True:
-        worker_line = "Worker produced no changes in disposable managed worktree"
+        if not expects_diff:
+            worker_line = (
+                "Analysis left disposable managed worktree unchanged "
+                "(expected for read-only; findings are in artifacts/summary)"
+            )
+        else:
+            worker_line = "Worker produced no changes in disposable managed worktree"
     elif diff_empty is False:
         worker_line = "Worker produced changes in disposable managed worktree"
     else:
@@ -432,7 +442,9 @@ class ConversationJobsMixin:
                 )
             except Exception:
                 pass
-            provenance_text = _worker_provenance_text(provenance)
+            provenance_text = _worker_provenance_text(
+                provenance, expects_diff=expects_diff,
+            )
             if provenance_text:
                 res.summary = f"{provenance_text}\n{res.summary}".strip()
 
@@ -459,6 +471,12 @@ class ConversationJobsMixin:
                             _nc_t_in, _nc_t_out,
                             real_cost_usd=float(getattr(res, "est_cost_usd", 0.0) or 0.0),
                             tokens_cached=_nc_t_cached)
+                # Analysis failures are findings/contract failures, not missing patches.
+                _fail_fallback = (
+                    "Analysis failed"
+                    if not expects_diff
+                    else "Worker failed to produce patch"
+                )
                 res_dict = {
                     "job_id": job_id,
                     "applied": False,
@@ -467,13 +485,13 @@ class ConversationJobsMixin:
                     "tokens_out": _nc_t_out,
                     "tokens_cached": _nc_t_cached,
                     "summary": append_failed_declarative_checks_summary(
-                        res.summary or res.error or "Worker failed to produce patch",
+                        res.summary or res.error or _fail_fallback,
                         getattr(res, "declarative_checks", None),
                     ),
                     "error": res.error,
                     "artifacts": [],
                     "has_patch_art": False,
-                    "apply_msg": res.error or "Worker failed to produce patch",
+                    "apply_msg": res.error or _fail_fallback,
                     "num_artifacts": 0,
                     "artifact_types": [],
                     "ar_list": []

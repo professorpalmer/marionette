@@ -74,6 +74,30 @@ def test_provenance_text_distinguishes_disposable_worktree_and_live_tree():
     assert "tracked.txt" in text
 
 
+def test_analysis_empty_diff_provenance_is_not_a_failure_cue():
+    text = _worker_provenance_text({
+        "managed_worktree_mode": "managed",
+        "managed_worktree_path": "/tmp/managed",
+        "worktree_diff_empty": True,
+        "live_dirty_paths_before": [],
+        "live_dirty_paths_after": [],
+    }, expects_diff=False)
+
+    assert "expected for read-only" in text
+    assert "no changes in disposable managed worktree" not in text
+
+
+def test_implement_empty_diff_provenance_keeps_no_changes_wording():
+    text = _worker_provenance_text({
+        "managed_worktree_mode": "managed",
+        "worktree_diff_empty": True,
+        "live_dirty_paths_before": [],
+        "live_dirty_paths_after": [],
+    }, expects_diff=True)
+
+    assert "no changes in disposable managed worktree" in text
+
+
 def test_analysis_instruction_labels_git_status_as_disposable():
     instruction = _analysis_instruction("audit the code", "/tmp/repo", "explore")
 
