@@ -439,6 +439,42 @@ def test_cancel_before_run_cancellable_does_not_execute(session):
     assert (job.get("output") or "") == ""
 
 
+def test_null_command_auto_guard_does_not_fail_open(session):
+    """None command must not AttributeError-skip the full-auto danger gate.
+
+    Pre-fix: command.encode threw, except Exception: pass swallowed it, and
+    execution continued with command=None (fail-open). Foreground tool_dispatch
+    already used ``act.command or ""``; background must match.
+    """
+    sess, state_dir, repo = session
+    from harness.command_jobs import _run_registered_command_job
+
+    sess._auto_mode = True
+    sess._auto_command_guard = True
+    sess._register_command_job(
+        "local-cmd-none",
+        command="placeholder",
+        action_id="a-none",
+        cwd=repo,
+    )
+    ran = []
+
+    def _track_run(cmd, **kwargs):
+        ran.append(cmd)
+        return ("", 0, "ok")
+
+    with patch(
+        "harness.command_policy.run_cancellable",
+        side_effect=_track_run,
+    ):
+        _run_registered_command_job(sess, "local-cmd-none", None, repo)
+
+    # Gate normalized None -> "" (non-danger) and proceeded; never ran None.
+    assert ran == [""]
+    job = sess.get_local_job("local-cmd-none")
+    assert job["status"] == "completed"
+
+
 def test_public_receipt_omits_spill_path(session):
     """build_pending_receipt must never expose local filesystem spill_path."""
     sess, state_dir, repo = session

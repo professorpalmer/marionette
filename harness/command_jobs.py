@@ -303,7 +303,10 @@ def _run_registered_command_job(
             return
 
     # Full-auto danger gate: reuse the same classify path as foreground.
-    # Background never bypasses the auto command guard.
+    # Background never bypasses the auto command guard. Null-safe like
+    # tool_dispatch (act.command or "") — a None command must not
+    # AttributeError on .encode and silently skip this gate (fail-open).
+    command = command or ""
     if getattr(session, "_auto_mode", False) and getattr(session, "_auto_command_guard", None):
         try:
             from harness.command_policy import classify_command
