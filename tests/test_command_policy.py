@@ -6,7 +6,13 @@ false-flagged into approval fatigue.
 import pytest
 
 from harness.command_policy import (
-    resolve_timeout, classify_command, DEFAULT_TIMEOUT, CommandVerdict,
+    resolve_timeout,
+    resolve_hard_ceiling,
+    effective_command_timeout,
+    classify_command,
+    DEFAULT_TIMEOUT,
+    DEFAULT_HARD_CEILING,
+    CommandVerdict,
 )
 
 
@@ -34,6 +40,34 @@ def test_timeout_malformed_falls_back_to_default():
 
 def test_timeout_empty_string_is_default():
     assert resolve_timeout({"HARNESS_COMMAND_TIMEOUT": ""}) == DEFAULT_TIMEOUT
+
+
+def test_hard_ceiling_default_when_unset():
+    assert resolve_hard_ceiling({}) == DEFAULT_HARD_CEILING
+
+
+def test_hard_ceiling_off_is_truly_unbounded():
+    for v in ("0", "none", "off", "unbounded", "infinite"):
+        assert resolve_hard_ceiling({"HARNESS_COMMAND_HARD_CEILING": v}) is None
+
+
+def test_hard_ceiling_malformed_falls_back():
+    assert resolve_hard_ceiling({"HARNESS_COMMAND_HARD_CEILING": "banana"}) == DEFAULT_HARD_CEILING
+
+
+def test_effective_timeout_explicit_wins_over_ceiling():
+    env = {"HARNESS_COMMAND_TIMEOUT": "600", "HARNESS_COMMAND_HARD_CEILING": "900"}
+    assert effective_command_timeout(env) == 600
+
+
+def test_effective_timeout_applies_ceiling_when_unbounded():
+    env = {"HARNESS_COMMAND_TIMEOUT": "0"}
+    assert effective_command_timeout(env) == DEFAULT_HARD_CEILING
+
+
+def test_effective_timeout_truly_unbounded_when_ceiling_off():
+    env = {"HARNESS_COMMAND_TIMEOUT": "0", "HARNESS_COMMAND_HARD_CEILING": "0"}
+    assert effective_command_timeout(env) is None
 
 
 # ---- classify_command: DANGER must be caught ----------------------------------

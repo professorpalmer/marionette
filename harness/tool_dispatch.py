@@ -940,7 +940,7 @@ class ToolDispatchMixin:
         """
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
-        from .command_policy import classify_command, resolve_timeout, run_cancellable
+        from .command_policy import classify_command, effective_command_timeout, run_cancellable
 
         if getattr(self, "_auto_mode", False) and getattr(self, "_auto_command_guard", None):
             verdict = classify_command(act.command or "")
@@ -982,7 +982,7 @@ class ToolDispatchMixin:
             # Do not unlocked-discard again: a fresh same-hash re-approval raced
             # in after consume must survive for its own retry.
 
-        cmd_timeout = resolve_timeout()
+        cmd_timeout = effective_command_timeout()
         output, exit_code, run_status = run_cancellable(
             act.command,
             cwd=self.config.repo,

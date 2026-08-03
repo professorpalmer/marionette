@@ -359,13 +359,13 @@ def _run_registered_command_job(
             )
         return
 
-    from harness.command_policy import resolve_timeout, run_cancellable
+    from harness.command_policy import effective_command_timeout, run_cancellable
 
     try:
         output, exit_code, run_status = run_cancellable(
             command,
             cwd=cwd,
-            timeout=resolve_timeout(),
+            timeout=effective_command_timeout(),
             cancel_event=cancel_event,
         )
     except Exception as exc:

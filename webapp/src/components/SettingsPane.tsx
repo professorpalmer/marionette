@@ -1324,7 +1324,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           </div>
           <p className="text-[10px] text-muted">
             Per-command shell timeout. Use 0 or "off" for unbounded (needed for long SSH
-            sessions or builds). Unbounded plus full-auto is why the guard above matters.
+            sessions or builds). Even when off, a 15m safety ceiling still applies unless
+            HARNESS_COMMAND_HARD_CEILING is set to off — hung shells otherwise pin the turn
+            until Stop. Unbounded plus full-auto is why the guard above matters.
           </p>
           <div className="flex items-center gap-2 pt-1">
             <label className="text-[11px] text-muted shrink-0">Max investigation steps</label>

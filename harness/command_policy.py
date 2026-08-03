@@ -27,6 +27,10 @@ import subprocess
 from dataclasses import dataclass
 
 DEFAULT_TIMEOUT = 120
+# When the operator sets HARNESS_COMMAND_TIMEOUT=0/off, commands are "unbounded"
+# but still get this safety ceiling so a hung pytest cannot pin the turn forever.
+# Set HARNESS_COMMAND_HARD_CEILING=0/off to opt out of the ceiling entirely.
+DEFAULT_HARD_CEILING = 900
 MAX_CAPTURED_OUTPUT = 2 * 1024 * 1024  # 2 MiB
 
 
@@ -50,6 +54,41 @@ def resolve_timeout(env: dict | None = None) -> int | None:
     if val <= 0:
         return None
     return val
+
+
+def resolve_hard_ceiling(env: dict | None = None) -> int | None:
+    """Safety ceiling (seconds) applied when resolve_timeout returns None.
+
+    HARNESS_COMMAND_HARD_CEILING: unset -> DEFAULT_HARD_CEILING (900).
+    0 / none / off / unbounded / infinite -> None (truly unbounded).
+    Malformed values fall back to DEFAULT_HARD_CEILING (fail safe).
+    """
+    env = env if env is not None else os.environ
+    raw = (env.get("HARNESS_COMMAND_HARD_CEILING", "") or "").strip().lower()
+    if raw == "":
+        return DEFAULT_HARD_CEILING
+    if raw in ("0", "none", "off", "unbounded", "infinite"):
+        return None
+    try:
+        val = int(raw)
+    except ValueError:
+        return DEFAULT_HARD_CEILING
+    if val <= 0:
+        return None
+    return val
+
+
+def effective_command_timeout(env: dict | None = None) -> int | None:
+    """Timeout actually used for run_command / batch jobs.
+
+    Explicit HARNESS_COMMAND_TIMEOUT wins. When that is unbounded (None), the
+    hard ceiling still applies unless the operator disabled it too.
+    """
+    env = env if env is not None else os.environ
+    timeout = resolve_timeout(env)
+    if timeout is not None:
+        return timeout
+    return resolve_hard_ceiling(env)
 
 
 @dataclass
