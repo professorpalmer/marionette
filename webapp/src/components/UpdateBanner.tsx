@@ -227,6 +227,17 @@ export default function UpdateBanner() {
             return;
           }
           recover(`Update failed: ${r.error || "no update available"}`);
+          return;
+        }
+        // Seamless packaged install: main process will quitAndInstall. Keep the
+        // committed Installing state (do not recover to Restart) until the
+        // window dies; clear the stall watchdog so a slow shell swap cannot
+        // flip the banner back to a second Restart click.
+        if (r && r.ok && r.packagedInstallPending) {
+          window.clearTimeout(watchdog);
+          setApplying(true);
+          setProgress("Installing app shell — Marionette will relaunch");
+          return;
         }
       })
       .catch((e: any) => {

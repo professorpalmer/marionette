@@ -120,6 +120,30 @@ function shouldRelaunchAfterSourceUpdate({ ok, isPackaged, installerUpdateRequir
 }
 
 /**
+ * Plan a single Restart click across the dual update planes.
+ * Checkout (git) always runs before the packaged shell so one apply never
+ * leaves shell-skew for a second banner cycle.
+ */
+function planSeamlessApplyStages({
+  isPackaged = false,
+  gitAvailable = false,
+  packagedAvailable = false,
+  packagedDownloaded = false,
+  shellSkew = false,
+  mainProcessChanged = false,
+} = {}) {
+  const runSource = !!gitAvailable;
+  const runShell = !!(
+    isPackaged &&
+    (packagedAvailable || packagedDownloaded || shellSkew || mainProcessChanged)
+  );
+  const sequence = [];
+  if (runSource) sequence.push("source");
+  if (runShell) sequence.push("shell");
+  return { runSource, runShell, sequence };
+}
+
+/**
  * Wire electron-updater. `createAutoUpdater` is injectable so unit tests never
  * load the real module (Electron APIs are missing under node:test).
  */
@@ -297,7 +321,10 @@ function registerPackagedUpdater(ipcMain, app, opts = {}) {
       emitProgress({ stage: "install", message: "Installing app shell update", percent: 100 });
       // isSilent=false, isForceRunAfter=true: relaunch into the new shell.
       // Signed builds fail closed here rather than installing an unverified binary.
-      setTimeout(() => {
+      // If quitAndInstall does not tear down (some macOS/Gatekeeper paths), fall
+      // back to app.quit so autoInstallOnAppQuit still finishes the shell swap
+      // without forcing the user through a second Restart click.
+      const quitTimer = setTimeout(() => {
         try {
           autoUpdater.quitAndInstall(false, true);
         } catch (err) {
@@ -305,7 +332,16 @@ function registerPackagedUpdater(ipcMain, app, opts = {}) {
           log(`quitAndInstall failed: ${message}`);
           emitProgress({ stage: "error", message });
         }
+        const fallbackTimer = setTimeout(() => {
+          try {
+            if (app && typeof app.quit === "function") app.quit();
+          } catch (err) {
+            log(`quit fallback failed: ${err && err.message ? err.message : err}`);
+          }
+        }, 5000);
+        fallbackTimer.unref?.();
       }, 400);
+      quitTimer.unref?.();
       return { ok: true, installerUpdateRequired: true, packagedInstallPending: true };
     } catch (err) {
       const message = String(err && err.message ? err.message : err);
@@ -343,5 +379,6 @@ module.exports = {
   packagedUpdaterEnabled,
   mergeUpdateAvailability,
   shouldRelaunchAfterSourceUpdate,
+  planSeamlessApplyStages,
   registerPackagedUpdater,
 };

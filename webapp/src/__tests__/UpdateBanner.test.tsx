@@ -167,4 +167,34 @@ describe("UpdateBanner update checks", () => {
     });
     expect(idleListener).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps Installing state when packaged shell install is pending", async () => {
+    const apply = vi.fn(async () => ({
+      ok: true,
+      packagedInstallPending: true,
+      installerUpdateRequired: true,
+    }));
+    (window as any).harnessIPC.updates.apply = apply;
+    (window as any).harnessIPC.updates.onAvailable = vi.fn((listener: (res: CheckResult) => void) => {
+      listener({ available: true, downloaded: true });
+      return () => {};
+    });
+
+    render(<UpdateBanner />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("update-banner")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      screen.getByRole("button", { name: /restart now/i }).click();
+    });
+
+    await waitFor(() => {
+      expect(apply).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/Installing app shell/i)).toBeInTheDocument();
+    });
+    // Must not recover to a second Restart click while quitAndInstall runs.
+    expect(screen.queryByRole("button", { name: /restart now/i })).not.toBeInTheDocument();
+  });
 });

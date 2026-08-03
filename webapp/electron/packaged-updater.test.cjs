@@ -8,6 +8,7 @@ const {
   packagedUpdaterEnabled,
   mergeUpdateAvailability,
   shouldRelaunchAfterSourceUpdate,
+  planSeamlessApplyStages,
   registerPackagedUpdater,
 } = require("./packaged-updater.cjs");
 
@@ -85,6 +86,43 @@ test("shouldRelaunchAfterSourceUpdate: packaged installer requirement blocks rel
     }),
     false,
   );
+});
+
+test("planSeamlessApplyStages: git + shell becomes one source-then-shell sequence", () => {
+  const both = planSeamlessApplyStages({
+    isPackaged: true,
+    gitAvailable: true,
+    packagedAvailable: true,
+    shellSkew: true,
+  });
+  assert.equal(both.runSource, true);
+  assert.equal(both.runShell, true);
+  assert.deepEqual(both.sequence, ["source", "shell"]);
+
+  const shellOnly = planSeamlessApplyStages({
+    isPackaged: true,
+    gitAvailable: false,
+    packagedDownloaded: true,
+    shellSkew: true,
+  });
+  assert.deepEqual(shellOnly.sequence, ["shell"]);
+
+  const sourceOnly = planSeamlessApplyStages({
+    isPackaged: false,
+    gitAvailable: true,
+    packagedAvailable: true,
+  });
+  assert.deepEqual(sourceOnly.sequence, ["source"]);
+  assert.equal(sourceOnly.runShell, false);
+
+  // After a source pull, main-process changes force the shell stage even when
+  // the pre-apply packaged check looked idle.
+  const afterMain = planSeamlessApplyStages({
+    isPackaged: true,
+    gitAvailable: false,
+    mainProcessChanged: true,
+  });
+  assert.deepEqual(afterMain.sequence, ["shell"]);
 });
 
 test("registerPackagedUpdater: disabled outside packaged builds", async () => {

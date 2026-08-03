@@ -31,6 +31,7 @@ const marker = require("./update-marker.cjs");
 const {
   mergeUpdateAvailability,
   shouldRelaunchAfterSourceUpdate,
+  planSeamlessApplyStages,
   readCheckoutPackageVersion,
   shellBehindCheckout,
 } = require("./packaged-updater.cjs");
@@ -619,95 +620,132 @@ function registerUpdateBridge(ipcMain, app, shell, opts = {}) {
     };
     const isPackaged = !!(app && app.isPackaged);
     try {
-      // Packaged shell with a downloaded/available installer: prefer installing
-      // the signed release before (or instead of) claiming a source-only update.
+      // One Restart click owns both planes: checkout (git) first, then packaged
+      // shell via electron-updater. Never install the shell alone while git is
+      // still behind -- that was the double Restart / shell-skew loop.
+      const repoRoot = getRepoRoot();
       const shellVersion = app.getVersion();
-      const checkoutVersion = readCheckoutPackageVersion(getRepoRoot());
-      const skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
-      const packagedReady = !!(packagedUpdater && packagedUpdater.enabled && (
-        packagedUpdater.isDownloaded() || skew
-      ));
-      // When the shell is behind OR a packaged update was already downloaded,
-      // finish via electron-updater. Source-only apply never "completes" a
-      // packaged shell update by relaunching the old asar.
-      if (packagedUpdater && packagedUpdater.enabled && (packagedReady || skew)) {
-        const installed = await packagedUpdater.downloadAndInstall();
-        if (installed.ok) {
-          emit({
-            stage: "install",
-            message: "Installing app shell update — Marionette will relaunch",
-            percent: 100,
-          });
-          return {
-            ok: true,
-            installerUpdateRequired: true,
-            packagedInstallPending: true,
-            note: "Installing the packaged Marionette shell update.",
-          };
+      let checkoutVersion = readCheckoutPackageVersion(repoRoot);
+      let skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
+
+      const gitRes = await checkForUpdate({
+        repoRoot,
+        currentVersion: shellVersion,
+        env: getEnv(),
+      });
+      let packagedRes = null;
+      if (packagedUpdater && packagedUpdater.enabled) {
+        try {
+          packagedRes = await packagedUpdater.check();
+        } catch (err) {
+          appendUpdateLog(`[packaged] pre-apply check failed: ${err && err.message ? err.message : err}`);
         }
-        // Fall through to source update when the feed is unreachable but the
-        // checkout can still advance; the UI keeps installerUpdateRequired set.
-        appendUpdateLog(`[packaged] install deferred: ${installed.error || "unknown"}`);
       }
 
-      const result = await applyUpdate({ repoRoot: getRepoRoot(), strategy, env: getEnv() }, emit);
-      if (result.ok) {
+      let plan = planSeamlessApplyStages({
+        isPackaged,
+        gitAvailable: !!(gitRes && gitRes.available),
+        packagedAvailable: !!(packagedRes && packagedRes.available),
+        packagedDownloaded: !!(
+          (packagedUpdater && packagedUpdater.isDownloaded()) ||
+          (packagedRes && packagedRes.downloaded)
+        ),
+        shellSkew: skew,
+      });
+
+      let sourceResult = { ok: true, skipped: true, mainProcessChanged: false };
+      if (plan.runSource) {
+        sourceResult = await applyUpdate({ repoRoot, strategy, env: getEnv() }, emit);
+        if (!sourceResult.ok) return sourceResult;
+        checkoutVersion = readCheckoutPackageVersion(repoRoot);
+        skew = isPackaged && shellBehindCheckout({ shellVersion, checkoutVersion });
+        // After pull, main-process or version skew may newly require the installer.
+        if (isPackaged && (skew || sourceResult.mainProcessChanged)) {
+          plan = { ...plan, runShell: true, sequence: [...plan.sequence.filter((s) => s !== "shell"), "shell"] };
+        }
+      }
+
+      if (plan.runShell) {
         const shellVerdict = describeMainProcessUpdate({
-          mainProcessChanged: !!result.mainProcessChanged,
+          mainProcessChanged: !!sourceResult.mainProcessChanged,
           isPackaged,
           shellSkew: skew,
         });
-        Object.assign(result, shellVerdict);
-
-        // After a source update on a packaged install that still needs a shell
-        // replace, try electron-updater before any relaunch. Never claim done.
-        if (shellVerdict.installerUpdateRequired && packagedUpdater && packagedUpdater.enabled) {
-          appendUpdateLog(`[apply] ${shellVerdict.note}`);
-          emit({ stage: "done", message: shellVerdict.note, percent: 95 });
+        if (packagedUpdater && packagedUpdater.enabled) {
+          appendUpdateLog(`[apply] seamless shell stage after source=${!sourceResult.skipped}`);
+          emit({
+            stage: "install",
+            message: sourceResult.skipped
+              ? "Installing app shell update — Marionette will relaunch"
+              : "Checkout updated — installing app shell",
+            percent: 96,
+          });
           try {
             const packaged = await packagedUpdater.downloadAndInstall();
             if (packaged.ok) {
-              Object.assign(result, {
-                packagedInstallPending: true,
-                note: packaged.note || shellVerdict.note,
-              });
               emit({
                 stage: "install",
                 message: "Installing app shell update — Marionette will relaunch",
                 percent: 100,
               });
-              return result;
+              return {
+                ok: true,
+                installerUpdateRequired: true,
+                packagedInstallPending: true,
+                sourceUpdated: !sourceResult.skipped,
+                note: sourceResult.skipped
+                  ? "Installing the packaged Marionette shell update."
+                  : "Checkout and app shell update applied in one restart.",
+                ...shellVerdict,
+              };
             }
-            appendUpdateLog(`[packaged] post-source install failed: ${packaged.error || "unknown"}`);
+            appendUpdateLog(`[packaged] seamless install failed: ${packaged.error || "unknown"}`);
           } catch (err) {
-            appendUpdateLog(`[packaged] post-source install error: ${err && err.message ? err.message : err}`);
+            appendUpdateLog(`[packaged] seamless install error: ${err && err.message ? err.message : err}`);
           }
-          // Feed unavailable: keep the window alive with a clear installer ask.
           emit({
             stage: "error",
             message:
               shellVerdict.note ||
-              "Source updated, but the packaged app shell still needs the latest installer.",
+              "Could not finish the app shell installer. Download the latest release to complete the update.",
           });
-          result.ok = false;
-          result.code = "installer_required";
-          result.error =
-            shellVerdict.note ||
-            "Source updated, but install the latest Marionette release to finish the app shell update.";
-          return result;
+          return {
+            ok: false,
+            code: "installer_required",
+            sourceUpdated: !sourceResult.skipped,
+            installerUpdateRequired: true,
+            error:
+              shellVerdict.note ||
+              "Install the latest Marionette release to finish the app shell update.",
+            ...shellVerdict,
+          };
         }
+        // Packaged updater disabled/unavailable but shell still owed.
+        return {
+          ok: false,
+          code: "installer_required",
+          sourceUpdated: !sourceResult.skipped,
+          installerUpdateRequired: true,
+          error:
+            shellVerdict.note ||
+            "Install the latest Marionette release to finish the app shell update.",
+          ...shellVerdict,
+        };
+      }
 
+      if (!sourceResult.skipped && sourceResult.ok) {
         if (shouldRelaunchAfterSourceUpdate({
-          ok: result.ok,
+          ok: true,
           isPackaged,
-          installerUpdateRequired: !!shellVerdict.installerUpdateRequired,
-          packagedInstallPending: !!result.packagedInstallPending,
+          installerUpdateRequired: false,
+          packagedInstallPending: false,
         })) {
-          // Give the renderer a beat to paint the final "relaunching" state.
           setTimeout(() => { try { relaunch(); } catch { void 0; } }, 400);
         }
+        return sourceResult;
       }
-      return result;
+
+      return { ok: false, error: "no update available" };
     } finally {
       applying = false;
     }
