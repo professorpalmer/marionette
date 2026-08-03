@@ -59,8 +59,8 @@ import {
   userOrdinalBeforeIndex,
 } from "./conversation/composerSend";
 import {
-  FEED_PIN_THRESHOLD_PX,
-  pinStateFromScrollGeometry,
+  FEED_REPIN_THRESHOLD_PX,
+  nextFeedPinState,
   settleFrameResult,
   shouldUnpinOnTouchMove,
   FEED_UNPIN_BUBBLE_EVENT,
@@ -751,6 +751,11 @@ export default function Conversation({
   // the bottom (which re-pins). A programmatic scroll-to-bottom lands at the
   // bottom, so it never un-pins itself, and there is no fight with the stream.
   const pinnedToBottomRef = useRef(true);
+  // After an upward trackpad/touch gesture, stay unpinned until the user
+  // scrolls back toward the true bottom — do not re-pin from the soft
+  // "near bottom" band (that fight feels like scroll stutter while streaming).
+  const scrollReleasedByGestureRef = useRef(false);
+  const prevFeedScrollTopRef = useRef<number | null>(null);
   // Hermes session-switch settle: while true, the [items] effect keeps scrolling
   // to bottom until height stabilizes (or wall-clock timeout). onScroll still
   // tracks real geometry so keyboard/scrollbar unpin is not swallowed.
@@ -758,25 +763,36 @@ export default function Conversation({
   useEffect(() => {
     const el = feedRef.current;
     if (!el) return;
+    const applyPinState = () => {
+      const next = nextFeedPinState({
+        wasPinned: pinnedToBottomRef.current,
+        releasedByGesture: scrollReleasedByGestureRef.current,
+        scrollHeight: el.scrollHeight,
+        scrollTop: el.scrollTop,
+        clientHeight: el.clientHeight,
+        prevScrollTop: prevFeedScrollTopRef.current,
+        settling: scrollSettlingRef.current,
+        repinPx: FEED_REPIN_THRESHOLD_PX,
+      });
+      pinnedToBottomRef.current = next.pinned;
+      scrollReleasedByGestureRef.current = next.releasedByGesture;
+      prevFeedScrollTopRef.current = el.scrollTop;
+    };
     const onScroll = () => {
-      pinnedToBottomRef.current = pinStateFromScrollGeometry(
-        el.scrollHeight,
-        el.scrollTop,
-        el.clientHeight,
-        scrollSettlingRef.current,
-        FEED_PIN_THRESHOLD_PX,
-      );
+      applyPinState();
     };
     // Fast-path unpin on upward wheel/touch before the next thinking token
     // re-runs stick-to-bottom -- otherwise long reasoning streams keep yanking
     // the feed back to the end and the user cannot scroll the Thought block.
     const onWheel = (e: WheelEvent) => {
       if (shouldUnpinOnWheel(e.deltaY, scrollSettlingRef.current)) {
+        scrollReleasedByGestureRef.current = true;
         pinnedToBottomRef.current = false;
       }
     };
     const onNestedFeedUnpin = () => {
       if (!scrollSettlingRef.current) {
+        scrollReleasedByGestureRef.current = true;
         pinnedToBottomRef.current = false;
       }
     };
@@ -787,6 +803,7 @@ export default function Conversation({
     const onTouchMove = (e: TouchEvent) => {
       const y = e.touches[0]?.clientY;
       if (shouldUnpinOnTouchMove(touchY, y ?? null, scrollSettlingRef.current)) {
+        scrollReleasedByGestureRef.current = true;
         pinnedToBottomRef.current = false;
       }
       touchY = y ?? touchY;
@@ -820,6 +837,8 @@ export default function Conversation({
     const el = feedRef.current;
     if (!el || !activeSessionId) return;
     pinnedToBottomRef.current = true;
+    scrollReleasedByGestureRef.current = false;
+    prevFeedScrollTopRef.current = null;
     scrollSettlingRef.current = true;
     el.scrollTop = el.scrollHeight;
     let frame = 0;

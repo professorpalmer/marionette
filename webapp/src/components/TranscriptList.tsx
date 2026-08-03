@@ -38,7 +38,7 @@ import {
 import { TranscriptImage } from "./conversation/TranscriptImage";
 import {
   FEED_UNPIN_BUBBLE_EVENT,
-  isPinnedToBottom,
+  nextFeedPinState,
   shouldStopNestedWheelBubble,
   shouldUnpinInnerOnWheel,
   THINKING_INNER_PIN_THRESHOLD_PX,
@@ -1253,6 +1253,8 @@ function ThinkingBlock({
   const [expanded, setExpanded] = useState(() => resolveThinkingExpanded(blockId));
   const bodyRef = useRef<HTMLDivElement>(null);
   const pinnedInnerRef = useRef(true);
+  const innerReleasedByGestureRef = useRef(false);
+  const prevInnerScrollTopRef = useRef<number | null>(null);
 
   const notifyOuterFeedUnpin = useCallback(() => {
     bodyRef.current?.dispatchEvent(
@@ -1263,16 +1265,23 @@ function ThinkingBlock({
   const syncInnerPinFromScroll = useCallback(() => {
     const el = bodyRef.current;
     if (!el) return;
-    const pinned = isPinnedToBottom(
-      el.scrollHeight,
-      el.scrollTop,
-      el.clientHeight,
-      THINKING_INNER_PIN_THRESHOLD_PX,
-    );
-    if (pinnedInnerRef.current && !pinned) {
+    const wasPinned = pinnedInnerRef.current;
+    const next = nextFeedPinState({
+      wasPinned,
+      releasedByGesture: innerReleasedByGestureRef.current,
+      scrollHeight: el.scrollHeight,
+      scrollTop: el.scrollTop,
+      clientHeight: el.clientHeight,
+      prevScrollTop: prevInnerScrollTopRef.current,
+      settling: false,
+      repinPx: THINKING_INNER_PIN_THRESHOLD_PX,
+    });
+    if (wasPinned && !next.pinned) {
       notifyOuterFeedUnpin();
     }
-    pinnedInnerRef.current = pinned;
+    pinnedInnerRef.current = next.pinned;
+    innerReleasedByGestureRef.current = next.releasedByGesture;
+    prevInnerScrollTopRef.current = el.scrollTop;
   }, [notifyOuterFeedUnpin]);
 
   useLayoutEffect(() => {
@@ -1325,6 +1334,7 @@ function ThinkingBlock({
               e.stopPropagation();
             }
             if (shouldUnpinInnerOnWheel(e.deltaY)) {
+              innerReleasedByGestureRef.current = true;
               if (pinnedInnerRef.current) {
                 pinnedInnerRef.current = false;
                 notifyOuterFeedUnpin();

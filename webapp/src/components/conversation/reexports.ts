@@ -196,10 +196,12 @@ export {
 
 export {
   FEED_PIN_THRESHOLD_PX,
+  FEED_REPIN_THRESHOLD_PX,
   FEED_SETTLE_TIMEOUT_MS,
   FEED_UNPIN_BUBBLE_EVENT,
   feedWheelUnpinListenerOptions,
   isPinnedToBottom,
+  nextFeedPinState,
   pinStateFromScrollGeometry,
   shouldStopNestedWheelBubble,
   shouldUnpinInnerOnWheel,

@@ -3,6 +3,12 @@
  */
 
 export const FEED_PIN_THRESHOLD_PX = 120;
+/**
+ * Re-attach stick-to-bottom only when the viewport is this close to the true
+ * end. Kept tight so a light Mac trackpad nudge cannot "still count as pinned"
+ * and fight streaming growth.
+ */
+export const FEED_REPIN_THRESHOLD_PX = 28;
 /** Inner live-reasoning pane re-pin threshold (smaller than outer feed). */
 export const THINKING_INNER_PIN_THRESHOLD_PX = 48;
 export const FEED_SETTLE_STABLE_FRAMES = 5;
@@ -24,6 +30,9 @@ export function isPinnedToBottom(
 /**
  * Pin state from live scroll geometry. Settling must never force-true — the
  * [items] effect keeps glue via scrollSettlingRef separately.
+ *
+ * Prefer {@link nextFeedPinState} for the live feed: geometry alone re-pins
+ * inside a large threshold and fights trackpad unpin + streaming stick.
  */
 export function pinStateFromScrollGeometry(
   scrollHeight: number,
@@ -34,6 +43,53 @@ export function pinStateFromScrollGeometry(
 ): boolean {
   void _settling;
   return isPinnedToBottom(scrollHeight, scrollTop, clientHeight, thresholdPx);
+}
+
+/**
+ * Next stick-to-bottom state with gesture hysteresis.
+ *
+ * Light Mac trackpad scrolls fire wheel-up (unpin) then a scroll event that is
+ * still within the old 120px "near bottom" band. Without a release latch,
+ * onScroll re-pins and the next stream token yanks the feed back — stutter.
+ *
+ * Rules:
+ * - Upward wheel/touch sets ``releasedByGesture``; stay unpinned until the user
+ *   scrolls toward the bottom AND lands within ``repinPx`` of the end.
+ * - Without a gesture release, pin follows the tight re-pin threshold only.
+ */
+export function nextFeedPinState(opts: {
+  wasPinned: boolean;
+  releasedByGesture: boolean;
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+  /** Prior scrollTop; null on first observation. */
+  prevScrollTop: number | null;
+  settling: boolean;
+  repinPx?: number;
+}): { pinned: boolean; releasedByGesture: boolean } {
+  const repinPx = opts.repinPx ?? FEED_REPIN_THRESHOLD_PX;
+  const distance =
+    opts.scrollHeight - opts.scrollTop - opts.clientHeight;
+  const nearBottom = distance < repinPx;
+  const scrolledTowardBottom =
+    opts.prevScrollTop != null && opts.scrollTop > opts.prevScrollTop + 0.5;
+
+  if (opts.settling) {
+    return { pinned: true, releasedByGesture: false };
+  }
+
+  if (opts.releasedByGesture) {
+    if (scrolledTowardBottom && nearBottom) {
+      return { pinned: true, releasedByGesture: false };
+    }
+    return { pinned: false, releasedByGesture: true };
+  }
+
+  if (nearBottom) {
+    return { pinned: true, releasedByGesture: false };
+  }
+  return { pinned: false, releasedByGesture: false };
 }
 
 /** Upward wheel should unpin (unless settle glue is active). */

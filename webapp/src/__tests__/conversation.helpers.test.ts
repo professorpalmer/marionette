@@ -156,11 +156,13 @@ import {
   normalizeContextUsage,
 } from "../components/conversation/contextUsageColors";
 import {
+  FEED_REPIN_THRESHOLD_PX,
   FEED_SETTLE_STABLE_FRAMES,
   FEED_SETTLE_TIMEOUT_MS,
   FEED_UNPIN_BUBBLE_EVENT,
   feedWheelUnpinListenerOptions,
   isPinnedToBottom,
+  nextFeedPinState,
   pinStateFromScrollGeometry,
   settleFrameResult,
   shouldStopNestedWheelBubble,
@@ -1836,6 +1838,40 @@ describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
     expect(
       pinStateFromScrollGeometry(2000, 1600, 400, true),
     ).toBe(true);
+    // Trackpad stutter fix: light upward wheel releases stick; a scroll event
+    // still within the soft near-bottom band must NOT re-pin until the user
+    // scrolls back toward the true bottom.
+    {
+      const height = 2000;
+      const client = 400;
+      // 40px from bottom — inside old 120px band, outside tight repin.
+      const lightUpTop = height - client - 40;
+      expect(
+        nextFeedPinState({
+          wasPinned: true,
+          releasedByGesture: true,
+          scrollHeight: height,
+          scrollTop: lightUpTop,
+          clientHeight: client,
+          prevScrollTop: lightUpTop + 8,
+          settling: false,
+          repinPx: FEED_REPIN_THRESHOLD_PX,
+        }),
+      ).toEqual({ pinned: false, releasedByGesture: true });
+      // Scroll back down into the tight bottom band → re-pin.
+      expect(
+        nextFeedPinState({
+          wasPinned: false,
+          releasedByGesture: true,
+          scrollHeight: height,
+          scrollTop: height - client - 10,
+          clientHeight: client,
+          prevScrollTop: lightUpTop,
+          settling: false,
+          repinPx: FEED_REPIN_THRESHOLD_PX,
+        }),
+      ).toEqual({ pinned: true, releasedByGesture: false });
+    }
     expect(streamOnDoneDecision({ turnSettled: false, userStopped: false }).kind).toBe("abort_error");
     expect(streamOnErrorDecision({ turnSettled: true, userStopped: false }).kind).toBe(
       "preserve_error_or_done",
