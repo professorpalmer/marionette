@@ -317,13 +317,23 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // Reuse only a prior workerStream bubble -- never merge worker tokens into
       // the pilot's own message bubble, and never let several workers pile into
       // one unbounded permanent bubble.
+      // Commit any pending pilot typewriter buffer first, then append worker
+      // text directly (never via the shared typeBuf) so channels cannot merge.
       if (d.kind === "text" && d.text) {
         clearWaitHintOnProgress();
         setCompactingStatus(null);
         if (refreshBusyChrome()) setStatus("streaming");
-        setItems((p) => ensureWorkerStreamingBubble(p, { isPlan: planTurnRef.current }));
-        typeBufRef.current += (d.text || "");
-        startTypewriter();
+        flushTypewriter();
+        const chunk = d.text || "";
+        setItems((p) => {
+          let next = ensureWorkerStreamingBubble(p, { isPlan: planTurnRef.current });
+          next = appendStreamingTextToItems(next, chunk, {
+            workerStream: true,
+            isPlan: planTurnRef.current,
+          });
+          itemsRef.current = next;
+          return next;
+        });
       }
     } else if (ev.kind === "message") {
       setCompactingStatus(null);

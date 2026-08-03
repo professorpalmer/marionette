@@ -889,7 +889,13 @@ export function ensureAssistantStreamingBubble(
   // Identity-bearing deltas must NOT seal thinking — dual-channel Sol keeps
   // progress + reasoning open together until an explicit lifecycle barrier.
   const base = streamId ? items : finalizeStreamingThinking(items);
-  if (findStreamingBubbleIdx(base, { streamId: streamId || undefined }) >= 0) {
+  // Never reuse an open worker preview as the pilot message_delta target.
+  if (
+    findStreamingBubbleIdx(base, {
+      streamId: streamId || undefined,
+      excludeWorkerStream: true,
+    }) >= 0
+  ) {
     return base;
   }
   return [

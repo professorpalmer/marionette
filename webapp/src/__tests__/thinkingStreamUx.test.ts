@@ -1175,3 +1175,197 @@ describe("message_delta cover gate without eager setState updaters", () => {
     expect(state.typeBufRef.current).toBe("");
   });
 });
+
+describe("worker_delta / message_delta stream isolation", () => {
+  /**
+   * Same deferred-setItems shape as the cover-gate suite, but flushTypewriter
+   * drains typeBuf through appendStreamingText so pilot buffers commit before
+   * worker_delta mutates items — matching Conversation wiring.
+   */
+  function makeDeferredIsolationDeps(opts: {
+    items: Item[];
+    itemsRef: { current: Item[] };
+    typeBufRef: { current: string };
+  }) {
+    const pending: Array<(prev: Item[]) => Item[]> = [];
+    let startTypewriterCalls = 0;
+    let appendCalls = 0;
+    const pendingJobIdsRef = { current: [] as string[] };
+    const setItems = (updater: Item[] | ((prev: Item[]) => Item[])) => {
+      if (typeof updater === "function") {
+        pending.push(updater);
+        return;
+      }
+      opts.items = updater;
+      opts.itemsRef.current = updater;
+    };
+    const appendStreamingText = (chunk: string) => {
+      appendCalls += 1;
+      if (!chunk) return;
+      setItems((p) => appendStreamingTextToItems(p, chunk));
+    };
+    const flushTypewriter = () => {
+      flushTypewriterBuffer(
+        {
+          typeBufRef: opts.typeBufRef,
+          typeRafRef: { current: null },
+          typeDoneRef: { current: false },
+        },
+        appendStreamingText,
+        () => {},
+      );
+    };
+    const deps = {
+      setCompactingStatus: ((_v?: string | null) => {}) as (v: string | null) => void,
+      setItems,
+      setDistillNotice: () => {},
+      setWikiPrepared: () => {},
+      setMemoryProposals: () => {},
+      setWaitHint: (_value: string | null | ((prev: string | null) => string | null)) => {},
+      setStatus: () => {},
+      setTurnOpen: () => {},
+      setPendingJobIds: () => {},
+      pendingJobIdsRef,
+      setSafeTimeout: () => {},
+      itemsRef: opts.itemsRef,
+      planTurnRef: { current: false },
+      turnSettledRef: { current: false },
+      resumeQueuedRef: { current: false },
+      typeBufRef: opts.typeBufRef,
+      flushTypewriter,
+      startTypewriter: () => {
+        startTypewriterCalls += 1;
+      },
+      appendStreamingText,
+      setCard: () => {},
+      onArtifacts: () => {},
+      onJobChange: () => {},
+      handleSwarmResult: () => {},
+      refreshQueue: () => {},
+      fetchContextUsage: () => {},
+    };
+    return {
+      apply: createApplyStreamEvent(deps),
+      flushPending: () => {
+        while (pending.length) {
+          const updater = pending.shift()!;
+          const next = updater(opts.items);
+          opts.items = next;
+          opts.itemsRef.current = next;
+        }
+      },
+      get startTypewriterCalls() {
+        return startTypewriterCalls;
+      },
+      get appendCalls() {
+        return appendCalls;
+      },
+    };
+  }
+
+  it("worker_delta with deferred setItems does not append into an open pilot streaming msg", () => {
+    const state = {
+      items: [
+        { kind: "msg", msg: { role: "user", text: "swarm" } },
+        {
+          kind: "msg",
+          msg: { role: "assistant", text: "Pilot draft", streaming: true },
+        },
+      ] as Item[],
+      itemsRef: { current: [] as Item[] },
+      // Pending pilot typewriter tokens must flush into the pilot bubble, not
+      // share a buffer with the worker preview.
+      typeBufRef: { current: " — more pilot" },
+    };
+    state.itemsRef.current = state.items;
+    const harness = makeDeferredIsolationDeps(state);
+
+    harness.apply({
+      kind: "worker_delta",
+      data: { kind: "text", text: "worker token" },
+    });
+
+    // Worker path must not use the shared typewriter.
+    expect(harness.startTypewriterCalls).toBe(0);
+    expect(state.typeBufRef.current).toBe("");
+
+    harness.flushPending();
+
+    const assistants = state.items.filter(
+      (i): i is Extract<Item, { kind: "msg" }> =>
+        i.kind === "msg" && i.msg.role === "assistant",
+    );
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0].msg.workerStream).toBeFalsy();
+    expect(assistants[0].msg.text).toBe("Pilot draft — more pilot");
+    expect(assistants[0].msg.streaming).toBe(true);
+    expect(assistants[1].msg.workerStream).toBe(true);
+    expect(assistants[1].msg.text).toBe("worker token");
+    expect(assistants[1].msg.streaming).toBe(true);
+  });
+
+  it("message_delta does not reuse a trailing workerStream bubble as the pilot target", () => {
+    const state = {
+      items: [
+        { kind: "msg", msg: { role: "user", text: "go" } },
+        {
+          kind: "msg",
+          msg: {
+            role: "assistant",
+            text: "worker preview",
+            streaming: true,
+            workerStream: true,
+          },
+        },
+      ] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const harness = makeDeferredIsolationDeps(state);
+
+    harness.apply({
+      kind: "message_delta",
+      data: { text: "Pilot answer" },
+    });
+
+    // Bare prose turn buffers into typewriter; ensure bubble is deferred.
+    expect(harness.startTypewriterCalls).toBe(1);
+    expect(state.typeBufRef.current).toBe("Pilot answer");
+
+    harness.flushPending();
+
+    const assistants = state.items.filter(
+      (i): i is Extract<Item, { kind: "msg" }> =>
+        i.kind === "msg" && i.msg.role === "assistant",
+    );
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0].msg.workerStream).toBe(true);
+    expect(assistants[0].msg.text).toBe("worker preview");
+    expect(assistants[1].msg.workerStream).toBeFalsy();
+    expect(assistants[1].msg.streaming).toBe(true);
+    expect(assistants[1].msg.text).toBe("");
+
+    // Drain the pilot typewriter into the new non-worker bubble.
+    flushTypewriterBuffer(
+      {
+        typeBufRef: state.typeBufRef,
+        typeRafRef: { current: null },
+        typeDoneRef: { current: false },
+      },
+      (chunk) => {
+        state.items = appendStreamingTextToItems(state.items, chunk);
+        state.itemsRef.current = state.items;
+      },
+      () => {},
+    );
+    const after = state.items.filter(
+      (i): i is Extract<Item, { kind: "msg" }> =>
+        i.kind === "msg" && i.msg.role === "assistant",
+    );
+    expect(after[0].msg.text).toBe("worker preview");
+    expect(after[0].msg.workerStream).toBe(true);
+    expect(after[1].msg.text).toBe("Pilot answer");
+    expect(after[1].msg.workerStream).toBeFalsy();
+  });
+});

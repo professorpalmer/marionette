@@ -71,12 +71,23 @@ export function sealedAssistantCoversDelta(items: Item[], chunk: string): boolea
  *
  * When excludeWorkerStream is set, skip ephemeral swarm worker preview bubbles
  * so the pilot's open bubble is finalized instead.
+ * When workerStreamOnly is set, only match assistant streaming msgs tagged
+ * workerStream (never the pilot bubble).
  */
 export function findStreamingBubbleIdx(
   items: Item[],
-  opts?: { excludeWorkerStream?: boolean; streamId?: string },
+  opts?: {
+    excludeWorkerStream?: boolean;
+    workerStreamOnly?: boolean;
+    streamId?: string;
+  },
 ): number {
   const streamId = (opts?.streamId || "").trim();
+  const matchesStreamAffinity = (m: Msg): boolean => {
+    if (opts?.workerStreamOnly) return Boolean(m.workerStream);
+    if (opts?.excludeWorkerStream && m.workerStream) return false;
+    return true;
+  };
   if (streamId) {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
@@ -92,7 +103,7 @@ export function findStreamingBubbleIdx(
         m.role === "assistant"
         && m.streaming
         && m.stream_id === streamId
-        && (!opts?.excludeWorkerStream || !m.workerStream)
+        && matchesStreamAffinity(m)
       ) {
         return i;
       }
@@ -113,7 +124,7 @@ export function findStreamingBubbleIdx(
       if (
         m.role === "assistant"
         && m.streaming
-        && (!opts?.excludeWorkerStream || !m.workerStream)
+        && matchesStreamAffinity(m)
       ) {
         return i;
       }
@@ -127,11 +138,22 @@ export function findStreamingBubbleIdx(
 export function appendStreamingTextToItems(
   items: Item[],
   chunk: string,
-  opts?: { isPlan?: boolean; streamId?: string; channel?: string },
+  opts?: {
+    isPlan?: boolean;
+    streamId?: string;
+    channel?: string;
+    workerStream?: boolean;
+  },
 ): Item[] {
   if (!chunk) return items;
   const streamId = (opts?.streamId || "").trim();
-  const idx = findStreamingBubbleIdx(items, { streamId: streamId || undefined });
+  const workerStream = Boolean(opts?.workerStream);
+  const idx = findStreamingBubbleIdx(items, {
+    streamId: streamId || undefined,
+    ...(workerStream
+      ? { workerStreamOnly: true }
+      : { excludeWorkerStream: true }),
+  });
   if (idx >= 0) {
     const bubble = items[idx] as { kind: "msg"; msg: Msg };
     const updated = [...items];
@@ -143,7 +165,8 @@ export function appendStreamingTextToItems(
   }
   // cursor_gap / ring_miss replay after durable hydrate: never open a second
   // bubble for prose that already landed in a sealed assistant row.
-  if (sealedAssistantCoversDelta(items, chunk)) {
+  // Worker previews are ephemeral and must not be suppressed by pilot cover.
+  if (!workerStream && sealedAssistantCoversDelta(items, chunk)) {
     return items;
   }
   return [
@@ -155,6 +178,7 @@ export function appendStreamingTextToItems(
         text: chunk,
         streaming: true,
         isPlan: opts?.isPlan,
+        ...(workerStream ? { workerStream: true } : {}),
         ...(streamId ? { stream_id: streamId } : {}),
         ...(opts?.channel ? { channel: opts.channel } : {}),
       },
