@@ -647,6 +647,24 @@ describe("streamBubbles module", () => {
     expect(typewriterCharsPerFrame(3, false)).toBe(3);
     expect(typewriterCharsPerFrame(40, true)).toBeGreaterThanOrEqual(12);
   });
+
+  it("finds an earlier pilot bubble when a trailing worker preview fails affinity", () => {
+    // Regression: excludeWorkerStream used to break on the trailing worker
+    // stream and mint a duplicate pilot bubble instead of appending.
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      { kind: "msg", msg: { role: "assistant", text: "pilot", streaming: true } },
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "worker", streaming: true, workerStream: true },
+      },
+    ];
+    expect(findStreamingBubbleIdx(items, { excludeWorkerStream: true })).toBe(1);
+    expect(findStreamingBubbleIdx(items, { workerStreamOnly: true })).toBe(2);
+    const next = appendStreamingTextToItems(items, " more", { workerStream: false });
+    expect((next[1] as Extract<Item, { kind: "msg" }>).msg.text).toBe("pilot more");
+    expect((next[2] as Extract<Item, { kind: "msg" }>).msg.text).toBe("worker");
+  });
 });
 
 describe("pillStatus + workspaceDisplay + StatusPill chrome", () => {

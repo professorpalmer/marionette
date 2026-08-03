@@ -128,6 +128,12 @@ export function findStreamingBubbleIdx(
       ) {
         return i;
       }
+      // Affinity miss on a still-open assistant (e.g. trailing worker preview
+      // while looking for the pilot): keep scanning. Sealed / user msgs still
+      // end the scan so we never resume under a finished bubble.
+      if (m.role === "assistant" && m.streaming) {
+        continue;
+      }
     }
     break;
   }
