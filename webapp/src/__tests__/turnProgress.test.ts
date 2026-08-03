@@ -526,6 +526,47 @@ describe("looksLikeFinalAnswer / late Cursor tool insert", () => {
     ]);
   });
 
+  it("hoists every trailing tool_prep (relative order) before the sealed finale", () => {
+    const finalText =
+      "Validated.\n\n| Gap | Evidence |\n|---|---|\n| Lease | heartbeat |\n\nShip-ready.";
+    const items: Item[] = [
+      msg("user", "validate"),
+      { kind: "thinking", text: "Checking.", id: "th-1" },
+      { kind: "msg", msg: { role: "assistant", text: finalText } },
+      {
+        kind: "card",
+        card: {
+          id: "c-late",
+          goal: "mcp_manager.py",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+        },
+      },
+      { kind: "tool_prep", name: "Read" },
+      { kind: "thinking", text: "late reason", id: "th-late" },
+      { kind: "tool_prep", name: "Grep" },
+    ];
+    const next = hoistCardsBeforeTrailingFinals(items);
+    const kinds = next.map((it) => {
+      if (it.kind === "card") return "card";
+      if (it.kind === "tool_prep") return `tool_prep:${it.name}`;
+      if (it.kind === "msg") return `msg:${it.msg.role}`;
+      if (it.kind === "thinking") return `thinking:${it.id}`;
+      return it.kind;
+    });
+    expect(kinds).toEqual([
+      "msg:user",
+      "thinking:th-1",
+      "card",
+      "thinking:th-late",
+      "tool_prep:Read",
+      "tool_prep:Grep",
+      "msg:assistant",
+    ]);
+  });
+
   it("upsertStreamingThinking keys late deltas by stream_id after a finale", () => {
     const finalText =
       "Ship it.\n\n"

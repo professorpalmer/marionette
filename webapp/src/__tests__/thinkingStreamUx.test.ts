@@ -494,6 +494,50 @@ describe("createApplyStreamEvent Sol reasoning coalescing", () => {
     expect(afterTool[0].id).toBe(thinking[0].id);
   });
 
+  it("stream_item_done without stream_id seals all open stream surfaces", () => {
+    // Regression: missing/empty stream_id used to no-op and leave streaming:true.
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "buffered " },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+    apply({
+      kind: "thinking",
+      data: { text: "reasoning…", delta: true, stream_id: "rs_open" },
+    });
+    apply({
+      kind: "message_delta",
+      data: { text: "draft", stream_id: "msg_open" },
+    });
+    expect(thinkingRows(state.items)[0].streaming).toBe(true);
+    const openMsg = state.items.find(
+      (it) => it.kind === "msg" && it.msg.role === "assistant" && it.msg.streaming,
+    ) as Extract<Item, { kind: "msg" }> | undefined;
+    expect(openMsg?.msg.streaming).toBe(true);
+
+    apply({ kind: "stream_item_done", data: {} });
+
+    expect(state.typeBufRef.current).toBe("");
+    for (const it of state.items) {
+      if (it.kind === "thinking") {
+        expect(it.streaming).toBeFalsy();
+      }
+      if (it.kind === "msg" && it.msg.role === "assistant") {
+        expect(it.msg.streaming).toBeFalsy();
+      }
+    }
+    // Typewriter flush lands before the seal.
+    const assistantText = state.items
+      .filter((it): it is Extract<Item, { kind: "msg" }> =>
+        it.kind === "msg" && it.msg.role === "assistant")
+      .map((it) => it.msg.text)
+      .join("");
+    expect(assistantText).toContain("buffered");
+    expect(assistantText).toContain("draft");
+  });
+
   it("interleaves progress + reasoning into one surface each", () => {
     const state = {
       items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],

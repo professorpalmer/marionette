@@ -124,6 +124,18 @@ export function patchCardInItems(
  * Ring-miss / reload can deliver a result without a prior action_start; still
  * paint a card when kind/goal/status/duration/error are present.
  */
+/** Number or numeric string exit codes (e.g. "1"); empty/non-numeric → null. */
+function normalizeActionResultExitCode(exitCode: unknown): number | null {
+  if (typeof exitCode === "number" && Number.isFinite(exitCode)) return exitCode;
+  if (typeof exitCode === "string") {
+    const trimmed = exitCode.trim();
+    if (!trimmed || !/^-?\d+$/.test(trimmed)) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 /** Keep failed / noisy run_command results expanded so exit + output stay visible. */
 function shouldOpenActionResultCard(
   d: {
@@ -136,13 +148,13 @@ function shouldOpenActionResultCard(
   existingKind?: string,
 ): boolean {
   if (d.error) return true;
-  const exitCode = d.exit_code;
-  if (typeof exitCode === "number" && exitCode !== 0) return true;
+  const exitCode = normalizeActionResultExitCode(d.exit_code);
+  if (exitCode != null && exitCode !== 0) return true;
   const kind = String(d.kind || existingKind || "").trim().toLowerCase();
   const isRun =
     kind === "run_command" || kind === "bash" || kind === "shell" || kind === "execute";
   const output = typeof d.output === "string" ? d.output.trim() : "";
-  if (isRun && output && typeof exitCode === "number" && exitCode !== 0) return true;
+  if (isRun && output && exitCode != null && exitCode !== 0) return true;
   return false;
 }
 
@@ -170,10 +182,7 @@ export function isUpgradeableActionResult(result: ActionResultBody): boolean {
   if (status === "pending" || status === "registered" || status === "running") {
     return true;
   }
-  // Explicit terminal_receipt means the body already settled.
-  if (result.terminal_receipt) {
-    return false;
-  }
+  // Settled / terminal bodies (including explicit terminal_receipt) are not upgradeable.
   return false;
 }
 

@@ -207,9 +207,14 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       }
     } else if (ev.kind === "stream_item_done") {
       const streamId = d.stream_id != null ? String(d.stream_id) : "";
-      if (!streamId) return;
       clearWaitHintOnProgress();
       flushTypewriter();
+      // Missing/empty stream_id: seal every open stream surface for this turn
+      // (mirror tool_prep) so nothing is left with streaming:true forever.
+      if (!streamId) {
+        setItems((p) => sealOpenStreamSurfaces(p));
+        return;
+      }
       setItems((p) => sealStreamById(p, streamId));
     } else if (ev.kind === "tool_prep") {
       const name = String(d.name || "").trim();

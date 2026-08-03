@@ -596,6 +596,8 @@ describe("Wave 4 command-job reattach fences", () => {
 
   it("treats pending receipts as upgradeable and terminal receipts as durable", () => {
     expect(isUpgradeableActionResult({ status: "pending", job_id: "local-cmd-1" })).toBe(true);
+    expect(isUpgradeableActionResult({ status: "registered" })).toBe(true);
+    expect(isUpgradeableActionResult({ status: "running" })).toBe(true);
     expect(isDurableTerminalActionResult({ status: "pending", job_id: "local-cmd-1" })).toBe(false);
     expect(isDurableTerminalActionResult({
       status: "completed",
@@ -606,6 +608,10 @@ describe("Wave 4 command-job reattach fences", () => {
       status: "completed",
       terminal_receipt: { status: "completed" },
     })).toBe(false);
+    // Settled status without terminal_receipt is also not upgradeable.
+    expect(isUpgradeableActionResult({ status: "completed" })).toBe(false);
+    expect(isUpgradeableActionResult({ status: "failed" })).toBe(false);
+    expect(isUpgradeableActionResult(null)).toBe(false);
   });
 
   it("keeps the first durable terminal action_result (duplicate frames)", () => {

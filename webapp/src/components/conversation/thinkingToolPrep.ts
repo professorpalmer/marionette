@@ -47,6 +47,14 @@ export function coalesceThinkingChunk(existing: string, chunk: string): string {
   if (chunk === existing) return existing;
   if (existing.startsWith(chunk)) return existing;
   if (chunk.startsWith(existing)) return chunk;
+  // Partial overlap: longest suffix of existing that is a prefix of chunk
+  // (avoids "world"+"world foo" style duplication on snapshot frames).
+  const maxOverlap = Math.min(existing.length, chunk.length);
+  for (let n = maxOverlap; n > 0; n--) {
+    if (chunk.startsWith(existing.slice(-n))) {
+      return existing + chunk.slice(n);
+    }
+  }
   return existing + chunk;
 }
 
@@ -250,7 +258,7 @@ export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
   const head = items.slice(0, finalIdx);
   const finalItem = items[finalIdx];
   const hoist: Item[] = [];
-  let hoistPrep: Extract<Item, { kind: "tool_prep" }> | null = null;
+  const hoistPreps: Extract<Item, { kind: "tool_prep" }>[] = [];
   const tail: Item[] = [];
   for (let j = finalIdx + 1; j < items.length; j++) {
     const it = items[j];
@@ -261,7 +269,8 @@ export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
     if (it.kind === "card" || it.kind === "thinking") {
       hoist.push(it);
     } else if (it.kind === "tool_prep") {
-      hoistPrep = it;
+      // Keep every trailing tool_prep in relative order (not just the last).
+      hoistPreps.push(it);
     } else {
       tail.push(it);
     }
@@ -270,7 +279,7 @@ export function hoistCardsBeforeTrailingFinals(items: Item[]): Item[] {
   return [
     ...head,
     ...hoist,
-    ...(hoistPrep ? [hoistPrep] : []),
+    ...hoistPreps,
     finalItem,
     ...tail.filter((it) => it.kind !== "tool_prep"),
   ];

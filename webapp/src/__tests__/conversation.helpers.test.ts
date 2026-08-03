@@ -15,8 +15,10 @@ import {
 } from "../components/conversation/transcriptItems";
 import {
   clearToolPrepPlaceholders,
+  coalesceThinkingChunk,
   finalizeStreamingThinking,
   hoistCardsBeforeTrailingFinals,
+  newThinkingId,
   upsertStreamingThinking,
   upsertToolPrep,
 } from "../components/conversation/thinkingToolPrep";
@@ -489,6 +491,79 @@ describe("thinkingToolPrep module", () => {
     expect((done[0] as Extract<Item, { kind: "thinking" }>).streaming).toBeFalsy();
     expect((done[0] as Extract<Item, { kind: "thinking" }>).id).toBe(id);
   });
+
+  it("newThinkingId mints unique ids", () => {
+    const a = newThinkingId();
+    const b = newThinkingId();
+    expect(a).toMatch(/^th-/);
+    expect(b).toMatch(/^th-/);
+    expect(a).not.toBe(b);
+  });
+
+  it("coalesceThinkingChunk keeps identical/stale/extension and merges partial overlap", () => {
+    expect(coalesceThinkingChunk("hello", "")).toBe("hello");
+    expect(coalesceThinkingChunk("", "hello")).toBe("hello");
+    expect(coalesceThinkingChunk("hello", "hello")).toBe("hello");
+    // Stale prefix snapshot — keep the longer existing text.
+    expect(coalesceThinkingChunk("hello world", "hello")).toBe("hello world");
+    // Strict extension snapshot — replace with the longer chunk.
+    expect(coalesceThinkingChunk("hello", "hello world")).toBe("hello world");
+    // Partial overlap — merge at the longest shared boundary.
+    expect(coalesceThinkingChunk("hello world", "world foo")).toBe("hello world foo");
+    expect(coalesceThinkingChunk("abcXYZdef", "XYZdefGHI")).toBe("abcXYZdefGHI");
+    // No overlap — append.
+    expect(coalesceThinkingChunk("alpha", "beta")).toBe("alphabeta");
+  });
+
+  it("upsertStreamingThinking coalesceSnapshots uses coalesce; default strict-appends", () => {
+    let snap: Item[] = [{ kind: "msg", msg: { role: "user", text: "go" } }];
+    snap = upsertStreamingThinking(snap, "hello world", { coalesceSnapshots: true });
+    snap = upsertStreamingThinking(snap, "world foo", { coalesceSnapshots: true });
+    expect((snap.find((i) => i.kind === "thinking") as Extract<Item, { kind: "thinking" }>).text)
+      .toBe("hello world foo");
+
+    let live: Item[] = [{ kind: "msg", msg: { role: "user", text: "go" } }];
+    live = upsertStreamingThinking(live, "hello world");
+    live = upsertStreamingThinking(live, "world foo");
+    expect((live.find((i) => i.kind === "thinking") as Extract<Item, { kind: "thinking" }>).text)
+      .toBe("hello worldworld foo");
+  });
+
+  it("hoists all trailing tool_prep rows before a sealed finale", () => {
+    const finalText =
+      "Validated.\n\n| Gap | Evidence |\n|---|---|\n| Lease | heartbeat |\n\nShip-ready.";
+    const items: Item[] = [
+      msg("user", "validate"),
+      { kind: "msg", msg: { role: "assistant", text: finalText } },
+      {
+        kind: "card",
+        card: {
+          id: "c-late",
+          goal: "a.py",
+          cwd: null,
+          kind: "read_file",
+          running: false,
+          open: false,
+        },
+      },
+      { kind: "tool_prep", name: "Read" },
+      { kind: "tool_prep", name: "Grep" },
+    ];
+    const next = hoistCardsBeforeTrailingFinals(items);
+    const kinds = next.map((it) => {
+      if (it.kind === "card") return "card";
+      if (it.kind === "tool_prep") return `tool_prep:${it.name}`;
+      if (it.kind === "msg") return `msg:${it.msg.role}`;
+      return it.kind;
+    });
+    expect(kinds).toEqual([
+      "msg:user",
+      "card",
+      "tool_prep:Read",
+      "tool_prep:Grep",
+      "msg:assistant",
+    ]);
+  });
 });
 
 describe("chatEvents module", () => {
@@ -664,6 +739,60 @@ describe("streamBubbles module", () => {
     const next = appendStreamingTextToItems(items, " more", { workerStream: false });
     expect((next[1] as Extract<Item, { kind: "msg" }>).msg.text).toBe("pilot more");
     expect((next[2] as Extract<Item, { kind: "msg" }>).msg.text).toBe("worker");
+  });
+
+  it("finds an earlier worker bubble when a trailing pilot fails workerStreamOnly affinity", () => {
+    // Mirror of the pilot-affinity regression: workerStreamOnly must skip the
+    // trailing open pilot and land on the earlier worker preview.
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "worker", streaming: true, workerStream: true },
+      },
+      { kind: "msg", msg: { role: "assistant", text: "pilot", streaming: true } },
+    ];
+    expect(findStreamingBubbleIdx(items, { workerStreamOnly: true })).toBe(1);
+    expect(findStreamingBubbleIdx(items, { excludeWorkerStream: true })).toBe(2);
+    const next = appendStreamingTextToItems(items, " more", { workerStream: true });
+    expect((next[1] as Extract<Item, { kind: "msg" }>).msg.text).toBe("worker more");
+    expect((next[2] as Extract<Item, { kind: "msg" }>).msg.text).toBe("pilot");
+  });
+
+  it("does not resume under a sealed pilot when only a worker preview is open", () => {
+    // Sealed assistant ends the scan — excludeWorkerStream must not fall
+    // through to invent a resume slot under a finished pilot.
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      { kind: "msg", msg: { role: "assistant", text: "done", streaming: false } },
+      {
+        kind: "msg",
+        msg: { role: "assistant", text: "worker", streaming: true, workerStream: true },
+      },
+    ];
+    expect(findStreamingBubbleIdx(items, { excludeWorkerStream: true })).toBe(-1);
+  });
+
+  it("appendStreamingTextToItems appends into an open pilot or opens a new bubble", () => {
+    const open: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      { kind: "msg", msg: { role: "assistant", text: "hi", streaming: true } },
+    ];
+    const appended = appendStreamingTextToItems(open, " there");
+    expect((appended[1] as Extract<Item, { kind: "msg" }>).msg.text).toBe("hi there");
+    expect(appendStreamingTextToItems(open, "")).toBe(open);
+
+    const sealed: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      { kind: "msg", msg: { role: "assistant", text: "done", streaming: false } },
+    ];
+    const minted = appendStreamingTextToItems(sealed, "next");
+    expect(minted).toHaveLength(3);
+    expect((minted[2] as Extract<Item, { kind: "msg" }>).msg).toMatchObject({
+      role: "assistant",
+      text: "next",
+      streaming: true,
+    });
   });
 });
 
@@ -1950,6 +2079,42 @@ describe("pilot tool-action visibility (prep promotion + result upsert)", () => 
       artifacts: [{ type: "command", headline: "Command exited with 0" }],
     });
     expect((quietOk[0] as Extract<Item, { kind: "card" }>).card.open).toBe(false);
+  });
+
+  it("applyActionResultCard opens on numeric-string exit_code and ignores non-numeric", () => {
+    const running: Item[] = [{
+      kind: "card",
+      card: {
+        id: "run-str",
+        goal: "pytest -q",
+        kind: "run_command",
+        running: true,
+        open: false,
+      },
+    }];
+    const failed = applyActionResultCard(running, {
+      id: "run-str",
+      kind: "run_command",
+      exit_code: "1",
+      output: "",
+    });
+    expect((failed[0] as Extract<Item, { kind: "card" }>).card.open).toBe(true);
+
+    const junk = applyActionResultCard(running, {
+      id: "run-str",
+      kind: "run_command",
+      exit_code: "oops",
+      output: "",
+    });
+    expect((junk[0] as Extract<Item, { kind: "card" }>).card.open).toBe(false);
+
+    const empty = applyActionResultCard(running, {
+      id: "run-str",
+      kind: "run_command",
+      exit_code: "",
+      output: "",
+    });
+    expect((empty[0] as Extract<Item, { kind: "card" }>).card.open).toBe(false);
   });
 
   it("hydrates run_parallel goals and nested actions across reload", () => {

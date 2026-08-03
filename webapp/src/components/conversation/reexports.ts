@@ -22,6 +22,7 @@ export {
   upsertToolPrep,
   clearToolPrepPlaceholders,
   newThinkingId,
+  coalesceThinkingChunk,
   looksLikeFinalAnswer,
   hoistCardsBeforeTrailingFinals,
   isTrivialAssistantCrumb,
