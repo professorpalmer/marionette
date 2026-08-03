@@ -66,6 +66,37 @@ def _worker_provenance_text(provenance: dict, *, expects_diff: bool = True) -> s
     )
 
 
+def _analysis_signal_rows_for_job(res, summary_text: str) -> list:
+    """Typed finding/risk/decision rows for an analysis job result.
+
+    Prefers ``WorkerResult.findings`` when present; otherwise parses FINDING/
+    RISK/DECISION labels from the worker summary text.
+    """
+    rows: list = []
+    try:
+        raw = getattr(res, "findings", None) or []
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("type") or "").lower()
+                if kind not in ("finding", "risk", "decision"):
+                    continue
+                headline = str(item.get("headline") or "").strip()
+                if not headline:
+                    continue
+                rows.append({"type": kind, "headline": headline})
+    except Exception:
+        rows = []
+    if rows:
+        return rows
+    try:
+        from harness.worker import parse_analysis_signal_rows
+        return list(parse_analysis_signal_rows(summary_text or ""))
+    except Exception:
+        return []
+
+
 def _background_evidence_boundary(
     session: object,
     job_id: str,
@@ -551,6 +582,33 @@ class ConversationJobsMixin:
                         "degraded": True,
                     }
                 else:
+                    # Persist typed FINDING/RISK/DECISION rows onto the job so
+                    # artifact:// readers see structured analysis, not only prose.
+                    signal_rows = _analysis_signal_rows_for_job(
+                        res, raw_worker_summary or summary,
+                    )
+                    artifacts = [
+                        {
+                            "type": row["type"],
+                            "payload": {
+                                "claim": row.get("headline") or "",
+                                "report": row.get("headline") or "",
+                            },
+                        }
+                        for row in signal_rows
+                    ]
+                    ar_list = [
+                        {
+                            "type": row["type"],
+                            "headline": row.get("headline") or "",
+                        }
+                        for row in signal_rows
+                    ]
+                    artifact_types = sorted({
+                        str(row.get("type") or "")
+                        for row in signal_rows
+                        if row.get("type")
+                    })
                     res_dict = {
                         "job_id": job_id,
                         "applied": True,
@@ -560,12 +618,12 @@ class ConversationJobsMixin:
                         "tokens_cached": tokens_cached,
                         "summary": summary,
                         "error": None,
-                        "artifacts": [],
+                        "artifacts": artifacts,
                         "has_patch_art": False,
                         "apply_msg": "",
-                        "num_artifacts": 0,
-                        "artifact_types": [],
-                        "ar_list": [],
+                        "num_artifacts": len(artifacts),
+                        "artifact_types": artifact_types,
+                        "ar_list": ar_list,
                     }
             else:
                 artifacts = []

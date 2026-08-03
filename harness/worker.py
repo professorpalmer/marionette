@@ -107,6 +107,10 @@ class WorkerResult:
     worktree_diff_empty: Optional[bool] = None
     live_dirty_paths_before: list[str] = field(default_factory=list)
     live_dirty_paths_after: list[str] = field(default_factory=list)
+    # Typed analysis signal rows (finding/risk/decision). Optional empty default
+    # keeps positional/legacy construction back-compatible; conversation_jobs
+    # prefers these over re-parsing the summary when present.
+    findings: list = field(default_factory=list)
 
 
 # --- Escaped-write detection ------------------------------------------------
@@ -394,6 +398,44 @@ def patch_subprocess_run(repo_path: str):
                 _original_run = None
 
 
+# Case-insensitive FINDING:/RISK:/DECISION: line labels (native analysis brief).
+# Gate requires a true line-start label; extract also accepts the common
+# "Last assistant message: FINDING: ..." wrapper used in WorkerResult.summary.
+_ANALYSIS_SIGNAL_LINE_RE = re.compile(
+    r"^(FINDING|RISK|DECISION)\s*:",
+    re.IGNORECASE | re.MULTILINE,
+)
+_ANALYSIS_SIGNAL_EXTRACT_RE = re.compile(
+    r"^(?:Last assistant message:\s*)?(FINDING|RISK|DECISION)\s*:\s*(.*)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_ANALYSIS_SIGNAL_HEADLINE_CAP = 240
+
+
+def parse_analysis_signal_rows(text: str) -> list:
+    """Extract typed FINDING/RISK/DECISION rows from free-text analysis output.
+
+    Returns a list of ``{"type": "finding"|"risk"|"decision", "headline": "..."}``
+    dicts. Headline is the rest of the labelled line, trimmed, length-capped.
+    Accepts both bare ``FINDING:`` lines and the worker summary wrapper
+    ``Last assistant message: FINDING: ...``.
+    """
+    rows: list = []
+    try:
+        body = text or ""
+    except Exception:
+        return rows
+    for match in _ANALYSIS_SIGNAL_EXTRACT_RE.finditer(body):
+        kind = (match.group(1) or "").strip().lower()
+        if kind not in ("finding", "risk", "decision"):
+            continue
+        headline = (match.group(2) or "").strip()
+        if len(headline) > _ANALYSIS_SIGNAL_HEADLINE_CAP:
+            headline = headline[: _ANALYSIS_SIGNAL_HEADLINE_CAP - 1] + "…"
+        rows.append({"type": kind, "headline": headline})
+    return rows
+
+
 def _analysis_output_is_structured(
     last_message: str, *, halt_reason: str = "",
 ) -> tuple[bool, str]:
@@ -401,6 +443,8 @@ def _analysis_output_is_structured(
 
     Returns ``(ok, degrade_reason)``. Reasoning-only / empty / no_tool_calls
     outputs must fail so they never surface as a clean completed artifact.
+    Unlabelled prose (no FINDING/RISK/DECISION lines) also fails — same bar as
+    bridge swarms requiring typed structured findings.
     Outer failures fail closed (never treat opaque exceptions as structured).
     """
     try:
@@ -426,6 +470,11 @@ def _analysis_output_is_structured(
                 or low.startswith("i will look")
             ):
                 return False, "no structured findings (reasoning only)"
+        if not _ANALYSIS_SIGNAL_LINE_RE.search(text):
+            return (
+                False,
+                "no structured findings (missing FINDING/RISK/DECISION labels)",
+            )
         return True, ""
     except Exception:
         return False, "no structured findings"
@@ -874,6 +923,7 @@ class ProviderWorker:
                     events=events,
                     worktree=wt_path,
                     declarative_checks=check_payload,
+                    findings=parse_analysis_signal_rows(last_message),
                 )
                 
             # 5. Optional self-test execution

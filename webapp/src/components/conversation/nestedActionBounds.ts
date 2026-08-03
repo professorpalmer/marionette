@@ -23,6 +23,7 @@ const TERMINAL_JOB_STATUSES = new Set([
   "truncated",
   "interrupted",
   "stalled",
+  "degraded",
 ]);
 
 export function isTerminalJobStatus(status: string | undefined | null): boolean {

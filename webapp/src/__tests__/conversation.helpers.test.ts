@@ -98,6 +98,7 @@ import {
   MAX_JOB_ACTIONS,
   MAX_ACTION_GOAL_CHARS,
   boundActionField,
+  isTerminalJobStatus,
 } from "../components/conversation/streamApply";
 import {
   collectDisplayArtifacts,
@@ -589,6 +590,12 @@ describe("chatEvents module", () => {
       data: { ok: 1 },
     });
     expect(isTerminalStreamKind("error")).toBe(true);
+  });
+
+  it("treats degraded job status as terminal", () => {
+    expect(isTerminalJobStatus("degraded")).toBe(true);
+    expect(isTerminalJobStatus("DEGRADED")).toBe(true);
+    expect(isTerminalJobStatus("running")).toBe(false);
   });
 
   it("gates poll and runner arming", () => {

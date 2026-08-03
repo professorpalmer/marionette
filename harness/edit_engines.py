@@ -351,7 +351,11 @@ def run_agentic_edit(
     Never raises for a run failure -- it returns a WorkerResult whose ``error`` is
     one of the ``AGENTIC_*`` reasons so the dispatcher can fall back to native.
     """
-    from harness.worker import WorkerResult, _analysis_output_is_structured
+    from harness.worker import (
+        WorkerResult,
+        _analysis_output_is_structured,
+        parse_analysis_signal_rows,
+    )
     from harness.job_scoping import job_label_for_session, stamp_task_payload
 
     if not agentic_available():
@@ -499,7 +503,9 @@ def run_agentic_edit(
                         events=list(mapped_events),
                     ), result)
                 if not expects_diff:
-                    # Gate on structured findings — never green "No summary".
+                    # Gate on structured findings — never green unlabeled prose.
+                    # has_structured = typed compact artifacts; structured_ok =
+                    # FINDING/RISK/DECISION labels in final_text (tightened gate).
                     compact: list = []
                     try:
                         from pmharness.bridge import _compact_artifact
@@ -518,6 +524,9 @@ def run_agentic_edit(
                         summary = _agentic_analysis_summary(
                             compact, final_text or "",
                         )
+                        signal_rows = parse_analysis_signal_rows(final_text or "")
+                        if not signal_rows and has_structured:
+                            signal_rows = _signal_rows_from_compact(compact)
                         return _stamp_agentic(WorkerResult(
                             ok=True, tokens_out=tokens_out, tokens_in=tokens_in,
                             summary=summary,
@@ -527,6 +536,7 @@ def run_agentic_edit(
                             managed_worktree_mode="managed",
                             worktree_diff_empty=worktree_diff_empty,
                             events=list(mapped_events),
+                            findings=signal_rows,
                         ), result)
                     label = degrade_reason or "no structured findings"
                     summary_parts = [label]
@@ -666,6 +676,26 @@ def agentic_events_from_store(store: Any, job_id: str) -> list:
             "error": err,
         }))
     return out
+
+
+def _signal_rows_from_compact(compact: list) -> list:
+    """Map compact typed artifacts into WorkerResult.findings-shaped rows."""
+    rows: list = []
+    for art in compact or []:
+        if not isinstance(art, dict):
+            continue
+        kind = str(art.get("type") or "").lower()
+        if kind not in ("finding", "risk", "decision"):
+            continue
+        if art.get("empty_headline"):
+            continue
+        headline = str(art.get("headline") or art.get("body") or "").strip()
+        if not headline:
+            continue
+        if len(headline) > 240:
+            headline = headline[:239] + "…"
+        rows.append({"type": kind, "headline": headline})
+    return rows
 
 
 def _agentic_analysis_summary(compact: list, final_text: str) -> str:

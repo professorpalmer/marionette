@@ -198,14 +198,131 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
         assert res.get("error") in (None, "")
         assert res.get("has_patch_art") is False
         assert "harness/auth.py" in (res.get("summary") or "")
+        ar_list = res.get("ar_list") or []
+        assert any(
+            isinstance(row, dict)
+            and row.get("type") == "finding"
+            and "token refresh" in (row.get("headline") or "")
+            for row in ar_list
+        )
+        assert "finding" in (res.get("artifact_types") or [])
 
         with session._local_jobs_lock:
             job = session._local_jobs.get(job_id)
             assert job is not None
             assert job["status"] == "completed"
             assert job["role"] == "analysis"
+            arts = job.get("artifacts") or []
+            assert any(
+                isinstance(row, dict) and row.get("type") == "finding"
+                for row in arts
+            )
 
         assert expects_seen == [False]
+    finally:
+        shutil.rmtree(repo_dir)
+
+
+def test_run_parallel_analysis_discards_seed_patch_persists_findings(monkeypatch):
+    """expects_diff=False with seed-noise patch: discard edits, keep FINDING rows."""
+    import time
+
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = HarnessConfig()
+        cfg.repo = repo_dir
+        session = ConversationalSession(cfg)
+        monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: False)
+
+        finding_line = (
+            "FINDING: harness/auth.py:42 token refresh never validates expiry"
+        )
+        seed_patch = (
+            "diff --git a/seed.txt b/seed.txt\n"
+            "--- a/seed.txt\n"
+            "+++ b/seed.txt\n"
+            "@@ -0,0 +1 @@\n"
+            "+noise\n"
+        )
+
+        def mock_worker_run(self):
+            return WorkerResult(
+                ok=True,
+                patch=seed_patch,
+                files_changed=["seed.txt"],
+                summary=f"Last assistant message: {finding_line}",
+                findings=[{
+                    "type": "finding",
+                    "headline": (
+                        "harness/auth.py:42 token refresh never validates expiry"
+                    ),
+                }],
+            )
+
+        monkeypatch.setattr(ProviderWorker, "run", mock_worker_run)
+
+        mock_pilot = MagicMock()
+        first_resp = MagicMock()
+        first_resp.text = json.dumps({
+            "say": "Running analysis",
+            "actions": [{
+                "kind": "run_parallel",
+                "goals": ["Audit auth"],
+                "mode": "analysis",
+            }],
+        })
+        first_resp.meta = {}
+        first_resp.error = None
+        mock_pilot.chat.return_value = first_resp
+        session.pilot = mock_pilot
+
+        events = list(session.send("audit please"))
+        job_id = [e for e in events if e.kind == "swarm_pending"][0].data["job_ids"][0]
+
+        start_time = time.time()
+        while time.time() - start_time < 5:
+            with session._swarm_futures_lock:
+                if not session._swarm_futures:
+                    break
+            time.sleep(0.1)
+
+        drain_events = list(session.drain_swarm_results())
+        swarm_results = [e for e in drain_events if e.kind == "swarm_result"]
+        assert len(swarm_results) == 1
+        res = swarm_results[0].data["result"]
+        assert res["applied"] is True
+        assert res.get("files") in ([], None)
+        assert res.get("has_patch_art") is False
+        assert "patch" not in (res.get("artifact_types") or [])
+        ar_list = res.get("ar_list") or []
+        assert any(
+            isinstance(row, dict)
+            and row.get("type") == "finding"
+            and "token refresh" in (row.get("headline") or "")
+            for row in ar_list
+        ), ar_list
+
+        with session._local_jobs_lock:
+            job = session._local_jobs.get(job_id)
+            assert job is not None
+            assert job["status"] == "completed"
+            arts = job.get("artifacts") or []
+            assert any(
+                isinstance(row, dict)
+                and row.get("type") == "finding"
+                and "token refresh" in (
+                    (row.get("headline") or "")
+                    + str((row.get("payload") or {}).get("claim") or "")
+                    + str((row.get("payload") or {}).get("report") or "")
+                )
+                for row in arts
+            ), arts
+            # Seed patch must not land as applied files on the job.
+            assert not (job.get("files") or [])
+            assert not any(
+                isinstance(row, dict) and row.get("type") == "patch"
+                for row in arts
+            )
     finally:
         shutil.rmtree(repo_dir)
 

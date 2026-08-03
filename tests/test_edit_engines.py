@@ -627,6 +627,35 @@ def test_agentic_analysis_empty_result_fails_structured_gate(monkeypatch):
         shutil.rmtree(repo_dir, ignore_errors=True)
 
 
+def test_agentic_analysis_unlabeled_prose_fails_structured_gate(monkeypatch):
+    """expects_diff=False must not green on unlabeled non-reasoning prose."""
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        _install_agentic_mocks(
+            monkeypatch,
+            orchestrator_result=_fake_pm_result([
+                _fake_artifact(
+                    stdout="The auth module looks fine overall after a careful pass.",
+                    tokens_out=3,
+                    tokens_in=2,
+                    failure="empty_or_unstructured_agentic_result",
+                ),
+            ]),
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("", []),
+        )
+        result = run_agentic_edit(cfg, "audit auth", expects_diff=False)
+        assert result.ok is False
+        assert "missing FINDING/RISK/DECISION" in (
+            result.error or result.summary or ""
+        )
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
 def test_agentic_analysis_summary_from_artifacts_is_substantive(monkeypatch):
     """Artifact FINDING must become a parent-gate-passing summary, not a stub."""
     from harness.edit_engines import _agentic_analysis_summary

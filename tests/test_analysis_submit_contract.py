@@ -15,6 +15,7 @@ from harness.conversation import ConversationalSession, ConvEvent
 from harness.worker import (
     ProviderWorker,
     _analysis_output_is_structured,
+    parse_analysis_signal_rows,
 )
 from pmharness.bridge import (
     _analysis_bridge_status,
@@ -89,6 +90,36 @@ def test_analysis_output_helper_rejects_reasoning_only():
     ok4, reason4 = _analysis_output_is_structured(object())  # type: ignore[arg-type]
     assert ok4 is False
     assert "no structured findings" in reason4
+
+
+def test_analysis_output_rejects_unlabeled_prose():
+    """Non-reasoning free text without FINDING/RISK/DECISION labels must fail."""
+    ok, reason = _analysis_output_is_structured(
+        "The auth module looks fine overall."
+    )
+    assert ok is False
+    assert "missing FINDING/RISK/DECISION" in reason
+
+    ok_risk, reason_risk = _analysis_output_is_structured(
+        "RISK: sessions never expire after logout in harness/auth.py:42"
+    )
+    assert ok_risk is True
+    assert reason_risk == ""
+
+
+def test_parse_analysis_signal_rows_extracts_typed_labels():
+    rows = parse_analysis_signal_rows(
+        "Preface.\n"
+        "FINDING: token refresh skips expiry checks in harness/auth.py:42\n"
+        "risk: cookie jar is shared across workers\n"
+        "DECISION: prefer typed labels over prose\n"
+        "Still unlabeled trailing prose."
+    )
+    assert [r["type"] for r in rows] == ["finding", "risk", "decision"]
+    assert "token refresh" in rows[0]["headline"]
+    assert "cookie jar" in rows[1]["headline"]
+    assert "typed labels" in rows[2]["headline"]
+    assert parse_analysis_signal_rows("The auth module looks fine overall.") == []
 
 
 def test_analysis_mode_gate_crash_does_not_early_halt(monkeypatch):

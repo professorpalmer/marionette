@@ -230,11 +230,15 @@ def test_worker_empty_change(monkeypatch):
 
 def test_worker_empty_change_analysis_ok(monkeypatch):
     """Analysis/review workers (expects_diff=False) treat empty diff as success
-    and summarize from the last assistant message / halt reason."""
+    when the last message carries typed FINDING/RISK/DECISION labels."""
     repo_dir = create_temp_git_repo()
     try:
+        finding = (
+            "FINDING: harness/auth.py:42 token refresh never validates expiry"
+        )
+
         def mock_run_auto_empty(self, objective, budget=None, require_codegraph=True, **kwargs):
-            yield ConvEvent("message", {"text": "Audit complete: no issues found in auth."})
+            yield ConvEvent("message", {"text": finding})
             yield ConvEvent("auto_halt", {"reason": "pilot reports objective met"})
 
         monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto_empty)
@@ -249,9 +253,41 @@ def test_worker_empty_change_analysis_ok(monkeypatch):
 
         assert res.ok is True
         assert res.patch == ""
-        assert "Audit complete" in (res.summary or "")
+        assert "FINDING:" in (res.summary or "")
         assert "no changes captured" not in (res.summary or "")
+        assert any(
+            isinstance(r, dict) and r.get("type") == "finding"
+            for r in (res.findings or [])
+        )
         assert not os.path.exists(res.worktree)
+    finally:
+        shutil.rmtree(repo_dir)
+
+
+def test_worker_empty_change_analysis_rejects_unlabeled_prose(monkeypatch):
+    """Unlabeled non-reasoning prose must not green expects_diff=False."""
+    repo_dir = create_temp_git_repo()
+    try:
+        def mock_run_auto_empty(self, objective, budget=None, require_codegraph=True, **kwargs):
+            yield ConvEvent(
+                "message",
+                {"text": "The auth module looks fine overall."},
+            )
+            yield ConvEvent("auto_halt", {"reason": "pilot reports objective met"})
+
+        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto_empty)
+
+        worker = ProviderWorker(
+            repo=repo_dir,
+            goal="Audit the repository",
+            expects_diff=False,
+            keep_worktree_on_failure=True,
+        )
+        res = worker.run()
+
+        assert res.ok is False
+        assert "missing FINDING/RISK/DECISION" in (res.error or "")
+        assert "looks fine overall" in (res.summary or "")
     finally:
         shutil.rmtree(repo_dir)
 
