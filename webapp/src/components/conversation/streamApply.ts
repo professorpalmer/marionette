@@ -236,7 +236,8 @@ export function applyActionResultCard(
     artifacts?: { type: string; headline: string }[];
     chars?: number;
     auth_failure?: string;
-    exit_code?: number;
+    /** Wire may send a number or numeric string; normalizeActionResultExitCode handles both. */
+    exit_code?: number | string;
     output?: string;
     command?: string;
     [key: string]: unknown;

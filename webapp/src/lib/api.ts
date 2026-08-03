@@ -258,11 +258,11 @@ export type Job = {
     command_fingerprint?: string;
     command_preview?: string;
     status?: string;
-    exit_code?: number;
+    exit_code?: number | string;
     terminal_receipt?: {
       status?: string;
       summary?: string;
-      exit_code?: number;
+      exit_code?: number | string;
       finished_at?: number;
     } | null;
   }>;
@@ -273,7 +273,7 @@ export type Job = {
   terminal_receipt?: {
     status?: string;
     run_status?: string;
-    exit_code?: number;
+    exit_code?: number | string;
     summary?: string;
     finished_at?: number;
     output_chars?: number;
@@ -303,8 +303,8 @@ export type Job = {
   spill_uri?: string;
   /** Bounded stdout preview when spilled or truncated. */
   output_preview?: string;
-  /** Process exit code when known. */
-  exit_code?: number;
+  /** Process exit code when known (number or numeric string from the wire). */
+  exit_code?: number | string;
 };
 export type Artifact = {
   id?: string;

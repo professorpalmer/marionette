@@ -92,7 +92,7 @@ export type Card = {
              status?: string; message?: string; duration_ms?: number;
              /** Truncated shell stdout/stderr excerpt for run_command cards. */
              output?: string;
-             exit_code?: number;
+             exit_code?: number | string;
              command?: string };
 };
 /** Inline swarm status pill lifecycle (running spinner vs terminal chips). */
