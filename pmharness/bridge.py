@@ -152,7 +152,7 @@ _STOP_CONDITIONS = (
 
 
 _ANALYSIS_OUTPUT_FORMAT_BLOCK = (
-    "REQUIRED OUTPUT FORMAT (literal line prefixes — fail-closed without them):\n"
+    "REQUIRED OUTPUT FORMAT (literal line prefixes -- fail-closed without them):\n"
     "FINDING: path/to/file.py:123 short claim with evidence\n"
     "RISK: path/to/file.py:45 short claim\n"
     "DECISION: keep X because Y\n"
