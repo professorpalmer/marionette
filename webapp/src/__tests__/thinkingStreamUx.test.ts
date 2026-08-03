@@ -12,6 +12,8 @@ import {
   activityGroupStableId,
   groupAgentActivity,
   liveActivityGroupIndex,
+  resolveActivityGroupOpen,
+  resolveThinkingExpanded,
 } from "../components/TranscriptList";
 import type { GroupedItem, Item } from "../components/TranscriptList";
 import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
@@ -795,6 +797,24 @@ describe("liveActivityGroupIndex fences prior turns", () => {
       },
     ];
     expect(liveActivityGroupIndex(grouped)).toBe(3);
+  });
+});
+
+describe("investigation folds default collapsed", () => {
+  it("resolveActivityGroupOpen is closed unless the user toggled", () => {
+    const prefs = new Map<string, boolean>();
+    expect(resolveActivityGroupOpen("g1", prefs)).toBe(false);
+    prefs.set("g1", true);
+    expect(resolveActivityGroupOpen("g1", prefs)).toBe(true);
+    prefs.set("g1", false);
+    expect(resolveActivityGroupOpen("g1", prefs)).toBe(false);
+  });
+
+  it("resolveThinkingExpanded ignores live streaming and stays closed by default", () => {
+    const prefs = new Map<string, boolean>();
+    expect(resolveThinkingExpanded("th1", prefs)).toBe(false);
+    prefs.set("th1", true);
+    expect(resolveThinkingExpanded("th1", prefs)).toBe(true);
   });
 });
 

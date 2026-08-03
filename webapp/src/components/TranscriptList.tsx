@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, useCallback, useEffect, memo } from "react";
+import { useLayoutEffect, useRef, useState, useCallback, memo } from "react";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -356,6 +356,30 @@ function objKey(obj: object): string {
 const __activityOpen = new Map<string, boolean>();
 // Reasoning expand preference (user click) survives remounts / live→idle flips.
 const __thinkingExpanded = new Map<string, boolean>();
+
+/**
+ * Investigation folds default CLOSED (Cursor/Hermes). Only an explicit user
+ * toggle (sticky in ``prefs``) opens them — never live tools/reasoning.
+ */
+export function resolveActivityGroupOpen(
+  groupId: string,
+  prefs: Map<string, boolean> = __activityOpen,
+): boolean {
+  if (prefs.has(groupId)) return Boolean(prefs.get(groupId));
+  return false;
+}
+
+/**
+ * REASONING / thinking rows default CLOSED. Live streaming must not auto-expand;
+ * the user opens individual blocks when they want the body.
+ */
+export function resolveThinkingExpanded(
+  blockId: string,
+  prefs: Map<string, boolean> = __thinkingExpanded,
+): boolean {
+  if (prefs.has(blockId)) return Boolean(prefs.get(blockId));
+  return false;
+}
 // Alias every durable member of an investigation onto one canon key so a
 // thinking-only group does not remount when the first tool card arrives (and
 // the reverse). Streaming used to key off objKey(thinking) which changed every
@@ -991,22 +1015,17 @@ function ActivityGroup({
   /** True while this is the current turn's fold and the agent loop is still open. */
   loopOpen?: boolean;
 }) {
-  // Tool-bearing investigations start OPEN (Cursor/Hermes: see every write /
-  // run as it happens). Pure Thought/reasoning stays collapsed. Seed from the
-  // module map so a remount does not yank an explicit toggle mid-stream.
+  // Investigation chrome stays collapsed by default (Cursor/Hermes). The
+  // headline still tracks Investigating / Explored while closed; the user
+  // opens the fold when they want the step list. Seed from the module map so
+  // a remount does not yank an explicit toggle mid-stream.
   const swarmPendingItems = items.filter((it) => it.kind === "swarm_pending");
   const swarmPendingRunning = swarmPendingItems.some((it) => {
     const status = it.status || (it.resolved ? "done" : "running");
     return status === "running";
   });
 
-  const [open, setOpen] = useState(() => {
-    if (__activityOpen.has(groupId)) return Boolean(__activityOpen.get(groupId));
-    // Live tool-bearing folds start open; sealed history stays collapsed so a
-    // remount / regroup at turn-end cannot re-expand every prior Investigating.
-    if (!loopOpen) return false;
-    return items.some((it) => it.kind === "card") || swarmPendingRunning;
-  });
+  const [open, setOpen] = useState(() => resolveActivityGroupOpen(groupId));
   const toggleOpen = () => {
     setOpen((v) => {
       const next = !v;
@@ -1053,16 +1072,6 @@ function ActivityGroup({
     || liveThinking
     || swarmPendingRunning
     || (loopOpen && (actionCount > 0 || thinkingItems.length > 0 || swarmPendingItems.length > 0));
-
-  // Auto-open while tools/reasoning are live ONLY when the user has never
-  // toggled this group. A prior remount reset autoOpenedRef and re-forced open
-  // on every tool call -- expand clicked shut, then snapped open again.
-  useEffect(() => {
-    if (!(anyRunning || liveThinking || investigating)) return;
-    if (__activityOpen.has(groupId)) return;
-    setOpen(true);
-    __activityOpen.set(groupId, true);
-  }, [anyRunning, liveThinking, investigating, groupId]);
 
   // A group with NO tool actions, no narration AND no reasoning (just a lone
   // CodeGraph chip from the per-step auto-injection) would render a misleading
@@ -1173,27 +1182,9 @@ function ActivityGroup({
     return null;
   };
 
-  // Tiny tool-only groups (1-2 actions, no reasoning/narration) render inline --
-  // collapsing them would add a click for no benefit. Thinking-only groups must
-  // NOT take this path: uncapped REASONING rows under the finale is the bug
-  // Cursor CLI late-thinking used to paint; they use the Thought collapsible.
-  const hasMsg = items.some((it) => it.kind === "msg" && (it as { kind: "msg"; msg: Msg }).msg.text.trim());
-  if (
-    actionCount > 0
-    && actionCount <= 2
-    && cgItems.length === 0
-    && !hasMsg
-    && thinkingItems.length === 0
-    && checkpointItems.length === 0
-    && swarmResults.length === 0
-    && swarmPendingItems.length === 0
-  ) {
-    return (
-      <div className="flex flex-col gap-0.5 pl-3 border-l-2 border-edge/40 my-1 w-full">
-        {items.map(renderInner)}
-      </div>
-    );
-  }
+  // Always use the Investigating / Explored collapsible — even for tiny
+  // tool-only groups. Inline always-open rows used to burn scroll space and
+  // disagreed with Cursor/Hermes (collapsed until the user opens them).
 
   return (
     <div className="my-1 w-full">
@@ -1253,20 +1244,13 @@ function ThinkingBlock({
   live?: boolean;
   blockId: string;
 }) {
-  // Cursor/Hermes-style compression: reasoning collapses to a single header line
-  // by default (a faint preview of the first line hints at the content), and
-  // expands into a height-capped, scrollable window rather than dumping its full
-  // height inline. Unbounded inline reasoning is what used to blow up the window
-  // and bury the actual answer, so the compact default is the legibility win.
-  // While live-streaming, render plain text -- full markdown + syntax highlight
-  // on every delta was a major CPU sink.
-  //
-  // Expand preference is sticky: never re-force open on live/tool updates once
-  // the user has toggled. Inner scroll stick-to-bottom follows new tokens only
-  // while the user stays pinned near the bottom of this box.
-  const [expanded, setExpanded] = useState(
-    () => __thinkingExpanded.get(blockId) ?? live,
-  );
+  // Cursor/Hermes-style compression: reasoning stays a single header line
+  // by default (faint first-line preview). Expand is user-driven and sticky;
+  // live streaming must not auto-open the body. While live, render plain text
+  // -- full markdown + syntax highlight on every delta was a major CPU sink.
+  // Inner scroll stick-to-bottom follows new tokens only while the user stays
+  // pinned near the bottom of an expanded box.
+  const [expanded, setExpanded] = useState(() => resolveThinkingExpanded(blockId));
   const bodyRef = useRef<HTMLDivElement>(null);
   const pinnedInnerRef = useRef(true);
 
@@ -1290,12 +1274,6 @@ function ThinkingBlock({
     }
     pinnedInnerRef.current = pinned;
   }, [notifyOuterFeedUnpin]);
-
-  useEffect(() => {
-    if (!live) return;
-    if (__thinkingExpanded.has(blockId)) return;
-    setExpanded(true);
-  }, [live, blockId]);
 
   useLayoutEffect(() => {
     const el = bodyRef.current;
@@ -1785,11 +1763,9 @@ function ActionCard({ card, onToggle }: { card: Card; onToggle: () => void }) {
   const meta = getCardMeta(card);
   const nested = Array.isArray(card.actions) ? card.actions : [];
   const effectivelyRunning = cardEffectivelyRunning(card);
-  const nestedRunning =
-    effectivelyRunning && nested.some((a) => a.status === "running");
-  // Nested worker tools stay visible while running (open fold); terminal stays
-  // collapsible with the parent card chrome.
-  const showNested = nested.length > 0 && (card.open || nestedRunning || effectivelyRunning);
+  // Nested worker tools follow the parent card: collapsed until the user opens
+  // the row (same default as Investigating / REASONING).
+  const showNested = nested.length > 0 && card.open;
   const resultOutput = String(card.result?.output || "");
   const hasExitCode = typeof card.result?.exit_code === "number";
   const nonZeroExit = hasExitCode && card.result!.exit_code !== 0;
