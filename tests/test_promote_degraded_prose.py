@@ -23,7 +23,8 @@ def test_prose_verification_is_promoted_when_no_signal():
     out = _promote_degraded_prose(compact)
     findings = [a for a in out if a.get("type") == "finding"]
     assert findings, "prose analysis must be promoted to a finding"
-    assert findings[0]["headline"].startswith("harness/server.py:2834")
+    assert "harness/server.py:2834" in findings[0]["headline"]
+    assert findings[0]["body"].startswith("FINDING: ")
     assert findings[0].get("promoted_from") == "verification"
 
 
@@ -64,8 +65,9 @@ def test_long_stdout_prose_promoted_with_full_body_preserved():
     findings = [a for a in out if a.get("type") == "finding"]
     assert findings, "long prose analysis must be promoted to a finding"
     f = findings[0]
-    # (a) FULL body preserved, not truncated to 240.
-    assert f["body"] == long_prose.strip()
+    # (a) FULL body preserved (with FINDING: label), not truncated to 240.
+    assert long_prose.strip() in f["body"]
+    assert f["body"].startswith("FINDING: ")
     assert len(f["body"]) > 1000
     # (b) headline stays <= 240 for display.
     assert len(f["headline"]) <= 240
@@ -130,3 +132,58 @@ def test_no_model_goal_echo_not_promoted_or_completed():
     assert "completed" not in summary.lower()
     assert "0 findings" not in summary.lower()
     assert "without structured findings" not in summary.lower()
+
+
+def test_empty_or_unstructured_substantive_prose_is_promoted():
+    """empty_or_unstructured + long path-citing prose must become a finding."""
+    prose = (
+        "harness/server.py:2834 bills cached tokens at full price; apply the "
+        "cache discount so multi-turn cost accounting stays accurate across "
+        "long agentic analysis sessions that never called submit_findings."
+    )
+    compact = [
+        {"type": "routing", "headline": "", "empty_headline": True},
+        {
+            "type": "verification",
+            "headline": prose[:240],
+            "body": prose,
+            "empty_headline": False,
+            "failure": "empty_or_unstructured_agentic_result",
+        },
+    ]
+    out = _promote_degraded_prose(compact)
+    findings = [a for a in out if a.get("type") == "finding"]
+    assert findings, "empty_or_unstructured substantive prose must promote"
+    assert findings[0].get("promoted_from") == "verification"
+    assert "harness/server.py:2834" in findings[0]["body"]
+    assert findings[0]["body"].startswith("FINDING: ")
+
+
+def test_empty_or_unstructured_reasoning_still_not_promoted():
+    prose = "Now let me look at the cache eviction path and then report back..."
+    compact = [{
+        "type": "verification",
+        "headline": prose,
+        "body": prose,
+        "empty_headline": False,
+        "failure": "empty_or_unstructured_agentic_result",
+    }]
+    out = _promote_degraded_prose(compact)
+    assert not any(a.get("type") == "finding" for a in out)
+
+
+def test_auth_and_timeout_still_not_promoted():
+    prose = (
+        "harness/server.py:2834 bills cached tokens at full price; apply the "
+        "cache discount so multi-turn cost is accurate."
+    )
+    for tag in ("timeout", "auth_failed:401", "http_status:401"):
+        compact = [{
+            "type": "verification",
+            "headline": prose[:240],
+            "body": prose,
+            "empty_headline": False,
+            "failure": tag,
+        }]
+        out = _promote_degraded_prose(compact)
+        assert not any(a.get("type") == "finding" for a in out), tag

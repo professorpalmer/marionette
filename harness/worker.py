@@ -480,11 +480,66 @@ def _analysis_output_is_structured(
         return False, "no structured findings"
 
 
+def coerce_unlabeled_analysis_prose(text: str) -> str:
+    """Soft-rescue substantive unlabeled analysis prose into one FINDING row.
+
+    Workers often emit a real audit paragraph without FINDING:/RISK:/DECISION:
+    labels. Before fail-closed, wrap the whole trimmed body as a single
+    ``FINDING:`` line so the structured gate and ``parse_analysis_signal_rows``
+    can accept it. Does not invent multiple findings. Reasoning fragments and
+    empty/thin text are left unchanged.
+    """
+    try:
+        raw = (text or "").strip()
+        if not raw:
+            return text if isinstance(text, str) else ""
+        ok, _ = _analysis_output_is_structured(raw, halt_reason="")
+        if ok:
+            return text
+        try:
+            from pmharness.bridge import _looks_like_reasoning_fragment
+            if _looks_like_reasoning_fragment(raw):
+                return text
+        except Exception:
+            low = raw.lower()
+            if any(
+                low.startswith(p)
+                for p in (
+                    "now let me", "let me look", "let me check",
+                    "i'll look", "i will look",
+                )
+            ):
+                return text
+        substantive = False
+        try:
+            from harness.pilot_guards import analysis_summary_is_substantive
+            substantive = bool(analysis_summary_is_substantive(raw))
+        except Exception:
+            substantive = False
+        if not substantive:
+            if len(raw) >= 200:
+                substantive = True
+            elif len(raw) >= 40 and re.search(
+                r"[\w./\\-]+\.(py|ts|tsx|js|jsx|md|json|toml|yml|yaml)\b|line\s+\d+|:\d+\b",
+                raw,
+                re.IGNORECASE,
+            ):
+                substantive = True
+        if not substantive:
+            return text
+        if _ANALYSIS_SIGNAL_LINE_RE.search(raw):
+            return text
+        return f"FINDING: {raw}"
+    except Exception:
+        return text if isinstance(text, str) else ""
+
+
 def _pick_analysis_message(events: list) -> tuple[str, str]:
     """Select the best analysis summary text and last halt reason from events.
 
     Prefers the last message that passes the structured-findings gate; otherwise
     the longest non-empty assistant message (for diagnostics on degrade).
+    Soft-coerces substantive unlabeled prose once before falling back.
     """
     messages: list[str] = []
     halt_reason = ""
@@ -505,8 +560,19 @@ def _pick_analysis_message(events: list) -> tuple[str, str]:
         ok, _ = _analysis_output_is_structured(text, halt_reason="")
         if ok:
             return text, halt_reason
-    # Fallback: longest non-empty for diagnostic summary.
-    return max(messages, key=len), halt_reason
+        coerced = coerce_unlabeled_analysis_prose(text)
+        if coerced != text:
+            ok2, _ = _analysis_output_is_structured(coerced, halt_reason="")
+            if ok2:
+                return coerced, halt_reason
+    # Fallback: longest non-empty for diagnostic summary; try coerce once.
+    fallback = max(messages, key=len)
+    coerced = coerce_unlabeled_analysis_prose(fallback)
+    if coerced != fallback:
+        ok, _ = _analysis_output_is_structured(coerced, halt_reason="")
+        if ok:
+            return coerced, halt_reason
+    return fallback, halt_reason
 
 
 def _analysis_degrade_label(degrade_reason: str, halt_reason: str) -> str:
@@ -888,10 +954,19 @@ class ProviderWorker:
                 # produced structured findings. Free-text reasoning alone
                 # (e.g. "Now let me look at...") must fail degraded so the
                 # pilot re-dispatches -- same submit contract as swarm workers.
+                # Soft-coerce substantive unlabeled prose once before fail-closed.
                 last_message, halt_reason = _pick_analysis_message(events)
                 structured_ok, degrade_reason = _analysis_output_is_structured(
                     last_message, halt_reason=halt_reason,
                 )
+                if not structured_ok:
+                    coerced = coerce_unlabeled_analysis_prose(last_message)
+                    if coerced != last_message:
+                        structured_ok, degrade_reason = _analysis_output_is_structured(
+                            coerced, halt_reason=halt_reason,
+                        )
+                        if structured_ok:
+                            last_message = coerced
                 if not structured_ok:
                     success = True  # clean worktree; the failure is contractual
                     label = _analysis_degrade_label(degrade_reason, halt_reason)

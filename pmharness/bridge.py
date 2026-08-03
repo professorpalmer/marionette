@@ -151,6 +151,19 @@ _STOP_CONDITIONS = (
 )
 
 
+_ANALYSIS_OUTPUT_FORMAT_BLOCK = (
+    "REQUIRED OUTPUT FORMAT (literal line prefixes — fail-closed without them):\n"
+    "FINDING: path/to/file.py:123 short claim with evidence\n"
+    "RISK: path/to/file.py:45 short claim\n"
+    "DECISION: keep X because Y\n"
+    "\n"
+    "Rules:\n"
+    "- At least one FINDING or RISK or DECISION line is required before you stop.\n"
+    "- Lines must start with the label (optionally after 'Last assistant message: ').\n"
+    "- Do not end on unlabeled prose paragraphs alone."
+)
+
+
 def _analysis_submit_contract(*, via_tool: bool) -> str:
     """Shared turn-budget / submit contract for analysis workers.
 
@@ -159,6 +172,7 @@ def _analysis_submit_contract(*, via_tool: bool) -> str:
     structured FINDING/RISK/DECISION summary in the final message instead.
     Either way: never end on free-text planning/reasoning alone.
     """
+    format_block = _ANALYSIS_OUTPUT_FORMAT_BLOCK
     if via_tool:
         return (
             "IMPORTANT: You have a limited number of tool-call turns. Do a focused "
@@ -167,7 +181,10 @@ def _analysis_submit_contract(*, via_tool: bool) -> str:
             "out of turns. A few well-evidenced findings submitted is far better than "
             "a deep exploration that never submits. If unsure, submit early and stop. "
             "Do not end on planning or mid-thought reasoning alone "
-            "(e.g. 'Now let me look at...')."
+            "(e.g. 'Now let me look at...'). "
+            "Typed tool payloads must use type finding/risk/decision with concrete "
+            "headlines (not a single unlabeled blob).\n\n"
+            f"{format_block}"
         )
     return (
         "IMPORTANT: You have a limited number of turns. Do a focused "
@@ -176,7 +193,8 @@ def _analysis_submit_contract(*, via_tool: bool) -> str:
         "FINDING/RISK/DECISION lines with file:line evidence -- BEFORE you run "
         "out of turns. A few well-evidenced findings concluded is far better than "
         "a deep exploration that never concludes. Do not end on planning or "
-        "mid-thought reasoning alone (e.g. 'Now let me look at...')."
+        "mid-thought reasoning alone (e.g. 'Now let me look at...').\n\n"
+        f"{format_block}"
     )
 
 
@@ -672,17 +690,67 @@ _NO_STRUCTURE_FAILURES = frozenset({
 })
 
 
+# Failure tag that means the worker wrote free-text analysis but never called
+# submit_findings / never labelled FINDING lines. Unlike timeout/auth/route,
+# the stdout may still be real audit prose worth promoting.
+_PROMOTABLE_UNSTRUCTURED_FAILURE = "empty_or_unstructured_agentic_result"
+
+
 def _is_nonpromotable_failure(failure: object) -> bool:
     """True when a compact artifact must never be promoted to a finding.
 
-    ANY non-empty failure tag disqualifies promotion. Promotion exists to rescue
-    a worker that DID the analysis but skipped ``submit_findings``; a tagged
-    failure is the opposite — positive evidence that the run died. Enumerating
-    known-bad tags let every new tag (``timeout``, ``insufficient_credits``,
-    ``http_status:429``, ...) default to promotable, which is how a dead run
-    grew synthetic findings and a green badge.
+    Non-empty failure tags disqualify promotion by default — a tagged failure
+    is positive evidence the run died (timeout / auth / route / ...). The sole
+    exception is ``empty_or_unstructured_agentic_result``: that tag parks real
+    analysis prose when the worker skipped structured submit, so it remains
+    promotable when the body is substantive.
     """
-    return bool(str(failure or "").strip())
+    fail = str(failure or "").strip()
+    if not fail:
+        return False
+    if fail.lower() == _PROMOTABLE_UNSTRUCTURED_FAILURE:
+        return False
+    return True
+
+
+def _meta_degrade_only_empty_unstructured(a: dict) -> bool:
+    """True when meta-degrade is solely ``empty_or_unstructured_agentic_result``.
+
+    Other meta markers (no_tool_calls, auth/route tags, without-structured-
+    findings headline text) stay non-promotable even if this tag is also set.
+    """
+    try:
+        fail = str(a.get("failure") or "").strip().lower()
+        if fail != _PROMOTABLE_UNSTRUCTURED_FAILURE:
+            return False
+        head = str(a.get("headline") or a.get("body") or "").lower()
+        if "without structured findings" in head:
+            return False
+        if "never called any tool" in head:
+            return False
+        if "no structured findings" in head:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_finding_label(body: str) -> str:
+    """Prefix ``FINDING: `` when promoted prose lacks typed signal labels."""
+    text = (body or "").strip()
+    if not text:
+        return text
+    low = text.lower()
+    if (
+        low.startswith("finding:")
+        or low.startswith("risk:")
+        or low.startswith("decision:")
+        or "\nfinding:" in low
+        or "\nrisk:" in low
+        or "\ndecision:" in low
+    ):
+        return text
+    return f"FINDING: {text}"
 
 # Planning / mid-thought openers that must never masquerade as a finding headline.
 _REASONING_FRAGMENT_PREFIXES = (
@@ -955,16 +1023,17 @@ def _promote_degraded_prose(compact: list) -> list:
                 continue
             if _is_auth_failure_tag(a.get("failure"), a.get("headline")):
                 continue
-            # Never launder a no_tool_calls / unstructured degrade into a
-            # synthetic finding -- Puppetmaster >= 1.19.14 already fails those
-            # runs; promoting their stdout would recreate the bug (reasoning
-            # fragment as headline, clean "completed" badge).
-            if _is_meta_degrade_artifact(a):
+            # Never launder no_tool_calls / auth / route meta-degrades into a
+            # synthetic finding. empty_or_unstructured_agentic_result alone is
+            # different: it parks real analysis prose when the worker skipped
+            # structured submit, so fall through to body-length / reasoning
+            # checks instead of skipping.
+            if _is_meta_degrade_artifact(a) and not _meta_degrade_only_empty_unstructured(a):
                 continue
-            # Promotion requires POSITIVE analysis evidence: prose with no
-            # failure tag at all. Any tag (timeout / model_not_found /
-            # insufficient_credits / http_status:* / provider_error / ...) means
-            # the run died, and its stdout is diagnostics, not findings.
+            # Promotion requires POSITIVE analysis evidence. Timeout /
+            # model_not_found / insufficient_credits / http_status:* /
+            # provider_error / ... mean the run died; stdout is diagnostics.
+            # empty_or_unstructured_agentic_result is the sole tagged exception.
             if _is_nonpromotable_failure(a.get("failure")):
                 continue
             # Use the FULL body (untruncated stdout prose), falling back to the
@@ -978,6 +1047,9 @@ def _promote_degraded_prose(compact: list) -> list:
                 continue
             if _looks_like_reasoning_fragment(body):
                 continue
+            # Label unlabeled prose so native parse_analysis_signal_rows can
+            # extract later; already-labelled bodies stay unchanged.
+            body = _ensure_finding_label(body)
             row = {
                 "type": "finding",
                 # headline stays clipped for display, but the full body is carried

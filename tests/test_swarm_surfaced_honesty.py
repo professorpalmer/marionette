@@ -22,7 +22,10 @@ from pmharness.bridge import (
     _promote_degraded_prose,
 )
 
-# Every failure tag that must block promotion of degraded prose.
+# Failure tags that must block promotion of degraded prose.
+# empty_or_unstructured_agentic_result is intentionally absent: that tag parks
+# real analysis prose when the worker skipped structured submit, so promote
+# may rescue substantive bodies (see test_empty_or_unstructured_*).
 NON_PROMOTABLE_TAGS = [
     "timeout",
     "model_not_found",
@@ -33,7 +36,6 @@ NON_PROMOTABLE_TAGS = [
     "http_status:500",
     "provider_error",
     "no_tool_calls",
-    "empty_or_unstructured_agentic_result",
     "auth_failed:401",
 ]
 
@@ -94,8 +96,29 @@ def test_untagged_prose_still_promotes():
 
     findings = [a for a in promoted if a.get("type") == "finding"]
     assert len(findings) == 1
-    assert findings[0]["body"] == _REAL_PROSE
+    assert _REAL_PROSE in findings[0]["body"]
+    assert findings[0]["body"].startswith("FINDING: ")
     assert findings[0]["promoted_from"] == "verification"
+
+
+def test_empty_or_unstructured_substantive_promotes():
+    """empty_or_unstructured + path-citing prose is promotable (not a hard fail)."""
+    compact = [{
+        "type": "verification",
+        "headline": _REAL_PROSE[:240],
+        "body": _REAL_PROSE,
+        "empty_headline": False,
+        "failure": "empty_or_unstructured_agentic_result",
+    }]
+    promoted = _promote_degraded_prose(compact)
+    findings = [a for a in promoted if a.get("type") == "finding"]
+    assert len(findings) == 1
+    assert findings[0]["promoted_from"] == "verification"
+    status, summary = _analysis_bridge_status(
+        promoted, job_status="completed", summary="Analysis complete.",
+    )
+    assert status == "completed"
+    assert "no structured findings" not in summary.lower()
 
 
 def test_bridge_result_positional_auth_failure_compat():

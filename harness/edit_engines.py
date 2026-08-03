@@ -354,6 +354,7 @@ def run_agentic_edit(
     from harness.worker import (
         WorkerResult,
         _analysis_output_is_structured,
+        coerce_unlabeled_analysis_prose,
         parse_analysis_signal_rows,
     )
     from harness.job_scoping import job_label_for_session, stamp_task_payload
@@ -516,15 +517,27 @@ def run_agentic_edit(
                         has_structured = _has_real_structured_findings(compact)
                     except Exception:
                         has_structured = False
+                    analysis_text = final_text or ""
                     structured_ok, degrade_reason = _analysis_output_is_structured(
-                        final_text or "",
+                        analysis_text,
                         halt_reason=failure or "",
                     )
+                    if not has_structured and not structured_ok:
+                        coerced = coerce_unlabeled_analysis_prose(analysis_text)
+                        if coerced != analysis_text:
+                            structured_ok, degrade_reason = (
+                                _analysis_output_is_structured(
+                                    coerced,
+                                    halt_reason=failure or "",
+                                )
+                            )
+                            if structured_ok:
+                                analysis_text = coerced
                     if has_structured or structured_ok:
                         summary = _agentic_analysis_summary(
-                            compact, final_text or "",
+                            compact, analysis_text,
                         )
-                        signal_rows = parse_analysis_signal_rows(final_text or "")
+                        signal_rows = parse_analysis_signal_rows(analysis_text)
                         if not signal_rows and has_structured:
                             signal_rows = _signal_rows_from_compact(compact)
                         return _stamp_agentic(WorkerResult(

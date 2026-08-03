@@ -3243,6 +3243,7 @@ class ConversationalSession(
                     loop_msg = (
                         "(system) Do not stop yet. End with a structured "
                         "FINDING/RISK/DECISION summary citing file:line evidence. "
+                        "Example: FINDING: harness/foo.py:12 claim "
                         "Do not end on planning or mid-thought reasoning alone."
                     )
                 elif self.config.verify_cmd:
@@ -3303,6 +3304,7 @@ class ConversationalSession(
                     loop_msg = (
                         "(system) Token budget is nearly exhausted. STOP "
                         "exploring and end NOW with a structured "
-                        "FINDING/RISK/DECISION summary citing file:line evidence."
+                        "FINDING/RISK/DECISION summary citing file:line evidence. "
+                        "Example: FINDING: harness/foo.py:12 claim"
                     )
 

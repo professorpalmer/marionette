@@ -628,7 +628,7 @@ def test_agentic_analysis_empty_result_fails_structured_gate(monkeypatch):
 
 
 def test_agentic_analysis_unlabeled_prose_fails_structured_gate(monkeypatch):
-    """expects_diff=False must not green on unlabeled non-reasoning prose."""
+    """expects_diff=False must not green on thin unlabeled non-reasoning prose."""
     repo_dir = create_temp_git_repo()
     try:
         cfg = _cfg(repo_dir)
@@ -651,6 +651,41 @@ def test_agentic_analysis_unlabeled_prose_fails_structured_gate(monkeypatch):
         assert result.ok is False
         assert "missing FINDING/RISK/DECISION" in (
             result.error or result.summary or ""
+        )
+    finally:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
+
+def test_agentic_analysis_coerces_substantive_unlabeled_prose(monkeypatch):
+    """Substantive unlabeled path-citing prose soft-coerces before fail-closed."""
+    repo_dir = create_temp_git_repo()
+    try:
+        cfg = _cfg(repo_dir)
+        prose = (
+            "harness/edit_engines.py:505 analysis empty-diff path must coerce "
+            "substantive unlabeled prose that cites a concrete path:line locus."
+        )
+        _install_agentic_mocks(
+            monkeypatch,
+            orchestrator_result=_fake_pm_result([
+                _fake_artifact(
+                    stdout=prose,
+                    tokens_out=3,
+                    tokens_in=2,
+                    failure="empty_or_unstructured_agentic_result",
+                ),
+            ]),
+        )
+        monkeypatch.setattr(
+            "harness.edit_engines.finalize_worktree_patch",
+            lambda _wt: ("", []),
+        )
+        result = run_agentic_edit(cfg, "audit auth", expects_diff=False)
+        assert result.ok is True
+        assert "FINDING:" in (result.summary or "")
+        assert any(
+            isinstance(r, dict) and r.get("type") == "finding"
+            for r in (result.findings or [])
         )
     finally:
         shutil.rmtree(repo_dir, ignore_errors=True)

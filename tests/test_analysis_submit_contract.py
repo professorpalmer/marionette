@@ -15,6 +15,7 @@ from harness.conversation import ConversationalSession, ConvEvent
 from harness.worker import (
     ProviderWorker,
     _analysis_output_is_structured,
+    coerce_unlabeled_analysis_prose,
     parse_analysis_signal_rows,
 )
 from pmharness.bridge import (
@@ -345,9 +346,46 @@ def test_native_analysis_brief_aligns_with_swarm_contract():
     assert "FINDING" in inst or "findings" in inst.lower()
     assert "submit_findings" not in inst
     assert "Now let me look" in inst  # negative example in the brief
-    # Swarm tool brief still asks for submit_findings.
+    assert "REQUIRED OUTPUT FORMAT" in inst
+    assert "FINDING: path/to/file.py:123" in inst
+    assert "RISK: path/to/file.py:45" in inst
+    assert "DECISION: keep X because Y" in inst
+    # Swarm tool brief still asks for submit_findings + same format block.
     tool_inst = _analysis_instruction("audit auth", "/repo", "explore", via_tool=True)
     assert "submit_findings" in tool_inst
+    assert "REQUIRED OUTPUT FORMAT" in tool_inst
+    assert "FINDING: path/to/file.py:123" in tool_inst
+    assert "type finding/risk/decision" in tool_inst
+
+
+def test_coerce_unlabeled_substantive_prose_becomes_structured():
+    prose = (
+        "harness/worker.py:700 empty-diff analysis accepts unlabeled "
+        "substantive prose that cites a concrete path:line locus."
+    )
+    coerced = coerce_unlabeled_analysis_prose(prose)
+    assert coerced.startswith("FINDING: ")
+    assert prose in coerced
+    ok, reason = _analysis_output_is_structured(coerced)
+    assert ok is True
+    assert reason == ""
+    rows = parse_analysis_signal_rows(coerced)
+    assert len(rows) == 1
+    assert rows[0]["type"] == "finding"
+
+
+def test_coerce_leaves_reasoning_and_labelled_unchanged():
+    reasoning = "Now let me look at the auth module more carefully..."
+    assert coerce_unlabeled_analysis_prose(reasoning) == reasoning
+    ok, reason = _analysis_output_is_structured(reasoning)
+    assert ok is False
+    assert "reasoning" in reason
+
+    labelled = "FINDING: harness/keys.py:12 leaks the API key into logs"
+    assert coerce_unlabeled_analysis_prose(labelled) == labelled
+
+    thin = "The auth module looks fine overall."
+    assert coerce_unlabeled_analysis_prose(thin) == thin
 
 
 def test_analysis_degrade_label_prefers_token_ceiling():

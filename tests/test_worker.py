@@ -292,6 +292,39 @@ def test_worker_empty_change_analysis_rejects_unlabeled_prose(monkeypatch):
         shutil.rmtree(repo_dir)
 
 
+def test_worker_empty_change_analysis_coerces_substantive_unlabeled(monkeypatch):
+    """Substantive unlabeled path-citing prose soft-coerces to FINDING success."""
+    repo_dir = create_temp_git_repo()
+    try:
+        prose = (
+            "harness/worker.py:700 empty-diff analysis accepts unlabeled "
+            "substantive prose that cites a concrete path:line locus."
+        )
+
+        def mock_run_auto_empty(self, objective, budget=None, require_codegraph=True, **kwargs):
+            yield ConvEvent("message", {"text": prose})
+            yield ConvEvent("auto_halt", {"reason": "pilot reports objective met"})
+
+        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto_empty)
+
+        worker = ProviderWorker(
+            repo=repo_dir,
+            goal="Audit the repository",
+            expects_diff=False,
+            keep_worktree_on_failure=True,
+        )
+        res = worker.run()
+
+        assert res.ok is True
+        assert "FINDING:" in (res.summary or "")
+        assert any(
+            isinstance(r, dict) and r.get("type") == "finding"
+            for r in (res.findings or [])
+        )
+    finally:
+        shutil.rmtree(repo_dir)
+
+
 def test_worker_destructive_guards(monkeypatch):
     repo_dir = create_temp_git_repo()
     try:
