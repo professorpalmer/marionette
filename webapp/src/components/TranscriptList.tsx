@@ -36,6 +36,13 @@ import {
   type AutoBudgetSnapshot,
 } from "../lib/autoReceipts";
 import { TranscriptImage } from "./conversation/TranscriptImage";
+import {
+  FEED_UNPIN_BUBBLE_EVENT,
+  isPinnedToBottom,
+  shouldStopNestedWheelBubble,
+  shouldUnpinInnerOnWheel,
+  THINKING_INNER_PIN_THRESHOLD_PX,
+} from "./conversation/feedScroll";
 
 export type Msg = {
   role: "user" | "assistant";
@@ -1263,6 +1270,27 @@ function ThinkingBlock({
   const bodyRef = useRef<HTMLDivElement>(null);
   const pinnedInnerRef = useRef(true);
 
+  const notifyOuterFeedUnpin = useCallback(() => {
+    bodyRef.current?.dispatchEvent(
+      new CustomEvent(FEED_UNPIN_BUBBLE_EVENT, { bubbles: true }),
+    );
+  }, []);
+
+  const syncInnerPinFromScroll = useCallback(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const pinned = isPinnedToBottom(
+      el.scrollHeight,
+      el.scrollTop,
+      el.clientHeight,
+      THINKING_INNER_PIN_THRESHOLD_PX,
+    );
+    if (pinnedInnerRef.current && !pinned) {
+      notifyOuterFeedUnpin();
+    }
+    pinnedInnerRef.current = pinned;
+  }, [notifyOuterFeedUnpin]);
+
   useEffect(() => {
     if (!live) return;
     if (__thinkingExpanded.has(blockId)) return;
@@ -1306,12 +1334,7 @@ function ThinkingBlock({
       {expanded && (
         <div
           ref={bodyRef}
-          onScroll={() => {
-            const el = bodyRef.current;
-            if (!el) return;
-            pinnedInnerRef.current =
-              el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-          }}
+          onScroll={syncInnerPinFromScroll}
           onWheel={(e) => {
             // Keep wheel deltas inside this capped pane so the outer transcript
             // does not steal scroll while the user reads a long live thought.
@@ -1320,10 +1343,15 @@ function ThinkingBlock({
             const atTop = el.scrollTop <= 0;
             const atBottom =
               el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
-            if ((e.deltaY < 0 && !atTop) || (e.deltaY > 0 && !atBottom)) {
+            if (shouldStopNestedWheelBubble(e.deltaY, atTop, atBottom)) {
               e.stopPropagation();
             }
-            if (e.deltaY < 0) pinnedInnerRef.current = false;
+            if (shouldUnpinInnerOnWheel(e.deltaY)) {
+              if (pinnedInnerRef.current) {
+                pinnedInnerRef.current = false;
+                notifyOuterFeedUnpin();
+              }
+            }
           }}
           className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] leading-[1.65] max-w-[92%] max-h-[34dvh]"
         >

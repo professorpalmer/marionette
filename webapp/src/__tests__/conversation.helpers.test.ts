@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
 import {
   clearTranscriptCache,
   peekTranscriptCache,
@@ -108,11 +108,15 @@ import {
   classifyLocalSlashCommand,
   composerEnterAction,
   editNoticeAfterSend,
+  EDIT_BUSY_PROGRESS_NOTICE,
   executeSendGate,
   formatCompactCompleteMessage,
   formatCompactErrorMessage,
   formatHelpSlashReply,
+  runEditMessageFlow,
   shouldBlockEmptySend,
+  showStandaloneEditNoticeDismiss,
+  userOrdinalBeforeIndex,
 } from "../components/conversation/composerSend";
 import {
   appendMentionsToInput,
@@ -151,11 +155,16 @@ import {
 import {
   FEED_SETTLE_STABLE_FRAMES,
   FEED_SETTLE_TIMEOUT_MS,
+  FEED_UNPIN_BUBBLE_EVENT,
+  feedWheelUnpinListenerOptions,
   isPinnedToBottom,
   pinStateFromScrollGeometry,
   settleFrameResult,
+  shouldStopNestedWheelBubble,
+  shouldUnpinInnerOnWheel,
   shouldUnpinOnTouchMove,
   shouldUnpinOnWheel,
+  THINKING_INNER_PIN_THRESHOLD_PX,
 } from "../components/conversation/feedScroll";
 import {
   STREAM_ABORT_MESSAGE,
@@ -1438,6 +1447,89 @@ describe("composerSend module", () => {
     expect(editNoticeAfterSend(false)).toBeNull();
   });
 
+  it("runEditMessageFlow stops locally, awaits interrupt, then rewinds when busy", async () => {
+    const order: string[] = [];
+    const stopLocal = vi.fn(() => { order.push("stopLocal"); });
+    const interruptSession = vi.fn(async () => {
+      order.push("interrupt");
+      return { ok: true };
+    });
+    const rewindSession = vi.fn(async () => {
+      order.push("rewind");
+      return { ok: true, prefill: "hello", notice: "Editing — resubmit, or Revert to restore." };
+    });
+
+    const result = await runEditMessageFlow({
+      composerBusy: true,
+      idx: 2,
+      userOrdinal: 1,
+      originalText: "hello",
+      stopLocal,
+      interruptSession,
+      rewindSession,
+    });
+
+    expect(order).toEqual(["stopLocal", "interrupt", "rewind"]);
+    expect(result).toEqual({
+      kind: "success",
+      truncateToIndex: 2,
+      prefill: "hello",
+      notice: "Editing — resubmit, or Revert to restore.",
+    });
+  });
+
+  it("runEditMessageFlow idle edit rewinds without interrupt", async () => {
+    const stopLocal = vi.fn();
+    const interruptSession = vi.fn();
+    const rewindSession = vi.fn(async () => ({ ok: true, prefill: "draft" }));
+
+    const result = await runEditMessageFlow({
+      composerBusy: false,
+      idx: 3,
+      userOrdinal: 2,
+      originalText: "draft",
+      stopLocal,
+      interruptSession,
+      rewindSession,
+    });
+
+    expect(stopLocal).not.toHaveBeenCalled();
+    expect(interruptSession).not.toHaveBeenCalled();
+    expect(rewindSession).toHaveBeenCalledWith(2);
+    expect(result.kind).toBe("success");
+  });
+
+  it("EDIT_BUSY_PROGRESS_NOTICE begins with the auto-stop wording", () => {
+    expect(EDIT_BUSY_PROGRESS_NOTICE.startsWith("Sending will stop and revert")).toBe(true);
+  });
+
+  it("showStandaloneEditNoticeDismiss targets orphan editNotice banners", () => {
+    expect(
+      showStandaloneEditNoticeDismiss({
+        editingIndex: null,
+        canRevertEdit: false,
+        editNotice: "Could not stop the current turn.",
+      }),
+    ).toBe(true);
+    expect(
+      showStandaloneEditNoticeDismiss({
+        editingIndex: 1,
+        canRevertEdit: false,
+        editNotice: "Editing",
+      }),
+    ).toBe(false);
+  });
+
+  it("userOrdinalBeforeIndex counts only user messages before the index", () => {
+    const items = [
+      { kind: "msg", msg: { role: "user" } },
+      { kind: "thinking" },
+      { kind: "msg", msg: { role: "assistant" } },
+      { kind: "msg", msg: { role: "user" } },
+    ];
+    expect(userOrdinalBeforeIndex(items, 3)).toBe(1);
+  });
+
   it("classifies local slash commands", () => {
     const builtIn = (cmd: string) => ["/clear", "/help", "/compact", "/model", "/new"].includes(cmd);
     expect(
@@ -1600,6 +1692,46 @@ describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
     expect(classifySwarmPollEvent({ kind: "pilot_resume" }).kind).toBe("pilot_resume");
     expect(appendMemoryProposal([], { id: "1", text: "t", category: "g" })).toHaveLength(1);
     expect(appendMemoryProposal([{ id: "1", text: "t", category: "g" }], { id: "1", text: "t", category: "g" })).toHaveLength(1);
+  });
+
+  it("nested live reasoning wheel helpers cooperate with capture-phase unpin", () => {
+    expect(FEED_UNPIN_BUBBLE_EVENT).toBe("pmharness-feed-unpin");
+    expect(feedWheelUnpinListenerOptions()).toEqual({
+      passive: true,
+      capture: true,
+    });
+    // Inner pane consumes wheel while scrolled off an edge.
+    expect(shouldStopNestedWheelBubble(-1, false, true)).toBe(true);
+    expect(shouldStopNestedWheelBubble(1, true, false)).toBe(true);
+    // At top/bottom edges, bubble continues so outer feed can scroll too.
+    expect(shouldStopNestedWheelBubble(-1, true, false)).toBe(false);
+    expect(shouldStopNestedWheelBubble(1, false, true)).toBe(false);
+    expect(shouldUnpinInnerOnWheel(-1)).toBe(true);
+    expect(shouldUnpinInnerOnWheel(1)).toBe(false);
+    // Inner pin threshold matches ThinkingBlock geometry checks.
+    expect(
+      isPinnedToBottom(500, 452, 100, THINKING_INNER_PIN_THRESHOLD_PX),
+    ).toBe(true);
+    expect(
+      isPinnedToBottom(500, 300, 100, THINKING_INNER_PIN_THRESHOLD_PX),
+    ).toBe(false);
+    // Capture listener runs before nested stopPropagation — simulate ordering.
+    let outerPinned = true;
+    const settling = false;
+    const onCaptureWheel = (deltaY: number) => {
+      if (shouldUnpinOnWheel(deltaY, settling)) outerPinned = false;
+    };
+    const onNestedWheel = (deltaY: number, atTop: boolean, atBottom: boolean) => {
+      if (shouldStopNestedWheelBubble(deltaY, atTop, atBottom)) {
+        // stopPropagation — outer bubble listener would not run.
+      }
+      if (shouldUnpinInnerOnWheel(deltaY)) {
+        /* inner unpinned */
+      }
+    };
+    onCaptureWheel(-1);
+    onNestedWheel(-1, false, true);
+    expect(outerPinned).toBe(false);
   });
 
   it("keeps context-usage display helpers finite on malformed inputs", () => {

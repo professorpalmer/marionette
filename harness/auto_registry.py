@@ -397,6 +397,7 @@ _AGENTIC_PROVIDER_SLUGS = {
     "zai": "zai",
     "xai": "xai",
     "bedrock": "bedrock",
+    "opencode-go": "opencode-go",
 }
 
 

@@ -327,6 +327,67 @@ def _prepare_analysis_env() -> None:
         os.environ["OPENAI_BASE_URL"] = "https://openrouter.ai/api/v1"
 
 
+def _harness_to_puppetmaster_provider_slug(name: str) -> str:
+    """Map a harness provider reach name to Puppetmaster's agentic slug."""
+    try:
+        from harness.auto_registry import _AGENTIC_PROVIDER_SLUGS
+
+        return _AGENTIC_PROVIDER_SLUGS.get(name, name)
+    except Exception:
+        return name
+
+
+def _sync_agentic_credential_env() -> None:
+    """Best-effort Marionette → Puppetmaster credential boundary.
+
+    Invokes :func:`harness.providers.available_providers` so healthy
+    credential-pool tokens are mirrored into ``os.environ`` for Puppetmaster's
+    agentic providers, and exports disconnected reaches as
+    ``PUPPETMASTER_DISABLED_PROVIDERS`` (comma-separated Puppetmaster slugs,
+    empty when none).
+
+    Swallows all failures so offline/unit paths stay unchanged. Never logs or
+    returns secret values.
+    """
+    import os
+
+    try:
+        from harness.keys import get_disconnected
+
+        slugs = sorted(
+            _harness_to_puppetmaster_provider_slug(n) for n in get_disconnected()
+        )
+        os.environ["PUPPETMASTER_DISABLED_PROVIDERS"] = ",".join(slugs)
+    except Exception:
+        pass
+
+    try:
+        from harness.providers import available_providers
+        from harness.registry_wizard import get_provider_key
+        from harness.credential_pool import (
+            _mirror_pool_token_to_env,
+            providers_for_env_var,
+        )
+    except Exception:
+        return
+
+    try:
+        for p in available_providers():
+            try:
+                key = get_provider_key(p)
+                key_env = p.key_env()
+                if key and key_env:
+                    os.environ[key_env] = key
+                _mirror_pool_token_to_env(p.name)
+                for ev in p.env_vars or ():
+                    for prov in providers_for_env_var(ev):
+                        _mirror_pool_token_to_env(prov)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
 @dataclass
 class BridgeResult:
     job_id: str
@@ -1231,6 +1292,8 @@ def execute_intent(
         env_repo = (_os.environ.get("HARNESS_REPO") or "").strip()
         repo_cwd = resolve_effective_repo(env_repo) if env_repo else ""
 
+    _sync_agentic_credential_env()
+
     try:
         if intent.action == "run_prewalk":
             if not repo_cwd:
@@ -1263,12 +1326,18 @@ def execute_intent(
 
         if swarm_adapter == "agentic" and repo_cwd:
             # Standalone path: run READ-ONLY analysis workers on the built-in
-            # 'agentic' adapter, which calls a provider API directly on the user's
-            # own key -- no external agent CLI. auto_route lets Puppetmaster's router
-            # pick the right-sized model among ONLY the providers the user's keys
-            # unlock (key-aware filter) and the enabled platform lock. The agentic
-            # adapter's analyze mode exposes no edit tools, so this is safe on live
-            # repos even before the triple read-only guard below.
+            # 'agentic' adapter (provider API on the user's key -- no external
+            # agent CLI). Agentic is provider-universal: OpenRouter, OpenCode
+            # Go, OpenAI-compatible, Anthropic-wire, and other keyed agentic
+            # providers all execute here. auto_route lets Puppetmaster's
+            # agentic router select among usable provider-key-backed agentic
+            # model specs only (allowed_adapters=['agentic'] below). A
+            # missing provider key or empty agentic catalog must fail clearly
+            # -- never fall through to Cursor/Codex/OpenAI platform adapters.
+            # Prefer keyed API billing over plan-billed first picks
+            # (prefer_plan_billed=False below). Agentic analyze mode exposes
+            # no edit tools, so the default path is safe on live repos even
+            # before the triple read-only guard below.
             _warn_if_unindexed(repo_cwd)
             from puppetmaster.workers import WorkerSpec
             roles = intent.roles or infer_roles(intent.goal)
@@ -1300,14 +1369,19 @@ def execute_intent(
                     "cwd": repo_cwd, "prompt": intent.goal,
                     "auto_route": True,
                     # Stay on the agentic adapter for BOTH the first pick
-                    # and router-fallback. Without this, prefer_plan_billed
-                    # first-picks Cursor GPT ($0 plan) then fallback lands
-                    # on openai/gpt-* even when the user's Models toggles
-                    # only enabled OpenRouter pilots -- the tracker then
-                    # shows a GPT model the picker never offered.
+                    # and router-fallback. Agentic is provider-universal
+                    # (OpenRouter, OpenCode Go, OpenAI-compatible,
+                    # Anthropic-wire, …); Puppetmaster's agentic router
+                    # selects among usable provider-key-backed agentic
+                    # model specs. Without this pin, an eligible
+                    # Cursor/Codex/OpenAI platform adapter may win and the
+                    # orchestrator may rewrite WorkerSpec.adapter. A
+                    # missing provider key or empty agentic catalog must
+                    # fail clearly rather than silently leaving agentic.
                     "allowed_adapters": ["agentic"],
-                    # Agentic path is API-billed OpenRouter (or other keyed
-                    # providers); do not prefer plan-billed Cursor/Codex.
+                    # Agentic path is API-billed keyed providers; do not
+                    # prefer plan-billed Cursor/Codex ($0 plan) ahead of
+                    # agentic.
                     "prefer_plan_billed": False,
                     # Opt this worker into the CDP browser toolset. The
                     # agentic adapter's _browser_enabled gate reads this flag

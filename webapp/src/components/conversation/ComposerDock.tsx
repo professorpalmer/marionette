@@ -32,6 +32,7 @@ import {
   contextUsagePercent,
   formatTokenK,
 } from "./contextUsageColors";
+import { showStandaloneEditNoticeDismiss } from "./composerSend";
 
 export type AttachedImage = { path: string; name: string; previewUrl: string };
 export type MsgQueueItem = { text: string; auto: boolean; plan?: boolean };
@@ -549,6 +550,17 @@ export default function ComposerDock({
                     Dismiss
                   </button>
                 )}
+                {showStandaloneEditNoticeDismiss({ editingIndex, canRevertEdit, editNotice }) && (
+                  <button
+                    type="button"
+                    onClick={() => onSetEditNotice(null)}
+                    className="text-faint hover:text-muted transition font-medium text-[10px] px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2"
+                    title="Dismiss notice"
+                    aria-label="Dismiss notice"
+                  >
+                    <X size={11} />
+                  </button>
+                )}
               </span>
             </div>
           )}
@@ -765,7 +777,7 @@ export default function ComposerDock({
             </div>
           )}
 
-          <textarea ref={taRef} value={input}
+          <textarea ref={taRef} value={input} disabled={editBusy}
             onChange={(e) => handleInputChange(e.target.value, e.target.selectionStart)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
@@ -826,12 +838,12 @@ export default function ComposerDock({
             {composerBusy
               ? <>
                   <button onClick={stop} className="px-2 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-medium flex items-center gap-1"><Square size={9} />Stop</button>
-                  <button onClick={send} disabled={transcriptStale || (!input.trim() && attachedImages.length === 0)}
+                  <button onClick={send} disabled={editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0)}
                     title="Steer: redirect the current turn now (Enter). Cmd/Ctrl+Enter or Queue = run after this turn finishes."
                     className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                     <Send size={9} />Steer</button>
                 </>
-              : <button onClick={send} disabled={transcriptStale || (!input.trim() && attachedImages.length === 0)}
+              : <button onClick={send} disabled={editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0)}
                   className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                   <Send size={9} />{auto ? "Run" : plan ? "Plan" : "Send"}</button>}
           </div>

@@ -138,6 +138,10 @@ export {
   formatSteerErrorMessage,
   formatRenderCommandErrorMessage,
   editNoticeAfterSend,
+  EDIT_BUSY_PROGRESS_NOTICE,
+  userOrdinalBeforeIndex,
+  showStandaloneEditNoticeDismiss,
+  runEditMessageFlow,
   classifyLocalSlashCommand,
 } from "./composerSend";
 export {
@@ -192,11 +196,16 @@ export {
 export {
   FEED_PIN_THRESHOLD_PX,
   FEED_SETTLE_TIMEOUT_MS,
+  FEED_UNPIN_BUBBLE_EVENT,
+  feedWheelUnpinListenerOptions,
   isPinnedToBottom,
   pinStateFromScrollGeometry,
+  shouldStopNestedWheelBubble,
+  shouldUnpinInnerOnWheel,
   shouldUnpinOnWheel,
   shouldUnpinOnTouchMove,
   settleFrameResult,
+  THINKING_INNER_PIN_THRESHOLD_PX,
 } from "./feedScroll";
 export {
   STREAM_ABORT_MESSAGE,

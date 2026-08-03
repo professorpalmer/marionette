@@ -52,7 +52,7 @@ describe("UpdateBanner update checks", () => {
     delete (window as any).harnessIPC;
   });
 
-  it("clears checking progress when no packaged update is available", async () => {
+  it("keeps checking progress invisible when no packaged update is available", async () => {
     render(<UpdateBanner />);
 
     await waitFor(() => expect(progressListener).not.toBeNull());
@@ -63,7 +63,7 @@ describe("UpdateBanner update checks", () => {
         percent: 0,
       });
     });
-    expect(screen.getByText("Checking for app shell update 0%")).toBeInTheDocument();
+    expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument();
 
     act(() => {
       resolveCheck?.({ available: false, downloaded: false });
@@ -73,6 +73,25 @@ describe("UpdateBanner update checks", () => {
       expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument();
     });
     expect(idleListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the banner when an update becomes actionable", async () => {
+    render(<UpdateBanner />);
+
+    await waitFor(() => expect(progressListener).not.toBeNull());
+    act(() => {
+      progressListener?.({
+        stage: "check",
+        message: "Checking for app shell update",
+        percent: 0,
+      });
+      resolveCheck?.({ available: true, downloaded: false });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("update-banner")).toBeInTheDocument();
+    });
+    expect(screen.getByText("A new version of Marionette is ready.")).toBeInTheDocument();
   });
 
   it("clears checking progress when the update check fails", async () => {
@@ -86,7 +105,7 @@ describe("UpdateBanner update checks", () => {
         percent: 0,
       });
     });
-    expect(screen.getByTestId("update-banner")).toBeInTheDocument();
+    expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument();
 
     act(() => {
       rejectCheck?.(new Error("network unavailable"));
@@ -109,7 +128,7 @@ describe("UpdateBanner update checks", () => {
         percent: 0,
       });
     });
-    expect(screen.getByText("Checking for app shell update 0%")).toBeInTheDocument();
+    expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument();
 
     act(() => {
       progressListener?.({ stage: "idle", message: "", percent: 0 });
@@ -132,12 +151,12 @@ describe("UpdateBanner update checks", () => {
         percent: 0,
       });
     });
-    expect(screen.getByText("Checking for app shell update 0%")).toBeInTheDocument();
+    expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument();
 
     act(() => {
       resolveCheck?.({ available: false, downloaded: false, busy: true });
     });
-    expect(screen.getByText("Checking for app shell update 0%")).toBeInTheDocument();
+    expect(screen.queryByTestId("update-banner")).not.toBeInTheDocument();
 
     act(() => {
       progressListener?.({ stage: "idle", message: "", percent: 0 });

@@ -103,6 +103,116 @@ export function editNoticeAfterSend(_canRevertEdit: boolean): string | null {
   return null;
 }
 
+/** Shown while auto stop+rewind runs after edit during an active turn. */
+export const EDIT_BUSY_PROGRESS_NOTICE =
+  "Sending will stop and revert to this message…";
+
+export type EditOrdinalItem = {
+  kind: string;
+  msg?: { role: string };
+};
+
+/** User-message ordinal for rewind: UI-only rows before idx are skipped. */
+export function userOrdinalBeforeIndex(
+  items: EditOrdinalItem[],
+  idx: number,
+): number {
+  return items
+    .slice(0, idx)
+    .filter((it) => it.kind === "msg" && it.msg?.role === "user").length;
+}
+
+/** Standalone editNotice with no edit/revert chrome needs an explicit dismiss. */
+export function showStandaloneEditNoticeDismiss(opts: {
+  editingIndex: number | null;
+  canRevertEdit: boolean;
+  editNotice: string | null;
+}): boolean {
+  return (
+    opts.editNotice !== null
+    && opts.editingIndex === null
+    && !opts.canRevertEdit
+  );
+}
+
+export type RewindSessionResponse = {
+  ok: boolean;
+  prefill?: string;
+  notice?: string;
+  error?: string;
+};
+
+export type EditMessageFlowResult =
+  | { kind: "interrupt_failed"; notice: string }
+  | { kind: "rewind_failed"; notice: string }
+  | {
+      kind: "success";
+      truncateToIndex: number;
+      prefill: string;
+      notice: string;
+    };
+
+function editFlowErrorMessage(err: unknown, fallback: string): string {
+  if (err && typeof err === "object" && "message" in err) {
+    return String((err as { message?: unknown }).message || fallback);
+  }
+  return fallback;
+}
+
+/**
+ * Idle edit: rewind only. Busy edit: stop local UI, await interrupt, then rewind.
+ * Caller must guard duplicate clicks with editBusy and set EDIT_BUSY_PROGRESS_NOTICE
+ * before awaiting when composerBusy.
+ */
+export async function runEditMessageFlow(opts: {
+  composerBusy: boolean;
+  idx: number;
+  userOrdinal: number;
+  originalText: string;
+  stopLocal: () => void;
+  interruptSession: () => Promise<{ ok: boolean }>;
+  rewindSession: (userOrdinal: number) => Promise<RewindSessionResponse>;
+}): Promise<EditMessageFlowResult> {
+  if (opts.composerBusy) {
+    opts.stopLocal();
+    try {
+      const interruptRes = await opts.interruptSession();
+      if (!interruptRes?.ok) {
+        return {
+          kind: "interrupt_failed",
+          notice: "Could not stop the current turn.",
+        };
+      }
+    } catch (err) {
+      return {
+        kind: "interrupt_failed",
+        notice: editFlowErrorMessage(err, "Could not stop the current turn."),
+      };
+    }
+  }
+
+  try {
+    const res = await opts.rewindSession(opts.userOrdinal);
+    if (!res?.ok) {
+      return {
+        kind: "rewind_failed",
+        notice: res?.error || "Could not rewind transcript for edit.",
+      };
+    }
+    return {
+      kind: "success",
+      truncateToIndex: opts.idx,
+      prefill: res.prefill || opts.originalText,
+      notice: res.notice || "Editing — resubmit, or Revert to restore.",
+    };
+  } catch (err) {
+    return {
+      kind: "rewind_failed",
+      notice: editFlowErrorMessage(err, "Rewind failed."),
+    };
+  }
+}
+
 export type LocalSlashAction =
   | { kind: "none" }
   | { kind: "clear_or_new" }

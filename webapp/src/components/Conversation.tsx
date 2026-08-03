@@ -47,19 +47,24 @@ import {
   classifyLocalSlashCommand,
   composerEnterAction,
   editNoticeAfterSend,
+  EDIT_BUSY_PROGRESS_NOTICE,
   executeSendGate,
   formatCompactCompleteMessage,
   formatCompactErrorMessage,
   formatHelpSlashReply,
   formatRenderCommandErrorMessage,
   formatSteerErrorMessage,
+  runEditMessageFlow,
   shouldBlockEmptySend,
+  userOrdinalBeforeIndex,
 } from "./conversation/composerSend";
-  import {
+import {
   FEED_PIN_THRESHOLD_PX,
   pinStateFromScrollGeometry,
   settleFrameResult,
   shouldUnpinOnTouchMove,
+  FEED_UNPIN_BUBBLE_EVENT,
+  feedWheelUnpinListenerOptions,
   shouldUnpinOnWheel,
 } from "./conversation/feedScroll";
 import {
@@ -770,6 +775,11 @@ export default function Conversation({
         pinnedToBottomRef.current = false;
       }
     };
+    const onNestedFeedUnpin = () => {
+      if (!scrollSettlingRef.current) {
+        pinnedToBottomRef.current = false;
+      }
+    };
     let touchY: number | null = null;
     const onTouchStart = (e: TouchEvent) => {
       touchY = e.touches[0]?.clientY ?? null;
@@ -782,12 +792,16 @@ export default function Conversation({
       touchY = y ?? touchY;
     };
     el.addEventListener("scroll", onScroll, { passive: true });
-    el.addEventListener("wheel", onWheel, { passive: true });
+    // Capture phase: nested ThinkingBlock stops wheel bubble while scrolling
+    // inside its pane — unpin must run first or stream tokens re-yank the feed.
+    el.addEventListener("wheel", onWheel, feedWheelUnpinListenerOptions());
+    el.addEventListener(FEED_UNPIN_BUBBLE_EVENT, onNestedFeedUnpin);
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: true });
     return () => {
       el.removeEventListener("scroll", onScroll);
-      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("wheel", onWheel, feedWheelUnpinListenerOptions().capture);
+      el.removeEventListener(FEED_UNPIN_BUBBLE_EVENT, onNestedFeedUnpin);
       el.removeEventListener("touchstart", onTouchStart);
       el.removeEventListener("touchmove", onTouchMove);
     };
@@ -1231,34 +1245,33 @@ export default function Conversation({
   };
 
   const handleEditMessage = (idx: number, originalText: string) => {
-    if (composerBusy || editBusy) {
-      setEditNotice("Stop the current turn before editing a prior message.");
-      return;
+    if (editBusy) return;
+    const userOrdinal = userOrdinalBeforeIndex(items, idx);
+    const busyEdit = composerBusy;
+    if (busyEdit) {
+      setEditNotice(EDIT_BUSY_PROGRESS_NOTICE);
     }
-    // Count user messages before this items-index so UI-only rows (thinking,
-    // steer, etc.) do not skew the backend display ordinal.
-    const userOrdinal = items
-      .slice(0, idx)
-      .filter((it) => it.kind === "msg" && it.msg.role === "user").length;
-
     setEditBusy(true);
-    api.rewindSession(userOrdinal)
-      .then((res) => {
-        if (!res?.ok) {
-          setEditNotice(res?.error || "Could not rewind transcript for edit.");
+    runEditMessageFlow({
+      composerBusy: busyEdit,
+      idx,
+      userOrdinal,
+      originalText,
+      stopLocal,
+      interruptSession: () => api.interruptSession(),
+      rewindSession: (ordinal) => api.rewindSession(ordinal),
+    })
+      .then((result) => {
+        if (result.kind === "interrupt_failed" || result.kind === "rewind_failed") {
+          setEditNotice(result.notice);
           return;
         }
-        // Truncate the visible transcript to the same spot; message reappears
-        // when the user resubmits. Revert restores the stashed tail.
-        setItems((prev) => prev.slice(0, idx));
-        setEditingIndex(idx);
-        setInput(res.prefill || originalText);
+        setItems((prev) => prev.slice(0, result.truncateToIndex));
+        setEditingIndex(result.truncateToIndex);
+        setInput(result.prefill);
         setCanRevertEdit(true);
-        setEditNotice(res.notice || "Editing — resubmit, or Revert to restore.");
+        setEditNotice(result.notice);
         setTimeout(() => taRef.current?.focus(), 10);
-      })
-      .catch((err) => {
-        setEditNotice((err as Error)?.message || "Rewind failed.");
       })
       .finally(() => setEditBusy(false));
   };
@@ -1800,6 +1813,7 @@ export default function Conversation({
   resumeTriggerRef.current = triggerResume;
 
   const send = () => {
+    if (editBusy) return;
     const msg = input.trim();
     // Allow a send/steer that is only attached image(s) with no text -- the
     // backend accepts text OR images.
@@ -1956,7 +1970,7 @@ export default function Conversation({
     kickSend();
   };
 
-  const stop = () => {
+  const stopLocal = () => {
     userStoppedRef.current = true;
     turnSettledRef.current = true;
     resumeQueuedRef.current = false;
@@ -1987,6 +2001,10 @@ export default function Conversation({
         liveIds,
       ),
     );
+  };
+
+  const stop = () => {
+    stopLocal();
     api.interruptSession().catch((e) => console.error("Failed to interrupt session on backend:", e));
   };
 

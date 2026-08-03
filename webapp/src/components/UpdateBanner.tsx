@@ -148,10 +148,13 @@ export default function UpdateBanner() {
         return;
       }
 
-      // Pre-commit background download churn. Once we've latched "ready", ignore
-      // it so the banner doesn't oscillate between "Restart now" and progress.
-      if (readyRef.current) return;
-      showProgress(p);
+      // Pre-commit updater activity is deliberately invisible. The user only
+      // needs chrome when an update is actionable; checking and background
+      // download progress belongs in the updater, not across the chat header.
+      // Once the update is available/downloaded, the branch above latches the
+      // actionable banner. After the user commits, the branch above shows
+      // install progress.
+      return;
     });
 
     return () => {
